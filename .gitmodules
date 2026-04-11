@@ -1,0 +1,3 @@
+[submodule "docs/references/satori-docs"]
+	path = docs/references/satori-docs
+	url = https://github.com/satorijs/docs

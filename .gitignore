@@ -1,0 +1,27 @@
+# Vibe files
+AGENTS.md
+.agent/
+.codex/
+.opencode/
+.kilocode/
+.worktrees/
+IFLOW.md
+
+# Operating System
+**/.DS_Store
+.DS_Store
+
+# Python related
+__pycache__
+.mypy_cache
+.venv*
+.conda/
+uv.lock
+.coverage
+
+# IDE and editors
+.vscode
+.ideadata/
+
+# data files
+data/
