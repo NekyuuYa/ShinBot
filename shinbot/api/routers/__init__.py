@@ -1,0 +1,1 @@
+"""ShinBot API routers package."""

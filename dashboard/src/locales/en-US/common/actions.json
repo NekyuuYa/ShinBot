@@ -1,0 +1,45 @@
+{
+  "action": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "create": "Create",
+    "refresh": "Refresh",
+    "search": "Search",
+    "reset": "Reset",
+    "confirm": "Confirm",
+    "back": "Back",
+    "close": "Close",
+    "submit": "Submit",
+    "start": "Start",
+    "stop": "Stop"
+  },
+  "status": {
+    "success": "Success",
+    "error": "Error",
+    "warning": "Warning",
+    "info": "Info",
+    "loading": "Loading",
+    "online": "Online",
+    "offline": "Offline",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "connecting": "Connecting"
+  },
+  "validation": {
+    "required": "This field is required",
+    "invalidEmail": "Please enter a valid email address",
+    "passwordTooShort": "Password must be at least 6 characters",
+    "passwordMismatch": "Passwords do not match"
+  },
+  "message": {
+    "deleteConfirm": "Are you sure you want to delete this item? This action cannot be undone.",
+    "operationSuccess": "Operation successful",
+    "operationFailed": "Operation failed",
+    "networkError": "Network error, please try again later",
+    "unauthorized": "Your session has expired, please login again",
+    "requestFailed": "Request failed"
+  }
+}

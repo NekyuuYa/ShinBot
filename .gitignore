@@ -18,6 +18,9 @@ __pycache__
 .conda/
 uv.lock
 .coverage
+.pytest_cache
+.ruff_cache
+shinbot.egg-info/
 
 # IDE and editors
 .vscode

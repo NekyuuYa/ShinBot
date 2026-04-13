@@ -1,0 +1,10 @@
+{
+    "id": "shinbot_adapter_satori",
+    "name": "Satori Adapter (Official)",
+    "version": "1.0.0",
+    "author": "ShinBot Team",
+    "description": "The standard Satori protocol driver for ShinBot.",
+    "entry": "__init__.py",
+    "role": "adapter",
+    "permissions": ["network.inbound", "network.outbound"]
+}

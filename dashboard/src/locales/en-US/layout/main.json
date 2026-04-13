@@ -1,0 +1,16 @@
+{
+  "appName": "ShinBot",
+  "nav": {
+    "welcome": "Welcome",
+    "dashboard": "Dashboard",
+    "instances": "Instances",
+    "instancesManage": "Instance Management",
+    "plugins": "Plugins",
+    "pluginsManage": "Plugin Management",
+    "settings": "Settings",
+    "logout": "Logout",
+    "profile": "Profile",
+    "monitoring": "Monitoring",
+    "audit": "Audit"
+  }
+}

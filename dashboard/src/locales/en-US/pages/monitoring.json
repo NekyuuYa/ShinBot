@@ -1,0 +1,10 @@
+{
+  "title": "Monitoring",
+  "connectLogs": "Connect Logs",
+  "logs": "Logs",
+  "status": "System Status",
+  "cpu": "CPU Usage",
+  "memory": "Memory Usage",
+  "memoryUsageMb": "{value} MB",
+  "uptime": "Uptime"
+}

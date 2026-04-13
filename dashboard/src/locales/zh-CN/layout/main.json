@@ -1,0 +1,16 @@
+{
+  "appName": "ShinBot",
+  "nav": {
+    "welcome": "欢迎",
+    "dashboard": "仪表板",
+    "instances": "机器人",
+    "instancesManage": "机器人管理",
+    "plugins": "插件",
+    "pluginsManage": "插件管理",
+    "settings": "设置",
+    "logout": "登出",
+    "profile": "个人资料",
+    "monitoring": "监控",
+    "audit": "审计"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "title": "Instance Management",
+  "create": "Create Instance",
+  "created": "Instance created",
+  "updated": "Instance updated",
+  "deleted": "Instance deleted",
+  "started": "Instance started",
+  "stopped": "Instance stopped",
+  "createFailed": "Failed to create instance",
+  "loadFailed": "Failed to load instances",
+  "updateFailed": "Failed to update instance",
+  "deleteFailed": "Failed to delete instance",
+  "startFailed": "Failed to start instance",
+  "stopFailed": "Failed to stop instance",
+  "stopRequested": "Stop requested, waiting for live status update",
+  "saved": "Instance saved",
+  "views": {
+    "card": "Card View",
+    "list": "List View"
+  },
+  "table": {
+    "name": "Name",
+    "adapterType": "Adapter Type",
+    "status": "Status",
+    "created": "Created",
+    "actions": "Actions"
+  },
+  "noData": "No instances",
+  "form": {
+    "name": "Instance Name",
+    "adapterType": "Adapter Type",
+    "adapterTypeLabel": "Select an adapter",
+    "host": "Host",
+    "token": "Token",
+    "port": "Port",
+    "status": "Status",
+    "statusLabel": "Instance Status",
+    "config": "Configuration",
+    "itemCount": "{count} items"
+  },
+  "dialog": {
+    "createTitle": "Create Instance",
+    "editTitle": "Edit Instance"
+  },
+  "card": {
+    "isRunning": "Running",
+    "isStopped": "Stopped",
+    "editConfig": "Edit Config",
+    "control": "Control",
+    "start": "Start",
+    "stop": "Stop",
+    "delete": "Delete"
+  }
+}

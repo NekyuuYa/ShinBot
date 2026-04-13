@@ -1,0 +1,21 @@
+# ShinBot Configuration (Silent Mode)
+
+[logging]
+level = "INFO"
+
+# Bot Instances - Disabled for now
+# [[instances]]
+# id = "main-bot"
+# platform = "satori"
+# [instances.satori]
+# host = "localhost:5140"
+# token = ""
+# reconnect_delay = 5.0
+
+[admin]
+username = "admin"
+password = "admin"
+jwt_expire_hours = 24
+
+[permissions]
+# Groups: "default", "admin", "owner"

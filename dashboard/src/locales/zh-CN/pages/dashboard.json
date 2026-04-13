@@ -1,0 +1,22 @@
+{
+  "welcome": "欢迎，{name}！",
+  "subtitle": "系统概览与快捷入口",
+  "loadFailed": "仪表盘数据加载失败",
+  "cards": {
+    "totalInstances": "实例总数",
+    "runningInstances": "运行中",
+    "totalPlugins": "插件总数",
+    "enabledPlugins": "已启用插件",
+    "statusOnline": "状态：{value}",
+    "memoryUsageMb": "内存：{value} MB"
+  },
+  "quickActions": {
+    "title": "快捷操作",
+    "instancesTitle": "管理实例",
+    "instancesDescription": "查看和控制机器人实例",
+    "pluginsTitle": "管理插件",
+    "pluginsDescription": "安装并配置插件",
+    "monitoringTitle": "监控中心",
+    "monitoringDescription": "查看系统日志和状态"
+  }
+}

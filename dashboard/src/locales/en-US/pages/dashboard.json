@@ -1,0 +1,22 @@
+{
+  "welcome": "Welcome, {name}!",
+  "subtitle": "System overview and quick actions",
+  "loadFailed": "Failed to load dashboard data",
+  "cards": {
+    "totalInstances": "Total Instances",
+    "runningInstances": "Running",
+    "totalPlugins": "Total Plugins",
+    "enabledPlugins": "Enabled Plugins",
+    "statusOnline": "Status: {value}",
+    "memoryUsageMb": "Memory: {value} MB"
+  },
+  "quickActions": {
+    "title": "Quick Actions",
+    "instancesTitle": "Manage Instances",
+    "instancesDescription": "View and control your bot instances",
+    "pluginsTitle": "Manage Plugins",
+    "pluginsDescription": "Install and configure plugins",
+    "monitoringTitle": "Monitoring",
+    "monitoringDescription": "View system logs and status"
+  }
+}

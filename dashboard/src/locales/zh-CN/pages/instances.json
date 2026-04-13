@@ -1,0 +1,54 @@
+{
+  "title": "机器人管理",
+  "create": "创建机器人",
+  "created": "实例已创建",
+  "updated": "实例已更新",
+  "deleted": "实例已删除",
+  "started": "实例已启动",
+  "stopped": "实例已停止",
+  "createFailed": "创建实例失败",
+  "loadFailed": "加载实例失败",
+  "updateFailed": "更新实例失败",
+  "deleteFailed": "删除实例失败",
+  "startFailed": "启动实例失败",
+  "stopFailed": "停止实例失败",
+  "stopRequested": "已请求停止，等待实时状态更新",
+  "saved": "实例已保存",
+  "views": {
+    "card": "卡片视图",
+    "list": "列表视图"
+  },
+  "table": {
+    "name": "名称",
+    "adapterType": "适配器类型",
+    "status": "状态",
+    "created": "创建时间",
+    "actions": "操作"
+  },
+  "noData": "暂无机器人",
+  "form": {
+    "name": "机器人名称",
+    "adapterType": "适配器类型",
+    "adapterTypeLabel": "请选择适配器",
+    "host": "Host",
+    "token": "Token",
+    "port": "Port",
+    "status": "状态",
+    "statusLabel": "机器人状态",
+    "config": "配置",
+    "itemCount": "{count} 项"
+  },
+  "dialog": {
+    "createTitle": "创建机器人",
+    "editTitle": "编辑机器人"
+  },
+  "card": {
+    "isRunning": "运行中",
+    "isStopped": "已停止",
+    "editConfig": "编辑配置",
+    "control": "控制",
+    "start": "启动",
+    "stop": "停止",
+    "delete": "删除"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "title": "监控",
+  "connectLogs": "连接日志",
+  "logs": "日志",
+  "status": "系统状态",
+  "cpu": "CPU 占用",
+  "memory": "内存占用",
+  "memoryUsageMb": "{value} MB",
+  "uptime": "运行时间"
+}

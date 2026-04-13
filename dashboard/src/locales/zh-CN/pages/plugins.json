@@ -1,0 +1,33 @@
+{
+  "title": "插件管理",
+  "reload": "重新加载",
+  "rescan": "重新扫描",
+  "noData": "暂无插件",
+  "reloaded": "插件已重新加载",
+  "rescanned": "插件已重新扫描",
+  "loadFailed": "加载插件失败",
+  "enabled": "插件已启用",
+  "disabled": "插件已禁用",
+  "configSaved": "插件配置已保存",
+  "schema": {
+    "empty": "该插件未提供可配置的 Schema。"
+  },
+  "dialog": {
+    "title": "配置插件：{name}",
+    "hint": "表单根据后端元数据动态生成。"
+  },
+  "form": {
+    "name": "插件名称",
+    "version": "版本",
+    "status": "状态",
+    "author": "作者",
+    "config": "配置"
+  },
+  "card": {
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "configure": "配置",
+    "disable": "禁用",
+    "enable": "启用"
+  }
+}

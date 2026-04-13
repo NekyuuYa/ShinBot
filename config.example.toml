@@ -1,0 +1,55 @@
+# ShinBot Configuration
+# Copy this file to config.toml and adjust the values.
+
+[logging]
+level = "INFO"  # DEBUG | INFO | WARNING | ERROR
+
+
+# ─── Bot Instances ────────────────────────────────────────────────────────────
+# Each [[instances]] block represents a single bot account / connection.
+# ShinBot supports multiple concurrent instances.
+
+[[instances]]
+id = "main-bot"       # Unique identifier (used in session URNs and permission keys)
+platform = "satori"   # Adapter type — currently only "satori" is built-in
+
+[instances.satori]
+host      = "localhost:5140"   # WebSocket server address (host:port)
+token     = ""                  # Auth token (leave empty if your server has no auth)
+reconnect_delay = 5.0          # Seconds between reconnect attempts on disconnect
+
+
+# ─── Plugins ─────────────────────────────────────────────────────────────────
+# List Python modules to load as plugins on startup.
+# Each module must expose a setup(ctx: PluginContext) function.
+
+# [[plugins]]
+# id     = "hello"
+# module = "plugins.hello"
+
+
+# ─── Management API ───────────────────────────────────────────────────────────
+# The management control plane is served at http://host:3945/api/v1
+# All /api/v1/* routes require JWT authentication (except /auth/login).
+
+[admin]
+username = "admin"
+password = "admin"                # Change before deploying
+jwt_expire_hours = 24
+
+# jwt_secret = ""                 # Leave empty to auto-generate and persist to data/admin_secret.key
+# cors_origins = ["http://localhost:5173"]  # Vite dev server; defaults to ["*"]
+
+# Bind users or sessions to permission groups.
+# Groups: "default" (basic cmds), "admin" (tools.*), "owner" (all)
+
+[permissions]
+# Global binding: {instance_id}:{user_id} → group
+# [[permissions.bindings]]
+# key   = "main-bot:123456789"
+# group = "owner"
+
+# Session-local binding: {session_id}.{user_id} → group
+# [[permissions.bindings]]
+# key   = "main-bot:group:696879614.123456789"
+# group = "admin"

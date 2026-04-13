@@ -1,0 +1,33 @@
+{
+  "title": "Plugin Management",
+  "reload": "Reload",
+  "rescan": "Rescan",
+  "noData": "No plugins",
+  "reloaded": "Plugins reloaded",
+  "rescanned": "Plugins rescanned",
+  "loadFailed": "Failed to load plugins",
+  "enabled": "Plugin enabled",
+  "disabled": "Plugin disabled",
+  "configSaved": "Plugin configuration saved",
+  "schema": {
+    "empty": "This plugin does not provide a configurable schema."
+  },
+  "dialog": {
+    "title": "Configure Plugin: {name}",
+    "hint": "This form is generated dynamically from backend metadata."
+  },
+  "form": {
+    "name": "Plugin Name",
+    "version": "Version",
+    "status": "Status",
+    "author": "Author",
+    "config": "Configuration"
+  },
+  "card": {
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "configure": "Configure",
+    "disable": "Disable",
+    "enable": "Enable"
+  }
+}
