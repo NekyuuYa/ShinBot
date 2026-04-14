@@ -55,6 +55,7 @@ interface FlatField {
 interface Props {
   schema: PluginConfigSchema | null
   modelValue: Record<string, unknown>
+  mode?: string
 }
 
 const props = defineProps<Props>()
@@ -75,6 +76,10 @@ function flattenProperties(
 
   for (const [key, property] of Object.entries(properties)) {
     const fieldKey = parent ? `${parent}.${key}` : key
+
+    if (property.modes?.length && props.mode && !property.modes.includes(props.mode)) {
+      continue
+    }
 
     if (property.type === 'object' && property.properties) {
       result.push(...flattenProperties(property.properties, fieldKey))

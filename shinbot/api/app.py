@@ -32,6 +32,12 @@ from shinbot.api.ws_manager import (
     log_manager,
     status_manager,
 )
+from shinbot.utils.logger import register_log_handler_installer
+
+# Push the WebSocket log handler installer into utils so that
+# setup_logging() can call it without importing shinbot.api.
+# This keeps the dependency arrow pointing downward (api → utils).
+register_log_handler_installer(install_log_handler)
 
 if TYPE_CHECKING:
     from shinbot.core.app import ShinBot
@@ -158,11 +164,9 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
             while True:
                 payload = _build_system_status(bot)
                 # 包装为标准 Envelope
-                await websocket.send_json({
-                    "success": True,
-                    "data": payload,
-                    "timestamp": int(time.time())
-                })
+                await websocket.send_json(
+                    {"success": True, "data": payload, "timestamp": int(time.time())}
+                )
                 await asyncio.sleep(3.0)
         except WebSocketDisconnect:
             status_manager.disconnect(websocket)
@@ -214,6 +218,7 @@ def _build_system_status(bot: ShinBot) -> dict[str, Any]:
     mem_mb = 0.0
     try:
         import psutil
+
         # 使用当前进程的内存快照
         process = psutil.Process(os.getpid())
         cpu = process.cpu_percent(interval=None)
@@ -225,7 +230,7 @@ def _build_system_status(bot: ShinBot) -> dict[str, Any]:
     mgr = bot.adapter_manager
     total_instances = len(mgr.all_instances)
     running_instances = sum(1 for a in mgr.all_instances if mgr.is_running(a.instance_id))
-    
+
     return {
         "totalInstances": total_instances,
         "runningInstances": running_instances,
@@ -233,7 +238,7 @@ def _build_system_status(bot: ShinBot) -> dict[str, Any]:
         "totalPlugins": len(bot.plugin_manager.all_plugins),
         "enabledPlugins": len(bot.plugin_manager.all_plugins),
         "cpuUsage": cpu,
-        "memoryUsage": mem_mb, # 现在是 MB 单位
+        "memoryUsage": mem_mb,  # 现在是 MB 单位
         "online": True,
         "timestamp": int(time.time()),
     }

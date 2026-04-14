@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,8 @@ audit_logger = logging.getLogger("shinbot.audit")
 class AuditLog:
     """A single audit log entry for command execution."""
 
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    entry_type: str = "command"
     command_name: str = ""
     plugin_id: str = ""
     user_id: str = ""
@@ -86,6 +87,7 @@ class AuditLogger:
             The AuditLog entry that was created.
         """
         entry = AuditLog(
+            entry_type="command",
             command_name=command_name,
             plugin_id=plugin_id,
             user_id=user_id,
@@ -108,13 +110,40 @@ class AuditLogger:
 
         return entry
 
+    def log_message(
+        self,
+        *,
+        event_type: str,
+        plugin_id: str,
+        user_id: str,
+        session_id: str,
+        instance_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> AuditLog:
+        """Log an inbound message event with modality statistics."""
+        entry = AuditLog(
+            entry_type="message",
+            command_name=event_type,
+            plugin_id=plugin_id,
+            user_id=user_id,
+            session_id=session_id,
+            instance_id=instance_id,
+            metadata=metadata or {},
+        )
+
+        audit_logger.info(entry.to_json())
+        if self._data_dir:
+            self._persist_to_disk(entry)
+
+        return entry
+
     def _persist_to_disk(self, entry: AuditLog) -> None:
         """Persist audit entry to disk (daily rotating files)."""
         if not self._data_dir:
             return
 
         # Use daily log files: audit_YYYY-MM-DD.jsonl
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         log_file = self._data_dir / f"audit_{today}.jsonl"
 
         try:

@@ -5,7 +5,6 @@ import pytest
 from shinbot.core.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.models.elements import MessageElement
 
-
 # ── Test adapter implementation ──────────────────────────────────────
 
 
@@ -55,6 +54,15 @@ class TestMessageHandle:
         h = MessageHandle("msg-1")
         with pytest.raises(RuntimeError):
             await h.recall()
+
+    @pytest.mark.asyncio
+    async def test_recall_after_send_calls_delete_api(self):
+        adapter = MockAdapter("test-1", "mock")
+        handle = await adapter.send("session-1", [MessageElement.text("hello")])
+
+        await handle.recall()
+
+        assert adapter.api_calls[-1] == ("message.delete", {"message_id": "msg-1"})
 
 
 class TestBaseAdapter:

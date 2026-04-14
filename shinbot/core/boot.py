@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import logging
+import shutil
 import tomllib
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from shinbot.core.app import ShinBot
+from shinbot.utils.logger import get_logger, setup_logging
 
-if TYPE_CHECKING:
-    from fastapi import FastAPI
-
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BootState(Enum):
@@ -84,6 +82,7 @@ class BootController:
         self._ensure_admin_defaults()
         cfg_level = self.config.get("logging", {}).get("level", self.log_level)
         self._configure_logging(cfg_level)
+        self._cleanup_temp_directory()
 
         required_dirs = [
             self.data_dir,
@@ -203,14 +202,25 @@ class BootController:
         for inst_cfg in instances:
             instance_id = inst_cfg["id"]
             platform = inst_cfg.get("platform", "satori")
-            satori_cfg = inst_cfg.get("satori", {})
+            config_kwargs = inst_cfg.get("config", {})
+            if not isinstance(config_kwargs, dict):
+                config_kwargs = {}
+
+            # Backward compatibility with legacy layout: instances[].satori
+            if platform == "satori" and not config_kwargs:
+                legacy_satori_cfg = inst_cfg.get("satori", {})
+                if isinstance(legacy_satori_cfg, dict):
+                    config_kwargs = {
+                        "host": legacy_satori_cfg.get("host", "localhost:5140"),
+                        "token": legacy_satori_cfg.get("token", ""),
+                        "reconnect_delay": legacy_satori_cfg.get("reconnect_delay", 5.0),
+                    }
+
             try:
                 self.bot.add_adapter(
                     instance_id=instance_id,
                     platform=platform,
-                    host=satori_cfg.get("host", "localhost:5140"),
-                    token=satori_cfg.get("token", ""),
-                    reconnect_delay=satori_cfg.get("reconnect_delay", 5.0),
+                    **config_kwargs,
                 )
             except ValueError:
                 logger.warning(
@@ -234,12 +244,7 @@ class BootController:
                 logger.warning("Permission binding error: %s", exc)
 
     def _configure_logging(self, level_name: str = "INFO") -> None:
-        level = getattr(logging, level_name.upper(), logging.INFO)
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+        setup_logging(level_name)
 
     def _load_config(self, config_path: Path) -> dict[str, Any]:
         if not config_path.exists():
@@ -247,6 +252,21 @@ class BootController:
             return {}
         with config_path.open("rb") as file_obj:
             return tomllib.load(file_obj)
+
+    def _cleanup_temp_directory(self) -> None:
+        temp_dir = self.data_dir / "temp"
+        if not temp_dir.exists():
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            return
+
+        for child in temp_dir.iterdir():
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            except Exception:
+                logger.exception("Failed to clean temp entry %s", child)
 
     def _ensure_admin_defaults(self) -> None:
         """Ensure [admin] config always exists and persist only when defaults are injected."""
@@ -287,8 +307,11 @@ class BootController:
                 probe.unlink()
 
     # ── API integration ──────────────────────────────────────────────
+    # ADR-001: This method is the sole core→api integration point.
+    # The import is deferred to method scope to keep core's module-level
+    # dependency graph free of api references. Do not move to module level.
 
-    def create_api_app(self) -> FastAPI:
+    def create_api_app(self) -> Any:
         """Create the FastAPI management control plane app with bot injected.
 
         Must be called after ``boot()`` has completed successfully.

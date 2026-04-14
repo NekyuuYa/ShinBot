@@ -3,14 +3,15 @@
 import pytest
 
 from shinbot.core.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.audit import AuditLogger
 from shinbot.core.command import CommandDef, CommandRegistry
 from shinbot.core.event_bus import EventBus
 from shinbot.core.permission import PermissionEngine
 from shinbot.core.pipeline import MessageContext, MessagePipeline
-from shinbot.core.session import Session, SessionConfig, SessionManager
+from shinbot.core.session import Session, SessionManager
 from shinbot.models.elements import Message, MessageElement
-from shinbot.models.events import Channel, MessagePayload, UnifiedEvent, User
-
+from shinbot.models.events import Channel, Guild, MessagePayload, UnifiedEvent, User
+from shinbot.utils.resource_ingress import summarize_message_modalities
 
 # ── Mock adapter for testing ─────────────────────────────────────────
 
@@ -19,6 +20,7 @@ class MockAdapter(BaseAdapter):
     def __init__(self, instance_id="test-bot", platform="mock", **kwargs):
         super().__init__(instance_id, platform)
         self.sent: list[tuple[str, list[MessageElement]]] = []
+        self.api_calls: list[tuple[str, dict]] = []
 
     async def start(self):
         pass
@@ -31,6 +33,7 @@ class MockAdapter(BaseAdapter):
         return MessageHandle(message_id=f"sent-{len(self.sent)}", adapter_ref=self)
 
     async def call_api(self, method, params):
+        self.api_calls.append((method, params))
         return {"ok": True}
 
     async def get_capabilities(self):
@@ -98,7 +101,7 @@ class TestMessageContext:
 
     @pytest.mark.asyncio
     async def test_send_xml(self):
-        handle = await self.ctx.send('hi <at id="123"/>')
+        await self.ctx.send('hi <at id="123"/>')
         assert len(self.adapter.sent) == 1
         elements = self.adapter.sent[0][1]
         assert len(elements) == 2  # text + at
@@ -118,10 +121,113 @@ class TestMessageContext:
 
     @pytest.mark.asyncio
     async def test_reply(self):
-        handle = await self.ctx.reply("reply text")
+        await self.ctx.reply("reply text")
         assert len(self.adapter.sent) == 1
         elements = self.adapter.sent[0][1]
         assert elements[0].type == "quote"
+
+    @pytest.mark.asyncio
+    async def test_kick_uses_event_guild_id(self):
+        event = self.event.model_copy(update={"guild": Guild(id="guild-1")})
+        bot = MessageContext(
+            event=event,
+            message=self.message,
+            session=self.session,
+            adapter=self.adapter,
+            permissions=set(),
+        )
+        await bot.kick("user-2")
+        assert self.adapter.api_calls[-1] == (
+            "member.kick",
+            {"user_id": "user-2", "guild_id": "guild-1"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_kick_requires_guild_id(self):
+        with pytest.raises(ValueError, match="guild_id is required"):
+            await self.ctx.kick("user-2")
+
+    @pytest.mark.asyncio
+    async def test_mute_api_failure_raises_clear_error(self, monkeypatch):
+        event = self.event.model_copy(update={"guild": Guild(id="guild-1")})
+        bot = MessageContext(
+            event=event,
+            message=self.message,
+            session=self.session,
+            adapter=self.adapter,
+            permissions=set(),
+        )
+
+        async def _broken_call_api(method, params):
+            raise RuntimeError("adapter failure")
+
+        monkeypatch.setattr(self.adapter, "call_api", _broken_call_api)
+        with pytest.raises(RuntimeError, match="API call failed: member.mute"):
+            await bot.mute("user-2", duration=60)
+
+    @pytest.mark.asyncio
+    async def test_poke_calls_internal_namespace(self):
+        await self.ctx.poke("user-2")
+        assert self.adapter.api_calls[-1] == (
+            "internal.mock.poke",
+            {"user_id": "user-2"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_approve_friend_calls_api(self):
+        await self.ctx.approve_friend("msg-123")
+        assert self.adapter.api_calls[-1] == (
+            "friend.approve",
+            {"message_id": "msg-123"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_member_list_uses_guild_id(self):
+        event = self.event.model_copy(update={"guild": Guild(id="guild-1")})
+        bot = MessageContext(
+            event=event,
+            message=self.message,
+            session=self.session,
+            adapter=self.adapter,
+            permissions=set(),
+        )
+        await bot.get_member_list()
+        assert self.adapter.api_calls[-1] == (
+            "guild.member.list",
+            {"guild_id": "guild-1"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_set_group_name_falls_back_to_internal(self, monkeypatch):
+        event = self.event.model_copy(update={"guild": Guild(id="guild-1")})
+        bot = MessageContext(
+            event=event,
+            message=self.message,
+            session=self.session,
+            adapter=self.adapter,
+            permissions=set(),
+        )
+
+        async def _call_api(method, params):
+            if method == "guild.update":
+                raise RuntimeError("not supported")
+            self.adapter.api_calls.append((method, params))
+            return {"ok": True}
+
+        monkeypatch.setattr(self.adapter, "call_api", _call_api)
+        await bot.set_group_name("New Name")
+        assert self.adapter.api_calls[-1] == (
+            "internal.mock.set_group_name",
+            {"group_id": "guild-1", "group_name": "New Name"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_msg_calls_api(self):
+        await self.ctx.delete_msg("msg-42")
+        assert self.adapter.api_calls[-1] == (
+            "message.delete",
+            {"message_id": "msg-42"},
+        )
 
     def test_stop(self):
         assert self.ctx.is_stopped is False
@@ -274,11 +380,12 @@ class TestMessagePipeline:
 
     @pytest.mark.asyncio
     async def test_non_message_event(self):
-        """Non-message events should go to event bus directly."""
+        """Non-message events should go to event bus directly with UnifiedEvent."""
         results = []
 
-        async def handler(ctx):
-            results.append(ctx.event.type)
+        async def handler(event):
+            # Notice event handlers receive UnifiedEvent directly, not MessageContext
+            results.append(event.type)
 
         self.event_bus.on("member-joined", handler)
 
@@ -310,3 +417,27 @@ class TestMessagePipeline:
         )
         await self.pipeline.process_event(event, self.adapter)
         assert results == [0]
+
+    def test_audit_message_modality_summary(self, tmp_path):
+        audit = AuditLogger(tmp_path)
+        summary = summarize_message_modalities(
+            [
+                MessageElement.text("hello"),
+                MessageElement.img("/tmp/image.png"),
+                MessageElement.audio("/tmp/audio.ogg"),
+            ]
+        )
+
+        entry = audit.log_message(
+            event_type="message-created",
+            plugin_id="",
+            user_id="user-1",
+            session_id="session-1",
+            instance_id="bot-1",
+            metadata={"modality": summary},
+        )
+
+        assert entry.entry_type == "message"
+        assert entry.metadata["modality"]["counts"]["text"] == 1
+        assert entry.metadata["modality"]["counts"]["image"] == 1
+        assert entry.metadata["modality"]["counts"]["audio"] == 1

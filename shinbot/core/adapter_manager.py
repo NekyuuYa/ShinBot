@@ -38,9 +38,12 @@ class MessageHandle:
     async def edit(self, elements: list[MessageElement]) -> None:
         if self.adapter_ref is None:
             raise RuntimeError("No adapter reference for edit operation")
+        params: dict[str, Any] = {"message_id": self.message_id, "elements": elements}
+        if "session_id" in self._platform_data:
+            params["session_id"] = self._platform_data["session_id"]
         await self.adapter_ref.call_api(
             "message.update",
-            {"message_id": self.message_id, "elements": elements},
+            params,
         )
 
     async def recall(self) -> None:

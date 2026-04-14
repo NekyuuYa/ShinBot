@@ -43,4 +43,6 @@ async def login(body: LoginRequest, auth_config: AuthConfigDep):
             },
         )
     token = auth_config.create_token()
-    return ok({"token": token, "token_type": "Bearer", "expires_in_hours": auth_config.jwt_expire_hours})
+    return ok(
+        {"token": token, "token_type": "Bearer", "expires_in_hours": auth_config.jwt_expire_hours}
+    )

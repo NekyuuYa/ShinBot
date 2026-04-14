@@ -21,19 +21,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 import websockets
 
 from shinbot.core.adapter_manager import BaseAdapter, MessageHandle
-from shinbot.models.elements import MessageElement
+from shinbot.models.elements import Message, MessageElement
 from shinbot.models.events import UnifiedEvent
+from shinbot.utils.logger import get_logger
+from shinbot.utils.resource_ingress import download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Satori opcodes
 OP_EVENT = 0
@@ -54,6 +56,10 @@ class SatoriConfig:
     path: str = "/v1/events"  # WebSocket endpoint path
     reconnect_delay: float = 5.0  # Seconds between reconnection attempts
     max_reconnects: int = -1  # -1 = infinite retries
+    download_resources: bool = False
+    resource_cache_dir: str = "data/temp/resources"
+    silent_reconnect: bool = True
+    reconnect_log_interval: float = 30.0
 
 
 class SatoriAdapter(BaseAdapter):
@@ -77,6 +83,8 @@ class SatoriAdapter(BaseAdapter):
         self._recv_task: asyncio.Task | None = None
         self._ping_task: asyncio.Task | None = None
         self._http: httpx.AsyncClient | None = None
+        self._resource_cache_dir = Path(self.config.resource_cache_dir)
+        self._resource_cache_dir.mkdir(parents=True, exist_ok=True)
 
     # ── BaseAdapter interface ────────────────────────────────────────
 
@@ -122,6 +130,7 @@ class SatoriAdapter(BaseAdapter):
         return MessageHandle(
             message_id=msg_id,
             adapter_ref=self,
+            platform_data={"session_id": target_session},
         )
 
     async def call_api(self, method: str, params: dict[str, Any]) -> Any:
@@ -132,6 +141,11 @@ class SatoriAdapter(BaseAdapter):
         """
         if self._http is None:
             raise RuntimeError("Adapter not started — call start() first")
+
+        params = dict(params)
+        params.pop("session_id", None)
+        if method == "message.update" and isinstance(params.get("elements"), list):
+            params["content"] = elements_to_xml(params.pop("elements"))
 
         # Convert dotted method to URL path (e.g. channel.message.create → /v1/channel.message.create)
         base = f"http://{self.config.host}"
@@ -204,22 +218,34 @@ class SatoriAdapter(BaseAdapter):
     async def _connection_loop(self) -> None:
         """Maintain a persistent WebSocket connection with auto-reconnect."""
         attempt = 0
+        last_log_ts = 0.0
         while self._running:
             try:
                 await self._connect_and_receive()
+                if attempt > 0:
+                    logger.info("Satori %s reconnected successfully", self.instance_id)
+                attempt = 0
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 if not self._running:
                     break
                 attempt += 1
-                logger.warning(
-                    "Satori %s connection lost (%s), reconnect in %.1fs (attempt %d)",
-                    self.instance_id,
-                    e,
-                    self.config.reconnect_delay,
-                    attempt,
+                now = asyncio.get_running_loop().time()
+                should_log = (
+                    not self.config.silent_reconnect
+                    or attempt == 1
+                    or now - last_log_ts >= self.config.reconnect_log_interval
                 )
+                if should_log:
+                    logger.warning(
+                        "Satori %s reconnecting in %.1fs (attempt %d): %s",
+                        self.instance_id,
+                        self.config.reconnect_delay,
+                        attempt,
+                        e,
+                    )
+                    last_log_ts = now
                 if self.config.max_reconnects >= 0 and attempt > self.config.max_reconnects:
                     logger.error(
                         "Satori %s: max reconnect attempts reached, giving up", self.instance_id
@@ -292,7 +318,17 @@ class SatoriAdapter(BaseAdapter):
             )
 
     async def _handle_event(self, body: dict[str, Any]) -> None:
-        """Parse a Satori event body into UnifiedEvent and dispatch."""
+        """Parse a Satori event body into UnifiedEvent and dispatch.
+
+        Implements dual-track design: message events (with content to parse)
+        and notice events (with structured resources) are handled separately
+        by the pipeline.
+
+        The adapter's responsibility is to:
+          1. Validate the Satori JSON into UnifiedEvent with proper resource models
+          2. Emit the event as-is (message or notice)
+          3. Let the pipeline handle the dual-track dispatching
+        """
         if self._event_callback is None:
             return
 
@@ -302,8 +338,18 @@ class SatoriAdapter(BaseAdapter):
             logger.warning("Satori %s: failed to parse event body: %s", self.instance_id, e)
             return
 
-        # Semantic enrichment: map platform poke-like events to sb:poke XML
-        event = self._enrich_poke(event, body)
+        if self.config.download_resources and event.message is not None and event.message.content:
+            try:
+                message = Message.from_xml(event.message.content)
+                elements = await download_resource_elements(
+                    message.elements,
+                    self._resource_cache_dir,
+                )
+                event.message = event.message.model_copy(
+                    update={"content": elements_to_xml(elements)}
+                )
+            except Exception:
+                logger.exception("Satori %s failed to download message resources", self.instance_id)
 
         try:
             await self._event_callback(event)
@@ -311,53 +357,21 @@ class SatoriAdapter(BaseAdapter):
             logger.exception("Satori %s: event callback raised", self.instance_id)
 
     def _enrich_poke(self, event: UnifiedEvent, raw_body: dict[str, Any]) -> UnifiedEvent:
-        """Map platform-specific poke events to sb:poke element in message.content.
+        """Deprecated: This method is kept for backward compatibility only.
 
-        Platforms like LLOneBot emit poke as notice-type events. We detect
-        these and synthesize a message-created event with <sb:poke/> content
-        so that plugins can handle them uniformly.
+        The new dual-track design preserves notice events as-is with their
+        structured resource payloads instead of converting them to message events.
 
-        Detection heuristics:
-          - LLOneBot: event.type contains "notify" and raw_body sub_type=poke
-          - Generic: event.type == "interaction.button" with action=poke
+        Notice events like poke, guild-member-added, etc. are now dispatched
+        directly through the EventBus with their resource fields populated.
+
+        This method is no longer called by _handle_event and can be removed
+        in a future version.
         """
-        etype = event.type
-
-        # LLOneBot poke comes as "notice" type with sub_type poke
-        is_poke = ("poke" in etype.lower()) or (
-            etype in ("notice", "notify") and raw_body.get("sub_type") == "poke"
-        )
-
-        if not is_poke:
-            return event
-
-        # Build a synthetic message with <sb:poke/> so plugins can subscribe
-        target_id = str(raw_body.get("target_id", ""))
-        sender_id = str(raw_body.get("user_id", raw_body.get("sender_id", "")))
-        poke_type = raw_body.get("poke_type", raw_body.get("action", ""))
-
-        attrs = []
-        if target_id:
-            attrs.append(f'target="{target_id}"')
-        if poke_type:
-            attrs.append(f'type="{poke_type}"')
-        poke_xml = f"<sb:poke {' '.join(attrs)}/>" if attrs else "<sb:poke/>"
-
-        from shinbot.models.events import MessagePayload
-
-        enriched = event.model_copy(
-            update={
-                "type": "message-created",
-                "message": MessagePayload(
-                    id=str(raw_body.get("message_id", f"poke-{sender_id}")),
-                    content=poke_xml,
-                ),
-            }
-        )
         logger.debug(
-            "Satori %s: enriched poke event as sb:poke for sender %s", self.instance_id, sender_id
+            "Satori %s: _enrich_poke called but not used in dual-track design", self.instance_id
         )
-        return enriched
+        return event
 
     # ── Helpers ──────────────────────────────────────────────────────
 

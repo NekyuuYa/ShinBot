@@ -130,18 +130,24 @@
               <v-text-field v-model="form.name" :label="$t('pages.instances.form.name')" />
             </v-col>
             <v-col cols="12" md="6">
-              <v-text-field v-model="form.adapterType" :label="$t('pages.instances.form.adapterType')" />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-text-field v-model="form.host" :label="$t('pages.instances.form.host')" />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-text-field v-model="form.token" :label="$t('pages.instances.form.token')" />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-text-field v-model="form.port" :label="$t('pages.instances.form.port')" type="number" />
+              <v-select
+                v-model="form.adapterType"
+                :label="$t('pages.instances.form.adapterType')"
+                :items="adapterOptions"
+              />
             </v-col>
           </v-row>
+
+          <schema-form
+            v-if="activeAdapterSchema"
+            v-model="form.config"
+            :schema="activeAdapterSchema"
+            :mode="String(form.config.mode ?? '')"
+          />
+
+          <v-alert v-else type="warning" variant="tonal" class="mt-3">
+            No configuration schema is available for this adapter.
+          </v-alert>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -154,15 +160,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useInstancesStore } from '@/stores/instances'
+import { usePluginsStore } from '@/stores/plugins'
 import InstanceCard from '@/components/InstanceCard.vue'
+import SchemaForm from '@/components/SchemaForm.vue'
 import type { Instance, InstanceConfig, UpdateInstanceRequest } from '@/api/instances'
+import type { PluginConfigSchema } from '@/api/plugins'
 import { useUiStore } from '@/stores/ui'
 
 const { t } = useI18n()
 const instancesStore = useInstancesStore()
+const pluginsStore = usePluginsStore()
 const uiStore = useUiStore()
 
 const searchQuery = ref('')
@@ -174,10 +184,37 @@ const editingId = ref('')
 const form = ref({
   name: '',
   adapterType: '',
-  host: '',
-  token: '',
-  port: '',
+  config: {} as Record<string, unknown>,
 })
+
+const adapterOptions = computed(() => {
+  const adapters = pluginsStore.plugins
+    .filter((plugin) => plugin.role === 'adapter')
+    .map((plugin) => plugin.metadata?.adapter_platform)
+    .filter((platform): platform is string => Boolean(platform))
+
+  const unique = Array.from(new Set(adapters))
+  return unique.length > 0 ? unique : ['satori', 'onebot_v11']
+})
+
+const adapterSchemaByPlatform = computed<Record<string, PluginConfigSchema>>(() => {
+  const mapping: Record<string, PluginConfigSchema> = {}
+  for (const plugin of pluginsStore.plugins) {
+    if (plugin.role !== 'adapter') {
+      continue
+    }
+    const platform = plugin.metadata?.adapter_platform
+    const schema = plugin.metadata?.config_schema
+    if (platform && schema) {
+      mapping[platform] = schema
+    }
+  }
+  return mapping
+})
+
+const activeAdapterSchema = computed<PluginConfigSchema | null>(
+  () => adapterSchemaByPlatform.value[form.value.adapterType] ?? null
+)
 
 const viewModes = [
   { title: 'pages.instances.views.card', value: 'card' },
@@ -205,7 +242,32 @@ const filteredInstances = computed(() =>
 
 onMounted(() => {
   instancesStore.fetchInstances()
+  pluginsStore.fetchPlugins()
 })
+
+watch(
+  () => form.value.adapterType,
+  (nextPlatform, prevPlatform) => {
+    if (!nextPlatform || nextPlatform === prevPlatform) {
+      return
+    }
+    if (Object.keys(form.value.config).length > 0) {
+      return
+    }
+    const schema = adapterSchemaByPlatform.value[nextPlatform]
+    if (!schema?.properties) {
+      return
+    }
+
+    const defaults: Record<string, unknown> = {}
+    for (const [key, property] of Object.entries(schema.properties)) {
+      if (property.default !== undefined) {
+        defaults[key] = property.default
+      }
+    }
+    form.value.config = defaults
+  }
+)
 
 const handleRefresh = () => {
   instancesStore.fetchInstances()
@@ -214,7 +276,8 @@ const handleRefresh = () => {
 const showCreateDialog = () => {
   editingId.value = ''
   dialogTitleKey.value = 'pages.instances.dialog.createTitle'
-  form.value = { name: '', adapterType: '', host: '', token: '', port: '' }
+  const defaultAdapter = adapterOptions.value[0] ?? 'satori'
+  form.value = { name: '', adapterType: defaultAdapter, config: {} }
   dialogVisible.value = true
 }
 
@@ -225,9 +288,7 @@ const editInstance = (instance: Instance) => {
   form.value = {
     name: instance.name,
     adapterType: instance.adapterType,
-    host: config.host ?? '',
-    token: config.token ?? '',
-    port: config.port ? String(config.port) : '',
+    config: { ...config },
   }
   dialogVisible.value = true
 }
@@ -237,11 +298,7 @@ const closeDialog = () => {
 }
 
 const saveInstance = async () => {
-  const config: InstanceConfig = {
-    host: form.value.host,
-    token: form.value.token,
-    ...(form.value.port ? { port: Number(form.value.port) } : {}),
-  }
+  const config: InstanceConfig = { ...form.value.config }
 
   const payload: UpdateInstanceRequest = {
     name: form.value.name,

@@ -12,7 +12,6 @@ Pipeline stages:
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -25,8 +24,10 @@ from shinbot.core.permission import PermissionEngine, check_permission
 from shinbot.core.session import Session, SessionManager
 from shinbot.models.elements import Message, MessageElement
 from shinbot.models.events import UnifiedEvent
+from shinbot.utils.logger import get_logger
+from shinbot.utils.resource_ingress import summarize_message_modalities
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ── Interactive input registry ────────────────────────────────────────────────
@@ -164,6 +165,89 @@ class MessageContext:
         self._sent_messages.append(handle)
         return handle
 
+    async def _call_api(self, method: str, params: dict[str, Any]) -> Any:
+        """Call adapter API and re-raise with clear context on failure."""
+        try:
+            return await self.adapter.call_api(method, params)
+        except Exception as e:
+            raise RuntimeError(f"API call failed: {method} params={params}") from e
+
+    async def kick(self, user_id: str, guild_id: str | None = None) -> Any:
+        """Kick a guild member via `member.kick`."""
+        resolved_guild_id = guild_id or self.event.guild_id
+        if not resolved_guild_id:
+            raise ValueError(
+                "guild_id is required for kick; provide guild_id or ensure event.guild is set"
+            )
+        return await self._call_api(
+            "member.kick",
+            {"user_id": user_id, "guild_id": resolved_guild_id},
+        )
+
+    async def mute(self, user_id: str, duration: int, guild_id: str | None = None) -> Any:
+        """Mute a guild member via `member.mute`."""
+        resolved_guild_id = guild_id or self.event.guild_id
+        if not resolved_guild_id:
+            raise ValueError(
+                "guild_id is required for mute; provide guild_id or ensure event.guild is set"
+            )
+        return await self._call_api(
+            "member.mute",
+            {"user_id": user_id, "duration": duration, "guild_id": resolved_guild_id},
+        )
+
+    async def poke(self, user_id: str) -> Any:
+        """Send a poke action via platform internal API namespace."""
+        return await self._call_api(
+            f"internal.{self.platform}.poke",
+            {"user_id": user_id},
+        )
+
+    async def approve_friend(self, message_id: str) -> Any:
+        """Approve a friend request via `friend.approve`."""
+        return await self._call_api(
+            "friend.approve",
+            {"message_id": message_id},
+        )
+
+    async def get_member_list(self, guild_id: str | None = None) -> Any:
+        """Fetch member list for current guild/session context."""
+        resolved_guild_id = guild_id or self.event.guild_id or self.event.channel_id
+        if not resolved_guild_id:
+            raise ValueError(
+                "guild_id is required for get_member_list; provide guild_id or ensure event.guild/channel is set"
+            )
+        return await self._call_api(
+            "guild.member.list",
+            {"guild_id": resolved_guild_id},
+        )
+
+    async def set_group_name(self, name: str, guild_id: str | None = None) -> Any:
+        """Update group/guild name with standard-first, internal-fallback strategy."""
+        resolved_guild_id = guild_id or self.event.guild_id or self.event.channel_id
+        if not resolved_guild_id:
+            raise ValueError(
+                "guild_id is required for set_group_name; provide guild_id or ensure event.guild/channel is set"
+            )
+
+        try:
+            return await self._call_api(
+                "guild.update",
+                {"guild_id": resolved_guild_id, "name": name},
+            )
+        except Exception:
+            return await self._call_api(
+                f"internal.{self.platform}.set_group_name",
+                {"group_id": resolved_guild_id, "group_name": name},
+            )
+
+    async def delete_msg(self, message_id: str) -> Any:
+        """Delete/recall a message by id."""
+        return await self._call_api(
+            "message.delete",
+            {"message_id": message_id},
+        )
+
     async def reply(self, content: str | Message | list[MessageElement]) -> MessageHandle:
         """Send a reply that quotes the original message."""
         if self.event.message is None:
@@ -287,7 +371,39 @@ class MessagePipeline:
         event: UnifiedEvent,
         adapter: BaseAdapter,
     ) -> None:
-        """Process a single incoming event through the full pipeline."""
+        """Process a single incoming event through the full pipeline.
+
+        Implements dual-track dispatching:
+
+        **Message Track** (message-created, message-updated, etc.):
+          1. Parse XML content into MessageElement AST
+          2. Build MessageContext with interceptors
+          3. Check for pending wait_for_input
+          4. Resolve commands and dispatch handlers
+          5. Emit event to event bus for post-processing
+
+        **Notice Track** (guild-member-added, friend-request, etc.):
+          1. Skip message parsing (no payload)
+          2. Skip interceptors (not needed for system events)
+          3. Emit directly to event bus with structured resources
+          4. Handlers extract resource objects (guild, user, operator, etc.)
+        """
+
+        # Fast path for notice events — emit directly to event bus
+        if event.is_notice_event:
+            logger.debug(
+                "Processing notice event: type=%s, self_id=%s, platform=%s",
+                event.type,
+                event.self_id,
+                event.platform,
+            )
+            # Emit notice to event bus with the raw event (handlers can access resources)
+            await self._event_bus.emit(event.type, event)
+            return
+
+        # ────────────────────────────────────────────────────────────────
+        # Message Event Processing (traditional message track)
+        # ────────────────────────────────────────────────────────────────
 
         # Stage 1: Parse message content into AST
         message = Message()
@@ -305,7 +421,7 @@ class MessagePipeline:
             session_base_group=session.permission_group,
         )
 
-        ctx = MessageContext(
+        bot = MessageContext(
             event=event,
             message=message,
             session=session,
@@ -314,10 +430,24 @@ class MessagePipeline:
             waiting_registry=self._waiting_registry,
         )
 
+        if self._audit_logger:
+            self._audit_logger.log_message(
+                event_type=event.type,
+                plugin_id="",
+                user_id=event.sender_id or "",
+                session_id=session.id,
+                instance_id=adapter.instance_id,
+                metadata={
+                    "platform": event.platform,
+                    "modality": summarize_message_modalities(bot.elements),
+                    "message_id": event.message.id if event.message is not None else "",
+                },
+            )
+
         # Stage 3: Interceptors
         for _priority, interceptor in self._interceptors:
             try:
-                allow = await interceptor(ctx)
+                allow = await interceptor(bot)
                 if not allow:
                     logger.debug("Interceptor blocked event: %s", interceptor.__name__)
                     return
@@ -331,98 +461,98 @@ class MessagePipeline:
             return
 
         # Stage 3c: Check for pending wait_for_input — deliver and stop
-        if event.is_message_event and self._waiting_registry.is_waiting(session.id):
-            resolved = self._waiting_registry.resolve(session.id, ctx.text)
+        if self._waiting_registry.is_waiting(session.id):
+            resolved = self._waiting_registry.resolve(session.id, bot.text)
             if resolved:
                 logger.debug("Delivered wait_for_input response for session %s", session.id)
                 return
 
-        # Stage 3d: Command resolution (only for message events)
-        if event.is_message_event:
-            plain_text = ctx.text
-            match = self._command_registry.resolve(plain_text, session.config.prefixes)
+        # Stage 3d: Command resolution
+        plain_text = bot.text
+        match = self._command_registry.resolve(plain_text, session.config.prefixes)
 
-            if match is not None:
-                ctx.command_match = match
+        if match is not None:
+            bot.command_match = match
 
-                # Permission check for command
-                permission_granted = True
-                if match.command.permission:
-                    permission_granted = ctx.has_permission(match.command.permission)
-                    if not permission_granted:
-                        logger.debug(
-                            "Permission denied for %s: requires %s",
-                            match.command.name,
-                            match.command.permission,
-                        )
-                        await ctx.send(f"权限不足：需要 {match.command.permission}")
-
-                        # Audit log: permission denied
-                        if self._audit_logger:
-                            self._audit_logger.log_command(
-                                command_name=match.command.name,
-                                plugin_id=match.command.owner,
-                                user_id=event.sender_id or "",
-                                session_id=session.id,
-                                instance_id=adapter.instance_id,
-                                permission_required=match.command.permission,
-                                permission_granted=False,
-                                execution_time_ms=ctx.elapsed_ms,
-                                success=False,
-                                error="Permission denied",
-                            )
-                        return
-
-                # Execute command handler
-                cmd_start = time.monotonic()
-                try:
-                    handler_result = await match.command.handler(ctx, match.raw_args)
-                    if handler_result is not None:
-                        logger.warning(
-                            "Command handler %s returned a value that was ignored; use ctx.send()",
-                            match.command.name,
-                        )
-                    cmd_time = (time.monotonic() - cmd_start) * 1000.0
-                    success = True
-                    error = ""
-
+            # Permission check for command
+            permission_granted = True
+            if match.command.permission:
+                permission_granted = bot.has_permission(match.command.permission)
+                if not permission_granted:
                     logger.debug(
-                        "Command %s (plugin=%s) executed in %.1fms",
+                        "Permission denied for %s: requires %s",
                         match.command.name,
-                        match.command.owner,
-                        cmd_time,
+                        match.command.permission,
                     )
-                except Exception as e:
-                    cmd_time = (time.monotonic() - cmd_start) * 1000.0
-                    success = False
-                    error = str(e)
-                    logger.exception("Command handler error: %s", match.command.name)
+                    await bot.send(f"权限不足：需要 {match.command.permission}")
 
-                # Audit log: command executed
-                if self._audit_logger:
-                    self._audit_logger.log_command(
-                        command_name=match.command.name,
-                        plugin_id=match.command.owner,
-                        user_id=event.sender_id or "",
-                        session_id=session.id,
-                        instance_id=adapter.instance_id,
-                        permission_required=match.command.permission,
-                        permission_granted=permission_granted,
-                        execution_time_ms=cmd_time,
-                        success=success,
-                        error=error,
-                        metadata={
-                            "raw_args": match.raw_args[:100]
-                            if match.raw_args
-                            else "",  # Truncate for safety
-                            "message_count": len(ctx._sent_messages),
-                        },
+                    # Audit log: permission denied
+                    if self._audit_logger:
+                        self._audit_logger.log_command(
+                            command_name=match.command.name,
+                            plugin_id=match.command.owner,
+                            user_id=event.sender_id or "",
+                            session_id=session.id,
+                            instance_id=adapter.instance_id,
+                            permission_required=match.command.permission,
+                            permission_granted=False,
+                            execution_time_ms=bot.elapsed_ms,
+                            success=False,
+                            error="Permission denied",
+                        )
+                    return
+
+            # Execute command handler
+            cmd_start = time.monotonic()
+            cmd_time = 0.0
+            success = True
+            error = ""
+
+            try:
+                handler_result = await match.command.handler(bot, match.raw_args)
+                if handler_result is not None:
+                    logger.warning(
+                        "Command handler %s returned a value that was ignored; use ctx.send()",
+                        match.command.name,
                     )
+                cmd_time = (time.monotonic() - cmd_start) * 1000.0
+                logger.debug(
+                    "Command %s (plugin=%s) executed in %.1fms",
+                    match.command.name,
+                    match.command.owner,
+                    cmd_time,
+                )
+            except Exception as e:
+                cmd_time = (time.monotonic() - cmd_start) * 1000.0
+                success = False
+                error = str(e)
+                logger.exception("Command handler error: %s", match.command.name)
 
-                return
+            # Audit log: command executed (for both success and error cases)
+            if self._audit_logger:
+                self._audit_logger.log_command(
+                    command_name=match.command.name,
+                    plugin_id=match.command.owner,
+                    user_id=event.sender_id or "",
+                    session_id=session.id,
+                    instance_id=adapter.instance_id,
+                    permission_required=match.command.permission,
+                    permission_granted=permission_granted,
+                    execution_time_ms=cmd_time,
+                    success=success,
+                    error=error,
+                    metadata={
+                        "raw_args": match.raw_args[:100]
+                        if match.raw_args
+                        else "",  # Truncate for safety
+                        "message_count": len(bot._sent_messages),
+                    },
+                )
+
+            return
 
         # Stage 3d: No command matched — dispatch to event bus
-        event_results = await self._event_bus.emit(event.type, ctx)
+        event_results = await self._event_bus.emit(event.type, bot)
         if event_results:
             logger.warning(
                 "Event handlers returned values for %s; return values are ignored, use ctx.send()",
@@ -434,7 +564,7 @@ class MessagePipeline:
 
         logger.debug(
             "Processed event in %.1fms (session=%s, command=%s)",
-            ctx.elapsed_ms,
+            bot.elapsed_ms,
             session.id,
-            ctx.command_match.command.name if ctx.command_match else "none",
+            bot.command_match.command.name if bot.command_match else "none",
         )

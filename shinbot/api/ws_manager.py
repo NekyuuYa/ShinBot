@@ -53,6 +53,11 @@ class _AsyncLogHandler(logging.Handler):
         )
 
     def emit(self, record: logging.LogRecord) -> None:
+        # 核心修复：禁止转发 uvicorn 和 websockets 的低级别日志，防止回放死循环
+        if record.name.startswith(("uvicorn", "websockets")):
+            if record.levelno < logging.INFO:
+                return
+
         try:
             msg = self.format(record)
             payload = {

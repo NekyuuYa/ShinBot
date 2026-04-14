@@ -51,6 +51,11 @@
         {{ instance.adapterType }}
       </div>
 
+      <div v-if="instance.config.mode" class="text-caption text-medium-emphasis mb-2">
+        <strong>Mode:</strong>
+        {{ instance.config.mode }}
+      </div>
+
       <div class="text-caption text-medium-emphasis">
         <strong>{{ $t('pages.instances.form.config') }}:</strong>
         <span v-if="Object.keys(instance.config).length === 0">—</span>
