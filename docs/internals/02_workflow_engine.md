@@ -22,14 +22,24 @@
 
 ---
 
-## 2. 上下文门面：MessageContext
+## 2. 上下文门面：Bot 句柄 (The Bot Handle)
 
 ### 2.1 实现亮点
-- **资源抽象**: `ctx.send()` 和 `ctx.reply()` 并不关心具体的平台协议，而是通过持有的 `adapter` 引用直接调用抽象接口。
+- **资源抽象**: `bot.send()` 和 `bot.reply()` 并不关心具体的平台协议，而是通过持有的 `adapter` 引用直接调用抽象接口。
+- **语义化管理 API**: 实现了 `bot.kick()`, `bot.mute()`, `bot.poke()` 等高阶方法。这些方法自动从 `bot.event` 中提取上下文（如 `guild_id`），极大地简化了插件编写。
 - **交互式补全 (wait_for_input)**: 
   - 实现逻辑：通过在 `MessageContext` 中集成一个 `WaitingInputRegistry`。
   - 当调用 `wait_for_input` 时，它会创建一个异步 `Future` 并将其与当前的 `session_id` 绑定，然后 `await` 该 Future。
   - 当下一条属于该会话的消息进入时，Pipeline 会优先检查该注册表，如果存在挂起的 Future，则直接 `set_result` 恢复执行逻辑。
 
 ### 2.2 解耦性评估
-- `MessageContext` 成功充当了核心引擎与业务插件之间的“防火墙”。插件开发者只需面对 `ctx` 提供的精简接口，无法直接触碰底层的适配器细节。
+- `bot` 句柄成功充当了核心引擎与业务插件之间的“防火墙”。插件开发者只需面对 `bot` 提供的精简接口，无法直接触碰底层的适配器细节。
+
+
+---
+
+## 3. 双轨分发逻辑 (Dual-Track Logic)
+
+为了支持“方案一”的设计，Pipeline 实现了分层处理：
+1. **消息流 (Message Flow)**: 当 `event.type` 为消息创建时，调用 `SatoriParser` 生成 `Message` 对象，支持富文本指令。
+2. **事件流 (Notice Flow)**: 当 `event.type` 为系统通知时，绕过 XML 解析，直接映射结构化资源 JSON。通过 `@on_notice` 装饰器实现精准分发。

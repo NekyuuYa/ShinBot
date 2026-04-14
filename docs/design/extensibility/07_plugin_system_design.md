@@ -17,6 +17,11 @@ ShinBot 采用“微内核 + 全量插件化”架构，支持运行时热重载
 - **格式**: `shinbot_adapter_{platform}`
 - **示例**: `shinbot_adapter_satori`, `shinbot_adapter_onebot_v11`。
 
+### 2.3 调试与诊断插件 (Debug Plugins)
+- **格式**: `shinbot_debug_{name}`
+- **示例**: `shinbot_debug_message`。
+- **用途**: 用于核心状态监控、流量拦截审计等非业务功能。
+
 ## 3. 插件物理分布与角色 (Plugin Distribution)
 
 根据存放位置，插件分为两类：

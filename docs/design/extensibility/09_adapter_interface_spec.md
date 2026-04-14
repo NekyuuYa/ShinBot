@@ -52,6 +52,7 @@ class BaseAdapter(ABC):
         }
         """
         pass
+```
 
 ## 3. 能力发现机制 (Capability Discovery)
 
@@ -60,9 +61,8 @@ class BaseAdapter(ABC):
     - **发送拦截**: 核心在 Egress 阶段可根据 `elements` 列表预检发送内容的兼容性。
     - **UI 联动**: Dashboard 通过此接口获取可用方法列表，为管理员生成动态调试面板。
     - **逻辑退避**: 插件可根据当前适配器的能力发现结果，自动切换备选执行路径。
-```
 
-## 3. Satori 标准 API 支持要求
+## 4. Satori 标准 API 支持要求
 
 驱动插件应尽可能对齐 Satori 的资源管理规范：
 - **消息类**: `message.get`, `message.delete`, `message.list`
@@ -70,13 +70,33 @@ class BaseAdapter(ABC):
 - **关系类**: `friend.list`, `friend.approve`
 - **交互类**: `reaction.create`, `reaction.delete`
 
-## 4. 内部扩展与透传 (Internal API)
+## 5. 内部扩展与透传 (Internal API)
 
 当标准 API 无法覆盖平台特性时：
 - 适配器应提供 `internal.{platform}.{action}` 命名空间的调用。
 - 核心不理解这些调用的含义，仅负责将参数透传给适配器。
 
-## 5. 官方补全策略与语义修复
+### 5.1 命名规则
+
+- 格式固定为 `internal.{platform}.{action}`。
+- 示例：`internal.qq.poke`、`internal.discord.create_thread`。
+
+### 5.2 官方补全职责
+
+官方适配器除了做协议翻译，也负责做必要的“语义补全”：
+
+- 合并转发等不完整上报，应在接入层补全后再进入核心。
+- 平台原生的戳一戳、抖动等交互，应统一映射到内部事件或 `sb:` 扩展元素。
+
+### 5.3 典型非标能力
+
+以 QQ/OneBot 生态为例，适配器可暴露如下非标方法：
+
+- `internal.qq.poke`
+- `internal.qq.set_group_card`
+- `internal.qq.send_like`
+
+## 6. 官方补全策略与语义修复
 
 官方适配器（Pure Satori 与 OB11 Bridge）除了负责翻译，还承担 **“语义修复层”** 的职责：
 

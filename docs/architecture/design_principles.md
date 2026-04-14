@@ -1,0 +1,134 @@
+# ShinBot Design Principles — Distilled from docs/
+
+Extracted from 15 project documents. Each principle below represents validated **user intent** (the "what and why"), separated from Gemini's implementation specifics (the "how").
+
+---
+
+## P1. Micro-Kernel + Full Plugin Architecture
+
+> "系统核心仅负责逻辑编排，所有的平台接入与业务功能均以插件形式存在。" — 07_plugin_system_design.md
+
+**Rule**: `shinbot/core/` contains ONLY:
+- Domain models and abstract interfaces
+- Lifecycle orchestration (boot, pipeline, event bus)
+- Plugin loading mechanics
+
+**Rule**: Everything else — adapters, commands, business logic — is a plugin. No exceptions.
+
+**Rationale**: Micro-kernel enables hot-reload, keeps the core testable without any platform SDK, and allows third-party extensibility.
+
+---
+
+## P2. Core Purity (Zero Upward Dependencies)
+
+**Rule**: Core may depend on `models/` and `utils/`. Core MUST NOT import from `builtin_plugins/`, `api/`, or any external plugin.
+
+**Rule**: Plugins depend on Core, never the reverse. The dependency arrow is strictly downward.
+
+**Corollary**: Web frameworks (`fastapi`, `uvicorn`, `starlette`) belong in `api/` and plugins, never in core.
+
+---
+
+## P3. Adapter as Protocol Translator
+
+> "Core is completely decoupled from protocol implementations." — 09_adapter_interface_spec.md
+
+**Rule**: Adapters are plugins that implement `BaseAdapter`. They translate between platform-native wire formats and ShinBot's internal `UnifiedEvent`/`MessageElement` AST.
+
+**Rule**: Core calls adapters through the abstract `BaseAdapter` interface only. The core engine never contains platform-specific logic.
+
+**Contract**: `start()`, `shutdown()`, `send()`, `call_api()`, `get_capabilities()`.
+
+---
+
+## P4. Satori-Aligned Message AST
+
+> "Messages are sequences of MessageElement AST nodes, following the Satori protocol model." — 02_message_element_spec.md
+
+**Rule**: The internal message representation is a tree of `MessageElement` nodes with Satori-compatible types (text, at, img, quote, ...).
+
+**Extension**: Non-Satori types use the `sb:` namespace (e.g. `sb:poke`, `sb:ark`).
+
+**Dual View**: `.elements` for programmatic access (AST array), `.text` for string access (Satori XML).
+
+---
+
+## P5. Three-Pillar Interaction Model
+
+> "听 (Listen), 说 (Speak), 管 (Action)" — 00_core_philosophy.md
+
+1. **Listen**: Adapter → `UnifiedEvent` → pipeline (ingress)
+2. **Speak**: Plugin → `MessageElement[]` → `bot.send()` → adapter (egress)
+3. **Action**: Plugin → `bot.call_api(method, params)` → adapter (control)
+
+**Rule**: The `bot` handle auto-binds to the originating adapter. Plugins never choose which adapter to use — routing is implicit.
+
+---
+
+## P6. Plugin Lifecycle via PluginContext
+
+> "Plugin entry point is setup(ctx: PluginContext) — declarative, not global code execution." — internals/04_plugin_lifecycle.md
+
+**Rule**: Plugins register capabilities (commands, event listeners, adapter factories) through `PluginContext` methods, not by mutating global state.
+
+**Rule**: On unload, the framework deregisters all stubs owned by the plugin. This prevents "duplicate commands after reload".
+
+**Contract**: `setup(ctx)` for initialization, `on_disable(ctx)` for cleanup.
+
+---
+
+## P7. Session as Processing Unit
+
+> "Session is the minimum unit for logic processing, context maintenance, and permission binding." — 04_session_management.md
+
+**Rule**: Session ID is a URN: `{instance_id}:{type}:{target_id}`.
+
+**Rule**: Instance-level isolation: same group + different bot accounts = different sessions.
+
+**Rule**: Plugin data is sandboxed per-session via `Session.plugin_data`.
+
+---
+
+## P8. RBAC Permission Model
+
+> "Dot-separated permission tree with explicit-deny highest priority." — 05_permission_system.md
+
+**Rule**: Permissions are hierarchical paths (`tools.weather.admin`).
+
+**Rule**: Explicit deny (`-permission.node`) overrides all grants.
+
+**Rule**: Two scopes — session-scoped and global-scoped.
+
+---
+
+## P9. Naming Convention Enforcement
+
+> 07_plugin_system_design.md §2
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Business plugin | `shinbot_plugin_{name}` | `shinbot_plugin_weather` |
+| Adapter plugin | `shinbot_adapter_{platform}` | `shinbot_adapter_satori` |
+| Debug plugin | `shinbot_debug_{name}` | `shinbot_debug_message` |
+
+---
+
+## P10. Data Isolation
+
+**Rule**: Plugin code directory is read-only at runtime.
+
+**Rule**: All persistent data goes to `data/plugin_data/{plugin_id}/`.
+
+**Rule**: Framework injects path via `ctx.data_dir`.
+
+---
+
+## Gemini-Specific Decisions (Documented but NOT Ratified as Principles)
+
+The following items appear in docs but are Gemini implementation choices, not validated design intent. They should be treated as "current implementation" rather than "architectural constraints":
+
+1. **P0 hard-fail**: Prefix-matched but unrecognized commands error instead of falling through to LLM. (03_command_system.md — strong opinion, needs user confirmation.)
+2. **JSON file persistence** for sessions. (internals/05 — may not scale.)
+3. **Specific FastAPI admin endpoints** (`/admin/plugins`, `/admin/plugins/{id}/reload`). (internals/07 — implementation detail.)
+4. **TOML as config format**. (Never formally specified in a design doc, appeared in Gemini implementation.)
+5. **Specific permission delimiter choices** (`:` in URN, `.` in permission paths). (Ambiguity with platform IDs unresolved.)
