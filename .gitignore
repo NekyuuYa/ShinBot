@@ -1,6 +1,7 @@
 # Vibe files
 AGENTS.md
 .agent/
+.codex
 .codex/
 .opencode/
 .kilocode/

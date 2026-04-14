@@ -75,7 +75,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
 
     app = FastAPI(
         title="ShinBot Management API",
-        version="1.0.0",
+        version="0.1.1",
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
