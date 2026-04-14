@@ -32,6 +32,8 @@
 - `04_session_management.md`
 - `05_permission_system.md`
 - `12_system_boot_lifecycle.md`
+- `18_agent_model_runtime.md`
+- `19_database_persistence_architecture.md`
 
 ### `extensibility/`
 
