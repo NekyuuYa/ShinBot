@@ -44,6 +44,7 @@
 
 - `13_webui_design_spec.md`
 - `16_api_communication_spec.md`
+- `20_model_runtime_webui_spec.md`
 
 ### `governance/`
 

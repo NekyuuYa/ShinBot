@@ -103,6 +103,18 @@
 - 对单机 Bot、个人部署、开发调试足够友好。
 - 便于 WebUI 和主程序共用同一个数据源。
 
+默认本地数据库文件应放在 `data/` 目录下，而不是项目根目录。
+
+建议默认路径：
+
+- `data/db/shinbot.sqlite3`
+
+原则：
+
+- 代码与 schema 定义属于仓库内容，放在 `shinbot/persistence/`
+- 运行时生成的数据库文件属于实例数据，放在 `data/`
+- 这样与现有 `data/audit/`、`data/plugin_data/`、`data/temp/resources/` 的约定保持一致
+
 ### 4.2 可扩展后端
 
 数据库访问层必须预留切换到 `PostgreSQL` 的能力。
@@ -174,6 +186,7 @@
 
 - `config.toml` 不会立即消失。
 - 但它应逐步收敛为 bootstrap config，而不是长期承载全部业务配置。
+- 若使用默认 SQLite，bootstrap 配置中的数据库连接串应默认指向 `data/db/shinbot.sqlite3`。
 
 ### 6.2 运行级配置
 
