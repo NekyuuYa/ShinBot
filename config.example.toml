@@ -10,13 +10,40 @@ level = "INFO"  # DEBUG | INFO | WARNING | ERROR
 # ShinBot supports multiple concurrent instances.
 
 [[instances]]
-id = "main-bot"       # Unique identifier (used in session URNs and permission keys)
-platform = "satori"   # Adapter type — currently only "satori" is built-in
+id = "satori-main"   # Unique identifier
+platform = "satori"  # Adapter type
 
-[instances.satori]
-host      = "localhost:5140"   # WebSocket server address (host:port)
-token     = ""                  # Auth token (leave empty if your server has no auth)
-reconnect_delay = 5.0          # Seconds between reconnect attempts on disconnect
+[instances.config]
+host = "localhost:5140"
+token = ""
+path = "/v1/events"
+reconnect_delay = 5.0
+max_reconnects = -1
+download_resources = true
+resource_cache_dir = "data/temp/resources"
+silent_reconnect = true
+reconnect_log_interval = 30.0
+
+[[instances]]
+id = "ob11-main"
+platform = "onebot_v11"
+
+[instances.config]
+mode = "forward"                    # forward | reverse
+url = "ws://127.0.0.1:3001"         # forward mode only
+reverse_host = "0.0.0.0"            # reverse mode only (adapter listener bind host)
+reverse_port = 8082                  # reverse mode only (adapter standalone listener port)
+reverse_path = "/onebot/v11"        # reverse mode only
+self_id = ""                        # optional reverse validation
+access_token = ""
+reconnect_delay = 5.0
+max_reconnects = -1
+request_timeout = 20.0
+forward_max_depth = 3
+download_resources = true
+resource_cache_dir = "data/temp/resources"
+silent_reconnect = true
+reconnect_log_interval = 30.0
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
@@ -26,6 +53,11 @@ reconnect_delay = 5.0          # Seconds between reconnect attempts on disconnec
 # [[plugins]]
 # id     = "hello"
 # module = "plugins.hello"
+
+# Debug plugin can be enabled to inspect raw ingress events.
+# [[plugins]]
+# id     = "shinbot_debug_message"
+# module = "shinbot.builtin_plugins.shinbot_debug_message"
 
 
 # ─── Management API ───────────────────────────────────────────────────────────

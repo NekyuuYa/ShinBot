@@ -84,9 +84,22 @@ class TestParseXML:
     def test_platform_specific_tag(self):
         """Platform-specific tags (e.g. llonebot:ark) should be preserved."""
         xml = '<llonebot:ark data="{}"/>'
-        # This may need namespace handling — parser should at least not crash
         result = parse_xml(xml)
-        assert len(result) >= 1
+        assert len(result) == 1
+        assert result[0].type == "llonebot:ark"
+
+    def test_sb_namespace_extension_tag(self):
+        xml = '<message forward="true"><sb:ark data="{&quot;x&quot;:1}"/></message>'
+        result = parse_xml(xml)
+        assert len(result) == 1
+        assert result[0].type == "message"
+        assert len(result[0].children) == 1
+        assert result[0].children[0].type == "sb:ark"
+
+    def test_multiple_prefixed_tags_parse_without_text_fallback(self):
+        xml = '<qq:markdown content="**hi**"/><sb:poke target="42" type="poke"/>'
+        result = parse_xml(xml)
+        assert [el.type for el in result] == ["qq:markdown", "sb:poke"]
 
     def test_malformed_xml_fallback(self):
         """Malformed XML should fall back to a single text element."""

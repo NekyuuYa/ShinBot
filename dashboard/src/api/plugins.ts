@@ -12,6 +12,8 @@ export interface Plugin {
   id: string
   name: string
   version: string
+  role?: string
+  state?: string
   status: 'enabled' | 'disabled'
   description?: string
   author?: string
@@ -22,6 +24,7 @@ export interface JsonSchemaProperty {
   type?: 'string' | 'number' | 'integer' | 'boolean' | 'object' | 'array'
   title?: string
   description?: string
+  modes?: Array<'forward' | 'reverse' | string>
   enum?: Array<string | number | boolean>
   default?: string | number | boolean | null
   properties?: Record<string, JsonSchemaProperty>
@@ -38,6 +41,7 @@ export interface PluginConfigSchema {
 }
 
 export interface PluginMetadata {
+  adapter_platform?: string
   configSchema?: Record<string, ConfigSchemaField>
   config_schema?: PluginConfigSchema
   dynamicForm?: Record<string, unknown>

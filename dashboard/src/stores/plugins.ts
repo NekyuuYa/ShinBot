@@ -46,6 +46,11 @@ export const usePluginsStore = defineStore('plugins', () => {
   }
 
   const fetchPluginSchema = async (id: string) => {
+    const plugin = plugins.value.find((item) => item.id === id)
+    if (plugin?.role === 'adapter') {
+      return null
+    }
+
     try {
       const response = await pluginsApi.getSchema(id)
       if (response.data.success && response.data.data) {
@@ -56,7 +61,6 @@ export const usePluginsStore = defineStore('plugins', () => {
       // Fallback to metadata-backed schema if endpoint is unavailable.
     }
 
-    const plugin = plugins.value.find((item) => item.id === id)
     const metadataSchema = plugin?.metadata?.config_schema
     if (metadataSchema) {
       pluginSchemas.value[id] = metadataSchema

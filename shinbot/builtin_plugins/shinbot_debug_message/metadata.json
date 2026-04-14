@@ -1,0 +1,10 @@
+{
+  "id": "shinbot_debug_message",
+  "name": "Message Debug Plugin",
+  "version": "1.0.0",
+  "author": "ShinBot Team",
+  "description": "Logs all events and persists raw payloads for debugging.",
+  "entry": "__init__.py",
+  "role": "logic",
+  "permissions": []
+}

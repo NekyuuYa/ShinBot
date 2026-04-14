@@ -23,7 +23,7 @@
                 }}
               </v-list-item-title>
             </v-list-item>
-            <v-list-item @click="handleConfigure">
+            <v-list-item v-if="canConfigure" @click="handleConfigure">
               <v-list-item-title>{{ $t('pages.plugins.card.configure') }}</v-list-item-title>
             </v-list-item>
           </v-list>
@@ -70,7 +70,7 @@
             : $t('pages.plugins.card.enable')
         }}
       </v-btn>
-      <v-btn color="primary" variant="text" size="small" @click="handleConfigure">
+      <v-btn v-if="canConfigure" color="primary" variant="text" size="small" @click="handleConfigure">
         {{ $t('pages.plugins.card.configure') }}
       </v-btn>
     </v-card-actions>
@@ -78,6 +78,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { usePluginsStore } from '@/stores/plugins'
 import type { Plugin } from '@/api/plugins'
 
@@ -91,6 +92,7 @@ const emit = defineEmits<{
 }>()
 
 const pluginsStore = usePluginsStore()
+const canConfigure = computed(() => props.plugin.role !== 'adapter')
 
 const handleToggle = async () => {
   if (props.plugin.status === 'enabled') {

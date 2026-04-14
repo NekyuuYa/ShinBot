@@ -17,7 +17,6 @@ import asyncio
 import importlib
 import inspect
 import json
-import logging
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -27,17 +26,59 @@ from typing import TYPE_CHECKING, Any
 
 from shinbot.core.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
 from shinbot.core.event_bus import EventBus
+from shinbot.utils.logger import get_logger, get_plugin_logger
 
 if TYPE_CHECKING:
     from shinbot.core.adapter_manager import AdapterManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Naming rules for metadata-directory based plugin loading
-_VALID_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_")
+_VALID_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
 
 # Absolute path to the built-in plugins directory (shinbot/builtin_plugins/)
 _BUILTIN_PLUGINS_DIR = Path(__file__).parent.parent / "builtin_plugins"
+
+
+def _topo_sort(
+    candidates: list[tuple[Path, dict[str, Any]]],
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Topological sort of plugin candidates by their declared ``dependencies`` list.
+
+    Plugins are sorted so that each plugin's declared dependencies are loaded
+    before it. Plugins not in the candidate set are silently skipped in the
+    traversal (the caller emits missing-dependency warnings separately).
+    Cycles are logged as errors; the participating plugins are appended at the
+    end in their original order so loading can still proceed.
+    """
+    id_to_item: dict[str, tuple[Path, dict[str, Any]]] = {
+        m["id"]: (d, m) for d, m in candidates
+    }
+    visited: set[str] = set()
+    in_stack: set[str] = set()
+    result: list[tuple[Path, dict[str, Any]]] = []
+
+    def visit(pid: str) -> None:
+        if pid in visited or pid not in id_to_item:
+            return
+        if pid in in_stack:
+            logger.error(
+                "Plugin dependency cycle detected at %r — placing after all non-cyclic plugins",
+                pid,
+            )
+            return
+        in_stack.add(pid)
+        _, meta = id_to_item[pid]
+        for dep in meta.get("dependencies", []):
+            visit(dep)
+        in_stack.discard(pid)
+        if pid not in visited:
+            visited.add(pid)
+            result.append(id_to_item[pid])
+
+    for _, meta in candidates:
+        visit(meta["id"])
+    return result
 
 
 class PluginRole(Enum):
@@ -48,6 +89,7 @@ class PluginRole(Enum):
 class PluginState(Enum):
     LOADED = "loaded"
     ACTIVE = "active"
+    DISABLED = "disabled"
     LOAD_FAILED = "load_failed"
     ERROR = "error"
     UNLOADED = "unloaded"
@@ -95,6 +137,7 @@ class PluginContext:
         )
         self._registered_commands: list[str] = []
         self._registered_events: list[str] = []
+        self.logger = get_plugin_logger(plugin_id)
 
     def on_command(
         self,
@@ -292,47 +335,76 @@ class PluginManager:
         meta = self._plugins.pop(plugin_id, None)
         if meta is None:
             return False
-
-        module = self._modules.get(plugin_id)
-        ctx = self._contexts.get(plugin_id)
-
-        try:
-            await self._invoke_hook(module, "on_disable", ctx)
-        except Exception:
-            logger.exception("Error in on_disable() for plugin %s", plugin_id)
-
-        # Clean up commands
-        cmd_count = self._command_registry.unregister_by_owner(plugin_id)
-
-        # Clean up event handlers
-        evt_count = self._event_bus.off_all(plugin_id)
-
-        # Call teardown if available
-        if module and hasattr(module, "teardown"):
-            try:
-                await self._invoke(module.teardown)
-            except Exception:
-                logger.exception("Error in teardown() for plugin %s", plugin_id)
-
-        # Remove module reference
-        self._modules.pop(plugin_id, None)
-        self._contexts.pop(plugin_id, None)
-
-        # Remove from sys.modules for hot reload support
-        if remove_module and meta.module_path in sys.modules:
-            del sys.modules[meta.module_path]
-
-        logger.info(
-            "Unloaded plugin %s (removed %d commands, %d event handlers)",
+        cmd_count, evt_count = await self._deactivate_plugin_runtime(
             plugin_id,
-            cmd_count,
-            evt_count,
+            meta,
+            remove_module=remove_module,
         )
+        logger.info("Unloaded plugin %s (removed %d commands, %d event handlers)", plugin_id, cmd_count, evt_count)
         return True
 
     async def unload_all_plugins_async(self) -> None:
         for plugin_id in list(self._plugins.keys()):
             await self.unload_plugin_async(plugin_id)
+
+    def disable_plugin(self, plugin_id: str) -> PluginMeta:
+        return self._run_sync(self.disable_plugin_async(plugin_id))
+
+    async def disable_plugin_async(self, plugin_id: str) -> PluginMeta:
+        meta = self._plugins.get(plugin_id)
+        if meta is None:
+            raise ValueError(f"Plugin {plugin_id!r} is not loaded")
+        if meta.state == PluginState.DISABLED:
+            return meta
+
+        cmd_count, evt_count = await self._deactivate_plugin_runtime(
+            plugin_id,
+            meta,
+            remove_module=False,
+        )
+        meta.state = PluginState.DISABLED
+        logger.info("Disabled plugin %s (removed %d commands, %d event handlers)", plugin_id, cmd_count, evt_count)
+        return meta
+
+    def enable_plugin(self, plugin_id: str) -> PluginMeta:
+        return self._run_sync(self.enable_plugin_async(plugin_id))
+
+    async def enable_plugin_async(self, plugin_id: str) -> PluginMeta:
+        meta = self._plugins.get(plugin_id)
+        if meta is None:
+            raise ValueError(f"Plugin {plugin_id!r} is not loaded")
+        if meta.state == PluginState.ACTIVE:
+            return meta
+
+        module_path = meta.module_path
+        existing = sys.modules.get(module_path)
+        if existing is not None and getattr(existing, "__spec__", None) is not None:
+            module = importlib.reload(existing)
+        elif existing is not None:
+            module = existing
+        else:
+            module = importlib.import_module(module_path)
+
+        if not hasattr(module, "setup"):
+            raise AttributeError(f"Plugin module {module_path!r} must expose a setup(ctx) function")
+
+        ctx = self._build_ctx(plugin_id)
+        await self._invoke(module.setup, ctx)
+        await self._invoke_hook(module, "on_enable", ctx)
+
+        meta.name = getattr(module, "__plugin_name__", plugin_id)
+        meta.version = getattr(module, "__plugin_version__", "0.0.0")
+        meta.description = getattr(module, "__plugin_description__", "")
+        meta.author = getattr(module, "__plugin_author__", "")
+        meta.role = getattr(module, "__plugin_role__", PluginRole.LOGIC)
+        meta.state = PluginState.ACTIVE
+        meta.commands = list(ctx._registered_commands)
+        meta.event_types = list(ctx._registered_events)
+        meta.data_dir = str(ctx.data_dir)
+        self._contexts[plugin_id] = ctx
+        self._modules[plugin_id] = module
+        logger.info("Enabled plugin %s", plugin_id)
+        return meta
 
     def load_plugins_from_dir(self, directory: Path | str, *, prefix: str = "") -> list[PluginMeta]:
         """Scan a directory and load all Python plugin modules found.
@@ -420,9 +492,7 @@ class PluginManager:
 
         user_path = Path(user_dir) if user_dir is not None else self._root_data_dir / "plugins"
         if user_path.is_dir():
-            results.extend(
-                await self._load_from_metadata_dir_async(user_path, is_builtin=False)
-            )
+            results.extend(await self._load_from_metadata_dir_async(user_path, is_builtin=False))
 
         return results
 
@@ -438,8 +508,8 @@ class PluginManager:
             if parent not in sys.path:
                 sys.path.insert(0, parent)
 
-        loaded: list[PluginMeta] = []
-
+        # Pass 1: collect and validate metadata for all plugin directories.
+        candidates: list[tuple[Path, dict[str, Any]]] = []
         for plugin_dir in sorted(directory.iterdir()):
             if not plugin_dir.is_dir() or plugin_dir.name.startswith("_"):
                 continue
@@ -457,18 +527,42 @@ class PluginManager:
                 logger.exception("Invalid metadata.json in %s", plugin_dir)
                 continue
 
+            if metadata["id"] in self._plugins:
+                logger.debug("Plugin %r already loaded, skipping", metadata["id"])
+                continue
+
+            candidates.append((plugin_dir, metadata))
+
+        # Pass 2: sort candidates in dependency order so that a declared
+        # dependency is always initialized before its dependents.
+        sorted_candidates = _topo_sort(candidates)
+
+        # Pass 3: warn on declared dependencies that are not present in this
+        # scan batch (they may be separately loaded user plugins).
+        batch_ids = {m["id"] for _, m in sorted_candidates}
+        already_loaded = set(self._plugins.keys())
+        for _, metadata in sorted_candidates:
+            for dep in metadata.get("dependencies", []):
+                if dep not in batch_ids and dep not in already_loaded:
+                    logger.warning(
+                        "Plugin %r declares dependency on %r which is not available",
+                        metadata["id"],
+                        dep,
+                    )
+
+        # Pass 4: load in dependency-sorted order.
+        loaded: list[PluginMeta] = []
+        for plugin_dir, metadata in sorted_candidates:
             plugin_id = metadata["id"]
             entry_file = metadata["entry"]
             permissions = metadata.get("permissions", [])
 
-            if plugin_id in self._plugins:
-                logger.debug("Plugin %r already loaded, skipping", plugin_id)
-                continue
-
             if is_builtin:
                 pkg = f"shinbot.builtin_plugins.{plugin_dir.name}"
-                module_path = pkg if entry_file == "__init__.py" else (
-                    f"{pkg}.{'.'.join(Path(entry_file).with_suffix('').parts)}"
+                module_path = (
+                    pkg
+                    if entry_file == "__init__.py"
+                    else (f"{pkg}.{'.'.join(Path(entry_file).with_suffix('').parts)}")
                 )
             else:
                 prefix = directory.name
@@ -576,6 +670,38 @@ class PluginManager:
         self._modules[plugin_id] = module
         return new_meta
 
+    async def _deactivate_plugin_runtime(
+        self,
+        plugin_id: str,
+        meta: PluginMeta,
+        *,
+        remove_module: bool,
+    ) -> tuple[int, int]:
+        module = self._modules.get(plugin_id)
+        ctx = self._contexts.get(plugin_id)
+
+        try:
+            await self._invoke_hook(module, "on_disable", ctx)
+        except Exception:
+            logger.exception("Error in on_disable() for plugin %s", plugin_id)
+
+        cmd_count = self._command_registry.unregister_by_owner(plugin_id)
+        evt_count = self._event_bus.off_all(plugin_id)
+
+        if module and hasattr(module, "teardown"):
+            try:
+                await self._invoke(module.teardown)
+            except Exception:
+                logger.exception("Error in teardown() for plugin %s", plugin_id)
+
+        self._modules.pop(plugin_id, None)
+        self._contexts.pop(plugin_id, None)
+
+        if remove_module and meta.module_path in sys.modules:
+            del sys.modules[meta.module_path]
+
+        return cmd_count, evt_count
+
     def _build_plugin_data_dir(self, plugin_id: str) -> Path:
         candidate = (self._plugin_data_root / plugin_id).resolve()
         root = self._plugin_data_root.resolve()
@@ -631,6 +757,12 @@ class PluginManager:
 
         metadata["id"] = plugin_id
         metadata["entry"] = entry_path.as_posix()
+
+        deps = metadata.get("dependencies", [])
+        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+            raise ValueError("metadata.dependencies must be a list of plugin ID strings")
+        metadata["dependencies"] = deps
+
         return metadata
 
     async def _invoke_hook(self, module: Any, hook_name: str, ctx: PluginContext | None) -> None:
@@ -643,7 +775,7 @@ class PluginManager:
                 await self._invoke(hook)
             else:
                 await self._invoke(hook, ctx)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             await self._invoke(hook, ctx)
 
     async def _invoke(self, func: Callable[..., Any], *args: Any) -> Any:

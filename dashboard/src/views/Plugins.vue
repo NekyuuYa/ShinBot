@@ -146,6 +146,10 @@ const applySchemaDefaults = (schema: PluginConfigSchema) => {
 }
 
 const openConfigDialog = async (plugin: Plugin) => {
+  if (plugin.role === 'adapter') {
+    return
+  }
+
   activePlugin.value = plugin
   const schema = await pluginsStore.fetchPluginSchema(plugin.id)
   activeSchema.value = schema

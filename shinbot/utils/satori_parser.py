@@ -13,6 +13,7 @@ Key behaviors:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from lxml import etree
@@ -26,6 +27,7 @@ from shinbot.models.elements import MessageElement
 
 # Namespace map for lxml parsing
 _NSMAP = {"sb": "urn:shinbot:elements"}
+_SYNTHETIC_NS_PREFIX = "urn:shinbot:prefixed:"
 
 # Self-closing tags that never have meaningful children
 _VOID_TAGS = frozenset({"br", "img", "audio", "video", "file", "emoji"})
@@ -47,7 +49,7 @@ def parse_xml(xml_content: str) -> list[MessageElement]:
         return []
 
     # Wrap in a root element so lxml can parse mixed content (text + elements)
-    wrapped = f"<__root__>{xml_content}</__root__>"
+    wrapped = _wrap_xml_with_namespaces(xml_content)
 
     try:
         root = etree.fromstring(wrapped.encode("utf-8"))
@@ -100,6 +102,9 @@ def _normalize_tag(tag: str) -> str:
         uri, _, local = tag[1:].partition("}")
         if uri == "urn:shinbot:elements":
             return f"sb:{local}"
+        if uri.startswith(_SYNTHETIC_NS_PREFIX):
+            prefix = uri.removeprefix(_SYNTHETIC_NS_PREFIX)
+            return f"{prefix}:{local}" if prefix else local
         # For platform-specific namespaces (e.g. llonebot:ark),
         # try to preserve the prefix from the raw tag name
         return local
@@ -110,6 +115,26 @@ def _normalize_tag(tag: str) -> str:
 def _extract_attrs(el: etree._Element) -> dict[str, str]:
     """Extract attributes from an lxml element, skipping xmlns declarations."""
     return {k: v for k, v in el.attrib.items() if not k.startswith("{") and k != "xmlns"}
+
+
+def _wrap_xml_with_namespaces(xml_content: str) -> str:
+    prefixes = _collect_tag_prefixes(xml_content)
+    ns_attrs = [f'xmlns:{prefix}="{_namespace_uri_for_prefix(prefix)}"' for prefix in sorted(prefixes)]
+    attr_text = f" {' '.join(ns_attrs)}" if ns_attrs else ""
+    return f"<__root__{attr_text}>{xml_content}</__root__>"
+
+
+def _collect_tag_prefixes(xml_content: str) -> set[str]:
+    prefixes = {"sb"} if "sb:" in xml_content else set()
+    for match in re.finditer(r"<\s*/?\s*([A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*", xml_content):
+        prefixes.add(match.group(1))
+    return prefixes
+
+
+def _namespace_uri_for_prefix(prefix: str) -> str:
+    if prefix == "sb":
+        return _NSMAP["sb"]
+    return f"{_SYNTHETIC_NS_PREFIX}{prefix}"
 
 
 # ── AST → XML ───────────────────────────────────────────────────────

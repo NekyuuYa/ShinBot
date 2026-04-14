@@ -1,0 +1,10 @@
+{
+  "id": "shinbot_adapter_onebot_v11",
+  "name": "OneBot v11 Adapter (Official)",
+  "version": "1.0.0",
+  "author": "ShinBot Team",
+  "description": "OneBot v11 forward WebSocket bridge for ShinBot.",
+  "entry": "__init__.py",
+  "role": "adapter",
+  "permissions": ["network.inbound", "network.outbound"]
+}

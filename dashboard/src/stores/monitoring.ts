@@ -177,8 +177,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
   let statusSocket: WebSocket | null = null
   let logReconnectTimer: ReturnType<typeof setTimeout> | null = null
   let statusReconnectTimer: ReturnType<typeof setTimeout> | null = null
-  let logHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
-  let statusHeartbeatTimer: ReturnType<typeof setTimeout> | null = null
+  let logHeartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   const reconnectDelayMs = 5000
   const heartbeatIntervalMs = 30000
@@ -197,16 +196,18 @@ export const useMonitoringStore = defineStore('monitoring', () => {
 
   const clearLogTimers = () => {
     if (logReconnectTimer) clearTimeout(logReconnectTimer)
-    if (logHeartbeatTimer) clearTimeout(logHeartbeatTimer)
+    if (logHeartbeatTimer) clearInterval(logHeartbeatTimer)
     logReconnectTimer = null
     logHeartbeatTimer = null
   }
 
   const armLogHeartbeat = () => {
-    if (logHeartbeatTimer) clearTimeout(logHeartbeatTimer)
-    logHeartbeatTimer = setTimeout(() => {
-      logSocket?.close()
-    }, heartbeatIntervalMs + 5000)
+    if (logHeartbeatTimer) clearInterval(logHeartbeatTimer)
+    logHeartbeatTimer = setInterval(() => {
+      if (logSocket?.readyState === WebSocket.OPEN) {
+        logSocket.send('ping')
+      }
+    }, heartbeatIntervalMs)
   }
 
   const connectLogs = (endpoint?: string) => {
@@ -234,7 +235,6 @@ export const useMonitoringStore = defineStore('monitoring', () => {
       logConnected.value = false
     }
     logSocket.onmessage = (event: MessageEvent<string>) => {
-      armLogHeartbeat()
       const parsed = parseEnvelope<LogWsPayload | LogWsPayload[]>(event.data)
       const payload = parsed && typeof parsed === 'object' && 'data' in parsed ? parsed.data : parsed
       const entries = extractLogEntries(payload)
@@ -253,16 +253,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
 
   const clearStatusTimers = () => {
     if (statusReconnectTimer) clearTimeout(statusReconnectTimer)
-    if (statusHeartbeatTimer) clearTimeout(statusHeartbeatTimer)
     statusReconnectTimer = null
-    statusHeartbeatTimer = null
-  }
-
-  const armStatusHeartbeat = () => {
-    if (statusHeartbeatTimer) clearTimeout(statusHeartbeatTimer)
-    statusHeartbeatTimer = setTimeout(() => {
-      statusSocket?.close()
-    }, heartbeatIntervalMs + 5000)
   }
 
   const connectStatus = (endpoint?: string) => {
@@ -277,7 +268,6 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     statusSocket = new WebSocket(finalEndpoint)
     statusSocket.onopen = () => {
       statusConnected.value = true
-      armStatusHeartbeat()
     }
     statusSocket.onclose = () => {
       statusConnected.value = false
@@ -292,7 +282,6 @@ export const useMonitoringStore = defineStore('monitoring', () => {
       status.value.online = false
     }
     statusSocket.onmessage = (event: MessageEvent<string>) => {
-      armStatusHeartbeat()
       const parsed = parseEnvelope<StatusWsPayload>(event.data)
       const payload = parsed && typeof parsed === 'object' && 'data' in parsed ? parsed.data : parsed
       const nextStatus = extractStatus(payload)

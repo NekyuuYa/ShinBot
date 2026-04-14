@@ -91,22 +91,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useMonitoringStore } from '@/stores/monitoring'
 
 const monitoringStore = useMonitoringStore()
 const { filteredLogs, logLevelFilter, logConnected, status } = storeToRefs(monitoringStore)
-
-onMounted(() => {
-  monitoringStore.connectLogs()
-  monitoringStore.connectStatus()
-})
-
-onBeforeUnmount(() => {
-  monitoringStore.disconnectLogs()
-  monitoringStore.disconnectStatus()
-})
 
 const connectLogs = () => monitoringStore.connectLogs()
 const clearLogs = () => monitoringStore.clearLogs()

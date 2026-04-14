@@ -142,12 +142,14 @@ const statusChipColor = computed(() =>
 )
 
 onMounted(() => {
+  monitoringStore.connectLogs()
   monitoringStore.connectStatus()
   instancesStore.fetchInstances()
   setTimeout(() => { if (uiStore.isLoading) uiStore.resetLoading() }, 5000)
 })
 
 onBeforeUnmount(() => {
+  monitoringStore.disconnectLogs()
   monitoringStore.disconnectStatus()
 })
 

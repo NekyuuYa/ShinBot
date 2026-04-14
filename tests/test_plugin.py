@@ -1,7 +1,9 @@
 """Tests for shinbot.core.plugin — PluginManager and PluginContext."""
 
+import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,7 @@ from shinbot.core.plugin import (
     PluginMeta,
     PluginRole,
     PluginState,
+    _topo_sort,
 )
 
 
@@ -133,6 +136,41 @@ class TestPluginManager:
     def test_unload_nonexistent(self):
         assert self.mgr.unload_plugin("nonexistent") is False
 
+    def test_disable_plugin_keeps_metadata_and_unregisters_handlers(self):
+        def setup(ctx: PluginContext):
+            @ctx.on_command("sleep")
+            async def sleep(c, args):
+                pass
+
+            @ctx.on_event("test-event")
+            async def on_test(event):
+                pass
+
+        _make_plugin_module("test_plugin_disable", setup_fn=setup)
+        self.mgr.load_plugin("disable-me", "test_plugin_disable")
+
+        meta = self.mgr.disable_plugin("disable-me")
+
+        assert meta.state == PluginState.DISABLED
+        assert self.mgr.get_plugin("disable-me") is meta
+        assert self.cmd_reg.get("sleep") is None
+        assert self.event_bus.handler_count("test-event") == 0
+
+    def test_enable_plugin_restores_registrations(self):
+        def setup(ctx: PluginContext):
+            @ctx.on_command("wake")
+            async def wake(c, args):
+                pass
+
+        _make_plugin_module("test_plugin_enable", setup_fn=setup)
+        self.mgr.load_plugin("enable-me", "test_plugin_enable")
+        self.mgr.disable_plugin("enable-me")
+
+        meta = self.mgr.enable_plugin("enable-me")
+
+        assert meta.state == PluginState.ACTIVE
+        assert self.cmd_reg.get("wake") is not None
+
     def test_reload_plugin(self):
         call_count = {"n": 0}
 
@@ -191,3 +229,103 @@ class TestPluginManager:
         meta = await self.mgr.load_plugin_async("async1", "test_plugin_async_load")
         assert meta.state == PluginState.ACTIVE
         assert self.cmd_reg.get("async_cmd") is not None
+
+
+# ── _topo_sort unit tests ──────────────────────────────────────────────
+
+
+def _fake_candidates(specs: list[tuple[str, list[str]]]) -> list[tuple[Path, dict]]:
+    return [
+        (Path(f"/fake/{pid}"), {"id": pid, "dependencies": deps, "entry": "__init__.py"})
+        for pid, deps in specs
+    ]
+
+
+class TestTopoSort:
+    def test_no_dependencies_preserves_order(self):
+        candidates = _fake_candidates([("a", []), ("b", []), ("c", [])])
+        ids = [m["id"] for _, m in _topo_sort(candidates)]
+        assert ids == ["a", "b", "c"]
+
+    def test_simple_dependency_chain(self):
+        # b depends on a → a must come before b
+        candidates = _fake_candidates([("b", ["a"]), ("a", [])])
+        ids = [m["id"] for _, m in _topo_sort(candidates)]
+        assert ids.index("a") < ids.index("b")
+
+    def test_diamond_dependency(self):
+        # c and d both depend on b; b depends on a
+        candidates = _fake_candidates([("c", ["b"]), ("d", ["b"]), ("b", ["a"]), ("a", [])])
+        ids = [m["id"] for _, m in _topo_sort(candidates)]
+        assert ids.index("a") < ids.index("b")
+        assert ids.index("b") < ids.index("c")
+        assert ids.index("b") < ids.index("d")
+
+    def test_external_dependency_silently_skipped(self):
+        # b depends on "external" which is not in the candidate set
+        candidates = _fake_candidates([("b", ["external"]), ("a", [])])
+        ids = [m["id"] for _, m in _topo_sort(candidates)]
+        assert "a" in ids and "b" in ids
+
+    def test_cycle_includes_all_plugins(self):
+        # a ↔ b cycle: both should still appear in the result
+        candidates = _fake_candidates([("a", ["b"]), ("b", ["a"])])
+        ids = [m["id"] for _, m in _topo_sort(candidates)]
+        assert set(ids) == {"a", "b"}
+
+    def test_empty_candidates(self):
+        assert _topo_sort([]) == []
+
+
+# ── dependency-order integration test ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_load_respects_dependency_order(tmp_path: Path):
+    """plugin_b (depends on plugin_z) must load after plugin_z even though
+    alphabetical order would place b before z."""
+    load_order: list[str] = []
+
+    def _make_setup(pid: str):
+        def setup(ctx: PluginContext):
+            load_order.append(pid)
+        return setup
+
+    prefix = tmp_path.name
+
+    # plugin_a — no deps
+    # plugin_b — depends on plugin_z
+    # plugin_z — no deps
+    # Alphabetical: a, b, z → b would load before z (wrong).
+    # Topo-sorted:  a, z, b (z is b's dep, so z first).
+    for pid, deps in [("plugin_a", []), ("plugin_b", ["plugin_z"]), ("plugin_z", [])]:
+        plugin_dir = tmp_path / pid
+        plugin_dir.mkdir()
+        (plugin_dir / "metadata.json").write_text(
+            json.dumps({
+                "id": pid,
+                "name": pid,
+                "version": "1.0.0",
+                "author": "test",
+                "description": "",
+                "entry": "__init__.py",
+                "permissions": [],
+                "dependencies": deps,
+            })
+        )
+        (plugin_dir / "__init__.py").write_text("")
+        mod = types.ModuleType(f"{prefix}.{pid}")
+        mod.setup = _make_setup(pid)  # type: ignore[attr-defined]
+        sys.modules[f"{prefix}.{pid}"] = mod
+
+    parent = str(tmp_path.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+
+    cmd_reg = CommandRegistry()
+    event_bus = EventBus()
+    mgr = PluginManager(cmd_reg, event_bus)
+    await mgr.load_plugins_from_metadata_dir_async(tmp_path)
+
+    assert load_order.index("plugin_z") < load_order.index("plugin_b")
+    assert "plugin_a" in load_order
