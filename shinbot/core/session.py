@@ -15,11 +15,14 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from shinbot.models.events import UnifiedEvent
+
+if TYPE_CHECKING:
+    from shinbot.persistence.repos import SessionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -136,16 +139,23 @@ def session_from_event(
 
 
 class SessionManager:
-    """In-memory session store with optional JSON persistence.
+    """In-memory session store with optional database or JSON persistence.
 
-    If `data_dir` is provided, sessions are loaded from and saved to
-    `{data_dir}/sessions/{sanitized_id}.json` automatically.
+    If `session_repo` is provided, it becomes the primary persistence backend.
+    Otherwise, if `data_dir` is provided, sessions are loaded from and saved to
+    `{data_dir}/sessions/{sanitized_id}.json`.
     """
 
-    def __init__(self, data_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path | str | None = None,
+        *,
+        session_repo: SessionRepository | None = None,
+    ) -> None:
         self._sessions: dict[str, Session] = {}
+        self._session_repo = session_repo
         self._data_dir: Path | None = Path(data_dir) / "sessions" if data_dir else None
-        if self._data_dir:
+        if self._data_dir and self._session_repo is None:
             self._data_dir.mkdir(parents=True, exist_ok=True)
 
     def _session_path(self, session_id: str) -> Path | None:
@@ -189,24 +199,29 @@ class SessionManager:
             session.touch()
             return session
 
-        # Try to restore from disk
-        session = self._load_from_disk(session_id)
+        session = self._load_from_storage(session_id)
         if session is None:
             session = session_from_event(instance_id, event)
             logger.debug("Created new session: %s", session_id)
         else:
-            logger.debug("Restored session from disk: %s", session_id)
+            logger.debug("Restored session from storage: %s", session_id)
 
         self._sessions[session_id] = session
         return session
 
     def update(self, session: Session) -> None:
-        """Persist a session (update in store, write to disk if configured)."""
+        """Persist a session via the configured storage backend."""
         self._sessions[session.id] = session
+        if self._session_repo is not None:
+            self._session_repo.upsert(session.model_dump())
+            return
         self._save_to_disk(session)
 
     def remove(self, session_id: str) -> Session | None:
-        return self._sessions.pop(session_id, None)
+        removed = self._sessions.pop(session_id, None)
+        if self._session_repo is not None:
+            self._session_repo.delete(session_id)
+        return removed
 
     @property
     def all_sessions(self) -> list[Session]:
@@ -217,3 +232,10 @@ class SessionManager:
 
     def __len__(self) -> int:
         return len(self._sessions)
+
+    def _load_from_storage(self, session_id: str) -> Session | None:
+        if self._session_repo is not None:
+            data = self._session_repo.get(session_id)
+            if data is not None:
+                return Session.model_validate(data)
+        return self._load_from_disk(session_id)

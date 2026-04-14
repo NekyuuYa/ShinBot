@@ -86,6 +86,7 @@ class BootController:
 
         required_dirs = [
             self.data_dir,
+            self.data_dir / "db",
             self.data_dir / "plugins",
             self.data_dir / "plugin_data",
             self.data_dir / "sessions",
@@ -98,7 +99,8 @@ class BootController:
         logger.info("Boot Phase 2/5: infrastructure")
         self._init_dashboard_static_config()
         try:
-            self.bot = ShinBot(data_dir=self.data_dir)
+            database_url = self.config.get("database", {}).get("url")
+            self.bot = ShinBot(data_dir=self.data_dir, database_url=database_url)
         except Exception:
             self.state = BootState.DEGRADED
             raise

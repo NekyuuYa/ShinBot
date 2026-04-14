@@ -29,3 +29,6 @@ shinbot.egg-info/
 
 # data files
 data/
+
+# local config
+config.toml

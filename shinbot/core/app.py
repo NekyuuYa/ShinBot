@@ -18,7 +18,9 @@ from shinbot.core.permission import PermissionEngine
 from shinbot.core.pipeline import MessagePipeline
 from shinbot.core.plugin import PluginManager
 from shinbot.core.session import SessionManager
+from shinbot.model_runtime import ModelRuntime
 from shinbot.models.events import UnifiedEvent
+from shinbot.persistence import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +31,31 @@ class ShinBot:
     Holds references to all subsystems and orchestrates startup/shutdown.
     """
 
-    def __init__(self, data_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path | str | None = None,
+        *,
+        database_url: str | None = None,
+    ) -> None:
         # Core subsystems
+        self.database: DatabaseManager | None = None
+        session_repo = None
+        audit_repo = None
+        if data_dir is not None or database_url is not None:
+            runtime_data_dir = Path(data_dir) if data_dir is not None else Path("data")
+            self.database = DatabaseManager.from_bootstrap(
+                data_dir=runtime_data_dir,
+                url=database_url,
+            )
+            self.database.initialize()
+            session_repo = self.database.sessions
+            audit_repo = self.database.audit
+
         self.event_bus = EventBus()
         self.command_registry = CommandRegistry()
-        self.session_manager = SessionManager(data_dir=data_dir)
-        self.audit_logger = AuditLogger(data_dir=data_dir)
+        self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
+        self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
+        self.model_runtime = ModelRuntime(self.database)
         self.permission_engine = PermissionEngine()
         self.adapter_manager = AdapterManager()
         self.plugin_manager = PluginManager(

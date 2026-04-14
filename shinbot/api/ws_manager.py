@@ -81,12 +81,17 @@ status_manager = ConnectionManager()
 
 _log_queue: asyncio.Queue | None = None  # type: ignore[type-arg]
 _log_handler: _AsyncLogHandler | None = None
+_log_queue_loop: asyncio.AbstractEventLoop | None = None
 
 
 def get_log_queue() -> asyncio.Queue:  # type: ignore[type-arg]
-    global _log_queue
-    if _log_queue is None:
+    global _log_queue, _log_queue_loop
+    current_loop = asyncio.get_running_loop()
+    if _log_queue is None or _log_queue_loop is not current_loop:
         _log_queue = asyncio.Queue(maxsize=1000)
+        _log_queue_loop = current_loop
+        if _log_handler is not None:
+            _log_handler._queue = _log_queue
     return _log_queue
 
 

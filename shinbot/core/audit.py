@@ -7,7 +7,10 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from shinbot.persistence.repos import AuditRepository
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +44,18 @@ class AuditLog:
 class AuditLogger:
     """Centralized audit logging for command execution."""
 
-    def __init__(self, data_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path | str | None = None,
+        *,
+        audit_repo: AuditRepository | None = None,
+    ) -> None:
         """Initialize audit logger, optionally with file persistence.
 
         Args:
             data_dir: Optional directory to persist audit logs to.
         """
+        self._audit_repo = audit_repo
         self._data_dir: Path | None = None
         if data_dir:
             audit_path = Path(data_dir) / "audit"
@@ -103,6 +112,8 @@ class AuditLogger:
 
         # Log to audit logger (can be configured to go to a file)
         audit_logger.info(entry.to_json())
+        if self._audit_repo:
+            self._audit_repo.insert(asdict(entry))
 
         # Optionally persist to disk
         if self._data_dir:
@@ -132,6 +143,8 @@ class AuditLogger:
         )
 
         audit_logger.info(entry.to_json())
+        if self._audit_repo:
+            self._audit_repo.insert(asdict(entry))
         if self._data_dir:
             self._persist_to_disk(entry)
 

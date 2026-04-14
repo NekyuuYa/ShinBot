@@ -1,0 +1,124 @@
+"""Tests for the SQLite persistence layer."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from shinbot.core.audit import AuditLogger
+from shinbot.core.session import SessionManager
+from shinbot.models.events import Channel, UnifiedEvent, User
+from shinbot.persistence import DatabaseManager, ModelExecutionRecord
+
+
+def _make_event(channel_id: str = "g-1") -> UnifiedEvent:
+    return UnifiedEvent(
+        type="message-created",
+        platform="mock",
+        user=User(id="user-1"),
+        channel=Channel(id=channel_id, type=0, name="Group"),
+    )
+
+
+class TestDatabaseManager:
+    def test_initialize_creates_database_and_schema(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        assert sqlite_path.exists()
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "sessions" in tables
+        assert "audit_logs" in tables
+        assert "model_execution_records" in tables
+        assert "model_providers" in tables
+
+    def test_model_execution_repository_persists_metrics(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        db.model_executions.insert(
+            ModelExecutionRecord(
+                id="exec-1",
+                route_id="agent.default_chat",
+                provider_id="openai",
+                model_id="gpt-4.1-mini",
+                caller="agent.runtime",
+                session_id="inst1:group:g1",
+                instance_id="inst1",
+                success=True,
+                latency_ms=123.4,
+                input_tokens=10,
+                output_tokens=20,
+                cache_hit=True,
+            )
+        )
+
+        rows = db.model_executions.list_recent(limit=5)
+        assert len(rows) == 1
+        assert rows[0]["id"] == "exec-1"
+        assert rows[0]["input_tokens"] == 10
+
+
+class TestDatabaseBackedSessionManager:
+    def test_session_roundtrip_via_database(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        manager = SessionManager(session_repo=db.sessions)
+        session = manager.get_or_create("inst1", _make_event())
+        session.config.prefixes = ["/", "#"]
+        manager.update(session)
+
+        second_manager = SessionManager(session_repo=db.sessions)
+        restored = second_manager.get_or_create("inst1", _make_event())
+
+        assert restored.id == session.id
+        assert restored.display_name == "Group"
+        assert restored.config.prefixes == ["/", "#"]
+
+
+class TestDatabaseBackedAuditLogger:
+    def test_audit_log_is_persisted_to_database(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        audit = AuditLogger(tmp_path, audit_repo=db.audit)
+
+        entry = audit.log_command(
+            command_name="ping",
+            plugin_id="plugin.test",
+            user_id="user-1",
+            session_id="inst1:group:g1",
+            instance_id="inst1",
+            success=True,
+            execution_time_ms=12.5,
+        )
+
+        sqlite_path = Path(tmp_path) / "db" / "shinbot.sqlite3"
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            row = conn.execute(
+                """
+                SELECT command_name, plugin_id, session_id, success
+                FROM audit_logs
+                WHERE id = (
+                    SELECT MAX(id) FROM audit_logs
+                )
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert entry.command_name == "ping"
+        assert row == ("ping", "plugin.test", "inst1:group:g1", 1)

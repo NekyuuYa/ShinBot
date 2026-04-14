@@ -4,6 +4,9 @@
 [logging]
 level = "INFO"  # DEBUG | INFO | WARNING | ERROR
 
+[database]
+url = "sqlite:///data/db/shinbot.sqlite3"
+
 
 # ─── Bot Instances ────────────────────────────────────────────────────────────
 # Each [[instances]] block represents a single bot account / connection.

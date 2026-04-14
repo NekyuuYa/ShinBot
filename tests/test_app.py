@@ -9,7 +9,6 @@ import pytest
 
 from shinbot.core.app import ShinBot
 from shinbot.core.plugin import PluginContext, PluginState
-from shinbot.models.events import Channel, MessagePayload, UnifiedEvent, User
 from tests.conftest import MockAdapter, make_message_event
 
 
@@ -23,6 +22,12 @@ class TestShinBotInit:
         assert bot.adapter_manager is not None
         assert bot.plugin_manager is not None
         assert bot.pipeline is not None
+        assert bot.model_runtime is not None
+
+    def test_database_is_initialized_when_data_dir_is_provided(self, tmp_path):
+        bot = ShinBot(data_dir=tmp_path)
+        assert bot.database is not None
+        assert (tmp_path / "db" / "shinbot.sqlite3").exists()
 
     def test_plugin_manager_shares_registry(self):
         """PluginManager must use the same registry as the pipeline."""
