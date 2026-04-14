@@ -32,6 +32,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Plugins.vue'),
       },
       {
+        path: 'model-runtime',
+        name: 'ModelRuntime',
+        component: () => import('@/views/ModelRuntime.vue'),
+      },
+      {
         path: 'monitoring',
         name: 'Monitoring',
         component: () => import('@/views/Monitoring.vue'),

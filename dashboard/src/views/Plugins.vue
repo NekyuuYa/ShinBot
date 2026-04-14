@@ -1,18 +1,15 @@
 <template>
   <v-container fluid class="pa-0">
-    <v-row class="mb-8" align="center">
-      <v-col cols="12" md="6">
-        <h1 class="text-h4 font-weight-bold">{{ $t('pages.plugins.title') }}</h1>
-      </v-col>
-      <v-col cols="12" md="6" class="text-end">
+    <app-page-header :title="$t('pages.plugins.title')">
+      <template #actions>
         <v-btn color="secondary" prepend-icon="mdi-reload" @click="handleReload" class="me-2">
           {{ $t('pages.plugins.reload') }}
         </v-btn>
         <v-btn color="secondary" prepend-icon="mdi-magnify" @click="handleRescan">
           {{ $t('pages.plugins.rescan') }}
         </v-btn>
-      </v-col>
-    </v-row>
+      </template>
+    </app-page-header>
 
     <v-row class="mb-6 mx-0" align="center">
       <v-col cols="12" sm="8" md="4" class="pa-0">
@@ -92,6 +89,7 @@ import { computed, onMounted, ref } from 'vue'
 import { usePluginsStore } from '@/stores/plugins'
 import PluginCard from '@/components/PluginCard.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
+import AppPageHeader from '@/components/AppPageHeader.vue'
 import type { Plugin, PluginConfigSchema } from '@/api/plugins'
 
 const pluginsStore = usePluginsStore()

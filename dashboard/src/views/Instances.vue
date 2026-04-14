@@ -1,15 +1,12 @@
 <template>
   <v-container fluid class="pa-0">
-    <v-row class="mb-8" align="center">
-      <v-col cols="12" md="6">
-        <h1 class="text-h4 font-weight-bold">{{ $t('pages.instances.title') }}</h1>
-      </v-col>
-      <v-col cols="12" md="6" class="text-end">
+    <app-page-header :title="$t('pages.instances.title')">
+      <template #actions>
         <v-btn color="primary" prepend-icon="mdi-plus" @click="showCreateDialog">
           {{ $t('pages.instances.create') }}
         </v-btn>
-      </v-col>
-    </v-row>
+      </template>
+    </app-page-header>
 
     <v-row class="mb-6 mx-0" align="center">
       <v-col cols="12" sm="8" md="4" class="pa-0">
@@ -166,6 +163,7 @@ import { useInstancesStore } from '@/stores/instances'
 import { usePluginsStore } from '@/stores/plugins'
 import InstanceCard from '@/components/InstanceCard.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
+import AppPageHeader from '@/components/AppPageHeader.vue'
 import type { Instance, InstanceConfig, UpdateInstanceRequest } from '@/api/instances'
 import type { PluginConfigSchema } from '@/api/plugins'
 import { useUiStore } from '@/stores/ui'
