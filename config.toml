@@ -1,21 +1,24 @@
-# ShinBot Configuration (Silent Mode)
-
 [logging]
 level = "INFO"
 
-# Bot Instances - Disabled for now
-# [[instances]]
-# id = "main-bot"
-# platform = "satori"
-# [instances.satori]
-# host = "localhost:5140"
-# token = ""
-# reconnect_delay = 5.0
+[[instances]]
+id = "napcat-main"
+platform = "onebot_v11"
+name = "napcat-main"
+
+[instances.config]
+mode = "reverse"
+reverse_host = "0.0.0.0"
+reverse_port = 8082
+reverse_path = "/onebot/v11"
+access_token = "uXDszokZyxiZ6Jq9"
+download_resources = true
+resource_cache_dir = "data/temp/resources"
 
 [admin]
 username = "admin"
 password = "admin"
 jwt_expire_hours = 24
+dashboard_dist = "/mnt/windows/Users/Nekyuu/Workplace/ShinBot/dashboard/dist"
 
 [permissions]
-# Groups: "default", "admin", "owner"
