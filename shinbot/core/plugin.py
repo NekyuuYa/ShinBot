@@ -775,7 +775,7 @@ class PluginManager:
                 await self._invoke(hook)
             else:
                 await self._invoke(hook, ctx)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             await self._invoke(hook, ctx)
 
     async def _invoke(self, func: Callable[..., Any], *args: Any) -> Any:

@@ -85,7 +85,7 @@ async def _download_single_resource(
         file_path = cache_dir / f"{resource_hash}{suffix}"
         file_path.write_bytes(response.content)
         return str(file_path.resolve())
-    except httpx.TimeoutException, httpx.HTTPError, OSError:
+    except (httpx.TimeoutException, httpx.HTTPError, OSError):
         return None
 
 
