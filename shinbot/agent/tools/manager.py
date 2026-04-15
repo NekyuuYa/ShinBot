@@ -90,7 +90,9 @@ class ToolManager:
         started = _utc_now()
         definition = self._registry.get_tool_by_name(call.tool_name)
         if definition is None:
-            return self._error_result(call, started, "tool_not_found", f"Unknown tool: {call.tool_name}")
+            return self._error_result(
+                call, started, "tool_not_found", f"Unknown tool: {call.tool_name}"
+            )
         if not definition.enabled:
             return self._error_result(
                 call,

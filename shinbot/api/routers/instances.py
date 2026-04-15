@@ -67,7 +67,9 @@ def _persist_instance_record(boot: Any, record: dict[str, Any]) -> None:
         instances.append(record)
 
 
-def _find_instance_record(boot: Any, instance_id: str) -> tuple[int, dict[str, Any]] | tuple[None, None]:
+def _find_instance_record(
+    boot: Any, instance_id: str
+) -> tuple[int, dict[str, Any]] | tuple[None, None]:
     for index, item in enumerate(boot.config.get("instances", [])):
         if item.get("id") == instance_id:
             return index, item
@@ -94,7 +96,11 @@ def _runtime_config(adapter: Any) -> dict[str, Any]:
 def _serialize_instance_record(item: dict[str, Any], mgr: Any) -> dict[str, Any]:
     instance_id = item.get("id")
     adapter = mgr.get_instance(instance_id) if instance_id else None
-    status = "running" if instance_id and adapter is not None and mgr.is_running(instance_id) else "stopped"
+    status = (
+        "running"
+        if instance_id and adapter is not None and mgr.is_running(instance_id)
+        else "stopped"
+    )
     config = item.get("config") or item.get("satori", {})
     if not config and adapter is not None:
         config = _runtime_config(adapter)

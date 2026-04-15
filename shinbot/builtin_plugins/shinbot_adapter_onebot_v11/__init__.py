@@ -47,8 +47,12 @@ class OneBotV11PluginConfig(BaseModel):
     )
     access_token: str = Field(default="", description="Access token for WS auth")
     reconnect_delay: float = Field(default=5.0, ge=0.0, description="Reconnect delay in seconds")
-    max_reconnects: int = Field(default=-1, description="Maximum reconnect attempts, -1 for infinite")
-    request_timeout: float = Field(default=20.0, gt=0.0, description="API request timeout in seconds")
+    max_reconnects: int = Field(
+        default=-1, description="Maximum reconnect attempts, -1 for infinite"
+    )
+    request_timeout: float = Field(
+        default=20.0, gt=0.0, description="API request timeout in seconds"
+    )
     forward_max_depth: int = Field(
         default=3,
         ge=0,
@@ -58,10 +62,16 @@ class OneBotV11PluginConfig(BaseModel):
         default=False,
         description="Cache image/video/file resources to local temp before pipeline",
     )
-    download_resources: bool = Field(default=False, description="Download media resources to local temp cache")
-    resource_cache_dir: str = Field(default="data/temp/resources", description="Local cache directory for downloaded resources")
+    download_resources: bool = Field(
+        default=False, description="Download media resources to local temp cache"
+    )
+    resource_cache_dir: str = Field(
+        default="data/temp/resources", description="Local cache directory for downloaded resources"
+    )
     silent_reconnect: bool = Field(default=True, description="Suppress frequent reconnect warnings")
-    reconnect_log_interval: float = Field(default=30.0, ge=1.0, description="Minimum seconds between reconnect warning logs")
+    reconnect_log_interval: float = Field(
+        default=30.0, ge=1.0, description="Minimum seconds between reconnect warning logs"
+    )
 
 
 __plugin_config_class__ = OneBotV11PluginConfig

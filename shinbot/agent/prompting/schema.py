@@ -83,9 +83,9 @@ class PromptComponent(BaseModel):
         if not self.id.strip():
             raise ValueError("PromptComponent.id must not be empty")
 
-        if (
-            self.kind == PromptComponentKind.EXTERNAL_INJECTION
-            and self.stage not in (PromptStage.COMPATIBILITY, PromptStage.INSTRUCTIONS)
+        if self.kind == PromptComponentKind.EXTERNAL_INJECTION and self.stage not in (
+            PromptStage.COMPATIBILITY,
+            PromptStage.INSTRUCTIONS,
         ):
             raise ValueError(
                 "external_injection components may only target compatibility or instructions"

@@ -107,7 +107,9 @@ class PromptRegistry:
                 records_by_stage[stage],
                 key=lambda item: (item.priority, item.component_id, item.version),
             )
-            rendered_text = "\n\n".join(record.rendered_text for record in records if record.rendered_text)
+            rendered_text = "\n\n".join(
+                record.rendered_text for record in records if record.rendered_text
+            )
             token_estimate = len(rendered_text.split()) if rendered_text else 0
             stage_block = PromptStageBlock(
                 stage=stage,
@@ -118,7 +120,9 @@ class PromptRegistry:
             stage_blocks.append(stage_block)
             if rendered_text:
                 final_parts.append(rendered_text)
-            if any(record.source.source_type == PromptSourceType.UNKNOWN_SOURCE for record in records):
+            if any(
+                record.source.source_type == PromptSourceType.UNKNOWN_SOURCE for record in records
+            ):
                 has_unknown_source = True
 
         final_prompt = "\n\n".join(part for part in final_parts if part)
@@ -326,7 +330,9 @@ class PromptRegistry:
             owner_plugin_id=owner_plugin_id,
             owner_module=owner_module,
             module_path=module_path,
-            resolver_name=component.resolver_ref if component.kind == PromptComponentKind.RESOLVER else "",
+            resolver_name=component.resolver_ref
+            if component.kind == PromptComponentKind.RESOLVER
+            else "",
             is_builtin=source_type == PromptSourceType.BUILTIN_SYSTEM,
             metadata=dict(metadata),
         )

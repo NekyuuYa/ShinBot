@@ -119,7 +119,9 @@ def _extract_attrs(el: etree._Element) -> dict[str, str]:
 
 def _wrap_xml_with_namespaces(xml_content: str) -> str:
     prefixes = _collect_tag_prefixes(xml_content)
-    ns_attrs = [f'xmlns:{prefix}="{_namespace_uri_for_prefix(prefix)}"' for prefix in sorted(prefixes)]
+    ns_attrs = [
+        f'xmlns:{prefix}="{_namespace_uri_for_prefix(prefix)}"' for prefix in sorted(prefixes)
+    ]
     attr_text = f" {' '.join(ns_attrs)}" if ns_attrs else ""
     return f"<__root__{attr_text}>{xml_content}</__root__>"
 

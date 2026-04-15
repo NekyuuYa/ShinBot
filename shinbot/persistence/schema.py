@@ -183,10 +183,7 @@ def _migrate_model_registry_schema(conn: sqlite3.Connection) -> None:
         return
 
     provider_rows = conn.execute("SELECT * FROM model_providers").fetchall()
-    provider_uuid_by_id = {
-        str(row["id"]): str(uuid.uuid4())
-        for row in provider_rows
-    }
+    provider_uuid_by_id = {str(row["id"]): str(uuid.uuid4()) for row in provider_rows}
     model_rows = conn.execute("SELECT * FROM model_definitions").fetchall()
 
     foreign_keys_before = conn.execute("PRAGMA foreign_keys").fetchone()

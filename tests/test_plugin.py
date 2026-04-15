@@ -324,6 +324,7 @@ async def test_load_respects_dependency_order(tmp_path: Path):
     def _make_setup(pid: str):
         def setup(ctx: PluginContext):
             load_order.append(pid)
+
         return setup
 
     prefix = tmp_path.name
@@ -337,16 +338,18 @@ async def test_load_respects_dependency_order(tmp_path: Path):
         plugin_dir = tmp_path / pid
         plugin_dir.mkdir()
         (plugin_dir / "metadata.json").write_text(
-            json.dumps({
-                "id": pid,
-                "name": pid,
-                "version": "1.0.0",
-                "author": "test",
-                "description": "",
-                "entry": "__init__.py",
-                "permissions": [],
-                "dependencies": deps,
-            })
+            json.dumps(
+                {
+                    "id": pid,
+                    "name": pid,
+                    "version": "1.0.0",
+                    "author": "test",
+                    "description": "",
+                    "entry": "__init__.py",
+                    "permissions": [],
+                    "dependencies": deps,
+                }
+            )
         )
         (plugin_dir / "__init__.py").write_text("")
         mod = types.ModuleType(f"{prefix}.{pid}")
@@ -367,7 +370,9 @@ async def test_load_respects_dependency_order(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_load_all_async_includes_builtin_plugins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+async def test_load_all_async_includes_builtin_plugins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     builtin_root = tmp_path / "builtin_plugins"
     builtin_plugin_dir = builtin_root / "shinbot_plugin_builtin_demo"
     builtin_plugin_dir.mkdir(parents=True)

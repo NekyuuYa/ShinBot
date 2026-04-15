@@ -52,9 +52,7 @@ def _topo_sort(
     Cycles are logged as errors; the participating plugins are appended at the
     end in their original order so loading can still proceed.
     """
-    id_to_item: dict[str, tuple[Path, dict[str, Any]]] = {
-        m["id"]: (d, m) for d, m in candidates
-    }
+    id_to_item: dict[str, tuple[Path, dict[str, Any]]] = {m["id"]: (d, m) for d, m in candidates}
     visited: set[str] = set()
     in_stack: set[str] = set()
     result: list[tuple[Path, dict[str, Any]]] = []
@@ -395,7 +393,12 @@ class PluginManager:
             meta,
             remove_module=remove_module,
         )
-        logger.info("Unloaded plugin %s (removed %d commands, %d event handlers)", plugin_id, cmd_count, evt_count)
+        logger.info(
+            "Unloaded plugin %s (removed %d commands, %d event handlers)",
+            plugin_id,
+            cmd_count,
+            evt_count,
+        )
         return True
 
     async def unload_all_plugins_async(self) -> None:
@@ -418,7 +421,12 @@ class PluginManager:
             remove_module=False,
         )
         meta.state = PluginState.DISABLED
-        logger.info("Disabled plugin %s (removed %d commands, %d event handlers)", plugin_id, cmd_count, evt_count)
+        logger.info(
+            "Disabled plugin %s (removed %d commands, %d event handlers)",
+            plugin_id,
+            cmd_count,
+            evt_count,
+        )
         return meta
 
     def enable_plugin(self, plugin_id: str) -> PluginMeta:

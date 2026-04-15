@@ -131,7 +131,10 @@ class _GatewayEntry:
             if entry._paths and req_path not in entry._paths:
                 logger.debug(
                     "Gateway [%s:%d] rejected path=%s (registered: %s)",
-                    entry.host, entry.port, req_path, entry._paths,
+                    entry.host,
+                    entry.port,
+                    req_path,
+                    entry._paths,
                 )
                 return connection.respond(http.HTTPStatus.NOT_FOUND, "Not Found\n")
             return None
@@ -145,14 +148,20 @@ class _GatewayEntry:
 
             logger.debug(
                 "Gateway [%s:%d] incoming connection: path=%s X-Self-ID=%r",
-                entry.host, entry.port, path, self_id,
+                entry.host,
+                entry.port,
+                path,
+                self_id,
             )
 
             adapter = entry.resolve(self_id, path)
             if adapter is None:
                 logger.warning(
                     "Gateway [%s:%d] no adapter matched X-Self-ID=%r path=%s — closing",
-                    entry.host, entry.port, self_id, path,
+                    entry.host,
+                    entry.port,
+                    self_id,
+                    path,
                 )
                 await websocket.close(1008, "No matching instance for X-Self-ID")
                 return
@@ -160,7 +169,9 @@ class _GatewayEntry:
             if not _check_token(adapter, headers, path):
                 logger.warning(
                     "Gateway [%s:%d] token validation failed for instance %s",
-                    entry.host, entry.port, adapter.instance_id,
+                    entry.host,
+                    entry.port,
+                    adapter.instance_id,
                 )
                 await websocket.close(1008, "Unauthorized")
                 return
@@ -181,7 +192,9 @@ class _GatewayEntry:
         except OSError as exc:
             logger.error(
                 "[ERROR] Gateway failed to bind %s:%d — %s",
-                self.host, self.port, exc,
+                self.host,
+                self.port,
+                exc,
             )
             raise
 
@@ -256,7 +269,10 @@ class OneBotGateway:
                 self._entries[key].add(adapter, path)
                 logger.info(
                     "OneBotGateway [%s:%d] added instance %s (total: %d)",
-                    host, port, adapter.instance_id, len(self._entries[key]._adapters),
+                    host,
+                    port,
+                    adapter.instance_id,
+                    len(self._entries[key]._adapters),
                 )
 
     async def unregister(self, adapter: OneBotV11Adapter, host: str, port: int) -> None:
@@ -318,7 +334,10 @@ class OneBotV11Adapter(BaseAdapter):
             await _GATEWAY.register(self, host, port, path)
             logger.info(
                 "OneBot v11 adapter %s registered with gateway on %s:%d%s",
-                self.instance_id, host, port, path,
+                self.instance_id,
+                host,
+                port,
+                path,
             )
 
     async def shutdown(self) -> None:
@@ -366,7 +385,9 @@ class OneBotV11Adapter(BaseAdapter):
         self._ws = websocket
         logger.info(
             "OneBot v11 %s accepted reverse connection (self_id=%s role=%s)",
-            self.instance_id, self._self_id, client_role,
+            self.instance_id,
+            self._self_id,
+            client_role,
         )
 
         try:
@@ -389,7 +410,7 @@ class OneBotV11Adapter(BaseAdapter):
         channel = self._decode_session_id(target_session)
 
         if channel.startswith("private:"):
-            user_id = channel[len("private:"):]
+            user_id = channel[len("private:") :]
             result = await self._call_ob11_api(
                 "send_private_msg",
                 {"user_id": int(user_id) if user_id.isdigit() else user_id, "message": message},
@@ -527,9 +548,19 @@ class OneBotV11Adapter(BaseAdapter):
             "modes": ["forward", "reverse"],
             "mode": self.config.mode,
             "elements": [
-                "text", "at", "img", "emoji", "quote",
-                "audio", "video", "file", "message",
-                "sb:poke", "qq:markdown", "qq:keyboard", "qq:mface",
+                "text",
+                "at",
+                "img",
+                "emoji",
+                "quote",
+                "audio",
+                "video",
+                "file",
+                "message",
+                "sb:poke",
+                "qq:markdown",
+                "qq:keyboard",
+                "qq:mface",
             ],
             "actions": [
                 "channel.message.create",
@@ -569,7 +600,10 @@ class OneBotV11Adapter(BaseAdapter):
                 if should_log:
                     logger.warning(
                         "OneBot v11 %s reconnecting in %.1fs (attempt %d): %s",
-                        self.instance_id, self.config.reconnect_delay, attempts, e,
+                        self.instance_id,
+                        self.config.reconnect_delay,
+                        attempts,
+                        e,
                     )
                     last_log_ts = now
                 if self.config.max_reconnects >= 0 and attempts > self.config.max_reconnects:
@@ -803,7 +837,9 @@ class OneBotV11Adapter(BaseAdapter):
             **extra_payload,
         )
 
-    async def _normalize_message(self, message: Any, *, forward_depth: int | None = None) -> list[MessageElement]:
+    async def _normalize_message(
+        self, message: Any, *, forward_depth: int | None = None
+    ) -> list[MessageElement]:
         if forward_depth is None:
             forward_depth = self.config.forward_max_depth
 
@@ -836,7 +872,9 @@ class OneBotV11Adapter(BaseAdapter):
                 src = str(data.get("url") or data.get("file") or "")
                 if src:
                     elements.append(
-                        MessageElement.img(src, sub_type=data.get("subType") or data.get("sub_type"))
+                        MessageElement.img(
+                            src, sub_type=data.get("subType") or data.get("sub_type")
+                        )
                     )
             elif seg_type == "record":
                 src = str(data.get("url") or data.get("file") or "")
@@ -893,9 +931,7 @@ class OneBotV11Adapter(BaseAdapter):
                         forward_id,
                         forward_depth=forward_depth - 1,
                     )
-                    elements.append(
-                        MessageElement(type="message", attrs=attrs, children=nodes)
-                    )
+                    elements.append(MessageElement(type="message", attrs=attrs, children=nodes))
             elif seg_type in ("json", "xml", "miniapp"):
                 raw_data = data.get("data", data)
                 elements.append(
@@ -1032,13 +1068,13 @@ class OneBotV11Adapter(BaseAdapter):
         colon_pos = session_id.find(":")
         if colon_pos == -1:
             return session_id
-        rest = session_id[colon_pos + 1:]
+        rest = session_id[colon_pos + 1 :]
 
         if rest.startswith("private:"):
             return rest
 
         if rest.startswith("group:"):
-            group_part = rest[len("group:"):]
+            group_part = rest[len("group:") :]
             if ":" in group_part:
                 return group_part.rsplit(":", 1)[1]
             return group_part
