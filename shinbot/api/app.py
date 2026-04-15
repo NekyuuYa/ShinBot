@@ -164,7 +164,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
         await status_manager.connect(websocket)
         try:
             while True:
-                payload = _build_system_status(bot)
+                payload = _build_system_status(bot, boot)
                 # 包装为标准 Envelope
                 await websocket.send_json(
                     {"success": True, "data": payload, "timestamp": int(time.time())}
@@ -215,7 +215,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
 # ── System status snapshot ────────────────────────────────────────────
 
 
-def _build_system_status(bot: ShinBot) -> dict[str, Any]:
+def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> dict[str, Any]:
     cpu = 0.0
     mem_mb = 0.0
     try:
@@ -226,12 +226,38 @@ def _build_system_status(bot: ShinBot) -> dict[str, Any]:
         cpu = process.cpu_percent(interval=None)
         # 转换为 MB 并保留两位小数
         mem_mb = round(process.memory_info().rss / (1024 * 1024), 2)
-    except ImportError, Exception:
+    except Exception:
         pass
 
     mgr = bot.adapter_manager
-    total_instances = len(mgr.all_instances)
-    running_instances = sum(1 for a in mgr.all_instances if mgr.is_running(a.instance_id))
+    configured_instances = boot.config.get("instances", []) if boot is not None else []
+    instances: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for item in configured_instances:
+        instance_id = item.get("id")
+        if not instance_id:
+            continue
+        seen_ids.add(instance_id)
+        instances.append(
+            {
+                "id": instance_id,
+                "running": mgr.is_running(instance_id),
+            }
+        )
+
+    for adapter in mgr.all_instances:
+        if adapter.instance_id in seen_ids:
+            continue
+        instances.append(
+            {
+                "id": adapter.instance_id,
+                "running": mgr.is_running(adapter.instance_id),
+            }
+        )
+
+    total_instances = len(instances)
+    running_instances = sum(1 for instance in instances if instance["running"])
 
     return {
         "totalInstances": total_instances,
@@ -242,6 +268,7 @@ def _build_system_status(bot: ShinBot) -> dict[str, Any]:
         "cpuUsage": cpu,
         "memoryUsage": mem_mb,  # 现在是 MB 单位
         "online": True,
+        "instances": instances,
         "timestamp": int(time.time()),
     }
 

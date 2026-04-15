@@ -57,15 +57,6 @@ class ControlRequest(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _instance_dict(adapter: Any, mgr: Any) -> dict:
-    return {
-        "id": adapter.instance_id,
-        "name": getattr(adapter, "instance_id", adapter.instance_id),
-        "platform": adapter.platform,
-        "running": mgr.is_running(adapter.instance_id),
-    }
-
-
 def _persist_instance_record(boot: Any, record: dict[str, Any]) -> None:
     instances = boot.config.setdefault("instances", [])
     for index, item in enumerate(instances):
@@ -76,6 +67,13 @@ def _persist_instance_record(boot: Any, record: dict[str, Any]) -> None:
         instances.append(record)
 
 
+def _find_instance_record(boot: Any, instance_id: str) -> tuple[int, dict[str, Any]] | tuple[None, None]:
+    for index, item in enumerate(boot.config.get("instances", [])):
+        if item.get("id") == instance_id:
+            return index, item
+    return None, None
+
+
 def _resolve_config(body: CreateInstanceRequest | PatchInstanceRequest) -> dict[str, Any]:
     if body.config:
         return dict(body.config)
@@ -84,49 +82,64 @@ def _resolve_config(body: CreateInstanceRequest | PatchInstanceRequest) -> dict[
     return {}
 
 
+def _runtime_config(adapter: Any) -> dict[str, Any]:
+    config = getattr(adapter, "config", None)
+    if hasattr(config, "model_dump"):
+        return config.model_dump()
+    if isinstance(config, dict):
+        return dict(config)
+    return {}
+
+
+def _serialize_instance_record(item: dict[str, Any], mgr: Any) -> dict[str, Any]:
+    instance_id = item.get("id")
+    adapter = mgr.get_instance(instance_id) if instance_id else None
+    status = "running" if instance_id and adapter is not None and mgr.is_running(instance_id) else "stopped"
+    config = item.get("config") or item.get("satori", {})
+    if not config and adapter is not None:
+        config = _runtime_config(adapter)
+
+    return {
+        "id": instance_id,
+        "name": item.get("name", instance_id),
+        "adapterType": item.get("adapterType")
+        or item.get("platform", getattr(adapter, "platform", "satori")),
+        "status": status,
+        "config": config,
+        "createdAt": item.get("createdAt", 0),
+        "lastModified": item.get("lastModified", item.get("createdAt", 0)),
+    }
+
+
+def _serialize_runtime_instance(adapter: Any, mgr: Any) -> dict[str, Any]:
+    return {
+        "id": adapter.instance_id,
+        "name": adapter.instance_id,
+        "adapterType": adapter.platform,
+        "status": "running" if mgr.is_running(adapter.instance_id) else "stopped",
+        "config": _runtime_config(adapter),
+        "createdAt": 0,
+        "lastModified": 0,
+    }
+
+
 # ── Routes ───────────────────────────────────────────────────────────
 
 
 @router.get("")
 async def list_instances(bot=BotDep, boot=BootDep):
     mgr = bot.adapter_manager
-    runtime = {a.instance_id: a for a in mgr.all_instances}
     records: list[dict[str, Any]] = []
 
     for item in boot.config.get("instances", []):
-        instance_id = item.get("id")
-        adapter = runtime.get(instance_id)
-        status = "running" if adapter is not None and mgr.is_running(instance_id) else "stopped"
-        records.append(
-            {
-                "id": instance_id,
-                "name": item.get("name", instance_id),
-                "adapterType": item.get("adapterType") or item.get("platform", "satori"),
-                "status": status,
-                "config": item.get("config") or item.get("satori", {}),
-                "createdAt": item.get("createdAt", 0),
-                "lastModified": item.get("lastModified", item.get("createdAt", 0)),
-            }
-        )
+        records.append(_serialize_instance_record(item, mgr))
 
     # Include any runtime adapters not yet persisted in config.
     seen_ids = {item["id"] for item in records}
     for adapter in mgr.all_instances:
         if adapter.instance_id in seen_ids:
             continue
-        records.append(
-            {
-                "id": adapter.instance_id,
-                "name": adapter.instance_id,
-                "adapterType": adapter.platform,
-                "status": "running" if mgr.is_running(adapter.instance_id) else "stopped",
-                "config": getattr(adapter, "config", {}).model_dump()
-                if hasattr(getattr(adapter, "config", None), "model_dump")
-                else {},
-                "createdAt": 0,
-                "lastModified": 0,
-            }
-        )
+        records.append(_serialize_runtime_instance(adapter, mgr))
 
     return ok(records)
 
@@ -141,7 +154,10 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
             detail={"code": EC.INVALID_ACTION, "message": "Instance id/name is required"},
         )
 
-    if bot.adapter_manager.get_instance(instance_id) is not None:
+    if (
+        bot.adapter_manager.get_instance(instance_id) is not None
+        or _find_instance_record(boot, instance_id)[1] is not None
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -167,14 +183,15 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
     )
 
     # Persist to config
+    now = int(time.time())
     inst_entry: dict = {
         "id": instance_id,
         "name": body.name or instance_id,
         "adapterType": platform,
         "platform": platform,
         "config": config_kwargs,
-        "createdAt": int(time.time()),
-        "lastModified": int(time.time()),
+        "createdAt": now,
+        "lastModified": now,
     }
     _persist_instance_record(boot, inst_entry)
     try:
@@ -182,23 +199,14 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
     except Exception as e:
         logger.warning("Failed to persist config after create_instance: %s", e)
 
-    return ok(
-        {
-            "id": instance_id,
-            "name": body.name or instance_id,
-            "adapterType": platform,
-            "status": "stopped",
-            "config": config_kwargs,
-            "createdAt": inst_entry["createdAt"],
-            "lastModified": inst_entry["lastModified"],
-        }
-    )
+    return ok(_serialize_instance_record(inst_entry, bot.adapter_manager))
 
 
 @router.patch("/{instance_id}")
 async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotDep, boot=BootDep):
     adapter = bot.adapter_manager.get_instance(instance_id)
-    if adapter is None:
+    index, inst = _find_instance_record(boot, instance_id)
+    if adapter is None and inst is None:
         raise HTTPException(
             status_code=404,
             detail={
@@ -207,30 +215,44 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
             },
         )
 
-    # Apply to in-memory config dict
-    for inst in boot.config.get("instances", []):
-        if inst.get("id") == instance_id:
-            if body.name is not None:
-                inst["name"] = body.name
-            if body.adapterType is not None:
-                inst["adapterType"] = body.adapterType
-                inst["platform"] = body.adapterType
+    if inst is None and adapter is not None:
+        inst = {
+            "id": instance_id,
+            "name": instance_id,
+            "adapterType": adapter.platform,
+            "platform": adapter.platform,
+            "config": _runtime_config(adapter),
+            "createdAt": 0,
+            "lastModified": 0,
+        }
+        boot.config.setdefault("instances", []).append(inst)
+        index = len(boot.config["instances"]) - 1
 
-            config_patch = _resolve_config(body)
-            if config_patch:
-                inst_config = inst.setdefault("config", {})
-                inst_config.update(config_patch)
-                if body.satori is not None and not body.config:
-                    inst["satori"] = body.satori.model_dump(exclude_none=True)
+    assert inst is not None
+    assert index is not None
 
-            if body.satori is not None:
-                satori_section = inst.setdefault("satori", {})
-                patch = body.satori.model_dump(exclude_none=True)
-                satori_section.update(patch)
-            break
+    if body.name is not None:
+        inst["name"] = body.name
+    if body.adapterType is not None:
+        inst["adapterType"] = body.adapterType
+        inst["platform"] = body.adapterType
+
+    config_patch = _resolve_config(body)
+    if config_patch:
+        inst_config = inst.setdefault("config", {})
+        inst_config.update(config_patch)
+        if body.satori is not None and not body.config:
+            inst["satori"] = body.satori.model_dump(exclude_none=True)
+
+    if body.satori is not None:
+        satori_section = inst.setdefault("satori", {})
+        patch = body.satori.model_dump(exclude_none=True)
+        satori_section.update(patch)
+
+    inst["lastModified"] = int(time.time())
+    boot.config["instances"][index] = inst
 
     if adapter is not None and hasattr(adapter, "config") and hasattr(adapter.config, "model_copy"):
-        config_patch = _resolve_config(body)
         if config_patch:
             adapter.config = adapter.config.model_copy(update=config_patch)
 
@@ -239,7 +261,36 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
     except Exception as e:
         logger.warning("Failed to persist config after update_instance: %s", e)
 
-    return ok({"id": instance_id, "updated": True})
+    return ok(_serialize_instance_record(inst, bot.adapter_manager))
+
+
+@router.delete("/{instance_id}")
+async def delete_instance(instance_id: str, bot=BotDep, boot=BootDep):
+    mgr = bot.adapter_manager
+    adapter = mgr.get_instance(instance_id)
+    index, _inst = _find_instance_record(boot, instance_id)
+
+    if adapter is None and index is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": EC.INSTANCE_NOT_FOUND,
+                "message": f"Instance {instance_id!r} not found",
+            },
+        )
+
+    if adapter is not None:
+        await mgr.delete_instance(instance_id)
+
+    if index is not None:
+        del boot.config["instances"][index]
+
+    try:
+        boot.save_config()
+    except Exception as e:
+        logger.warning("Failed to persist config after delete_instance: %s", e)
+
+    return ok({"id": instance_id, "deleted": True})
 
 
 @router.post("/{instance_id}/control")
