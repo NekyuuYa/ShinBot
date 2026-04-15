@@ -9,6 +9,7 @@
           variant="tonal"
           color="primary"
           rounded="xl"
+          class="sidebar-add-btn"
           @click="$emit('add')"
         >
           {{ addLabel }}
@@ -21,9 +22,11 @@
         v-model="search"
         :label="$t('common.actions.action.search')"
         prepend-inner-icon="mdi-magnify"
-        density="compact"
+        density="comfortable"
         variant="outlined"
         hide-details
+        rounded="lg"
+        bg-color="white"
         class="mb-3"
       />
 
@@ -37,7 +40,7 @@
           :key="item.id"
           :active="item.id === activeId"
           rounded="lg"
-          class="mb-2"
+          class="mb-2 sidebar-item"
           @click="$emit('select', item.id)"
         >
           <template #prepend>
@@ -111,12 +114,29 @@ const filteredItems = computed(() => {
 
 <style scoped>
 .sidebar-card {
-  border: 1px solid rgba(199, 144, 0, 0.14);
-  border-radius: 18px;
-  background: #fff;
+  border: 1px solid rgba(120, 86, 0, 0.12);
+  border-radius: 24px;
+  background: linear-gradient(180deg, #fffef6 0%, #ffffff 100%);
+  box-shadow: 0 10px 28px rgba(145, 103, 0, 0.06);
+}
+
+.sidebar-add-btn {
+  box-shadow: none;
+}
+
+.sidebar-item {
+  border: 1px solid rgba(120, 86, 0, 0.08);
+  background: rgba(255, 252, 244, 0.66);
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.sidebar-item:hover {
+  border-color: rgba(120, 86, 0, 0.16);
+  background: rgba(255, 249, 232, 0.92);
 }
 
 :deep(.v-list-item--active) {
-  background: rgba(255, 224, 130, 0.28);
+  background: linear-gradient(180deg, rgba(255, 229, 153, 0.45) 0%, rgba(255, 241, 208, 0.92) 100%);
+  border-color: rgba(120, 86, 0, 0.18);
 }
 </style>

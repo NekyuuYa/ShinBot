@@ -1,25 +1,30 @@
 <template>
-  <div class="d-flex flex-column ga-3">
-    <div v-for="(entry, index) in rows" :key="entry.key + index" class="d-flex ga-3 align-start">
+  <div class="key-value-editor d-flex flex-column ga-3">
+    <div v-for="(entry, index) in rows" :key="entry.key + index" class="key-value-row d-flex ga-3 align-start">
       <v-text-field
         v-model="entry.key"
         :label="$t('pages.modelRuntime.fields.key')"
-        density="compact"
+        density="comfortable"
         variant="outlined"
         hide-details
+        rounded="lg"
+        bg-color="white"
         class="flex-grow-1"
       />
       <v-text-field
         v-model="entry.value"
         :label="$t('pages.modelRuntime.fields.value')"
-        density="compact"
+        density="comfortable"
         variant="outlined"
         hide-details
+        rounded="lg"
+        bg-color="white"
         class="flex-grow-1"
       />
       <v-btn
         icon="mdi-delete-outline"
-        variant="text"
+        variant="outlined"
+        rounded="xl"
         color="error"
         @click="removeRow(index)"
       />
@@ -68,3 +73,19 @@ const removeRow = (index: number) => {
   rows.value = rows.value.filter((_, rowIndex) => rowIndex !== index)
 }
 </script>
+
+<style scoped>
+.key-value-editor {
+  padding: 14px;
+  border: 1px solid rgba(120, 86, 0, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 252, 244, 0.72);
+}
+
+.key-value-row {
+  padding: 10px;
+  border: 1px solid rgba(120, 86, 0, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+}
+</style>

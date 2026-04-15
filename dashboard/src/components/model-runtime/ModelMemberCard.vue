@@ -2,19 +2,19 @@
   <v-card class="member-card" variant="outlined">
     <v-card-item class="pb-2">
       <template #prepend>
-        <v-avatar color="secondary" variant="tonal" icon="mdi-cube-outline" />
+        <v-avatar color="secondary" variant="tonal" icon="mdi-cube-outline" class="member-avatar" />
       </template>
       <v-card-title class="text-body-1 text-break">{{ title }}</v-card-title>
       <v-card-subtitle>{{ subtitle }}</v-card-subtitle>
       <template #append>
-      <v-switch
-        :model-value="enabled"
-        color="primary"
-        density="compact"
-        hide-details
-        inset
-        @update:model-value="$emit('toggle', Boolean($event))"
-      />
+        <v-switch
+          :model-value="enabled"
+          color="primary"
+          density="compact"
+          hide-details
+          inset
+          @update:model-value="$emit('toggle', Boolean($event))"
+        />
       </template>
     </v-card-item>
 
@@ -39,27 +39,30 @@
     <v-card-actions>
       <v-btn
         v-if="showEdit"
-        variant="text"
+        variant="outlined"
         size="small"
         color="primary"
+        rounded="xl"
         @click="$emit('edit')"
       >
         {{ $t('common.actions.action.edit') }}
       </v-btn>
       <v-btn
         v-if="showProbe"
-        variant="text"
+        variant="outlined"
         size="small"
         color="info"
+        rounded="xl"
         @click="$emit('probe')"
       >
         {{ $t('pages.modelRuntime.actions.testConnection') }}
       </v-btn>
       <v-spacer />
       <v-btn
-        variant="text"
+        variant="outlined"
         size="small"
         color="error"
+        rounded="xl"
         @click="$emit('remove')"
       >
         {{ $t('common.actions.action.delete') }}
@@ -95,6 +98,16 @@ defineEmits<{
 
 <style scoped>
 .member-card {
-  border-radius: 16px;
+  border-radius: 20px;
+  border-color: rgba(120, 86, 0, 0.14);
+  background: rgba(255, 252, 244, 0.82);
+}
+
+.member-avatar {
+  box-shadow: inset 0 0 0 1px rgba(120, 86, 0, 0.08);
+}
+
+.member-card :deep(.v-card-actions) {
+  padding-top: 0;
 }
 </style>

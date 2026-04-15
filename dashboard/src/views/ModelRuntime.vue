@@ -8,10 +8,11 @@
       <template #actions>
         <v-btn
           color="secondary"
-          variant="outlined"
+          variant="tonal"
           prepend-icon="mdi-refresh"
           :loading="store.isLoading"
           rounded="xl"
+          class="page-action-btn"
           @click="refreshPage"
         >
           {{ $t('pages.modelRuntime.actions.refresh') }}
@@ -19,22 +20,24 @@
       </template>
     </app-page-header>
 
-    <v-btn-toggle
-      v-model="activeTab"
-      mandatory
-      density="comfortable"
-      class="runtime-tab-toggle mb-6"
-    >
-      <v-btn
-        v-for="tab in runtimeTabs"
-        :key="tab.value"
-        :value="tab.value"
-        rounded="lg"
+    <div class="runtime-toolbar mb-6">
+      <v-btn-toggle
+        v-model="activeTab"
+        mandatory
+        density="comfortable"
+        class="runtime-tab-toggle"
       >
-        <v-icon :icon="tab.icon" size="18" class="me-1" />
-        <span>{{ tab.label }}</span>
-      </v-btn>
-    </v-btn-toggle>
+        <v-btn
+          v-for="tab in runtimeTabs"
+          :key="tab.value"
+          :value="tab.value"
+          rounded="lg"
+        >
+          <v-icon :icon="tab.icon" size="18" class="me-1" />
+          <span>{{ tab.label }}</span>
+        </v-btn>
+      </v-btn-toggle>
+    </div>
 
     <v-row class="ma-0" align="start">
       <v-col cols="12" md="4" class="pa-0 pe-md-4">
@@ -50,7 +53,7 @@
         />
       </v-col>
 
-      <v-col cols="12" md="8" class="pa-0">
+      <v-col cols="12" md="8" class="pa-0 runtime-main-pane">
         <div v-if="isRouteMode" class="d-flex flex-column ga-4">
           <v-card class="editor-card">
             <v-card-item>
@@ -59,7 +62,8 @@
                 <div class="d-flex ga-2">
                   <v-btn
                     color="error"
-                    variant="text"
+                    variant="outlined"
+                    rounded="xl"
                     :disabled="isCreatingRoute || !selectedRoute"
                     @click="deleteCurrentRoute"
                   >
@@ -69,6 +73,7 @@
                     color="primary"
                     variant="tonal"
                     rounded="xl"
+                    class="action-btn"
                     :loading="store.isSaving"
                     @click="saveRoute"
                   >
@@ -251,7 +256,8 @@
                 <div class="d-flex ga-2">
                   <v-btn
                     color="error"
-                    variant="text"
+                    variant="outlined"
+                    rounded="xl"
                     :disabled="isCreatingProvider || !selectedProvider"
                     @click="deleteCurrentProvider"
                   >
@@ -261,6 +267,7 @@
                     color="primary"
                     variant="tonal"
                     rounded="xl"
+                    class="action-btn"
                     :loading="store.isSaving"
                     @click="saveProvider"
                   >
@@ -338,7 +345,8 @@
               <template #append>
                 <v-btn
                   color="info"
-                  variant="text"
+                  variant="outlined"
+                  rounded="xl"
                   :loading="probingProviderId === selectedProvider?.id"
                   :disabled="!selectedProvider || isCreatingProvider"
                   @click="probeSelectedProvider()"
@@ -402,7 +410,8 @@
               <template #append>
                 <div class="d-flex ga-2 flex-wrap justify-end">
                   <v-btn
-                    variant="text"
+                    variant="outlined"
+                    rounded="xl"
                     color="info"
                     :disabled="!selectedProvider || isCreatingProvider || !selectedProviderSource?.supportsCatalog"
                     :loading="catalogLoading"
@@ -435,7 +444,7 @@
                       <v-btn variant="text" @click="cancelInlineModelEditor">
                         {{ $t('common.actions.action.cancel') }}
                       </v-btn>
-                      <v-btn color="primary" variant="tonal" rounded="xl" @click="saveModel">
+                      <v-btn color="primary" variant="tonal" rounded="xl" class="action-btn" @click="saveModel">
                         {{ inlineModelSaveLabel }}
                       </v-btn>
                     </div>
@@ -525,9 +534,13 @@
                     />
                   </v-col>
                 </v-row>
-                <div v-else class="text-body-2 text-medium-emphasis py-6">
+                <v-sheet
+                  v-else
+                  rounded="xl"
+                  class="empty-state-panel text-body-2 text-medium-emphasis py-6 px-5"
+                >
                   {{ $t('pages.modelRuntime.hints.noConfiguredModels') }}
-                </div>
+                </v-sheet>
               </div>
 
               <div v-if="availableCatalogItems.length > 0">
@@ -551,6 +564,7 @@
                         color="primary"
                         variant="tonal"
                         rounded="xl"
+                        class="action-btn"
                         @click="importCatalogItem(item.id)"
                       >
                         {{ $t('pages.modelRuntime.actions.addToConfigured') }}
@@ -644,6 +658,18 @@ const {
 </script>
 
 <style scoped>
+.page-action-btn,
+.action-btn {
+  box-shadow: none;
+}
+
+.runtime-toolbar {
+  padding: 14px;
+  border: 1px solid rgba(120, 86, 0, 0.12);
+  border-radius: 24px;
+  background: linear-gradient(180deg, #fffef4 0%, #fffdf8 100%);
+}
+
 .runtime-tab-toggle {
   width: 100%;
   display: grid;
@@ -659,28 +685,62 @@ const {
 .runtime-tab-toggle :deep(.v-btn) {
   width: 100%;
   justify-content: center;
-  min-height: 44px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 14px;
+  min-height: 46px;
+  border: 1px solid rgba(120, 86, 0, 0.14);
+  border-radius: 16px;
   font-weight: 700;
   text-transform: none;
+  background: rgba(255, 255, 255, 0.88);
 }
 
 .runtime-tab-toggle :deep(.v-btn--active) {
-  background: rgba(255, 224, 130, 0.22);
+  background: linear-gradient(180deg, rgba(255, 229, 153, 0.5) 0%, rgba(255, 241, 208, 0.9) 100%);
   color: rgba(82, 61, 9, 0.95);
 }
 
 .editor-card {
-  border: 1px solid rgba(199, 144, 0, 0.14);
-  border-radius: 20px;
-  background: #fff;
+  border: 1px solid rgba(120, 86, 0, 0.12);
+  border-radius: 24px;
+  background: linear-gradient(180deg, #fffef6 0%, #ffffff 100%);
+  box-shadow: 0 10px 28px rgba(145, 103, 0, 0.06);
+}
+
+.editor-card :deep(.v-card-item) {
+  padding-bottom: 12px;
+}
+
+.runtime-main-pane :deep(.v-field--variant-outlined .v-field__outline) {
+  --v-field-border-opacity: 1;
+  color: rgba(120, 86, 0, 0.16);
+}
+
+.runtime-main-pane :deep(.v-field) {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.runtime-main-pane :deep(.v-field__input) {
+  color: rgba(26, 23, 16, 0.92);
+}
+
+.runtime-main-pane :deep(.v-label.v-field-label) {
+  color: rgba(84, 73, 49, 0.74);
+}
+
+.runtime-main-pane :deep(.v-input__details) {
+  padding-inline: 6px;
+}
+
+.runtime-main-pane :deep(.v-messages__message) {
+  color: rgba(120, 86, 0, 0.72);
 }
 
 .route-member-row,
 .catalog-item-card,
 .model-editor-card {
-  border-radius: 18px;
+  border-radius: 20px;
+  border-color: rgba(120, 86, 0, 0.14);
+  background: rgba(255, 252, 244, 0.78);
 }
 
 .section-label {
@@ -689,6 +749,11 @@ const {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(120, 86, 0, 0.68);
+}
+
+.empty-state-panel {
+  border: 1px dashed rgba(120, 86, 0, 0.16);
+  background: linear-gradient(180deg, rgba(255, 252, 244, 0.95) 0%, rgba(255, 248, 232, 0.72) 100%);
 }
 
 @media (max-width: 959px) {
