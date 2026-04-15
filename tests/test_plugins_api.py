@@ -150,3 +150,62 @@ def test_plugin_config_route_persists_config_instead_of_reloading(tmp_path: Path
             assert boot.save_config_calls == 1
     finally:
         sys.modules.pop(module_name, None)
+
+
+def test_plugins_list_and_schema_apply_locale_translations(tmp_path: Path):
+    module_name = "test_api_plugin_i18n"
+    sys.modules.pop(module_name, None)
+
+    mod = types.ModuleType(module_name)
+
+    class DemoPluginConfig(BaseModel):
+        api_key: str = ""
+
+    def setup(ctx):
+        @ctx.on_command("demo-i18n")
+        async def demo(c, args):
+            return None
+
+    mod.setup = setup  # type: ignore[attr-defined]
+    mod.__plugin_name__ = "Demo Plugin"  # type: ignore[attr-defined]
+    mod.__plugin_description__ = "Demo description"  # type: ignore[attr-defined]
+    mod.__plugin_config_class__ = DemoPluginConfig  # type: ignore[attr-defined]
+    mod.__plugin_locales__ = {  # type: ignore[attr-defined]
+        "zh-CN": {
+            "meta.name": "演示插件",
+            "meta.description": "演示描述",
+            "config.title": "演示配置",
+            "config.fields.api_key.label": "接口密钥",
+            "config.fields.api_key.description": "用于访问服务的密钥",
+        }
+    }
+    sys.modules[module_name] = mod
+
+    bot = ShinBot(data_dir=tmp_path)
+    bot.load_plugin("demo-i18n-plugin", module_name)
+    boot = _BootStub(tmp_path)
+    app = create_api_app(bot, boot)
+    token = app.state.auth_config.create_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+
+    try:
+        with TestClient(app) as client:
+            list_resp = client.get("/api/v1/plugins", headers=headers)
+            assert list_resp.status_code == 200
+            payload = list_resp.json()["data"][0]
+            assert payload["name"] == "演示插件"
+            assert payload["description"] == "演示描述"
+            assert payload["metadata"]["config_schema"]["title"] == "演示配置"
+            assert payload["metadata"]["config_schema"]["properties"]["api_key"]["title"] == "接口密钥"
+
+            schema_resp = client.get("/api/v1/plugins/demo-i18n-plugin/schema", headers=headers)
+            assert schema_resp.status_code == 200
+            schema = schema_resp.json()["data"]
+            assert schema["title"] == "演示配置"
+            assert schema["properties"]["api_key"]["title"] == "接口密钥"
+            assert schema["properties"]["api_key"]["description"] == "用于访问服务的密钥"
+    finally:
+        sys.modules.pop(module_name, None)

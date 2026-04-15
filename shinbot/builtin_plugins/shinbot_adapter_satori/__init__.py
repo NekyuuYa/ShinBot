@@ -16,6 +16,56 @@ __plugin_version__ = "1.0.0"
 __plugin_author__ = "ShinBot Team"
 __plugin_description__ = "The standard Satori protocol driver for ShinBot."
 __plugin_adapter_platform__ = "satori"
+__plugin_locales__ = {
+    "zh-CN": {
+        "meta.name": "Satori 适配器（官方）",
+        "meta.description": "ShinBot 标准 Satori 协议适配器。",
+        "config.title": "Satori 连接配置",
+        "config.description": "配置 Satori 网关连接与资源缓存行为。",
+        "config.fields.host.label": "网关地址",
+        "config.fields.host.description": "Satori 网关地址，例如 localhost:5140",
+        "config.fields.token.label": "鉴权令牌",
+        "config.fields.token.description": "连接 Satori 网关时使用的令牌",
+        "config.fields.path.label": "事件路径",
+        "config.fields.path.description": "WebSocket 事件订阅路径",
+        "config.fields.reconnect_delay.label": "重连间隔",
+        "config.fields.reconnect_delay.description": "断线后的重连间隔秒数",
+        "config.fields.max_reconnects.label": "最大重连次数",
+        "config.fields.max_reconnects.description": "最大重连次数，-1 表示无限重试",
+        "config.fields.download_resources.label": "下载资源",
+        "config.fields.download_resources.description": "将媒体资源下载到本地临时缓存",
+        "config.fields.resource_cache_dir.label": "资源缓存目录",
+        "config.fields.resource_cache_dir.description": "下载资源的本地缓存目录",
+        "config.fields.silent_reconnect.label": "静默重连日志",
+        "config.fields.silent_reconnect.description": "抑制高频重连告警日志",
+        "config.fields.reconnect_log_interval.label": "重连日志间隔",
+        "config.fields.reconnect_log_interval.description": "两次重连告警日志之间的最小秒数",
+    },
+    "en-US": {
+        "meta.name": "Satori Adapter (Official)",
+        "meta.description": "The standard Satori protocol driver for ShinBot.",
+        "config.title": "Satori Connection Settings",
+        "config.description": "Configure Satori gateway connectivity and local resource caching.",
+        "config.fields.host.label": "Gateway Host",
+        "config.fields.host.description": "Satori gateway host, for example localhost:5140",
+        "config.fields.token.label": "Auth Token",
+        "config.fields.token.description": "Authorization token used to connect to the Satori gateway",
+        "config.fields.path.label": "Events Path",
+        "config.fields.path.description": "WebSocket path used to subscribe to events",
+        "config.fields.reconnect_delay.label": "Reconnect Delay",
+        "config.fields.reconnect_delay.description": "Delay in seconds before reconnecting",
+        "config.fields.max_reconnects.label": "Max Reconnects",
+        "config.fields.max_reconnects.description": "Maximum reconnect attempts, -1 means unlimited",
+        "config.fields.download_resources.label": "Download Resources",
+        "config.fields.download_resources.description": "Download media resources into the local temp cache",
+        "config.fields.resource_cache_dir.label": "Resource Cache Directory",
+        "config.fields.resource_cache_dir.description": "Local cache directory for downloaded resources",
+        "config.fields.silent_reconnect.label": "Silent Reconnect Logs",
+        "config.fields.silent_reconnect.description": "Suppress noisy reconnect warning logs",
+        "config.fields.reconnect_log_interval.label": "Reconnect Log Interval",
+        "config.fields.reconnect_log_interval.description": "Minimum seconds between reconnect warning logs",
+    },
+}
 
 from shinbot.core.plugins.plugin import PluginRole
 

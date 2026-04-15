@@ -17,6 +17,16 @@ __plugin_version__ = "1.0.0"
 __plugin_author__ = "ShinBot Team"
 __plugin_description__ = "Logs event summaries and writes raw + AST events to JSONL."
 __plugin_role__ = PluginRole.LOGIC
+__plugin_locales__ = {
+    "zh-CN": {
+        "meta.name": "消息调试插件",
+        "meta.description": "记录事件摘要，并将原始事件与 AST 写入 JSONL。",
+    },
+    "en-US": {
+        "meta.name": "Message Debug Plugin",
+        "meta.description": "Logs event summaries and writes raw + AST events to JSONL.",
+    },
+}
 
 _WRITE_QUEUE: asyncio.Queue[tuple[Path, dict[str, Any]]] | None = None
 _WRITER_TASK: asyncio.Task[None] | None = None

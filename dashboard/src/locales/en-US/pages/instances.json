@@ -36,7 +36,8 @@
     "status": "Status",
     "statusLabel": "Instance Status",
     "config": "Configuration",
-    "itemCount": "{count} items"
+    "itemCount": "{count} items",
+    "noSchema": "This adapter does not provide a configurable schema."
   },
   "dialog": {
     "createTitle": "Create Instance",

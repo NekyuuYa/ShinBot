@@ -143,7 +143,7 @@
           />
 
           <v-alert v-else type="warning" variant="tonal" class="mt-3">
-            No configuration schema is available for this adapter.
+            {{ $t('pages.instances.form.noSchema') }}
           </v-alert>
         </v-card-text>
         <v-card-actions>

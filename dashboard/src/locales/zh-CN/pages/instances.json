@@ -36,7 +36,8 @@
     "status": "状态",
     "statusLabel": "机器人状态",
     "config": "配置",
-    "itemCount": "{count} 项"
+    "itemCount": "{count} 项",
+    "noSchema": "当前适配器未提供可配置的 Schema。"
   },
   "dialog": {
     "createTitle": "创建机器人",

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import ValidationError
 
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
@@ -38,6 +39,83 @@ def _adapter_config_schema(bot: Any, plugin_id: str) -> dict[str, Any] | None:
     except Exception:
         logger.exception("Failed to build config schema for plugin %s", plugin_id)
         return None
+
+
+def _plugin_locales(bot: Any, plugin_id: str) -> dict[str, dict[str, str]]:
+    module = bot.plugin_manager._modules.get(plugin_id)
+    if module is None:
+        return {}
+    payload = getattr(module, "__plugin_locales__", {})
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for locale, entries in payload.items():
+        if not isinstance(locale, str) or not isinstance(entries, dict):
+            continue
+        result[locale] = {
+            str(key): str(value)
+            for key, value in entries.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+    return result
+
+
+def _request_locale(request: Request) -> list[str]:
+    header = request.headers.get("accept-language", "")
+    locales: list[str] = []
+    for chunk in header.split(","):
+        code = chunk.split(";")[0].strip()
+        if code:
+            locales.append(code)
+    locales.extend(["zh-CN", "en-US"])
+    return locales
+
+
+def _resolve_translations(locales: dict[str, dict[str, str]], requested: list[str]) -> dict[str, str]:
+    for locale in requested:
+        if locale in locales:
+            return locales[locale]
+        base = locale.split("-")[0].lower()
+        for candidate, entries in locales.items():
+            if candidate.split("-")[0].lower() == base:
+                return entries
+    return {}
+
+
+def _translate_schema_properties(
+    properties: dict[str, Any] | None,
+    translations: dict[str, str],
+    parent: str = "",
+) -> None:
+    if not isinstance(properties, dict):
+        return
+    for key, value in properties.items():
+        if not isinstance(value, dict):
+            continue
+        path = f"{parent}.{key}" if parent else key
+        label_key = f"config.fields.{path}.label"
+        description_key = f"config.fields.{path}.description"
+        if label_key in translations:
+            value["title"] = translations[label_key]
+        if description_key in translations:
+            value["description"] = translations[description_key]
+        if value.get("type") == "object":
+            _translate_schema_properties(value.get("properties"), translations, path)
+        items = value.get("items")
+        if isinstance(items, dict) and items.get("type") == "object":
+            _translate_schema_properties(items.get("properties"), translations, path)
+
+
+def _translate_plugin_schema(schema: dict[str, Any] | None, translations: dict[str, str]) -> dict[str, Any] | None:
+    if schema is None:
+        return None
+    translated = deepcopy(schema)
+    if "config.title" in translations:
+        translated["title"] = translations["config.title"]
+    if "config.description" in translations:
+        translated["description"] = translations["config.description"]
+    _translate_schema_properties(translated.get("properties"), translations)
+    return translated
 
 
 def _plugin_config_class(bot: Any, plugin_id: str) -> type[Any] | None:
@@ -106,14 +184,21 @@ def _normalize_plugin_config(bot: Any, plugin_id: str, config: dict[str, Any]) -
     return validated.model_dump(exclude_none=True)
 
 
-def _plugin_dict(bot: Any, p: Any, boot: Any | None = None) -> dict:
+def _plugin_dict(
+    bot: Any,
+    p: Any,
+    boot: Any | None = None,
+    *,
+    translations: dict[str, str] | None = None,
+) -> dict:
     module = bot.plugin_manager._modules.get(p.id)
     cfg_schema = _adapter_config_schema(bot, p.id)
     status = "enabled" if p.state.value in ("active", "loaded", "running") else "disabled"
+    resolved_translations = translations or {}
 
     metadata: dict[str, Any] = {}
     if cfg_schema is not None:
-        metadata["config_schema"] = cfg_schema
+        metadata["config_schema"] = _translate_plugin_schema(cfg_schema, resolved_translations)
     if boot is not None:
         metadata["config"] = _plugin_saved_config(boot, p.id)
     if module is not None and hasattr(module, "__plugin_adapter_platform__"):
@@ -121,9 +206,9 @@ def _plugin_dict(bot: Any, p: Any, boot: Any | None = None) -> dict:
 
     return {
         "id": p.id,
-        "name": p.name,
+        "name": resolved_translations.get("meta.name", p.name),
         "version": p.version,
-        "description": p.description,
+        "description": resolved_translations.get("meta.description", p.description),
         "author": p.author,
         "role": p.role.value,
         "status": status,
@@ -139,13 +224,24 @@ def _plugin_dict(bot: Any, p: Any, boot: Any | None = None) -> dict:
 
 
 @router.get("")
-async def list_plugins(bot=BotDep, boot=BootDep):
+async def list_plugins(request: Request, bot=BotDep, boot=BootDep):
     """List all loaded plugins with their metadata and config schema."""
-    return ok([_plugin_dict(bot, p, boot) for p in bot.plugin_manager.all_plugins])
+    requested = _request_locale(request)
+    return ok(
+        [
+            _plugin_dict(
+                bot,
+                p,
+                boot,
+                translations=_resolve_translations(_plugin_locales(bot, p.id), requested),
+            )
+            for p in bot.plugin_manager.all_plugins
+        ]
+    )
 
 
 @router.get("/{plugin_id}/schema")
-async def get_plugin_schema(plugin_id: str, bot=BotDep):
+async def get_plugin_schema(plugin_id: str, request: Request, bot=BotDep):
     """Get config schema for a non-adapter plugin that declares __plugin_config_class__."""
     plugin = bot.plugin_manager.get_plugin(plugin_id)
     if plugin is None:
@@ -172,7 +268,8 @@ async def get_plugin_schema(plugin_id: str, bot=BotDep):
                 "message": f"Plugin {plugin_id!r} does not expose a config schema",
             },
         )
-    return ok(schema)
+    translations = _resolve_translations(_plugin_locales(bot, plugin_id), _request_locale(request))
+    return ok(_translate_plugin_schema(schema, translations))
 
 
 async def _rescan_plugins(bot: Any, boot: Any):
