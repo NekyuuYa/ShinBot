@@ -2,6 +2,10 @@
   "kicker": "Tooling Registry",
   "title": "工具管理",
   "subtitle": "统一查看当前注册的工具定义、可见性、权限要求与风险等级。",
+  "layout": {
+    "list": "切换到列表",
+    "card": "切换到卡片"
+  },
   "refresh": "刷新",
   "loadFailed": "加载工具失败",
   "summary": {

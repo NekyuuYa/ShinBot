@@ -83,17 +83,12 @@
             />
           </v-col>
           <v-col cols="12" md="2" class="pa-2 d-flex justify-end">
-            <v-btn-toggle
+            <layout-mode-button
               :model-value="toolsStore.layoutMode"
-              color="primary"
-              divided
-              rounded="lg"
-              mandatory
+              :list-label="$t('pages.tools.layout.list')"
+              :card-label="$t('pages.tools.layout.card')"
               @update:model-value="handleLayoutChange"
-            >
-              <v-btn value="list" icon="mdi-format-list-bulleted" />
-              <v-btn value="card" icon="mdi-view-grid-outline" />
-            </v-btn-toggle>
+            />
           </v-col>
         </v-row>
       </v-card-text>
@@ -128,6 +123,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import LayoutModeButton from '@/components/LayoutModeButton.vue'
 import ToolCollection from '@/components/tools/ToolCollection.vue'
 import { useToolsStore } from '@/stores/tools'
 import { translate } from '@/plugins/i18n'

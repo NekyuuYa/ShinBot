@@ -2,6 +2,10 @@
   "kicker": "Tooling Registry",
   "title": "Tool Management",
   "subtitle": "Browse registered tools, visibility, permission requirements, and risk levels in one place.",
+  "layout": {
+    "list": "Switch to List",
+    "card": "Switch to Cards"
+  },
   "refresh": "Refresh",
   "loadFailed": "Failed to load tools",
   "summary": {

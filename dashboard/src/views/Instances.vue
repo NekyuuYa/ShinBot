@@ -26,17 +26,14 @@
           rounded="lg"
         />
       </v-col>
-      <v-col cols="12" sm="4" md="3">
-        <v-select
+      <v-spacer />
+      <v-col cols="auto">
+        <layout-mode-button
           v-model="viewMode"
-          :items="viewModes"
-          :item-title="(item) => t(item.title)"
-          item-value="value"
-          density="compact"
-          hide-details
+          :list-label="t('pages.instances.views.list')"
+          :card-label="t('pages.instances.views.card')"
         />
       </v-col>
-      <v-spacer />
       <v-col cols="auto">
         <v-btn
           icon="mdi-refresh"
@@ -168,6 +165,7 @@ import { usePluginsStore } from '@/stores/plugins'
 import InstanceCard from '@/components/InstanceCard.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import LayoutModeButton from '@/components/LayoutModeButton.vue'
 import type { Instance, InstanceConfig, UpdateInstanceRequest } from '@/api/instances'
 import type { PluginConfigSchema } from '@/api/plugins'
 import { useUiStore } from '@/stores/ui'
@@ -217,11 +215,6 @@ const adapterSchemaByPlatform = computed<Record<string, PluginConfigSchema>>(() 
 const activeAdapterSchema = computed<PluginConfigSchema | null>(
   () => adapterSchemaByPlatform.value[form.value.adapterType] ?? null
 )
-
-const viewModes = [
-  { title: 'pages.instances.views.card', value: 'card' },
-  { title: 'pages.instances.views.list', value: 'list' },
-]
 
 const tableHeaders = computed(() => [
   { title: t('pages.instances.table.name'), value: 'name', width: '20%' },
