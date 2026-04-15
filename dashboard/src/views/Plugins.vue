@@ -121,7 +121,27 @@ const handleRescan = async () => {
   await pluginsStore.rescanPlugins()
 }
 
-const applySchemaDefaults = (schema: PluginConfigSchema) => {
+const flattenConfig = (
+  value: Record<string, unknown> | undefined,
+  parent = ''
+): Record<string, unknown> => {
+  if (!value) {
+    return {}
+  }
+
+  return Object.entries(value).reduce<Record<string, unknown>>((acc, [key, item]) => {
+    const nextKey = parent ? `${parent}.${key}` : key
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      Object.assign(acc, flattenConfig(item as Record<string, unknown>, nextKey))
+      return acc
+    }
+
+    acc[nextKey] = item
+    return acc
+  }, {})
+}
+
+const buildSchemaDefaults = (schema: PluginConfigSchema) => {
   const defaults: Record<string, unknown> = {}
 
   const walk = (properties: PluginConfigSchema['properties'], parent = '') => {
@@ -140,7 +160,7 @@ const applySchemaDefaults = (schema: PluginConfigSchema) => {
   }
 
   walk(schema.properties)
-  schemaForm.value = defaults
+  return defaults
 }
 
 const openConfigDialog = async (plugin: Plugin) => {
@@ -153,7 +173,10 @@ const openConfigDialog = async (plugin: Plugin) => {
   activeSchema.value = schema
 
   if (schema) {
-    applySchemaDefaults(schema)
+    schemaForm.value = {
+      ...buildSchemaDefaults(schema),
+      ...flattenConfig(plugin.metadata?.config),
+    }
   } else {
     schemaForm.value = {}
   }
@@ -166,7 +189,9 @@ const saveConfig = async () => {
     return
   }
 
-  await pluginsStore.updatePluginConfig(activePlugin.value.id, schemaForm.value)
-  dialogVisible.value = false
+  const saved = await pluginsStore.updatePluginConfig(activePlugin.value.id, schemaForm.value)
+  if (saved) {
+    dialogVisible.value = false
+  }
 }
 </script>

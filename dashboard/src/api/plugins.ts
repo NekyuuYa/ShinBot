@@ -42,6 +42,7 @@ export interface PluginConfigSchema {
 
 export interface PluginMetadata {
   adapter_platform?: string
+  config?: Record<string, unknown>
   configSchema?: Record<string, ConfigSchemaField>
   config_schema?: PluginConfigSchema
   dynamicForm?: Record<string, unknown>

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
 
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import EC, ok
@@ -39,7 +40,73 @@ def _adapter_config_schema(bot: Any, plugin_id: str) -> dict[str, Any] | None:
         return None
 
 
-def _plugin_dict(bot: Any, p: Any) -> dict:
+def _plugin_config_class(bot: Any, plugin_id: str) -> type[Any] | None:
+    module = bot.plugin_manager._modules.get(plugin_id)
+    if module is None:
+        return None
+    cfg_cls = getattr(module, "__plugin_config_class__", None)
+    return cfg_cls if cfg_cls is not None and hasattr(cfg_cls, "model_validate") else None
+
+
+def _plugin_config_store(boot: Any) -> dict[str, Any]:
+    store = boot.config.setdefault("plugin_configs", {})
+    if not isinstance(store, dict):
+        store = {}
+        boot.config["plugin_configs"] = store
+    return store
+
+
+def _plugin_saved_config(boot: Any, plugin_id: str) -> dict[str, Any]:
+    store = boot.config.get("plugin_configs", {})
+    if not isinstance(store, dict):
+        return {}
+    config = store.get(plugin_id, {})
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _unflatten_config(raw: dict[str, Any]) -> dict[str, Any]:
+    nested: dict[str, Any] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key:
+            continue
+
+        cursor = nested
+        parts = [part for part in key.split(".") if part]
+        if not parts:
+            continue
+
+        for part in parts[:-1]:
+            child = cursor.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                cursor[part] = child
+            cursor = child
+
+        cursor[parts[-1]] = value
+
+    return nested
+
+
+def _normalize_plugin_config(bot: Any, plugin_id: str, config: dict[str, Any]) -> dict[str, Any]:
+    cfg_cls = _plugin_config_class(bot, plugin_id)
+    if cfg_cls is None:
+        return _unflatten_config(config)
+
+    try:
+        validated = cfg_cls.model_validate(_unflatten_config(config))
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": EC.INVALID_ACTION,
+                "message": exc.errors()[0].get("msg", "Invalid plugin configuration"),
+            },
+        ) from exc
+
+    return validated.model_dump(exclude_none=True)
+
+
+def _plugin_dict(bot: Any, p: Any, boot: Any | None = None) -> dict:
     module = bot.plugin_manager._modules.get(p.id)
     cfg_schema = _adapter_config_schema(bot, p.id)
     status = "enabled" if p.state.value in ("active", "loaded", "running") else "disabled"
@@ -47,6 +114,8 @@ def _plugin_dict(bot: Any, p: Any) -> dict:
     metadata: dict[str, Any] = {}
     if cfg_schema is not None:
         metadata["config_schema"] = cfg_schema
+    if boot is not None:
+        metadata["config"] = _plugin_saved_config(boot, p.id)
     if module is not None and hasattr(module, "__plugin_adapter_platform__"):
         metadata["adapter_platform"] = module.__plugin_adapter_platform__
 
@@ -70,9 +139,9 @@ def _plugin_dict(bot: Any, p: Any) -> dict:
 
 
 @router.get("")
-async def list_plugins(bot=BotDep):
+async def list_plugins(bot=BotDep, boot=BootDep):
     """List all loaded plugins with their metadata and config schema."""
-    return ok([_plugin_dict(bot, p) for p in bot.plugin_manager.all_plugins])
+    return ok([_plugin_dict(bot, p, boot) for p in bot.plugin_manager.all_plugins])
 
 
 @router.get("/{plugin_id}/schema")
@@ -139,22 +208,38 @@ async def rescan_plugins(bot=BotDep, boot=BootDep):
 
 
 @router.patch("/{plugin_id}/config")
-async def reload_plugin(plugin_id: str, bot=BotDep):
-    """Hot-reload a specific plugin by ID."""
-    try:
-        meta = await bot.plugin_manager.reload_plugin_async(plugin_id)
-        return ok(_plugin_dict(bot, meta))
-    except ValueError as e:
+async def update_plugin_config(plugin_id: str, config: dict[str, Any], bot=BotDep, boot=BootDep):
+    """Persist plugin configuration for a specific plugin by ID."""
+    plugin = bot.plugin_manager.get_plugin(plugin_id)
+    if plugin is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": EC.PLUGIN_NOT_FOUND, "message": str(e)},
-        ) from e
-    except Exception as e:
-        logger.exception("Hot-reload failed for plugin %s", plugin_id)
+            detail={"code": EC.PLUGIN_NOT_FOUND, "message": f"Plugin {plugin_id!r} not found"},
+        )
+
+    if plugin.role.value == "adapter":
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": EC.PLUGIN_NOT_FOUND,
+                "message": f"Plugin {plugin_id!r} does not expose plugin-level configuration",
+            },
+        )
+
+    normalized_config = _normalize_plugin_config(bot, plugin_id, config)
+    store = _plugin_config_store(boot)
+    store[plugin_id] = normalized_config
+
+    if not boot.save_config():
         raise HTTPException(
             status_code=500,
-            detail={"code": EC.PLUGIN_RELOAD_FAILED, "message": str(e)},
-        ) from e
+            detail={
+                "code": EC.CONFIG_WRITE_FAILED,
+                "message": f"Failed to persist configuration for plugin {plugin_id!r}",
+            },
+        )
+
+    return ok(_plugin_dict(bot, plugin, boot))
 
 
 @router.post("/{plugin_id}/disable")

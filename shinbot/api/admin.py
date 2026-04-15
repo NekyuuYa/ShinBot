@@ -5,7 +5,7 @@ The canonical plugin and instance management endpoints are:
 
   GET    /api/v1/plugins
   POST   /api/v1/plugins/reload        (rescan)
-  PATCH  /api/v1/plugins/{id}/config   (hot-reload)
+  PATCH  /api/v1/plugins/{id}/config   (persist config)
   GET    /api/v1/instances
   POST   /api/v1/instances
   PATCH  /api/v1/instances/{id}
