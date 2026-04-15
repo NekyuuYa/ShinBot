@@ -7,6 +7,7 @@
     "instancesManage": "机器人管理",
     "plugins": "插件",
     "pluginsManage": "插件管理",
+    "toolsManage": "工具管理",
     "modelRuntime": "模型管理",
     "settings": "设置",
     "logout": "登出",

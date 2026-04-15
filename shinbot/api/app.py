@@ -27,6 +27,7 @@ from shinbot.api.routers import auth as auth_router
 from shinbot.api.routers import instances as instances_router
 from shinbot.api.routers import model_runtime as model_runtime_router
 from shinbot.api.routers import plugins as plugins_router
+from shinbot.api.routers import tools as tools_router
 from shinbot.api.ws_manager import (
     install_log_handler,
     log_broadcaster,
@@ -140,6 +141,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
     app.include_router(instances_router.router, prefix=api_prefix)
     app.include_router(model_runtime_router.router, prefix=api_prefix)
     app.include_router(plugins_router.router, prefix=api_prefix)
+    app.include_router(tools_router.router, prefix=api_prefix)
 
     # ── WebSocket: /ws/logs ───────────────────────────────────────────
     # The log_broadcaster() task fans out records queued by AsyncLogHandler
