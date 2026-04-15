@@ -9,7 +9,7 @@ import sys
 
 import uvicorn
 
-from shinbot.core.boot import BootController
+from shinbot.core.application.boot import BootController
 
 logger = logging.getLogger("shinbot.main")
 

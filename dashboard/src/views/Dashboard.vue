@@ -14,7 +14,7 @@
               <div>
                 <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.totalInstances') }}</div>
                 <div class="text-h5">{{ instancesStore.instances.length }}</div>
-                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.statusOnline', { value: monitoringStore.status.online ? $t('common.actions.status.online') : $t('common.actions.status.offline') }) }}</div>
+                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.statusOnline', { value: monitoringStore.isOnline ? $t('common.actions.status.online') : $t('common.actions.status.offline') }) }}</div>
                 <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.memoryUsageMb', { value: monitoringStore.status.memoryUsage }) }}</div>
               </div>
             </v-col>

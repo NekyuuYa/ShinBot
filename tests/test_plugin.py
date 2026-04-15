@@ -364,3 +364,39 @@ async def test_load_respects_dependency_order(tmp_path: Path):
 
     assert load_order.index("plugin_z") < load_order.index("plugin_b")
     assert "plugin_a" in load_order
+
+
+@pytest.mark.asyncio
+async def test_load_all_async_includes_builtin_plugins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    builtin_root = tmp_path / "builtin_plugins"
+    builtin_plugin_dir = builtin_root / "shinbot_plugin_builtin_demo"
+    builtin_plugin_dir.mkdir(parents=True)
+    (builtin_plugin_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": "shinbot_plugin_builtin_demo",
+                "name": "builtin-demo",
+                "version": "1.0.0",
+                "author": "test",
+                "description": "",
+                "entry": "__init__.py",
+                "permissions": [],
+            }
+        )
+    )
+    (builtin_plugin_dir / "__init__.py").write_text("")
+
+    mod = types.ModuleType("shinbot.builtin_plugins.shinbot_plugin_builtin_demo")
+    mod.setup = lambda ctx: None  # type: ignore[attr-defined]
+    sys.modules["shinbot.builtin_plugins.shinbot_plugin_builtin_demo"] = mod
+
+    monkeypatch.setattr("shinbot.core.plugins.plugin._BUILTIN_PLUGINS_DIR", builtin_root)
+
+    cmd_reg = CommandRegistry()
+    event_bus = EventBus()
+    mgr = PluginManager(cmd_reg, event_bus)
+
+    loaded = await mgr.load_all_async(tmp_path / "user_plugins")
+
+    assert [item.id for item in loaded] == ["shinbot_plugin_builtin_demo"]
+    assert mgr.get_plugin("shinbot_plugin_builtin_demo") is not None

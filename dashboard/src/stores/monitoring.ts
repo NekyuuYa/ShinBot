@@ -190,6 +190,8 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     return logs.value.filter((entry) => entry.level === logLevelFilter.value)
   })
 
+  const isOnline = computed(() => statusConnected.value && status.value.online)
+
   const pushLogs = (entries: MonitoringLogEntry[]) => {
     logs.value = [...entries, ...logs.value].slice(0, 1000)
   }
@@ -268,6 +270,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     statusSocket = new WebSocket(finalEndpoint)
     statusSocket.onopen = () => {
       statusConnected.value = true
+      status.value.online = true
     }
     statusSocket.onclose = () => {
       statusConnected.value = false
@@ -286,7 +289,10 @@ export const useMonitoringStore = defineStore('monitoring', () => {
       const payload = parsed && typeof parsed === 'object' && 'data' in parsed ? parsed.data : parsed
       const nextStatus = extractStatus(payload)
       if (nextStatus) {
-        status.value = nextStatus
+        status.value = {
+          ...nextStatus,
+          online: statusConnected.value && nextStatus.online,
+        }
       }
       const instanceStatuses = extractInstanceStatuses(payload)
       if (instanceStatuses.length > 0) {
@@ -315,6 +321,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     filteredLogs,
     logLevelFilter,
     status,
+    isOnline,
     logConnected,
     statusConnected,
     connectLogs,

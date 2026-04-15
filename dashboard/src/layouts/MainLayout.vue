@@ -138,11 +138,11 @@ const breadcrumbs = computed(() => {
 })
 
 const statusChipText = computed(() =>
-  monitoringStore.status.online ? 'common.actions.status.online' : 'common.actions.status.offline'
+  monitoringStore.isOnline ? 'common.actions.status.online' : 'common.actions.status.offline'
 )
 
 const statusChipColor = computed(() =>
-  monitoringStore.status.online ? 'success' : 'error'
+  monitoringStore.isOnline ? 'success' : 'error'
 )
 
 onMounted(() => {

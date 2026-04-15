@@ -18,7 +18,7 @@
       <v-col cols="12" md="3">
         <v-card class="pa-4" elevation="5">
           <div class="text-caption text-medium-emphasis">{{ $t('pages.monitoring.status') }}</div>
-          <div class="text-h6">{{ status.online ? $t('common.actions.status.online') : $t('common.actions.status.offline') }}</div>
+          <div class="text-h6">{{ isOnline ? $t('common.actions.status.online') : $t('common.actions.status.offline') }}</div>
         </v-card>
       </v-col>
       <v-col cols="12" md="3">
@@ -95,7 +95,7 @@ import { storeToRefs } from 'pinia'
 import { useMonitoringStore } from '@/stores/monitoring'
 
 const monitoringStore = useMonitoringStore()
-const { filteredLogs, logLevelFilter, logConnected, status } = storeToRefs(monitoringStore)
+const { filteredLogs, isOnline, logLevelFilter, logConnected, status } = storeToRefs(monitoringStore)
 
 const connectLogs = () => monitoringStore.connectLogs()
 const clearLogs = () => monitoringStore.clearLogs()
