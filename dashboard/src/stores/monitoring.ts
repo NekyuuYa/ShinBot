@@ -50,6 +50,36 @@ interface StatusWsPayload {
 }
 
 const LOG_LEVEL_ORDER: readonly LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR']
+const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
+
+function resolveWsEndpoint(configured: string | undefined, fallback: string): string {
+  const raw = (configured ?? '').trim()
+  if (!raw) {
+    return fallback
+  }
+
+  if (raw.startsWith('/')) {
+    return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${raw}`
+  }
+
+  try {
+    const parsed = new URL(raw, window.location.origin)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
+    }
+
+    const currentHost = window.location.hostname.toLowerCase()
+    const isConfiguredLocalhost = LOCALHOST_HOSTS.has(parsed.hostname.toLowerCase())
+    const isCurrentLocalhost = LOCALHOST_HOSTS.has(currentHost)
+    if (isConfiguredLocalhost && !isCurrentLocalhost) {
+      return fallback
+    }
+
+    return parsed.toString()
+  } catch {
+    return fallback
+  }
+}
 
 function normalizeLogLevel(level: string | undefined): LogLevel {
   const upper = (level ?? 'INFO').toUpperCase()
@@ -234,7 +264,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     }
 
     const defaultUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/logs`
-    const finalEndpoint = endpoint ?? import.meta.env.VITE_WS_LOGS_URL ?? defaultUrl
+    const finalEndpoint = resolveWsEndpoint(endpoint ?? import.meta.env.VITE_WS_LOGS_URL, defaultUrl)
 
     clearLogTimers()
     logSocket = new WebSocket(finalEndpoint)
@@ -280,7 +310,10 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     }
 
     const defaultUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/status`
-    const finalEndpoint = endpoint ?? import.meta.env.VITE_WS_STATUS_URL ?? defaultUrl
+    const finalEndpoint = resolveWsEndpoint(
+      endpoint ?? import.meta.env.VITE_WS_STATUS_URL,
+      defaultUrl
+    )
 
     clearStatusTimers()
     statusSocket = new WebSocket(finalEndpoint)

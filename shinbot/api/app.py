@@ -159,10 +159,9 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
         except Exception:
             log_manager.disconnect(websocket)
 
-    # ── WebSocket: /ws/status ─────────────────────────────────────────
+    # ── WebSocket: /ws/status + /ws/system (legacy alias) ───────────
 
-    @app.websocket("/ws/status")
-    async def ws_status(websocket: WebSocket) -> None:
+    async def _serve_status_socket(websocket: WebSocket) -> None:
         await status_manager.connect(websocket)
         try:
             while True:
@@ -176,6 +175,15 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
             status_manager.disconnect(websocket)
         except Exception:
             status_manager.disconnect(websocket)
+
+    @app.websocket("/ws/status")
+    async def ws_status(websocket: WebSocket) -> None:
+        await _serve_status_socket(websocket)
+
+    # Backward compatibility with older docs/configs.
+    @app.websocket("/ws/system")
+    async def ws_system(websocket: WebSocket) -> None:
+        await _serve_status_socket(websocket)
 
     # ── Static dashboard hosting + SPA fallback ──────────────────────
 
