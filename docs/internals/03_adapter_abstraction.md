@@ -3,7 +3,7 @@
 本文档剖析了 ShinBot 的“驱动容器模式”，分析核心如何通过抽象接口与各种 IM 协议通信。
 
 ## 1. 核心契约：BaseAdapter
-位于 `shinbot/core/adapter_manager.py`。
+位于 `shinbot/core/platform/adapter_manager.py`。
 
 ### 1.1 实现方法
 - **抽象方法集**: 严格定义了 `start`, `shutdown`, `send`, `call_api`, `get_capabilities`。
@@ -16,12 +16,12 @@
 
 ### 2.1 实现方法
 - **动态注册**: 采用工厂模式 (`register_adapter`)。驱动插件在加载时注入自己的类，而不是由核心 import。
-- **多实例管理**: 通过 `create_instance` 方法，用户可以在 `config.yaml` 中利用同一个驱动类开启多个具有独立 `instance_id` 的连接实例。
+- **多实例管理**: 通过 `create_instance` 方法，用户可以在 `config.toml` 的 `[[instances]]` 中为同一驱动开启多个具有独立 `instance_id` 的连接实例。
 
 ---
 
 ## 3. 实战实现：SatoriAdapter
-位于 `shinbot/adapters/satori/adapter.py`。
+位于 `shinbot/builtin_plugins/shinbot_adapter_satori/adapter.py`。
 
 ### 3.1 健壮性分析
 - **生命周期自动化**: 实现了 WebSocket 的自动连接循环 (`_connection_loop`)、指数退避重连机制以及心跳保活 (`PING/PONG`)。

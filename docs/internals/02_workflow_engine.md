@@ -3,7 +3,7 @@
 本文档剖析了 ShinBot 消息处理的核心调度逻辑及其高度解耦的上下文模型。
 
 ## 1. 消息流水线：MessagePipeline
-位于 `shinbot/core/pipeline.py`。
+位于 `shinbot/core/dispatch/pipeline.py`。
 
 ### 1.1 阶段化调度实现
 代码严谨地实现了设计文档中的四个阶段：

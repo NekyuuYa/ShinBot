@@ -1,56 +1,62 @@
 # ShinBot
 
-> **The Agentic-Native Bot Orchestration Framework.**
+> The agent-oriented bot orchestration framework.
 
-ShinBot 是一款从底层为 **智能体 (Agent)** 设计的新一代机器人框架。通过 **异步工作流 (Workflow)** 编排和 **Satori 协议** 的深度集成，它为复杂的多模态交互、长链条决策和跨平台自动化提供了稳健的工程底座。
+ShinBot 是一个面向多实例 Bot、Agent Runtime 和插件化扩展的 Python 框架。当前代码库已经按职责拆分为应用生命周期、消息分发、平台适配、插件系统、权限与会话、Agent 运行时和持久化几个独立子系统。
 
----
+## 核心能力
 
-## ✨ 核心特性
+- 面向 `UnifiedEvent` / `MessageElement` AST 的统一消息模型
+- 基于 `MessagePipeline` 的事件分发、命令解析和权限校验
+- 内置插件与外部插件并存的热加载机制
+- 可管理的模型运行时与 Prompt Registry
+- FastAPI 管理 API 与 Vue 3 Dashboard
+- SQLite 优先的持久化骨架与运行时数据目录
 
-- 🤖 **Agentic-Native (智能体原生)**：深度对齐 LLM 的决策逻辑，消息全量保留 AST 结构。
-- 🔄 **Workflow Orchestration (工作流编排)**：基于异步状态机，彻底解决消息流乱序与 Prompt 污染。
-- 🎨 **Vue 3 现代化看板**：采用 **Vuetify 3 (Material Design 3)** 构建，清新淡黄主题与极致大圆角设计。
-- 🛡️ **精细化权限体系**：支持“会话+用户”维度的双层权限绑定，具备显式拒绝优先策略。
-- 🧩 **全插件化内核**：核心零网络依赖，适配器（OneBot, Satori 等）作为驱动插件热插拔。
-
----
-
-## 🏗️ 架构分层
-
-| 层级 | 技术栈 | 职责 |
-| :--- | :--- | :--- |
-| **ShinBot Core** | Python 3.10+ (uv) | 流程编排、指令解析、权限引擎、会话状态管理。 |
-| **Dashboard** | Vue 3 (Vite + Pinia) | 实例可视化配置、实时监控、美观的管理面板。 |
-| **Adapters** | Python Plugins | 协议翻译与语义补全 (如 Satori, OB11 Bridge)。 |
-
----
-
-## 📂 项目结构
+## 当前代码结构
 
 ```text
 ShinBot/
-├── docs/                 # 项目文档总入口 (设计 / 实现 / 插件 / 参考)
-├── shinbot/              # 程序源代码 (Core Layer)
-│   ├── core/             # 逻辑引擎 (Workflow, Auth, Session)
-│   ├── builtin_plugins/  # 官方插件 (含适配器驱动)
-│   └── models/           # 数据模型 (MessageElement AST)
-├── data/                 # 持久化资产 (插件、数据、会话、审计)
-├── dashboard/            # Vue 3 前端工程
-└── main.py               # 引导入口 (端口: 3945)
+├── docs/                        # 设计、实现与插件文档
+├── dashboard/                   # Vue 3 + Vite 管理面板
+├── shinbot/
+│   ├── agent/                   # Agent 运行时、Prompt Registry
+│   ├── api/                     # FastAPI 管理 API
+│   ├── builtin_plugins/         # 内置插件与适配器插件
+│   ├── core/
+│   │   ├── application/         # ShinBot 应用装配与 BootController
+│   │   ├── dispatch/            # Command/Event/Pipeline
+│   │   ├── platform/            # AdapterManager 与 BaseAdapter
+│   │   ├── plugins/             # PluginManager 与 PluginContext
+│   │   ├── security/            # PermissionEngine 与 AuditLogger
+│   │   └── state/               # SessionManager 与会话模型
+│   ├── models/                  # 领域模型与协议资源模型
+│   ├── persistence/             # 数据库引擎、记录与仓储
+│   └── utils/                   # 通用工具
+├── tests/                       # Python 测试
+├── config.example.toml          # 启动配置模板
+└── main.py                      # 进程入口
 ```
 
-文档入口： [docs/README.md](docs/README.md)  
-设计分层： [docs/design/README.md](docs/design/README.md)
+## 启动方式
 
----
+要求：
 
-## 🙏 致谢 (Acknowledgements)
+- Python `>=3.12`
+- `uv`
 
-- **NoneBot**: 提供了优秀的插件依赖解析与解耦思路参考。
-- **AstrBot**: 在前端管理与目录结构规范上提供了宝贵的实践启发。
-- **Satori Protocol**: 提供了跨平台标准化语义的基石。
+常用命令：
 
----
+```bash
+uv run pytest
+uv run ruff check .
+python main.py --config config.toml
+```
 
-<p align="center"><b>ShinBot</b> - <i>Shinku in Shiny Shinbot.</i></p>
+默认配置模板见 [config.example.toml](/home/Nekyuu/Workplace/ShinBot/config.example.toml)。
+
+## 文档入口
+
+- 项目文档总入口：[docs/README.md](/home/Nekyuu/Workplace/ShinBot/docs/README.md)
+- 设计文档分层：[docs/design/README.md](/home/Nekyuu/Workplace/ShinBot/docs/design/README.md)
+- 插件能力说明：[docs/plugins/capabilities.md](/home/Nekyuu/Workplace/ShinBot/docs/plugins/capabilities.md)

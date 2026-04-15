@@ -17,7 +17,7 @@
 引导过程分为五个严格的原子阶段：
 
 ### Phase 1: 环境探测 (Environment)
-- **动作**: 读取 `config.yaml`，初始化日志系统，检查 `data/` 目录下所有子目录的读写权限。
+- **动作**: 读取 `config.toml`，初始化日志系统，检查 `data/` 目录下运行时子目录的读写权限。
 - **失败影响**: 核心无法运行，直接抛出系统级错误并退出。
 
 ### Phase 2: 基础设施就绪 (Infrastructure)
@@ -32,7 +32,7 @@
 - **失败影响**: 系统无法处理逻辑，Dashboard 展示核心崩溃详情。
 
 ### Phase 4: 插件注入 (Plugin Loading)
-- **动作**: 调用 `PluginManager` 扫描 `data/plugins/`。
+- **动作**: 调用 `PluginManager` 先扫描 `shinbot/builtin_plugins/`，再扫描 `data/plugins/`。
 - **子任务**:
     1. 解析 `metadata.json`。
     2. 导入 Python 模块并调用其 `setup(ctx)`。
@@ -61,6 +61,6 @@
 
 关机顺序应与启动顺序**严格相反**：
 1. **停止适配器**: 立即切断外部流量。
-2. **通知插件**: 触发 `on_disable()`，释放插件自有的句柄。
-3. **状态持久化**: `SessionManager` 强制执行最后一次落库。
-4. **关闭基础设施**: 销毁数据库连接池。
+2. **通知插件**: 触发 `on_disable()`，必要时再执行 `teardown()` 释放插件自有资源。
+3. **状态持久化**: `SessionManager` 将内存会话刷新到持久化层。
+4. **关闭基础设施**: 收敛数据库、静态资源和其他运行时基础设施。

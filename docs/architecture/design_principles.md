@@ -8,12 +8,15 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 > "系统核心仅负责逻辑编排，所有的平台接入与业务功能均以插件形式存在。" — 07_plugin_system_design.md
 
-**Rule**: `shinbot/core/` contains ONLY:
-- Domain models and abstract interfaces
-- Lifecycle orchestration (boot, pipeline, event bus)
-- Plugin loading mechanics
+**Rule**: `shinbot/core/` is split by responsibility:
+- `application/` for app assembly and boot lifecycle
+- `dispatch/` for command, event bus, and pipeline
+- `platform/` for adapter abstractions and instance management
+- `plugins/` for plugin lifecycle and registration
+- `security/` for permission and audit
+- `state/` for session state
 
-**Rule**: Everything else — adapters, commands, business logic — is a plugin. No exceptions.
+**Rule**: Platform adapters and business capabilities live outside those subpackages, typically under `shinbot/builtin_plugins/` or user plugin directories.
 
 **Rationale**: Micro-kernel enables hot-reload, keeps the core testable without any platform SDK, and allows third-party extensibility.
 
@@ -21,7 +24,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P2. Core Purity (Zero Upward Dependencies)
 
-**Rule**: Core may depend on `models/` and `utils/`. Core MUST NOT import from `builtin_plugins/`, `api/`, or any external plugin.
+**Rule**: Core may depend on `models/`, `utils/`, and persistence abstractions. Core MUST NOT import from `builtin_plugins/` or any external plugin.
 
 **Rule**: Plugins depend on Core, never the reverse. The dependency arrow is strictly downward.
 
@@ -73,7 +76,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 **Rule**: On unload, the framework deregisters all stubs owned by the plugin. This prevents "duplicate commands after reload".
 
-**Contract**: `setup(ctx)` for initialization, `on_disable(ctx)` for cleanup.
+**Contract**: `setup(ctx)` for initialization, optional `on_enable(ctx)` after activation, `on_disable(ctx)` for cleanup, and optional `teardown()` for final release.
 
 ---
 
@@ -117,7 +120,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 **Rule**: Plugin code directory is read-only at runtime.
 
-**Rule**: All persistent data goes to `data/plugin_data/{plugin_id}/`.
+**Rule**: Plugin-owned file assets go to `data/plugin_data/{plugin_id}/`.
 
 **Rule**: Framework injects path via `ctx.data_dir`.
 

@@ -1,6 +1,6 @@
 # Design Docs
 
-`docs/design/` 只放“系统应该怎样设计”的长期规范，不放阶段性实现记录。
+`docs/design/` 只放“系统应该怎样设计”的长期规范，不放阶段性实现记录。当前设计文档对应的代码实现主要落在 `shinbot/core/*`、`shinbot/agent/*`、`shinbot/api/*` 与 `shinbot/persistence/*`。
 
 ## 目录分层
 
@@ -58,3 +58,4 @@
 - 平台接入规范：放 `extensibility/`
 - Dashboard 页面与交互：放 `interfaces/`
 - 新的核心语义模型：放 `core/`
+- 数据库、运行记录和存储边界：放 `runtime/`

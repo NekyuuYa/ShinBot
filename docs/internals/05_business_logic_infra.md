@@ -3,7 +3,7 @@
 本文档分析了指令、权限和会话这三大核心模块的代码实现细节。
 
 ## 1. 指令解析：CommandRegistry
-位于 `shinbot/core/command.py`。
+位于 `shinbot/core/dispatch/command.py`。
 
 ### 1.1 实现方法
 - **三层匹配算法**: 严格实现了 `03_command_system.md` 规定的优先级：
@@ -15,7 +15,7 @@
 ---
 
 ## 2. 权限引擎：PermissionEngine
-位于 `shinbot/core/permission.py`。
+位于 `shinbot/core/security/permission.py`。
 
 ### 2.1 实现方法
 - **树状路径匹配**: 实现了一个递归的路径校验算法。支持 `tools.*` 这种通配符，极大增强了权限管理的灵活性。
@@ -25,11 +25,11 @@
 ---
 
 ## 3. 会话管理：SessionManager
-位于 `shinbot/core/session.py`。
+位于 `shinbot/core/state/session.py`。
 
 ### 3.1 实现方法
 - **URN 生成器**: 实现了标准化的 `instance:type:target` ID 生成逻辑。
-- **自动持久化**: 会话对象内嵌了 `plugin_data` 字典。`SessionManager` 负责在工作流结束后将其异步同步至本地存储（目前为 JSON 文件，易于审查）。
+- **自动持久化**: `SessionManager` 可挂接持久化仓储，当前实现已经支持数据库记录持久化，并保留运行时内存态作为处理缓存。
 
 ## 4. 健壮性总结
 - **状态隔离**: 会话数据按 `instance_id` 进行物理目录隔离，防止多账号运行下的数据污染。

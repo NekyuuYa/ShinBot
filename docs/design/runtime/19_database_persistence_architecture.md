@@ -113,7 +113,7 @@
 
 - 代码与 schema 定义属于仓库内容，放在 `shinbot/persistence/`
 - 运行时生成的数据库文件属于实例数据，放在 `data/`
-- 这样与现有 `data/audit/`、`data/plugin_data/`、`data/temp/resources/` 的约定保持一致
+- 这样与现有 `data/audit/`、`data/plugin_data/`、`data/temp/resources/` 等运行时目录约定保持一致
 
 ### 4.2 可扩展后端
 
@@ -467,7 +467,7 @@
 对当前代码基线，建议做如下演进判断：
 
 - `SessionManager`
-  - 从“内存 + JSON 文件”演进为“内存缓存 + 数据库主存”
+  - 从“纯内存或临时文件思路”演进为“内存缓存 + 数据库主存”
 - `AuditLogger`
   - 从“JSONL 旁路”演进为“数据库主写 + JSONL 可选旁路”
 - `config.toml`
