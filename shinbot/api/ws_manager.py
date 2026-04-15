@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from shinbot.utils.logger import normalize_log_level, shorten_logger_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,10 +49,7 @@ class _AsyncLogHandler(logging.Handler):
     def __init__(self, queue: asyncio.Queue) -> None:  # type: ignore[type-arg]
         super().__init__()
         self._queue = queue
-        self.formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+        self.formatter = logging.Formatter("%(message)s")
 
     def emit(self, record: logging.LogRecord) -> None:
         # 核心修复：禁止转发 uvicorn 和 websockets 的低级别日志，防止回放死循环
@@ -59,11 +58,13 @@ class _AsyncLogHandler(logging.Handler):
                 return
 
         try:
-            msg = self.format(record)
+            msg = self.format(record).strip()
             payload = {
                 "ts": int(record.created),
-                "level": record.levelname,
+                "timestamp": int(record.created * 1000),
+                "level": normalize_log_level(record.levelname),
                 "logger": record.name,
+                "source": shorten_logger_name(record.name),
                 "message": msg,
             }
             try:

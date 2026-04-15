@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shinbot.utils.logger import format_log_event
+
 if TYPE_CHECKING:
     from shinbot.persistence.repos import AuditRepository
 
@@ -16,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 # Audit logger is separate to allow it to go to a different sink if configured
 audit_logger = logging.getLogger("shinbot.audit")
+
+
+def _metadata_key_count(metadata: dict[str, Any]) -> int | None:
+    if not metadata:
+        return None
+    return len(metadata)
 
 
 @dataclass
@@ -110,8 +118,23 @@ class AuditLogger:
             metadata=metadata or {},
         )
 
-        # Log to audit logger (can be configured to go to a file)
-        audit_logger.info(entry.to_json())
+        # Keep runtime log output compact; full payload is persisted separately.
+        audit_logger.info(
+            format_log_event(
+                "audit.command",
+                command=entry.command_name,
+                plugin=entry.plugin_id,
+                user=entry.user_id,
+                session=entry.session_id,
+                instance=entry.instance_id,
+                permission=entry.permission_required,
+                granted=entry.permission_granted if entry.permission_required else None,
+                ok=entry.success,
+                ms=round(entry.execution_time_ms, 2),
+                error=entry.error,
+                metadata_keys=_metadata_key_count(entry.metadata),
+            )
+        )
         if self._audit_repo:
             self._audit_repo.insert(asdict(entry))
 
@@ -142,7 +165,17 @@ class AuditLogger:
             metadata=metadata or {},
         )
 
-        audit_logger.info(entry.to_json())
+        audit_logger.info(
+            format_log_event(
+                "audit.message",
+                event=event_type,
+                plugin=plugin_id,
+                user=user_id,
+                session=session_id,
+                instance=instance_id,
+                metadata_keys=_metadata_key_count(entry.metadata),
+            )
+        )
         if self._audit_repo:
             self._audit_repo.insert(asdict(entry))
         if self._data_dir:

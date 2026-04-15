@@ -8,11 +8,14 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from typing import Any
 
 _CONFIGURED = False
 _log_handler_installer: Callable[[], None] | None = None
+_LOGGER_PREFIX = "shinbot."
 _NOISY_THIRD_PARTY_LOGGERS = (
     "uvicorn",
     "uvicorn.error",
@@ -21,6 +24,57 @@ _NOISY_THIRD_PARTY_LOGGERS = (
     "websockets.client",
     "websockets.server",
 )
+
+
+def normalize_log_level(level_name: str) -> str:
+    """Normalize stdlib logging names for compact display."""
+    upper = level_name.upper()
+    if upper == "WARNING":
+        return "WARN"
+    if upper == "CRITICAL":
+        return "ERROR"
+    return upper
+
+
+def shorten_logger_name(logger_name: str, *, keep_parts: int = 3) -> str:
+    """Keep logger names short enough for fast visual scanning."""
+    normalized = logger_name.strip()
+    if not normalized:
+        return "root"
+
+    if normalized.startswith(_LOGGER_PREFIX):
+        normalized = normalized[len(_LOGGER_PREFIX) :]
+
+    parts = [part for part in normalized.split(".") if part]
+    if not parts:
+        return "root"
+    if len(parts) <= keep_parts:
+        return ".".join(parts)
+    return ".".join(parts[-keep_parts:])
+
+
+def _stringify_log_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list, tuple, set)):
+        if isinstance(value, set):
+            value = sorted(value)
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def format_log_event(event: str, /, **fields: Any) -> str:
+    """Build compact key-value log lines without noisy empty fields."""
+    parts = [event]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, (dict, list, tuple, set)) and not value:
+            continue
+        parts.append(f"{key}={_stringify_log_value(value)}")
+    return " | ".join(parts)
 
 
 def register_log_handler_installer(fn: Callable[[], None]) -> None:
@@ -52,6 +106,17 @@ class _ColorFormatter(logging.Formatter):
         return f"{color}{message}{self._RESET}"
 
 
+class _ReadableContextFilter(logging.Filter):
+    def __init__(self, *, keep_logger_parts: int = 3) -> None:
+        super().__init__()
+        self._keep_logger_parts = keep_logger_parts
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.level_tag = normalize_log_level(record.levelname)
+        record.short_name = shorten_logger_name(record.name, keep_parts=self._keep_logger_parts)
+        return True
+
+
 def setup_logging(level_name: str = "INFO") -> None:
     """Configure root logging once with console + websocket handlers."""
     global _CONFIGURED
@@ -64,10 +129,11 @@ def setup_logging(level_name: str = "INFO") -> None:
 
     console = logging.StreamHandler()
     console.setLevel(level)
+    console.addFilter(_ReadableContextFilter())
     console.setFormatter(
         _ColorFormatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
+            "%(asctime)s | %(level_tag)-5s | %(short_name)-30s | %(message)s",
+            datefmt="%H:%M:%S",
         )
     )
     root.addHandler(console)

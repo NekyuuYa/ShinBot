@@ -53,6 +53,12 @@ const LOG_LEVEL_ORDER: readonly LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR']
 
 function normalizeLogLevel(level: string | undefined): LogLevel {
   const upper = (level ?? 'INFO').toUpperCase()
+  if (upper === 'WARNING') {
+    return 'WARN'
+  }
+  if (upper === 'CRITICAL' || upper === 'FATAL') {
+    return 'ERROR'
+  }
   if (LOG_LEVEL_ORDER.includes(upper as LogLevel)) {
     return upper as LogLevel
   }
@@ -83,8 +89,18 @@ function extractLogEntries(payload: unknown): MonitoringLogEntry[] {
   const record = payload as Record<string, unknown>
   const level = normalizeLogLevel(typeof record.level === 'string' ? record.level : undefined)
   const message = typeof record.message === 'string' ? record.message : ''
-  const timestamp = typeof record.timestamp === 'number' ? record.timestamp : Date.now()
-  const source = typeof record.source === 'string' ? record.source : undefined
+  const timestamp =
+    typeof record.timestamp === 'number'
+      ? record.timestamp
+      : typeof record.ts === 'number'
+        ? record.ts * 1000
+        : Date.now()
+  const source =
+    typeof record.source === 'string'
+      ? record.source
+      : typeof record.logger === 'string'
+        ? record.logger
+        : undefined
 
   if (!message) {
     return []
