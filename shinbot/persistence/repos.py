@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import asdict
 from typing import Any
 
@@ -193,14 +194,21 @@ class ModelRegistryRepository:
     def upsert_provider(self, record: ModelProviderRecord) -> None:
         payload = asdict(record)
         with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT provider_uuid, created_at FROM model_providers WHERE id = ?",
+                (payload["id"],),
+            ).fetchone()
+            provider_uuid = str(row["provider_uuid"]) if row is not None else str(uuid.uuid4())
+            created_at = row["created_at"] if row is not None else payload["created_at"]
             conn.execute(
                 """
                 INSERT INTO model_providers (
-                    id, type, display_name, base_url, auth_json, default_params_json,
-                    enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
+                    provider_uuid, id, type, display_name, base_url, auth_json,
+                    default_params_json, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_uuid) DO UPDATE SET
                     type = excluded.type,
+                    id = excluded.id,
                     display_name = excluded.display_name,
                     base_url = excluded.base_url,
                     auth_json = excluded.auth_json,
@@ -209,6 +217,7 @@ class ModelRegistryRepository:
                     updated_at = excluded.updated_at
                 """,
                 (
+                    provider_uuid,
                     payload["id"],
                     payload["type"],
                     payload["display_name"],
@@ -216,7 +225,7 @@ class ModelRegistryRepository:
                     _json_dumps(payload["auth"]),
                     _json_dumps(payload["default_params"]),
                     1 if payload["enabled"] else 0,
-                    payload["created_at"],
+                    created_at,
                     payload["updated_at"],
                 ),
             )
@@ -232,6 +241,7 @@ class ModelRegistryRepository:
             ).fetchall()
         return [
             {
+                "provider_uuid": row["provider_uuid"],
                 "id": row["id"],
                 "type": row["type"],
                 "display_name": row["display_name"],
@@ -258,6 +268,7 @@ class ModelRegistryRepository:
         if row is None:
             return None
         return {
+            "provider_uuid": row["provider_uuid"],
             "id": row["id"],
             "type": row["type"],
             "display_name": row["display_name"],
@@ -276,48 +287,28 @@ class ModelRegistryRepository:
 
     def rename_provider(self, provider_id: str, new_provider_id: str) -> None:
         with self._db.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM model_providers WHERE id = ?",
-                (provider_id,),
-            ).fetchone()
-            if row is None:
-                return
             conn.execute(
-                """
-                INSERT INTO model_providers (
-                    id, type, display_name, base_url, auth_json, default_params_json,
-                    enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    new_provider_id,
-                    row["type"],
-                    row["display_name"],
-                    row["base_url"],
-                    row["auth_json"],
-                    row["default_params_json"],
-                    row["enabled"],
-                    row["created_at"],
-                    row["updated_at"],
-                ),
-            )
-            conn.execute(
-                "UPDATE model_definitions SET provider_id = ? WHERE provider_id = ?",
+                "UPDATE model_providers SET id = ? WHERE id = ?",
                 (new_provider_id, provider_id),
             )
-            conn.execute("DELETE FROM model_providers WHERE id = ?", (provider_id,))
 
     def upsert_model(self, record: ModelDefinitionRecord) -> None:
         payload = asdict(record)
         with self._db.connect() as conn:
+            provider_row = conn.execute(
+                "SELECT provider_uuid FROM model_providers WHERE id = ?",
+                (payload["provider_id"],),
+            ).fetchone()
+            if provider_row is None:
+                raise ValueError(f"Provider {payload['provider_id']!r} not found")
             conn.execute(
                 """
                 INSERT INTO model_definitions (
-                    id, provider_id, litellm_model, display_name, capabilities_json, context_window,
+                    id, provider_uuid, litellm_model, display_name, capabilities_json, context_window,
                     default_params_json, cost_metadata_json, enabled, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                    provider_id = excluded.provider_id,
+                    provider_uuid = excluded.provider_uuid,
                     litellm_model = excluded.litellm_model,
                     display_name = excluded.display_name,
                     capabilities_json = excluded.capabilities_json,
@@ -329,7 +320,7 @@ class ModelRegistryRepository:
                 """,
                 (
                     payload["id"],
-                    payload["provider_id"],
+                    provider_row["provider_uuid"],
                     payload["litellm_model"],
                     payload["display_name"],
                     _json_dumps(payload["capabilities"]),
@@ -344,14 +335,17 @@ class ModelRegistryRepository:
 
     def list_models(self, *, provider_id: str | None = None) -> list[dict[str, Any]]:
         query = """
-            SELECT *
-            FROM model_definitions
+            SELECT
+                m.*,
+                p.id AS provider_id
+            FROM model_definitions AS m
+            JOIN model_providers AS p ON p.provider_uuid = m.provider_uuid
         """
         params: tuple[Any, ...] = ()
         if provider_id:
-            query += " WHERE provider_id = ?"
+            query += " WHERE p.id = ?"
             params = (provider_id,)
-        query += " ORDER BY provider_id ASC, id ASC"
+        query += " ORDER BY p.id ASC, m.id ASC"
 
         with self._db.connect() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -376,9 +370,12 @@ class ModelRegistryRepository:
         with self._db.connect() as conn:
             row = conn.execute(
                 """
-                SELECT *
-                FROM model_definitions
-                WHERE id = ?
+                SELECT
+                    m.*,
+                    p.id AS provider_id
+                FROM model_definitions AS m
+                JOIN model_providers AS p ON p.provider_uuid = m.provider_uuid
+                WHERE m.id = ?
                 """,
                 (model_id,),
             ).fetchone()

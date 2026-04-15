@@ -340,12 +340,7 @@ async def create_provider(body: ProviderRequest, bot=BotDep):
     return ok(_serialize_provider(_require_provider(bot, body.id)))
 
 
-@router.get("/providers/{provider_id}")
-async def get_provider(provider_id: str, bot=BotDep):
-    return ok(_serialize_provider(_require_provider(bot, provider_id)))
-
-
-@router.patch("/providers/{provider_id}")
+@router.patch("/providers/{provider_id:path}")
 async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotDep):
     current = _require_provider(bot, provider_id)
     next_id = body.id if body.id is not None else provider_id
@@ -382,21 +377,21 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
     return ok(_serialize_provider(_require_provider(bot, provider_id)))
 
 
-@router.delete("/providers/{provider_id}")
+@router.delete("/providers/{provider_id:path}")
 async def delete_provider(provider_id: str, bot=BotDep):
     _require_provider(bot, provider_id)
     bot.database.model_registry.delete_provider(provider_id)
     return ok({"id": provider_id, "deleted": True})
 
 
-@router.get("/providers/{provider_id}/catalog")
+@router.get("/providers/{provider_id:path}/catalog")
 async def get_provider_catalog(provider_id: str, bot=BotDep):
     provider = _require_provider(bot, provider_id)
     catalog = await _fetch_provider_catalog(provider)
     return ok(catalog)
 
 
-@router.post("/providers/{provider_id}/probe")
+@router.post("/providers/{provider_id:path}/probe")
 async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDep):
     provider = _require_provider(bot, provider_id)
 
@@ -476,6 +471,11 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
     )
 
 
+@router.get("/providers/{provider_id:path}")
+async def get_provider(provider_id: str, bot=BotDep):
+    return ok(_serialize_provider(_require_provider(bot, provider_id)))
+
+
 @router.get("/models")
 async def list_models(providerId: str | None = Query(default=None), bot=BotDep):
     models = bot.database.model_registry.list_models(provider_id=providerId)
@@ -510,12 +510,12 @@ async def create_model(body: ModelRequest, bot=BotDep):
     return ok(_serialize_model(_require_model(bot, body.id)))
 
 
-@router.get("/models/{model_id}")
+@router.get("/models/{model_id:path}")
 async def get_model(model_id: str, bot=BotDep):
     return ok(_serialize_model(_require_model(bot, model_id)))
 
 
-@router.patch("/models/{model_id}")
+@router.patch("/models/{model_id:path}")
 async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     current = _require_model(bot, model_id)
     provider_id = body.providerId if body.providerId is not None else current["provider_id"]
@@ -552,7 +552,7 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     return ok(_serialize_model(_require_model(bot, model_id)))
 
 
-@router.delete("/models/{model_id}")
+@router.delete("/models/{model_id:path}")
 async def delete_model(model_id: str, bot=BotDep):
     _require_model(bot, model_id)
     bot.database.model_registry.delete_model(model_id)
@@ -610,14 +610,14 @@ async def create_route(body: RouteRequest, bot=BotDep):
     return ok(_serialize_route(route, bot.database.model_registry.list_route_members(body.id)))
 
 
-@router.get("/routes/{route_id}")
+@router.get("/routes/{route_id:path}")
 async def get_route(route_id: str, bot=BotDep):
     route = _require_route(bot, route_id)
     members = bot.database.model_registry.list_route_members(route_id)
     return ok(_serialize_route(route, members))
 
 
-@router.patch("/routes/{route_id}")
+@router.patch("/routes/{route_id:path}")
 async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
     current = _require_route(bot, route_id)
     next_id = body.id if body.id is not None else route_id
@@ -672,7 +672,7 @@ async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
     return ok(_serialize_route(route, bot.database.model_registry.list_route_members(route_id)))
 
 
-@router.delete("/routes/{route_id}")
+@router.delete("/routes/{route_id:path}")
 async def delete_route(route_id: str, bot=BotDep):
     _require_route(bot, route_id)
     bot.database.model_registry.delete_route(route_id)
