@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from shinbot.agent.tools import ToolRegistry
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.plugins.plugin import (
@@ -39,7 +40,13 @@ class TestPluginContext:
     def setup_method(self):
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
-        self.ctx = PluginContext("test-plugin", self.cmd_reg, self.event_bus)
+        self.tool_registry = ToolRegistry()
+        self.ctx = PluginContext(
+            "test-plugin",
+            self.cmd_reg,
+            self.event_bus,
+            tool_registry=self.tool_registry,
+        )
 
     def test_on_command_decorator(self):
         @self.ctx.on_command("hello", aliases=["hi"], permission="cmd.hello")
@@ -65,12 +72,32 @@ class TestPluginContext:
 
         assert self.event_bus.handler_count("message-created") == 1
 
+    def test_tool_decorator_registers_tool(self):
+        @self.ctx.tool(
+            name="weather_query",
+            description="query weather",
+            permission="tools.weather.query",
+            input_schema={
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        )
+        async def weather_query(args, runtime):
+            return {"city": args["city"]}
+
+        definition = self.tool_registry.get_tool_by_name("weather_query")
+        assert definition is not None
+        assert definition.owner_id == "test-plugin"
+        assert definition.permission == "tools.weather.query"
+
 
 class TestPluginManager:
     def setup_method(self):
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
-        self.mgr = PluginManager(self.cmd_reg, self.event_bus)
+        self.tool_registry = ToolRegistry()
+        self.mgr = PluginManager(self.cmd_reg, self.event_bus, tool_registry=self.tool_registry)
 
     def teardown_method(self):
         # Clean up any test modules
@@ -119,16 +146,26 @@ class TestPluginManager:
             async def on_test(event):
                 pass
 
+            @ctx.tool(
+                name="bye_tool",
+                description="tool",
+                input_schema={"type": "object", "properties": {}},
+            )
+            async def bye_tool(args, runtime):
+                return None
+
         _make_plugin_module("test_plugin_bye", setup_fn=setup)
         self.mgr.load_plugin("bye", "test_plugin_bye")
 
         assert self.cmd_reg.get("bye") is not None
         assert self.event_bus.handler_count("test-event") == 1
+        assert self.tool_registry.get_tool_by_name("bye_tool") is not None
 
         result = self.mgr.unload_plugin("bye")
         assert result is True
         assert self.cmd_reg.get("bye") is None
         assert self.event_bus.handler_count("test-event") == 0
+        assert self.tool_registry.get_tool_by_name("bye_tool") is None
         assert self.mgr.get_plugin("bye") is None
 
     def test_unload_nonexistent(self):

@@ -36,6 +36,7 @@
 - `19_database_persistence_architecture.md`
 - `21_prompt_registry.md`
 - `22_prompt_registry_schema.md`
+- `23_tool_registry_and_manager.md`
 
 ### `extensibility/`
 

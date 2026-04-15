@@ -23,6 +23,17 @@ from shinbot.agent.prompting import (
     PromptStage,
     PromptStageBlock,
 )
+from shinbot.agent.tools import (
+    ToolCallRequest,
+    ToolCallResult,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolManager,
+    ToolOwnerType,
+    ToolRegistry,
+    ToolRiskLevel,
+    ToolVisibility,
+)
 
 __all__ = [
     "EmbedResult",
@@ -44,4 +55,13 @@ __all__ = [
     "PromptSourceType",
     "PromptStage",
     "PromptStageBlock",
+    "ToolCallRequest",
+    "ToolCallResult",
+    "ToolDefinition",
+    "ToolExecutionContext",
+    "ToolManager",
+    "ToolOwnerType",
+    "ToolRegistry",
+    "ToolRiskLevel",
+    "ToolVisibility",
 ]

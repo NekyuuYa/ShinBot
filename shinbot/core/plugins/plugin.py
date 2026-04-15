@@ -24,6 +24,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
 from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.utils.logger import get_logger, get_plugin_logger
@@ -127,16 +128,19 @@ class PluginContext:
         data_dir: Path | str | None = None,
         *,
         adapter_manager: AdapterManager | None = None,
+        tool_registry: ToolRegistry | None = None,
     ):
         self.plugin_id = plugin_id
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._adapter_manager = adapter_manager
+        self._tool_registry = tool_registry
         self.data_dir = (
             Path(data_dir) if data_dir is not None else Path("data") / "plugin_data" / plugin_id
         )
         self._registered_commands: list[str] = []
         self._registered_events: list[str] = []
+        self._registered_tools: list[str] = []
         self.logger = get_plugin_logger(plugin_id)
 
     def on_command(
@@ -225,6 +229,52 @@ class PluginContext:
             )
         self._adapter_manager.register_adapter(name, factory)
 
+    def tool(
+        self,
+        *,
+        name: str,
+        description: str,
+        input_schema: dict[str, Any],
+        display_name: str = "",
+        output_schema: dict[str, Any] | None = None,
+        permission: str = "",
+        enabled: bool = True,
+        visibility: ToolVisibility = ToolVisibility.SCOPED,
+        timeout_seconds: float = 30.0,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Callable:
+        if self._tool_registry is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot register tools: no ToolRegistry is available."
+            )
+
+        def decorator(func: Callable) -> Callable:
+            tool_id = f"{self.plugin_id}.{name}"
+            definition = ToolDefinition(
+                id=tool_id,
+                name=name,
+                display_name=display_name or name,
+                description=description,
+                input_schema=input_schema,
+                output_schema=output_schema,
+                handler=func,
+                owner_type=ToolOwnerType.PLUGIN,
+                owner_id=self.plugin_id,
+                owner_module=getattr(func, "__module__", ""),
+                permission=permission,
+                enabled=enabled,
+                visibility=visibility,
+                timeout_seconds=timeout_seconds,
+                tags=list(tags or []),
+                metadata=dict(metadata or {}),
+            )
+            self._tool_registry.register_tool(definition)
+            self._registered_tools.append(tool_id)
+            return func
+
+        return decorator
+
 
 class PluginManager:
     """Manages plugin lifecycle: load, unload, reload.
@@ -241,10 +291,12 @@ class PluginManager:
         data_dir: Path | str | None = None,
         *,
         adapter_manager: AdapterManager | None = None,
+        tool_registry: ToolRegistry | None = None,
     ):
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._adapter_manager = adapter_manager
+        self._tool_registry = tool_registry
         self._plugins: dict[str, PluginMeta] = {}
         self._contexts: dict[str, PluginContext] = {}
         self._modules: dict[str, Any] = {}
@@ -261,6 +313,7 @@ class PluginManager:
             self._event_bus,
             data_dir=self._build_plugin_data_dir(plugin_id),
             adapter_manager=self._adapter_manager,
+            tool_registry=self._tool_registry,
         )
 
     @property
@@ -303,6 +356,8 @@ class PluginManager:
             logger.exception("Error loading plugin %s", plugin_id)
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
+            if self._tool_registry is not None:
+                self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
 
         meta = PluginMeta(
@@ -687,6 +742,8 @@ class PluginManager:
 
         cmd_count = self._command_registry.unregister_by_owner(plugin_id)
         evt_count = self._event_bus.off_all(plugin_id)
+        if self._tool_registry is not None:
+            self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
 
         if module and hasattr(module, "teardown"):
             try:

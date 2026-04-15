@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from shinbot.agent.model_runtime import ModelRuntime
+from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
@@ -57,11 +58,18 @@ class ShinBot:
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.model_runtime = ModelRuntime(self.database)
         self.permission_engine = PermissionEngine()
+        self.tool_registry = ToolRegistry()
+        self.tool_manager = ToolManager(
+            self.tool_registry,
+            permission_engine=self.permission_engine,
+            audit_logger=self.audit_logger,
+        )
         self.adapter_manager = AdapterManager()
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,
             event_bus=self.event_bus,
             adapter_manager=self.adapter_manager,
+            tool_registry=self.tool_registry,
             data_dir=data_dir,
         )
         self.pipeline = MessagePipeline(

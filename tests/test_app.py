@@ -19,6 +19,8 @@ class TestShinBotInit:
         assert bot.command_registry is not None
         assert bot.session_manager is not None
         assert bot.permission_engine is not None
+        assert bot.tool_registry is not None
+        assert bot.tool_manager is not None
         assert bot.adapter_manager is not None
         assert bot.plugin_manager is not None
         assert bot.pipeline is not None
