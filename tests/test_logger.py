@@ -39,6 +39,34 @@ def test_normalize_log_level_aliases_warning_and_critical():
     assert logger_utils.normalize_log_level("info") == "INFO"
 
 
+def test_display_log_level_downgrades_noisy_uvicorn_info_to_debug():
+    record = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="WebSocket connected",
+        args=(),
+        exc_info=None,
+    )
+
+    assert logger_utils.display_log_level(record) == "DEBUG"
+
+
+def test_display_log_level_preserves_app_info_logs():
+    record = logging.LogRecord(
+        name="shinbot.api.app",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Management API ready",
+        args=(),
+        exc_info=None,
+    )
+
+    assert logger_utils.display_log_level(record) == "INFO"
+
+
 def test_shorten_logger_name_strips_prefix_and_keeps_tail_parts():
     assert (
         logger_utils.shorten_logger_name("shinbot.core.application.boot") == "core.application.boot"

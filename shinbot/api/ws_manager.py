@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from shinbot.utils.logger import normalize_log_level, shorten_logger_name
+from shinbot.utils.logger import display_log_level, shorten_logger_name
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class _AsyncLogHandler(logging.Handler):
             payload = {
                 "ts": int(record.created),
                 "timestamp": int(record.created * 1000),
-                "level": normalize_log_level(record.levelname),
+                "level": display_log_level(record),
                 "logger": record.name,
                 "source": shorten_logger_name(record.name),
                 "message": msg,

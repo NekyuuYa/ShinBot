@@ -26,6 +26,18 @@ _NOISY_THIRD_PARTY_LOGGERS = (
 )
 
 
+def should_downgrade_noisy_log(record: logging.LogRecord) -> bool:
+    if record.levelno > logging.INFO:
+        return False
+    return any(record.name.startswith(name) for name in _NOISY_THIRD_PARTY_LOGGERS)
+
+
+def display_log_level(record: logging.LogRecord) -> str:
+    if should_downgrade_noisy_log(record):
+        return "DEBUG"
+    return normalize_log_level(record.levelname)
+
+
 def normalize_log_level(level_name: str) -> str:
     """Normalize stdlib logging names for compact display."""
     upper = level_name.upper()
@@ -112,7 +124,7 @@ class _ReadableContextFilter(logging.Filter):
         self._keep_logger_parts = keep_logger_parts
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.level_tag = normalize_log_level(record.levelname)
+        record.level_tag = display_log_level(record)
         record.short_name = shorten_logger_name(record.name, keep_parts=self._keep_logger_parts)
         return True
 
