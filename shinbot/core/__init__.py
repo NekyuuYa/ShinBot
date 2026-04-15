@@ -1,25 +1,25 @@
 """ShinBot core engine — all core subsystems."""
 
-from shinbot.core.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
-from shinbot.core.app import ShinBot
-from shinbot.core.boot import BootController, BootState
-from shinbot.core.command import (
+from shinbot.core.application.app import ShinBot
+from shinbot.core.application.boot import BootController, BootState
+from shinbot.core.dispatch.command import (
     CommandDef,
     CommandMatch,
     CommandMode,
     CommandPriority,
     CommandRegistry,
 )
-from shinbot.core.event_bus import EventBus, StopPropagation
-from shinbot.core.permission import (
+from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
+from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
+from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.plugins.plugin import PluginContext, PluginManager, PluginMeta
+from shinbot.core.security.permission import (
     PermissionEngine,
     PermissionGroup,
     check_permission,
     merge_permissions,
 )
-from shinbot.core.pipeline import MessageContext, MessagePipeline
-from shinbot.core.plugin import PluginContext, PluginManager, PluginMeta
-from shinbot.core.session import Session, SessionConfig, SessionManager
+from shinbot.core.state.session import Session, SessionConfig, SessionManager
 
 __all__ = [
     "ShinBot",

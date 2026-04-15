@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from shinbot.builtin_plugins.shinbot_adapter_satori.adapter import SatoriAdapter, SatoriConfig
-from shinbot.core.adapter_manager import MessageHandle
+from shinbot.core.platform.adapter_manager import MessageHandle
 from shinbot.models.elements import MessageElement
 from shinbot.models.events import UnifiedEvent
 

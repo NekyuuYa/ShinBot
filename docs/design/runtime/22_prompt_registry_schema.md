@@ -1,11 +1,11 @@
-# ShinBot 技术规范：PromptRegistry 对象模型 (PromptRegistry Object Model)
+# ShinBot 技术规范：PromptRegistry 数据结构 (PromptRegistry Schema)
 
-本文档定义 PromptRegistry 首版实现所需的核心对象、字段约束与运行关系。
+本文档定义 PromptRegistry 首版实现所需的核心数据结构、字段约束与运行关系。
 
-它不是新的架构设计，而是 `21_prompt_registry.md` 的对象化落地版本，用于回答：
+它不是新的架构设计，而是 `21_prompt_registry.md` 的结构化落地版本，用于回答：
 
-- PromptRegistry 运行时到底维护哪些对象
-- 这些对象之间如何关联
+- PromptRegistry 运行时到底维护哪些数据结构
+- 这些数据结构之间如何关联
 - 哪些字段是必填、哪些字段可选
 - 哪些字段由系统推导，哪些字段由调用方提供
 - PromptSnapshot / PromptLogger 应如何建模
@@ -16,13 +16,13 @@
 
 - 为 PromptRegistry 提供稳定的实现骨架。
 - 保证“阶段顺序强制执行、来源系统主动推导、上下文以 resolver 为主”的设计能直接映射到代码。
-- 为后续数据库持久化、审计、缓存和 WebUI 观察能力预留统一对象模型。
+- 为后续数据库持久化、审计、缓存和 WebUI 观察能力预留统一数据结构。
 
 ---
 
-## 2. 核心对象总览
+## 2. 核心数据结构总览
 
-PromptRegistry 首版建议至少包含以下对象：
+PromptRegistry 首版建议至少包含以下数据结构：
 
 1. `PromptComponent`
 2. `PromptSource`
@@ -186,7 +186,7 @@ PromptRegistry 首版建议至少包含以下对象：
 
 ### 5.3 不建议字段
 
-首版不建议在组件对象中直接存：
+首版不建议在组件数据结构中直接存：
 
 - 最终展开文本
 - 运行时 token 统计

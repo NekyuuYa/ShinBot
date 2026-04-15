@@ -1,9 +1,5 @@
 """Tests for shinbot.models.events — UnifiedEvent and related models."""
 
-import json
-
-import pytest
-
 from shinbot.models.events import (
     Channel,
     Guild,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from shinbot.core.plugin import PluginContext
+from shinbot.core.plugins.plugin import PluginContext
 
 __plugin_name__ = "Satori Adapter (Official)"
 __plugin_version__ = "1.0.0"
@@ -17,7 +17,7 @@ __plugin_author__ = "ShinBot Team"
 __plugin_description__ = "The standard Satori protocol driver for ShinBot."
 __plugin_adapter_platform__ = "satori"
 
-from shinbot.core.plugin import PluginRole
+from shinbot.core.plugins.plugin import PluginRole
 
 __plugin_role__ = PluginRole.ADAPTER
 

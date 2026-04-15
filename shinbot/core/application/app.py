@@ -10,15 +10,15 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from shinbot.core.adapter_manager import AdapterManager, BaseAdapter
-from shinbot.core.audit import AuditLogger
-from shinbot.core.command import CommandRegistry
-from shinbot.core.event_bus import EventBus
-from shinbot.core.permission import PermissionEngine
-from shinbot.core.pipeline import MessagePipeline
-from shinbot.core.plugin import PluginManager
-from shinbot.core.session import SessionManager
-from shinbot.model_runtime import ModelRuntime
+from shinbot.agent.model_runtime import ModelRuntime
+from shinbot.core.dispatch.command import CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.pipeline import MessagePipeline
+from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
+from shinbot.core.plugins.plugin import PluginManager
+from shinbot.core.security.audit import AuditLogger
+from shinbot.core.security.permission import PermissionEngine
+from shinbot.core.state.session import SessionManager
 from shinbot.models.events import UnifiedEvent
 from shinbot.persistence import DatabaseManager
 

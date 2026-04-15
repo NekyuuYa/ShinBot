@@ -41,8 +41,8 @@ from shinbot.utils.logger import register_log_handler_installer
 register_log_handler_installer(install_log_handler)
 
 if TYPE_CHECKING:
-    from shinbot.core.app import ShinBot
-    from shinbot.core.boot import BootController
+    from shinbot.core.application.app import ShinBot
+    from shinbot.core.application.boot import BootController
 
 logger = logging.getLogger(__name__)
 

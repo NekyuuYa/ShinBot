@@ -1,23 +1,35 @@
-"""Prompt registry primitives and assembly service."""
+"""Agent-related runtime services."""
 
-from shinbot.prompting.logger import PromptLogger
-from shinbot.prompting.models import (
+from shinbot.agent.model_runtime import (
+    EmbedResult,
+    GenerateResult,
+    ModelCallError,
+    ModelRuntime,
+    ModelRuntimeCall,
+)
+from shinbot.agent.prompting import (
     PromptAssemblyRequest,
     PromptAssemblyResult,
     PromptComponent,
     PromptComponentKind,
     PromptComponentRecord,
+    PromptLogger,
     PromptLoggerRecord,
     PromptProfile,
+    PromptRegistry,
     PromptSnapshot,
     PromptSource,
     PromptSourceType,
     PromptStage,
     PromptStageBlock,
 )
-from shinbot.prompting.registry import PromptRegistry
 
 __all__ = [
+    "EmbedResult",
+    "GenerateResult",
+    "ModelCallError",
+    "ModelRuntime",
+    "ModelRuntimeCall",
     "PromptAssemblyRequest",
     "PromptAssemblyResult",
     "PromptComponent",

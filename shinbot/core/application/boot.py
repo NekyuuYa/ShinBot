@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from shinbot.core.app import ShinBot
+from shinbot.core.application.app import ShinBot
 from shinbot.utils.logger import get_logger, setup_logging
 
 logger = get_logger(__name__)

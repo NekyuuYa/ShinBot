@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -29,9 +31,13 @@ async def _boot_controller(request: Request):
 # ── Auth dependency ──────────────────────────────────────────────────
 
 
+AuthConfigDep = Annotated[object, Depends(_auth_config)]
+CredentialsDep = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
+
+
 def require_auth(
-    auth_config=Depends(_auth_config),
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    auth_config: AuthConfigDep,
+    credentials: CredentialsDep,
 ) -> None:
     if credentials is None:
         raise HTTPException(
@@ -47,12 +53,12 @@ def require_auth(
         raise HTTPException(
             status_code=401,
             detail={"code": EC.AUTH_TOKEN_EXPIRED, "message": "Token has expired"},
-        )
+        ) from None
     except jwt.InvalidTokenError:
         raise HTTPException(
             status_code=401,
             detail={"code": EC.AUTH_TOKEN_INVALID, "message": "Invalid or malformed token"},
-        )
+        ) from None
 
 
 # Shorthand Depends wrappers used in router files

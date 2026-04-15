@@ -1,8 +1,8 @@
-"""Tests for shinbot.core.event_bus — EventBus."""
+"""Tests for dispatch event bus."""
 
 import pytest
 
-from shinbot.core.event_bus import EventBus, StopPropagation
+from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
 
 
 class TestEventBus:

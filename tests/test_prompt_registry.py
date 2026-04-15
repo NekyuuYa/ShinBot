@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.prompting import (
+from shinbot.agent.prompting import (
     PromptAssemblyRequest,
     PromptComponent,
     PromptComponentKind,

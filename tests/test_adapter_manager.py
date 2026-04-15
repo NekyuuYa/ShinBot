@@ -1,8 +1,8 @@
-"""Tests for shinbot.core.adapter_manager — BaseAdapter and AdapterManager."""
+"""Tests for platform adapter management."""
 
 import pytest
 
-from shinbot.core.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.models.elements import MessageElement
 
 # ── Test adapter implementation ──────────────────────────────────────

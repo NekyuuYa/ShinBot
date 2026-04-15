@@ -1,8 +1,8 @@
-"""Tests for shinbot.core.permission — permission checking and engine."""
+"""Tests for security permission engine."""
 
 import pytest
 
-from shinbot.core.permission import (
+from shinbot.core.security.permission import (
     PermissionEngine,
     PermissionGroup,
     check_permission,

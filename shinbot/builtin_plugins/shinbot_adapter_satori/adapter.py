@@ -28,7 +28,7 @@ from typing import Any
 import httpx
 import websockets
 
-from shinbot.core.adapter_manager import BaseAdapter, MessageHandle
+from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.models.elements import Message, MessageElement
 from shinbot.models.events import UnifiedEvent
 from shinbot.utils.logger import get_logger

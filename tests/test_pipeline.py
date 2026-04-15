@@ -1,14 +1,14 @@
-"""Tests for shinbot.core.pipeline — MessageContext and MessagePipeline."""
+"""Tests for message pipeline dispatch."""
 
 import pytest
 
-from shinbot.core.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
-from shinbot.core.audit import AuditLogger
-from shinbot.core.command import CommandDef, CommandRegistry
-from shinbot.core.event_bus import EventBus
-from shinbot.core.permission import PermissionEngine
-from shinbot.core.pipeline import MessageContext, MessagePipeline
-from shinbot.core.session import Session, SessionManager
+from shinbot.core.dispatch.command import CommandDef, CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
+from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.security.audit import AuditLogger
+from shinbot.core.security.permission import PermissionEngine
+from shinbot.core.state.session import Session, SessionManager
 from shinbot.models.elements import Message, MessageElement
 from shinbot.models.events import Channel, Guild, MessagePayload, UnifiedEvent, User
 from shinbot.utils.resource_ingress import summarize_message_modalities

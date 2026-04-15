@@ -16,12 +16,12 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from shinbot.core.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
-from shinbot.core.audit import AuditLogger
-from shinbot.core.command import CommandMatch, CommandRegistry
-from shinbot.core.event_bus import EventBus
-from shinbot.core.permission import PermissionEngine, check_permission
-from shinbot.core.session import Session, SessionManager
+from shinbot.core.dispatch.command import CommandMatch, CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.security.audit import AuditLogger
+from shinbot.core.security.permission import PermissionEngine, check_permission
+from shinbot.core.state.session import Session, SessionManager
 from shinbot.models.elements import Message, MessageElement
 from shinbot.models.events import UnifiedEvent
 from shinbot.utils.logger import get_logger

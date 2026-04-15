@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-import sys
-import types
 from typing import Any
 
 import pytest
 
-from shinbot.core.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
-from shinbot.core.command import CommandRegistry
-from shinbot.core.event_bus import EventBus
-from shinbot.core.permission import PermissionEngine
-from shinbot.core.plugin import PluginManager
-from shinbot.core.session import SessionManager
+from shinbot.core.dispatch.command import CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.plugins.plugin import PluginManager
+from shinbot.core.security.permission import PermissionEngine
+from shinbot.core.state.session import SessionManager
 from shinbot.models.elements import MessageElement
 from shinbot.models.events import Channel, Guild, MessagePayload, UnifiedEvent, User
-
 
 # ── Mock adapter ─────────────────────────────────────────────────────────────
 

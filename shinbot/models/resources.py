@@ -9,8 +9,6 @@ Reference: docs/design/17_resource_schema_spec.md
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field
 
 

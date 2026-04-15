@@ -1,13 +1,11 @@
-"""Tests for shinbot.core.command — Command system."""
+"""Tests for command dispatch system."""
 
 import re
 
 import pytest
 
-from shinbot.core.command import (
+from shinbot.core.dispatch.command import (
     CommandDef,
-    CommandMatch,
-    CommandMode,
     CommandPriority,
     CommandRegistry,
 )

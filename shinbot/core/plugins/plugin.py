@@ -24,12 +24,12 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.core.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
-from shinbot.core.event_bus import EventBus
+from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.utils.logger import get_logger, get_plugin_logger
 
 if TYPE_CHECKING:
-    from shinbot.core.adapter_manager import AdapterManager
+    from shinbot.core.platform.adapter_manager import AdapterManager
 
 logger = get_logger(__name__)
 

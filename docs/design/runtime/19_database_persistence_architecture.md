@@ -484,7 +484,7 @@
 后续应继续补充：
 
 - `interfaces/` 下的数据库管理 API 与 WebUI 设计
-- `runtime/` 下的 Agent 运行对象模型设计
+- `runtime/` 下的 Agent 运行数据结构设计
 - `core/` 下的资源索引与存储抽象设计
 
 这样数据库不会只是“换个存储介质”，而是成为整个 Agent 时代的数据底座。

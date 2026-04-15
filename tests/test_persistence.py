@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from shinbot.core.audit import AuditLogger
-from shinbot.core.session import SessionManager
+from shinbot.core.security.audit import AuditLogger
+from shinbot.core.state.session import SessionManager
 from shinbot.models.events import Channel, UnifiedEvent, User
 from shinbot.persistence import DatabaseManager, ModelExecutionRecord
 

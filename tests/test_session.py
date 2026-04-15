@@ -1,8 +1,6 @@
-"""Tests for shinbot.core.session — Session, SessionManager, ID generation."""
+"""Tests for session state management."""
 
-import pytest
-
-from shinbot.core.session import (
+from shinbot.core.state.session import (
     Session,
     SessionConfig,
     SessionManager,

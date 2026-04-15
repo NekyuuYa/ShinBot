@@ -1,4 +1,4 @@
-"""Tests for shinbot.core.plugin — PluginManager and PluginContext."""
+"""Tests for plugin lifecycle and registration."""
 
 import json
 import sys
@@ -7,13 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from shinbot.core.command import CommandRegistry
-from shinbot.core.event_bus import EventBus
-from shinbot.core.plugin import (
+from shinbot.core.dispatch.command import CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.plugins.plugin import (
     PluginContext,
     PluginManager,
-    PluginMeta,
-    PluginRole,
     PluginState,
     _topo_sort,
 )

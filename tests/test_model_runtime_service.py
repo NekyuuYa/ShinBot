@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.model_runtime.service import ModelRuntime
+from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.model_runtime.service import ModelRuntime
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
     ModelDefinitionRecord,
@@ -103,7 +103,7 @@ async def test_generate_merges_provider_model_and_call_params(monkeypatch, tmp_p
             "_hidden_params": {"response_cost": 0.12},
         }
 
-    monkeypatch.setattr("shinbot.model_runtime.litellm_adapter.completion", fake_completion)
+    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
 
     result = await runtime.generate(
         ModelRuntimeCall(
@@ -150,7 +150,7 @@ async def test_generate_falls_back_to_second_route_member(monkeypatch, tmp_path)
             "usage": {"prompt_tokens": 5, "completion_tokens": 7},
         }
 
-    monkeypatch.setattr("shinbot.model_runtime.litellm_adapter.completion", fake_completion)
+    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
 
     result = await runtime.generate(
         ModelRuntimeCall(
@@ -186,7 +186,7 @@ async def test_embed_records_usage(monkeypatch, tmp_path):
             "usage": {"prompt_tokens": 9},
         }
 
-    monkeypatch.setattr("shinbot.model_runtime.litellm_adapter.embedding", fake_embedding)
+    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.embedding", fake_embedding)
 
     result = await runtime.embed(
         ModelRuntimeCall(

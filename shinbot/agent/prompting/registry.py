@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 from collections.abc import Callable
 from typing import Any
 
-from shinbot.prompting.models import (
+from shinbot.agent.prompting.schema import (
     PROMPT_STAGE_ORDER,
     PromptAssemblyRequest,
     PromptAssemblyResult,

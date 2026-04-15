@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from shinbot.api.app import create_api_app
-from shinbot.core.app import ShinBot
+from shinbot.core.application.app import ShinBot
 
 
 class _BootStub:

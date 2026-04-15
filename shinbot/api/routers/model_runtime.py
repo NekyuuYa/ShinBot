@@ -8,9 +8,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from shinbot.agent.model_runtime import ModelRuntimeCall
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, ok
-from shinbot.model_runtime import ModelRuntimeCall
 from shinbot.persistence.records import (
     ModelDefinitionRecord,
     ModelProviderRecord,

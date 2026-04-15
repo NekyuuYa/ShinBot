@@ -1,7 +1,5 @@
 """Tests for shinbot.models.elements — MessageElement and Message."""
 
-import pytest
-
 from shinbot.models.elements import Message, MessageElement
 
 

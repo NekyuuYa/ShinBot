@@ -1,4 +1,4 @@
-"""Tests for shinbot.core.app — ShinBot top-level orchestrator."""
+"""Tests for application orchestrator."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import types
 
 import pytest
 
-from shinbot.core.app import ShinBot
-from shinbot.core.plugin import PluginContext, PluginState
+from shinbot.core.application.app import ShinBot
+from shinbot.core.plugins.plugin import PluginContext, PluginState
 from tests.conftest import MockAdapter, make_message_event
 
 

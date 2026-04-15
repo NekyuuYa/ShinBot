@@ -2,7 +2,7 @@
 
 本文档定义 ShinBot 在 Agent、系统任务与插件侧的统一 Prompt 编排机制。
 
-对象模型与实现字段定义见 `22_prompt_registry_object_model.md`。
+数据结构与实现字段定义见 `22_prompt_registry_schema.md`。
 
 PromptRegistry 的目标不是“存几段 prompt 文本”，而是建立一套稳定、可组合、可审计、可缓存优化的 Prompt 组装协议。
 

@@ -1,6 +1,6 @@
 """Unified LiteLLM-backed model runtime."""
 
-from shinbot.model_runtime.service import (
+from shinbot.agent.model_runtime.service import (
     EmbedResult,
     GenerateResult,
     ModelCallError,

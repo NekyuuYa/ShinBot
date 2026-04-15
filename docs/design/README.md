@@ -35,7 +35,7 @@
 - `18_agent_model_runtime.md`
 - `19_database_persistence_architecture.md`
 - `21_prompt_registry.md`
-- `22_prompt_registry_object_model.md`
+- `22_prompt_registry_schema.md`
 
 ### `extensibility/`
 

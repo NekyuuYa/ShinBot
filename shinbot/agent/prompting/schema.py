@@ -1,18 +1,18 @@
-"""Prompt registry object model."""
+"""Prompt registry schema definitions."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import time
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
 
-class PromptStage(str, Enum):
+class PromptStage(StrEnum):
     SYSTEM_BASE = "system_base"
     IDENTITY = "identity"
     CONTEXT = "context"
@@ -33,7 +33,7 @@ PROMPT_STAGE_ORDER: tuple[PromptStage, ...] = (
 )
 
 
-class PromptComponentKind(str, Enum):
+class PromptComponentKind(StrEnum):
     STATIC_TEXT = "static_text"
     TEMPLATE = "template"
     RESOLVER = "resolver"
@@ -41,7 +41,7 @@ class PromptComponentKind(str, Enum):
     EXTERNAL_INJECTION = "external_injection"
 
 
-class PromptSourceType(str, Enum):
+class PromptSourceType(StrEnum):
     BUILTIN_SYSTEM = "builtin_system"
     AGENT_PLUGIN = "agent_plugin"
     CONTEXT_PLUGIN = "context_plugin"
@@ -218,4 +218,3 @@ class PromptLoggerRecord(BaseModel):
 
 def stable_text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
