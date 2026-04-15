@@ -615,8 +615,9 @@ export function useModelRuntimePage() {
       return
     }
 
+    let saved = null
     if (editingModelId.value) {
-      await store.updateModel(editingModelId.value, {
+      saved = await store.updateModel(editingModelId.value, {
         displayName: modelForm.value.displayName,
         litellmModel: modelForm.value.litellmModel,
         capabilities: modelForm.value.capabilities,
@@ -626,7 +627,7 @@ export function useModelRuntimePage() {
         costMetadata: {},
       })
     } else {
-      await store.createModel({
+      saved = await store.createModel({
         id: modelForm.value.id.trim(),
         providerId: selectedProvider.value.id,
         displayName: modelForm.value.displayName.trim() || modelForm.value.id.trim(),
@@ -639,11 +640,16 @@ export function useModelRuntimePage() {
       })
     }
 
-    cancelInlineModelEditor()
+    if (saved) {
+      cancelInlineModelEditor()
+    }
   }
 
   const removeModel = async (modelId: string) => {
-    await store.deleteModel(modelId)
+    const deleted = await store.deleteModel(modelId)
+    if (deleted && editingModelId.value === modelId) {
+      cancelInlineModelEditor()
+    }
   }
 
   const toggleModel = async (modelId: string, enabled: boolean) => {

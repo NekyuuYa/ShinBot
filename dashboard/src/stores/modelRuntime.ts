@@ -99,6 +99,10 @@ export const useModelRuntimeStore = defineStore(
             models.value = models.value.map((item) =>
               item.providerId === id ? { ...item, providerId: response.data.data!.id } : item
             )
+            if (catalogItems.value[id]) {
+              catalogItems.value[response.data.data.id] = catalogItems.value[id]
+              delete catalogItems.value[id]
+            }
           }
           useUiStore().showSnackbar(
             translate('pages.modelRuntime.messages.providerUpdated'),
@@ -123,6 +127,7 @@ export const useModelRuntimeStore = defineStore(
         if (response.data.success) {
           providers.value = providers.value.filter((item) => item.id !== id)
           models.value = models.value.filter((item) => item.providerId !== id)
+          delete catalogItems.value[id]
           useUiStore().showSnackbar(
             translate('pages.modelRuntime.messages.providerDeleted'),
             'info'

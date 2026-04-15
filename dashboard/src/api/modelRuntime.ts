@@ -1,5 +1,7 @@
 import { apiClient } from './client'
 
+const encodePathSegment = (value: string) => encodeURIComponent(value)
+
 export interface ModelRuntimeProvider {
   id: string
   type: string
@@ -134,21 +136,29 @@ export const modelRuntimeApi = {
   },
 
   updateProvider(id: string, data: Partial<ProviderPayload>) {
-    return apiClient.patch<ModelRuntimeProvider>(`/model-runtime/providers/${id}`, data)
+    return apiClient.patch<ModelRuntimeProvider>(
+      `/model-runtime/providers/${encodePathSegment(id)}`,
+      data
+    )
   },
 
   deleteProvider(id: string) {
-    return apiClient.delete<void>(`/model-runtime/providers/${id}`)
+    return apiClient.delete<void>(`/model-runtime/providers/${encodePathSegment(id)}`)
   },
 
   fetchProviderCatalog(id: string) {
-    return apiClient.get<ProviderCatalogItem[]>(`/model-runtime/providers/${id}/catalog`)
+    return apiClient.get<ProviderCatalogItem[]>(
+      `/model-runtime/providers/${encodePathSegment(id)}/catalog`
+    )
   },
 
   probeProvider(id: string, modelId?: string) {
-    return apiClient.post<ProviderProbeResult>(`/model-runtime/providers/${id}/probe`, {
+    return apiClient.post<ProviderProbeResult>(
+      `/model-runtime/providers/${encodePathSegment(id)}/probe`,
+      {
       modelId,
-    })
+      }
+    )
   },
 
   listModels(providerId?: string) {
@@ -162,11 +172,14 @@ export const modelRuntimeApi = {
   },
 
   updateModel(id: string, data: Partial<ModelPayload>) {
-    return apiClient.patch<ModelRuntimeModel>(`/model-runtime/models/${id}`, data)
+    return apiClient.patch<ModelRuntimeModel>(
+      `/model-runtime/models/${encodePathSegment(id)}`,
+      data
+    )
   },
 
   deleteModel(id: string) {
-    return apiClient.delete<void>(`/model-runtime/models/${id}`)
+    return apiClient.delete<void>(`/model-runtime/models/${encodePathSegment(id)}`)
   },
 
   listRoutes() {
@@ -178,11 +191,14 @@ export const modelRuntimeApi = {
   },
 
   updateRoute(id: string, data: Partial<RoutePayload>) {
-    return apiClient.patch<ModelRuntimeRoute>(`/model-runtime/routes/${id}`, data)
+    return apiClient.patch<ModelRuntimeRoute>(
+      `/model-runtime/routes/${encodePathSegment(id)}`,
+      data
+    )
   },
 
   deleteRoute(id: string) {
-    return apiClient.delete<void>(`/model-runtime/routes/${id}`)
+    return apiClient.delete<void>(`/model-runtime/routes/${encodePathSegment(id)}`)
   },
 
   listExecutions(limit = 50) {
