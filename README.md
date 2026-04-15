@@ -53,10 +53,10 @@ uv run ruff check .
 python main.py --config config.toml
 ```
 
-默认配置模板见 [config.example.toml](/home/Nekyuu/Workplace/ShinBot/config.example.toml)。
+默认配置模板见 [config.example.toml](config.example.toml)。
 
 ## 文档入口
 
-- 项目文档总入口：[docs/README.md](/home/Nekyuu/Workplace/ShinBot/docs/README.md)
-- 设计文档分层：[docs/design/README.md](/home/Nekyuu/Workplace/ShinBot/docs/design/README.md)
-- 插件能力说明：[docs/plugins/capabilities.md](/home/Nekyuu/Workplace/ShinBot/docs/plugins/capabilities.md)
+- 项目文档总入口：[docs/README.md](docs/README.md)
+- 设计文档分层：[docs/design/README.md](docs/design/README.md)
+- 插件能力说明：[docs/plugins/capabilities.md](docs/plugins/capabilities.md)
