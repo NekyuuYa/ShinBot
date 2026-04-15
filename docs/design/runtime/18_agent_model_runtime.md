@@ -41,7 +41,7 @@
 
 ## 2. 非目标
 
-- 本文档不规定具体 Prompt 模板内容。
+- 本文档不规定具体 Prompt 模板内容；Prompt 编排结构由 `21_prompt_registry.md` 单独定义。
 - 本文档不要求首版就支持所有 LiteLLM 能力，重点先覆盖文本生成与嵌入能力。
 - 本文档不强制首版引入数据库；允许先用配置文件或本地持久化承载模型资产元数据。
 
@@ -67,6 +67,15 @@
 而不是：
 
 `Agent / Plugin -> 第三方 SDK`
+
+与 Prompt 相关的职责边界如下：
+
+- `PromptRegistry` 负责定义“向模型提交什么 Prompt 结构”
+- `Model Runtime` 负责定义“由哪个模型、通过哪条 Route 执行”
+- Prompt 的阶段顺序、来源标记与快照记录由 `PromptRegistry` 统一负责
+- Agent / Plugin 不得绕过 PromptRegistry 直接拼装最终 system prompt
+
+二者是串联关系，不是替代关系。
 
 ---
 

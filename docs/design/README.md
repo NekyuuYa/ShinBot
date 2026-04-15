@@ -34,6 +34,8 @@
 - `12_system_boot_lifecycle.md`
 - `18_agent_model_runtime.md`
 - `19_database_persistence_architecture.md`
+- `21_prompt_registry.md`
+- `22_prompt_registry_object_model.md`
 
 ### `extensibility/`
 
