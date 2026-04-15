@@ -158,6 +158,15 @@ def test_model_and_route_crud_roundtrip(tmp_path: Path):
         assert list_models_resp.status_code == 200
         assert len(list_models_resp.json()["data"]) == 1
 
+        patch_model_resp = client.patch(
+            "/api/v1/model-runtime/models/openrouter-main/claude-sonnet",
+            headers=headers,
+            json={"enabled": False, "displayName": "Claude Sonnet Disabled"},
+        )
+        assert patch_model_resp.status_code == 200
+        assert patch_model_resp.json()["data"]["enabled"] is False
+        assert patch_model_resp.json()["data"]["displayName"] == "Claude Sonnet Disabled"
+
         route_resp = client.post(
             "/api/v1/model-runtime/routes",
             headers=headers,
@@ -211,6 +220,13 @@ def test_model_and_route_crud_roundtrip(tmp_path: Path):
         )
         assert delete_route_resp.status_code == 200
         assert delete_route_resp.json()["data"]["deleted"] is True
+
+        delete_model_resp = client.delete(
+            "/api/v1/model-runtime/models/openrouter-main/claude-sonnet",
+            headers=headers,
+        )
+        assert delete_model_resp.status_code == 200
+        assert delete_model_resp.json()["data"]["deleted"] is True
 
 
 def test_model_execution_list_endpoint(tmp_path: Path):
@@ -333,3 +349,67 @@ def test_provider_probe_endpoint_uses_runtime(tmp_path: Path, monkeypatch: pytes
 
     assert response.status_code == 200
     assert response.json()["data"]["executionId"] == "probe-exec"
+
+
+def test_provider_and_route_path_ids_support_nested_segments(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        provider_resp = client.post(
+            "/api/v1/model-runtime/providers",
+            headers=headers,
+            json={
+                "id": "tenant/openai-main",
+                "type": "openai",
+                "displayName": "OpenAI Main",
+                "baseUrl": "https://api.openai.com/v1",
+            },
+        )
+        assert provider_resp.status_code == 201
+
+        patch_provider_resp = client.patch(
+            "/api/v1/model-runtime/providers/tenant/openai-main",
+            headers=headers,
+            json={"displayName": "OpenAI Tenant Main"},
+        )
+        assert patch_provider_resp.status_code == 200
+        assert patch_provider_resp.json()["data"]["displayName"] == "OpenAI Tenant Main"
+
+        route_resp = client.post(
+            "/api/v1/model-runtime/routes",
+            headers=headers,
+            json={
+                "id": "agent/chat/default",
+                "purpose": "default chat",
+                "strategy": "priority",
+                "enabled": True,
+                "stickySessions": False,
+                "metadata": {"domain": "chat"},
+                "members": [],
+            },
+        )
+        assert route_resp.status_code == 201
+
+        patch_route_resp = client.patch(
+            "/api/v1/model-runtime/routes/agent/chat/default",
+            headers=headers,
+            json={"strategy": "weighted"},
+        )
+        assert patch_route_resp.status_code == 200
+        assert patch_route_resp.json()["data"]["strategy"] == "weighted"
+
+        delete_route_resp = client.delete(
+            "/api/v1/model-runtime/routes/agent/chat/default",
+            headers=headers,
+        )
+        assert delete_route_resp.status_code == 200
+        assert delete_route_resp.json()["data"]["deleted"] is True
+
+        delete_provider_resp = client.delete(
+            "/api/v1/model-runtime/providers/tenant/openai-main",
+            headers=headers,
+        )
+        assert delete_provider_resp.status_code == 200
+        assert delete_provider_resp.json()["data"]["deleted"] is True
