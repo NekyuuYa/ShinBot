@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 from typing import Any
 
 def plugin_module(plugin_manager: Any, plugin_id: str) -> Any | None:
@@ -13,6 +15,10 @@ def plugin_locales(plugin_manager: Any, plugin_id: str) -> dict[str, dict[str, s
     module = plugin_module(plugin_manager, plugin_id)
     if module is None:
         return {}
+
+    file_locales = _plugin_file_locales(module)
+    if file_locales:
+        return file_locales
 
     payload = getattr(module, "__plugin_locales__", {})
     if not isinstance(payload, dict):
@@ -25,6 +31,31 @@ def plugin_locales(plugin_manager: Any, plugin_id: str) -> dict[str, dict[str, s
         result[locale] = {
             str(key): str(value)
             for key, value in entries.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+    return result
+
+
+def _plugin_file_locales(module: Any) -> dict[str, dict[str, str]]:
+    module_file = getattr(module, "__file__", None)
+    if not isinstance(module_file, str) or not module_file:
+        return {}
+
+    locales_dir = Path(module_file).resolve().parent / "locales"
+    if not locales_dir.is_dir():
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for locale_file in sorted(locales_dir.glob("*.json")):
+        try:
+            payload = json.loads(locale_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        result[locale_file.stem] = {
+            str(key): str(value)
+            for key, value in payload.items()
             if isinstance(key, str) and isinstance(value, str)
         }
     return result

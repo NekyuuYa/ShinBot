@@ -1,0 +1,4 @@
+{
+  "meta.name": "消息调试插件",
+  "meta.description": "记录事件摘要，并将原始事件与 AST 写入 JSONL。"
+}

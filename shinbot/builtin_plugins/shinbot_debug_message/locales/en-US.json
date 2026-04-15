@@ -1,0 +1,4 @@
+{
+  "meta.name": "Message Debug Plugin",
+  "meta.description": "Logs event summaries and writes raw + AST events to JSONL."
+}

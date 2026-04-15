@@ -212,6 +212,71 @@ def test_plugins_list_and_schema_apply_locale_translations(tmp_path: Path):
         sys.modules.pop(module_name, None)
 
 
+def test_plugins_list_and_schema_load_locale_files(tmp_path: Path):
+    plugins_root = tmp_path / "plugins"
+    plugin_dir = plugins_root / "demo_file_i18n"
+    locales_dir = plugin_dir / "locales"
+    locales_dir.mkdir(parents=True)
+
+    (plugin_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from pydantic import BaseModel",
+                "",
+                '__plugin_name__ = "Demo File Plugin"',
+                '__plugin_description__ = "Demo file description"',
+                "",
+                "class DemoPluginConfig(BaseModel):",
+                '    api_key: str = ""',
+                "",
+                "__plugin_config_class__ = DemoPluginConfig",
+                "",
+                "def setup(ctx):",
+                '    @ctx.on_command("demo-file")',
+                "    async def demo(c, args):",
+                "        return None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (locales_dir / "zh-CN.json").write_text(
+        """
+{
+  "meta.name": "文件插件",
+  "meta.description": "来自 locale 文件的描述",
+  "config.title": "文件配置",
+  "config.fields.api_key.label": "接口密钥"
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    bot = ShinBot(data_dir=tmp_path)
+    bot.plugin_manager.load_plugins_from_dir(plugins_root)
+    boot = _BootStub(tmp_path)
+    app = create_api_app(bot, boot)
+    token = app.state.auth_config.create_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+
+    with TestClient(app) as client:
+        list_resp = client.get("/api/v1/plugins", headers=headers)
+        assert list_resp.status_code == 200
+        payload = list_resp.json()["data"][0]
+        assert payload["name"] == "文件插件"
+        assert payload["description"] == "来自 locale 文件的描述"
+        assert payload["metadata"]["config_schema"]["title"] == "文件配置"
+        assert payload["metadata"]["config_schema"]["properties"]["api_key"]["title"] == "接口密钥"
+
+        schema_resp = client.get("/api/v1/plugins/demo_file_i18n/schema", headers=headers)
+        assert schema_resp.status_code == 200
+        schema = schema_resp.json()["data"]
+        assert schema["title"] == "文件配置"
+        assert schema["properties"]["api_key"]["title"] == "接口密钥"
+
+
 def test_plugin_config_helpers_are_reusable_after_module_split(tmp_path: Path):
     module_name = "test_api_plugin_config_helpers"
     sys.modules.pop(module_name, None)
