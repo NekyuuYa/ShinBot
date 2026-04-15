@@ -55,7 +55,9 @@ export const pluginsApi = {
   },
 
   getSchema(id: string) {
-    return apiClient.get<PluginConfigSchema>(`/plugins/${id}/schema`)
+    return apiClient.get<PluginConfigSchema>(`/plugins/${id}/schema`, {
+      suppressErrorNotify: true,
+    })
   },
 
   reload() {

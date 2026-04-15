@@ -23,6 +23,9 @@ type RequestTracker = {
   start: () => void
   stop: () => void
 }
+type ApiRequestConfig = AxiosRequestConfig & {
+  suppressErrorNotify?: boolean
+}
 
 class ApiClient {
   private instance: AxiosInstance
@@ -84,7 +87,10 @@ class ApiClient {
           error.message ??
           translate('common.actions.message.requestFailed')
 
-        this.errorNotifier?.(responseMessage)
+        const requestConfig = error.config as ApiRequestConfig | undefined
+        if (!requestConfig?.suppressErrorNotify) {
+          this.errorNotifier?.(responseMessage)
+        }
         return Promise.reject(error)
       }
     )
@@ -102,19 +108,19 @@ class ApiClient {
     this.requestTracker = tracker
   }
 
-  get<T = unknown>(url: string, config?: AxiosRequestConfig) {
+  get<T = unknown>(url: string, config?: ApiRequestConfig) {
     return this.instance.get<ApiResponse<T>>(url, config)
   }
 
-  post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig) {
+  post<T = unknown>(url: string, data?: unknown, config?: ApiRequestConfig) {
     return this.instance.post<ApiResponse<T>>(url, data, config)
   }
 
-  patch<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig) {
+  patch<T = unknown>(url: string, data?: unknown, config?: ApiRequestConfig) {
     return this.instance.patch<ApiResponse<T>>(url, data, config)
   }
 
-  delete<T = unknown>(url: string, config?: AxiosRequestConfig) {
+  delete<T = unknown>(url: string, config?: ApiRequestConfig) {
     return this.instance.delete<ApiResponse<T>>(url, config)
   }
 }
