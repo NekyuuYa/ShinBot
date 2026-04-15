@@ -1,6 +1,10 @@
 <template>
   <v-container fluid class="pa-0">
-    <app-page-header :title="$t('pages.instances.title')">
+    <app-page-header
+      :title="$t('pages.instances.title')"
+      :subtitle="$t('pages.instances.subtitle')"
+      :kicker="$t('pages.instances.kicker')"
+    >
       <template #actions>
         <v-btn color="primary" prepend-icon="mdi-plus" @click="showCreateDialog">
           {{ $t('pages.instances.create') }}
@@ -174,7 +178,7 @@ const pluginsStore = usePluginsStore()
 const uiStore = useUiStore()
 
 const searchQuery = ref('')
-const viewMode = ref<'card' | 'list'>('card')
+const viewMode = ref<'card' | 'list'>('list')
 const dialogVisible = ref(false)
 const dialogTitleKey = ref('pages.instances.dialog.createTitle')
 const editingId = ref('')

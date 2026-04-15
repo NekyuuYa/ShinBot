@@ -1,4 +1,5 @@
 {
+  "kicker": "控制台",
   "welcome": "欢迎，{name}！",
   "subtitle": "系统概览与快捷入口",
   "loadFailed": "仪表盘数据加载失败",

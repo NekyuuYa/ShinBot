@@ -1,11 +1,13 @@
 <template>
-  <div>
-    <!-- Placeholder for Settings view -->
-    <v-container>
-      <h1>{{ $t('pages.settings.title') }}</h1>
-    </v-container>
-  </div>
+  <v-container fluid class="pa-0">
+    <app-page-header
+      :title="$t('pages.settings.title')"
+      :subtitle="$t('pages.settings.subtitle')"
+      :kicker="$t('pages.settings.kicker')"
+    />
+  </v-container>
 </template>
 
 <script setup lang="ts">
+import AppPageHeader from '@/components/AppPageHeader.vue'
 </script>

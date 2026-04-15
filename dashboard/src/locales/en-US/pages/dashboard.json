@@ -1,4 +1,5 @@
 {
+  "kicker": "Control Center",
   "welcome": "Welcome, {name}!",
   "subtitle": "System overview and quick actions",
   "loadFailed": "Failed to load dashboard data",

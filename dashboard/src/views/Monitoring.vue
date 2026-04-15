@@ -1,18 +1,19 @@
 <template>
   <v-container fluid class="pa-0">
-    <v-row class="mb-8" align="center">
-      <v-col cols="12" md="6">
-        <h1 class="text-h4 font-weight-bold">{{ $t('pages.monitoring.title') }}</h1>
-      </v-col>
-      <v-col cols="12" md="6" class="text-end">
+    <app-page-header
+      :title="$t('pages.monitoring.title')"
+      :subtitle="$t('pages.monitoring.subtitle')"
+      :kicker="$t('pages.monitoring.kicker')"
+    >
+      <template #actions>
         <v-btn variant="tonal" class="me-2" @click="clearLogs">
           {{ $t('common.actions.action.reset') }}
         </v-btn>
         <v-btn color="primary" @click="connectLogs">
           {{ $t('pages.monitoring.connectLogs') }}
         </v-btn>
-      </v-col>
-    </v-row>
+      </template>
+    </app-page-header>
 
     <v-row class="mb-4">
       <v-col cols="12" md="3">
@@ -92,6 +93,7 @@
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
+import AppPageHeader from '@/components/AppPageHeader.vue'
 import { useMonitoringStore } from '@/stores/monitoring'
 
 const monitoringStore = useMonitoringStore()

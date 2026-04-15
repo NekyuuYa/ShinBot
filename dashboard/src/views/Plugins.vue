@@ -1,6 +1,10 @@
 <template>
   <v-container fluid class="pa-0">
-    <app-page-header :title="$t('pages.plugins.title')">
+    <app-page-header
+      :title="$t('pages.plugins.title')"
+      :subtitle="$t('pages.plugins.subtitle')"
+      :kicker="$t('pages.plugins.kicker')"
+    >
       <template #actions>
         <v-btn color="secondary" prepend-icon="mdi-reload" @click="handleReload" class="me-2">
           {{ $t('pages.plugins.reload') }}

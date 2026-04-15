@@ -1,10 +1,10 @@
 <template>
   <v-container fluid class="pa-0">
-    <v-row class="mb-8">
-      <v-col cols="12">
-        <h1 class="text-h4 font-weight-bold">{{ $t('pages.dashboard.welcome', { name: authStore.username }) }}</h1>
-      </v-col>
-    </v-row>
+    <app-page-header
+      :title="$t('pages.dashboard.welcome', { name: authStore.username })"
+      :subtitle="$t('pages.dashboard.subtitle')"
+      :kicker="$t('pages.dashboard.kicker')"
+    />
 
     <v-row class="mb-6">
       <v-col cols="12" sm="6" md="3">
@@ -107,6 +107,7 @@
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import AppPageHeader from '@/components/AppPageHeader.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useInstancesStore } from '@/stores/instances'
 import { usePluginsStore } from '@/stores/plugins'

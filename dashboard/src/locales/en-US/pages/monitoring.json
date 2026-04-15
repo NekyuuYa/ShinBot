@@ -1,5 +1,7 @@
 {
+  "kicker": "Runtime Observability",
   "title": "Monitoring",
+  "subtitle": "Inspect service health, resource metrics, and live logs from a single operational view.",
   "connectLogs": "Connect Logs",
   "logs": "Logs",
   "status": "System Status",

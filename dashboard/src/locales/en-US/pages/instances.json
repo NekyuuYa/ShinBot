@@ -1,5 +1,7 @@
 {
+  "kicker": "Instance Orchestration",
   "title": "Instance Management",
+  "subtitle": "Manage bot instances, adapter configuration, and runtime status with a list-first operational layout.",
   "create": "Create Instance",
   "created": "Instance created",
   "updated": "Instance updated",

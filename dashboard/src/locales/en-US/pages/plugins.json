@@ -1,5 +1,7 @@
 {
+  "kicker": "Extension Control",
   "title": "Plugin Management",
+  "subtitle": "Review plugin status, trigger reload or rescan, and maintain plugin-level configuration.",
   "reload": "Reload",
   "rescan": "Rescan",
   "noData": "No plugins",
