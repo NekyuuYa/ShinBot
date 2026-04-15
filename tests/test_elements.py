@@ -1,6 +1,6 @@
-"""Tests for shinbot.models.elements — MessageElement and Message."""
+"""Tests for message element schema."""
 
-from shinbot.models.elements import Message, MessageElement
+from shinbot.schema.elements import Message, MessageElement
 
 
 class TestMessageElement:

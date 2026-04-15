@@ -29,8 +29,8 @@ import httpx
 import websockets
 
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
-from shinbot.models.elements import Message, MessageElement
-from shinbot.models.events import UnifiedEvent
+from shinbot.schema.elements import Message, MessageElement
+from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.logger import get_logger
 from shinbot.utils.resource_ingress import download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from shinbot.models.resources import Channel, Guild, Login, Member, User
+from shinbot.schema.resources import Channel, Guild, Login, Member, User
 
 
 class MessagePayload(BaseModel):

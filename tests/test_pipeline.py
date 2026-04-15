@@ -9,8 +9,8 @@ from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, M
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import Session, SessionManager
-from shinbot.models.elements import Message, MessageElement
-from shinbot.models.events import Channel, Guild, MessagePayload, UnifiedEvent, User
+from shinbot.schema.elements import Message, MessageElement
+from shinbot.schema.events import Channel, Guild, MessagePayload, UnifiedEvent, User
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
 # ── Mock adapter for testing ─────────────────────────────────────────

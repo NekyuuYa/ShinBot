@@ -1,11 +1,11 @@
-"""ShinBot data models — MessageElement AST, UnifiedEvent, and related types."""
+"""ShinBot protocol schema — message AST, unified events, and related types."""
 
-from shinbot.models.elements import Message, MessageElement
-from shinbot.models.events import (
+from shinbot.schema.elements import Message, MessageElement
+from shinbot.schema.events import (
     MessagePayload,
     UnifiedEvent,
 )
-from shinbot.models.resources import (
+from shinbot.schema.resources import (
     Channel,
     Guild,
     Login,

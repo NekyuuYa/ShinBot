@@ -19,8 +19,8 @@ from shinbot.core.plugins.plugin import PluginManager
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
-from shinbot.models.events import UnifiedEvent
 from shinbot.persistence import DatabaseManager
+from shinbot.schema.events import UnifiedEvent
 
 logger = logging.getLogger(__name__)
 

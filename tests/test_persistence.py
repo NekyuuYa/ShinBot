@@ -7,8 +7,8 @@ from pathlib import Path
 
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
-from shinbot.models.events import Channel, UnifiedEvent, User
 from shinbot.persistence import DatabaseManager, ModelExecutionRecord
+from shinbot.schema.events import Channel, UnifiedEvent, User
 
 
 def _make_event(channel_id: str = "g-1") -> UnifiedEvent:

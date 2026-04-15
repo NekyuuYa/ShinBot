@@ -7,7 +7,7 @@ from shinbot.core.state.session import (
     build_session_id,
     session_from_event,
 )
-from shinbot.models.events import Channel, Guild, UnifiedEvent, User
+from shinbot.schema.events import Channel, Guild, UnifiedEvent, User
 
 
 def _make_event(

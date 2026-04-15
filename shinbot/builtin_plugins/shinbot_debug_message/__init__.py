@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from shinbot.core.plugins.plugin import PluginContext, PluginRole
-from shinbot.models.elements import Message
-from shinbot.models.events import UnifiedEvent
+from shinbot.schema.elements import Message
+from shinbot.schema.events import UnifiedEvent
 
 __plugin_name__ = "Message Debug Plugin"
 __plugin_version__ = "1.0.0"

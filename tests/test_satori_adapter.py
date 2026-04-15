@@ -9,8 +9,8 @@ import pytest
 
 from shinbot.builtin_plugins.shinbot_adapter_satori.adapter import SatoriAdapter, SatoriConfig
 from shinbot.core.platform.adapter_manager import MessageHandle
-from shinbot.models.elements import MessageElement
-from shinbot.models.events import UnifiedEvent
+from shinbot.schema.elements import MessageElement
+from shinbot.schema.events import UnifiedEvent
 
 
 def _make_adapter(

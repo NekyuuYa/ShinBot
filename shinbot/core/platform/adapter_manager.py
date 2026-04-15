@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
-from shinbot.models.elements import MessageElement
+from shinbot.schema.elements import MessageElement
 
 logger = logging.getLogger(__name__)
 

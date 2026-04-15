@@ -3,7 +3,7 @@
 import pytest
 
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
-from shinbot.models.elements import MessageElement
+from shinbot.schema.elements import MessageElement
 
 # ── Test adapter implementation ──────────────────────────────────────
 

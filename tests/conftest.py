@@ -12,8 +12,8 @@ from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, M
 from shinbot.core.plugins.plugin import PluginManager
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
-from shinbot.models.elements import MessageElement
-from shinbot.models.events import Channel, Guild, MessagePayload, UnifiedEvent, User
+from shinbot.schema.elements import MessageElement
+from shinbot.schema.events import Channel, Guild, MessagePayload, UnifiedEvent, User
 
 # ── Mock adapter ─────────────────────────────────────────────────────────────
 

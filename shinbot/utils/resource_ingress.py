@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from shinbot.models.elements import MessageElement
+from shinbot.schema.elements import MessageElement
 
 
 def _hash_resource_url(url: str) -> str:

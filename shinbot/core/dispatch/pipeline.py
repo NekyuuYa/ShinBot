@@ -22,8 +22,8 @@ from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, M
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine, check_permission
 from shinbot.core.state.session import Session, SessionManager
-from shinbot.models.elements import Message, MessageElement
-from shinbot.models.events import UnifiedEvent
+from shinbot.schema.elements import Message, MessageElement
+from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.logger import get_logger
 from shinbot.utils.resource_ingress import summarize_message_modalities
 

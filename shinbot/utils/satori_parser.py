@@ -21,7 +21,7 @@ from lxml import etree
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-from shinbot.models.elements import MessageElement
+from shinbot.schema.elements import MessageElement
 
 # ── XML → AST ───────────────────────────────────────────────────────
 

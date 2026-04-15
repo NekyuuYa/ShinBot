@@ -2,7 +2,7 @@
 
 import pytest
 
-from shinbot.models.elements import Message, MessageElement
+from shinbot.schema.elements import Message, MessageElement
 from shinbot.utils.satori_parser import elements_to_xml, parse_xml
 
 

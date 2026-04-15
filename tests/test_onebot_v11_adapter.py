@@ -17,7 +17,7 @@ from shinbot.builtin_plugins.shinbot_adapter_onebot_v11.adapter import (
     OneBotV11Adapter,
     OneBotV11Config,
 )
-from shinbot.models.elements import Message
+from shinbot.schema.elements import Message
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):

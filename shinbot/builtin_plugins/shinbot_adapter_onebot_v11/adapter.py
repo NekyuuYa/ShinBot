@@ -27,9 +27,9 @@ import websockets.exceptions
 from pydantic import BaseModel, Field
 
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
-from shinbot.models.elements import Message, MessageElement
-from shinbot.models.events import MessagePayload, UnifiedEvent
-from shinbot.models.resources import Channel, Guild, Member, User
+from shinbot.schema.elements import Message, MessageElement
+from shinbot.schema.events import MessagePayload, UnifiedEvent
+from shinbot.schema.resources import Channel, Guild, Member, User
 from shinbot.utils.logger import get_logger
 from shinbot.utils.resource_ingress import download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from shinbot.models.events import UnifiedEvent
+from shinbot.schema.events import UnifiedEvent
 
 if TYPE_CHECKING:
     from shinbot.persistence.repos import SessionRepository

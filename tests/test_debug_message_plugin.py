@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from shinbot.builtin_plugins.shinbot_debug_message import _build_ast_record, _build_raw_record
-from shinbot.models.events import MessagePayload, UnifiedEvent
-from shinbot.models.resources import Channel, Guild, User
+from shinbot.schema.events import MessagePayload, UnifiedEvent
+from shinbot.schema.resources import Channel, Guild, User
 
 
 def test_build_raw_record_preserves_event_payload():

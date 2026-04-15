@@ -1,6 +1,6 @@
-"""Tests for shinbot.models.events — UnifiedEvent and related models."""
+"""Tests for unified event schema."""
 
-from shinbot.models.events import (
+from shinbot.schema.events import (
     Channel,
     Guild,
     Login,

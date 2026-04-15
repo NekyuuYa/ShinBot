@@ -3,7 +3,7 @@
 本文档剖析了 ShinBot 如何将复杂的富文本消息抽象为 AST，并实现与 Satori XML 的健壮转换。
 
 ## 1. 核心模型：MessageElement 与 Message
-位于 `shinbot/models/elements.py`。
+位于 `shinbot/schema/elements.py`。
 
 ### 1.1 实现方法
 - **递归 Pydantic 模型**: `MessageElement` 类通过 `children: list[MessageElement]` 实现了递归嵌套。利用 Pydantic v2 的 `model_config = {"extra": "forbid"}` 确保了 AST 结构的严谨性。
