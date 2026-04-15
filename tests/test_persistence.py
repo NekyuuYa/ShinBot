@@ -7,6 +7,7 @@ from pathlib import Path
 
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
+from shinbot.persistence.schema import apply_schema
 from shinbot.persistence import DatabaseManager, ModelExecutionRecord
 from shinbot.schema.events import Channel, UnifiedEvent, User
 
@@ -69,6 +70,102 @@ class TestDatabaseManager:
         assert len(rows) == 1
         assert rows[0]["id"] == "exec-1"
         assert rows[0]["input_tokens"] == 10
+
+    def test_initialize_migrates_model_registry_to_provider_uuid(self, tmp_path):
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE model_providers (
+                    id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    base_url TEXT NOT NULL DEFAULT '',
+                    auth_json TEXT NOT NULL DEFAULT '{}',
+                    default_params_json TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE model_definitions (
+                    id TEXT PRIMARY KEY,
+                    provider_id TEXT NOT NULL,
+                    litellm_model TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    context_window INTEGER,
+                    default_params_json TEXT NOT NULL DEFAULT '{}',
+                    cost_metadata_json TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(provider_id) REFERENCES model_providers(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO model_providers (
+                    id, type, display_name, base_url, auth_json, default_params_json,
+                    enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "openai-main",
+                    "openai",
+                    "OpenAI Main",
+                    "https://api.openai.com/v1",
+                    "{}",
+                    "{}",
+                    1,
+                    "2025-01-01T00:00:00+00:00",
+                    "2025-01-01T00:00:00+00:00",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO model_definitions (
+                    id, provider_id, litellm_model, display_name, capabilities_json,
+                    context_window, default_params_json, cost_metadata_json, enabled,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "openai-main/gpt-fast",
+                    "openai-main",
+                    "gpt-4.1-mini",
+                    "GPT Fast",
+                    '["chat"]',
+                    None,
+                    "{}",
+                    "{}",
+                    1,
+                    "2025-01-01T00:00:00+00:00",
+                    "2025-01-01T00:00:00+00:00",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        providers = db.model_registry.list_providers()
+        models = db.model_registry.list_models(provider_id="openai-main")
+
+        assert len(providers) == 1
+        assert providers[0]["id"] == "openai-main"
+        assert providers[0]["provider_uuid"]
+        assert len(models) == 1
+        assert models[0]["provider_id"] == "openai-main"
 
 
 class TestDatabaseBackedSessionManager:
