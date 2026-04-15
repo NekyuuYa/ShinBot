@@ -8,7 +8,8 @@ import types
 import pytest
 
 from shinbot.core.application.app import ShinBot
-from shinbot.core.plugins.plugin import PluginContext, PluginState
+from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.types import PluginState
 from tests.conftest import MockAdapter, make_message_event
 
 

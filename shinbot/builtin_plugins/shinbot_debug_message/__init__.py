@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from shinbot.core.plugins.plugin import PluginContext, PluginRole
+from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.types import PluginRole
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 

@@ -16,7 +16,7 @@ from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
-from shinbot.core.plugins.plugin import PluginManager
+from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager

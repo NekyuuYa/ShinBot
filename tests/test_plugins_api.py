@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
+from shinbot.core.plugins.config import normalize_plugin_config, translate_plugin_schema
 
 
 class _BootStub:
@@ -207,5 +208,31 @@ def test_plugins_list_and_schema_apply_locale_translations(tmp_path: Path):
             assert schema["title"] == "演示配置"
             assert schema["properties"]["api_key"]["title"] == "接口密钥"
             assert schema["properties"]["api_key"]["description"] == "用于访问服务的密钥"
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_plugin_config_helpers_are_reusable_after_module_split(tmp_path: Path):
+    module_name = "test_api_plugin_config_helpers"
+    sys.modules.pop(module_name, None)
+    _make_configurable_plugin_module(module_name)
+
+    bot = ShinBot(data_dir=tmp_path)
+    bot.load_plugin("demo-config-plugin", module_name)
+
+    try:
+        normalized = normalize_plugin_config(
+            bot.plugin_manager,
+            "demo-config-plugin",
+            {"api_key": "secret", "retry.timeout": 8},
+        )
+        translated = translate_plugin_schema(
+            {"type": "object", "properties": {"api_key": {"type": "string"}}},
+            {"config.fields.api_key.label": "接口密钥"},
+        )
+
+        assert normalized == {"api_key": "secret", "retry": {"timeout": 8}}
+        assert translated is not None
+        assert translated["properties"]["api_key"]["title"] == "接口密钥"
     finally:
         sys.modules.pop(module_name, None)

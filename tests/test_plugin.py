@@ -10,12 +10,9 @@ import pytest
 from shinbot.agent.tools import ToolRegistry
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.plugins.plugin import (
-    PluginContext,
-    PluginManager,
-    PluginState,
-    _topo_sort,
-)
+from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.manager import PluginManager, _topo_sort
+from shinbot.core.plugins.types import PluginState
 
 
 def _make_plugin_module(
@@ -395,7 +392,7 @@ async def test_load_all_async_includes_builtin_plugins(
     mod.setup = lambda ctx: None  # type: ignore[attr-defined]
     sys.modules["shinbot.builtin_plugins.shinbot_plugin_builtin_demo"] = mod
 
-    monkeypatch.setattr("shinbot.core.plugins.plugin._BUILTIN_PLUGINS_DIR", builtin_root)
+    monkeypatch.setattr("shinbot.core.plugins.manager._BUILTIN_PLUGINS_DIR", builtin_root)
 
     cmd_reg = CommandRegistry()
     event_bus = EventBus()

@@ -12,7 +12,9 @@ from shinbot.core.dispatch.command import (
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
 from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
-from shinbot.core.plugins.plugin import PluginContext, PluginManager, PluginMeta
+from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.manager import PluginManager
+from shinbot.core.plugins.types import PluginMeta
 from shinbot.core.security.permission import (
     PermissionEngine,
     PermissionGroup,

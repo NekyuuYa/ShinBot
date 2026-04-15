@@ -1,15 +1,4 @@
-"""Plugin system — lifecycle, registration, and decorator API.
-
-Implements the plugin specification (07_plugin_system_design.md).
-
-Two plugin roles:
-  - Logic Plugins: business features (weather, translate, etc.)
-  - Adapter Plugins: protocol drivers (OneBot, Discord, etc.)
-
-Plugins register commands and event handlers via decorators.
-PluginManager handles loading, unloading, and hot-reload with
-automatic cleanup of all registered hooks.
-"""
+"""Plugin lifecycle, discovery, and metadata validation."""
 
 from __future__ import annotations
 
@@ -19,39 +8,28 @@ import inspect
 import json
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
-from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
+from shinbot.agent.tools import ToolOwnerType, ToolRegistry
+from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.utils.logger import get_logger, get_plugin_logger
+from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
+from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from shinbot.core.platform.adapter_manager import AdapterManager
 
 logger = get_logger(__name__)
 
-# Naming rules for metadata-directory based plugin loading
 _VALID_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
-
-# Absolute path to the built-in plugins directory (shinbot/builtin_plugins/)
 _BUILTIN_PLUGINS_DIR = Path(__file__).resolve().parents[2] / "builtin_plugins"
 
 
 def _topo_sort(
     candidates: list[tuple[Path, dict[str, Any]]],
 ) -> list[tuple[Path, dict[str, Any]]]:
-    """Topological sort of plugin candidates by their declared ``dependencies`` list.
-
-    Plugins are sorted so that each plugin's declared dependencies are loaded
-    before it. Plugins not in the candidate set are silently skipped in the
-    traversal (the caller emits missing-dependency warnings separately).
-    Cycles are logged as errors; the participating plugins are appended at the
-    end in their original order so loading can still proceed.
-    """
     id_to_item: dict[str, tuple[Path, dict[str, Any]]] = {m["id"]: (d, m) for d, m in candidates}
     visited: set[str] = set()
     in_stack: set[str] = set()
@@ -80,207 +58,8 @@ def _topo_sort(
     return result
 
 
-class PluginRole(Enum):
-    LOGIC = "logic"
-    ADAPTER = "adapter"
-
-
-class PluginState(Enum):
-    LOADED = "loaded"
-    ACTIVE = "active"
-    DISABLED = "disabled"
-    LOAD_FAILED = "load_failed"
-    ERROR = "error"
-    UNLOADED = "unloaded"
-
-
-@dataclass
-class PluginMeta:
-    """Metadata for a loaded plugin."""
-
-    id: str
-    name: str = ""
-    version: str = "0.0.0"
-    description: str = ""
-    author: str = ""
-    role: PluginRole = PluginRole.LOGIC
-    state: PluginState = PluginState.LOADED
-    module_path: str = ""
-    commands: list[str] = field(default_factory=list)  # registered command names
-    event_types: list[str] = field(default_factory=list)  # subscribed event types
-    data_dir: str = ""
-
-
-class PluginContext:
-    """Context object passed to plugins during initialization.
-
-    Provides the API surface for plugins to register commands,
-    subscribe to events, and interact with the framework.
-    """
-
-    def __init__(
-        self,
-        plugin_id: str,
-        command_registry: CommandRegistry,
-        event_bus: EventBus,
-        data_dir: Path | str | None = None,
-        *,
-        adapter_manager: AdapterManager | None = None,
-        tool_registry: ToolRegistry | None = None,
-    ):
-        self.plugin_id = plugin_id
-        self._command_registry = command_registry
-        self._event_bus = event_bus
-        self._adapter_manager = adapter_manager
-        self._tool_registry = tool_registry
-        self.data_dir = (
-            Path(data_dir) if data_dir is not None else Path("data") / "plugin_data" / plugin_id
-        )
-        self._registered_commands: list[str] = []
-        self._registered_events: list[str] = []
-        self._registered_tools: list[str] = []
-        self.logger = get_plugin_logger(plugin_id)
-
-    def on_command(
-        self,
-        name: str,
-        *,
-        aliases: list[str] | None = None,
-        description: str = "",
-        usage: str = "",
-        permission: str = "",
-        mode: CommandMode = CommandMode.DELEGATED,
-        priority: CommandPriority = CommandPriority.P0_PREFIX,
-        pattern: str | None = None,
-    ) -> Callable:
-        """Decorator to register a command handler.
-
-        Usage:
-            @ctx.on_command("weather", aliases=["w"], permission="cmd.weather")
-            async def weather_handler(ctx, args):
-                ...
-        """
-        import re as _re
-
-        def decorator(func: Callable) -> Callable:
-            compiled_pattern = _re.compile(pattern) if pattern else None
-            cmd = CommandDef(
-                name=name,
-                handler=func,
-                mode=mode,
-                aliases=aliases or [],
-                description=description,
-                usage=usage,
-                permission=permission,
-                priority=priority,
-                pattern=compiled_pattern,
-                owner=self.plugin_id,
-            )
-            self._command_registry.register(cmd)
-            self._registered_commands.append(name)
-            return func
-
-        return decorator
-
-    def on_event(
-        self,
-        event_type: str,
-        *,
-        priority: int = 100,
-    ) -> Callable:
-        """Decorator to subscribe to an event type.
-
-        Usage:
-            @ctx.on_event("message-created")
-            async def on_message(event):
-                ...
-        """
-
-        def decorator(func: Callable) -> Callable:
-            self._event_bus.on(event_type, func, priority=priority, owner=self.plugin_id)
-            self._registered_events.append(event_type)
-            return func
-
-        return decorator
-
-    def on_message(self, *, priority: int = 100) -> Callable:
-        """Shorthand for @on_event("message-created")."""
-        return self.on_event("message-created", priority=priority)
-
-    def register_adapter_factory(self, name: str, factory: Callable) -> None:
-        """Register an adapter factory with the AdapterManager.
-
-        Only available to plugins whose PluginManager was constructed with an
-        AdapterManager reference (i.e. adapter plugins loaded via ShinBot).
-
-        Args:
-            name: Platform identifier (e.g. "satori", "onebot_v11").
-            factory: Callable ``(instance_id, platform, **kwargs) -> BaseAdapter``.
-
-        Raises:
-            RuntimeError: If no AdapterManager is injected in this context.
-        """
-        if self._adapter_manager is None:
-            raise RuntimeError(
-                f"Plugin {self.plugin_id!r} cannot register an adapter factory: "
-                "no AdapterManager is available in this PluginContext."
-            )
-        self._adapter_manager.register_adapter(name, factory)
-
-    def tool(
-        self,
-        *,
-        name: str,
-        description: str,
-        input_schema: dict[str, Any],
-        display_name: str = "",
-        output_schema: dict[str, Any] | None = None,
-        permission: str = "",
-        enabled: bool = True,
-        visibility: ToolVisibility = ToolVisibility.SCOPED,
-        timeout_seconds: float = 30.0,
-        tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> Callable:
-        if self._tool_registry is None:
-            raise RuntimeError(
-                f"Plugin {self.plugin_id!r} cannot register tools: no ToolRegistry is available."
-            )
-
-        def decorator(func: Callable) -> Callable:
-            tool_id = f"{self.plugin_id}.{name}"
-            definition = ToolDefinition(
-                id=tool_id,
-                name=name,
-                display_name=display_name or name,
-                description=description,
-                input_schema=input_schema,
-                output_schema=output_schema,
-                handler=func,
-                owner_type=ToolOwnerType.PLUGIN,
-                owner_id=self.plugin_id,
-                owner_module=getattr(func, "__module__", ""),
-                permission=permission,
-                enabled=enabled,
-                visibility=visibility,
-                timeout_seconds=timeout_seconds,
-                tags=list(tags or []),
-                metadata=dict(metadata or {}),
-            )
-            self._tool_registry.register_tool(definition)
-            self._registered_tools.append(tool_id)
-            return func
-
-        return decorator
-
-
 class PluginManager:
-    """Manages plugin lifecycle: load, unload, reload.
-
-    Plugins are Python modules that expose a `setup(ctx: PluginContext)` function.
-    On load, the module is imported and setup() is called with a PluginContext.
-    On unload, all registered commands and event handlers are cleaned up.
-    """
+    """Manages plugin lifecycle: load, unload, reload."""
 
     def __init__(
         self,
@@ -304,7 +83,6 @@ class PluginManager:
         self._plugin_data_root.mkdir(parents=True, exist_ok=True)
 
     def _build_ctx(self, plugin_id: str) -> PluginContext:
-        """Create a PluginContext for the given plugin_id, injecting all dependencies."""
         return PluginContext(
             plugin_id,
             self._command_registry,
@@ -322,11 +100,9 @@ class PluginManager:
         return self._plugins.get(plugin_id)
 
     def load_plugin(self, plugin_id: str, module_path: str) -> PluginMeta:
-        """Sync wrapper for plugin loading."""
         return self._run_sync(self.load_plugin_async(plugin_id, module_path))
 
     async def load_plugin_async(self, plugin_id: str, module_path: str) -> PluginMeta:
-        """Load a plugin that has an async setup function."""
         if plugin_id in self._plugins:
             raise ValueError(f"Plugin {plugin_id!r} is already loaded")
 
@@ -380,11 +156,9 @@ class PluginManager:
         return meta
 
     def unload_plugin(self, plugin_id: str) -> bool:
-        """Sync wrapper for plugin unloading."""
         return self._run_sync(self.unload_plugin_async(plugin_id))
 
     async def unload_plugin_async(self, plugin_id: str, *, remove_module: bool = True) -> bool:
-        """Unload a plugin, cleaning up all its registrations."""
         meta = self._plugins.pop(plugin_id, None)
         if meta is None:
             return False
@@ -470,21 +244,6 @@ class PluginManager:
         return meta
 
     def load_plugins_from_dir(self, directory: Path | str, *, prefix: str = "") -> list[PluginMeta]:
-        """Scan a directory and load all Python plugin modules found.
-
-        Discovery rules:
-          - `{directory}/{name}.py`  → module "{pkg}.{name}"  (single file)
-          - `{directory}/{name}/__init__.py` → module "{pkg}.{name}"  (package)
-
-        Args:
-            directory: Path to the plugins directory.
-            prefix: Optional module path prefix. If empty, the directory's
-                    parent is added to sys.path and the directory name is used
-                    as the top-level package name.
-
-        Returns:
-            List of successfully loaded PluginMeta.
-        """
         directory = Path(directory)
         if not directory.is_dir():
             raise NotADirectoryError(f"Plugin directory not found: {directory}")
@@ -499,7 +258,7 @@ class PluginManager:
 
         for entry in sorted(directory.iterdir()):
             if entry.name.startswith("_"):
-                continue  # skip __init__, __pycache__, etc.
+                continue
 
             if entry.is_file() and entry.suffix == ".py":
                 module_path = f"{prefix}.{entry.stem}"
@@ -526,24 +285,9 @@ class PluginManager:
         return self._run_sync(self.load_plugins_from_metadata_dir_async(directory))
 
     async def load_plugins_from_metadata_dir_async(self, directory: Path | str) -> list[PluginMeta]:
-        """Load user plugins from a metadata directory (e.g. ``data/plugins/``).
-
-        Naming-prefix rules are **not** enforced here so that third-party
-        plugin authors can freely choose names.  For strict enforcement
-        (including built-in plugins) use ``load_all_async``.
-        """
         return await self._load_from_metadata_dir_async(Path(directory), is_builtin=False)
 
     async def load_all_async(self, user_dir: Path | str | None = None) -> list[PluginMeta]:
-        """Scan and load both built-in and user plugin directories.
-
-        Loading order:
-          1. ``shinbot/builtin_plugins/``  — strict naming, shipped with the package.
-          2. ``{user_dir}``  (default: ``data/plugins/``) — user-installed plugins.
-
-        Returns:
-            Flat list of all newly loaded PluginMeta.
-        """
         results: list[PluginMeta] = []
 
         if _BUILTIN_PLUGINS_DIR.is_dir():
@@ -562,7 +306,6 @@ class PluginManager:
     async def _load_from_metadata_dir_async(
         self, directory: Path, *, is_builtin: bool
     ) -> list[PluginMeta]:
-        """Internal scanner shared by ``load_all_async`` and the public wrapper."""
         if not directory.is_dir():
             raise NotADirectoryError(f"Plugin directory not found: {directory}")
 
@@ -571,7 +314,6 @@ class PluginManager:
             if parent not in sys.path:
                 sys.path.insert(0, parent)
 
-        # Pass 1: collect and validate metadata for all plugin directories.
         candidates: list[tuple[Path, dict[str, Any]]] = []
         for plugin_dir in sorted(directory.iterdir()):
             if not plugin_dir.is_dir() or plugin_dir.name.startswith("_"):
@@ -596,12 +338,8 @@ class PluginManager:
 
             candidates.append((plugin_dir, metadata))
 
-        # Pass 2: sort candidates in dependency order so that a declared
-        # dependency is always initialized before its dependents.
         sorted_candidates = _topo_sort(candidates)
 
-        # Pass 3: warn on declared dependencies that are not present in this
-        # scan batch (they may be separately loaded user plugins).
         batch_ids = {m["id"] for _, m in sorted_candidates}
         already_loaded = set(self._plugins.keys())
         for _, metadata in sorted_candidates:
@@ -613,7 +351,6 @@ class PluginManager:
                         dep,
                     )
 
-        # Pass 4: load in dependency-sorted order.
         loaded: list[PluginMeta] = []
         for plugin_dir, metadata in sorted_candidates:
             plugin_id = metadata["id"]
@@ -653,17 +390,6 @@ class PluginManager:
     def _validate_permissions(
         self, plugin_id: str, declared_permissions: list[str], meta: PluginMeta
     ) -> None:
-        """Cross-validate that plugin's decorator permissions match metadata.
-
-        This ensures that the permissions declared in metadata.json match
-        what the plugin actually registers via @ctx.on_command(permission=...).
-
-        Args:
-            plugin_id: The plugin ID.
-            declared_permissions: Permissions from metadata.json.
-            meta: The loaded plugin metadata.
-        """
-        # Get registered commands with permission requirements
         cmd_registry = self._command_registry
         registered_commands = cmd_registry._commands.values()
 
@@ -672,7 +398,6 @@ class PluginManager:
             if cmd.owner == plugin_id and cmd.permission:
                 plugin_perms_used.add(cmd.permission)
 
-        # Check: all used permissions should be declared in metadata
         undeclared = plugin_perms_used - set(declared_permissions)
         if undeclared:
             logger.warning(
@@ -681,7 +406,6 @@ class PluginManager:
                 undeclared,
             )
 
-        # Check: all declared permissions should be reasonable (basic format check)
         for perm in declared_permissions:
             if not perm or "." not in perm:
                 logger.debug(
@@ -797,12 +521,10 @@ class PluginManager:
         plugin_id = plugin_id.strip()
 
         if require_naming:
-            # Folder name must exactly match the plugin ID.
             if plugin_dir.name != plugin_id:
                 raise ValueError(
                     f"Plugin folder name {plugin_dir.name!r} must match metadata.id {plugin_id!r}"
                 )
-            # Plugin ID must follow the mandatory prefix convention.
             if not any(plugin_id.startswith(p) for p in _VALID_PREFIXES):
                 raise ValueError(
                     f"Plugin id {plugin_id!r} must start with one of: "

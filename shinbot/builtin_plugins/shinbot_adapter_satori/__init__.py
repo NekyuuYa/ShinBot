@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from shinbot.core.plugins.plugin import PluginContext
+from shinbot.core.plugins.context import PluginContext
 
 __plugin_name__ = "Satori Adapter (Official)"
 __plugin_version__ = "1.0.0"
@@ -67,7 +67,7 @@ __plugin_locales__ = {
     },
 }
 
-from shinbot.core.plugins.plugin import PluginRole
+from shinbot.core.plugins.types import PluginRole
 
 __plugin_role__ = PluginRole.ADAPTER
 

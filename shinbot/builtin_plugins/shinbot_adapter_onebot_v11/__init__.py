@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from shinbot.core.plugins.plugin import PluginContext, PluginRole
+from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.types import PluginRole
 
 __plugin_name__ = "OneBot v11 Adapter (Official)"
 __plugin_version__ = "1.0.0"
