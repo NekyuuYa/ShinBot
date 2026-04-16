@@ -96,7 +96,7 @@ class ModelExecutionRecord:
 class PersonaRecord:
     uuid: str
     name: str
-    prompt_text: str
+    prompt_definition_uuid: str
     enabled: bool = True
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
@@ -106,15 +106,10 @@ class PersonaRecord:
 class ContextStrategyRecord:
     uuid: str
     name: str
+    type: str
     resolver_ref: str
     description: str = ""
     config: dict[str, Any] = field(default_factory=dict)
-    max_context_tokens: int | None = None
-    max_history_turns: int | None = None
-    memory_summary_required: bool = False
-    truncate_policy: str = "tail"
-    trigger_ratio: float = 0.5
-    trim_ratio: float = 0.1
     enabled: bool = True
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
@@ -126,7 +121,49 @@ class AgentRecord:
     agent_id: str
     name: str
     persona_uuid: str
+    prompts: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
-    context_policy: str = ""
+    context_strategy: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class PromptDefinitionRecord:
+    uuid: str
+    prompt_id: str
+    name: str
+    stage: str
+    type: str
+    source_type: str = "unknown_source"
+    source_id: str = ""
+    owner_plugin_id: str = ""
+    owner_module: str = ""
+    module_path: str = ""
+    priority: int = 100
+    version: str = "1.0.0"
+    description: str = ""
+    enabled: bool = True
+    content: str = ""
+    template_vars: list[str] = field(default_factory=list)
+    resolver_ref: str = ""
+    bundle_refs: list[str] = field(default_factory=list)
+    config: dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class BotConfigRecord:
+    uuid: str
+    instance_id: str
+    default_agent_uuid: str = ""
+    main_llm: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)

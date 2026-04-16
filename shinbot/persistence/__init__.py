@@ -3,6 +3,8 @@
 from shinbot.persistence.config import DatabaseConfig, default_database_path, default_database_url
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import (
+    AgentRecord,
+    BotConfigRecord,
     ContextStrategyRecord,
     ModelDefinitionRecord,
     ModelExecutionRecord,
@@ -10,11 +12,14 @@ from shinbot.persistence.records import (
     ModelRouteMemberRecord,
     ModelRouteRecord,
     PersonaRecord,
+    PromptDefinitionRecord,
 )
 
 __all__ = [
     "DatabaseConfig",
     "DatabaseManager",
+    "AgentRecord",
+    "BotConfigRecord",
     "ContextStrategyRecord",
     "ModelDefinitionRecord",
     "ModelExecutionRecord",
@@ -22,6 +27,7 @@ __all__ = [
     "ModelRouteMemberRecord",
     "ModelRouteRecord",
     "PersonaRecord",
+    "PromptDefinitionRecord",
     "default_database_path",
     "default_database_url",
 ]

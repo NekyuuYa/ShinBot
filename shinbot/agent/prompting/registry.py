@@ -33,14 +33,14 @@ ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any
 class PromptRegistry:
     """In-memory prompt registry with deterministic assembly."""
 
-    BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID = "builtin.context.sliding_window_fallback"
-    BUILTIN_FALLBACK_CONTEXT_RESOLVER = "builtin.context.sliding_window_fallback"
+    BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID = "builtin.context.sliding_window"
+    BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER = "builtin.context.sliding_window"
 
     def __init__(
         self,
         *,
         fallback_context_trigger_ratio: float = 0.5,
-        fallback_context_trim_ratio: float = 0.1,
+        fallback_context_trim_turns: int = 2,
     ) -> None:
         self._components: dict[str, PromptComponent] = {}
         self._context_strategies: dict[str, ContextStrategy] = {}
@@ -49,7 +49,7 @@ class PromptRegistry:
         self._resolvers: dict[str, Resolver] = {}
         self._register_builtin_context_strategies(
             trigger_ratio=fallback_context_trigger_ratio,
-            trim_ratio=fallback_context_trim_ratio,
+            trim_turns=fallback_context_trim_turns,
         )
 
     def register_component(self, component: PromptComponent) -> None:
@@ -102,6 +102,39 @@ class PromptRegistry:
 
     def list_profiles(self) -> list[PromptProfile]:
         return list(self._profiles.values())
+
+    def list_component_catalog(self) -> list[dict[str, Any]]:
+        catalog: list[dict[str, Any]] = []
+        for component in self.list_components():
+            source = self._infer_source(component)
+            catalog.append(
+                {
+                    "id": component.id,
+                    "display_name": str(
+                        component.metadata.get("display_name")
+                        or component.metadata.get("title")
+                        or component.id
+                    ),
+                    "description": str(component.metadata.get("description", "")),
+                    "stage": component.stage.value,
+                    "type": component.kind.value,
+                    "version": component.version,
+                    "priority": component.priority,
+                    "enabled": component.enabled,
+                    "cache_stable": component.cache_stable,
+                    "resolver_ref": component.resolver_ref,
+                    "template_vars": list(component.template_vars),
+                    "bundle_refs": list(component.bundle_refs),
+                    "tags": list(component.tags),
+                    "source_type": source.source_type.value,
+                    "source_id": source.source_id,
+                    "owner_plugin_id": source.owner_plugin_id,
+                    "owner_module": source.owner_module,
+                    "module_path": source.module_path,
+                    "metadata": dict(component.metadata),
+                }
+            )
+        return catalog
 
     def assemble(self, request: PromptAssemblyRequest) -> PromptAssemblyResult:
         profile = self._profiles.get(request.profile_id)
@@ -432,31 +465,31 @@ class PromptRegistry:
                     f"Context strategy {request.context_strategy_id!r} is not registered"
                 )
             return strategy
-        return self._context_strategies.get(self.BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID)
+        return self._context_strategies.get(self.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID)
 
     def _register_builtin_context_strategies(
         self,
         *,
         trigger_ratio: float,
-        trim_ratio: float,
+        trim_turns: int,
     ) -> None:
         self.register_context_strategy(
             ContextStrategy(
-                id=self.BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID,
-                display_name="Sliding Window Fallback",
-                description="Built-in fallback context strategy based on a sliding window.",
-                resolver_ref=self.BUILTIN_FALLBACK_CONTEXT_RESOLVER,
+                id=self.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
+                display_name="Sliding Window",
+                description="Built-in context strategy based on a sliding window.",
+                resolver_ref=self.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
                 priority=10_000,
-                metadata={"builtin": True, "fallback": True},
+                metadata={"builtin": True, "default": True},
                 budget={
                     "truncate_policy": "sliding_window",
                     "trigger_ratio": trigger_ratio,
-                    "trim_ratio": trim_ratio,
+                    "trim_turns": trim_turns,
                 },
             )
         )
         self.register_context_strategy_resolver(
-            self.BUILTIN_FALLBACK_CONTEXT_RESOLVER,
+            self.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
             self._resolve_builtin_sliding_window_context,
         )
 
@@ -469,7 +502,7 @@ class PromptRegistry:
         summary = str(request.context_inputs.get("summary", "")).strip()
         model_context_window = request.model_context_window or strategy.budget.max_context_tokens
         trigger_ratio = strategy.budget.trigger_ratio
-        trim_ratio = strategy.budget.trim_ratio
+        trim_turns = strategy.budget.trim_turns
         dropped_turns = 0
 
         if strategy.budget.max_history_turns is not None and len(turns) > strategy.budget.max_history_turns:
@@ -487,7 +520,7 @@ class PromptRegistry:
             current_tokens = self._estimate_context_tokens(turns, summary)
             if current_tokens < trigger_tokens:
                 break
-            trim_count = max(1, math.ceil(len(turns) * trim_ratio))
+            trim_count = max(1, trim_turns)
             trim_count = min(trim_count, len(turns) - 1)
             turns = turns[trim_count:]
             dropped_turns += trim_count

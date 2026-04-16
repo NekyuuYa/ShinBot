@@ -219,7 +219,7 @@ def test_prompt_registry_supports_context_strategy_registry() -> None:
     assert "history=recent chat" in result.final_prompt
 
 
-def test_prompt_registry_uses_builtin_sliding_window_fallback_strategy() -> None:
+def test_prompt_registry_uses_builtin_sliding_window_strategy() -> None:
     registry = PromptRegistry()
     registry.register_component(
         PromptComponent(
@@ -250,16 +250,16 @@ def test_prompt_registry_uses_builtin_sliding_window_fallback_strategy() -> None
     component = context_stage.components[0]
     assert (
         component.metadata["context_strategy_id"]
-        == PromptRegistry.BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID
+        == PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID
     )
     assert component.metadata["resolver_output"]["dropped_turns"] >= 1
     assert "one two three four five six" not in context_stage.rendered_text
 
 
-def test_prompt_registry_builtin_sliding_window_ratios_are_configurable() -> None:
+def test_prompt_registry_builtin_sliding_window_budget_is_configurable() -> None:
     registry = PromptRegistry(
         fallback_context_trigger_ratio=0.9,
-        fallback_context_trim_ratio=0.5,
+        fallback_context_trim_turns=2,
     )
     registry.register_component(
         PromptComponent(
@@ -286,5 +286,5 @@ def test_prompt_registry_builtin_sliding_window_ratios_are_configurable() -> Non
     context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
     component = context_stage.components[0]
     assert component.metadata["budget"]["trigger_ratio"] == 0.9
-    assert component.metadata["budget"]["trim_ratio"] == 0.5
+    assert component.metadata["budget"]["trim_turns"] == 2
     assert component.metadata["resolver_output"]["dropped_turns"] == 0

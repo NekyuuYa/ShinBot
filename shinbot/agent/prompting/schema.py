@@ -125,14 +125,14 @@ class ContextStrategyBudget(BaseModel):
     memory_summary_required: bool = False
     truncate_policy: str = "tail"
     trigger_ratio: float = 0.5
-    trim_ratio: float = 0.1
+    trim_turns: int = 2
 
     @model_validator(mode="after")
     def validate_budget(self) -> ContextStrategyBudget:
         if not 0 < self.trigger_ratio <= 1:
             raise ValueError("ContextStrategyBudget.trigger_ratio must be within (0, 1]")
-        if not 0 < self.trim_ratio <= 1:
-            raise ValueError("ContextStrategyBudget.trim_ratio must be within (0, 1]")
+        if self.trim_turns < 1:
+            raise ValueError("ContextStrategyBudget.trim_turns must be greater than or equal to 1")
         return self
 
 

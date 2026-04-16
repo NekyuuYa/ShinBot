@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, ok
-from shinbot.persistence.records import PersonaRecord, utc_now_iso
+from shinbot.persistence.records import PersonaRecord, PromptDefinitionRecord, utc_now_iso
 
 router = APIRouter(
     prefix="/personas",
@@ -34,6 +34,7 @@ def _serialize_persona(payload: dict[str, object]) -> dict[str, object]:
     return {
         "uuid": payload["uuid"],
         "name": payload["name"],
+        "promptDefinitionUuid": payload["prompt_definition_uuid"],
         "promptText": payload["prompt_text"],
         "enabled": payload["enabled"],
         "createdAt": payload["created_at"],
@@ -57,6 +58,22 @@ def _normalize_persona_input(name: str, prompt_text: str) -> tuple[str, str]:
     return normalized_name, normalized_prompt
 
 
+def _persona_prompt_definition(persona_uuid: str, name: str, prompt_text: str) -> PromptDefinitionRecord:
+    return PromptDefinitionRecord(
+        uuid=str(uuid4()),
+        prompt_id=f"persona.{persona_uuid}",
+        name=f"{name} Persona Prompt",
+        source_type="persona",
+        source_id=persona_uuid,
+        stage="identity",
+        type="static_text",
+        priority=100,
+        description=f"Backing prompt for persona {name}",
+        content=prompt_text,
+        metadata={},
+    )
+
+
 @router.get("")
 def list_personas(bot=BotDep):
     return ok([_serialize_persona(item) for item in bot.database.personas.list()])
@@ -75,10 +92,16 @@ def create_persona(body: PersonaRequest, bot=BotDep):
         )
 
     now = utc_now_iso()
+    persona_uuid = str(uuid4())
+    prompt_definition = _persona_prompt_definition(persona_uuid, name, prompt_text)
+    prompt_definition.created_at = now
+    prompt_definition.updated_at = now
+    bot.database.prompt_definitions.upsert(prompt_definition)
+
     record = PersonaRecord(
-        uuid=str(uuid4()),
+        uuid=persona_uuid,
         name=name,
-        prompt_text=prompt_text,
+        prompt_definition_uuid=prompt_definition.uuid,
         enabled=body.enabled,
         created_at=now,
         updated_at=now,
@@ -117,7 +140,7 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, bot=BotDep):
 
     next_name = body.name if body.name is not None else str(current["name"])
     next_prompt_text = (
-        body.promptText if body.promptText is not None else str(current["prompt_text"])
+        body.promptText if body.promptText is not None else str(current["prompt_text"] or "")
     )
     normalized_name, normalized_prompt = _normalize_persona_input(next_name, next_prompt_text)
 
@@ -131,11 +154,47 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, bot=BotDep):
             },
         )
 
+    prompt_definition_uuid = str(current["prompt_definition_uuid"])
+    prompt_definition_payload = bot.database.prompt_definitions.get(prompt_definition_uuid)
+    if prompt_definition_payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": EC.PROMPT_NOT_FOUND,
+                "message": f"PromptDefinition {prompt_definition_uuid!r} was not found",
+            },
+        )
+
+    bot.database.prompt_definitions.upsert(
+        PromptDefinitionRecord(
+            uuid=prompt_definition_uuid,
+            prompt_id=f"persona.{persona_uuid}",
+            name=f"{normalized_name} Persona Prompt",
+            source_type="persona",
+            source_id=persona_uuid,
+            stage="identity",
+            type="static_text",
+            priority=int(prompt_definition_payload["priority"]),
+            version=str(prompt_definition_payload["version"]),
+            description=f"Backing prompt for persona {normalized_name}",
+            enabled=bool(prompt_definition_payload["enabled"]),
+            content=normalized_prompt,
+            template_vars=list(prompt_definition_payload["template_vars"]),
+            resolver_ref=str(prompt_definition_payload["resolver_ref"]),
+            bundle_refs=list(prompt_definition_payload["bundle_refs"]),
+            config=dict(prompt_definition_payload["config"]),
+            tags=list(prompt_definition_payload["tags"]),
+            metadata=dict(prompt_definition_payload["metadata"]),
+            created_at=str(prompt_definition_payload["created_at"]),
+            updated_at=utc_now_iso(),
+        )
+    )
+
     bot.database.personas.upsert(
         PersonaRecord(
             uuid=persona_uuid,
             name=normalized_name,
-            prompt_text=normalized_prompt,
+            prompt_definition_uuid=prompt_definition_uuid,
             enabled=body.enabled if body.enabled is not None else bool(current["enabled"]),
             created_at=str(current["created_at"]),
             updated_at=utc_now_iso(),
@@ -157,5 +216,7 @@ def delete_persona(persona_uuid: str, bot=BotDep):
                 "message": f"Persona {persona_uuid!r} was not found",
             },
         )
+    prompt_definition_uuid = str(current["prompt_definition_uuid"])
     bot.database.personas.delete(persona_uuid)
+    bot.database.prompt_definitions.delete(prompt_definition_uuid)
     return ok({"deleted": True, "uuid": persona_uuid})

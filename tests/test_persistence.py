@@ -5,13 +5,17 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from shinbot.agent.prompting import PromptRegistry
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
+    AgentRecord,
+    BotConfigRecord,
     ContextStrategyRecord,
     DatabaseManager,
     ModelExecutionRecord,
     PersonaRecord,
+    PromptDefinitionRecord,
 )
 from shinbot.schema.events import Channel, UnifiedEvent, User
 
@@ -74,6 +78,16 @@ class TestDatabaseManager:
         assert len(rows) == 1
         assert rows[0]["id"] == "exec-1"
         assert rows[0]["input_tokens"] == 10
+
+    def test_initialize_seeds_builtin_context_strategy(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        payload = db.context_strategies.get(PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID)
+        assert payload is not None
+        assert payload["type"] == "sliding_window"
+        assert payload["resolver_ref"] == PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER
+        assert payload["config"] == {"builtin": True, "default": True}
 
     def test_initialize_migrates_model_registry_to_provider_uuid(self, tmp_path):
         sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
@@ -174,18 +188,31 @@ class TestDatabaseManager:
     def test_persona_repository_roundtrip(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
+        db.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid="prompt-persona-1",
+                prompt_id="persona.persona-1",
+                name="Assistant Default Persona Prompt",
+                source_type="persona",
+                source_id="persona-1",
+                stage="identity",
+                type="static_text",
+                content="You are a concise assistant.",
+            )
+        )
 
         db.personas.upsert(
             PersonaRecord(
                 uuid="persona-1",
                 name="Assistant Default",
-                prompt_text="You are a concise assistant.",
+                prompt_definition_uuid="prompt-persona-1",
             )
         )
 
         payload = db.personas.get("persona-1")
         assert payload is not None
         assert payload["name"] == "Assistant Default"
+        assert payload["prompt_definition_uuid"] == "prompt-persona-1"
         assert payload["prompt_text"] == "You are a concise assistant."
 
         items = db.personas.list()
@@ -200,29 +227,168 @@ class TestDatabaseManager:
             ContextStrategyRecord(
                 uuid="ctx-1",
                 name="Recent History",
+                type="recent_history",
                 resolver_ref="context.recent_history",
                 description="Use the latest conversation turns.",
                 config={"window": 12},
-                max_context_tokens=1200,
-                max_history_turns=12,
-                memory_summary_required=True,
-                truncate_policy="head_tail",
-                trigger_ratio=0.6,
-                trim_ratio=0.2,
             )
         )
 
         payload = db.context_strategies.get("ctx-1")
         assert payload is not None
+        assert payload["type"] == "recent_history"
         assert payload["resolver_ref"] == "context.recent_history"
         assert payload["config"]["window"] == 12
-        assert payload["memory_summary_required"] is True
-        assert payload["trigger_ratio"] == 0.6
-        assert payload["trim_ratio"] == 0.2
 
         items = db.context_strategies.list()
+        assert len(items) == 2
+        assert {item["uuid"] for item in items} == {
+            "ctx-1",
+            PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
+        }
+
+    def test_agent_repository_roundtrip(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        db.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid="prompt-persona-1",
+                prompt_id="persona.persona-1",
+                name="Assistant Default Persona Prompt",
+                source_type="persona",
+                source_id="persona-1",
+                stage="identity",
+                type="static_text",
+                content="You are a concise assistant.",
+            )
+        )
+        db.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid="prompt-1",
+                prompt_id="prompt.identity.extra",
+                name="Identity Extra",
+                source_type="agent_plugin",
+                source_id="plugin.identity",
+                stage="identity",
+                type="static_text",
+                content="extra identity",
+            )
+        )
+        db.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid="prompt-2",
+                prompt_id="prompt.instructions.chat",
+                name="Chat Instructions",
+                source_type="agent_plugin",
+                source_id="plugin.chat",
+                stage="instructions",
+                type="static_text",
+                content="chat instructions",
+            )
+        )
+        db.personas.upsert(
+            PersonaRecord(
+                uuid="persona-1",
+                name="Assistant Default",
+                prompt_definition_uuid="prompt-persona-1",
+            )
+        )
+
+        db.agents.upsert(
+            AgentRecord(
+                uuid="agent-uuid-1",
+                agent_id="agent.default",
+                name="Default Agent",
+                persona_uuid="persona-1",
+                prompts=["prompt-1", "prompt-2"],
+                tools=["tool.echo", "tool.search"],
+                context_strategy={
+                    "ref": "builtin.context.sliding_window",
+                    "type": "sliding_window",
+                    "params": {"triggerRatio": 0.5, "trimTurns": 2},
+                },
+                config={"model_id": "openai-main/gpt-fast"},
+                tags=["default", "chat"],
+            )
+        )
+
+        payload = db.agents.get("agent-uuid-1")
+        assert payload is not None
+        assert payload["agent_id"] == "agent.default"
+        assert payload["prompts"] == ["prompt-1", "prompt-2"]
+        assert payload["tools"] == ["tool.echo", "tool.search"]
+        assert payload["context_strategy"] == {
+            "ref": "builtin.context.sliding_window",
+            "type": "sliding_window",
+            "params": {"triggerRatio": 0.5, "trimTurns": 2},
+        }
+        assert payload["config"]["model_id"] == "openai-main/gpt-fast"
+        assert payload["tags"] == ["default", "chat"]
+
+        items = db.agents.list()
         assert len(items) == 1
-        assert items[0]["uuid"] == "ctx-1"
+        assert items[0]["uuid"] == "agent-uuid-1"
+
+    def test_prompt_definition_repository_roundtrip(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        db.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid="prompt-1",
+                prompt_id="prompt.identity.extra",
+                name="Identity Extra",
+                source_type="agent_plugin",
+                source_id="plugin.identity",
+                owner_plugin_id="plugin.identity",
+                owner_module="shinbot.plugins.identity",
+                stage="identity",
+                type="static_text",
+                priority=20,
+                description="Additional identity prompt",
+                content="You are calm and concise.",
+                tags=["identity", "agent"],
+                metadata={"display_name": "Identity Extra"},
+            )
+        )
+
+        payload = db.prompt_definitions.get("prompt-1")
+        assert payload is not None
+        assert payload["prompt_id"] == "prompt.identity.extra"
+        assert payload["source_type"] == "agent_plugin"
+        assert payload["source_id"] == "plugin.identity"
+        assert payload["content"] == "You are calm and concise."
+        assert payload["tags"] == ["identity", "agent"]
+
+        items = db.prompt_definitions.list()
+        assert len(items) == 1
+        assert items[0]["uuid"] == "prompt-1"
+
+    def test_bot_config_repository_roundtrip(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        db.bot_configs.upsert(
+            BotConfigRecord(
+                uuid="bot-config-1",
+                instance_id="inst-1",
+                default_agent_uuid="agent-uuid-1",
+                main_llm="openai-main/gpt-fast",
+                config={"reply_mode": "group"},
+                tags=["prod", "default"],
+            )
+        )
+
+        payload = db.bot_configs.get("bot-config-1")
+        assert payload is not None
+        assert payload["instance_id"] == "inst-1"
+        assert payload["main_llm"] == "openai-main/gpt-fast"
+        assert payload["config"]["reply_mode"] == "group"
+        assert payload["tags"] == ["prod", "default"]
+
+        items = db.bot_configs.list()
+        assert len(items) == 1
+        assert items[0]["uuid"] == "bot-config-1"
 
 
 class TestDatabaseBackedSessionManager:

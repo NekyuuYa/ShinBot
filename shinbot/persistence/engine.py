@@ -7,13 +7,18 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from shinbot.agent.prompting import PromptRegistry
 from shinbot.persistence.config import DatabaseConfig
+from shinbot.persistence.records import ContextStrategyRecord, utc_now_iso
 from shinbot.persistence.repos import (
+    AgentRepository,
     AuditRepository,
+    BotConfigRepository,
     ContextStrategyRepository,
     ModelExecutionRepository,
     ModelRegistryRepository,
     PersonaRepository,
+    PromptDefinitionRepository,
     SessionRepository,
 )
 from shinbot.persistence.schema import apply_schema
@@ -26,7 +31,10 @@ class DatabaseManager:
         self.config = config
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
+        self.agents = AgentRepository(self)
+        self.bot_configs = BotConfigRepository(self)
         self.personas = PersonaRepository(self)
+        self.prompt_definitions = PromptDefinitionRepository(self)
         self.context_strategies = ContextStrategyRepository(self)
         self.model_registry = ModelRegistryRepository(self)
         self.model_executions = ModelExecutionRepository(self)
@@ -62,3 +70,20 @@ class DatabaseManager:
         """Create the database file and ensure the known schema exists."""
         with self.connect() as conn:
             apply_schema(conn)
+        self._ensure_builtin_context_strategies()
+
+    def _ensure_builtin_context_strategies(self) -> None:
+        now = utc_now_iso()
+        self.context_strategies.upsert(
+            ContextStrategyRecord(
+                uuid=PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
+                name="Sliding Window",
+                type="sliding_window",
+                resolver_ref=PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
+                description="Built-in context strategy based on a sliding window.",
+                config={"builtin": True, "default": True},
+                enabled=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )

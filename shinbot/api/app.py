@@ -23,12 +23,16 @@ from fastapi.staticfiles import StaticFiles
 
 from shinbot.api.auth import AuthConfig
 from shinbot.api.models import EC, Envelope, ErrorBody
+from shinbot.api.routers import agents as agents_router
 from shinbot.api.routers import auth as auth_router
+from shinbot.api.routers import bot_configs as bot_configs_router
 from shinbot.api.routers import context_strategies as context_strategies_router
 from shinbot.api.routers import instances as instances_router
 from shinbot.api.routers import model_runtime as model_runtime_router
 from shinbot.api.routers import personas as personas_router
 from shinbot.api.routers import plugins as plugins_router
+from shinbot.api.routers import prompt_definitions as prompt_definitions_router
+from shinbot.api.routers import prompts as prompts_router
 from shinbot.api.routers import tools as tools_router
 from shinbot.api.ws_manager import (
     install_log_handler,
@@ -140,10 +144,14 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
 
     api_prefix = "/api/v1"
     app.include_router(auth_router.router, prefix=api_prefix)
+    app.include_router(agents_router.router, prefix=api_prefix)
+    app.include_router(bot_configs_router.router, prefix=api_prefix)
     app.include_router(context_strategies_router.router, prefix=api_prefix)
     app.include_router(instances_router.router, prefix=api_prefix)
     app.include_router(model_runtime_router.router, prefix=api_prefix)
     app.include_router(personas_router.router, prefix=api_prefix)
+    app.include_router(prompt_definitions_router.router, prefix=api_prefix)
+    app.include_router(prompts_router.router, prefix=api_prefix)
     app.include_router(plugins_router.router, prefix=api_prefix)
     app.include_router(tools_router.router, prefix=api_prefix)
 

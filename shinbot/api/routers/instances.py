@@ -93,7 +93,22 @@ def _runtime_config(adapter: Any) -> dict[str, Any]:
     return {}
 
 
-def _serialize_instance_record(item: dict[str, Any], mgr: Any) -> dict[str, Any]:
+def _serialize_bot_config_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    return {
+        "uuid": payload["uuid"],
+        "defaultAgentUuid": payload["default_agent_uuid"],
+        "mainLlm": payload["main_llm"],
+        "tags": payload["tags"],
+    }
+
+
+def _serialize_instance_record(
+    item: dict[str, Any],
+    mgr: Any,
+    bot_config_by_instance_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     instance_id = item.get("id")
     adapter = mgr.get_instance(instance_id) if instance_id else None
     status = (
@@ -112,18 +127,26 @@ def _serialize_instance_record(item: dict[str, Any], mgr: Any) -> dict[str, Any]
         or item.get("platform", getattr(adapter, "platform", "satori")),
         "status": status,
         "config": config,
+        "botConfig": _serialize_bot_config_summary(bot_config_by_instance_id.get(str(instance_id))),
         "createdAt": item.get("createdAt", 0),
         "lastModified": item.get("lastModified", item.get("createdAt", 0)),
     }
 
 
-def _serialize_runtime_instance(adapter: Any, mgr: Any) -> dict[str, Any]:
+def _serialize_runtime_instance(
+    adapter: Any,
+    mgr: Any,
+    bot_config_by_instance_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "id": adapter.instance_id,
         "name": adapter.instance_id,
         "adapterType": adapter.platform,
         "status": "running" if mgr.is_running(adapter.instance_id) else "stopped",
         "config": _runtime_config(adapter),
+        "botConfig": _serialize_bot_config_summary(
+            bot_config_by_instance_id.get(adapter.instance_id)
+        ),
         "createdAt": 0,
         "lastModified": 0,
     }
@@ -135,17 +158,20 @@ def _serialize_runtime_instance(adapter: Any, mgr: Any) -> dict[str, Any]:
 @router.get("")
 async def list_instances(bot=BotDep, boot=BootDep):
     mgr = bot.adapter_manager
+    bot_config_by_instance_id = {
+        item["instance_id"]: item for item in bot.database.bot_configs.list()
+    }
     records: list[dict[str, Any]] = []
 
     for item in boot.config.get("instances", []):
-        records.append(_serialize_instance_record(item, mgr))
+        records.append(_serialize_instance_record(item, mgr, bot_config_by_instance_id))
 
     # Include any runtime adapters not yet persisted in config.
     seen_ids = {item["id"] for item in records}
     for adapter in mgr.all_instances:
         if adapter.instance_id in seen_ids:
             continue
-        records.append(_serialize_runtime_instance(adapter, mgr))
+        records.append(_serialize_runtime_instance(adapter, mgr, bot_config_by_instance_id))
 
     return ok(records)
 
@@ -205,7 +231,16 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
     except Exception as e:
         logger.warning("Failed to persist config after create_instance: %s", e)
 
-    return ok(_serialize_instance_record(inst_entry, bot.adapter_manager))
+    return ok(
+        _serialize_instance_record(
+            inst_entry,
+            bot.adapter_manager,
+            {
+                item["instance_id"]: item
+                for item in bot.database.bot_configs.list()
+            },
+        )
+    )
 
 
 @router.patch("/{instance_id}")
@@ -267,7 +302,16 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
     except Exception as e:
         logger.warning("Failed to persist config after update_instance: %s", e)
 
-    return ok(_serialize_instance_record(inst, bot.adapter_manager))
+    return ok(
+        _serialize_instance_record(
+            inst,
+            bot.adapter_manager,
+            {
+                item["instance_id"]: item
+                for item in bot.database.bot_configs.list()
+            },
+        )
+    )
 
 
 @router.delete("/{instance_id}")

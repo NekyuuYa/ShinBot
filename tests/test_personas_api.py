@@ -47,6 +47,7 @@ def test_persona_crud_roundtrip(tmp_path: Path):
         created = create_resp.json()["data"]
         assert created["uuid"]
         assert created["name"] == "Default Assistant"
+        assert created["promptDefinitionUuid"]
         assert created["promptText"] == "You are a precise assistant."
 
         persona_uuid = created["uuid"]
@@ -67,6 +68,7 @@ def test_persona_crud_roundtrip(tmp_path: Path):
         assert patch_resp.status_code == 200
         patched = patch_resp.json()["data"]
         assert patched["name"] == "Default Assistant v2"
+        assert patched["promptDefinitionUuid"] == created["promptDefinitionUuid"]
         assert patched["enabled"] is False
 
         list_resp = client.get("/api/v1/personas", headers=headers)
