@@ -8,6 +8,7 @@ from shinbot.persistence.records import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
+    PersonaRecord,
 )
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "ModelProviderRecord",
     "ModelRouteMemberRecord",
     "ModelRouteRecord",
+    "PersonaRecord",
     "default_database_path",
     "default_database_url",
 ]

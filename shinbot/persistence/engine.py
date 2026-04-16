@@ -12,6 +12,7 @@ from shinbot.persistence.repos import (
     AuditRepository,
     ModelExecutionRepository,
     ModelRegistryRepository,
+    PersonaRepository,
     SessionRepository,
 )
 from shinbot.persistence.schema import apply_schema
@@ -24,6 +25,7 @@ class DatabaseManager:
         self.config = config
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
+        self.personas = PersonaRepository(self)
         self.model_registry = ModelRegistryRepository(self)
         self.model_executions = ModelExecutionRepository(self)
 

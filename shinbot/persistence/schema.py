@@ -165,6 +165,16 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_audit_logs_session_id
     ON audit_logs(session_id)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS personas (
+        uuid TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        prompt_text TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
 )
 
 

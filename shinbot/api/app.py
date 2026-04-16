@@ -26,6 +26,7 @@ from shinbot.api.models import EC, Envelope, ErrorBody
 from shinbot.api.routers import auth as auth_router
 from shinbot.api.routers import instances as instances_router
 from shinbot.api.routers import model_runtime as model_runtime_router
+from shinbot.api.routers import personas as personas_router
 from shinbot.api.routers import plugins as plugins_router
 from shinbot.api.routers import tools as tools_router
 from shinbot.api.ws_manager import (
@@ -140,6 +141,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
     app.include_router(auth_router.router, prefix=api_prefix)
     app.include_router(instances_router.router, prefix=api_prefix)
     app.include_router(model_runtime_router.router, prefix=api_prefix)
+    app.include_router(personas_router.router, prefix=api_prefix)
     app.include_router(plugins_router.router, prefix=api_prefix)
     app.include_router(tools_router.router, prefix=api_prefix)
 

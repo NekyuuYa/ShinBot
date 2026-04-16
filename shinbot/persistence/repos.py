@@ -14,6 +14,7 @@ from shinbot.persistence.records import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
+    PersonaRecord,
 )
 
 
@@ -183,6 +184,109 @@ class AuditRepository:
                 ),
             )
             return int(cursor.lastrowid)
+
+
+class PersonaRepository:
+    """Persistence adapter for persona metadata."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def list(self) -> list[dict[str, Any]]:
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT uuid, name, prompt_text, enabled, created_at, updated_at
+                FROM personas
+                ORDER BY name ASC, uuid ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "uuid": row["uuid"],
+                "name": row["name"],
+                "prompt_text": row["prompt_text"],
+                "enabled": bool(row["enabled"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def get(self, persona_uuid: str) -> dict[str, Any] | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT uuid, name, prompt_text, enabled, created_at, updated_at
+                FROM personas
+                WHERE uuid = ?
+                """,
+                (persona_uuid,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "uuid": row["uuid"],
+            "name": row["name"],
+            "prompt_text": row["prompt_text"],
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def get_by_name(self, name: str) -> dict[str, Any] | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT uuid, name, prompt_text, enabled, created_at, updated_at
+                FROM personas
+                WHERE name = ?
+                """,
+                (name,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "uuid": row["uuid"],
+            "name": row["name"],
+            "prompt_text": row["prompt_text"],
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def upsert(self, record: PersonaRecord) -> None:
+        payload = asdict(record)
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT created_at FROM personas WHERE uuid = ?",
+                (payload["uuid"],),
+            ).fetchone()
+            created_at = row["created_at"] if row is not None else payload["created_at"]
+            conn.execute(
+                """
+                INSERT INTO personas (
+                    uuid, name, prompt_text, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(uuid) DO UPDATE SET
+                    name = excluded.name,
+                    prompt_text = excluded.prompt_text,
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    payload["uuid"],
+                    payload["name"],
+                    payload["prompt_text"],
+                    1 if payload["enabled"] else 0,
+                    created_at,
+                    payload["updated_at"],
+                ),
+            )
+
+    def delete(self, persona_uuid: str) -> None:
+        with self._db.connect() as conn:
+            conn.execute("DELETE FROM personas WHERE uuid = ?", (persona_uuid,))
 
 
 class ModelRegistryRepository:

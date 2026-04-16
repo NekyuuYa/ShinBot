@@ -90,3 +90,13 @@ class ModelExecutionRecord:
     estimated_cost: float | None = None
     currency: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class PersonaRecord:
+    uuid: str
+    name: str
+    prompt_text: str
+    enabled: bool = True
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)

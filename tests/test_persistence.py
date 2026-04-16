@@ -7,8 +7,7 @@ from pathlib import Path
 
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
-from shinbot.persistence.schema import apply_schema
-from shinbot.persistence import DatabaseManager, ModelExecutionRecord
+from shinbot.persistence import DatabaseManager, ModelExecutionRecord, PersonaRecord
 from shinbot.schema.events import Channel, UnifiedEvent, User
 
 
@@ -166,6 +165,27 @@ class TestDatabaseManager:
         assert providers[0]["provider_uuid"]
         assert len(models) == 1
         assert models[0]["provider_id"] == "openai-main"
+
+    def test_persona_repository_roundtrip(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        db.personas.upsert(
+            PersonaRecord(
+                uuid="persona-1",
+                name="Assistant Default",
+                prompt_text="You are a concise assistant.",
+            )
+        )
+
+        payload = db.personas.get("persona-1")
+        assert payload is not None
+        assert payload["name"] == "Assistant Default"
+        assert payload["prompt_text"] == "You are a concise assistant."
+
+        items = db.personas.list()
+        assert len(items) == 1
+        assert items[0]["uuid"] == "persona-1"
 
 
 class TestDatabaseBackedSessionManager:
