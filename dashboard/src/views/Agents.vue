@@ -49,13 +49,15 @@
           </v-col>
         </v-row>
 
-        <v-row v-else class="mx-n2">
+        <v-row v-else class="mx-n4">
           <v-col
             v-for="agent in filteredAgents"
             :key="agent.uuid"
             cols="12"
-            md="4"
-            class="pa-2"
+            sm="6"
+            md="6"
+            lg="4"
+            class="pa-4"
           >
             <v-card class="agent-card h-100 d-flex flex-column" elevation="0">
               <v-card-item>
@@ -142,11 +144,17 @@
               />
             </v-col>
             <v-col cols="12">
-              <v-text-field
+              <v-select
                 v-model="form.personaUuid"
-                :label="$t('pages.agents.fields.personaUuid')"
+                :label="$t('pages.agents.fields.persona')"
+                :items="personaOptions"
+                item-title="title"
+                item-value="value"
                 variant="outlined"
                 density="comfortable"
+                clearable
+                :placeholder="$t('pages.agents.fields.personaPlaceholder')"
+                :no-data-text="$t('pages.agents.fields.personaEmpty')"
               />
             </v-col>
 
@@ -250,7 +258,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import type { Agent, AgentPayload } from '@/api/agents'
 import AppPageHeader from '@/components/AppPageHeader.vue'
@@ -258,9 +266,11 @@ import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
 import { useAgentsStore } from '@/stores/agents'
+import { usePersonasStore } from '@/stores/personas'
 import { normalizeStringList } from '@/utils/stringList'
 
 const agentsStore = useAgentsStore()
+const personasStore = usePersonasStore()
 
 const dialogVisible = ref(false)
 const editingAgentUuid = ref('')
@@ -293,6 +303,13 @@ const {
     allSubtitle: translate('pages.agents.tags.showAll'),
     tagSubtitle: translate('pages.agents.tags.filterByTag'),
   }
+)
+
+const personaOptions = computed(() =>
+  personasStore.personas.map((persona) => ({
+    title: `${persona.name} (${persona.uuid})`,
+    value: persona.uuid,
+  }))
 )
 
 const parseJsonObject = (value: string, emptyFallback: Record<string, unknown>) => {
@@ -417,6 +434,7 @@ const refreshAgents = async () => {
 
 onMounted(() => {
   agentsStore.fetchAgents()
+  personasStore.fetchPersonas()
 })
 </script>
 

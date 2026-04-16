@@ -17,7 +17,10 @@
   "fields": {
     "agentId": "Agent ID",
     "name": "名称",
-    "personaUuid": "Persona UUID",
+    "personaUuid": "Persona",
+    "persona": "Persona",
+    "personaPlaceholder": "请选择 Persona",
+    "personaEmpty": "暂无可选 Persona，请先创建一个",
     "tags": "标签",
     "prompts": "Prompt UUID 列表",
     "tools": "工具 ID 列表",

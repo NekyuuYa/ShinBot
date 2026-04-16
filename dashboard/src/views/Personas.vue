@@ -49,15 +49,15 @@
           </v-col>
         </v-row>
 
-        <v-row v-else class="mx-n2">
+        <v-row v-else class="mx-n4">
           <v-col
             v-for="persona in filteredPersonas"
             :key="persona.uuid"
             cols="12"
             sm="6"
-            md="4"
-            lg="3"
-            class="pa-2"
+            md="6"
+            lg="4"
+            class="pa-4"
           >
             <v-card class="persona-card h-100 d-flex flex-column" elevation="0">
               <v-card-item>

@@ -17,7 +17,10 @@
   "fields": {
     "agentId": "Agent ID",
     "name": "Name",
-    "personaUuid": "Persona UUID",
+    "personaUuid": "Persona",
+    "persona": "Persona",
+    "personaPlaceholder": "Select a persona",
+    "personaEmpty": "No personas are available yet. Create one first.",
     "tags": "Tags",
     "prompts": "Prompt UUIDs",
     "tools": "Tool IDs",
