@@ -1,0 +1,54 @@
+{
+  "kicker": "编排中心",
+  "title": "Agent 管理",
+  "subtitle": "按标签管理 Agent，并通过弹出层新增或编辑 Agent 配置。",
+  "actions": {
+    "refresh": "刷新",
+    "addAgent": "添加 Agent"
+  },
+  "tags": {
+    "title": "标签分类",
+    "all": "All",
+    "showAll": "显示全部 Agent",
+    "filterByTag": "按标签筛选",
+    "untagged": "未打标签",
+    "empty": "当前没有可用标签"
+  },
+  "fields": {
+    "agentId": "Agent ID",
+    "name": "名称",
+    "personaUuid": "Persona UUID",
+    "tags": "标签",
+    "prompts": "Prompt UUID 列表",
+    "tools": "工具 ID 列表",
+    "contextStrategyRef": "上下文策略引用",
+    "contextStrategyType": "上下文策略类型",
+    "contextStrategyParams": "上下文策略参数（JSON）",
+    "config": "Agent 配置（JSON）"
+  },
+  "overlay": {
+    "createTitle": "新增 Agent",
+    "editTitle": "编辑 Agent"
+  },
+  "empty": {
+    "title": "暂无 Agent",
+    "subtitle": "当前标签下没有可展示的 Agent，点击右上角按钮创建一个。"
+  },
+  "hints": {
+    "contextStrategyParams": "可留空；若填写需为对象 JSON。",
+    "config": "可留空；若填写需为对象 JSON。"
+  },
+  "messages": {
+    "loadFailed": "加载 Agent 列表失败",
+    "created": "Agent 已创建",
+    "updated": "Agent 已更新",
+    "deleted": "Agent 已删除",
+    "createFailed": "创建 Agent 失败",
+    "updateFailed": "更新 Agent 失败",
+    "deleteFailed": "删除 Agent 失败",
+    "requiredFields": "请填写 Agent ID、名称和 Persona UUID",
+    "invalidContextStrategy": "上下文策略引用和类型必须同时填写",
+    "invalidJson": "JSON 格式无效，请检查后重试",
+    "confirmDelete": "确认删除 Agent {name} 吗？"
+  }
+}

@@ -37,6 +37,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Tools.vue'),
       },
       {
+        path: 'agents',
+        name: 'Agents',
+        component: () => import('@/views/Agents.vue'),
+      },
+      {
         path: 'model-runtime',
         name: 'ModelRuntime',
         component: () => import('@/views/ModelRuntime.vue'),

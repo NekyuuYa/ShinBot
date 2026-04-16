@@ -130,6 +130,7 @@ const navItems = [
   { to: '/instances', icon: 'mdi-robot-outline', title: 'layout.main.nav.instancesManage' },
   { to: '/plugins', icon: 'mdi-puzzle-outline', title: 'layout.main.nav.pluginsManage' },
   { to: '/tools', icon: 'mdi-tools', title: 'layout.main.nav.toolsManage' },
+  { to: '/agents', icon: 'mdi-account-group-outline', title: 'layout.main.nav.agentsManage' },
   { to: '/model-runtime', icon: 'mdi-router-network', title: 'layout.main.nav.modelRuntime' },
   { to: '/monitoring', icon: 'mdi-monitor-dashboard', title: 'layout.main.nav.monitoring' },
 ]
@@ -139,6 +140,7 @@ const routeTitleMap: Record<string, string> = {
   Instances: 'layout.main.nav.instancesManage',
   Plugins: 'layout.main.nav.pluginsManage',
   Tools: 'layout.main.nav.toolsManage',
+  Agents: 'layout.main.nav.agentsManage',
   ModelRuntime: 'layout.main.nav.modelRuntime',
   Monitoring: 'layout.main.nav.monitoring',
   Settings: 'layout.main.nav.settings',
