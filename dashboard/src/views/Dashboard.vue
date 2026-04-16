@@ -1,7 +1,7 @@
 <template>
   <v-container fluid class="pa-0">
     <app-page-header
-      :title="$t('pages.dashboard.welcome', { name: authStore.username })"
+      :title="$t('pages.dashboard.welcome', { name: authStore.displayName })"
       :subtitle="$t('pages.dashboard.subtitle')"
       :kicker="$t('pages.dashboard.kicker')"
     />

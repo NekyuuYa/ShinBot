@@ -19,11 +19,13 @@ class AuthConfig:
     """
 
     ALGORITHM = "HS256"
+    DEFAULT_USERNAME = "admin"
+    DEFAULT_PASSWORD = "admin"
 
     def __init__(self, config: dict[str, Any], data_dir: Path) -> None:
         admin_cfg = config.get("admin", {})
-        self.username: str = admin_cfg.get("username", "admin")
-        self._password: str = admin_cfg.get("password", "admin")
+        self.username: str = admin_cfg.get("username", self.DEFAULT_USERNAME)
+        self._password: str = admin_cfg.get("password", self.DEFAULT_PASSWORD)
         self.jwt_expire_hours: int = int(admin_cfg.get("jwt_expire_hours", 24))
 
         secret_from_cfg: str = admin_cfg.get("jwt_secret", "")
@@ -36,12 +38,20 @@ class AuthConfig:
     def verify_password(self, username: str, password: str) -> bool:
         return username == self.username and password == self._password
 
+    def is_using_default_credentials(self) -> bool:
+        return self.username == self.DEFAULT_USERNAME and self._password == self.DEFAULT_PASSWORD
+
+    def set_credentials(self, username: str, password: str) -> None:
+        self.username = username
+        self._password = password
+
     # ── Token lifecycle ──────────────────────────────────────────────
 
-    def create_token(self) -> str:
+    def create_token(self, subject: str | None = None) -> str:
         now = int(time.time())
         payload = {
-            "sub": "admin",
+            "sub": subject or self.username,
+            "username": self.username,
             "iat": now,
             "exp": now + self.jwt_expire_hours * 3600,
         }

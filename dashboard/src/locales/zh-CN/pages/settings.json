@@ -1,5 +1,20 @@
 {
   "kicker": "偏好与策略",
   "title": "设置",
-  "subtitle": "集中承载控制台级别的偏好、策略与后续系统配置入口。"
+  "subtitle": "集中承载控制台级别的偏好、策略与后续系统配置入口。",
+  "credentials": {
+    "title": "管理员账号",
+    "subtitle": "修改登录用户名与密码。",
+    "mustChangeHint": "你当前正在使用默认凭据。继续使用前必须先修改用户名和密码。",
+    "username": "新用户名",
+    "currentPassword": "当前密码",
+    "newPassword": "新密码",
+    "confirmPassword": "确认新密码",
+    "updateAction": "更新账号",
+    "allFieldsRequired": "请完整填写所有字段",
+    "passwordMismatch": "两次输入的新密码不一致",
+    "defaultNotAllowed": "默认凭据不允许继续使用，请同时修改用户名和密码",
+    "updateSuccess": "账号信息已更新",
+    "updateFailed": "更新账号信息失败"
+  }
 }

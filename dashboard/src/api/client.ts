@@ -75,6 +75,8 @@ class ApiClient {
         if (error.response?.status === 401) {
           // Token 已失效，清除 Token 并跳转登录
           localStorage.removeItem('auth_token')
+          localStorage.removeItem('auth_username')
+          localStorage.removeItem('auth_must_change_credentials')
           if (this.router) {
             this.router.push('/login')
           }

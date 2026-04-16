@@ -25,7 +25,7 @@
         <v-btn icon="mdi-account-circle-outline" v-bind="props" class="me-4" />
       </template>
       <v-list class="rounded-lg mt-2" elevation="4">
-        <v-list-item prepend-icon="mdi-account" :title="authStore.username" />
+        <v-list-item prepend-icon="mdi-account" :title="authStore.displayName" />
         <v-divider />
         <v-list-item prepend-icon="mdi-logout" color="error" @click="handleLogout" :title="t('layout.main.nav.logout')" />
       </v-list>
@@ -86,12 +86,30 @@
       <router-view />
     </div>
   </v-main>
+
+  <v-dialog
+    :model-value="authStore.mustChangeCredentials"
+    persistent
+    max-width="560"
+  >
+    <v-card class="pa-6">
+      <v-card-title class="px-0 pt-0">
+        {{ $t('pages.settings.credentials.title') }}
+      </v-card-title>
+      <v-card-subtitle class="px-0 pb-4">
+        {{ $t('pages.settings.credentials.subtitle') }}
+      </v-card-subtitle>
+
+      <credentials-update-form force-change />
+    </v-card>
+  </v-dialog>
 </template>
 
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import CredentialsUpdateForm from '@/components/CredentialsUpdateForm.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useMonitoringStore } from '@/stores/monitoring'
 import { useInstancesStore } from '@/stores/instances'

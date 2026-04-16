@@ -1,5 +1,20 @@
 {
   "kicker": "Preferences",
   "title": "Settings",
-  "subtitle": "A dedicated place for console-level preferences, policy controls, and future system configuration."
+  "subtitle": "A dedicated place for console-level preferences, policy controls, and future system configuration.",
+  "credentials": {
+    "title": "Administrator Account",
+    "subtitle": "Update the login username and password.",
+    "mustChangeHint": "You are using default credentials. You must update both username and password before continuing.",
+    "username": "New Username",
+    "currentPassword": "Current Password",
+    "newPassword": "New Password",
+    "confirmPassword": "Confirm New Password",
+    "updateAction": "Update Account",
+    "allFieldsRequired": "Please complete all fields",
+    "passwordMismatch": "The new passwords do not match",
+    "defaultNotAllowed": "Default credentials are not allowed. Please update both username and password",
+    "updateSuccess": "Account credentials updated",
+    "updateFailed": "Failed to update account credentials"
+  }
 }
