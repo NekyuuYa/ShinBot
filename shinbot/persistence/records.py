@@ -169,3 +169,36 @@ class BotConfigRecord:
     tags: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class MessageLogRecord:
+    """A single message in the full communication log."""
+
+    session_id: str
+    role: str  # "user" or "assistant"
+    created_at: float  # millisecond-precision epoch timestamp
+    platform_msg_id: str = ""
+    sender_id: str = ""
+    sender_name: str = ""
+    content_json: str = "[]"  # serialised MessageElement AST array
+    raw_text: str = ""
+    is_read: bool = False
+    is_mentioned: bool = False
+    id: int | None = None  # set after INSERT
+
+
+@dataclass(slots=True)
+class AIInteractionRecord:
+    """AI decision audit trail for a single trigger → response cycle."""
+
+    execution_id: str = ""
+    trigger_id: int | None = None
+    response_id: int | None = None
+    full_prompt_json: str = "[]"
+    think_text: str = ""
+    injected_context_json: str = "[]"
+    tool_calls_json: str = "[]"
+    model_id: str = ""
+    usage_json: str = "{}"
+    id: int | None = None

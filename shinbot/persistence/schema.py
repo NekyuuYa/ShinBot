@@ -246,6 +246,58 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         updated_at TEXT NOT NULL
     )
     """,
+    # ── Message logs & AI interactions ───────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS message_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        platform_msg_id TEXT NOT NULL DEFAULT '',
+        sender_id TEXT NOT NULL DEFAULT '',
+        sender_name TEXT NOT NULL DEFAULT '',
+        content_json TEXT NOT NULL DEFAULT '[]',
+        raw_text TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        is_mentioned INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_message_logs_session_id
+    ON message_logs(session_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_message_logs_created_at
+    ON message_logs(created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_message_logs_sender_id
+    ON message_logs(sender_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ai_interactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        execution_id TEXT NOT NULL DEFAULT '',
+        trigger_id INTEGER,
+        response_id INTEGER,
+        full_prompt_json TEXT NOT NULL DEFAULT '[]',
+        think_text TEXT NOT NULL DEFAULT '',
+        injected_context_json TEXT NOT NULL DEFAULT '[]',
+        tool_calls_json TEXT NOT NULL DEFAULT '[]',
+        model_id TEXT NOT NULL DEFAULT '',
+        usage_json TEXT NOT NULL DEFAULT '{}',
+        FOREIGN KEY(trigger_id) REFERENCES message_logs(id),
+        FOREIGN KEY(response_id) REFERENCES message_logs(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ai_interactions_execution_id
+    ON ai_interactions(execution_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ai_interactions_trigger_id
+    ON ai_interactions(trigger_id)
+    """,
 )
 
 

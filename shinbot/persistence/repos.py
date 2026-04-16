@@ -9,9 +9,11 @@ from dataclasses import asdict
 from typing import Any
 
 from shinbot.persistence.records import (
+    AIInteractionRecord,
     AgentRecord,
     BotConfigRecord,
     ContextStrategyRecord,
+    MessageLogRecord,
     ModelDefinitionRecord,
     ModelExecutionRecord,
     ModelProviderRecord,
@@ -1225,3 +1227,170 @@ class ModelExecutionRepository:
             }
             for row in rows
         ]
+
+
+class MessageLogRepository:
+    """Persistence adapter for the full communication log."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def insert(self, record: MessageLogRecord) -> int:
+        """Insert a message log entry and return the auto-incremented id."""
+        with self._db.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO message_logs (
+                    session_id, platform_msg_id, sender_id, sender_name,
+                    content_json, raw_text, role, is_read, is_mentioned, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.session_id,
+                    record.platform_msg_id,
+                    record.sender_id,
+                    record.sender_name,
+                    record.content_json,
+                    record.raw_text,
+                    record.role,
+                    1 if record.is_read else 0,
+                    1 if record.is_mentioned else 0,
+                    record.created_at,
+                ),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def mark_read(self, msg_id: int) -> None:
+        with self._db.connect() as conn:
+            conn.execute("UPDATE message_logs SET is_read = 1 WHERE id = ?", (msg_id,))
+
+    def get(self, msg_id: int) -> dict[str, Any] | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM message_logs WHERE id = ?", (msg_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row)
+
+    def list_by_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        before_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._db.connect() as conn:
+            if before_id is not None:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM message_logs
+                    WHERE session_id = ? AND id < ?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (session_id, before_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM message_logs
+                    WHERE session_id = ?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (session_id, limit),
+                ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "platform_msg_id": row["platform_msg_id"],
+            "sender_id": row["sender_id"],
+            "sender_name": row["sender_name"],
+            "content_json": row["content_json"],
+            "raw_text": row["raw_text"],
+            "role": row["role"],
+            "is_read": bool(row["is_read"]),
+            "is_mentioned": bool(row["is_mentioned"]),
+            "created_at": row["created_at"],
+        }
+
+
+class AIInteractionRepository:
+    """Persistence adapter for AI decision audit records."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def insert(self, record: AIInteractionRecord) -> int:
+        """Insert an AI interaction record and return the auto-incremented id."""
+        with self._db.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_interactions (
+                    execution_id, trigger_id, response_id,
+                    full_prompt_json, think_text, injected_context_json,
+                    tool_calls_json, model_id, usage_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.execution_id,
+                    record.trigger_id,
+                    record.response_id,
+                    record.full_prompt_json,
+                    record.think_text,
+                    record.injected_context_json,
+                    record.tool_calls_json,
+                    record.model_id,
+                    record.usage_json,
+                ),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_by_execution(self, execution_id: str) -> dict[str, Any] | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM ai_interactions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row)
+
+    def list_by_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return AI interactions whose trigger message belongs to the given session."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ai.*
+                FROM ai_interactions AS ai
+                JOIN message_logs AS ml ON ml.id = ai.trigger_id
+                WHERE ml.session_id = ?
+                ORDER BY ai.id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "execution_id": row["execution_id"],
+            "trigger_id": row["trigger_id"],
+            "response_id": row["response_id"],
+            "full_prompt_json": row["full_prompt_json"],
+            "think_text": row["think_text"],
+            "injected_context_json": row["injected_context_json"],
+            "tool_calls_json": row["tool_calls_json"],
+            "model_id": row["model_id"],
+            "usage_json": row["usage_json"],
+        }

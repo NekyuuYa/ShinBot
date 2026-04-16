@@ -81,6 +81,7 @@ class ShinBot:
             command_registry=self.command_registry,
             event_bus=self.event_bus,
             audit_logger=self.audit_logger,
+            database=self.database,
         )
 
     # ── Event ingress callback ───────────────────────────────────────

@@ -12,9 +12,10 @@ Pipeline stages:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shinbot.core.dispatch.command import CommandMatch, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
@@ -22,10 +23,14 @@ from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, M
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine, check_permission
 from shinbot.core.state.session import Session, SessionManager
+from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.logger import get_logger
 from shinbot.utils.resource_ingress import summarize_message_modalities
+
+if TYPE_CHECKING:
+    from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
 
@@ -87,6 +92,7 @@ class MessageContext:
         adapter: BaseAdapter,
         permissions: set[str],
         waiting_registry: WaitingInputRegistry | None = None,
+        database: DatabaseManager | None = None,
     ):
         self.event = event
         self.message = message
@@ -94,6 +100,7 @@ class MessageContext:
         self.adapter = adapter
         self.permissions = permissions
         self._waiting_registry = waiting_registry
+        self._database = database
 
         # Command resolution result (set during dispatch)
         self.command_match: CommandMatch | None = None
@@ -102,6 +109,9 @@ class MessageContext:
         self.start_time: float = time.monotonic()
         self._sent_messages: list[MessageHandle] = []
         self._stopped: bool = False
+
+        # Message log: id of the triggering user message in message_logs
+        self._msg_log_id: int | None = None
 
     # ── Convenience accessors ────────────────────────────────────────
 
@@ -163,6 +173,10 @@ class MessageContext:
 
         handle = await self.adapter.send(self.session.id, elements)
         self._sent_messages.append(handle)
+
+        # Persist assistant message to message_logs
+        self._log_assistant_message(elements, handle)
+
         return handle
 
     async def _call_api(self, method: str, params: dict[str, Any]) -> Any:
@@ -271,7 +285,42 @@ class MessageContext:
         all_elements = [quote] + response_els
         handle = await self.adapter.send(self.session.id, all_elements)
         self._sent_messages.append(handle)
+
+        # Persist assistant message to message_logs
+        self._log_assistant_message(all_elements, handle)
+
         return handle
+
+    def _log_assistant_message(
+        self,
+        elements: list[MessageElement],
+        handle: MessageHandle,
+    ) -> None:
+        """Insert an assistant message row into message_logs (best-effort, sync)."""
+        if self._database is None:
+            return
+        try:
+            plain_text = Message.from_elements(elements).get_text()
+            content_json = json.dumps(
+                [el.model_dump(mode="json") for el in elements],
+                ensure_ascii=False,
+            )
+            self._database.message_logs.insert(
+                MessageLogRecord(
+                    session_id=self.session.id,
+                    platform_msg_id=handle.message_id if handle is not None else "",
+                    sender_id=self.event.self_id,
+                    sender_name="",
+                    content_json=content_json,
+                    raw_text=plain_text,
+                    role="assistant",
+                    is_read=True,
+                    is_mentioned=False,
+                    created_at=time.time() * 1000,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to persist assistant message to message_logs")
 
     def stop(self) -> None:
         """Signal that processing should stop (no further handlers)."""
@@ -284,6 +333,17 @@ class MessageContext:
     @property
     def elapsed_ms(self) -> float:
         return (time.monotonic() - self.start_time) * 1000
+
+    def mark_trigger_read(self) -> None:
+        """Mark the triggering user message as read in message_logs.
+
+        Call this when the AI picks up the message for processing.
+        """
+        if self._database is not None and self._msg_log_id is not None:
+            try:
+                self._database.message_logs.mark_read(self._msg_log_id)
+            except Exception:
+                logger.exception("Failed to mark message %d as read", self._msg_log_id)
 
     # ── Interactive input ────────────────────────────────────────────────────
 
@@ -348,6 +408,7 @@ class MessagePipeline:
         command_registry: CommandRegistry,
         event_bus: EventBus,
         audit_logger: AuditLogger | None = None,
+        database: DatabaseManager | None = None,
     ):
         self._adapter_manager = adapter_manager
         self._session_manager = session_manager
@@ -355,6 +416,7 @@ class MessagePipeline:
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._audit_logger = audit_logger
+        self._database = database
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._waiting_registry = WaitingInputRegistry()
 
@@ -428,7 +490,37 @@ class MessagePipeline:
             adapter=adapter,
             permissions=permissions,
             waiting_registry=self._waiting_registry,
+            database=self._database,
         )
+
+        # Persist incoming user message to message_logs
+        if self._database is not None and event.is_message_event:
+            try:
+                is_mentioned = any(
+                    el.type == "at" and el.attrs.get("id") == event.self_id
+                    for el in message.elements
+                )
+                content_json = json.dumps(
+                    [el.model_dump(mode="json") for el in message.elements],
+                    ensure_ascii=False,
+                )
+                msg_log_id = self._database.message_logs.insert(
+                    MessageLogRecord(
+                        session_id=session.id,
+                        platform_msg_id=event.message.id if event.message is not None else "",
+                        sender_id=event.sender_id or "",
+                        sender_name=(event.user.name if event.user is not None else ""),
+                        content_json=content_json,
+                        raw_text=message.get_text(),
+                        role="user",
+                        is_read=False,
+                        is_mentioned=is_mentioned,
+                        created_at=time.time() * 1000,
+                    )
+                )
+                bot._msg_log_id = msg_log_id
+            except Exception:
+                logger.exception("Failed to persist user message to message_logs")
 
         if self._audit_logger:
             self._audit_logger.log_message(

@@ -9,9 +9,11 @@ from shinbot.agent.prompting import PromptRegistry
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
+    AIInteractionRecord,
     AgentRecord,
     BotConfigRecord,
     ContextStrategyRecord,
+    MessageLogRecord,
     DatabaseManager,
     ModelExecutionRecord,
     PersonaRecord,
@@ -52,6 +54,8 @@ class TestDatabaseManager:
         assert "audit_logs" in tables
         assert "model_execution_records" in tables
         assert "model_providers" in tables
+        assert "message_logs" in tables
+        assert "ai_interactions" in tables
 
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -442,3 +446,87 @@ class TestDatabaseBackedAuditLogger:
 
         assert entry.command_name == "ping"
         assert row == ("ping", "plugin.test", "inst1:group:g1", 1)
+
+    def test_message_log_repository_roundtrip(self, tmp_path):
+        import time
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        created_at = time.time() * 1000
+        msg_id = db.message_logs.insert(
+            MessageLogRecord(
+                session_id="inst1:group:g1",
+                platform_msg_id="pm-001",
+                sender_id="QQ:12345",
+                sender_name="Alice",
+                content_json='[{"type":"text","attrs":{"content":"hi"},"children":[]}]',
+                raw_text="hi",
+                role="user",
+                is_read=False,
+                is_mentioned=True,
+                created_at=created_at,
+            )
+        )
+        assert isinstance(msg_id, int)
+
+        row = db.message_logs.get(msg_id)
+        assert row is not None
+        assert row["session_id"] == "inst1:group:g1"
+        assert row["role"] == "user"
+        assert row["raw_text"] == "hi"
+        assert row["is_read"] is False
+        assert row["is_mentioned"] is True
+
+        db.message_logs.mark_read(msg_id)
+        row2 = db.message_logs.get(msg_id)
+        assert row2 is not None
+        assert row2["is_read"] is True
+
+        listing = db.message_logs.list_by_session("inst1:group:g1")
+        assert len(listing) == 1
+        assert listing[0]["id"] == msg_id
+
+    def test_ai_interaction_repository_roundtrip(self, tmp_path):
+        import time
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        trigger_id = db.message_logs.insert(
+            MessageLogRecord(
+                session_id="inst1:group:g1",
+                role="user",
+                created_at=time.time() * 1000,
+            )
+        )
+        response_id = db.message_logs.insert(
+            MessageLogRecord(
+                session_id="inst1:group:g1",
+                role="assistant",
+                created_at=time.time() * 1000,
+            )
+        )
+
+        ia_id = db.ai_interactions.insert(
+            AIInteractionRecord(
+                execution_id="exec-42",
+                trigger_id=trigger_id,
+                response_id=response_id,
+                full_prompt_json="[]",
+                model_id="claude-3-haiku",
+                usage_json='{"input_tokens":100,"output_tokens":50}',
+            )
+        )
+        assert isinstance(ia_id, int)
+
+        result = db.ai_interactions.get_by_execution("exec-42")
+        assert result is not None
+        assert result["execution_id"] == "exec-42"
+        assert result["trigger_id"] == trigger_id
+        assert result["response_id"] == response_id
+        assert result["model_id"] == "claude-3-haiku"
+
+        by_session = db.ai_interactions.list_by_session("inst1:group:g1")
+        assert len(by_session) == 1
+        assert by_session[0]["id"] == ia_id

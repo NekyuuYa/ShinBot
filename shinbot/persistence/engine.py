@@ -11,10 +11,12 @@ from shinbot.agent.prompting import PromptRegistry
 from shinbot.persistence.config import DatabaseConfig
 from shinbot.persistence.records import ContextStrategyRecord, utc_now_iso
 from shinbot.persistence.repos import (
+    AIInteractionRepository,
     AgentRepository,
     AuditRepository,
     BotConfigRepository,
     ContextStrategyRepository,
+    MessageLogRepository,
     ModelExecutionRepository,
     ModelRegistryRepository,
     PersonaRepository,
@@ -38,6 +40,8 @@ class DatabaseManager:
         self.context_strategies = ContextStrategyRepository(self)
         self.model_registry = ModelRegistryRepository(self)
         self.model_executions = ModelExecutionRepository(self)
+        self.message_logs = MessageLogRepository(self)
+        self.ai_interactions = AIInteractionRepository(self)
 
     @classmethod
     def from_bootstrap(
