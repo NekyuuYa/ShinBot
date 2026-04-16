@@ -16,7 +16,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+import jwt as _jwt
+
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -159,8 +161,31 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
     # The log_broadcaster() task fans out records queued by AsyncLogHandler
     # to all connected clients. Each handler here just keeps the socket alive.
 
+    async def _require_ws_auth(websocket: WebSocket, token: str | None) -> bool:
+        """Validate JWT token for WebSocket connections.
+
+        Returns True if valid, False (and closes the socket) if not.
+        Token must be provided as the ``?token=<jwt>`` query parameter because
+        browsers cannot set the ``Authorization`` header on WebSocket requests.
+        """
+        auth_config = websocket.app.state.auth_config
+        if not token:
+            await websocket.close(code=1008, reason="Unauthorized: token required")
+            return False
+        try:
+            auth_config.decode_token(token)
+        except _jwt.InvalidTokenError:
+            await websocket.close(code=1008, reason="Unauthorized: invalid token")
+            return False
+        return True
+
     @app.websocket("/ws/logs")
-    async def ws_logs(websocket: WebSocket) -> None:
+    async def ws_logs(
+        websocket: WebSocket,
+        token: str | None = Query(default=None),
+    ) -> None:
+        if not await _require_ws_auth(websocket, token):
+            return
         await log_manager.connect(websocket)
         try:
             while True:
@@ -173,7 +198,9 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
 
     # ── WebSocket: /ws/status + /ws/system (legacy alias) ───────────
 
-    async def _serve_status_socket(websocket: WebSocket) -> None:
+    async def _serve_status_socket(websocket: WebSocket, token: str | None) -> None:
+        if not await _require_ws_auth(websocket, token):
+            return
         await status_manager.connect(websocket)
         try:
             while True:
@@ -189,13 +216,19 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
             status_manager.disconnect(websocket)
 
     @app.websocket("/ws/status")
-    async def ws_status(websocket: WebSocket) -> None:
-        await _serve_status_socket(websocket)
+    async def ws_status(
+        websocket: WebSocket,
+        token: str | None = Query(default=None),
+    ) -> None:
+        await _serve_status_socket(websocket, token)
 
     # Backward compatibility with older docs/configs.
     @app.websocket("/ws/system")
-    async def ws_system(websocket: WebSocket) -> None:
-        await _serve_status_socket(websocket)
+    async def ws_system(
+        websocket: WebSocket,
+        token: str | None = Query(default=None),
+    ) -> None:
+        await _serve_status_socket(websocket, token)
 
     # ── Static dashboard hosting + SPA fallback ──────────────────────
 

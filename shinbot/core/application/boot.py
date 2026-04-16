@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import shutil
 import tomllib
 from enum import Enum
@@ -271,7 +272,14 @@ class BootController:
                 logger.exception("Failed to clean temp entry %s", child)
 
     def _ensure_admin_defaults(self) -> None:
-        """Ensure [admin] config always exists and persist only when defaults are injected."""
+        """Ensure [admin] config always exists with secure credentials.
+
+        On first run (no password configured), a cryptographically random
+        password is generated and printed to the terminal so the operator
+        can log in and change it via the Dashboard.  The generated password
+        is persisted to config.toml and is NOT the well-known "admin/admin"
+        default, so the system is safe from the moment it starts.
+        """
         admin_cfg = self.config.get("admin")
         if not isinstance(admin_cfg, dict):
             admin_cfg = {}
@@ -281,8 +289,22 @@ class BootController:
             admin_cfg["username"] = "admin"
             changed = True
         if not admin_cfg.get("password"):
-            admin_cfg["password"] = "admin"
+            generated = secrets.token_urlsafe(16)
+            admin_cfg["password"] = generated
             changed = True
+            # Print the generated password prominently so the operator can
+            # copy it.  Use print() to guarantee it reaches stdout even if
+            # the logging subsystem is not yet initialised.
+            border = "─" * 54
+            print(f"\n┌{border}┐")
+            print(f"│{'ShinBot — First-Run Credentials':^54}│")
+            print(f"├{border}┤")
+            print(f"│  Username : {'admin':<42}│")
+            print(f"│  Password : {generated:<42}│")
+            print(f"├{border}┤")
+            print(f"│  Log in and change these credentials before       │")
+            print(f"│  exposing this server to a network.               │")
+            print(f"└{border}┘\n")
         if "jwt_expire_hours" not in admin_cfg:
             admin_cfg["jwt_expire_hours"] = 24
             changed = True
@@ -290,13 +312,12 @@ class BootController:
         self.config["admin"] = admin_cfg
 
         if changed:
-            logger.warning(
-                "[admin] section is missing or incomplete in %s; defaults admin/admin were injected",
-                self.config_path,
-            )
             saved = self.save_config()
             if not saved:
-                logger.warning("Admin defaults were applied in memory but could not be persisted")
+                logger.warning(
+                    "Admin defaults were applied in memory but could not be persisted to %s",
+                    self.config_path,
+                )
 
     def _ensure_rw(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
