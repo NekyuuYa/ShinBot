@@ -7,6 +7,7 @@ between the core pipeline, plugins, and adapters.
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -14,6 +15,53 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 EventHandler = Callable[..., Coroutine[Any, Any, Any]]
+
+# ── Circuit-breaker constants ────────────────────────────────────────
+# A handler that raises on every invocation floods logs and wastes CPU.
+# After _CB_THRESHOLD consecutive failures the circuit opens and the
+# handler is skipped.  After _CB_RESET_SEC seconds the circuit enters
+# half-open state: the handler is tried once more.  Success closes it;
+# another failure re-opens it and resets the cooldown timer.
+
+_CB_THRESHOLD = 5       # consecutive failures before opening
+_CB_RESET_SEC = 60.0    # seconds before half-open retry
+
+
+class _CircuitState:
+    """Per-handler circuit-breaker state (closed → open → half-open → …)."""
+
+    __slots__ = ("consecutive_failures", "tripped_at")
+
+    def __init__(self) -> None:
+        self.consecutive_failures: int = 0
+        self.tripped_at: float | None = None  # None = closed
+
+    @property
+    def is_open(self) -> bool:
+        """True when the circuit is open and the handler should be skipped.
+
+        Side-effect: transitions open → half-open (sets tripped_at = None)
+        when the reset window has elapsed so the next call attempt is allowed.
+        """
+        if self.tripped_at is None:
+            return False
+        if time.monotonic() - self.tripped_at >= _CB_RESET_SEC:
+            # Half-open: give the handler one more chance.
+            self.tripped_at = None
+            return False
+        return True
+
+    def on_success(self) -> None:
+        self.consecutive_failures = 0
+        self.tripped_at = None
+
+    def on_failure(self) -> bool:
+        """Record a failure.  Returns True if the circuit just opened."""
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= _CB_THRESHOLD and self.tripped_at is None:
+            self.tripped_at = time.monotonic()
+            return True
+        return False
 
 
 class EventBus:
@@ -27,6 +75,9 @@ class EventBus:
     def __init__(self) -> None:
         # event_type → [(priority, handler, owner_id)]
         self._handlers: dict[str, list[tuple[int, EventHandler, str | None]]] = defaultdict(list)
+        # handler id → circuit-breaker state (keyed by id() — safe because
+        # handlers are held in _handlers, preventing GC until explicitly removed)
+        self._circuit: dict[int, _CircuitState] = {}
 
     def on(
         self,
@@ -51,6 +102,7 @@ class EventBus:
         """Remove a specific handler."""
         entries = self._handlers.get(event_type, [])
         self._handlers[event_type] = [(p, h, o) for p, h, o in entries if h is not handler]
+        self._circuit.pop(id(handler), None)
 
     def off_all(self, owner: str) -> int:
         """Remove all handlers owned by a specific owner (plugin unload).
@@ -60,10 +112,12 @@ class EventBus:
         removed = 0
         for event_type in list(self._handlers.keys()):
             before = len(self._handlers[event_type])
-            self._handlers[event_type] = [
-                (p, h, o) for p, h, o in self._handlers[event_type] if o != owner
-            ]
-            removed += before - len(self._handlers[event_type])
+            kept = [(p, h, o) for p, h, o in self._handlers[event_type] if o != owner]
+            for _p, h, o in self._handlers[event_type]:
+                if o == owner:
+                    self._circuit.pop(id(h), None)
+            self._handlers[event_type] = kept
+            removed += before - len(kept)
         return removed
 
     async def emit(self, event_type: str, *args: Any, **kwargs: Any) -> list[Any]:
@@ -85,11 +139,16 @@ class EventBus:
         handlers.sort(key=lambda x: x[0])
 
         for _priority, handler, owner in handlers:
+            cb = self._circuit.setdefault(id(handler), _CircuitState())
+            if cb.is_open:
+                continue
             try:
                 result = await handler(*args, **kwargs)
+                cb.on_success()
                 if result is not None:
                     results.append(result)
             except StopPropagation:
+                cb.on_success()
                 logger.debug(
                     "Propagation stopped by handler %s (owner=%s) for event %s",
                     handler.__name__,
@@ -98,6 +157,14 @@ class EventBus:
                 )
                 break
             except Exception:
+                just_opened = cb.on_failure()
+                if just_opened:
+                    logger.warning(
+                        "Circuit breaker OPEN for handler %s (owner=%s) after %d consecutive failures",
+                        handler.__name__,
+                        owner,
+                        _CB_THRESHOLD,
+                    )
                 logger.exception(
                     "Error in event handler %s (owner=%s) for event %s",
                     handler.__name__,
