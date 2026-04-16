@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import type { BotConfigSummary } from './botConfigs'
 
 export interface Instance {
   id: string
@@ -6,6 +7,7 @@ export interface Instance {
   adapterType: string
   status: 'running' | 'stopped'
   config: InstanceConfig
+  botConfig: BotConfigSummary | null
   createdAt: number
   lastModified: number
 }

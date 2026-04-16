@@ -43,17 +43,17 @@ export const useInstancesStore = defineStore('instances', () => {
       if (response.data.success && response.data.data) {
         instances.value = [...instances.value, response.data.data]
         useUiStore().showSnackbar(translate('pages.instances.created'), 'success')
-        return true
+        return response.data.data
       } else {
         error.value = response.data.error?.message || translate('pages.instances.createFailed')
-        return false
+        return null
       }
     } catch (errorDetail: unknown) {
       error.value = getErrorMessage(
         errorDetail,
         translate('common.actions.message.networkError')
       )
-      return false
+      return null
     }
   }
 
@@ -66,17 +66,17 @@ export const useInstancesStore = defineStore('instances', () => {
           instances.value[index] = response.data.data
         }
         useUiStore().showSnackbar(translate('pages.instances.updated'), 'success')
-        return true
+        return response.data.data
       } else {
         error.value = response.data.error?.message || translate('pages.instances.updateFailed')
-        return false
+        return null
       }
     } catch (errorDetail: unknown) {
       error.value = getErrorMessage(
         errorDetail,
         translate('common.actions.message.networkError')
       )
-      return false
+      return null
     }
   }
 

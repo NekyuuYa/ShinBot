@@ -1,42 +1,93 @@
 <template>
-  <v-row>
-    <v-col v-for="field in flatFields" :key="field.key" cols="12" md="6">
-      <v-select
-        v-if="field.component === 'select'"
-        :model-value="selectValue(field.key, field.multiple)"
-        :items="field.options"
-        :label="field.label"
-        :hint="field.description"
-        :multiple="field.multiple"
-        chips
-        persistent-hint
-        @update:model-value="(value) => updateField(field.key, value)"
-      />
+  <div class="d-flex flex-column ga-4">
+    <v-row>
+      <v-col v-for="field in basicFields" :key="field.key" cols="12" md="6">
+        <v-select
+          v-if="field.component === 'select'"
+          :model-value="selectValue(field.key, field.multiple)"
+          :items="field.options"
+          :label="field.label"
+          :hint="field.description"
+          :multiple="field.multiple"
+          chips
+          persistent-hint
+          item-title="title"
+          item-value="value"
+          @update:model-value="(value) => updateField(field.key, value)"
+        />
 
-      <v-switch
-        v-else-if="field.component === 'switch'"
-        :model-value="Boolean(fieldValue(field.key))"
-        :label="field.label"
-        :hint="field.description"
-        color="primary"
-        inset
-        persistent-hint
-        @update:model-value="(value) => updateField(field.key, value)"
-      />
+        <v-switch
+          v-else-if="field.component === 'switch'"
+          :model-value="Boolean(fieldValue(field.key))"
+          :label="field.label"
+          :hint="field.description"
+          color="primary"
+          inset
+          persistent-hint
+          @update:model-value="(value) => updateField(field.key, value)"
+        />
 
-      <v-text-field
-        v-else
-        :model-value="stringValue(field.key)"
-        :label="field.label"
-        :hint="field.description"
-        :type="field.inputType"
-        persistent-hint
-        @update:model-value="(value) => updateField(field.key, normalizeInput(value, field.kind))"
-      />
-    </v-col>
-  </v-row>
+        <v-text-field
+          v-else
+          :model-value="stringValue(field.key)"
+          :label="field.label"
+          :hint="field.description"
+          :type="field.inputType"
+          persistent-hint
+          @update:model-value="(value) => updateField(field.key, normalizeInput(value, field.kind))"
+        />
+      </v-col>
+    </v-row>
+
+    <v-expansion-panels v-if="advancedFields.length > 0" variant="accordion">
+      <v-expansion-panel rounded="xl">
+        <v-expansion-panel-title>
+          {{ $t('pages.instances.form.advancedConfig') }}
+        </v-expansion-panel-title>
+        <v-expansion-panel-text>
+          <v-row>
+            <v-col v-for="field in advancedFields" :key="field.key" cols="12" md="6">
+              <v-select
+                v-if="field.component === 'select'"
+                :model-value="selectValue(field.key, field.multiple)"
+                :items="field.options"
+                :label="field.label"
+                :hint="field.description"
+                :multiple="field.multiple"
+                chips
+                persistent-hint
+                item-title="title"
+                item-value="value"
+                @update:model-value="(value) => updateField(field.key, value)"
+              />
+
+              <v-switch
+                v-else-if="field.component === 'switch'"
+                :model-value="Boolean(fieldValue(field.key))"
+                :label="field.label"
+                :hint="field.description"
+                color="primary"
+                inset
+                persistent-hint
+                @update:model-value="(value) => updateField(field.key, value)"
+              />
+
+              <v-text-field
+                v-else
+                :model-value="stringValue(field.key)"
+                :label="field.label"
+                :hint="field.description"
+                :type="field.inputType"
+                persistent-hint
+                @update:model-value="(value) => updateField(field.key, normalizeInput(value, field.kind))"
+              />
+            </v-col>
+          </v-row>
+        </v-expansion-panel-text>
+      </v-expansion-panel>
+    </v-expansion-panels>
+  </div>
 </template>
-
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { PluginConfigSchema, JsonSchemaProperty } from '@/api/plugins'
@@ -45,10 +96,11 @@ interface FlatField {
   key: string
   label: string
   description: string
+  group: 'basic' | 'advanced'
   component: 'input' | 'switch' | 'select'
   inputType: 'text' | 'number' | 'password'
   kind: 'string' | 'number' | 'integer' | 'boolean' | 'array'
-  options?: Array<string | number | boolean>
+  options?: Array<string | number | boolean | { title: string; value: string | number | boolean }>
   multiple?: boolean
 }
 
@@ -89,13 +141,18 @@ function flattenProperties(
     const kind = property.type === 'integer' ? 'integer' : property.type ?? 'string'
     const label = property.title ?? fieldKey
     const description = property.description ?? ''
+    const group = property.ui_group === 'advanced' ? 'advanced' : 'basic'
 
     if (kind === 'array') {
-      const arrayOptions = property.items?.enum
+      const arrayOptions = property.items?.enum?.map((value) => ({
+        title: String(value),
+        value,
+      }))
       result.push({
         key: fieldKey,
         label,
         description,
+        group,
         component: 'select',
         inputType: 'text',
         kind: 'array',
@@ -106,14 +163,22 @@ function flattenProperties(
     }
 
     if (property.enum && property.enum.length > 0) {
+      const options =
+        Array.isArray(property.enum_titles) && property.enum_titles.length === property.enum.length
+          ? property.enum.map((value, index) => ({
+              title: property.enum_titles?.[index] ?? String(value),
+              value,
+            }))
+          : property.enum.map((value) => ({ title: String(value), value }))
       result.push({
         key: fieldKey,
         label,
         description,
+        group,
         component: 'select',
         inputType: 'text',
         kind: kind === 'number' || kind === 'integer' ? kind : 'string',
-        options: property.enum,
+        options,
         multiple: false,
       })
       continue
@@ -124,6 +189,7 @@ function flattenProperties(
         key: fieldKey,
         label,
         description,
+        group,
         component: 'switch',
         inputType: 'text',
         kind: 'boolean',
@@ -135,6 +201,7 @@ function flattenProperties(
       key: fieldKey,
       label,
       description,
+      group,
       component: 'input',
       inputType: kind === 'number' || kind === 'integer' ? 'number' : 'text',
       kind: kind === 'number' || kind === 'integer' ? kind : 'string',
@@ -145,6 +212,10 @@ function flattenProperties(
 }
 
 const flatFields = computed(() => flattenProperties(props.schema?.properties))
+const basicFields = computed(() => flatFields.value.filter((field) => field.group === 'basic'))
+const advancedFields = computed(() =>
+  flatFields.value.filter((field) => field.group === 'advanced')
+)
 
 const fieldValue = (key: string) => props.modelValue[key]
 

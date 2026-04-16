@@ -25,7 +25,9 @@ export interface JsonSchemaProperty {
   title?: string
   description?: string
   modes?: Array<'forward' | 'reverse' | string>
+  ui_group?: 'basic' | 'advanced' | string
   enum?: Array<string | number | boolean>
+  enum_titles?: string[]
   default?: string | number | boolean | null
   properties?: Record<string, JsonSchemaProperty>
   items?: JsonSchemaProperty

@@ -146,6 +146,47 @@
           <v-alert v-else type="warning" variant="tonal" class="mt-3">
             {{ $t('pages.instances.form.noSchema') }}
           </v-alert>
+
+          <v-divider class="my-5" />
+
+          <div class="text-subtitle1 font-weight-medium mb-3">
+            {{ $t('pages.instances.form.botConfigTitle') }}
+          </div>
+          <v-row>
+            <v-col cols="12" md="6">
+              <v-select
+                v-model="form.botConfig.defaultAgentUuid"
+                :label="$t('pages.instances.form.defaultAgent')"
+                :items="agentOptions"
+                item-title="title"
+                item-value="value"
+                clearable
+              />
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.botConfig.mainLlm"
+                :label="$t('pages.instances.form.mainLlm')"
+                placeholder="openai-main/gpt-fast"
+              />
+            </v-col>
+            <v-col cols="12">
+              <v-combobox
+                v-model="form.botConfig.tags"
+                :label="$t('pages.instances.form.botTags')"
+                multiple
+                chips
+                closable-chips
+                clearable
+              />
+            </v-col>
+            <v-col cols="12">
+              <div class="text-body-2 text-medium-emphasis mb-2">
+                {{ $t('pages.instances.form.botConfigFields') }}
+              </div>
+              <key-value-editor v-model="botConfigEntries" />
+            </v-col>
+          </v-row>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -160,15 +201,24 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { agentsApi, type AgentSummary } from '@/api/agents'
+import {
+  botConfigsApi,
+  type BotConfig,
+  type CreateBotConfigRequest,
+  type UpdateBotConfigRequest,
+} from '@/api/botConfigs'
 import { useInstancesStore } from '@/stores/instances'
 import { usePluginsStore } from '@/stores/plugins'
 import InstanceCard from '@/components/InstanceCard.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import LayoutModeButton from '@/components/LayoutModeButton.vue'
+import KeyValueEditor from '@/components/model-runtime/KeyValueEditor.vue'
 import type { Instance, InstanceConfig, UpdateInstanceRequest } from '@/api/instances'
 import type { PluginConfigSchema } from '@/api/plugins'
 import { useUiStore } from '@/stores/ui'
+import { getErrorMessage } from '@/utils/error'
 
 const { t } = useI18n()
 const instancesStore = useInstancesStore()
@@ -180,11 +230,20 @@ const viewMode = ref<'card' | 'list'>('list')
 const dialogVisible = ref(false)
 const dialogTitleKey = ref('pages.instances.dialog.createTitle')
 const editingId = ref('')
+const agents = ref<AgentSummary[]>([])
+const botConfigs = ref<BotConfig[]>([])
+const botConfigEntries = ref<Array<{ key: string; value: string }>>([])
 
 const form = ref({
   name: '',
   adapterType: '',
   config: {} as Record<string, unknown>,
+  botConfig: {
+    uuid: '',
+    defaultAgentUuid: '',
+    mainLlm: '',
+    tags: [] as string[],
+  },
 })
 
 const adapterOptions = computed(() => {
@@ -216,6 +275,14 @@ const activeAdapterSchema = computed<PluginConfigSchema | null>(
   () => adapterSchemaByPlatform.value[form.value.adapterType] ?? null
 )
 
+const agentOptions = computed(() => [
+  { title: t('pages.instances.form.noDefaultAgent'), value: '' },
+  ...agents.value.map((agent) => ({
+    title: `${agent.name} (${agent.agentId})`,
+    value: agent.uuid,
+  })),
+])
+
 const tableHeaders = computed(() => [
   { title: t('pages.instances.table.name'), value: 'name', width: '20%' },
   { title: t('pages.instances.table.adapterType'), value: 'adapterType', width: '25%' },
@@ -236,8 +303,12 @@ const filteredInstances = computed(() =>
 )
 
 onMounted(() => {
-  instancesStore.fetchInstances()
-  pluginsStore.fetchPlugins()
+  void Promise.all([
+    instancesStore.fetchInstances(),
+    pluginsStore.fetchPlugins(),
+    fetchAgents(),
+    fetchBotConfigs(),
+  ])
 })
 
 watch(
@@ -264,15 +335,26 @@ watch(
   }
 )
 
-const handleRefresh = () => {
-  instancesStore.fetchInstances()
+const handleRefresh = async () => {
+  await Promise.all([instancesStore.fetchInstances(), fetchAgents(), fetchBotConfigs()])
 }
 
 const showCreateDialog = () => {
   editingId.value = ''
   dialogTitleKey.value = 'pages.instances.dialog.createTitle'
   const defaultAdapter = adapterOptions.value[0] ?? 'satori'
-  form.value = { name: '', adapterType: defaultAdapter, config: {} }
+  form.value = {
+    name: '',
+    adapterType: defaultAdapter,
+    config: {},
+    botConfig: {
+      uuid: '',
+      defaultAgentUuid: '',
+      mainLlm: '',
+      tags: [],
+    },
+  }
+  botConfigEntries.value = []
   dialogVisible.value = true
 }
 
@@ -280,16 +362,25 @@ const editInstance = (instance: Instance) => {
   editingId.value = instance.id
   dialogTitleKey.value = 'pages.instances.dialog.editTitle'
   const config = instance.config as InstanceConfig
+  const currentBotConfig = botConfigs.value.find((item) => item.instanceId === instance.id)
   form.value = {
     name: instance.name,
     adapterType: instance.adapterType,
     config: { ...config },
+    botConfig: {
+      uuid: currentBotConfig?.uuid ?? '',
+      defaultAgentUuid: currentBotConfig?.defaultAgentUuid ?? instance.botConfig?.defaultAgentUuid ?? '',
+      mainLlm: currentBotConfig?.mainLlm ?? instance.botConfig?.mainLlm ?? '',
+      tags: [...(currentBotConfig?.tags ?? instance.botConfig?.tags ?? [])],
+    },
   }
+  botConfigEntries.value = objectToEntries(currentBotConfig?.config ?? {})
   dialogVisible.value = true
 }
 
 const closeDialog = () => {
   dialogVisible.value = false
+  botConfigEntries.value = []
 }
 
 const saveInstance = async () => {
@@ -300,7 +391,7 @@ const saveInstance = async () => {
     config,
   }
 
-  const success = editingId.value
+  const instance = editingId.value
     ? await instancesStore.updateInstance(editingId.value, payload)
     : await instancesStore.createInstance({
         name: form.value.name,
@@ -308,7 +399,13 @@ const saveInstance = async () => {
         config,
       })
 
-  if (success) {
+  if (instance) {
+    const botConfigSaved = await saveBotConfig(instance.id)
+    if (!botConfigSaved) {
+      return
+    }
+    await fetchBotConfigs()
+    await instancesStore.fetchInstances()
     uiStore.showSnackbar(t('pages.instances.saved'), 'success')
     closeDialog()
   }
@@ -324,5 +421,87 @@ const startInstance = async (instance: Instance) => {
 
 const stopInstance = async (instance: Instance) => {
   await instancesStore.stopInstance(instance.id)
+}
+
+const fetchAgents = async () => {
+  try {
+    const response = await agentsApi.list()
+    if (response.data.success && response.data.data) {
+      agents.value = response.data.data
+    }
+  } catch (error) {
+    uiStore.showSnackbar(getErrorMessage(error, t('pages.instances.agentsLoadFailed')), 'error')
+  }
+}
+
+const fetchBotConfigs = async () => {
+  try {
+    const response = await botConfigsApi.list()
+    if (response.data.success && response.data.data) {
+      botConfigs.value = response.data.data
+    }
+  } catch (error) {
+    uiStore.showSnackbar(getErrorMessage(error, t('pages.instances.botConfigLoadFailed')), 'error')
+  }
+}
+
+const saveBotConfig = async (instanceId: string) => {
+  const payloadBase = {
+    instanceId,
+    defaultAgentUuid: form.value.botConfig.defaultAgentUuid,
+    mainLlm: form.value.botConfig.mainLlm.trim(),
+    config: entriesToObject(botConfigEntries.value),
+    tags: form.value.botConfig.tags.map((tag) => tag.trim()).filter(Boolean),
+  }
+  const hasMeaningfulBotConfig =
+    Boolean(payloadBase.defaultAgentUuid) ||
+    Boolean(payloadBase.mainLlm) ||
+    payloadBase.tags.length > 0 ||
+    Object.keys(payloadBase.config).length > 0
+
+  if (!hasMeaningfulBotConfig && !form.value.botConfig.uuid) {
+    return true
+  }
+
+  try {
+    if (form.value.botConfig.uuid) {
+      const payload: UpdateBotConfigRequest = payloadBase
+      const response = await botConfigsApi.update(form.value.botConfig.uuid, payload)
+      return response.data.success
+    }
+    const payload: CreateBotConfigRequest = payloadBase
+    const response = await botConfigsApi.create(payload)
+    return response.data.success
+  } catch (error) {
+    uiStore.showSnackbar(getErrorMessage(error, t('pages.instances.botConfigSaveFailed')), 'error')
+    return false
+  }
+}
+
+const objectToEntries = (value: Record<string, unknown>) =>
+  Object.entries(value).map(([key, entryValue]) => ({
+    key,
+    value: typeof entryValue === 'string' ? entryValue : JSON.stringify(entryValue),
+  }))
+
+const entriesToObject = (rows: Array<{ key: string; value: string }>) => {
+  const output: Record<string, unknown> = {}
+  for (const row of rows) {
+    const key = row.key.trim()
+    if (!key) {
+      continue
+    }
+    const rawValue = row.value.trim()
+    if (!rawValue) {
+      output[key] = ''
+      continue
+    }
+    try {
+      output[key] = JSON.parse(rawValue)
+    } catch {
+      output[key] = rawValue
+    }
+  }
+  return output
 }
 </script>

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from shinbot.core.plugins.context import PluginContext
@@ -16,10 +18,13 @@ __plugin_adapter_platform__ = "onebot_v11"
 
 
 class OneBotV11PluginConfig(BaseModel):
-    mode: str = Field(
+    mode: Literal["forward", "reverse"] = Field(
         default="forward",
-        description="Connection mode",
-        json_schema_extra={"modes": ["forward", "reverse"]},
+        description="Connection method",
+        json_schema_extra={
+            "modes": ["forward", "reverse"],
+            "enum_titles": ["Forward WebSocket", "Reverse WebSocket"],
+        },
     )
     url: str = Field(
         default="ws://127.0.0.1:3001",
@@ -39,39 +44,41 @@ class OneBotV11PluginConfig(BaseModel):
     reverse_path: str = Field(
         default="/onebot/v11",
         description="Reverse WebSocket path or full ws://host:port/path URL",
-        json_schema_extra={"modes": ["reverse"]},
+        json_schema_extra={"modes": ["reverse"], "ui_group": "advanced"},
     )
     self_id: str = Field(
         default="",
         description="Expected X-Self-ID for reverse connection validation",
-        json_schema_extra={"modes": ["reverse"]},
+        json_schema_extra={"modes": ["reverse"], "ui_group": "advanced"},
     )
     access_token: str = Field(default="", description="Access token for WS auth")
-    reconnect_delay: float = Field(default=5.0, ge=0.0, description="Reconnect delay in seconds")
+    reconnect_delay: float = Field(
+        default=5.0,
+        ge=0.0,
+        description="Reconnect delay in seconds",
+        json_schema_extra={"ui_group": "advanced"},
+    )
     max_reconnects: int = Field(
-        default=-1, description="Maximum reconnect attempts, -1 for infinite"
+        default=-1,
+        description="Maximum reconnect attempts, -1 for infinite",
+        json_schema_extra={"ui_group": "advanced"},
     )
     request_timeout: float = Field(
-        default=20.0, gt=0.0, description="API request timeout in seconds"
+        default=20.0,
+        gt=0.0,
+        description="API request timeout in seconds",
+        json_schema_extra={"ui_group": "advanced"},
     )
     forward_max_depth: int = Field(
         default=3,
         ge=0,
         description="Maximum nested forward-message expansion depth",
-    )
-    auto_download_media: bool = Field(
-        default=False,
-        description="Cache image/video/file resources to local temp before pipeline",
+        json_schema_extra={"ui_group": "advanced"},
     )
     download_resources: bool = Field(
-        default=False, description="Download media resources to local temp cache"
-    )
-    resource_cache_dir: str = Field(
-        default="data/temp/resources", description="Local cache directory for downloaded resources"
-    )
-    silent_reconnect: bool = Field(default=True, description="Suppress frequent reconnect warnings")
-    reconnect_log_interval: float = Field(
-        default=30.0, ge=1.0, description="Minimum seconds between reconnect warning logs"
+        default=False,
+        description="Download media resources to local temp cache",
+        json_schema_extra={"ui_group": "advanced"},
     )
 
 
