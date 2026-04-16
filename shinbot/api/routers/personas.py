@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, ok
@@ -21,12 +21,14 @@ router = APIRouter(
 class PersonaRequest(BaseModel):
     name: str
     promptText: str
+    tags: list[str] = Field(default_factory=list)
     enabled: bool = True
 
 
 class PersonaPatchRequest(BaseModel):
     name: str | None = None
     promptText: str | None = None
+    tags: list[str] | None = None
     enabled: bool | None = None
 
 
@@ -36,6 +38,7 @@ def _serialize_persona(payload: dict[str, object]) -> dict[str, object]:
         "name": payload["name"],
         "promptDefinitionUuid": payload["prompt_definition_uuid"],
         "promptText": payload["prompt_text"],
+        "tags": payload["tags"],
         "enabled": payload["enabled"],
         "createdAt": payload["created_at"],
         "lastModified": payload["updated_at"],
@@ -58,7 +61,21 @@ def _normalize_persona_input(name: str, prompt_text: str) -> tuple[str, str]:
     return normalized_name, normalized_prompt
 
 
-def _persona_prompt_definition(persona_uuid: str, name: str, prompt_text: str) -> PromptDefinitionRecord:
+def _normalize_persona_tags(tags: list[str]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for tag in tags:
+        value = tag.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _persona_prompt_definition(
+    persona_uuid: str, name: str, prompt_text: str
+) -> PromptDefinitionRecord:
     return PromptDefinitionRecord(
         uuid=str(uuid4()),
         prompt_id=f"persona.{persona_uuid}",
@@ -82,6 +99,7 @@ def list_personas(bot=BotDep):
 @router.post("", status_code=201)
 def create_persona(body: PersonaRequest, bot=BotDep):
     name, prompt_text = _normalize_persona_input(body.name, body.promptText)
+    tags = _normalize_persona_tags(body.tags)
     if bot.database.personas.get_by_name(name) is not None:
         raise HTTPException(
             status_code=409,
@@ -102,6 +120,7 @@ def create_persona(body: PersonaRequest, bot=BotDep):
         uuid=persona_uuid,
         name=name,
         prompt_definition_uuid=prompt_definition.uuid,
+        tags=tags,
         enabled=body.enabled,
         created_at=now,
         updated_at=now,
@@ -142,7 +161,9 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, bot=BotDep):
     next_prompt_text = (
         body.promptText if body.promptText is not None else str(current["prompt_text"] or "")
     )
+    next_tags = body.tags if body.tags is not None else list(current["tags"])
     normalized_name, normalized_prompt = _normalize_persona_input(next_name, next_prompt_text)
+    normalized_tags = _normalize_persona_tags(next_tags)
 
     existing = bot.database.personas.get_by_name(normalized_name)
     if existing is not None and existing["uuid"] != persona_uuid:
@@ -195,6 +216,7 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, bot=BotDep):
             uuid=persona_uuid,
             name=normalized_name,
             prompt_definition_uuid=prompt_definition_uuid,
+            tags=normalized_tags,
             enabled=body.enabled if body.enabled is not None else bool(current["enabled"]),
             created_at=str(current["created_at"]),
             updated_at=utc_now_iso(),

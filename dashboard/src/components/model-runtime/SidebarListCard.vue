@@ -2,7 +2,7 @@
   <v-card class="sidebar-card">
     <v-card-item class="pb-2">
       <v-card-title class="text-subtitle-1 font-weight-bold">{{ title }}</v-card-title>
-      <template #append>
+      <template v-if="showAddButton" #append>
         <v-btn
           :prepend-icon="addIcon"
           size="small"
@@ -85,11 +85,13 @@ interface Props {
   emptyText: string
   items: SidebarItem[]
   activeId: string
+  showAddButton?: boolean
   addIcon?: string
   addLabel?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  showAddButton: true,
   addIcon: 'mdi-plus',
   addLabel: 'Add',
 })

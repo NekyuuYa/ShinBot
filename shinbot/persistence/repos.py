@@ -204,6 +204,7 @@ class PersonaRepository:
                     p.uuid,
                     p.name,
                     p.prompt_definition_uuid,
+                    p.tags_json,
                     d.content AS prompt_text,
                     p.enabled,
                     p.created_at,
@@ -218,6 +219,7 @@ class PersonaRepository:
                 "uuid": row["uuid"],
                 "name": row["name"],
                 "prompt_definition_uuid": row["prompt_definition_uuid"],
+                "tags": _json_loads(row["tags_json"], []),
                 "prompt_text": row["prompt_text"],
                 "enabled": bool(row["enabled"]),
                 "created_at": row["created_at"],
@@ -234,6 +236,7 @@ class PersonaRepository:
                     p.uuid,
                     p.name,
                     p.prompt_definition_uuid,
+                    p.tags_json,
                     d.content AS prompt_text,
                     p.enabled,
                     p.created_at,
@@ -250,6 +253,7 @@ class PersonaRepository:
             "uuid": row["uuid"],
             "name": row["name"],
             "prompt_definition_uuid": row["prompt_definition_uuid"],
+            "tags": _json_loads(row["tags_json"], []),
             "prompt_text": row["prompt_text"],
             "enabled": bool(row["enabled"]),
             "created_at": row["created_at"],
@@ -264,6 +268,7 @@ class PersonaRepository:
                     p.uuid,
                     p.name,
                     p.prompt_definition_uuid,
+                    p.tags_json,
                     d.content AS prompt_text,
                     p.enabled,
                     p.created_at,
@@ -280,6 +285,7 @@ class PersonaRepository:
             "uuid": row["uuid"],
             "name": row["name"],
             "prompt_definition_uuid": row["prompt_definition_uuid"],
+            "tags": _json_loads(row["tags_json"], []),
             "prompt_text": row["prompt_text"],
             "enabled": bool(row["enabled"]),
             "created_at": row["created_at"],
@@ -297,11 +303,12 @@ class PersonaRepository:
             conn.execute(
                 """
                 INSERT INTO personas (
-                    uuid, name, prompt_definition_uuid, enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    uuid, name, prompt_definition_uuid, tags_json, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uuid) DO UPDATE SET
                     name = excluded.name,
                     prompt_definition_uuid = excluded.prompt_definition_uuid,
+                    tags_json = excluded.tags_json,
                     enabled = excluded.enabled,
                     updated_at = excluded.updated_at
                 """,
@@ -309,6 +316,7 @@ class PersonaRepository:
                     payload["uuid"],
                     payload["name"],
                     payload["prompt_definition_uuid"],
+                    _json_dumps(payload["tags"]),
                     1 if payload["enabled"] else 0,
                     created_at,
                     payload["updated_at"],

@@ -171,6 +171,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         uuid TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         prompt_definition_uuid TEXT NOT NULL,
+        tags_json TEXT NOT NULL DEFAULT '[]',
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -457,6 +458,13 @@ def _migrate_personas_schema(conn: sqlite3.Connection) -> None:
             """
             ALTER TABLE personas
             ADD COLUMN prompt_definition_uuid TEXT NOT NULL DEFAULT ''
+            """
+        )
+    if "tags_json" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE personas
+            ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'
             """
         )
 

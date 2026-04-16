@@ -29,9 +29,7 @@
           :empty-text="$t('pages.agents.tags.empty')"
           :items="tagSidebarItems"
           :active-id="activeTag"
-          add-icon="mdi-account-plus"
-          :add-label="$t('pages.agents.actions.addAgent')"
-          @add="openCreateAgent"
+          :show-add-button="false"
           @select="selectTag"
         />
       </div>
@@ -252,16 +250,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
+
+import type { Agent, AgentPayload } from '@/api/agents'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
-import { useAgentsStore } from '@/stores/agents'
+import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
-import type { Agent, AgentPayload } from '@/api/agents'
+import { useAgentsStore } from '@/stores/agents'
+import { normalizeStringList } from '@/utils/stringList'
 
 const agentsStore = useAgentsStore()
 
-const activeTag = ref('all')
 const dialogVisible = ref(false)
 const editingAgentUuid = ref('')
 const localError = ref('')
@@ -279,59 +279,21 @@ const form = reactive({
   configJson: '',
 })
 
-const tagOptions = computed(() => agentsStore.allTags)
-
-const tagSidebarItems = computed(() => {
-  const allItem = {
-    id: 'all',
-    title: translate('pages.agents.tags.all'),
-    subtitle: translate('pages.agents.tags.showAll'),
-    icon: 'mdi-view-grid-outline',
-    badge: agentsStore.agents.length,
-    badgeColor: 'primary',
-  }
-
-  const tagItems = agentsStore.allTags.map((tag) => ({
-    id: tag,
-    title: tag,
-    subtitle: translate('pages.agents.tags.filterByTag'),
-    icon: 'mdi-tag-outline',
-    badge: agentsStore.agents.filter((agent) => agent.tags.includes(tag)).length,
-    badgeColor: 'secondary',
-  }))
-
-  return [allItem, ...tagItems]
-})
-
-const filteredAgents = computed(() => {
-  if (activeTag.value === 'all') {
-    return agentsStore.agents
-  }
-  return agentsStore.agents.filter((agent) => agent.tags.includes(activeTag.value))
-})
-
-watch(
-  () => agentsStore.allTags,
-  (tags) => {
-    if (activeTag.value !== 'all' && !tags.includes(activeTag.value)) {
-      activeTag.value = 'all'
-    }
+const {
+  activeTag,
+  allTags: tagOptions,
+  sidebarItems: tagSidebarItems,
+  filteredItems: filteredAgents,
+  selectTag,
+} = useTagSidebar(
+  () => agentsStore.agents,
+  {
+    getTags: (agent) => agent.tags,
+    allTitle: translate('pages.agents.tags.all'),
+    allSubtitle: translate('pages.agents.tags.showAll'),
+    tagSubtitle: translate('pages.agents.tags.filterByTag'),
   }
 )
-
-const normalizeStringList = (items: string[]) => {
-  const seen = new Set<string>()
-  const list: string[] = []
-  for (const item of items) {
-    const value = item.trim()
-    if (!value || seen.has(value)) {
-      continue
-    }
-    seen.add(value)
-    list.push(value)
-  }
-  return list
-}
 
 const parseJsonObject = (value: string, emptyFallback: Record<string, unknown>) => {
   const trimmed = value.trim()
@@ -449,10 +411,6 @@ const removeAgent = async (uuid: string, name: string) => {
   await agentsStore.deleteAgent(uuid)
 }
 
-const selectTag = (tag: string) => {
-  activeTag.value = tag
-}
-
 const refreshAgents = async () => {
   await agentsStore.fetchAgents()
 }
@@ -470,9 +428,9 @@ onMounted(() => {
 }
 
 .agents-tag-pane {
-  flex: 0 0 200px;
-  width: 200px;
-  max-width: 200px;
+  flex: 0 0 300px;
+  width: 300px;
+  max-width: 300px;
 }
 
 .agents-content-pane {

@@ -9,6 +9,7 @@
     "pluginsManage": "插件管理",
     "toolsManage": "工具管理",
     "agentsManage": "Agent管理",
+    "personasManage": "Persona管理",
     "modelRuntime": "模型管理",
     "settings": "设置",
     "logout": "登出",

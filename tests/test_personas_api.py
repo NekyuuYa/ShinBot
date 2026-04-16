@@ -40,6 +40,7 @@ def test_persona_crud_roundtrip(tmp_path: Path):
             json={
                 "name": "Default Assistant",
                 "promptText": "You are a precise assistant.",
+                "tags": ["default", " support ", "default", ""],
                 "enabled": True,
             },
         )
@@ -49,12 +50,14 @@ def test_persona_crud_roundtrip(tmp_path: Path):
         assert created["name"] == "Default Assistant"
         assert created["promptDefinitionUuid"]
         assert created["promptText"] == "You are a precise assistant."
+        assert created["tags"] == ["default", "support"]
 
         persona_uuid = created["uuid"]
 
         get_resp = client.get(f"/api/v1/personas/{persona_uuid}", headers=headers)
         assert get_resp.status_code == 200
         assert get_resp.json()["data"]["uuid"] == persona_uuid
+        assert get_resp.json()["data"]["tags"] == ["default", "support"]
 
         patch_resp = client.patch(
             f"/api/v1/personas/{persona_uuid}",
@@ -62,6 +65,7 @@ def test_persona_crud_roundtrip(tmp_path: Path):
             json={
                 "name": "Default Assistant v2",
                 "promptText": "You are a precise and calm assistant.",
+                "tags": ["support", "v2", "support"],
                 "enabled": False,
             },
         )
@@ -69,12 +73,14 @@ def test_persona_crud_roundtrip(tmp_path: Path):
         patched = patch_resp.json()["data"]
         assert patched["name"] == "Default Assistant v2"
         assert patched["promptDefinitionUuid"] == created["promptDefinitionUuid"]
+        assert patched["tags"] == ["support", "v2"]
         assert patched["enabled"] is False
 
         list_resp = client.get("/api/v1/personas", headers=headers)
         assert list_resp.status_code == 200
         assert len(list_resp.json()["data"]) == 1
         assert list_resp.json()["data"][0]["uuid"] == persona_uuid
+        assert list_resp.json()["data"][0]["tags"] == ["support", "v2"]
 
         delete_resp = client.delete(f"/api/v1/personas/{persona_uuid}", headers=headers)
         assert delete_resp.status_code == 200

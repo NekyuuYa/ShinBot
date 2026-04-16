@@ -1,0 +1,50 @@
+{
+  "kicker": "Persona Hub",
+  "title": "Persona Management",
+  "subtitle": "Manage personas by tag and update persona settings through an overlay form.",
+  "actions": {
+    "refresh": "Refresh",
+    "addPersona": "Add Persona"
+  },
+  "tags": {
+    "title": "Tag Categories",
+    "all": "All",
+    "showAll": "Show all personas",
+    "filterByTag": "Filter by tag",
+    "untagged": "Untagged",
+    "empty": "No tags are available yet"
+  },
+  "fields": {
+    "name": "Name",
+    "promptText": "Persona Prompt",
+    "tags": "Tags",
+    "enabled": "Enabled"
+  },
+  "overlay": {
+    "createTitle": "Create Persona",
+    "editTitle": "Edit Persona"
+  },
+  "state": {
+    "enabled": "Enabled",
+    "disabled": "Disabled"
+  },
+  "empty": {
+    "title": "No Personas",
+    "subtitle": "No personas match the current tag. Create one from the top-right action."
+  },
+  "hints": {
+    "promptText": "Defines the persona identity and behavior. Multi-line text is supported."
+  },
+  "messages": {
+    "loadFailed": "Failed to load personas",
+    "created": "Persona created",
+    "updated": "Persona updated",
+    "deleted": "Persona deleted",
+    "createFailed": "Failed to create persona",
+    "updateFailed": "Failed to update persona",
+    "deleteFailed": "Failed to delete persona",
+    "requiredFields": "Name and Persona Prompt are required",
+    "confirmDelete": "Delete persona {name}?",
+    "emptyPrompt": "No persona prompt is configured"
+  }
+}
