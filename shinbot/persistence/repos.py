@@ -797,13 +797,14 @@ class ModelRegistryRepository:
             conn.execute(
                 """
                 INSERT INTO model_providers (
-                    provider_uuid, id, type, display_name, base_url, auth_json,
+                    provider_uuid, id, type, display_name, capability_type, base_url, auth_json,
                     default_params_json, enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider_uuid) DO UPDATE SET
                     type = excluded.type,
                     id = excluded.id,
                     display_name = excluded.display_name,
+                    capability_type = excluded.capability_type,
                     base_url = excluded.base_url,
                     auth_json = excluded.auth_json,
                     default_params_json = excluded.default_params_json,
@@ -815,6 +816,7 @@ class ModelRegistryRepository:
                     payload["id"],
                     payload["type"],
                     payload["display_name"],
+                    payload["capability_type"],
                     payload["base_url"],
                     _json_dumps(payload["auth"]),
                     _json_dumps(payload["default_params"]),
@@ -839,6 +841,7 @@ class ModelRegistryRepository:
                 "id": row["id"],
                 "type": row["type"],
                 "display_name": row["display_name"],
+                "capability_type": row["capability_type"],
                 "base_url": row["base_url"],
                 "auth": _json_loads(row["auth_json"], {}),
                 "default_params": _json_loads(row["default_params_json"], {}),
@@ -866,6 +869,7 @@ class ModelRegistryRepository:
             "id": row["id"],
             "type": row["type"],
             "display_name": row["display_name"],
+            "capability_type": row["capability_type"],
             "base_url": row["base_url"],
             "auth": _json_loads(row["auth_json"], {}),
             "default_params": _json_loads(row["default_params_json"], {}),

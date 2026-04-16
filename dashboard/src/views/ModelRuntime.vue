@@ -11,7 +11,7 @@
           variant="tonal"
           prepend-icon="mdi-refresh"
           :loading="store.isLoading"
-          rounded="xl"
+          rounded="lg"
           class="page-action-btn"
           @click="refreshPage"
         >
@@ -26,6 +26,7 @@
         mandatory
         density="comfortable"
         class="runtime-tab-toggle"
+        :style="{ '--runtime-tab-count': String(Math.max(runtimeTabs.length, 1)) }"
       >
         <v-btn
           v-for="tab in runtimeTabs"
@@ -167,14 +168,23 @@
                 {{ $t('pages.modelRuntime.hints.noRouteModels') }}
               </v-alert>
 
-              <v-card
-                v-for="model in availableRouteModels"
-                :key="model.id"
-                class="route-member-row"
-                variant="outlined"
-              >
-                <v-card-text>
-                  <div class="d-flex align-start justify-space-between ga-4 flex-wrap">
+              <template v-else>
+                <div
+                  v-for="group in availableRouteModelsGrouped"
+                  :key="group.providerId"
+                  class="route-member-group"
+                >
+                  <div class="text-caption text-medium-emphasis mb-2 px-1">
+                    {{ group.providerName }}
+                  </div>
+                  <v-card
+                    v-for="model in group.models"
+                    :key="model.id"
+                    class="route-member-row mb-3"
+                    variant="outlined"
+                  >
+                    <v-card-text>
+                      <div class="d-flex align-start justify-space-between ga-4 flex-wrap">
                     <div>
                       <div class="text-body-1 font-weight-medium">
                         {{ model.displayName || model.id }}
@@ -244,8 +254,24 @@
                   </v-expand-transition>
                 </v-card-text>
               </v-card>
+            </div>
+          </template>
             </v-card-text>
           </v-card>
+        </div>
+
+        <div v-else-if="!selectedProvider && !isCreatingProvider" class="d-flex flex-column ga-4">
+          <v-sheet rounded="xl" class="empty-state-panel empty-provider-panel pa-8">
+            <div class="text-overline section-label mb-3">
+              {{ $t('pages.modelRuntime.sidebar.providers') }}
+            </div>
+            <div class="text-h6 mb-2">
+              {{ $t('pages.modelRuntime.hints.selectProviderSourceTitle') }}
+            </div>
+            <div class="text-body-2 text-medium-emphasis">
+              {{ $t('pages.modelRuntime.hints.selectProviderSource') }}
+            </div>
+          </v-sheet>
         </div>
 
         <div v-else class="d-flex flex-column ga-4">
@@ -478,24 +504,18 @@
                       />
                     </v-col>
                     <v-col cols="12" md="6">
-                      <v-select
-                        v-model="modelForm.capabilities"
-                        :items="capabilityOptions"
-                        multiple
-                        chips
+                      <v-alert
+                        type="info"
+                        variant="tonal"
                         density="comfortable"
-                        variant="outlined"
-                        :label="$t('pages.modelRuntime.fields.capabilities')"
-                      />
-                    </v-col>
-                    <v-col cols="12" md="6">
-                      <v-text-field
-                        v-model.number="modelForm.contextWindow"
-                        type="number"
-                        density="comfortable"
-                        variant="outlined"
-                        :label="$t('pages.modelRuntime.fields.contextWindow')"
-                      />
+                        class="model-context-window-alert"
+                      >
+                        {{
+                          $t('pages.modelRuntime.hints.contextWindowAuto', {
+                            value: modelForm.contextWindow || '—',
+                          })
+                        }}
+                      </v-alert>
                     </v-col>
                     <v-col cols="12">
                       <v-switch
@@ -559,6 +579,13 @@
                       <div>
                         <div class="text-body-1 font-weight-medium">{{ item.displayName }}</div>
                         <div class="text-caption text-medium-emphasis">{{ item.litellmModel }}</div>
+                        <div class="text-caption text-medium-emphasis mt-1">
+                          {{
+                            $t('pages.modelRuntime.hints.contextWindowAuto', {
+                              value: item.contextWindow || '—',
+                            })
+                          }}
+                        </div>
                       </div>
                       <v-btn
                         color="primary"
@@ -615,6 +642,7 @@ const {
   routeMembersEditor,
   activeRouteDomainLabel,
   availableRouteModels,
+  availableRouteModelsGrouped,
   isRouteMemberEnabled,
   toggleRouteMember,
   routeMemberByModel,
@@ -644,7 +672,6 @@ const {
   inlineModelSaveLabel,
   editingModelId,
   modelForm,
-  capabilityOptions,
   selectedProviderModels,
   providerModelMeta,
   removeModel,
@@ -664,7 +691,7 @@ const {
 }
 
 .runtime-toolbar {
-  padding: 14px;
+  padding: 14px 14px;
   border: 1px solid rgba(120, 86, 0, 0.12);
   border-radius: 24px;
   background: linear-gradient(180deg, #fffef4 0%, #fffdf8 100%);
@@ -673,8 +700,8 @@ const {
 .runtime-tab-toggle {
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(var(--runtime-tab-count, 8), minmax(0, 1fr));
+  gap: 8px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -684,13 +711,28 @@ const {
 
 .runtime-tab-toggle :deep(.v-btn) {
   width: 100%;
+  min-width: 0;
   justify-content: center;
-  min-height: 46px;
+  min-height: 44px;
+  padding-inline: 6px;
   border: 1px solid rgba(120, 86, 0, 0.14);
   border-radius: 16px;
   font-weight: 700;
+  font-size: 0.8rem;
+  line-height: 1.1;
   text-transform: none;
   background: rgba(255, 255, 255, 0.88);
+  white-space: nowrap;
+}
+
+.runtime-tab-toggle :deep(.v-btn .v-btn__content) {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.runtime-tab-toggle :deep(.v-btn .v-btn__content span) {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .runtime-tab-toggle :deep(.v-btn--active) {
@@ -756,9 +798,10 @@ const {
   background: linear-gradient(180deg, rgba(255, 252, 244, 0.95) 0%, rgba(255, 248, 232, 0.72) 100%);
 }
 
-@media (max-width: 959px) {
-  .runtime-tab-toggle {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.empty-provider-panel {
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 </style>

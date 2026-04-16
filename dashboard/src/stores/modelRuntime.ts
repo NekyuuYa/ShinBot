@@ -14,6 +14,7 @@ import {
 import { useUiStore } from './ui'
 import { getErrorMessage } from '@/utils/error'
 import { translate } from '@/plugins/i18n'
+import type { ModelRuntimeTab } from '@/utils/modelRuntimeSources'
 
 export const useModelRuntimeStore = defineStore(
   'modelRuntime',
@@ -23,7 +24,7 @@ export const useModelRuntimeStore = defineStore(
     const routes = ref<ModelRuntimeRoute[]>([])
     const executions = ref<ModelExecutionRecord[]>([])
     const catalogItems = ref<Record<string, ProviderCatalogItem[]>>({})
-    const selectedTab = ref<'routes' | 'chat' | 'embedding' | 'other'>('routes')
+    const selectedTab = ref<ModelRuntimeTab>('routes')
     const selectedKind = ref<'provider' | 'route'>('provider')
     const selectedId = ref('')
     const isLoading = ref(false)
@@ -313,7 +314,7 @@ export const useModelRuntimeStore = defineStore(
       selectedId.value = id
     }
 
-    const updateSelectedTab = (tab: 'routes' | 'chat' | 'embedding' | 'other') => {
+    const updateSelectedTab = (tab: ModelRuntimeTab) => {
       selectedTab.value = tab
     }
 

@@ -4,11 +4,13 @@ import { useI18n } from 'vue-i18n'
 import { useModelRuntimeStore } from '@/stores/modelRuntime'
 import type { ModelRuntimeModel, ModelRuntimeProvider } from '@/api/modelRuntime'
 import {
+  DEFAULT_CAPABILITIES_FOR_TYPE,
   makeModelId,
-  modelMatchesTab,
   providerSourceTemplates,
   resolveProviderSource,
+  tabToCapabilityType,
   type ModelRuntimeTab,
+  type ProviderCapabilityType,
 } from '@/utils/modelRuntimeSources'
 
 export function useModelRuntimePage() {
@@ -35,15 +37,22 @@ export function useModelRuntimePage() {
     },
     { value: 'chat' as const, label: t('pages.modelRuntime.tabs.chat'), icon: 'mdi-message-text-outline' },
     { value: 'embedding' as const, label: t('pages.modelRuntime.tabs.embedding'), icon: 'mdi-vector-line' },
-    { value: 'other' as const, label: t('pages.modelRuntime.tabs.other'), icon: 'mdi-shape-outline' },
+    { value: 'rerank' as const, label: t('pages.modelRuntime.tabs.rerank'), icon: 'mdi-sort-descending' },
+    { value: 'tts' as const, label: t('pages.modelRuntime.tabs.tts'), icon: 'mdi-text-to-speech' },
+    { value: 'stt' as const, label: t('pages.modelRuntime.tabs.stt'), icon: 'mdi-microphone-outline' },
+    { value: 'image' as const, label: t('pages.modelRuntime.tabs.image'), icon: 'mdi-image-outline' },
+    { value: 'video' as const, label: t('pages.modelRuntime.tabs.video'), icon: 'mdi-video-outline' },
   ])
 
   const routeStrategies = ['priority', 'weighted']
-  const capabilityOptions = ['chat', 'embedding', 'vision', 'tool_calling', 'json_mode']
   const routeDomainOptions = computed(() => [
     { label: t('pages.modelRuntime.tabs.chat'), value: 'chat' },
     { label: t('pages.modelRuntime.tabs.embedding'), value: 'embedding' },
-    { label: t('pages.modelRuntime.tabs.other'), value: 'other' },
+    { label: t('pages.modelRuntime.tabs.rerank'), value: 'rerank' },
+    { label: t('pages.modelRuntime.tabs.tts'), value: 'tts' },
+    { label: t('pages.modelRuntime.tabs.stt'), value: 'stt' },
+    { label: t('pages.modelRuntime.tabs.image'), value: 'image' },
+    { label: t('pages.modelRuntime.tabs.video'), value: 'video' },
   ])
 
   const providerForm = ref({
@@ -93,17 +102,15 @@ export function useModelRuntimePage() {
   const isRouteMode = computed(() => activeTab.value === 'routes')
   const providerSourceOptions = providerSourceTemplates
 
-  const filteredProviders = computed(() =>
-    store.providers.map((provider) => {
-      const matchedModels = (store.modelsByProvider[provider.id] || []).filter((model) =>
-        modelMatchesTab(model.capabilities, activeTab.value)
-      )
-      return {
+  const filteredProviders = computed(() => {
+    const capabilityType = tabToCapabilityType(activeTab.value)
+    return store.providers
+      .filter((provider) => provider.capabilityType === capabilityType)
+      .map((provider) => ({
         provider,
-        matchedModelCount: matchedModels.length,
-      }
-    })
-  )
+        matchedModelCount: store.modelsByProvider[provider.id]?.length || 0,
+      }))
+  })
 
   const routeSidebarItems = computed(() =>
     store.routes.map((item) => ({
@@ -143,22 +150,24 @@ export function useModelRuntimePage() {
     isRouteMode.value ? t('pages.modelRuntime.actions.addRoute') : t('pages.modelRuntime.actions.addProvider')
   )
 
-  const selectedProvider = computed<ModelRuntimeProvider | null>(() =>
-    selectedKind.value === 'provider'
-      ? store.providers.find((item) => item.id === selectedId.value) || null
-      : null
-  )
+  const selectedProvider = computed<ModelRuntimeProvider | null>(() => {
+    if (selectedKind.value !== 'provider') {
+      return null
+    }
+    const provider = store.providers.find((item) => item.id === selectedId.value) || null
+    if (!provider) {
+      return null
+    }
+    const capabilityType = tabToCapabilityType(activeTab.value)
+    return provider.capabilityType === capabilityType ? provider : null
+  })
 
   const selectedRoute = computed(() =>
     selectedKind.value === 'route' ? store.routes.find((item) => item.id === selectedId.value) || null : null
   )
 
   const selectedProviderModels = computed(() =>
-    selectedProvider.value
-      ? (store.modelsByProvider[selectedProvider.value.id] || []).filter((item) =>
-          modelMatchesTab(item.capabilities, activeTab.value)
-        )
-      : []
+    selectedProvider.value ? store.modelsByProvider[selectedProvider.value.id] || [] : []
   )
 
   const selectedProviderSource = computed(() => resolveProviderSource(providerForm.value.sourceType))
@@ -176,14 +185,33 @@ export function useModelRuntimePage() {
   )
 
   const availableRouteModels = computed(() => {
-    const domain = activeRouteDomain.value
-    return store.models.filter((item) =>
-      domain === 'chat'
-        ? modelMatchesTab(item.capabilities, 'chat')
-        : domain === 'embedding'
-          ? modelMatchesTab(item.capabilities, 'embedding')
-          : modelMatchesTab(item.capabilities, 'other')
+    const capabilityType = tabToCapabilityType(activeRouteDomain.value as ModelRuntimeTab)
+    const providerIds = new Set(
+      store.providers
+        .filter((p) => p.capabilityType === capabilityType)
+        .map((p) => p.id)
     )
+    return store.models.filter((item) => providerIds.has(item.providerId))
+  })
+
+  const availableRouteModelsGrouped = computed(() => {
+    const groups: { providerId: string; providerName: string; models: ModelRuntimeModel[] }[] = []
+
+    for (const model of availableRouteModels.value) {
+      let group = groups.find((g) => g.providerId === model.providerId)
+      if (!group) {
+        const provider = store.providers.find((p) => p.id === model.providerId)
+        group = {
+          providerId: model.providerId,
+          providerName: provider?.displayName || provider?.id || model.providerId,
+          models: [],
+        }
+        groups.push(group)
+      }
+      group.models.push(model)
+    }
+
+    return groups
   })
 
   const availableCatalogItems = computed(() => {
@@ -263,16 +291,18 @@ export function useModelRuntimePage() {
       enabled: Boolean(member.enabled),
     }))
 
-  const defaultCapabilitiesForTab = () =>
-    activeTab.value === 'embedding' ? ['embedding'] : activeTab.value === 'other' ? ['vision'] : ['chat']
+  const defaultCapabilitiesForTab = () => {
+    const type = (selectedProvider.value?.capabilityType || tabToCapabilityType(activeTab.value)) as ProviderCapabilityType
+    return DEFAULT_CAPABILITIES_FOR_TYPE[type] ?? DEFAULT_CAPABILITIES_FOR_TYPE.completion
+  }
 
-  const resetProviderForm = (type = 'openai') => {
-    const source = resolveProviderSource(type) || providerSourceTemplates[0]
+  const resetProviderForm = (type = '') => {
+    const source = type ? resolveProviderSource(type) || providerSourceTemplates[0] : null
     providerForm.value = {
       id: '',
       displayName: '',
-      sourceType: source.type,
-      baseUrl: source.defaultBaseUrl,
+      sourceType: source?.type || '',
+      baseUrl: source?.defaultBaseUrl || '',
       token: '',
       enabled: true,
       proxyAddress: '',
@@ -418,10 +448,16 @@ export function useModelRuntimePage() {
     }
 
     selectedKind.value = 'provider'
-    if (isCreatingProvider.value || selectedProvider.value) {
+    if (isCreatingProvider.value) {
       return
     }
-    selectedId.value = store.providers[0]?.id || ''
+    if (selectedProvider.value) {
+      const isValid = filteredProviders.value.some((p) => p.provider.id === selectedProvider.value!.id)
+      if (isValid) {
+        return
+      }
+    }
+    selectedId.value = filteredProviders.value[0]?.provider.id || ''
   }
 
   const saveProvider = async () => {
@@ -455,6 +491,7 @@ export function useModelRuntimePage() {
         id: providerForm.value.id.trim(),
         displayName: providerForm.value.displayName.trim() || providerForm.value.id.trim(),
         type: providerForm.value.sourceType,
+        capabilityType: tabToCapabilityType(activeTab.value),
         baseUrl: providerForm.value.baseUrl.trim(),
         enabled: providerForm.value.enabled,
         defaultParams: nextDefaults,
@@ -621,7 +658,6 @@ export function useModelRuntimePage() {
         displayName: modelForm.value.displayName,
         litellmModel: modelForm.value.litellmModel,
         capabilities: modelForm.value.capabilities,
-        contextWindow: modelForm.value.contextWindow,
         enabled: modelForm.value.enabled,
         defaultParams: {},
         costMetadata: {},
@@ -633,7 +669,7 @@ export function useModelRuntimePage() {
         displayName: modelForm.value.displayName.trim() || modelForm.value.id.trim(),
         litellmModel: modelForm.value.litellmModel.trim(),
         capabilities: modelForm.value.capabilities,
-        contextWindow: modelForm.value.contextWindow,
+        contextWindow: null,
         enabled: modelForm.value.enabled,
         defaultParams: {},
         costMetadata: {},
@@ -750,15 +786,16 @@ export function useModelRuntimePage() {
     { immediate: true }
   )
 
-  watch(activeTab, () => {
+  watch(activeTab, (nextTab, previousTab) => {
     showInlineModelEditor.value = false
     editingModelId.value = ''
-    if (activeTab.value === 'routes') {
+
+    if (nextTab !== previousTab) {
       isCreatingProvider.value = false
-    } else {
       isCreatingRoute.value = false
     }
-    store.updateSelectedTab(activeTab.value)
+
+    store.updateSelectedTab(nextTab)
     ensureSelection()
     syncQuery()
   })
@@ -774,7 +811,7 @@ export function useModelRuntimePage() {
       const tab = query.tab
       const kind = query.kind
       const id = query.id
-      if (typeof tab === 'string' && ['routes', 'chat', 'embedding', 'other'].includes(tab)) {
+      if (typeof tab === 'string' && ['routes', 'chat', 'embedding', 'rerank', 'tts', 'stt', 'image', 'video'].includes(tab)) {
         activeTab.value = tab as ModelRuntimeTab
       } else {
         activeTab.value = store.selectedTab
@@ -823,6 +860,7 @@ export function useModelRuntimePage() {
     routeMembersEditor,
     activeRouteDomainLabel,
     availableRouteModels,
+    availableRouteModelsGrouped,
     isRouteMemberEnabled,
     toggleRouteMember,
     routeMemberByModel,
@@ -852,7 +890,6 @@ export function useModelRuntimePage() {
     inlineModelSaveLabel,
     editingModelId,
     modelForm,
-    capabilityOptions,
     selectedProviderModels,
     providerModelMeta,
     removeModel,

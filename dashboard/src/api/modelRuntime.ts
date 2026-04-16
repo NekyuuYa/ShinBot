@@ -6,6 +6,7 @@ export interface ModelRuntimeProvider {
   id: string
   type: string
   displayName: string
+  capabilityType: string
   baseUrl: string
   hasAuth: boolean
   defaultParams: Record<string, unknown>
@@ -82,6 +83,7 @@ export interface ProviderCatalogItem {
   id: string
   displayName: string
   litellmModel: string
+  contextWindow: number | null
 }
 
 export interface ProviderProbeResult {
@@ -98,6 +100,7 @@ export interface ProviderPayload {
   id: string
   type: string
   displayName: string
+  capabilityType: string
   baseUrl: string
   auth?: Record<string, unknown>
   defaultParams: Record<string, unknown>

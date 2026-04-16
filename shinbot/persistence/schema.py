@@ -12,6 +12,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         id TEXT NOT NULL UNIQUE,
         type TEXT NOT NULL,
         display_name TEXT NOT NULL,
+        capability_type TEXT NOT NULL DEFAULT 'completion',
         base_url TEXT NOT NULL DEFAULT '',
         auth_json TEXT NOT NULL DEFAULT '{}',
         default_params_json TEXT NOT NULL DEFAULT '{}',
@@ -514,11 +515,49 @@ def _migrate_bot_configs_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_provider_capability_type(conn: sqlite3.Connection) -> None:
+    """Add capability_type column and migrate data from defaultParams._tab."""
+    import json
+
+    columns = _table_columns(conn, "model_providers")
+    if not columns:
+        return
+
+    if "capability_type" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE model_providers
+            ADD COLUMN capability_type TEXT NOT NULL DEFAULT 'completion'
+            """
+        )
+
+    # Migrate _tab from default_params_json → capability_type, then clean up _tab.
+    _TAB_TO_CAPABILITY = {"chat": "completion", "embedding": "embedding", "other": "rerank"}
+    rows = conn.execute(
+        "SELECT provider_uuid, default_params_json, capability_type FROM model_providers"
+    ).fetchall()
+    for row in rows:
+        try:
+            params = json.loads(row["default_params_json"] or "{}")
+        except Exception:
+            params = {}
+        tab = params.get("_tab")
+        if not tab:
+            continue
+        capability_type = _TAB_TO_CAPABILITY.get(str(tab), "completion")
+        params.pop("_tab", None)
+        conn.execute(
+            "UPDATE model_providers SET capability_type = ?, default_params_json = ? WHERE provider_uuid = ?",
+            (capability_type, json.dumps(params), row["provider_uuid"]),
+        )
+
+
 def apply_schema(conn: sqlite3.Connection) -> None:
     """Create all persistence tables if they do not exist yet."""
     _migrate_model_registry_schema(conn)
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
+    _migrate_provider_capability_type(conn)
     _migrate_context_strategies_schema(conn)
     _migrate_agents_schema(conn)
     _migrate_personas_schema(conn)

@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from shinbot.agent.model_runtime import ModelRuntimeCall
+from shinbot.agent.model_runtime import ModelRuntimeCall, litellm_adapter
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, ok
 from shinbot.persistence.records import (
@@ -30,6 +30,7 @@ class ProviderRequest(BaseModel):
     id: str
     type: str
     displayName: str
+    capabilityType: str = "completion"
     baseUrl: str = ""
     auth: dict[str, Any] = Field(default_factory=dict)
     defaultParams: dict[str, Any] = Field(default_factory=dict)
@@ -40,6 +41,7 @@ class ProviderPatchRequest(BaseModel):
     id: str | None = None
     type: str | None = None
     displayName: str | None = None
+    capabilityType: str | None = None
     baseUrl: str | None = None
     auth: dict[str, Any] | None = None
     defaultParams: dict[str, Any] | None = None
@@ -107,6 +109,7 @@ def _serialize_provider(payload: dict[str, Any]) -> dict[str, Any]:
         "id": payload["id"],
         "type": payload["type"],
         "displayName": payload["display_name"],
+        "capabilityType": payload.get("capability_type", "completion"),
         "baseUrl": payload["base_url"],
         "hasAuth": bool(payload.get("auth")),
         "defaultParams": payload["default_params"],
@@ -206,6 +209,37 @@ def _provider_request_headers(payload: dict[str, Any]) -> dict[str, str]:
     return headers
 
 
+def _provider_type_for_model_info(provider_type: str) -> str | None:
+    if provider_type == "custom_openai":
+        return "openai"
+    if provider_type == "azure_openai":
+        return "azure"
+    if provider_type in {"openai", "openrouter", "ollama"}:
+        return None
+    return None
+
+
+def _infer_context_window(provider: dict[str, Any], litellm_model: str) -> int | None:
+    try:
+        model_info = litellm_adapter.get_model_info(
+            litellm_model,
+            custom_llm_provider=_provider_type_for_model_info(provider["type"]),
+            api_base=provider.get("base_url") or None,
+        )
+    except Exception:
+        return None
+
+    max_input_tokens = model_info.get("max_input_tokens")
+    if isinstance(max_input_tokens, int) and max_input_tokens > 0:
+        return max_input_tokens
+
+    max_tokens = model_info.get("max_tokens")
+    if isinstance(max_tokens, int) and max_tokens > 0:
+        return max_tokens
+
+    return None
+
+
 def _normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[str, Any]]:
     provider_type = payload["type"]
     if provider_type == "ollama":
@@ -219,6 +253,7 @@ def _normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict
                     "id": str(model_id),
                     "displayName": str(model_id),
                     "litellmModel": f"ollama/{model_id}",
+                    "contextWindow": _infer_context_window(payload, f"ollama/{model_id}"),
                 }
             )
         return models
@@ -237,6 +272,7 @@ def _normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict
                 "id": str(model_id),
                 "displayName": str(item.get("name") or model_id),
                 "litellmModel": litellm_model,
+                "contextWindow": _infer_context_window(payload, litellm_model),
             }
         )
     return models
@@ -331,6 +367,7 @@ async def create_provider(body: ProviderRequest, bot=BotDep):
             id=body.id,
             type=body.type,
             display_name=body.displayName,
+            capability_type=body.capabilityType,
             base_url=body.baseUrl,
             auth=body.auth,
             default_params=body.defaultParams,
@@ -363,6 +400,9 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
             type=body.type if body.type is not None else current["type"],
             display_name=(
                 body.displayName if body.displayName is not None else current["display_name"]
+            ),
+            capability_type=(
+                body.capabilityType if body.capabilityType is not None else current.get("capability_type", "completion")
             ),
             base_url=body.baseUrl if body.baseUrl is not None else current["base_url"],
             auth=body.auth if body.auth is not None else current["auth"],
@@ -428,7 +468,9 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
             }
         )
 
-    if "embedding" in model["capabilities"]:
+    capability_type = provider.get("capability_type", "completion")
+
+    if capability_type == "embedding" or "embedding" in model["capabilities"]:
         result = await bot.model_runtime.embed(
             ModelRuntimeCall(
                 model_id=model["id"],
@@ -449,26 +491,52 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
             }
         )
 
-    result = await bot.model_runtime.generate(
-        ModelRuntimeCall(
-            model_id=model["id"],
-            caller="webui.provider_probe",
-            purpose="provider_probe",
-            messages=[{"role": "user", "content": "ping"}],
-            params={"max_tokens": 1},
-            metadata={"probe": True},
+    if capability_type == "completion":
+        result = await bot.model_runtime.generate(
+            ModelRuntimeCall(
+                model_id=model["id"],
+                caller="webui.provider_probe",
+                purpose="provider_probe",
+                messages=[{"role": "user", "content": "ping"}],
+                params={"max_tokens": 1},
+                metadata={"probe": True},
+            )
         )
-    )
-    return ok(
-        {
-            "success": True,
-            "providerId": provider_id,
-            "modelId": model["id"],
-            "mode": "chat",
-            "checkedAt": started_at,
-            "executionId": result.execution_id,
-        }
-    )
+        return ok(
+            {
+                "success": True,
+                "providerId": provider_id,
+                "modelId": model["id"],
+                "mode": "chat",
+                "checkedAt": started_at,
+                "executionId": result.execution_id,
+            }
+        )
+
+    # For rerank/tts/stt/image and other non-completion types: try catalog probe.
+    # If catalog isn't supported, return a basic connectivity indication.
+    try:
+        catalog = await _fetch_provider_catalog(provider)
+        return ok(
+            {
+                "success": True,
+                "providerId": provider_id,
+                "modelId": model["id"],
+                "mode": "catalog",
+                "checkedAt": started_at,
+                "catalogSize": len(catalog),
+            }
+        )
+    except Exception:
+        return ok(
+            {
+                "success": True,
+                "providerId": provider_id,
+                "modelId": model["id"],
+                "mode": "skipped",
+                "checkedAt": started_at,
+            }
+        )
 
 
 @router.get("/providers/{provider_id:path}")
@@ -492,7 +560,10 @@ async def create_model(body: ModelRequest, bot=BotDep):
                 "message": f"Model {body.id!r} already exists",
             },
         )
-    _require_provider(bot, body.providerId)
+    provider = _require_provider(bot, body.providerId)
+    context_window = body.contextWindow
+    if context_window is None:
+        context_window = _infer_context_window(provider, body.litellmModel)
 
     bot.database.model_registry.upsert_model(
         ModelDefinitionRecord(
@@ -501,7 +572,7 @@ async def create_model(body: ModelRequest, bot=BotDep):
             litellm_model=body.litellmModel,
             display_name=body.displayName,
             capabilities=body.capabilities,
-            context_window=body.contextWindow,
+            context_window=context_window,
             default_params=body.defaultParams,
             cost_metadata=body.costMetadata,
             enabled=body.enabled,
@@ -519,25 +590,29 @@ async def get_model(model_id: str, bot=BotDep):
 async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     current = _require_model(bot, model_id)
     provider_id = body.providerId if body.providerId is not None else current["provider_id"]
-    _require_provider(bot, provider_id)
+    provider = _require_provider(bot, provider_id)
     now = utc_now_iso()
+    litellm_model = body.litellmModel if body.litellmModel is not None else current["litellm_model"]
+    context_window = body.contextWindow if body.contextWindow is not None else current["context_window"]
+    if body.contextWindow is None and (
+        body.litellmModel is not None or body.providerId is not None or context_window is None
+    ):
+        inferred_context_window = _infer_context_window(provider, litellm_model)
+        if inferred_context_window is not None or context_window is None:
+            context_window = inferred_context_window
 
     bot.database.model_registry.upsert_model(
         ModelDefinitionRecord(
             id=model_id,
             provider_id=provider_id,
-            litellm_model=(
-                body.litellmModel if body.litellmModel is not None else current["litellm_model"]
-            ),
+            litellm_model=litellm_model,
             display_name=(
                 body.displayName if body.displayName is not None else current["display_name"]
             ),
             capabilities=body.capabilities
             if body.capabilities is not None
             else current["capabilities"],
-            context_window=(
-                body.contextWindow if body.contextWindow is not None else current["context_window"]
-            ),
+            context_window=context_window,
             default_params=(
                 body.defaultParams if body.defaultParams is not None else current["default_params"]
             ),

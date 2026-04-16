@@ -16,6 +16,7 @@ class ModelProviderRecord:
     id: str
     type: str
     display_name: str
+    capability_type: str = "completion"
     base_url: str = ""
     auth: dict[str, Any] = field(default_factory=dict)
     default_params: dict[str, Any] = field(default_factory=dict)

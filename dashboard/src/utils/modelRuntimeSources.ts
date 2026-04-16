@@ -1,4 +1,57 @@
-export type ModelRuntimeTab = 'routes' | 'chat' | 'embedding' | 'other'
+export type ModelRuntimeTab = 'routes' | 'chat' | 'embedding' | 'rerank' | 'tts' | 'stt' | 'image' | 'video'
+export type ProviderCapabilityType = 'completion' | 'embedding' | 'rerank' | 'tts' | 'stt' | 'image' | 'video'
+
+export const PROVIDER_CAPABILITY_TYPES: ProviderCapabilityType[] = [
+  'completion',
+  'embedding',
+  'rerank',
+  'tts',
+  'stt',
+  'image',
+  'video',
+]
+
+/** Capabilities stored on models under a given provider capability type. */
+export const MODEL_CAPABILITIES_FOR_TYPE: Record<ProviderCapabilityType, string[]> = {
+  completion: ['chat', 'vision', 'tool_calling', 'json_mode'],
+  embedding: ['embedding'],
+  rerank: ['rerank'],
+  tts: ['tts'],
+  stt: ['stt', 'audio_transcription'],
+  image: ['image_generation'],
+  video: ['video_generation'],
+}
+
+/** Default capabilities pre-set when adding a model to a provider. */
+export const DEFAULT_CAPABILITIES_FOR_TYPE: Record<ProviderCapabilityType, string[]> = {
+  completion: ['chat'],
+  embedding: ['embedding'],
+  rerank: ['rerank'],
+  tts: ['tts'],
+  stt: ['stt'],
+  image: ['image_generation'],
+  video: ['video_generation'],
+}
+
+export function tabToCapabilityType(tab: ModelRuntimeTab): ProviderCapabilityType {
+  if (tab === 'embedding') return 'embedding'
+  if (tab === 'rerank') return 'rerank'
+  if (tab === 'tts') return 'tts'
+  if (tab === 'stt') return 'stt'
+  if (tab === 'image') return 'image'
+  if (tab === 'video') return 'video'
+  return 'completion'
+}
+
+export function capabilityTypeToTab(type: string): ModelRuntimeTab {
+  if (type === 'embedding') return 'embedding'
+  if (type === 'rerank') return 'rerank'
+  if (type === 'tts') return 'tts'
+  if (type === 'stt') return 'stt'
+  if (type === 'image') return 'image'
+  if (type === 'video') return 'video'
+  return 'chat'
+}
 
 export interface ProviderSourceTemplate {
   key: string
@@ -88,30 +141,6 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
 
 export function resolveProviderSource(type: string) {
   return providerSourceTemplates.find((item) => item.type === type || item.key === type) ?? null
-}
-
-export function isChatModel(capabilities: string[]) {
-  const normalized = capabilities.map((item) => item.toLowerCase())
-  return normalized.some((item) =>
-    ['chat', 'vision', 'tool_calling', 'json_mode'].includes(item)
-  )
-}
-
-export function isEmbeddingModel(capabilities: string[]) {
-  return capabilities.map((item) => item.toLowerCase()).includes('embedding')
-}
-
-export function modelMatchesTab(capabilities: string[], tab: ModelRuntimeTab) {
-  if (tab === 'routes') {
-    return true
-  }
-  if (tab === 'chat') {
-    return isChatModel(capabilities)
-  }
-  if (tab === 'embedding') {
-    return isEmbeddingModel(capabilities)
-  }
-  return !isChatModel(capabilities) && !isEmbeddingModel(capabilities)
 }
 
 export function routeMatchesTab(
