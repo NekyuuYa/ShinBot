@@ -226,8 +226,18 @@ class PluginManager:
             raise AttributeError(f"Plugin module {module_path!r} must expose a setup(ctx) function")
 
         ctx = self._build_ctx(plugin_id)
-        await self._invoke(module.setup, ctx)
-        await self._invoke_hook(module, "on_enable", ctx)
+        try:
+            await self._invoke(module.setup, ctx)
+            await self._invoke_hook(module, "on_enable", ctx)
+        except Exception:
+            # Clean up any handlers registered by setup() so no ghost handlers
+            # remain in the EventBus or CommandRegistry when enable fails.
+            logger.exception("Error enabling plugin %s; reverting handler registrations", plugin_id)
+            self._command_registry.unregister_by_owner(plugin_id)
+            self._event_bus.off_all(plugin_id)
+            if self._tool_registry is not None:
+                self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
+            raise
 
         meta.name = getattr(module, "__plugin_name__", plugin_id)
         meta.version = getattr(module, "__plugin_version__", "0.0.0")
@@ -436,8 +446,16 @@ class PluginManager:
         logger.info("Reloading plugin %s", plugin_id)
 
         ctx = self._build_ctx(plugin_id)
-        await self._invoke(module.setup, ctx)
-        await self._invoke_hook(module, "on_enable", ctx)
+        try:
+            await self._invoke(module.setup, ctx)
+            await self._invoke_hook(module, "on_enable", ctx)
+        except Exception:
+            logger.exception("Error during reload of plugin %s; reverting handler registrations", plugin_id)
+            self._command_registry.unregister_by_owner(plugin_id)
+            self._event_bus.off_all(plugin_id)
+            if self._tool_registry is not None:
+                self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
+            raise
 
         new_meta = PluginMeta(
             id=plugin_id,

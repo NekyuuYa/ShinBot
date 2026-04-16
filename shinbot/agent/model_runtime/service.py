@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import uuid
 from dataclasses import dataclass, field
@@ -12,6 +13,8 @@ from typing import Any
 from shinbot.persistence import DatabaseManager, ModelExecutionRecord
 
 from . import litellm_adapter
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -929,4 +932,13 @@ class ModelRuntime:
     def _persist_execution(self, record: ModelExecutionRecord) -> None:
         if self._database is None:
             return
-        self._database.model_executions.insert(record)
+        try:
+            self._database.model_executions.insert(record)
+        except Exception:
+            logger.exception(
+                "Failed to persist model execution %s (caller=%s, success=%s);"
+                " API quota may have been consumed without a corresponding record",
+                record.id,
+                record.caller,
+                record.success,
+            )

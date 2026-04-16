@@ -22,7 +22,7 @@ from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine, check_permission
-from shinbot.core.state.session import Session, SessionManager
+from shinbot.core.state.session import Session, SessionManager, build_session_id
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import UnifiedEvent
@@ -175,7 +175,14 @@ class MessageContext:
         self._sent_messages.append(handle)
 
         # Persist assistant message to message_logs
-        self._log_assistant_message(elements, handle)
+        try:
+            self._log_assistant_message(elements, handle)
+        except Exception:
+            logger.exception(
+                "Failed to log assistant message in session %s"
+                " (message was already delivered to platform)",
+                self.session_id,
+            )
 
         return handle
 
@@ -287,7 +294,14 @@ class MessageContext:
         self._sent_messages.append(handle)
 
         # Persist assistant message to message_logs
-        self._log_assistant_message(all_elements, handle)
+        try:
+            self._log_assistant_message(all_elements, handle)
+        except Exception:
+            logger.exception(
+                "Failed to log assistant reply in session %s"
+                " (message was already delivered to platform)",
+                self.session_id,
+            )
 
         return handle
 
@@ -296,31 +310,32 @@ class MessageContext:
         elements: list[MessageElement],
         handle: MessageHandle,
     ) -> None:
-        """Insert an assistant message row into message_logs (best-effort, sync)."""
+        """Insert an assistant message row into message_logs.
+
+        Raises on DB failure — callers are responsible for catching and logging
+        with appropriate context (e.g. "message was already delivered").
+        """
         if self._database is None:
             return
-        try:
-            plain_text = Message.from_elements(elements).get_text()
-            content_json = json.dumps(
-                [el.model_dump(mode="json") for el in elements],
-                ensure_ascii=False,
+        plain_text = Message.from_elements(elements).get_text()
+        content_json = json.dumps(
+            [el.model_dump(mode="json") for el in elements],
+            ensure_ascii=False,
+        )
+        self._database.message_logs.insert(
+            MessageLogRecord(
+                session_id=self.session.id,
+                platform_msg_id=handle.message_id if handle is not None else "",
+                sender_id=self.event.self_id,
+                sender_name="",
+                content_json=content_json,
+                raw_text=plain_text,
+                role="assistant",
+                is_read=True,
+                is_mentioned=False,
+                created_at=time.time() * 1000,
             )
-            self._database.message_logs.insert(
-                MessageLogRecord(
-                    session_id=self.session.id,
-                    platform_msg_id=handle.message_id if handle is not None else "",
-                    sender_id=self.event.self_id,
-                    sender_name="",
-                    content_json=content_json,
-                    raw_text=plain_text,
-                    role="assistant",
-                    is_read=True,
-                    is_mentioned=False,
-                    created_at=time.time() * 1000,
-                )
-            )
-        except Exception:
-            logger.exception("Failed to persist assistant message to message_logs")
+        )
 
     def stop(self) -> None:
         """Signal that processing should stop (no further handlers)."""
@@ -472,6 +487,34 @@ class MessagePipeline:
         if event.message_content:
             message = Message.from_xml(event.message_content)
 
+        # Compute session_id early so we can use it before get_or_create().
+        session_id = build_session_id(adapter.instance_id, event)
+
+        # Stage 3c (fast path): wait_for_input resolution — must be handled
+        # *before* acquiring the session lock.  The suspended handler already
+        # holds the lock; resolving its Future lets it resume and release the
+        # lock naturally.  We do not log or process this message further here
+        # because the resumed handler owns its continuation.
+        if self._waiting_registry.is_waiting(session_id):
+            if self._waiting_registry.resolve(session_id, message.get_text()):
+                logger.debug("Delivered wait_for_input response for session %s", session_id)
+                return
+
+        # Acquire the per-session lock for the remainder of processing.
+        # This serialises concurrent events for the same session so that
+        # coroutines cannot interleave reads and writes to session state.
+        async with self._session_manager.session_lock(session_id):
+            await self._process_message_event(event, adapter, message, session_id)
+
+    async def _process_message_event(
+        self,
+        event: UnifiedEvent,
+        adapter: BaseAdapter,
+        message: Message,
+        session_id: str,
+    ) -> None:
+        """Inner handler for message events, called while holding the session lock."""
+
         # Stage 2: Context enrichment
         session = self._session_manager.get_or_create(adapter.instance_id, event)
         session.touch()
@@ -552,14 +595,7 @@ class MessagePipeline:
             logger.debug("Session %s is muted, skipping", session.id)
             return
 
-        # Stage 3c: Check for pending wait_for_input — deliver and stop
-        if self._waiting_registry.is_waiting(session.id):
-            resolved = self._waiting_registry.resolve(session.id, bot.text)
-            if resolved:
-                logger.debug("Delivered wait_for_input response for session %s", session.id)
-                return
-
-        # Stage 3d: Command resolution
+        # Stage 3c: Command resolution
         plain_text = bot.text
         match = self._command_registry.resolve(plain_text, session.config.prefixes)
 
@@ -641,6 +677,9 @@ class MessagePipeline:
                     },
                 )
 
+            # Persist session state changes made by the command handler.
+            # (Previously missing — state modifications were lost after commands.)
+            self._session_manager.update(session)
             return
 
         # Stage 3d: No command matched — dispatch to event bus

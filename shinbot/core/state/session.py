@@ -11,9 +11,12 @@ Session identity URN: {instance_id}:{type}:{target_id}
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -157,6 +160,10 @@ class SessionManager:
         self._data_dir: Path | None = Path(data_dir) / "sessions" if data_dir else None
         if self._data_dir and self._session_repo is None:
             self._data_dir.mkdir(parents=True, exist_ok=True)
+        # Per-session asyncio locks — serialise concurrent event processing for
+        # the same session so that interleaved coroutines cannot overwrite each
+        # other's state modifications.
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def _session_path(self, session_id: str) -> Path | None:
         """Return the JSON file path for a session, or None if no persistence."""
@@ -164,6 +171,29 @@ class SessionManager:
             return None
         sanitized = session_id.replace(":", "_").replace("/", "_")
         return self._data_dir / f"{sanitized}.json"
+
+    def _get_lock(self, session_id: str) -> asyncio.Lock:
+        """Return (creating if necessary) the asyncio.Lock for a session."""
+        if session_id not in self._locks:
+            self._locks[session_id] = asyncio.Lock()
+        return self._locks[session_id]
+
+    @asynccontextmanager
+    async def session_lock(self, session_id: str):  # type: ignore[return]
+        """Async context manager that grants exclusive access to a session.
+
+        Acquire this before reading or writing session state to prevent
+        concurrent event coroutines from interleaving their modifications.
+
+        Usage::
+
+            async with session_manager.session_lock(session_id):
+                session = session_manager.get_or_create(instance_id, event)
+                # ... process event ...
+                session_manager.update(session)
+        """
+        async with self._get_lock(session_id):
+            yield
 
     def _load_from_disk(self, session_id: str) -> Session | None:
         path = self._session_path(session_id)
@@ -181,10 +211,13 @@ class SessionManager:
         if path is None:
             return
         try:
-            path.write_text(
-                json.dumps(session.model_dump(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            content = json.dumps(session.model_dump(), ensure_ascii=False, indent=2)
+            # Write to a sibling .tmp file then rename atomically.
+            # os.replace() is atomic on POSIX and as-close-as-possible on Windows,
+            # so a crash mid-write cannot leave a corrupt session file.
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, path)
         except Exception:
             logger.exception("Failed to persist session %s", session.id)
 
