@@ -7,7 +7,12 @@ from pathlib import Path
 
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
-from shinbot.persistence import DatabaseManager, ModelExecutionRecord, PersonaRecord
+from shinbot.persistence import (
+    ContextStrategyRecord,
+    DatabaseManager,
+    ModelExecutionRecord,
+    PersonaRecord,
+)
 from shinbot.schema.events import Channel, UnifiedEvent, User
 
 
@@ -186,6 +191,38 @@ class TestDatabaseManager:
         items = db.personas.list()
         assert len(items) == 1
         assert items[0]["uuid"] == "persona-1"
+
+    def test_context_strategy_repository_roundtrip(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        db.context_strategies.upsert(
+            ContextStrategyRecord(
+                uuid="ctx-1",
+                name="Recent History",
+                resolver_ref="context.recent_history",
+                description="Use the latest conversation turns.",
+                config={"window": 12},
+                max_context_tokens=1200,
+                max_history_turns=12,
+                memory_summary_required=True,
+                truncate_policy="head_tail",
+                trigger_ratio=0.6,
+                trim_ratio=0.2,
+            )
+        )
+
+        payload = db.context_strategies.get("ctx-1")
+        assert payload is not None
+        assert payload["resolver_ref"] == "context.recent_history"
+        assert payload["config"]["window"] == 12
+        assert payload["memory_summary_required"] is True
+        assert payload["trigger_ratio"] == 0.6
+        assert payload["trim_ratio"] == 0.2
+
+        items = db.context_strategies.list()
+        assert len(items) == 1
+        assert items[0]["uuid"] == "ctx-1"
 
 
 class TestDatabaseBackedSessionManager:

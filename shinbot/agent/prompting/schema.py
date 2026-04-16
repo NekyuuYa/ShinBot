@@ -119,13 +119,51 @@ class PromptProfile(BaseModel):
     default_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ContextStrategyBudget(BaseModel):
+    max_context_tokens: int | None = None
+    max_history_turns: int | None = None
+    memory_summary_required: bool = False
+    truncate_policy: str = "tail"
+    trigger_ratio: float = 0.5
+    trim_ratio: float = 0.1
+
+    @model_validator(mode="after")
+    def validate_budget(self) -> ContextStrategyBudget:
+        if not 0 < self.trigger_ratio <= 1:
+            raise ValueError("ContextStrategyBudget.trigger_ratio must be within (0, 1]")
+        if not 0 < self.trim_ratio <= 1:
+            raise ValueError("ContextStrategyBudget.trim_ratio must be within (0, 1]")
+        return self
+
+
+class ContextStrategy(BaseModel):
+    id: str
+    display_name: str = ""
+    description: str = ""
+    resolver_ref: str
+    enabled: bool = True
+    priority: int = 100
+    budget: ContextStrategyBudget = Field(default_factory=ContextStrategyBudget)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_strategy_shape(self) -> ContextStrategy:
+        if not self.id.strip():
+            raise ValueError("ContextStrategy.id must not be empty")
+        if not self.resolver_ref.strip():
+            raise ValueError("ContextStrategy.resolver_ref must not be empty")
+        return self
+
+
 class PromptAssemblyRequest(BaseModel):
     profile_id: str = ""
+    context_strategy_id: str = ""
     caller: str = ""
     session_id: str = ""
     instance_id: str = ""
     route_id: str = ""
     model_id: str = ""
+    model_context_window: int | None = None
     task_id: str = ""
     component_overrides: list[str] = Field(default_factory=list)
     disabled_components: list[str] = Field(default_factory=list)

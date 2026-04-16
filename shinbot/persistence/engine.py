@@ -10,6 +10,7 @@ from pathlib import Path
 from shinbot.persistence.config import DatabaseConfig
 from shinbot.persistence.repos import (
     AuditRepository,
+    ContextStrategyRepository,
     ModelExecutionRepository,
     ModelRegistryRepository,
     PersonaRepository,
@@ -26,6 +27,7 @@ class DatabaseManager:
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
         self.personas = PersonaRepository(self)
+        self.context_strategies = ContextStrategyRepository(self)
         self.model_registry = ModelRegistryRepository(self)
         self.model_executions = ModelExecutionRepository(self)
 

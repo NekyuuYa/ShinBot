@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.prompting import (
+    ContextStrategy,
     PromptAssemblyRequest,
     PromptComponent,
     PromptComponentKind,
@@ -180,3 +181,110 @@ def test_prompt_registry_builds_snapshot_and_log_record() -> None:
 
     assert snapshot.prompt_signature == result.prompt_signature
     assert record.selected_component_count == 1
+
+
+def test_prompt_registry_supports_context_strategy_registry() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+    registry.register_context_strategy(
+        ContextStrategy(
+            id="context.windowed",
+            display_name="Windowed Context",
+            resolver_ref="context.windowed",
+        )
+    )
+    registry.register_context_strategy_resolver(
+        "context.windowed",
+        lambda request, strategy: f"history={request.context_inputs.get('summary', '')}",
+    )
+
+    result = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            context_strategy_id="context.windowed",
+            context_inputs={"summary": "recent chat"},
+        )
+    )
+
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    assert context_stage.components[0].metadata["context_strategy_id"] == "context.windowed"
+    assert "history=recent chat" in result.final_prompt
+
+
+def test_prompt_registry_uses_builtin_sliding_window_fallback_strategy() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    result = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            model_context_window=20,
+            context_inputs={
+                "summary": "short summary",
+                "history_turns": [
+                    {"role": "user", "content": "one two three four five six"},
+                    {"role": "assistant", "content": "seven eight nine ten eleven twelve"},
+                    {"role": "user", "content": "thirteen fourteen fifteen sixteen seventeen"},
+                ],
+            },
+        )
+    )
+
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    component = context_stage.components[0]
+    assert (
+        component.metadata["context_strategy_id"]
+        == PromptRegistry.BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID
+    )
+    assert component.metadata["resolver_output"]["dropped_turns"] >= 1
+    assert "one two three four five six" not in context_stage.rendered_text
+
+
+def test_prompt_registry_builtin_sliding_window_ratios_are_configurable() -> None:
+    registry = PromptRegistry(
+        fallback_context_trigger_ratio=0.9,
+        fallback_context_trim_ratio=0.5,
+    )
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    request = PromptAssemblyRequest(
+        profile_id="agent.default",
+        model_context_window=100,
+        context_inputs={
+            "history_turns": [
+                {"role": "user", "content": "alpha beta gamma delta"},
+                {"role": "assistant", "content": "epsilon zeta eta theta"},
+                {"role": "user", "content": "iota kappa lambda mu"},
+            ],
+        },
+    )
+    result = registry.assemble(request)
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    component = context_stage.components[0]
+    assert component.metadata["budget"]["trigger_ratio"] == 0.9
+    assert component.metadata["budget"]["trim_ratio"] == 0.5
+    assert component.metadata["resolver_output"]["dropped_turns"] == 0

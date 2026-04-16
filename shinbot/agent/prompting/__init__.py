@@ -3,6 +3,8 @@
 from shinbot.agent.prompting.logger import PromptLogger
 from shinbot.agent.prompting.registry import PromptRegistry
 from shinbot.agent.prompting.schema import (
+    ContextStrategy,
+    ContextStrategyBudget,
     PromptAssemblyRequest,
     PromptAssemblyResult,
     PromptComponent,
@@ -18,6 +20,8 @@ from shinbot.agent.prompting.schema import (
 )
 
 __all__ = [
+    "ContextStrategy",
+    "ContextStrategyBudget",
     "PromptAssemblyRequest",
     "PromptAssemblyResult",
     "PromptComponent",

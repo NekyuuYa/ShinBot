@@ -100,3 +100,33 @@ class PersonaRecord:
     enabled: bool = True
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ContextStrategyRecord:
+    uuid: str
+    name: str
+    resolver_ref: str
+    description: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
+    max_context_tokens: int | None = None
+    max_history_turns: int | None = None
+    memory_summary_required: bool = False
+    truncate_policy: str = "tail"
+    trigger_ratio: float = 0.5
+    trim_ratio: float = 0.1
+    enabled: bool = True
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class AgentRecord:
+    uuid: str
+    agent_id: str
+    name: str
+    persona_uuid: str
+    tools: list[str] = field(default_factory=list)
+    context_policy: str = ""
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)

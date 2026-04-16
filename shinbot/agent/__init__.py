@@ -8,6 +8,8 @@ from shinbot.agent.model_runtime import (
     ModelRuntimeCall,
 )
 from shinbot.agent.prompting import (
+    ContextStrategy,
+    ContextStrategyBudget,
     PromptAssemblyRequest,
     PromptAssemblyResult,
     PromptComponent,
@@ -41,6 +43,8 @@ __all__ = [
     "ModelCallError",
     "ModelRuntime",
     "ModelRuntimeCall",
+    "ContextStrategy",
+    "ContextStrategyBudget",
     "PromptAssemblyRequest",
     "PromptAssemblyResult",
     "PromptComponent",

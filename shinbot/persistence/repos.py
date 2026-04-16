@@ -9,6 +9,7 @@ from dataclasses import asdict
 from typing import Any
 
 from shinbot.persistence.records import (
+    ContextStrategyRecord,
     ModelDefinitionRecord,
     ModelExecutionRecord,
     ModelProviderRecord,
@@ -287,6 +288,130 @@ class PersonaRepository:
     def delete(self, persona_uuid: str) -> None:
         with self._db.connect() as conn:
             conn.execute("DELETE FROM personas WHERE uuid = ?", (persona_uuid,))
+
+
+class ContextStrategyRepository:
+    """Persistence adapter for context strategy metadata."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def list(self) -> list[dict[str, Any]]:
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    uuid, name, resolver_ref, description, config_json,
+                    max_context_tokens, max_history_turns, memory_summary_required,
+                    truncate_policy, trigger_ratio, trim_ratio,
+                    enabled, created_at, updated_at
+                FROM context_strategies
+                ORDER BY name ASC, uuid ASC
+                """
+            ).fetchall()
+        return [self._row_to_payload(row) for row in rows]
+
+    def get(self, strategy_uuid: str) -> dict[str, Any] | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    uuid, name, resolver_ref, description, config_json,
+                    max_context_tokens, max_history_turns, memory_summary_required,
+                    truncate_policy, trigger_ratio, trim_ratio,
+                    enabled, created_at, updated_at
+                FROM context_strategies
+                WHERE uuid = ?
+                """,
+                (strategy_uuid,),
+            ).fetchone()
+        return self._row_to_payload(row) if row is not None else None
+
+    def get_by_name(self, name: str) -> dict[str, Any] | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    uuid, name, resolver_ref, description, config_json,
+                    max_context_tokens, max_history_turns, memory_summary_required,
+                    truncate_policy, trigger_ratio, trim_ratio,
+                    enabled, created_at, updated_at
+                FROM context_strategies
+                WHERE name = ?
+                """,
+                (name,),
+            ).fetchone()
+        return self._row_to_payload(row) if row is not None else None
+
+    def upsert(self, record: ContextStrategyRecord) -> None:
+        payload = asdict(record)
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT created_at FROM context_strategies WHERE uuid = ?",
+                (payload["uuid"],),
+            ).fetchone()
+            created_at = row["created_at"] if row is not None else payload["created_at"]
+            conn.execute(
+                """
+                INSERT INTO context_strategies (
+                    uuid, name, resolver_ref, description, config_json,
+                    max_context_tokens, max_history_turns, memory_summary_required,
+                    truncate_policy, trigger_ratio, trim_ratio,
+                    enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(uuid) DO UPDATE SET
+                    name = excluded.name,
+                    resolver_ref = excluded.resolver_ref,
+                    description = excluded.description,
+                    config_json = excluded.config_json,
+                    max_context_tokens = excluded.max_context_tokens,
+                    max_history_turns = excluded.max_history_turns,
+                    memory_summary_required = excluded.memory_summary_required,
+                    truncate_policy = excluded.truncate_policy,
+                    trigger_ratio = excluded.trigger_ratio,
+                    trim_ratio = excluded.trim_ratio,
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    payload["uuid"],
+                    payload["name"],
+                    payload["resolver_ref"],
+                    payload["description"],
+                    _json_dumps(payload["config"]),
+                    payload["max_context_tokens"],
+                    payload["max_history_turns"],
+                    1 if payload["memory_summary_required"] else 0,
+                    payload["truncate_policy"],
+                    payload["trigger_ratio"],
+                    payload["trim_ratio"],
+                    1 if payload["enabled"] else 0,
+                    created_at,
+                    payload["updated_at"],
+                ),
+            )
+
+    def delete(self, strategy_uuid: str) -> None:
+        with self._db.connect() as conn:
+            conn.execute("DELETE FROM context_strategies WHERE uuid = ?", (strategy_uuid,))
+
+    def _row_to_payload(self, row: Any) -> dict[str, Any]:
+        return {
+            "uuid": row["uuid"],
+            "name": row["name"],
+            "resolver_ref": row["resolver_ref"],
+            "description": row["description"],
+            "config": _json_loads(row["config_json"], {}),
+            "max_context_tokens": row["max_context_tokens"],
+            "max_history_turns": row["max_history_turns"],
+            "memory_summary_required": bool(row["memory_summary_required"]),
+            "truncate_policy": row["truncate_policy"],
+            "trigger_ratio": float(row["trigger_ratio"]),
+            "trim_ratio": float(row["trim_ratio"]),
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
 
 class ModelRegistryRepository:

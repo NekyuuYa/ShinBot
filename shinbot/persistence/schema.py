@@ -175,6 +175,37 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         updated_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS context_strategies (
+        uuid TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        resolver_ref TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        config_json TEXT NOT NULL DEFAULT '{}',
+        max_context_tokens INTEGER,
+        max_history_turns INTEGER,
+        memory_summary_required INTEGER NOT NULL DEFAULT 0,
+        truncate_policy TEXT NOT NULL DEFAULT 'tail',
+        trigger_ratio REAL NOT NULL DEFAULT 0.5,
+        trim_ratio REAL NOT NULL DEFAULT 0.1,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agents (
+        uuid TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        persona_uuid TEXT NOT NULL,
+        tools_json TEXT NOT NULL DEFAULT '[]',
+        context_policy TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(persona_uuid) REFERENCES personas(uuid) ON DELETE RESTRICT
+    )
+    """,
 )
 
 
@@ -298,8 +329,30 @@ def _migrate_model_registry_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA foreign_keys = {'ON' if had_foreign_keys else 'OFF'}")
 
 
+def _migrate_context_strategies_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "context_strategies")
+    if not columns:
+        return
+
+    if "trigger_ratio" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE context_strategies
+            ADD COLUMN trigger_ratio REAL NOT NULL DEFAULT 0.5
+            """
+        )
+    if "trim_ratio" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE context_strategies
+            ADD COLUMN trim_ratio REAL NOT NULL DEFAULT 0.1
+            """
+        )
+
+
 def apply_schema(conn: sqlite3.Connection) -> None:
     """Create all persistence tables if they do not exist yet."""
     _migrate_model_registry_schema(conn)
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
+    _migrate_context_strategies_schema(conn)

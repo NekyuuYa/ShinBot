@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Callable
 from typing import Any
 
 from shinbot.agent.prompting.schema import (
     PROMPT_STAGE_ORDER,
+    ContextStrategy,
     PromptAssemblyRequest,
     PromptAssemblyResult,
     PromptComponent,
@@ -25,15 +27,30 @@ from shinbot.agent.prompting.schema import (
 )
 
 Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
+ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any]
 
 
 class PromptRegistry:
     """In-memory prompt registry with deterministic assembly."""
 
-    def __init__(self) -> None:
+    BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID = "builtin.context.sliding_window_fallback"
+    BUILTIN_FALLBACK_CONTEXT_RESOLVER = "builtin.context.sliding_window_fallback"
+
+    def __init__(
+        self,
+        *,
+        fallback_context_trigger_ratio: float = 0.5,
+        fallback_context_trim_ratio: float = 0.1,
+    ) -> None:
         self._components: dict[str, PromptComponent] = {}
+        self._context_strategies: dict[str, ContextStrategy] = {}
+        self._context_strategy_resolvers: dict[str, ContextStrategyResolver] = {}
         self._profiles: dict[str, PromptProfile] = {}
         self._resolvers: dict[str, Resolver] = {}
+        self._register_builtin_context_strategies(
+            trigger_ratio=fallback_context_trigger_ratio,
+            trim_ratio=fallback_context_trim_ratio,
+        )
 
     def register_component(self, component: PromptComponent) -> None:
         if component.id in self._components:
@@ -44,6 +61,18 @@ class PromptRegistry:
         if profile.id in self._profiles:
             raise ValueError(f"Prompt profile {profile.id!r} is already registered")
         self._profiles[profile.id] = profile
+
+    def register_context_strategy(self, strategy: ContextStrategy) -> None:
+        if strategy.id in self._context_strategies:
+            raise ValueError(f"Context strategy {strategy.id!r} is already registered")
+        self._context_strategies[strategy.id] = strategy
+
+    def register_context_strategy_resolver(
+        self, name: str, fn: ContextStrategyResolver
+    ) -> None:
+        if name in self._context_strategy_resolvers:
+            raise ValueError(f"Context strategy resolver {name!r} is already registered")
+        self._context_strategy_resolvers[name] = fn
 
     def register_resolver(self, name: str, fn: Resolver) -> None:
         if name in self._resolvers:
@@ -56,11 +85,20 @@ class PromptRegistry:
     def get_profile(self, profile_id: str) -> PromptProfile | None:
         return self._profiles.get(profile_id)
 
+    def get_context_strategy(self, strategy_id: str) -> ContextStrategy | None:
+        return self._context_strategies.get(strategy_id)
+
     def list_components(self, stage: PromptStage | None = None) -> list[PromptComponent]:
         components = list(self._components.values())
         if stage is not None:
             components = [component for component in components if component.stage == stage]
         return sorted(components, key=lambda item: (item.priority, item.id, item.version))
+
+    def list_context_strategies(self) -> list[ContextStrategy]:
+        return sorted(
+            self._context_strategies.values(),
+            key=lambda item: (item.priority, item.id),
+        )
 
     def list_profiles(self) -> list[PromptProfile]:
         return list(self._profiles.values())
@@ -93,6 +131,7 @@ class PromptRegistry:
                 continue
             self._expand_component(component, request, records_by_stage, ordered_records)
 
+        self._inject_context_strategy(request, records_by_stage, ordered_records)
         self._inject_payloads(request, records_by_stage, ordered_records)
 
         if not records_by_stage[PromptStage.SYSTEM_BASE]:
@@ -285,6 +324,54 @@ class PromptRegistry:
             records_by_stage[PromptStage.COMPATIBILITY].append(record)
             ordered_records.append(record)
 
+    def _inject_context_strategy(
+        self,
+        request: PromptAssemblyRequest,
+        records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
+        ordered_records: list[PromptComponentRecord],
+    ) -> None:
+        strategy = self._resolve_context_strategy(request)
+        if strategy is None:
+            return
+        if not strategy.enabled:
+            return
+
+        resolver = self._context_strategy_resolvers.get(strategy.resolver_ref)
+        if resolver is None:
+            raise ValueError(
+                f"Context strategy resolver {strategy.resolver_ref!r} is not registered"
+            )
+        result = resolver(request, strategy)
+        rendered_text = str(result.get("text", "") if isinstance(result, dict) else result).strip()
+        resolver_metadata = (
+            {k: v for k, v in result.items() if k != "text"} if isinstance(result, dict) else {}
+        )
+        if not rendered_text:
+            return
+        record = PromptComponentRecord(
+            component_id=f"__context_strategy__:{strategy.id}",
+            stage=PromptStage.CONTEXT,
+            kind=PromptComponentKind.RESOLVER,
+            version="1.0.0",
+            priority=strategy.priority,
+            source=PromptSource(
+                source_type=PromptSourceType.CONTEXT_PLUGIN,
+                source_id=strategy.id,
+                resolver_name=strategy.resolver_ref,
+                metadata={"strategy_metadata": dict(strategy.metadata)},
+            ),
+            rendered_text=rendered_text,
+            text_hash=stable_text_hash(rendered_text),
+            cache_stable=False,
+            metadata={
+                "context_strategy_id": strategy.id,
+                "budget": strategy.budget.model_dump(mode="json"),
+                "resolver_output": resolver_metadata,
+            },
+        )
+        records_by_stage[PromptStage.CONTEXT].append(record)
+        ordered_records.append(record)
+
     def _make_payload_record(
         self,
         *,
@@ -336,6 +423,125 @@ class PromptRegistry:
             is_builtin=source_type == PromptSourceType.BUILTIN_SYSTEM,
             metadata=dict(metadata),
         )
+
+    def _resolve_context_strategy(self, request: PromptAssemblyRequest) -> ContextStrategy | None:
+        if request.context_strategy_id:
+            strategy = self._context_strategies.get(request.context_strategy_id)
+            if strategy is None:
+                raise ValueError(
+                    f"Context strategy {request.context_strategy_id!r} is not registered"
+                )
+            return strategy
+        return self._context_strategies.get(self.BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID)
+
+    def _register_builtin_context_strategies(
+        self,
+        *,
+        trigger_ratio: float,
+        trim_ratio: float,
+    ) -> None:
+        self.register_context_strategy(
+            ContextStrategy(
+                id=self.BUILTIN_FALLBACK_CONTEXT_STRATEGY_ID,
+                display_name="Sliding Window Fallback",
+                description="Built-in fallback context strategy based on a sliding window.",
+                resolver_ref=self.BUILTIN_FALLBACK_CONTEXT_RESOLVER,
+                priority=10_000,
+                metadata={"builtin": True, "fallback": True},
+                budget={
+                    "truncate_policy": "sliding_window",
+                    "trigger_ratio": trigger_ratio,
+                    "trim_ratio": trim_ratio,
+                },
+            )
+        )
+        self.register_context_strategy_resolver(
+            self.BUILTIN_FALLBACK_CONTEXT_RESOLVER,
+            self._resolve_builtin_sliding_window_context,
+        )
+
+    def _resolve_builtin_sliding_window_context(
+        self,
+        request: PromptAssemblyRequest,
+        strategy: ContextStrategy,
+    ) -> dict[str, Any]:
+        turns = self._normalize_history_turns(request.context_inputs)
+        summary = str(request.context_inputs.get("summary", "")).strip()
+        model_context_window = request.model_context_window or strategy.budget.max_context_tokens
+        trigger_ratio = strategy.budget.trigger_ratio
+        trim_ratio = strategy.budget.trim_ratio
+        dropped_turns = 0
+
+        if strategy.budget.max_history_turns is not None and len(turns) > strategy.budget.max_history_turns:
+            overflow = len(turns) - strategy.budget.max_history_turns
+            turns = turns[overflow:]
+            dropped_turns += overflow
+
+        trigger_tokens = (
+            max(1, math.floor(model_context_window * trigger_ratio))
+            if model_context_window is not None
+            else None
+        )
+
+        while trigger_tokens is not None and len(turns) > 1:
+            current_tokens = self._estimate_context_tokens(turns, summary)
+            if current_tokens < trigger_tokens:
+                break
+            trim_count = max(1, math.ceil(len(turns) * trim_ratio))
+            trim_count = min(trim_count, len(turns) - 1)
+            turns = turns[trim_count:]
+            dropped_turns += trim_count
+
+        lines: list[str] = []
+        if summary:
+            lines.append(f"Summary:\n{summary}")
+        if turns:
+            rendered_turns = "\n".join(
+                f"{turn['role']}: {turn['content']}" if turn["role"] else turn["content"]
+                for turn in turns
+            )
+            lines.append(f"Recent Context:\n{rendered_turns}")
+
+        return {
+            "text": "\n\n".join(lines).strip(),
+            "dropped_turns": dropped_turns,
+            "trigger_tokens": trigger_tokens,
+            "remaining_turns": len(turns),
+        }
+
+    def _normalize_history_turns(self, context_inputs: dict[str, Any]) -> list[dict[str, str]]:
+        raw_turns = context_inputs.get("history_turns", context_inputs.get("history", []))
+        if not isinstance(raw_turns, list):
+            return []
+
+        turns: list[dict[str, str]] = []
+        for item in raw_turns:
+            if isinstance(item, str):
+                content = item.strip()
+                if content:
+                    turns.append({"role": "", "content": content})
+                continue
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "")).strip()
+            content = str(item.get("content", item.get("text", ""))).strip()
+            if not content:
+                continue
+            turns.append({"role": role, "content": content})
+        return turns
+
+    def _estimate_context_tokens(self, turns: list[dict[str, str]], summary: str) -> int:
+        text_parts = [summary] if summary else []
+        text_parts.extend(
+            f"{turn['role']}: {turn['content']}" if turn["role"] else turn["content"]
+            for turn in turns
+        )
+        text = "\n".join(part for part in text_parts if part).strip()
+        if not text:
+            return 0
+        word_estimate = len(text.split())
+        char_estimate = math.ceil(len(text) / 4)
+        return max(word_estimate, char_estimate)
 
     def _build_signature(self, stages: list[PromptStageBlock]) -> str:
         payload = [
