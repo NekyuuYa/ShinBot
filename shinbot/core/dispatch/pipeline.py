@@ -175,7 +175,14 @@ class MessageContext:
         self._sent_messages.append(handle)
 
         # Persist assistant message to message_logs
-        self._log_assistant_message(elements, handle)
+        try:
+            self._log_assistant_message(elements, handle)
+        except Exception:
+            logger.exception(
+                "Failed to log assistant message in session %s"
+                " (message was already delivered to platform)",
+                self.session_id,
+            )
 
         return handle
 
@@ -287,7 +294,14 @@ class MessageContext:
         self._sent_messages.append(handle)
 
         # Persist assistant message to message_logs
-        self._log_assistant_message(all_elements, handle)
+        try:
+            self._log_assistant_message(all_elements, handle)
+        except Exception:
+            logger.exception(
+                "Failed to log assistant reply in session %s"
+                " (message was already delivered to platform)",
+                self.session_id,
+            )
 
         return handle
 
@@ -296,31 +310,32 @@ class MessageContext:
         elements: list[MessageElement],
         handle: MessageHandle,
     ) -> None:
-        """Insert an assistant message row into message_logs (best-effort, sync)."""
+        """Insert an assistant message row into message_logs.
+
+        Raises on DB failure — callers are responsible for catching and logging
+        with appropriate context (e.g. "message was already delivered").
+        """
         if self._database is None:
             return
-        try:
-            plain_text = Message.from_elements(elements).get_text()
-            content_json = json.dumps(
-                [el.model_dump(mode="json") for el in elements],
-                ensure_ascii=False,
+        plain_text = Message.from_elements(elements).get_text()
+        content_json = json.dumps(
+            [el.model_dump(mode="json") for el in elements],
+            ensure_ascii=False,
+        )
+        self._database.message_logs.insert(
+            MessageLogRecord(
+                session_id=self.session.id,
+                platform_msg_id=handle.message_id if handle is not None else "",
+                sender_id=self.event.self_id,
+                sender_name="",
+                content_json=content_json,
+                raw_text=plain_text,
+                role="assistant",
+                is_read=True,
+                is_mentioned=False,
+                created_at=time.time() * 1000,
             )
-            self._database.message_logs.insert(
-                MessageLogRecord(
-                    session_id=self.session.id,
-                    platform_msg_id=handle.message_id if handle is not None else "",
-                    sender_id=self.event.self_id,
-                    sender_name="",
-                    content_json=content_json,
-                    raw_text=plain_text,
-                    role="assistant",
-                    is_read=True,
-                    is_mentioned=False,
-                    created_at=time.time() * 1000,
-                )
-            )
-        except Exception:
-            logger.exception("Failed to persist assistant message to message_logs")
+        )
 
     def stop(self) -> None:
         """Signal that processing should stop (no further handlers)."""
