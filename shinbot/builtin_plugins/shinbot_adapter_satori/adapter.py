@@ -356,23 +356,6 @@ class SatoriAdapter(BaseAdapter):
         except Exception:
             logger.exception("Satori %s: event callback raised", self.instance_id)
 
-    def _enrich_poke(self, event: UnifiedEvent, raw_body: dict[str, Any]) -> UnifiedEvent:
-        """Deprecated: This method is kept for backward compatibility only.
-
-        The new dual-track design preserves notice events as-is with their
-        structured resource payloads instead of converting them to message events.
-
-        Notice events like poke, guild-member-added, etc. are now dispatched
-        directly through the EventBus with their resource fields populated.
-
-        This method is no longer called by _handle_event and can be removed
-        in a future version.
-        """
-        logger.debug(
-            "Satori %s: _enrich_poke called but not used in dual-track design", self.instance_id
-        )
-        return event
-
     # ── Helpers ──────────────────────────────────────────────────────
 
     def _build_headers(self) -> dict[str, str]:

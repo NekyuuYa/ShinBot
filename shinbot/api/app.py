@@ -3,7 +3,7 @@
 Implements the communication contract defined in 16_api_communication_spec.md:
   - Unified Envelope response format for all HTTP endpoints
   - JWT-based authentication on all /api/v1/* routes (except /auth/login)
-  - WebSocket streams: /ws/logs (real-time log push), /ws/system (status broadcast)
+  - WebSocket streams: /ws/logs (real-time log push), /ws/status (status broadcast)
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
         except Exception:
             log_manager.disconnect(websocket)
 
-    # ── WebSocket: /ws/status + /ws/system (legacy alias) ───────────
+    # ── WebSocket: /ws/status ─────────────────────────────────────────
 
     async def _serve_status_socket(websocket: WebSocket, token: str | None) -> None:
         if not await _require_ws_auth(websocket, token):
@@ -217,14 +217,6 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
 
     @app.websocket("/ws/status")
     async def ws_status(
-        websocket: WebSocket,
-        token: str | None = Query(default=None),
-    ) -> None:
-        await _serve_status_socket(websocket, token)
-
-    # Backward compatibility with older docs/configs.
-    @app.websocket("/ws/system")
-    async def ws_system(
         websocket: WebSocket,
         token: str | None = Query(default=None),
     ) -> None:

@@ -1,12 +1,14 @@
 """Tests for unified event schema."""
 
 from shinbot.schema.events import (
+    MessagePayload,
+    UnifiedEvent,
+)
+from shinbot.schema.resources import (
     Channel,
     Guild,
     Login,
     Member,
-    MessagePayload,
-    UnifiedEvent,
     User,
 )
 

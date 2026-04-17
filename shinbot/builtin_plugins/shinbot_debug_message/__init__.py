@@ -9,15 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from shinbot.core.plugins.context import PluginContext
-from shinbot.core.plugins.types import PluginRole
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
-
-__plugin_name__ = "Message Debug Plugin"
-__plugin_version__ = "1.0.0"
-__plugin_author__ = "ShinBot Team"
-__plugin_description__ = "Logs event summaries and writes raw + AST events to JSONL."
-__plugin_role__ = PluginRole.LOGIC
 
 _WRITE_QUEUE: asyncio.Queue[tuple[Path, dict[str, Any]]] | None = None
 _WRITER_TASK: asyncio.Task[None] | None = None

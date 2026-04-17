@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from shinbot.schema.resources import Channel, Guild, Login, Member, User
+from shinbot.schema.resources import Channel, Guild, Login, Member, User  # noqa: F401
 
 
 class MessagePayload(BaseModel):
@@ -164,13 +164,7 @@ class UnifiedEvent(BaseModel):
         return self.message.content
 
 
-# Re-export for backward compatibility
 __all__ = [
-    "User",
-    "Channel",
-    "Guild",
-    "Member",
-    "Login",
     "MessagePayload",
     "UnifiedEvent",
 ]

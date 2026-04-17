@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
 import types
 from pathlib import Path
@@ -98,9 +100,17 @@ def test_plugins_enable_disable_routes(tmp_path: Path):
 
 def test_adapter_plugin_schema_endpoint_is_hidden_from_plugin_management(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
-    bot.load_plugin(
-        "shinbot_adapter_onebot_v11",
-        "shinbot.builtin_plugins.shinbot_adapter_onebot_v11",
+    metadata_path = (
+        Path(__file__).resolve().parents[1]
+        / "shinbot/builtin_plugins/shinbot_adapter_onebot_v11/metadata.json"
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    asyncio.run(
+        bot.plugin_manager.load_plugin_async(
+            "shinbot_adapter_onebot_v11",
+            "shinbot.builtin_plugins.shinbot_adapter_onebot_v11",
+            declared_metadata=metadata,
+        )
     )
     boot = _BootStub(tmp_path)
     app = create_api_app(bot, boot)

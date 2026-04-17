@@ -7,14 +7,6 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from shinbot.core.plugins.context import PluginContext
-from shinbot.core.plugins.types import PluginRole
-
-__plugin_name__ = "OneBot v11 Adapter (Official)"
-__plugin_version__ = "1.0.0"
-__plugin_author__ = "ShinBot Team"
-__plugin_description__ = "OneBot v11 forward WebSocket bridge for ShinBot."
-__plugin_role__ = PluginRole.ADAPTER
-__plugin_adapter_platform__ = "onebot_v11"
 
 
 class OneBotV11PluginConfig(BaseModel):
