@@ -556,9 +556,12 @@ class TestDatabaseBackedAuditLogger:
                 execution_id="exec-42",
                 trigger_id=trigger_id,
                 response_id=response_id,
-                full_prompt_json="[]",
                 model_id="claude-3-haiku",
-                usage_json='{"input_tokens":100,"output_tokens":50}',
+                provider_id="anthropic",
+                input_tokens=100,
+                output_tokens=50,
+                think_text="reasoning here",
+                injected_context_json='[{"type":"text","text":"summarize"}]',
             )
         )
         assert isinstance(ia_id, int)
@@ -569,6 +572,10 @@ class TestDatabaseBackedAuditLogger:
         assert result["trigger_id"] == trigger_id
         assert result["response_id"] == response_id
         assert result["model_id"] == "claude-3-haiku"
+        assert result["provider_id"] == "anthropic"
+        assert result["input_tokens"] == 100
+        assert result["output_tokens"] == 50
+        assert result["think_text"] == "reasoning here"
 
         by_session = db.ai_interactions.list_by_session("inst1:group:g1")
         assert len(by_session) == 1

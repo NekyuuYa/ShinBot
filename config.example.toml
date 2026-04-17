@@ -6,6 +6,7 @@ level = "INFO"  # DEBUG | INFO | WARNING | ERROR
 
 [database]
 url = "sqlite:///data/db/shinbot.sqlite3"
+snapshot_ttl = 10800  # Full prompt snapshot TTL in seconds (default 3 hours)
 
 
 # ─── Bot Instances ────────────────────────────────────────────────────────────

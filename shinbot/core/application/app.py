@@ -38,6 +38,7 @@ class ShinBot:
         data_dir: Path | str | None = None,
         *,
         database_url: str | None = None,
+        database_snapshot_ttl: int | None = None,
     ) -> None:
         # Core subsystems
         self.database: DatabaseManager | None = None
@@ -48,6 +49,7 @@ class ShinBot:
             self.database = DatabaseManager.from_bootstrap(
                 data_dir=runtime_data_dir,
                 url=database_url,
+                snapshot_ttl=database_snapshot_ttl,
             )
             self.database.initialize()
             session_repo = self.database.sessions

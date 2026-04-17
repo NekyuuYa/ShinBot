@@ -37,6 +37,7 @@ class DatabaseConfig:
 
     url: str
     sqlite_path: Path
+    snapshot_ttl: int = 10800  # Default 3 hours
 
     @classmethod
     def from_bootstrap(
@@ -44,8 +45,13 @@ class DatabaseConfig:
         *,
         data_dir: Path | str,
         url: str | None = None,
+        snapshot_ttl: int | None = None,
     ) -> DatabaseConfig:
         resolved_url = (
             url.strip() if isinstance(url, str) and url.strip() else default_database_url(data_dir)
         )
-        return cls(url=resolved_url, sqlite_path=resolve_sqlite_path(resolved_url))
+        return cls(
+            url=resolved_url,
+            sqlite_path=resolve_sqlite_path(resolved_url),
+            snapshot_ttl=snapshot_ttl if snapshot_ttl is not None else 10800,
+        )

@@ -100,8 +100,14 @@ class BootController:
         logger.info("Boot Phase 2/5: infrastructure")
         self._init_dashboard_static_config()
         try:
-            database_url = self.config.get("database", {}).get("url")
-            self.bot = ShinBot(data_dir=self.data_dir, database_url=database_url)
+            db_cfg = self.config.get("database", {})
+            database_url = db_cfg.get("url")
+            snapshot_ttl = db_cfg.get("snapshot_ttl")
+            self.bot = ShinBot(
+                data_dir=self.data_dir,
+                database_url=database_url,
+                database_snapshot_ttl=snapshot_ttl,
+            )
         except Exception:
             self.state = BootState.DEGRADED
             raise

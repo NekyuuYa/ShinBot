@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import uuid
@@ -10,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from shinbot.persistence import DatabaseManager, ModelExecutionRecord
+from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecutionRecord
 
 from . import litellm_adapter
 
@@ -157,6 +158,73 @@ def _extract_estimated_cost(response: Any) -> float | None:
     if isinstance(hidden_attr, dict) and isinstance(hidden_attr.get("response_cost"), (int, float)):
         return float(hidden_attr["response_cost"])
     return None
+
+
+def _extract_think_text(response: Any) -> str:
+    """Extract model reasoning/thinking text, handling multi-provider response shapes."""
+    payload = _response_to_dict(response)
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+
+    # OpenAI reasoning models: reasoning_content / reasoning
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    # Anthropic: content array may contain thinking blocks
+    content = message.get("content")
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                text = block.get("thinking") or block.get("text") or ""
+                if text:
+                    parts.append(str(text))
+        if parts:
+            return "\n".join(parts)
+
+    # Some providers: think / thought field directly on message
+    for key in ("think", "thought"):
+        value = message.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    return ""
+
+
+def _extract_tool_calls_list(response: Any) -> list[dict[str, Any]]:
+    """Extract tool calls from the model response as a list of plain dicts."""
+    payload = _response_to_dict(response)
+    choices = payload.get("choices") or []
+    if not choices:
+        return []
+    message = (choices[0] or {}).get("message") or {}
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            result.append(tc)
+        elif hasattr(tc, "__dict__"):
+            result.append(dict(tc.__dict__))
+    return result
+
+
+def _extract_injected_context(messages: list[dict[str, Any]]) -> str:
+    """Return the content array of the last user message as a JSON string."""
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if content is None:
+                content = []
+            elif isinstance(content, str):
+                content = [{"type": "text", "text": content}]
+            return json.dumps(content, ensure_ascii=False)
+    return "[]"
 
 
 @dataclass(slots=True)
@@ -317,6 +385,25 @@ class ModelRuntime:
                     currency="USD",
                 )
                 self._persist_execution(record)
+                self._persist_ai_interaction(
+                    AIInteractionRecord(
+                        execution_id=execution_id,
+                        timestamp=started.timestamp(),
+                        latency_ms=(finished - started).total_seconds() * 1000,
+                        input_tokens=usage["input_tokens"],
+                        output_tokens=usage["output_tokens"],
+                        cache_read_tokens=usage["cache_read_tokens"],
+                        cache_write_tokens=usage["cache_write_tokens"],
+                        model_id=attempt["model"]["id"],
+                        provider_id=attempt["provider"]["id"],
+                        think_text=_extract_think_text(response),
+                        injected_context_json=_extract_injected_context(call.messages),
+                        tool_calls_json=json.dumps(
+                            _extract_tool_calls_list(response), ensure_ascii=False
+                        ),
+                        prompt_snapshot_id=call.prompt_snapshot_id,
+                    )
+                )
                 return GenerateResult(
                     text=_extract_text(response),
                     raw_response=response,
@@ -944,4 +1031,15 @@ class ModelRuntime:
                 record.id,
                 record.caller,
                 record.success,
+            )
+
+    def _persist_ai_interaction(self, record: AIInteractionRecord) -> None:
+        if self._database is None:
+            return
+        try:
+            self._database.ai_interactions.insert(record)
+        except Exception:
+            logger.exception(
+                "Failed to persist AI interaction for execution %s",
+                record.execution_id,
             )

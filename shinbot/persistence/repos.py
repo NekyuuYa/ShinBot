@@ -1333,20 +1333,27 @@ class AIInteractionRepository:
                 """
                 INSERT INTO ai_interactions (
                     execution_id, trigger_id, response_id,
-                    full_prompt_json, think_text, injected_context_json,
-                    tool_calls_json, model_id, usage_json, prompt_snapshot_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    timestamp, latency_ms,
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                    model_id, provider_id,
+                    think_text, injected_context_json, tool_calls_json, prompt_snapshot_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.execution_id,
                     record.trigger_id,
                     record.response_id,
-                    record.full_prompt_json,
+                    record.timestamp,
+                    record.latency_ms,
+                    record.input_tokens,
+                    record.output_tokens,
+                    record.cache_read_tokens,
+                    record.cache_write_tokens,
+                    record.model_id,
+                    record.provider_id,
                     record.think_text,
                     record.injected_context_json,
                     record.tool_calls_json,
-                    record.model_id,
-                    record.usage_json,
                     record.prompt_snapshot_id,
                 ),
             )
@@ -1390,12 +1397,17 @@ class AIInteractionRepository:
             "execution_id": row["execution_id"],
             "trigger_id": row["trigger_id"],
             "response_id": row["response_id"],
-            "full_prompt_json": row["full_prompt_json"],
+            "timestamp": row["timestamp"],
+            "latency_ms": row["latency_ms"],
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "cache_read_tokens": row["cache_read_tokens"],
+            "cache_write_tokens": row["cache_write_tokens"],
+            "model_id": row["model_id"],
+            "provider_id": row["provider_id"],
             "think_text": row["think_text"],
             "injected_context_json": row["injected_context_json"],
             "tool_calls_json": row["tool_calls_json"],
-            "model_id": row["model_id"],
-            "usage_json": row["usage_json"],
             "prompt_snapshot_id": row["prompt_snapshot_id"],
         }
 
@@ -1409,6 +1421,10 @@ class PromptSnapshotRepository:
         self._db = db
 
     def insert(self, record: PromptSnapshotRecord) -> None:
+        expires_at = record.expires_at
+        if expires_at is None:
+            expires_at = record.created_at + self._db.config.snapshot_ttl
+
         with self._db.connect() as conn:
             conn.execute(
                 """
@@ -1432,7 +1448,7 @@ class PromptSnapshotRepository:
                     _json_dumps(record.tools),
                     1 if record.compatibility_used else 0,
                     record.created_at,
-                    record.expires_at,
+                    expires_at,
                 ),
             )
             # Lazy TTL cleanup: remove expired snapshots on each insert

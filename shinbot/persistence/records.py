@@ -197,12 +197,17 @@ class AIInteractionRecord:
     execution_id: str = ""
     trigger_id: int | None = None
     response_id: int | None = None
-    full_prompt_json: str = "[]"
+    timestamp: float = field(default_factory=time.time)
+    latency_ms: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    model_id: str = ""
+    provider_id: str = ""
     think_text: str = ""
     injected_context_json: str = "[]"
     tool_calls_json: str = "[]"
-    model_id: str = ""
-    usage_json: str = "{}"
     prompt_snapshot_id: str = ""
     id: int | None = None
 
@@ -224,4 +229,4 @@ class PromptSnapshotRecord:
     tools: list[dict[str, Any]] = field(default_factory=list)
     compatibility_used: bool = False
     created_at: float = field(default_factory=time.time)
-    expires_at: float = field(default_factory=lambda: time.time() + 10800)
+    expires_at: float | None = None

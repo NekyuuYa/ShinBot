@@ -281,12 +281,17 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         execution_id TEXT NOT NULL DEFAULT '',
         trigger_id INTEGER,
         response_id INTEGER,
-        full_prompt_json TEXT NOT NULL DEFAULT '[]',
+        timestamp REAL NOT NULL DEFAULT 0,
+        latency_ms REAL NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        model_id TEXT NOT NULL DEFAULT '',
+        provider_id TEXT NOT NULL DEFAULT '',
         think_text TEXT NOT NULL DEFAULT '',
         injected_context_json TEXT NOT NULL DEFAULT '[]',
         tool_calls_json TEXT NOT NULL DEFAULT '[]',
-        model_id TEXT NOT NULL DEFAULT '',
-        usage_json TEXT NOT NULL DEFAULT '{}',
         prompt_snapshot_id TEXT NOT NULL DEFAULT '',
         FOREIGN KEY(trigger_id) REFERENCES message_logs(id),
         FOREIGN KEY(response_id) REFERENCES message_logs(id)
@@ -617,13 +622,19 @@ def _migrate_ai_interactions_schema(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "ai_interactions")
     if not columns:
         return
-    if "prompt_snapshot_id" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE ai_interactions
-            ADD COLUMN prompt_snapshot_id TEXT NOT NULL DEFAULT ''
-            """
-        )
+    new_columns = {
+        "timestamp": "REAL NOT NULL DEFAULT 0",
+        "latency_ms": "REAL NOT NULL DEFAULT 0",
+        "input_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "output_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "cache_read_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "cache_write_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "provider_id": "TEXT NOT NULL DEFAULT ''",
+        "prompt_snapshot_id": "TEXT NOT NULL DEFAULT ''",
+    }
+    for col, spec in new_columns.items():
+        if col not in columns:
+            conn.execute(f"ALTER TABLE ai_interactions ADD COLUMN {col} {spec}")
 
 
 def _migrate_provider_capability_type(conn: sqlite3.Connection) -> None:
