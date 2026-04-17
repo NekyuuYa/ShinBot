@@ -45,11 +45,16 @@
     <v-card class="pa-4">
       <v-row class="mb-4" align="center">
         <v-col cols="12" md="8">
-          <v-btn-toggle v-model="logLevelFilter" mandatory divided density="comfortable" class="monitor-filter-toggle">
-            <v-btn value="ALL">ALL</v-btn>
-            <v-btn value="INFO">INFO</v-btn>
-            <v-btn value="WARN">WARN</v-btn>
-            <v-btn value="ERROR">ERROR</v-btn>
+          <v-btn-toggle
+            v-model="enabledLogLevels"
+            multiple
+            divided
+            density="comfortable"
+            class="monitor-filter-toggle"
+          >
+            <v-btn v-for="option in logLevelOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </v-btn>
           </v-btn-toggle>
         </v-col>
         <v-col cols="12" md="4" class="text-end">
@@ -65,7 +70,7 @@
             <v-card-text class="py-3 px-4">
               <v-row align="start" no-gutters>
                 <v-col cols="12" md="2" class="d-flex align-center">
-                  <v-chip size="small" variant="flat" :color="logColor(item.level)" class="font-weight-bold">{{ item.level }}</v-chip>
+                  <v-chip size="small" variant="flat" :color="logColor(item.level)" class="font-weight-bold">{{ displayLogLevel(item.level) }}</v-chip>
                 </v-col>
                 <v-col cols="12" md="2" class="text-caption text-medium-emphasis d-flex align-center">
                   {{ formatTime(item.timestamp) }}
@@ -95,12 +100,22 @@
 import { storeToRefs } from 'pinia'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import { useMonitoringStore } from '@/stores/monitoring'
+import type { LogLevel } from '@/stores/monitoring'
 
 const monitoringStore = useMonitoringStore()
-const { filteredLogs, isOnline, logLevelFilter, logConnected, status } = storeToRefs(monitoringStore)
+const { filteredLogs, enabledLogLevels, isOnline, logConnected, status } = storeToRefs(monitoringStore)
+
+const logLevelOptions: ReadonlyArray<{ value: LogLevel; label: string }> = [
+  { value: 'DEBUG', label: 'DEBUG' },
+  { value: 'INFO', label: 'INFO' },
+  { value: 'WARN', label: 'WARNING' },
+  { value: 'ERROR', label: 'ERROR' },
+]
 
 const connectLogs = () => monitoringStore.connectLogs()
 const clearLogs = () => monitoringStore.clearLogs()
+
+const displayLogLevel = (level: LogLevel) => (level === 'WARN' ? 'WARNING' : level)
 
 const logColor = (level: string) => {
   if (level === 'ERROR') return 'error'

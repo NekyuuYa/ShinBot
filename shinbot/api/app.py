@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import jwt as _jwt
-
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -170,13 +169,22 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
         """
         auth_config = websocket.app.state.auth_config
         if not token:
+            logger.warning("WS connection rejected: Missing token from %s", websocket.client)
             await websocket.close(code=1008, reason="Unauthorized: token required")
             return False
         try:
             auth_config.decode_token(token)
-        except _jwt.InvalidTokenError:
+        except _jwt.InvalidTokenError as e:
+            logger.warning("WS connection rejected: Invalid token from %s: %s", websocket.client, e)
             await websocket.close(code=1008, reason="Unauthorized: invalid token")
             return False
+        except Exception as e:
+            logger.error("WS connection rejected: Internal error during auth: %s", e)
+            await websocket.close(code=1011, reason="Internal server error")
+            return False
+
+        # IMPORTANT: Handshake must be accepted before any data transfer or connection registration.
+        await websocket.accept()
         return True
 
     @app.websocket("/ws/logs")
@@ -186,12 +194,13 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
     ) -> None:
         if not await _require_ws_auth(websocket, token):
             return
+        # Note: ConnectionManager.connect also calls accept(), which is idempotent if already accepted.
         await log_manager.connect(websocket)
         try:
             while True:
                 # Receive to detect client disconnect; we ignore the data.
                 await websocket.receive_text()
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError):
             log_manager.disconnect(websocket)
         except Exception:
             log_manager.disconnect(websocket)
@@ -202,17 +211,33 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
         if not await _require_ws_auth(websocket, token):
             return
         await status_manager.connect(websocket)
+
+        async def _keepalive():
+            try:
+                while True:
+                    # Receive to detect client disconnect; we ignore the data.
+                    await websocket.receive_text()
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                pass
+
+        # Run receiver in background to detect disconnects while we push data
+        recv_task = asyncio.create_task(_keepalive())
+
         try:
-            while True:
+            while not recv_task.done():
                 payload = _build_system_status(bot, boot)
                 # 包装为标准 Envelope
                 await websocket.send_json(
                     {"success": True, "data": payload, "timestamp": int(time.time())}
                 )
                 await asyncio.sleep(3.0)
-        except WebSocketDisconnect:
-            status_manager.disconnect(websocket)
-        except Exception:
+        except (WebSocketDisconnect, Exception):
+            pass
+        finally:
+            if not recv_task.done():
+                recv_task.cancel()
             status_manager.disconnect(websocket)
 
     @app.websocket("/ws/status")

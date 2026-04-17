@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 
 from shinbot.utils.logger import display_log_level, shorten_logger_name
 
@@ -20,7 +21,8 @@ class ConnectionManager:
         self._connections: set[WebSocket] = set()
 
     async def connect(self, ws: WebSocket) -> None:
-        await ws.accept()
+        if ws.application_state == WebSocketState.CONNECTING:
+            await ws.accept()
         self._connections.add(ws)
         logger.debug("WS client connected (%d total)", len(self._connections))
 
@@ -38,7 +40,7 @@ class ConnectionManager:
             *[ws.send_json(data) for ws in connections],
             return_exceptions=True,
         )
-        for ws, result in zip(connections, results):
+        for ws, result in zip(connections, results, strict=False):
             if isinstance(result, Exception):
                 self._connections.discard(ws)
 

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useInstancesStore } from '@/stores/instances'
+import { useAuthStore } from '@/stores/auth'
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
 
@@ -51,6 +52,20 @@ interface StatusWsPayload {
 
 const LOG_LEVEL_ORDER: readonly LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR']
 const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
+const AUTH_FAILURE_CLOSE_CODE = 1008
+
+function normalizeToken(rawToken: string): string {
+  const trimmed = (rawToken ?? '').trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  if (trimmed.toLowerCase().startsWith('bearer ')) {
+    return trimmed.slice(7).trim()
+  }
+
+  return trimmed
+}
 
 function resolveWsEndpoint(configured: string | undefined, fallback: string): string {
   const raw = (configured ?? '').trim()
@@ -78,6 +93,22 @@ function resolveWsEndpoint(configured: string | undefined, fallback: string): st
     return parsed.toString()
   } catch {
     return fallback
+  }
+}
+
+/**
+ * Append auth token to URL query parameters.
+ */
+function appendAuthToken(url: string, token: string): string {
+  const normalizedToken = normalizeToken(token)
+  if (!normalizedToken) return url
+  try {
+    const parsed = new URL(url)
+    parsed.searchParams.set('token', normalizedToken)
+    return parsed.toString()
+  } catch {
+    const separator = url.includes('?') ? '&' : '?'
+    return `${url}${separator}token=${encodeURIComponent(normalizedToken)}`
   }
 }
 
@@ -204,8 +235,9 @@ function extractInstanceStatuses(
 
 export const useMonitoringStore = defineStore('monitoring', () => {
   const instancesStore = useInstancesStore()
+  const authStore = useAuthStore()
   const logs = ref<MonitoringLogEntry[]>([])
-  const logLevelFilter = ref<LogLevel | 'ALL'>('ALL')
+  const enabledLogLevels = ref<LogLevel[]>([...LOG_LEVEL_ORDER])
   const status = ref<SystemStatus>({
     totalInstances: 0,
     runningInstances: 0,
@@ -229,11 +261,12 @@ export const useMonitoringStore = defineStore('monitoring', () => {
   const heartbeatIntervalMs = 30000
 
   const filteredLogs = computed(() => {
-    if (logLevelFilter.value === 'ALL') {
-      return logs.value
+    const activeLevels = new Set(enabledLogLevels.value)
+    if (activeLevels.size === 0) {
+      return []
     }
 
-    return logs.value.filter((entry) => entry.level === logLevelFilter.value)
+    return logs.value.filter((entry) => activeLevels.has(entry.level))
   })
 
   const isOnline = computed(() => statusConnected.value && status.value.online)
@@ -247,6 +280,22 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     if (logHeartbeatTimer) clearInterval(logHeartbeatTimer)
     logReconnectTimer = null
     logHeartbeatTimer = null
+  }
+
+  const scheduleLogReconnect = (endpoint?: string) => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    if (logReconnectTimer) {
+      clearTimeout(logReconnectTimer)
+    }
+    logReconnectTimer = setTimeout(() => {
+      if (logSocket && logSocket.readyState !== WebSocket.CLOSED) {
+        return
+      }
+      logSocket = null
+      connectLogs(endpoint)
+    }, reconnectDelayMs)
   }
 
   const armLogHeartbeat = () => {
@@ -263,8 +312,14 @@ export const useMonitoringStore = defineStore('monitoring', () => {
       return
     }
 
+    if (!normalizeToken(authStore.token)) {
+      logConnected.value = false
+      return
+    }
+
     const defaultUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/logs`
-    const finalEndpoint = resolveWsEndpoint(endpoint ?? import.meta.env.VITE_WS_LOGS_URL, defaultUrl)
+    let finalEndpoint = resolveWsEndpoint(endpoint ?? import.meta.env.VITE_WS_LOGS_URL, defaultUrl)
+    finalEndpoint = appendAuthToken(finalEndpoint, authStore.token)
 
     clearLogTimers()
     logSocket = new WebSocket(finalEndpoint)
@@ -272,15 +327,32 @@ export const useMonitoringStore = defineStore('monitoring', () => {
       logConnected.value = true
       armLogHeartbeat()
     }
-    logSocket.onclose = () => {
+    logSocket.onclose = (event) => {
       logConnected.value = false
       logSocket = null
-      if (typeof window !== 'undefined') {
-        logReconnectTimer = setTimeout(() => connectLogs(endpoint), reconnectDelayMs)
+      if (event.code === AUTH_FAILURE_CLOSE_CODE) {
+        return
       }
+      scheduleLogReconnect(endpoint)
     }
     logSocket.onerror = () => {
       logConnected.value = false
+      const socket = logSocket
+      if (!socket) {
+        scheduleLogReconnect(endpoint)
+        return
+      }
+
+      if (socket.readyState === WebSocket.CLOSED) {
+        logSocket = null
+        scheduleLogReconnect(endpoint)
+        return
+      }
+
+      // Some browsers may emit onerror before onclose. Close proactively and
+      // arm a reconnect fallback so the stream can recover deterministically.
+      socket.close()
+      scheduleLogReconnect(endpoint)
     }
     logSocket.onmessage = (event: MessageEvent<string>) => {
       const parsed = parseEnvelope<LogWsPayload | LogWsPayload[]>(event.data)
@@ -304,16 +376,39 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     statusReconnectTimer = null
   }
 
+  const scheduleStatusReconnect = (endpoint?: string) => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    if (statusReconnectTimer) {
+      clearTimeout(statusReconnectTimer)
+    }
+    statusReconnectTimer = setTimeout(() => {
+      if (statusSocket && statusSocket.readyState !== WebSocket.CLOSED) {
+        return
+      }
+      statusSocket = null
+      connectStatus(endpoint)
+    }, reconnectDelayMs)
+  }
+
   const connectStatus = (endpoint?: string) => {
     if (typeof window === 'undefined' || statusSocket) {
       return
     }
 
+    if (!normalizeToken(authStore.token)) {
+      statusConnected.value = false
+      status.value.online = false
+      return
+    }
+
     const defaultUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/status`
-    const finalEndpoint = resolveWsEndpoint(
+    let finalEndpoint = resolveWsEndpoint(
       endpoint ?? import.meta.env.VITE_WS_STATUS_URL,
       defaultUrl
     )
+    finalEndpoint = appendAuthToken(finalEndpoint, authStore.token)
 
     clearStatusTimers()
     statusSocket = new WebSocket(finalEndpoint)
@@ -321,17 +416,32 @@ export const useMonitoringStore = defineStore('monitoring', () => {
       statusConnected.value = true
       status.value.online = true
     }
-    statusSocket.onclose = () => {
+    statusSocket.onclose = (event) => {
       statusConnected.value = false
       statusSocket = null
       status.value.online = false
-      if (typeof window !== 'undefined') {
-        statusReconnectTimer = setTimeout(() => connectStatus(endpoint), reconnectDelayMs)
+      if (event.code === AUTH_FAILURE_CLOSE_CODE) {
+        return
       }
+      scheduleStatusReconnect(endpoint)
     }
     statusSocket.onerror = () => {
       statusConnected.value = false
       status.value.online = false
+      const socket = statusSocket
+      if (!socket) {
+        scheduleStatusReconnect(endpoint)
+        return
+      }
+
+      if (socket.readyState === WebSocket.CLOSED) {
+        statusSocket = null
+        scheduleStatusReconnect(endpoint)
+        return
+      }
+
+      socket.close()
+      scheduleStatusReconnect(endpoint)
     }
     statusSocket.onmessage = (event: MessageEvent<string>) => {
       const parsed = parseEnvelope<StatusWsPayload>(event.data)
@@ -357,10 +467,6 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     statusConnected.value = false
   }
 
-  const setLogLevelFilter = (level: LogLevel | 'ALL') => {
-    logLevelFilter.value = level
-  }
-
   const clearLogs = () => {
     logs.value = []
   }
@@ -368,7 +474,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
   return {
     logs,
     filteredLogs,
-    logLevelFilter,
+    enabledLogLevels,
     status,
     isOnline,
     logConnected,
@@ -377,7 +483,6 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     disconnectLogs,
     connectStatus,
     disconnectStatus,
-    setLogLevelFilter,
     clearLogs,
   }
 })
