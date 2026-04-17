@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from shinbot.agent.model_runtime import ModelRuntimeCall, litellm_adapter
+from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall, litellm_adapter
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, ok
 from shinbot.persistence.records import (
@@ -471,15 +471,24 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
     capability_type = provider.get("capability_type", "completion")
 
     if capability_type == "embedding" or "embedding" in model["capabilities"]:
-        result = await bot.model_runtime.embed(
-            ModelRuntimeCall(
-                model_id=model["id"],
-                caller="webui.provider_probe",
-                purpose="provider_probe",
-                input_data="ping",
-                metadata={"probe": True},
+        try:
+            result = await bot.model_runtime.embed(
+                ModelRuntimeCall(
+                    model_id=model["id"],
+                    caller="webui.provider_probe",
+                    purpose="provider_probe",
+                    input_data="ping",
+                    metadata={"probe": True},
+                )
             )
-        )
+        except ModelCallError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": EC.INTERNAL_ERROR,
+                    "message": f"Provider probe failed: {exc}",
+                },
+            ) from exc
         return ok(
             {
                 "success": True,
@@ -492,16 +501,25 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
         )
 
     if capability_type == "completion":
-        result = await bot.model_runtime.generate(
-            ModelRuntimeCall(
-                model_id=model["id"],
-                caller="webui.provider_probe",
-                purpose="provider_probe",
-                messages=[{"role": "user", "content": "ping"}],
-                params={"max_tokens": 1},
-                metadata={"probe": True},
+        try:
+            result = await bot.model_runtime.generate(
+                ModelRuntimeCall(
+                    model_id=model["id"],
+                    caller="webui.provider_probe",
+                    purpose="provider_probe",
+                    messages=[{"role": "user", "content": "ping"}],
+                    params={"max_tokens": 1, "drop_params": True},
+                    metadata={"probe": True},
+                )
             )
-        )
+        except ModelCallError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": EC.INTERNAL_ERROR,
+                    "message": f"Provider probe failed: {exc}",
+                },
+            ) from exc
         return ok(
             {
                 "success": True,

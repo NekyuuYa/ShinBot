@@ -486,7 +486,10 @@ def test_provider_probe_endpoint_uses_runtime(tmp_path: Path, monkeypatch: pytes
         )
         assert model_resp.status_code == 201
 
+        captured: dict[str, object] = {}
+
         async def fake_generate(call):
+            captured["params"] = dict(call.params)
             return type(
                 "FakeResult",
                 (),
@@ -503,6 +506,57 @@ def test_provider_probe_endpoint_uses_runtime(tmp_path: Path, monkeypatch: pytes
 
     assert response.status_code == 200
     assert response.json()["data"]["executionId"] == "probe-exec"
+    assert captured["params"] == {"max_tokens": 1, "drop_params": True}
+
+
+def test_provider_probe_endpoint_surfaces_runtime_errors_without_unhandled_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        provider_resp = client.post(
+            "/api/v1/model-runtime/providers",
+            headers=headers,
+            json={
+                "id": "openrouter-main",
+                "type": "openrouter",
+                "displayName": "OpenRouter Main",
+            },
+        )
+        assert provider_resp.status_code == 201
+
+        model_resp = client.post(
+            "/api/v1/model-runtime/models",
+            headers=headers,
+            json={
+                "id": "openrouter-main/gemma",
+                "providerId": "openrouter-main",
+                "litellmModel": "openrouter/google/gemma-4-31b-it:free",
+                "displayName": "Gemma",
+                "capabilities": ["chat"],
+                "enabled": True,
+            },
+        )
+        assert model_resp.status_code == 201
+
+        async def fake_generate(call):
+            from shinbot.agent.model_runtime import ModelCallError
+
+            raise ModelCallError("unsupported params")
+
+        monkeypatch.setattr(bot.model_runtime, "generate", fake_generate)
+
+        response = client.post(
+            "/api/v1/model-runtime/providers/openrouter-main/probe",
+            headers=headers,
+            json={},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["message"] == "Provider probe failed: unsupported params"
 
 
 def test_provider_and_route_path_ids_support_nested_segments(tmp_path: Path):
@@ -683,4 +737,3 @@ def test_provider_probe_non_completion_types_use_catalog_or_skip(
             # Should use catalog (which will fail since no real API) or skip — either is valid
             assert resp.json()["data"]["success"] is True
             assert resp.json()["data"]["mode"] in ("catalog", "skipped")
-
