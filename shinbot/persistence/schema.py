@@ -98,6 +98,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         fallback_reason TEXT NOT NULL DEFAULT '',
         estimated_cost REAL,
         currency TEXT NOT NULL DEFAULT '',
+        prompt_snapshot_id TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL DEFAULT '{}'
     )
     """,
@@ -286,6 +287,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         tool_calls_json TEXT NOT NULL DEFAULT '[]',
         model_id TEXT NOT NULL DEFAULT '',
         usage_json TEXT NOT NULL DEFAULT '{}',
+        prompt_snapshot_id TEXT NOT NULL DEFAULT '',
         FOREIGN KEY(trigger_id) REFERENCES message_logs(id),
         FOREIGN KEY(response_id) REFERENCES message_logs(id)
     )
@@ -297,6 +299,29 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_ai_interactions_trigger_id
     ON ai_interactions(trigger_id)
+    """,
+    # ── Prompt snapshots (TTL-based full prompt storage) ────────────────
+    """
+    CREATE TABLE IF NOT EXISTS prompt_snapshots (
+        id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL DEFAULT '',
+        caller TEXT NOT NULL DEFAULT '',
+        session_id TEXT NOT NULL DEFAULT '',
+        instance_id TEXT NOT NULL DEFAULT '',
+        route_id TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL DEFAULT '',
+        prompt_signature TEXT NOT NULL DEFAULT '',
+        cache_key TEXT NOT NULL DEFAULT '',
+        messages_json TEXT NOT NULL DEFAULT '[]',
+        tools_json TEXT NOT NULL DEFAULT '[]',
+        compatibility_used INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        expires_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_prompt_snapshots_expires_at
+    ON prompt_snapshots(expires_at)
     """,
 )
 
@@ -575,6 +600,32 @@ def _migrate_bot_configs_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_model_execution_records_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "model_execution_records")
+    if not columns:
+        return
+    if "prompt_snapshot_id" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE model_execution_records
+            ADD COLUMN prompt_snapshot_id TEXT NOT NULL DEFAULT ''
+            """
+        )
+
+
+def _migrate_ai_interactions_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "ai_interactions")
+    if not columns:
+        return
+    if "prompt_snapshot_id" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE ai_interactions
+            ADD COLUMN prompt_snapshot_id TEXT NOT NULL DEFAULT ''
+            """
+        )
+
+
 def _migrate_provider_capability_type(conn: sqlite3.Connection) -> None:
     """Add capability_type column and migrate data from defaultParams._tab."""
     import json
@@ -623,3 +674,5 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_personas_schema(conn)
     _migrate_prompt_definitions_schema(conn)
     _migrate_bot_configs_schema(conn)
+    _migrate_model_execution_records_schema(conn)
+    _migrate_ai_interactions_schema(conn)

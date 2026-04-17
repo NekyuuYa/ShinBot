@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -90,6 +91,7 @@ class ModelExecutionRecord:
     fallback_reason: str = ""
     estimated_cost: float | None = None
     currency: str = ""
+    prompt_snapshot_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -201,4 +203,25 @@ class AIInteractionRecord:
     tool_calls_json: str = "[]"
     model_id: str = ""
     usage_json: str = "{}"
+    prompt_snapshot_id: str = ""
     id: int | None = None
+
+
+@dataclass(slots=True)
+class PromptSnapshotRecord:
+    """TTL-based full prompt snapshot for audit and debugging."""
+
+    id: str
+    profile_id: str = ""
+    caller: str = ""
+    session_id: str = ""
+    instance_id: str = ""
+    route_id: str = ""
+    model_id: str = ""
+    prompt_signature: str = ""
+    cache_key: str = ""
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    compatibility_used: bool = False
+    created_at: float = field(default_factory=time.time)
+    expires_at: float = field(default_factory=lambda: time.time() + 10800)

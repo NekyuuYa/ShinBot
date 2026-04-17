@@ -1,4 +1,4 @@
-"""Prompt registry and basic assembly service."""
+"""Prompt registry and structured assembly service (Chat Completions format)."""
 
 from __future__ import annotations
 
@@ -31,7 +31,11 @@ ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any
 
 
 class PromptRegistry:
-    """In-memory prompt registry with deterministic assembly."""
+    """In-memory prompt registry with deterministic assembly.
+
+    Produces structured ``messages`` + ``tools`` lists in Chat Completions
+    API format instead of a flat prompt string.
+    """
 
     BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID = "builtin.context.sliding_window"
     BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER = "builtin.context.sliding_window"
@@ -51,6 +55,8 @@ class PromptRegistry:
             trigger_ratio=fallback_context_trigger_ratio,
             trim_turns=fallback_context_trim_turns,
         )
+
+    # ── Registration ────────────────────────────────────────────────────
 
     def register_component(self, component: PromptComponent) -> None:
         if component.id in self._components:
@@ -78,6 +84,8 @@ class PromptRegistry:
         if name in self._resolvers:
             raise ValueError(f"Prompt resolver {name!r} is already registered")
         self._resolvers[name] = fn
+
+    # ── Lookup / list ───────────────────────────────────────────────────
 
     def get_component(self, component_id: str) -> PromptComponent | None:
         return self._components.get(component_id)
@@ -136,6 +144,8 @@ class PromptRegistry:
             )
         return catalog
 
+    # ── Assembly ────────────────────────────────────────────────────────
+
     def assemble(self, request: PromptAssemblyRequest) -> PromptAssemblyResult:
         profile = self._profiles.get(request.profile_id)
         if request.profile_id and profile is None:
@@ -167,37 +177,103 @@ class PromptRegistry:
         self._inject_context_strategy(request, records_by_stage, ordered_records)
         self._inject_payloads(request, records_by_stage, ordered_records)
 
-        if not records_by_stage[PromptStage.SYSTEM_BASE]:
-            raise ValueError("Prompt assembly requires at least one system_base component")
-
-        stage_blocks: list[PromptStageBlock] = []
-        final_parts: list[str] = []
-        has_unknown_source = False
-
-        for stage in PROMPT_STAGE_ORDER:
-            records = sorted(
+        # ── Sort records within each stage ──────────────────────────────
+        sorted_records_by_stage: dict[PromptStage, list[PromptComponentRecord]] = {
+            stage: sorted(
                 records_by_stage[stage],
                 key=lambda item: (item.priority, item.component_id, item.version),
             )
-            rendered_text = "\n\n".join(
-                record.rendered_text for record in records if record.rendered_text
-            )
-            token_estimate = len(rendered_text.split()) if rendered_text else 0
-            stage_block = PromptStageBlock(
-                stage=stage,
-                components=records,
-                rendered_text=rendered_text,
-                token_estimate=token_estimate,
-            )
-            stage_blocks.append(stage_block)
-            if rendered_text:
-                final_parts.append(rendered_text)
+            for stage in PROMPT_STAGE_ORDER
+        }
+
+        # ── Build PromptStageBlock per stage ────────────────────────────
+        stage_blocks: list[PromptStageBlock] = []
+        has_unknown_source = False
+
+        for stage in PROMPT_STAGE_ORDER:
+            records = sorted_records_by_stage[stage]
+
             if any(
-                record.source.source_type == PromptSourceType.UNKNOWN_SOURCE for record in records
+                r.source.source_type == PromptSourceType.UNKNOWN_SOURCE for r in records
             ):
                 has_unknown_source = True
 
-        final_prompt = "\n\n".join(part for part in final_parts if part)
+            if stage == PromptStage.ABILITIES:
+                tools_for_stage = [
+                    tool for r in records if r.rendered_data for tool in r.rendered_data
+                ]
+                stage_blocks.append(
+                    PromptStageBlock(
+                        stage=stage,
+                        components=records,
+                        tools=tools_for_stage,
+                    )
+                )
+            elif stage == PromptStage.CONTEXT:
+                msgs_for_stage = [
+                    msg for r in records if r.rendered_messages for msg in r.rendered_messages
+                ]
+                stage_blocks.append(
+                    PromptStageBlock(
+                        stage=stage,
+                        components=records,
+                        messages=msgs_for_stage,
+                    )
+                )
+            else:
+                rendered_text = "\n\n".join(
+                    r.rendered_text for r in records if r.rendered_text
+                )
+                token_estimate = len(rendered_text.split()) if rendered_text else 0
+                stage_blocks.append(
+                    PromptStageBlock(
+                        stage=stage,
+                        components=records,
+                        rendered_text=rendered_text,
+                        token_estimate=token_estimate,
+                    )
+                )
+
+        stage_by_name = {block.stage: block for block in stage_blocks}
+
+        # Guard: require at least one system_base component
+        if not sorted_records_by_stage[PromptStage.SYSTEM_BASE]:
+            raise ValueError("Prompt assembly requires at least one system_base component")
+
+        # ── Compose Chat Completions structure ──────────────────────────
+
+        # System message: SYSTEM_BASE + IDENTITY (content array)
+        system_content: list[dict[str, Any]] = []
+        for stage_key in (PromptStage.SYSTEM_BASE, PromptStage.IDENTITY):
+            block = stage_by_name[stage_key]
+            for record in block.components:
+                if record.rendered_text:
+                    system_content.append({"type": "text", "text": record.rendered_text})
+
+        system_message: dict[str, Any] = {"role": "system", "content": system_content}
+
+        # Tools: ABILITIES
+        tools = list(stage_by_name[PromptStage.ABILITIES].tools)
+
+        # Context messages: CONTEXT
+        context_messages = list(stage_by_name[PromptStage.CONTEXT].messages)
+
+        # Final user message: COMPATIBILITY → INSTRUCTIONS → CONSTRAINTS
+        final_content: list[dict[str, Any]] = []
+        for stage_key in (
+            PromptStage.COMPATIBILITY,
+            PromptStage.INSTRUCTIONS,
+            PromptStage.CONSTRAINTS,
+        ):
+            block = stage_by_name[stage_key]
+            for record in block.components:
+                if record.rendered_text:
+                    final_content.append({"type": "text", "text": record.rendered_text})
+
+        messages: list[dict[str, Any]] = [system_message, *context_messages]
+        if final_content:
+            messages.append({"role": "user", "content": final_content})
+
         prompt_signature = self._build_signature(stage_blocks)
         cache_key = self._build_cache_key(prompt_signature, request)
 
@@ -206,7 +282,8 @@ class PromptRegistry:
             caller=request.caller,
             stages=stage_blocks,
             ordered_components=ordered_records,
-            final_prompt=final_prompt,
+            messages=messages,
+            tools=tools,
             prompt_signature=prompt_signature,
             cache_key=cache_key,
             compatibility_used=bool(records_by_stage[PromptStage.COMPATIBILITY]),
@@ -214,6 +291,8 @@ class PromptRegistry:
             truncation={},
             metadata=dict(request.metadata),
         )
+
+    # ── Snapshot / logging ──────────────────────────────────────────────
 
     def create_snapshot(
         self, result: PromptAssemblyResult, request: PromptAssemblyRequest
@@ -229,7 +308,8 @@ class PromptRegistry:
             cache_key=result.cache_key,
             components=result.ordered_components,
             stages=result.stages,
-            final_prompt=result.final_prompt,
+            full_messages=result.messages,
+            full_tools=result.tools,
             compatibility_used=result.compatibility_used,
             truncation=result.truncation,
             metadata=dict(result.metadata),
@@ -259,6 +339,8 @@ class PromptRegistry:
             metadata=dict(result.metadata),
         )
 
+    # ── Internal: component expansion ───────────────────────────────────
+
     def _expand_component(
         self,
         component: PromptComponent,
@@ -277,7 +359,52 @@ class PromptRegistry:
             return
 
         source = self._infer_source(component)
+
+        # ABILITIES stage: produce structured tool definitions
+        if component.stage == PromptStage.ABILITIES:
+            tool_defs = self._render_component_structured(component, request, source)
+            hash_input = json.dumps(tool_defs, ensure_ascii=False, sort_keys=True)
+            record = PromptComponentRecord(
+                component_id=component.id,
+                stage=component.stage,
+                kind=component.kind,
+                version=component.version,
+                priority=component.priority,
+                source=source,
+                rendered_data=tool_defs,
+                text_hash=stable_text_hash(hash_input),
+                cache_stable=component.cache_stable,
+                metadata=dict(component.metadata),
+            )
+            records_by_stage[component.stage].append(record)
+            ordered_records.append(record)
+            return
+
+        # Regular text rendering for all other stages
         rendered_text = self._render_component(component, request, source)
+
+        # CONTEXT stage: wrap text as message pairs
+        if component.stage == PromptStage.CONTEXT and rendered_text:
+            rendered_messages = [{"role": "user", "content": rendered_text}]
+            hash_input = json.dumps(rendered_messages, ensure_ascii=False, sort_keys=True)
+            record = PromptComponentRecord(
+                component_id=component.id,
+                stage=component.stage,
+                kind=component.kind,
+                version=component.version,
+                priority=component.priority,
+                source=source,
+                rendered_text=rendered_text,
+                rendered_messages=rendered_messages,
+                text_hash=stable_text_hash(hash_input),
+                cache_stable=component.cache_stable,
+                metadata=dict(component.metadata),
+            )
+            records_by_stage[component.stage].append(record)
+            ordered_records.append(record)
+            return
+
+        # Default path: text-based stages
         record = PromptComponentRecord(
             component_id=component.id,
             stage=component.stage,
@@ -311,6 +438,31 @@ class PromptRegistry:
         if component.kind == PromptComponentKind.EXTERNAL_INJECTION:
             return component.content.strip()
         raise ValueError(f"Unsupported prompt component kind: {component.kind}")
+
+    def _render_component_structured(
+        self, component: PromptComponent, request: PromptAssemblyRequest, source: PromptSource
+    ) -> list[dict[str, Any]]:
+        """Render a component as structured data (tool definitions)."""
+        if component.kind == PromptComponentKind.RESOLVER:
+            resolver = self._resolvers.get(component.resolver_ref)
+            if resolver is None:
+                raise ValueError(f"Prompt resolver {component.resolver_ref!r} is not registered")
+            result = resolver(request, component, source)
+            if isinstance(result, list):
+                return result
+            if isinstance(result, dict):
+                return [result]
+            raise ValueError(
+                f"ABILITIES resolver {component.resolver_ref!r} must return list[dict] or dict"
+            )
+        if component.kind == PromptComponentKind.STATIC_TEXT and component.content:
+            parsed = json.loads(component.content)
+            if isinstance(parsed, list):
+                return parsed
+            return [parsed]
+        return []
+
+    # ── Internal: payload injection ─────────────────────────────────────
 
     def _inject_payloads(
         self,
@@ -357,6 +509,8 @@ class PromptRegistry:
             records_by_stage[PromptStage.COMPATIBILITY].append(record)
             ordered_records.append(record)
 
+    # ── Internal: context strategy ──────────────────────────────────────
+
     def _inject_context_strategy(
         self,
         request: PromptAssemblyRequest,
@@ -375,12 +529,30 @@ class PromptRegistry:
                 f"Context strategy resolver {strategy.resolver_ref!r} is not registered"
             )
         result = resolver(request, strategy)
-        rendered_text = str(result.get("text", "") if isinstance(result, dict) else result).strip()
-        resolver_metadata = (
-            {k: v for k, v in result.items() if k != "text"} if isinstance(result, dict) else {}
-        )
-        if not rendered_text:
+
+        # Extract structured messages from the resolver result
+        if isinstance(result, dict):
+            rendered_messages: list[dict[str, Any]] = result.get("messages", [])
+            # Fallback: if resolver returns {"text": "..."} without "messages"
+            if not rendered_messages:
+                text = str(result.get("text", "")).strip()
+                if text:
+                    rendered_messages = [{"role": "user", "content": text}]
+            resolver_metadata = {
+                k: v for k, v in result.items() if k not in ("text", "messages")
+            }
+        elif isinstance(result, str):
+            text = result.strip()
+            rendered_messages = [{"role": "user", "content": text}] if text else []
+            resolver_metadata = {}
+        else:
+            rendered_messages = []
+            resolver_metadata = {}
+
+        if not rendered_messages:
             return
+
+        hash_input = json.dumps(rendered_messages, ensure_ascii=False, sort_keys=True)
         record = PromptComponentRecord(
             component_id=f"__context_strategy__:{strategy.id}",
             stage=PromptStage.CONTEXT,
@@ -393,8 +565,8 @@ class PromptRegistry:
                 resolver_name=strategy.resolver_ref,
                 metadata={"strategy_metadata": dict(strategy.metadata)},
             ),
-            rendered_text=rendered_text,
-            text_hash=stable_text_hash(rendered_text),
+            rendered_messages=rendered_messages,
+            text_hash=stable_text_hash(hash_input),
             cache_stable=False,
             metadata={
                 "context_strategy_id": strategy.id,
@@ -467,6 +639,8 @@ class PromptRegistry:
             return strategy
         return self._context_strategies.get(self.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID)
 
+    # ── Builtin context strategy ────────────────────────────────────────
+
     def _register_builtin_context_strategies(
         self,
         *,
@@ -525,18 +699,16 @@ class PromptRegistry:
             turns = turns[trim_count:]
             dropped_turns += trim_count
 
-        lines: list[str] = []
+        # Build structured message pairs
+        messages: list[dict[str, Any]] = []
         if summary:
-            lines.append(f"Summary:\n{summary}")
-        if turns:
-            rendered_turns = "\n".join(
-                f"{turn['role']}: {turn['content']}" if turn["role"] else turn["content"]
-                for turn in turns
-            )
-            lines.append(f"Recent Context:\n{rendered_turns}")
+            messages.append({"role": "user", "content": f"[Summary]\n{summary}"})
+        for turn in turns:
+            role = turn.get("role", "user") or "user"
+            messages.append({"role": role, "content": turn["content"]})
 
         return {
-            "text": "\n\n".join(lines).strip(),
+            "messages": messages,
             "dropped_turns": dropped_turns,
             "trigger_tokens": trigger_tokens,
             "remaining_turns": len(turns),
@@ -575,6 +747,8 @@ class PromptRegistry:
         word_estimate = len(text.split())
         char_estimate = math.ceil(len(text) / 4)
         return max(word_estimate, char_estimate)
+
+    # ── Internal: signature / cache key ─────────────────────────────────
 
     def _build_signature(self, stages: list[PromptStageBlock]) -> str:
         payload = [

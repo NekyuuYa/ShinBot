@@ -168,6 +168,7 @@ class ModelRuntimeCall:
     model_id: str | None = None
     session_id: str = ""
     instance_id: str = ""
+    prompt_snapshot_id: str = ""
     purpose: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
     input_data: str | list[str] | None = None
@@ -305,6 +306,7 @@ class ModelRuntime:
                     cache_write_tokens=usage["cache_write_tokens"],
                     success=True,
                     fallback_from_model_id=previous_model_id,
+                    prompt_snapshot_id=call.prompt_snapshot_id,
                     metadata={
                         "route_strategy": attempt["strategy"],
                         "response_model": _maybe_get(response, "model"),
@@ -343,6 +345,7 @@ class ModelRuntime:
                     error_message=str(exc),
                     fallback_from_model_id=previous_model_id,
                     fallback_reason="provider_error" if previous_model_id else "",
+                    prompt_snapshot_id=call.prompt_snapshot_id,
                     metadata={
                         "route_strategy": attempt["strategy"],
                         **call.metadata,

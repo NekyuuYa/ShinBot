@@ -9,15 +9,16 @@ from shinbot.agent.prompting import PromptRegistry
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
-    AIInteractionRecord,
     AgentRecord,
+    AIInteractionRecord,
     BotConfigRecord,
     ContextStrategyRecord,
-    MessageLogRecord,
     DatabaseManager,
+    MessageLogRecord,
     ModelExecutionRecord,
     PersonaRecord,
     PromptDefinitionRecord,
+    PromptSnapshotRecord,
 )
 from shinbot.schema.events import UnifiedEvent
 from shinbot.schema.resources import Channel, User
@@ -57,6 +58,7 @@ class TestDatabaseManager:
         assert "model_providers" in tables
         assert "message_logs" in tables
         assert "ai_interactions" in tables
+        assert "prompt_snapshots" in tables
 
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -395,8 +397,48 @@ class TestDatabaseManager:
         assert len(items) == 1
         assert items[0]["uuid"] == "bot-config-1"
 
+    def test_prompt_snapshot_repository_roundtrip(self, tmp_path):
+        import time
+        import uuid
 
-class TestDatabaseBackedSessionManager:
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        snapshot_id = str(uuid.uuid4())
+        now = time.time()
+        record = PromptSnapshotRecord(
+            id=snapshot_id,
+            profile_id="agent.default",
+            caller="agent.runtime",
+            session_id="inst1:group:g1",
+            instance_id="inst1",
+            messages=[
+                {"role": "system", "content": [{"type": "text", "text": "You are helpful."}]},
+                {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+            ],
+            tools=[{"type": "function", "function": {"name": "search"}}],
+            created_at=now,
+            expires_at=now + 10800,
+        )
+        db.prompt_snapshots.insert(record)
+
+        result = db.prompt_snapshots.get(snapshot_id)
+        assert result is not None
+        assert result["profile_id"] == "agent.default"
+        assert len(result["messages"]) == 2
+        assert result["messages"][0]["role"] == "system"
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["type"] == "function"
+
+        # Expired snapshot is not returned
+        expired_id = str(uuid.uuid4())
+        expired_record = PromptSnapshotRecord(
+            id=expired_id,
+            created_at=now - 10801,
+            expires_at=now - 1,
+        )
+        db.prompt_snapshots.insert(expired_record)
+        assert db.prompt_snapshots.get(expired_id) is None
     def test_session_roundtrip_via_database(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()

@@ -25,8 +25,8 @@ class PromptStage(StrEnum):
 PROMPT_STAGE_ORDER: tuple[PromptStage, ...] = (
     PromptStage.SYSTEM_BASE,
     PromptStage.IDENTITY,
-    PromptStage.CONTEXT,
     PromptStage.ABILITIES,
+    PromptStage.CONTEXT,
     PromptStage.COMPATIBILITY,
     PromptStage.INSTRUCTIONS,
     PromptStage.CONSTRAINTS,
@@ -184,6 +184,8 @@ class PromptComponentRecord(BaseModel):
     selected: bool = True
     source: PromptSource = Field(default_factory=PromptSource)
     rendered_text: str = ""
+    rendered_data: list[dict[str, Any]] | None = None
+    rendered_messages: list[dict[str, Any]] | None = None
     text_hash: str = ""
     cache_stable: bool = True
     truncated: bool = False
@@ -194,6 +196,8 @@ class PromptStageBlock(BaseModel):
     stage: PromptStage
     components: list[PromptComponentRecord] = Field(default_factory=list)
     rendered_text: str = ""
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     truncated: bool = False
     token_estimate: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -204,7 +208,8 @@ class PromptAssemblyResult(BaseModel):
     caller: str = ""
     stages: list[PromptStageBlock] = Field(default_factory=list)
     ordered_components: list[PromptComponentRecord] = Field(default_factory=list)
-    final_prompt: str = ""
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
     prompt_signature: str = ""
     cache_key: str = ""
     compatibility_used: bool = False
@@ -226,7 +231,8 @@ class PromptSnapshot(BaseModel):
     cache_key: str = ""
     components: list[PromptComponentRecord] = Field(default_factory=list)
     stages: list[PromptStageBlock] = Field(default_factory=list)
-    final_prompt: str = ""
+    full_messages: list[dict[str, Any]] = Field(default_factory=list)
+    full_tools: list[dict[str, Any]] = Field(default_factory=list)
     compatibility_used: bool = False
     truncation: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
