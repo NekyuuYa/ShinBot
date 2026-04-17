@@ -173,6 +173,45 @@ async def test_generate_falls_back_to_second_route_member(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_generate_retries_with_drop_params_on_unsupported_params(monkeypatch, tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db)
+    calls: list[dict[str, object]] = []
+
+    def fake_completion(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("drop_params") is True:
+            return {
+                "model": kwargs["model"],
+                "choices": [{"message": {"content": "recovered"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+            }
+        raise RuntimeError(
+            "litellm.UnsupportedParamsError: provider does not support parameters: ['thinking']"
+        )
+
+    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "hi"}],
+            params={"thinking": {"type": "enabled"}},
+        )
+    )
+
+    assert result.text == "recovered"
+    assert len(calls) == 2
+    assert calls[0].get("drop_params") is None
+    assert calls[1]["drop_params"] is True
+    records = db.model_executions.list_recent(limit=1)
+    assert records[0]["metadata"]["drop_params_retry"] is True
+
+
+@pytest.mark.asyncio
 async def test_embed_records_usage(monkeypatch, tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()

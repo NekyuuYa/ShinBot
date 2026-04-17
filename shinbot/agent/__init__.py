@@ -26,6 +26,7 @@ from shinbot.agent.prompting import (
     PromptStage,
     PromptStageBlock,
 )
+from shinbot.agent.runtime import AgentRuntime
 from shinbot.agent.tools import (
     ToolCallRequest,
     ToolCallResult,
@@ -40,6 +41,7 @@ from shinbot.agent.tools import (
 
 __all__ = [
     "ActiveContextPool",
+    "AgentRuntime",
     "ContextManager",
     "EmbedResult",
     "GenerateResult",

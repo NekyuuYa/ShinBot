@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import sys
 import types
+from uuid import uuid4
 
 import pytest
 
 from shinbot.core.application.app import ShinBot
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
+from shinbot.persistence import (
+    AgentRecord,
+    BotConfigRecord,
+    ModelDefinitionRecord,
+    ModelProviderRecord,
+    PersonaRecord,
+    PromptDefinitionRecord,
+)
 from tests.conftest import MockAdapter, make_message_event
 
 
@@ -145,6 +154,90 @@ class TestOnEvent:
         event = make_message_event(content="hello", instance_id="inst1")
         # Should not raise
         await bot.on_event(event, adapter)
+
+    @pytest.mark.asyncio
+    async def test_on_event_invokes_default_agent_runtime(self, tmp_path, monkeypatch):
+        bot = ShinBot(data_dir=tmp_path)
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("inst1", "mock")
+
+        persona_prompt_uuid = str(uuid4())
+        persona_uuid = str(uuid4())
+        agent_uuid = str(uuid4())
+        bot.database.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid=persona_prompt_uuid,
+                prompt_id=f"persona.{persona_uuid}",
+                name="Persona Prompt",
+                source_type="persona",
+                source_id=persona_uuid,
+                stage="identity",
+                type="static_text",
+                content="You are a concise assistant.",
+            )
+        )
+        bot.database.personas.upsert(
+            PersonaRecord(
+                uuid=persona_uuid,
+                name="Assistant",
+                prompt_definition_uuid=persona_prompt_uuid,
+            )
+        )
+        bot.database.agents.upsert(
+            AgentRecord(
+                uuid=agent_uuid,
+                agent_id="agent.default",
+                name="Default Agent",
+                persona_uuid=persona_uuid,
+                config={"modelId": "openai-main/gpt-fast"},
+            )
+        )
+        bot.database.bot_configs.upsert(
+            BotConfigRecord(
+                uuid=str(uuid4()),
+                instance_id="inst1",
+                default_agent_uuid=agent_uuid,
+            )
+        )
+        bot.database.model_registry.upsert_provider(
+            ModelProviderRecord(
+                id="openai-main",
+                type="openai",
+                display_name="OpenAI Main",
+            )
+        )
+        bot.database.model_registry.upsert_model(
+            ModelDefinitionRecord(
+                id="openai-main/gpt-fast",
+                provider_id="openai-main",
+                litellm_model="openai/gpt-4.1-mini",
+                display_name="GPT Fast",
+                capabilities=["chat"],
+            )
+        )
+
+        captured: dict[str, object] = {}
+
+        async def fake_generate(call):
+            captured["messages"] = list(call.messages)
+            captured["model_id"] = call.model_id
+            return type("FakeResult", (), {"text": "agent reply", "execution_id": "exec-1"})()
+
+        monkeypatch.setattr(bot.model_runtime, "generate", fake_generate)
+
+        event = make_message_event(content="hello from user", instance_id="inst1")
+        await bot.on_event(event, adapter)
+
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0][1][0].attrs["content"] == "agent reply"
+        assert captured["model_id"] == "openai-main/gpt-fast"
+        messages = captured["messages"]
+        assert isinstance(messages, list)
+        assert messages[0]["role"] == "system"
+        system_text = " ".join(block["text"] for block in messages[0]["content"])
+        assert "ShinBot" in system_text
+        assert "concise assistant" in system_text
+        assert any(message.get("content") == "hello from user" for message in messages[1:])
 
 
 class TestLifecycle:

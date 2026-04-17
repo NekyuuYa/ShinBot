@@ -386,7 +386,9 @@ class ModelRuntime:
                 }
             )
             try:
-                response = await asyncio.to_thread(litellm_adapter.completion, **kwargs)
+                response, retry_with_drop_params = await self._run_completion_with_param_fallback(
+                    kwargs
+                )
                 finished = _utc_now()
                 usage = _extract_usage(response)
                 record = ModelExecutionRecord(
@@ -415,6 +417,7 @@ class ModelRuntime:
                         "route_strategy": attempt["strategy"],
                         "response_model": _maybe_get(response, "model"),
                         "usage_raw": _response_to_dict(response).get("usage"),
+                        "drop_params_retry": retry_with_drop_params,
                         **call.metadata,
                     },
                     estimated_cost=_extract_estimated_cost(response),
@@ -1222,6 +1225,25 @@ class ModelRuntime:
                     await result
             except Exception:
                 logger.exception("Model runtime observer failed for event %s", payload.get("event"))
+
+    async def _run_completion_with_param_fallback(
+        self,
+        kwargs: dict[str, Any],
+    ) -> tuple[Any, bool]:
+        try:
+            return await asyncio.to_thread(litellm_adapter.completion, **kwargs), False
+        except Exception as exc:  # noqa: BLE001
+            if not self._should_retry_with_drop_params(exc, kwargs):
+                raise
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["drop_params"] = True
+            return await asyncio.to_thread(litellm_adapter.completion, **retry_kwargs), True
+
+    def _should_retry_with_drop_params(self, exc: Exception, kwargs: dict[str, Any]) -> bool:
+        if kwargs.get("drop_params") is True:
+            return False
+        text = f"{type(exc).__name__}: {exc}"
+        return "UnsupportedParamsError" in text
 
     def _sanitize_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         redacted = dict(kwargs)

@@ -31,6 +31,7 @@ from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
     from shinbot.agent.context import ContextManager
+    from shinbot.agent.runtime import AgentRuntime
     from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
@@ -429,6 +430,7 @@ class MessagePipeline:
         audit_logger: AuditLogger | None = None,
         database: DatabaseManager | None = None,
         context_manager: ContextManager | None = None,
+        agent_runtime: AgentRuntime | None = None,
     ):
         self._adapter_manager = adapter_manager
         self._session_manager = session_manager
@@ -438,6 +440,7 @@ class MessagePipeline:
         self._audit_logger = audit_logger
         self._database = database
         self._context_manager = context_manager
+        self._agent_runtime = agent_runtime
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._waiting_registry = WaitingInputRegistry()
 
@@ -699,6 +702,17 @@ class MessagePipeline:
                 "Event handlers returned values for %s; return values are ignored, use bot.send()",
                 event.type,
             )
+
+        if (
+            self._agent_runtime is not None
+            and not bot.is_stopped
+            and not bot._sent_messages
+            and event.type == "message-created"
+        ):
+            try:
+                await self._agent_runtime.handle_message(bot)
+            except Exception:
+                logger.exception("Agent runtime failed for session %s", session.id)
 
         # Stage 4: Post-processing
         self._session_manager.update(session)
