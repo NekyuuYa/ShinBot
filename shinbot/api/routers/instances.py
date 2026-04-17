@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import asdict, is_dataclass
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -78,6 +79,8 @@ def _runtime_config(adapter: Any) -> dict[str, Any]:
     config = getattr(adapter, "config", None)
     if hasattr(config, "model_dump"):
         return config.model_dump()
+    if is_dataclass(config):
+        return asdict(config)
     if isinstance(config, dict):
         return dict(config)
     return {}
@@ -275,9 +278,13 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
     inst["lastModified"] = int(time.time())
     boot.config["instances"][index] = inst
 
-    if adapter is not None and hasattr(adapter, "config") and hasattr(adapter.config, "model_copy"):
-        if config_patch:
+    if adapter is not None and hasattr(adapter, "config"):
+        if config_patch and hasattr(adapter.config, "model_copy"):
             adapter.config = adapter.config.model_copy(update=config_patch)
+        elif config_patch and is_dataclass(adapter.config):
+            for key, value in config_patch.items():
+                if hasattr(adapter.config, key):
+                    setattr(adapter.config, key, value)
 
     try:
         boot.save_config()

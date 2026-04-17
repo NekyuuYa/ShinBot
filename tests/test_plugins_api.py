@@ -129,6 +129,75 @@ def test_adapter_plugin_schema_endpoint_is_hidden_from_plugin_management(tmp_pat
     )
 
 
+def test_builtin_adapter_plugins_expose_adapter_platform_metadata(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    for plugin_id, module_path in (
+        ("shinbot_adapter_satori", "shinbot.builtin_plugins.shinbot_adapter_satori"),
+        ("shinbot_adapter_onebot_v11", "shinbot.builtin_plugins.shinbot_adapter_onebot_v11"),
+        ("shinbot_adapter_qqofficial", "shinbot.builtin_plugins.shinbot_adapter_qqofficial"),
+    ):
+        metadata_path = (
+            Path(__file__).resolve().parents[1] / "shinbot/builtin_plugins" / plugin_id / "metadata.json"
+        )
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        asyncio.run(
+            bot.plugin_manager.load_plugin_async(
+                plugin_id,
+                module_path,
+                declared_metadata=metadata,
+            )
+        )
+
+    boot = _BootStub(tmp_path)
+    app = create_api_app(bot, boot)
+    token = app.state.auth_config.create_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/plugins", headers=headers)
+
+    assert response.status_code == 200
+    payload = {item["id"]: item for item in response.json()["data"]}
+    assert payload["shinbot_adapter_satori"]["metadata"]["adapter_platform"] == "satori"
+    assert payload["shinbot_adapter_onebot_v11"]["metadata"]["adapter_platform"] == "onebot_v11"
+    assert payload["shinbot_adapter_qqofficial"]["metadata"]["adapter_platform"] == "qqofficial"
+
+
+def test_onebot_builtin_adapter_plugin_schema_matches_runtime_fields(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    metadata_path = (
+        Path(__file__).resolve().parents[1]
+        / "shinbot/builtin_plugins/shinbot_adapter_onebot_v11/metadata.json"
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    asyncio.run(
+        bot.plugin_manager.load_plugin_async(
+            "shinbot_adapter_onebot_v11",
+            "shinbot.builtin_plugins.shinbot_adapter_onebot_v11",
+            declared_metadata=metadata,
+        )
+    )
+
+    boot = _BootStub(tmp_path)
+    app = create_api_app(bot, boot)
+    token = app.state.auth_config.create_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/plugins", headers=headers)
+
+    assert response.status_code == 200
+    plugin = next(item for item in response.json()["data"] if item["id"] == "shinbot_adapter_onebot_v11")
+    properties = plugin["metadata"]["config_schema"]["properties"]
+    for field in (
+        "auto_download_media",
+        "resource_cache_dir",
+        "silent_reconnect",
+        "reconnect_log_interval",
+    ):
+        assert field in properties
+
+
 def test_plugin_config_route_persists_config_instead_of_reloading(tmp_path: Path):
     module_name = "test_api_plugin_config"
     sys.modules.pop(module_name, None)

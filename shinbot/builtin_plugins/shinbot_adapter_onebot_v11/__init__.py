@@ -72,9 +72,31 @@ class OneBotV11PluginConfig(BaseModel):
         description="Download media resources to local temp cache",
         json_schema_extra={"ui_group": "advanced"},
     )
+    auto_download_media: bool = Field(
+        default=False,
+        description="Cache image, video, and file resources before entering the pipeline",
+        json_schema_extra={"ui_group": "advanced"},
+    )
+    resource_cache_dir: str = Field(
+        default="data/temp/resources",
+        description="Local cache directory for downloaded resources",
+        json_schema_extra={"ui_group": "advanced"},
+    )
+    silent_reconnect: bool = Field(
+        default=True,
+        description="Suppress frequent reconnect warnings",
+        json_schema_extra={"ui_group": "advanced"},
+    )
+    reconnect_log_interval: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="Minimum seconds between reconnect warning logs",
+        json_schema_extra={"ui_group": "advanced"},
+    )
 
 
 __plugin_config_class__ = OneBotV11PluginConfig
+__plugin_adapter_platform__ = "onebot_v11"
 
 
 def setup(plg: Plugin) -> None:

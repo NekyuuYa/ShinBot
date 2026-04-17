@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from shinbot.api.app import create_api_app
+from shinbot.builtin_plugins.shinbot_adapter_satori.adapter import SatoriAdapter, SatoriConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import AgentRecord, BotConfigRecord, PersonaRecord, PromptDefinitionRecord
 from tests.conftest import MockAdapter
@@ -107,6 +108,75 @@ def test_update_instance_route_returns_full_instance_payload(tmp_path: Path):
         "createdAt": 1,
         "lastModified": boot.config["instances"][0]["lastModified"],
     }
+
+
+def test_instances_runtime_config_serializes_dataclass_adapter_config(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    adapter = SatoriAdapter(
+        instance_id="satori-1",
+        platform="satori",
+        config=SatoriConfig(host="127.0.0.1:5140", token="abc"),
+    )
+    bot.adapter_manager._instances["satori-1"] = adapter
+
+    boot = _BootStub(tmp_path)
+    boot.config["instances"] = [
+        {
+            "id": "satori-1",
+            "name": "Satori 1",
+            "adapterType": "satori",
+            "platform": "satori",
+            "config": {},
+            "createdAt": 1,
+            "lastModified": 1,
+        }
+    ]
+
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/instances", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    payload = response.json()["data"][0]
+    assert payload["config"]["host"] == "127.0.0.1:5140"
+    assert payload["config"]["token"] == "abc"
+
+
+def test_update_instance_updates_dataclass_adapter_runtime_config(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    adapter = SatoriAdapter(
+        instance_id="satori-1",
+        platform="satori",
+        config=SatoriConfig(host="127.0.0.1:5140", token="abc"),
+    )
+    bot.adapter_manager._instances["satori-1"] = adapter
+
+    boot = _BootStub(tmp_path)
+    boot.config["instances"] = [
+        {
+            "id": "satori-1",
+            "name": "Satori 1",
+            "adapterType": "satori",
+            "platform": "satori",
+            "config": {"host": "127.0.0.1:5140", "token": "abc"},
+            "createdAt": 1,
+            "lastModified": 1,
+        }
+    ]
+
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.patch(
+            "/api/v1/instances/satori-1",
+            headers=_auth_headers(app),
+            json={"config": {"token": "xyz"}},
+        )
+
+    assert response.status_code == 200
+    assert adapter.config.token == "xyz"
+    assert response.json()["data"]["config"]["token"] == "xyz"
 
 
 def test_list_instances_includes_bot_config_summary(tmp_path: Path):

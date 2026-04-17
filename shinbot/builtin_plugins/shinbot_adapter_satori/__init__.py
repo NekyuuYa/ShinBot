@@ -35,6 +35,7 @@ class SatoriPluginConfig(BaseModel):
 
 
 __plugin_config_class__ = SatoriPluginConfig
+__plugin_adapter_platform__ = "satori"
 
 
 def setup(plg: Plugin) -> None:
