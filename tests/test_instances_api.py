@@ -204,9 +204,10 @@ def test_status_websocket_includes_instance_details(tmp_path: Path):
     ]
 
     app = create_api_app(bot, boot)
+    token = app.state.auth_config.create_token()
 
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/status") as websocket:
+        with client.websocket_connect(f"/ws/status?token={token}") as websocket:
             payload = websocket.receive_json()
 
     assert payload["success"] is True
@@ -216,17 +217,3 @@ def test_status_websocket_includes_instance_details(tmp_path: Path):
         {"id": "inst-1", "running": False},
         {"id": "inst-2", "running": False},
     ]
-
-
-def test_system_websocket_legacy_alias_still_works(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    boot = _BootStub(tmp_path)
-    app = create_api_app(bot, boot)
-
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/system") as websocket:
-            payload = websocket.receive_json()
-
-    assert payload["success"] is True
-    assert isinstance(payload.get("data"), dict)
-    assert payload["data"]["online"] is True

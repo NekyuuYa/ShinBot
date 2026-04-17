@@ -19,7 +19,8 @@ from shinbot.persistence import (
     PersonaRecord,
     PromptDefinitionRecord,
 )
-from shinbot.schema.events import Channel, UnifiedEvent, User
+from shinbot.schema.events import UnifiedEvent
+from shinbot.schema.resources import Channel, User
 
 
 def _make_event(channel_id: str = "g-1") -> UnifiedEvent:

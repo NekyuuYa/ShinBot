@@ -209,16 +209,6 @@ class BootController:
             if not isinstance(config_kwargs, dict):
                 config_kwargs = {}
 
-            # Backward compatibility with legacy layout: instances[].satori
-            if platform == "satori" and not config_kwargs:
-                legacy_satori_cfg = inst_cfg.get("satori", {})
-                if isinstance(legacy_satori_cfg, dict):
-                    config_kwargs = {
-                        "host": legacy_satori_cfg.get("host", "localhost:5140"),
-                        "token": legacy_satori_cfg.get("token", ""),
-                        "reconnect_delay": legacy_satori_cfg.get("reconnect_delay", 5.0),
-                    }
-
             try:
                 self.bot.add_adapter(
                     instance_id=instance_id,

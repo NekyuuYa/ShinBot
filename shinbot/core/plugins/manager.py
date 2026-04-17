@@ -531,24 +531,20 @@ class PluginManager:
         *,
         declared_metadata: dict[str, Any] | None = None,
     ) -> tuple[str, str, str, str, PluginRole]:
-        if declared_metadata is not None:
-            return (
-                declared_metadata.get("name", plugin_id),
-                declared_metadata.get("version", "0.0.0"),
-                declared_metadata.get("description", ""),
-                declared_metadata.get("author", ""),
-                self._normalize_role(
-                    declared_metadata.get("role", PluginRole.LOGIC.value),
-                    default=PluginRole.LOGIC,
-                ),
+        if declared_metadata is None:
+            logger.warning(
+                "Plugin %r loaded without metadata.json; using defaults", plugin_id
             )
-
+            declared_metadata = {}
         return (
-            getattr(module, "__plugin_name__", plugin_id),
-            getattr(module, "__plugin_version__", "0.0.0"),
-            getattr(module, "__plugin_description__", ""),
-            getattr(module, "__plugin_author__", ""),
-            self._normalize_role(getattr(module, "__plugin_role__", PluginRole.LOGIC)),
+            declared_metadata.get("name", plugin_id),
+            declared_metadata.get("version", "0.0.0"),
+            declared_metadata.get("description", ""),
+            declared_metadata.get("author", ""),
+            self._normalize_role(
+                declared_metadata.get("role", PluginRole.LOGIC.value),
+                default=PluginRole.LOGIC,
+            ),
         )
 
     def _normalize_role(self, value: Any, *, default: PluginRole = PluginRole.LOGIC) -> PluginRole:

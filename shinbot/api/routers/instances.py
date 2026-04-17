@@ -24,19 +24,12 @@ router = APIRouter(
 # ── Request / response schemas ───────────────────────────────────────
 
 
-class SatoriCfg(BaseModel):
-    host: str = "localhost:5140"
-    token: str = ""
-    reconnect_delay: float = 5.0
-
-
 class CreateInstanceRequest(BaseModel):
     name: str | None = None
     adapterType: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     id: str | None = None
     platform: str | None = None
-    satori: SatoriCfg | None = None
 
     model_config = {"extra": "allow"}
 
@@ -45,7 +38,6 @@ class PatchInstanceRequest(BaseModel):
     name: str | None = None
     adapterType: str | None = None
     config: dict[str, Any] | None = None
-    satori: SatoriCfg | None = None
 
     model_config = {"extra": "allow"}
 
@@ -79,8 +71,6 @@ def _find_instance_record(
 def _resolve_config(body: CreateInstanceRequest | PatchInstanceRequest) -> dict[str, Any]:
     if body.config:
         return dict(body.config)
-    if body.satori is not None:
-        return body.satori.model_dump(exclude_none=True)
     return {}
 
 
@@ -116,20 +106,19 @@ def _serialize_instance_record(
         if instance_id and adapter is not None and mgr.is_running(instance_id)
         else "stopped"
     )
-    config = item.get("config") or item.get("satori", {})
+    config = item.get("config", {})
     if not config and adapter is not None:
         config = _runtime_config(adapter)
 
     return {
         "id": instance_id,
         "name": item.get("name", instance_id),
-        "adapterType": item.get("adapterType")
-        or item.get("platform", getattr(adapter, "platform", "satori")),
+        "adapterType": item.get("adapterType", getattr(adapter, "platform", "satori")),
         "status": status,
         "config": config,
         "botConfig": _serialize_bot_config_summary(bot_config_by_instance_id.get(str(instance_id))),
         "createdAt": item.get("createdAt", 0),
-        "lastModified": item.get("lastModified", item.get("createdAt", 0)),
+        "lastModified": item.get("lastModified", 0),
     }
 
 
@@ -282,13 +271,6 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
     if config_patch:
         inst_config = inst.setdefault("config", {})
         inst_config.update(config_patch)
-        if body.satori is not None and not body.config:
-            inst["satori"] = body.satori.model_dump(exclude_none=True)
-
-    if body.satori is not None:
-        satori_section = inst.setdefault("satori", {})
-        patch = body.satori.model_dump(exclude_none=True)
-        satori_section.update(patch)
 
     inst["lastModified"] = int(time.time())
     boot.config["instances"][index] = inst

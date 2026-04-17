@@ -7,19 +7,9 @@ it is discovered and loaded by PluginManager through metadata.json.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
-
 from shinbot.core.plugins.context import PluginContext
 
-__plugin_name__ = "Satori Adapter (Official)"
-__plugin_version__ = "1.0.0"
-__plugin_author__ = "ShinBot Team"
-__plugin_description__ = "The standard Satori protocol driver for ShinBot."
-__plugin_adapter_platform__ = "satori"
-
-from shinbot.core.plugins.types import PluginRole
-
-__plugin_role__ = PluginRole.ADAPTER
+from pydantic import BaseModel, Field
 
 
 class SatoriPluginConfig(BaseModel):

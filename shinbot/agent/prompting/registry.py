@@ -543,7 +543,7 @@ class PromptRegistry:
         }
 
     def _normalize_history_turns(self, context_inputs: dict[str, Any]) -> list[dict[str, str]]:
-        raw_turns = context_inputs.get("history_turns", context_inputs.get("history", []))
+        raw_turns = context_inputs.get("history_turns", [])
         if not isinstance(raw_turns, list):
             return []
 
@@ -557,7 +557,7 @@ class PromptRegistry:
             if not isinstance(item, dict):
                 continue
             role = str(item.get("role", "")).strip()
-            content = str(item.get("content", item.get("text", ""))).strip()
+            content = str(item.get("content", "")).strip()
             if not content:
                 continue
             turns.append({"role": role, "content": content})

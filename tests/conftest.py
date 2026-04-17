@@ -13,7 +13,8 @@ from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.schema.elements import MessageElement
-from shinbot.schema.events import Channel, Guild, MessagePayload, UnifiedEvent, User
+from shinbot.schema.events import MessagePayload, UnifiedEvent
+from shinbot.schema.resources import Channel, Guild, User
 
 # ── Mock adapter ─────────────────────────────────────────────────────────────
 

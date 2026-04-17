@@ -47,7 +47,6 @@ class PromptSourceType(StrEnum):
     CONTEXT_PLUGIN = "context_plugin"
     TOOLING_MODULE = "tooling_module"
     SKILL_MODULE = "skill_module"
-    LEGACY_BRIDGE = "legacy_bridge"
     EXTERNAL_INJECTION = "external_injection"
     UNKNOWN_SOURCE = "unknown_source"
 

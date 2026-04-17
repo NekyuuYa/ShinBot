@@ -117,7 +117,7 @@ class TestPluginManager:
 
         meta = self.mgr.load_plugin("greet", "test_plugin_greet")
         assert meta.state == PluginState.ACTIVE
-        assert meta.name == "Greeter"
+        assert meta.name == "greet"
         assert "greet" in meta.commands
         assert self.cmd_reg.get("greet") is not None
 
