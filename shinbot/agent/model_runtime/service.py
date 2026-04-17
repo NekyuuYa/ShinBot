@@ -443,6 +443,31 @@ class ModelRuntime:
                         prompt_snapshot_id=call.prompt_snapshot_id,
                     )
                 )
+                await self._notify_observers(
+                    {
+                        "event": "model_runtime.response",
+                        "mode": "completion",
+                        "execution_id": execution_id,
+                        "caller": call.caller,
+                        "purpose": call.purpose,
+                        "session_id": call.session_id,
+                        "instance_id": call.instance_id,
+                        "route_id": call.route_id or "",
+                        "provider_id": attempt["provider"]["id"],
+                        "provider_type": attempt["provider"]["type"],
+                        "model_id": attempt["model"]["id"],
+                        "litellm_model": attempt["model"]["litellm_model"],
+                        "strategy": attempt["strategy"],
+                        "text": _extract_text(response),
+                        "usage": usage,
+                        "raw_response": self._response_preview(response),
+                        "metadata": {
+                            "drop_params_retry": retry_with_drop_params,
+                            **call.metadata,
+                        },
+                        "prompt_snapshot_id": call.prompt_snapshot_id,
+                    }
+                )
                 return GenerateResult(
                     text=_extract_text(response),
                     raw_response=response,
@@ -478,6 +503,27 @@ class ModelRuntime:
                     },
                 )
                 self._persist_execution(record)
+                await self._notify_observers(
+                    {
+                        "event": "model_runtime.error",
+                        "mode": "completion",
+                        "execution_id": execution_id,
+                        "caller": call.caller,
+                        "purpose": call.purpose,
+                        "session_id": call.session_id,
+                        "instance_id": call.instance_id,
+                        "route_id": call.route_id or "",
+                        "provider_id": attempt["provider"]["id"],
+                        "provider_type": attempt["provider"]["type"],
+                        "model_id": attempt["model"]["id"],
+                        "litellm_model": attempt["model"]["litellm_model"],
+                        "strategy": attempt["strategy"],
+                        "error_code": type(exc).__name__,
+                        "error_message": str(exc),
+                        "metadata": dict(call.metadata),
+                        "prompt_snapshot_id": call.prompt_snapshot_id,
+                    }
+                )
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -555,6 +601,28 @@ class ModelRuntime:
                     currency="USD",
                 )
                 self._persist_execution(record)
+                await self._notify_observers(
+                    {
+                        "event": "model_runtime.response",
+                        "mode": "embedding",
+                        "execution_id": execution_id,
+                        "caller": call.caller,
+                        "purpose": call.purpose,
+                        "session_id": call.session_id,
+                        "instance_id": call.instance_id,
+                        "route_id": call.route_id or "",
+                        "provider_id": attempt["provider"]["id"],
+                        "provider_type": attempt["provider"]["type"],
+                        "model_id": attempt["model"]["id"],
+                        "litellm_model": attempt["model"]["litellm_model"],
+                        "strategy": attempt["strategy"],
+                        "embedding": _extract_embedding(response),
+                        "usage": usage,
+                        "raw_response": self._response_preview(response),
+                        "metadata": dict(call.metadata),
+                        "prompt_snapshot_id": call.prompt_snapshot_id,
+                    }
+                )
                 return EmbedResult(
                     embedding=_extract_embedding(response),
                     raw_response=response,
@@ -586,6 +654,27 @@ class ModelRuntime:
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
                 self._persist_execution(record)
+                await self._notify_observers(
+                    {
+                        "event": "model_runtime.error",
+                        "mode": "embedding",
+                        "execution_id": execution_id,
+                        "caller": call.caller,
+                        "purpose": call.purpose,
+                        "session_id": call.session_id,
+                        "instance_id": call.instance_id,
+                        "route_id": call.route_id or "",
+                        "provider_id": attempt["provider"]["id"],
+                        "provider_type": attempt["provider"]["type"],
+                        "model_id": attempt["model"]["id"],
+                        "litellm_model": attempt["model"]["litellm_model"],
+                        "strategy": attempt["strategy"],
+                        "error_code": type(exc).__name__,
+                        "error_message": str(exc),
+                        "metadata": dict(call.metadata),
+                        "prompt_snapshot_id": call.prompt_snapshot_id,
+                    }
+                )
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -1259,3 +1348,16 @@ class ModelRuntime:
             if key in redacted and redacted[key]:
                 redacted[key] = "***"
         return redacted
+
+    def _response_preview(self, response: Any) -> dict[str, Any]:
+        payload = _response_to_dict(response)
+        preview: dict[str, Any] = {}
+        if "model" in payload:
+            preview["model"] = payload["model"]
+        if "usage" in payload:
+            preview["usage"] = payload["usage"]
+        if "choices" in payload:
+            preview["choices"] = payload["choices"]
+        if "data" in payload:
+            preview["data"] = payload["data"]
+        return preview

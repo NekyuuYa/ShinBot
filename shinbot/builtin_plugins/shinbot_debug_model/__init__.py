@@ -1,4 +1,4 @@
-"""Builtin plugin: capture and persist all model runtime requests for debugging."""
+"""Builtin plugin: capture and persist all model runtime traffic for debugging."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def _enqueue_record(target_file: Path, payload: dict[str, Any]) -> None:
 
 
 def _build_model_record(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
+    record = {
         "timestamp": datetime.now(UTC).isoformat(),
         "event_type": str(payload.get("event", "model_runtime.request")),
         "mode": str(payload.get("mode", "")),
@@ -52,7 +52,9 @@ def _build_model_record(payload: dict[str, Any]) -> dict[str, Any]:
         "litellm_model": str(payload.get("litellm_model", "")),
         "execution_id": str(payload.get("execution_id", "")),
         "strategy": str(payload.get("strategy", "")),
-        "request": {
+    }
+    if record["event_type"] == "model_runtime.request":
+        record["request"] = {
             "messages": payload.get("messages"),
             "tools": payload.get("tools"),
             "response_format": payload.get("response_format"),
@@ -61,8 +63,24 @@ def _build_model_record(payload: dict[str, Any]) -> dict[str, Any]:
             "kwargs": payload.get("kwargs"),
             "metadata": payload.get("metadata"),
             "prompt_snapshot_id": payload.get("prompt_snapshot_id"),
-        },
-    }
+        }
+    elif record["event_type"] == "model_runtime.response":
+        record["response"] = {
+            "text": payload.get("text"),
+            "embedding": payload.get("embedding"),
+            "usage": payload.get("usage"),
+            "raw_response": payload.get("raw_response"),
+            "metadata": payload.get("metadata"),
+            "prompt_snapshot_id": payload.get("prompt_snapshot_id"),
+        }
+    elif record["event_type"] == "model_runtime.error":
+        record["error"] = {
+            "error_code": payload.get("error_code"),
+            "error_message": payload.get("error_message"),
+            "metadata": payload.get("metadata"),
+            "prompt_snapshot_id": payload.get("prompt_snapshot_id"),
+        }
+    return record
 
 
 def setup(plg: Plugin) -> None:
@@ -72,9 +90,10 @@ def setup(plg: Plugin) -> None:
     _WRITE_QUEUE = asyncio.Queue(maxsize=2000)
     _WRITER_TASK = asyncio.create_task(_writer_loop())
 
-    async def _on_model_request(payload: dict[str, Any]) -> None:
+    async def _on_model_event(payload: dict[str, Any]) -> None:
         plg.logger.info(
-            "[debug_model] mode=%s provider=%s model=%s caller=%s",
+            "[debug_model] event=%s mode=%s provider=%s model=%s caller=%s",
+            payload.get("event", ""),
             payload.get("mode", ""),
             payload.get("provider_id", ""),
             payload.get("model_id", ""),
@@ -88,7 +107,7 @@ def setup(plg: Plugin) -> None:
                 payload.get("execution_id", ""),
             )
 
-    plg.register_model_runtime_observer(_on_model_request)
+    plg.register_model_runtime_observer(_on_model_event)
 
 
 async def on_disable(plg: Plugin) -> None:
