@@ -77,6 +77,7 @@ class PluginManager:
         self._plugins: dict[str, PluginMeta] = {}
         self._contexts: dict[str, PluginContext] = {}
         self._modules: dict[str, Any] = {}
+        self._declared_metadata: dict[str, dict[str, Any]] = {}
 
         self._root_data_dir = Path(data_dir) if data_dir is not None else Path("data")
         self._plugin_data_root = self._root_data_dir / "plugin_data"
@@ -102,7 +103,13 @@ class PluginManager:
     def load_plugin(self, plugin_id: str, module_path: str) -> PluginMeta:
         return self._run_sync(self.load_plugin_async(plugin_id, module_path))
 
-    async def load_plugin_async(self, plugin_id: str, module_path: str) -> PluginMeta:
+    async def load_plugin_async(
+        self,
+        plugin_id: str,
+        module_path: str,
+        *,
+        declared_metadata: dict[str, Any] | None = None,
+    ) -> PluginMeta:
         if plugin_id in self._plugins:
             raise ValueError(f"Plugin {plugin_id!r} is already loaded")
 
@@ -134,23 +141,19 @@ class PluginManager:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
 
-        meta = PluginMeta(
-            id=plugin_id,
-            name=getattr(module, "__plugin_name__", plugin_id),
-            version=getattr(module, "__plugin_version__", "0.0.0"),
-            description=getattr(module, "__plugin_description__", ""),
-            author=getattr(module, "__plugin_author__", ""),
-            role=getattr(module, "__plugin_role__", PluginRole.LOGIC),
-            state=PluginState.ACTIVE,
-            module_path=module_path,
-            commands=list(ctx._registered_commands),
-            event_types=list(ctx._registered_events),
-            data_dir=str(ctx.data_dir),
+        meta = self._build_plugin_meta(
+            plugin_id,
+            module_path,
+            module,
+            ctx,
+            declared_metadata=declared_metadata,
         )
 
         self._plugins[plugin_id] = meta
         self._contexts[plugin_id] = ctx
         self._modules[plugin_id] = module
+        if declared_metadata is not None:
+            self._declared_metadata[plugin_id] = dict(declared_metadata)
 
         logger.info("Loaded plugin %s (async, data_dir=%s)", plugin_id, meta.data_dir)
         return meta
@@ -158,7 +161,13 @@ class PluginManager:
     def unload_plugin(self, plugin_id: str) -> bool:
         return self._run_sync(self.unload_plugin_async(plugin_id))
 
-    async def unload_plugin_async(self, plugin_id: str, *, remove_module: bool = True) -> bool:
+    async def unload_plugin_async(
+        self,
+        plugin_id: str,
+        *,
+        remove_module: bool = True,
+        remove_declared_metadata: bool = True,
+    ) -> bool:
         meta = self._plugins.pop(plugin_id, None)
         if meta is None:
             return False
@@ -173,6 +182,8 @@ class PluginManager:
             cmd_count,
             evt_count,
         )
+        if remove_declared_metadata:
+            self._declared_metadata.pop(plugin_id, None)
         return True
 
     async def unload_all_plugins_async(self) -> None:
@@ -239,11 +250,16 @@ class PluginManager:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
 
-        meta.name = getattr(module, "__plugin_name__", plugin_id)
-        meta.version = getattr(module, "__plugin_version__", "0.0.0")
-        meta.description = getattr(module, "__plugin_description__", "")
-        meta.author = getattr(module, "__plugin_author__", "")
-        meta.role = getattr(module, "__plugin_role__", PluginRole.LOGIC)
+        name, version, description, author, role = self._resolve_identity_fields(
+            plugin_id,
+            module,
+            declared_metadata=self._declared_metadata.get(plugin_id),
+        )
+        meta.name = name
+        meta.version = version
+        meta.description = description
+        meta.author = author
+        meta.role = role
         meta.state = PluginState.ACTIVE
         meta.commands = list(ctx._registered_commands)
         meta.event_types = list(ctx._registered_events)
@@ -383,7 +399,11 @@ class PluginManager:
                 )
 
             try:
-                meta = await self.load_plugin_async(plugin_id, module_path)
+                meta = await self.load_plugin_async(
+                    plugin_id,
+                    module_path,
+                    declared_metadata=metadata,
+                )
                 self._validate_permissions(plugin_id, permissions, meta)
                 loaded.append(meta)
                 logger.info(
@@ -433,7 +453,12 @@ class PluginManager:
             raise ValueError(f"Plugin {plugin_id!r} is not loaded")
 
         module_path = meta.module_path
-        await self.unload_plugin_async(plugin_id, remove_module=False)
+        declared_metadata = self._declared_metadata.get(plugin_id)
+        await self.unload_plugin_async(
+            plugin_id,
+            remove_module=False,
+            remove_declared_metadata=False,
+        )
 
         existing = sys.modules.get(module_path)
         if existing is not None and getattr(existing, "__spec__", None) is not None:
@@ -450,30 +475,91 @@ class PluginManager:
             await self._invoke(module.setup, ctx)
             await self._invoke_hook(module, "on_enable", ctx)
         except Exception:
-            logger.exception("Error during reload of plugin %s; reverting handler registrations", plugin_id)
+            logger.exception(
+                "Error during reload of plugin %s; reverting handler registrations", plugin_id
+            )
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
 
-        new_meta = PluginMeta(
+        new_meta = self._build_plugin_meta(
+            plugin_id,
+            module_path,
+            module,
+            ctx,
+            declared_metadata=declared_metadata,
+        )
+        self._plugins[plugin_id] = new_meta
+        self._contexts[plugin_id] = ctx
+        self._modules[plugin_id] = module
+        return new_meta
+
+    def _build_plugin_meta(
+        self,
+        plugin_id: str,
+        module_path: str,
+        module: Any,
+        ctx: PluginContext,
+        *,
+        declared_metadata: dict[str, Any] | None = None,
+    ) -> PluginMeta:
+        name, version, description, author, role = self._resolve_identity_fields(
+            plugin_id,
+            module,
+            declared_metadata=declared_metadata,
+        )
+        return PluginMeta(
             id=plugin_id,
-            name=getattr(module, "__plugin_name__", plugin_id),
-            version=getattr(module, "__plugin_version__", "0.0.0"),
-            description=getattr(module, "__plugin_description__", ""),
-            author=getattr(module, "__plugin_author__", ""),
-            role=getattr(module, "__plugin_role__", PluginRole.LOGIC),
+            name=name,
+            version=version,
+            description=description,
+            author=author,
+            role=role,
             state=PluginState.ACTIVE,
             module_path=module_path,
             commands=list(ctx._registered_commands),
             event_types=list(ctx._registered_events),
             data_dir=str(ctx.data_dir),
         )
-        self._plugins[plugin_id] = new_meta
-        self._contexts[plugin_id] = ctx
-        self._modules[plugin_id] = module
-        return new_meta
+
+    def _resolve_identity_fields(
+        self,
+        plugin_id: str,
+        module: Any,
+        *,
+        declared_metadata: dict[str, Any] | None = None,
+    ) -> tuple[str, str, str, str, PluginRole]:
+        if declared_metadata is not None:
+            return (
+                declared_metadata.get("name", plugin_id),
+                declared_metadata.get("version", "0.0.0"),
+                declared_metadata.get("description", ""),
+                declared_metadata.get("author", ""),
+                self._normalize_role(
+                    declared_metadata.get("role", PluginRole.LOGIC.value),
+                    default=PluginRole.LOGIC,
+                ),
+            )
+
+        return (
+            getattr(module, "__plugin_name__", plugin_id),
+            getattr(module, "__plugin_version__", "0.0.0"),
+            getattr(module, "__plugin_description__", ""),
+            getattr(module, "__plugin_author__", ""),
+            self._normalize_role(getattr(module, "__plugin_role__", PluginRole.LOGIC)),
+        )
+
+    def _normalize_role(self, value: Any, *, default: PluginRole = PluginRole.LOGIC) -> PluginRole:
+        if isinstance(value, PluginRole):
+            return value
+        if isinstance(value, str):
+            try:
+                return PluginRole(value.strip().lower())
+            except ValueError:
+                return default
+        return default
 
     async def _deactivate_plugin_runtime(
         self,
@@ -567,6 +653,30 @@ class PluginManager:
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
             raise ValueError("metadata.dependencies must be a list of plugin ID strings")
         metadata["dependencies"] = deps
+
+        for field in ("name", "version", "author", "description"):
+            value = metadata.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"metadata.{field} must be a string")
+
+        name = metadata.get("name", plugin_id)
+        version = metadata.get("version", "0.0.0")
+        author = metadata.get("author", "")
+        description = metadata.get("description", "")
+        metadata["name"] = name.strip() or plugin_id
+        metadata["version"] = version.strip() or "0.0.0"
+        metadata["author"] = author.strip()
+        metadata["description"] = description
+
+        role = metadata.get("role", PluginRole.LOGIC.value)
+        normalized_role = self._normalize_role(role)
+        if isinstance(role, str) and normalized_role.value == role.strip().lower():
+            metadata["role"] = normalized_role.value
+        elif isinstance(role, PluginRole):
+            metadata["role"] = role.value
+        else:
+            valid_roles = ", ".join(item.value for item in PluginRole)
+            raise ValueError(f"metadata.role must be one of: {valid_roles}")
 
         return metadata
 

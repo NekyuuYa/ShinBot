@@ -12,7 +12,7 @@ from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.plugins.context import PluginContext
 from shinbot.core.plugins.manager import PluginManager, _topo_sort
-from shinbot.core.plugins.types import PluginState
+from shinbot.core.plugins.types import PluginRole, PluginState
 
 
 def _make_plugin_module(
@@ -402,3 +402,85 @@ async def test_load_all_async_includes_builtin_plugins(
 
     assert [item.id for item in loaded] == ["shinbot_plugin_builtin_demo"]
     assert mgr.get_plugin("shinbot_plugin_builtin_demo") is not None
+
+
+@pytest.mark.asyncio
+async def test_metadata_identity_overrides_module_identity_fields(tmp_path: Path):
+    plugin_id = "demo_meta_identity"
+    plugin_dir = tmp_path / plugin_id
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": plugin_id,
+                "name": "Metadata Name",
+                "version": "1.2.3",
+                "author": "Metadata Author",
+                "description": "Metadata Description",
+                "entry": "__init__.py",
+                "role": "adapter",
+                "permissions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    module_name = f"{tmp_path.name}.{plugin_id}"
+    mod = types.ModuleType(module_name)
+
+    def setup(ctx: PluginContext):
+        @ctx.on_command("meta_wins")
+        async def meta_wins(c, args):
+            return None
+
+    mod.setup = setup  # type: ignore[attr-defined]
+    mod.__plugin_name__ = "Module Name"  # type: ignore[attr-defined]
+    mod.__plugin_version__ = "9.9.9"  # type: ignore[attr-defined]
+    mod.__plugin_author__ = "Module Author"  # type: ignore[attr-defined]
+    mod.__plugin_description__ = "Module Description"  # type: ignore[attr-defined]
+    mod.__plugin_role__ = PluginRole.LOGIC  # type: ignore[attr-defined]
+    sys.modules[module_name] = mod
+
+    parent = str(tmp_path.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+
+    cmd_reg = CommandRegistry()
+    event_bus = EventBus()
+    mgr = PluginManager(cmd_reg, event_bus)
+
+    try:
+        await mgr.load_plugins_from_metadata_dir_async(tmp_path)
+
+        loaded_meta = mgr.get_plugin(plugin_id)
+        assert loaded_meta is not None
+        assert loaded_meta.name == "Metadata Name"
+        assert loaded_meta.version == "1.2.3"
+        assert loaded_meta.author == "Metadata Author"
+        assert loaded_meta.description == "Metadata Description"
+        assert loaded_meta.role == PluginRole.ADAPTER
+
+        await mgr.disable_plugin_async(plugin_id)
+        enabled_meta = await mgr.enable_plugin_async(plugin_id)
+        assert enabled_meta.name == "Metadata Name"
+        assert enabled_meta.version == "1.2.3"
+        assert enabled_meta.author == "Metadata Author"
+        assert enabled_meta.description == "Metadata Description"
+        assert enabled_meta.role == PluginRole.ADAPTER
+
+        # Reload should preserve metadata.json identity source as well.
+        mod.__plugin_name__ = "Module Renamed"  # type: ignore[attr-defined]
+        mod.__plugin_version__ = "8.8.8"  # type: ignore[attr-defined]
+        mod.__plugin_author__ = "Another Author"  # type: ignore[attr-defined]
+        mod.__plugin_description__ = "Another Description"  # type: ignore[attr-defined]
+        mod.__plugin_role__ = PluginRole.LOGIC  # type: ignore[attr-defined]
+
+        reloaded_meta = await mgr.reload_plugin_async(plugin_id)
+        assert reloaded_meta.name == "Metadata Name"
+        assert reloaded_meta.version == "1.2.3"
+        assert reloaded_meta.author == "Metadata Author"
+        assert reloaded_meta.description == "Metadata Description"
+        assert reloaded_meta.role == PluginRole.ADAPTER
+    finally:
+        sys.modules.pop(module_name, None)
