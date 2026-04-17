@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.model_runtime import ModelRuntime, ModelRuntimeObserver
 from shinbot.agent.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
 from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
@@ -27,18 +28,21 @@ class Plugin:
         *,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
+        model_runtime: ModelRuntime | None = None,
     ):
         self.plugin_id = plugin_id
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
+        self._model_runtime = model_runtime
         self.data_dir = (
             Path(data_dir) if data_dir is not None else Path("data") / "plugin_data" / plugin_id
         )
         self._registered_commands: list[str] = []
         self._registered_events: list[str] = []
         self._registered_tools: list[str] = []
+        self._registered_model_observers: list[ModelRuntimeObserver] = []
         self.logger = get_plugin_logger(plugin_id)
 
     def on_command(
@@ -98,6 +102,15 @@ class Plugin:
                 "no AdapterManager is available in this Plugin object."
             )
         self._adapter_manager.register_adapter(name, factory)
+
+    def register_model_runtime_observer(self, observer: ModelRuntimeObserver) -> None:
+        if self._model_runtime is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot register a model runtime observer: "
+                "no ModelRuntime is available in this Plugin object."
+            )
+        self._model_runtime.register_observer(observer)
+        self._registered_model_observers.append(observer)
 
     def tool(
         self,

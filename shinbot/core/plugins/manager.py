@@ -19,6 +19,7 @@ from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
 from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from shinbot.agent.model_runtime import ModelRuntime
     from shinbot.core.platform.adapter_manager import AdapterManager
 
 logger = get_logger(__name__)
@@ -69,11 +70,13 @@ class PluginManager:
         *,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
+        model_runtime: ModelRuntime | None = None,
     ):
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
+        self._model_runtime = model_runtime
         self._plugins: dict[str, PluginMeta] = {}
         self._plugin_objects: dict[str, Plugin] = {}
         self._modules: dict[str, Any] = {}
@@ -91,6 +94,7 @@ class PluginManager:
             data_dir=self._build_plugin_data_dir(plugin_id),
             adapter_manager=self._adapter_manager,
             tool_registry=self._tool_registry,
+            model_runtime=self._model_runtime,
         )
 
     @property
@@ -574,6 +578,9 @@ class PluginManager:
         evt_count = self._event_bus.off_all(plugin_id)
         if self._tool_registry is not None:
             self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
+        if plg is not None and self._model_runtime is not None:
+            for observer in plg._registered_model_observers:
+                self._model_runtime.unregister_observer(observer)
 
         if module and hasattr(module, "teardown"):
             try:

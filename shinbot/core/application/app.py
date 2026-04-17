@@ -78,6 +78,7 @@ class ShinBot:
             event_bus=self.event_bus,
             adapter_manager=self.adapter_manager,
             tool_registry=self.tool_registry,
+            model_runtime=self.model_runtime,
             data_dir=data_dir,
         )
         self.pipeline = MessagePipeline(

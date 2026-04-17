@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import random
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +18,8 @@ from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecu
 from . import litellm_adapter
 
 logger = logging.getLogger(__name__)
+
+ModelRuntimeObserver = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
 def _utc_now() -> datetime:
@@ -330,6 +334,14 @@ class ModelRuntime:
     def __init__(self, database: DatabaseManager | None) -> None:
         self._database = database
         self._random = random.Random()
+        self._observers: list[ModelRuntimeObserver] = []
+
+    def register_observer(self, observer: ModelRuntimeObserver) -> None:
+        if observer not in self._observers:
+            self._observers.append(observer)
+
+    def unregister_observer(self, observer: ModelRuntimeObserver) -> None:
+        self._observers = [item for item in self._observers if item is not observer]
 
     async def generate(self, call: ModelRuntimeCall) -> GenerateResult:
         if not call.route_id and not call.model_id:
@@ -348,6 +360,30 @@ class ModelRuntime:
                 model=attempt["model"],
                 call=call,
                 timeout_override=attempt["timeout_override"],
+            )
+            await self._notify_observers(
+                {
+                    "event": "model_runtime.request",
+                    "mode": "completion",
+                    "execution_id": execution_id,
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "litellm_model": attempt["model"]["litellm_model"],
+                    "strategy": attempt["strategy"],
+                    "messages": list(call.messages),
+                    "tools": list(call.tools),
+                    "response_format": call.response_format,
+                    "params": dict(call.params),
+                    "metadata": dict(call.metadata),
+                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.completion, **kwargs)
@@ -462,6 +498,28 @@ class ModelRuntime:
                 timeout_override=attempt["timeout_override"],
                 mode="embedding",
             )
+            await self._notify_observers(
+                {
+                    "event": "model_runtime.request",
+                    "mode": "embedding",
+                    "execution_id": execution_id,
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "litellm_model": attempt["model"]["litellm_model"],
+                    "strategy": attempt["strategy"],
+                    "input_data": call.input_data,
+                    "params": dict(call.params),
+                    "metadata": dict(call.metadata),
+                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                }
+            )
             try:
                 response = await asyncio.to_thread(litellm_adapter.embedding, **kwargs)
                 finished = _utc_now()
@@ -548,6 +606,28 @@ class ModelRuntime:
                 timeout_override=attempt["timeout_override"],
                 mode="rerank",
             )
+            await self._notify_observers(
+                {
+                    "event": "model_runtime.request",
+                    "mode": "rerank",
+                    "execution_id": execution_id,
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "litellm_model": attempt["model"]["litellm_model"],
+                    "strategy": attempt["strategy"],
+                    "input_data": call.input_data,
+                    "params": dict(call.params),
+                    "metadata": dict(call.metadata),
+                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                }
+            )
             try:
                 response = await asyncio.to_thread(litellm_adapter.rerank, **kwargs)
                 finished = _utc_now()
@@ -628,6 +708,28 @@ class ModelRuntime:
                 timeout_override=attempt["timeout_override"],
                 mode="speech",
             )
+            await self._notify_observers(
+                {
+                    "event": "model_runtime.request",
+                    "mode": "speech",
+                    "execution_id": execution_id,
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "litellm_model": attempt["model"]["litellm_model"],
+                    "strategy": attempt["strategy"],
+                    "input_data": call.input_data,
+                    "params": dict(call.params),
+                    "metadata": dict(call.metadata),
+                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                }
+            )
             try:
                 response = await asyncio.to_thread(litellm_adapter.speech, **kwargs)
                 finished = _utc_now()
@@ -701,6 +803,28 @@ class ModelRuntime:
                 call=call,
                 timeout_override=attempt["timeout_override"],
                 mode="transcription",
+            )
+            await self._notify_observers(
+                {
+                    "event": "model_runtime.request",
+                    "mode": "transcription",
+                    "execution_id": execution_id,
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "litellm_model": attempt["model"]["litellm_model"],
+                    "strategy": attempt["strategy"],
+                    "input_data": call.input_data,
+                    "params": dict(call.params),
+                    "metadata": dict(call.metadata),
+                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.transcription, **kwargs)
@@ -782,6 +906,28 @@ class ModelRuntime:
                 timeout_override=attempt["timeout_override"],
                 mode="image",
             )
+            await self._notify_observers(
+                {
+                    "event": "model_runtime.request",
+                    "mode": "image",
+                    "execution_id": execution_id,
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "litellm_model": attempt["model"]["litellm_model"],
+                    "strategy": attempt["strategy"],
+                    "input_data": call.input_data,
+                    "params": dict(call.params),
+                    "metadata": dict(call.metadata),
+                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                }
+            )
             try:
                 response = await asyncio.to_thread(litellm_adapter.image_generation, **kwargs)
                 finished = _utc_now()
@@ -857,6 +1003,28 @@ class ModelRuntime:
                 call=call,
                 timeout_override=attempt["timeout_override"],
                 mode="video",
+            )
+            await self._notify_observers(
+                {
+                    "event": "model_runtime.request",
+                    "mode": "video",
+                    "execution_id": execution_id,
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "litellm_model": attempt["model"]["litellm_model"],
+                    "strategy": attempt["strategy"],
+                    "input_data": call.input_data,
+                    "params": dict(call.params),
+                    "metadata": dict(call.metadata),
+                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.video_generation, **kwargs)
@@ -1043,3 +1211,29 @@ class ModelRuntime:
                 "Failed to persist AI interaction for execution %s",
                 record.execution_id,
             )
+
+    async def _notify_observers(self, payload: dict[str, Any]) -> None:
+        if not self._observers:
+            return
+        for observer in list(self._observers):
+            try:
+                result = observer(payload)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("Model runtime observer failed for event %s", payload.get("event"))
+
+    def _sanitize_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        redacted = dict(kwargs)
+        for key in (
+            "api_key",
+            "api_token",
+            "access_token",
+            "authorization",
+            "Authorization",
+            "app_secret",
+            "api_secret",
+        ):
+            if key in redacted and redacted[key]:
+                redacted[key] = "***"
+        return redacted
