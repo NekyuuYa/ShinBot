@@ -25,6 +25,8 @@
     "prompts": "Prompt UUIDs",
     "tools": "Tool IDs",
     "contextStrategyRef": "Context Strategy Ref",
+    "contextStrategyPlaceholder": "Select a context strategy",
+    "contextStrategyEmpty": "No context strategies are available",
     "contextStrategyType": "Context Strategy Type",
     "contextStrategyParams": "Context Strategy Params (JSON)",
     "config": "Agent Config (JSON)"
@@ -38,11 +40,13 @@
     "subtitle": "No agents match the current tag. Create one from the top-right action."
   },
   "hints": {
+    "contextStrategyTypeAuto": "Auto-filled from the selected strategy.",
     "contextStrategyParams": "Optional. Must be a JSON object when provided.",
     "config": "Optional. Must be a JSON object when provided."
   },
   "messages": {
     "loadFailed": "Failed to load agents",
+    "loadContextStrategiesFailed": "Failed to load context strategies",
     "created": "Agent created",
     "updated": "Agent updated",
     "deleted": "Agent deleted",

@@ -200,11 +200,19 @@
             </v-col>
 
             <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.contextStrategyRef"
+              <v-select
+                :model-value="form.contextStrategyRef"
                 :label="$t('pages.agents.fields.contextStrategyRef')"
+                :items="contextStrategyOptions"
+                item-title="title"
+                item-value="value"
                 variant="outlined"
                 density="comfortable"
+                clearable
+                :loading="isLoadingContextStrategies"
+                :placeholder="$t('pages.agents.fields.contextStrategyPlaceholder')"
+                :no-data-text="$t('pages.agents.fields.contextStrategyEmpty')"
+                @update:model-value="handleContextStrategyChange"
               />
             </v-col>
             <v-col cols="12" md="6">
@@ -213,6 +221,9 @@
                 :label="$t('pages.agents.fields.contextStrategyType')"
                 variant="outlined"
                 density="comfortable"
+                :hint="$t('pages.agents.hints.contextStrategyTypeAuto')"
+                persistent-hint
+                readonly
               />
             </v-col>
             <v-col cols="12">
@@ -261,6 +272,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import type { Agent, AgentPayload } from '@/api/agents'
+import { contextStrategiesApi, type ContextStrategy } from '@/api/contextStrategies'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
@@ -275,6 +287,8 @@ const personasStore = usePersonasStore()
 const dialogVisible = ref(false)
 const editingAgentUuid = ref('')
 const localError = ref('')
+const contextStrategies = ref<ContextStrategy[]>([])
+const isLoadingContextStrategies = ref(false)
 
 const form = reactive({
   agentId: '',
@@ -311,6 +325,67 @@ const personaOptions = computed(() =>
     value: persona.uuid,
   }))
 )
+
+const contextStrategyOptions = computed(() => {
+  const options = [...contextStrategies.value]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((strategy) => ({
+      title: `${strategy.name} (${strategy.type})`,
+      value: strategy.uuid,
+      type: strategy.type,
+    }))
+
+  if (
+    form.contextStrategyRef
+    && !options.some((option) => option.value === form.contextStrategyRef)
+  ) {
+    options.push({
+      title: form.contextStrategyRef,
+      value: form.contextStrategyRef,
+      type: form.contextStrategyType,
+    })
+  }
+
+  return options
+})
+
+const syncContextStrategyType = (strategyRef: string) => {
+  const selected = contextStrategyOptions.value.find((option) => option.value === strategyRef)
+  if (selected) {
+    form.contextStrategyType = selected.type
+    return
+  }
+  if (!strategyRef) {
+    form.contextStrategyType = ''
+  }
+}
+
+const handleContextStrategyChange = (value: string | null) => {
+  const strategyRef = (value ?? '').trim()
+  form.contextStrategyRef = strategyRef
+  syncContextStrategyType(strategyRef)
+}
+
+const fetchContextStrategies = async () => {
+  isLoadingContextStrategies.value = true
+  try {
+    const response = await contextStrategiesApi.list()
+    if (response.data.success && response.data.data) {
+      contextStrategies.value = response.data.data
+      syncContextStrategyType(form.contextStrategyRef.trim())
+      return
+    }
+    throw new Error(
+      response.data.error?.message || translate('pages.agents.messages.loadContextStrategiesFailed')
+    )
+  } catch (errorDetail: unknown) {
+    localError.value = errorDetail instanceof Error
+      ? errorDetail.message
+      : String(errorDetail)
+  } finally {
+    isLoadingContextStrategies.value = false
+  }
+}
 
 const parseJsonObject = (value: string, emptyFallback: Record<string, unknown>) => {
   const trimmed = value.trim()
@@ -361,6 +436,7 @@ const openEditAgent = (agent: Agent) => {
   form.tools = [...agent.tools]
   form.contextStrategyRef = agent.contextStrategy?.ref || ''
   form.contextStrategyType = agent.contextStrategy?.type || ''
+  syncContextStrategyType(form.contextStrategyRef)
   form.contextStrategyParamsJson = agent.contextStrategy?.params
     ? JSON.stringify(agent.contextStrategy.params, null, 2)
     : ''
@@ -429,12 +505,16 @@ const removeAgent = async (uuid: string, name: string) => {
 }
 
 const refreshAgents = async () => {
-  await agentsStore.fetchAgents()
+  await Promise.all([
+    agentsStore.fetchAgents(),
+    fetchContextStrategies(),
+  ])
 }
 
 onMounted(() => {
   agentsStore.fetchAgents()
   personasStore.fetchPersonas()
+  fetchContextStrategies()
 })
 </script>
 

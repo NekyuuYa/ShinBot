@@ -25,6 +25,8 @@
     "prompts": "Prompt UUID 列表",
     "tools": "工具 ID 列表",
     "contextStrategyRef": "上下文策略引用",
+    "contextStrategyPlaceholder": "请选择上下文策略",
+    "contextStrategyEmpty": "暂无可选上下文策略",
     "contextStrategyType": "上下文策略类型",
     "contextStrategyParams": "上下文策略参数（JSON）",
     "config": "Agent 配置（JSON）"
@@ -38,11 +40,13 @@
     "subtitle": "当前标签下没有可展示的 Agent，点击右上角按钮创建一个。"
   },
   "hints": {
+    "contextStrategyTypeAuto": "根据所选策略自动填写。",
     "contextStrategyParams": "可留空；若填写需为对象 JSON。",
     "config": "可留空；若填写需为对象 JSON。"
   },
   "messages": {
     "loadFailed": "加载 Agent 列表失败",
+    "loadContextStrategiesFailed": "加载上下文策略失败",
     "created": "Agent 已创建",
     "updated": "Agent 已更新",
     "deleted": "Agent 已删除",
