@@ -1,5 +1,6 @@
 """Agent-related runtime services."""
 
+from shinbot.agent.context import ActiveContextPool, ContextManager
 from shinbot.agent.model_runtime import (
     EmbedResult,
     GenerateResult,
@@ -38,6 +39,8 @@ from shinbot.agent.tools import (
 )
 
 __all__ = [
+    "ActiveContextPool",
+    "ContextManager",
     "EmbedResult",
     "GenerateResult",
     "ModelCallError",

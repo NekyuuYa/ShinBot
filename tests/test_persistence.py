@@ -94,7 +94,11 @@ class TestDatabaseManager:
         assert payload is not None
         assert payload["type"] == "sliding_window"
         assert payload["resolver_ref"] == PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER
-        assert payload["config"] == {"builtin": True, "default": True}
+        assert payload["config"]["builtin"] is True
+        assert payload["config"]["default"] is True
+        assert payload["config"]["budget"]["truncate_policy"] == "sliding_window"
+        assert payload["config"]["budget"]["trigger_ratio"] == 0.5
+        assert payload["config"]["budget"]["trim_turns"] == 2
 
     def test_initialize_migrates_model_registry_to_provider_uuid(self, tmp_path):
         sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
@@ -253,6 +257,41 @@ class TestDatabaseManager:
             "ctx-1",
             PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
         }
+
+    def test_message_log_repository_supports_standard_context_queries(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        first = MessageLogRecord(
+            session_id="s-1",
+            role="user",
+            raw_text="hello there",
+            created_at=1000,
+        )
+        second = MessageLogRecord(
+            session_id="s-1",
+            role="assistant",
+            raw_text="general kenobi",
+            created_at=2000,
+        )
+        third = MessageLogRecord(
+            session_id="s-1",
+            role="user",
+            raw_text="searchable needle",
+            created_at=3000,
+        )
+        db.message_logs.insert(first)
+        db.message_logs.insert(second)
+        db.message_logs.insert(third)
+
+        recent = db.message_logs.get_recent("s-1", limit=2)
+        assert [item["raw_text"] for item in recent] == ["general kenobi", "searchable needle"]
+
+        ranged = db.message_logs.get_by_time("s-1", start=1500, end=3500, limit=10)
+        assert [item["raw_text"] for item in ranged] == ["general kenobi", "searchable needle"]
+
+        searched = db.message_logs.search_context("s-1", "needle", limit=10)
+        assert [item["raw_text"] for item in searched] == ["searchable needle"]
 
     def test_agent_repository_roundtrip(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

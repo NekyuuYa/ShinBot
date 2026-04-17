@@ -188,6 +188,17 @@ def _validate_sliding_window_params(params: dict[str, object]) -> None:
                 "message": "Agent contextStrategy.params.trimTurns must be greater than or equal to 1",
             },
         )
+    trim_ratio = params.get("trimRatio")
+    if trim_ratio is not None and (
+        not isinstance(trim_ratio, int | float) or not 0 < float(trim_ratio) < 1
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": EC.INVALID_ACTION,
+                "message": "Agent contextStrategy.params.trimRatio must be within (0, 1)",
+            },
+        )
     max_history_turns = params.get("maxHistoryTurns")
     if max_history_turns is not None and (
         not isinstance(max_history_turns, int) or max_history_turns < 1

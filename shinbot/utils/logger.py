@@ -15,6 +15,7 @@ from typing import Any
 
 _CONFIGURED = False
 _log_handler_installer: Callable[[], None] | None = None
+_ORIGINAL_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
 _LOGGER_PREFIX = "shinbot."
 _NOISY_THIRD_PARTY_LOGGERS = (
     "uvicorn",
@@ -32,9 +33,20 @@ def should_downgrade_noisy_log(record: logging.LogRecord) -> bool:
     return any(record.name.startswith(name) for name in _NOISY_THIRD_PARTY_LOGGERS)
 
 
-def display_log_level(record: logging.LogRecord) -> str:
+def _downgrade_noisy_log_record(record: logging.LogRecord) -> logging.LogRecord:
     if should_downgrade_noisy_log(record):
-        return "DEBUG"
+        record.levelno = logging.DEBUG
+        record.levelname = "DEBUG"
+        record.__dict__["_shinbot_downgraded"] = True
+    return record
+
+
+def _log_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+    record = _ORIGINAL_LOG_RECORD_FACTORY(*args, **kwargs)
+    return _downgrade_noisy_log_record(record)
+
+
+def display_log_level(record: logging.LogRecord) -> str:
     return normalize_log_level(record.levelname)
 
 
@@ -134,6 +146,8 @@ def setup_logging(level_name: str = "INFO") -> None:
     global _CONFIGURED
     if _CONFIGURED:
         return
+
+    logging.setLogRecordFactory(_log_record_factory)
 
     level = getattr(logging, level_name.upper(), logging.INFO)
     root = logging.getLogger()

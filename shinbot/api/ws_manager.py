@@ -58,9 +58,10 @@ class _AsyncLogHandler(logging.Handler):
         self.formatter = logging.Formatter("%(message)s")
 
     def emit(self, record: logging.LogRecord) -> None:
-        # 核心修复：禁止转发 uvicorn 和 websockets 的低级别日志，防止回放死循环
+        # Keep downgraded transport noise visible in the dashboard, but still
+        # avoid forwarding raw low-level transport debug chatter.
         if record.name.startswith(("uvicorn", "websockets")):
-            if record.levelno < logging.INFO:
+            if record.levelno < logging.INFO and not record.__dict__.get("_shinbot_downgraded", False):
                 return
 
         try:

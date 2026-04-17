@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.prompting.schema import (
     PROMPT_STAGE_ORDER,
@@ -26,6 +26,9 @@ from shinbot.agent.prompting.schema import (
     stable_text_hash,
 )
 
+if TYPE_CHECKING:
+    from shinbot.agent.context import ContextManager
+
 Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
 ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any]
 
@@ -40,17 +43,42 @@ class PromptRegistry:
     BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID = "builtin.context.sliding_window"
     BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER = "builtin.context.sliding_window"
 
+    @classmethod
+    def build_builtin_sliding_window_strategy(
+        cls,
+        *,
+        trigger_ratio: float = 0.5,
+        trim_turns: int = 2,
+        trim_ratio: float | None = None,
+    ) -> ContextStrategy:
+        return ContextStrategy(
+            id=cls.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
+            display_name="Sliding Window",
+            description="Built-in context strategy based on a sliding window.",
+            resolver_ref=cls.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
+            priority=10_000,
+            metadata={"builtin": True, "default": True},
+            budget={
+                "truncate_policy": "sliding_window",
+                "trigger_ratio": trigger_ratio,
+                "trim_ratio": trim_ratio,
+                "trim_turns": trim_turns,
+            },
+        )
+
     def __init__(
         self,
         *,
         fallback_context_trigger_ratio: float = 0.5,
         fallback_context_trim_turns: int = 2,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self._components: dict[str, PromptComponent] = {}
         self._context_strategies: dict[str, ContextStrategy] = {}
         self._context_strategy_resolvers: dict[str, ContextStrategyResolver] = {}
         self._profiles: dict[str, PromptProfile] = {}
         self._resolvers: dict[str, Resolver] = {}
+        self._context_manager = context_manager
         self._register_builtin_context_strategies(
             trigger_ratio=fallback_context_trigger_ratio,
             trim_turns=fallback_context_trim_turns,
@@ -84,6 +112,9 @@ class PromptRegistry:
         if name in self._resolvers:
             raise ValueError(f"Prompt resolver {name!r} is already registered")
         self._resolvers[name] = fn
+
+    def attach_context_manager(self, context_manager: ContextManager | None) -> None:
+        self._context_manager = context_manager
 
     # ── Lookup / list ───────────────────────────────────────────────────
 
@@ -523,6 +554,9 @@ class PromptRegistry:
         if not strategy.enabled:
             return
 
+        policy_sync = self._sync_context_policy(request, strategy)
+        request = self._hydrate_request_context(request)
+
         resolver = self._context_strategy_resolvers.get(strategy.resolver_ref)
         if resolver is None:
             raise ValueError(
@@ -541,6 +575,16 @@ class PromptRegistry:
             resolver_metadata = {
                 k: v for k, v in result.items() if k not in ("text", "messages")
             }
+            if policy_sync and int(policy_sync.get("dropped_turns", 0)) > int(
+                resolver_metadata.get("dropped_turns", 0)
+            ):
+                resolver_metadata["dropped_turns"] = int(policy_sync["dropped_turns"])
+                resolver_metadata["remaining_turns"] = int(policy_sync["remaining_turns"])
+                resolver_metadata["current_tokens"] = int(policy_sync["current_tokens"])
+                if "trigger_tokens" in policy_sync:
+                    resolver_metadata["trigger_tokens"] = int(policy_sync["trigger_tokens"])
+                if "trim_mode" in policy_sync:
+                    resolver_metadata["trim_mode"] = str(policy_sync["trim_mode"])
         elif isinstance(result, str):
             text = result.strip()
             rendered_messages = [{"role": "user", "content": text}] if text else []
@@ -648,23 +692,36 @@ class PromptRegistry:
         trim_turns: int,
     ) -> None:
         self.register_context_strategy(
-            ContextStrategy(
-                id=self.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
-                display_name="Sliding Window",
-                description="Built-in context strategy based on a sliding window.",
-                resolver_ref=self.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
-                priority=10_000,
-                metadata={"builtin": True, "default": True},
-                budget={
-                    "truncate_policy": "sliding_window",
-                    "trigger_ratio": trigger_ratio,
-                    "trim_turns": trim_turns,
-                },
+            self.build_builtin_sliding_window_strategy(
+                trigger_ratio=trigger_ratio,
+                trim_turns=trim_turns,
             )
         )
         self.register_context_strategy_resolver(
             self.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
             self._resolve_builtin_sliding_window_context,
+        )
+
+    def _hydrate_request_context(self, request: PromptAssemblyRequest) -> PromptAssemblyRequest:
+        if self._context_manager is None or not request.session_id:
+            return request
+        context_inputs = self._context_manager.get_context_inputs(
+            request.session_id,
+            fallback=request.context_inputs,
+        )
+        return request.model_copy(update={"context_inputs": context_inputs})
+
+    def _sync_context_policy(
+        self,
+        request: PromptAssemblyRequest,
+        strategy: ContextStrategy,
+    ) -> dict[str, Any]:
+        if self._context_manager is None or not request.session_id:
+            return {}
+        return self._context_manager.set_session_policy(
+            request.session_id,
+            strategy=strategy,
+            model_context_window=request.model_context_window,
         )
 
     def _resolve_builtin_sliding_window_context(
@@ -676,6 +733,7 @@ class PromptRegistry:
         summary = str(request.context_inputs.get("summary", "")).strip()
         model_context_window = request.model_context_window or strategy.budget.max_context_tokens
         trigger_ratio = strategy.budget.trigger_ratio
+        trim_ratio = strategy.budget.trim_ratio
         trim_turns = strategy.budget.trim_turns
         dropped_turns = 0
 
@@ -690,14 +748,32 @@ class PromptRegistry:
             else None
         )
 
-        while trigger_tokens is not None and len(turns) > 1:
-            current_tokens = self._estimate_context_tokens(turns, summary)
-            if current_tokens < trigger_tokens:
-                break
-            trim_count = max(1, trim_turns)
-            trim_count = min(trim_count, len(turns) - 1)
-            turns = turns[trim_count:]
-            dropped_turns += trim_count
+        if self._context_manager is not None and request.session_id:
+            ejection = self._context_manager.apply_batch_ejection(
+                request.session_id,
+                strategy=strategy,
+                model_context_window=request.model_context_window,
+            )
+            dropped_turns = int(ejection.get("dropped_turns", 0))
+            turns = self._normalize_history_turns(
+                self._context_manager.get_context_inputs(
+                    request.session_id,
+                    fallback={"summary": summary},
+                )
+            )
+        else:
+            while trigger_tokens is not None and len(turns) > 1:
+                current_tokens = self._estimate_context_tokens(turns, summary)
+                if current_tokens < trigger_tokens:
+                    break
+                trim_count = (
+                    max(1, math.floor(len(turns) * trim_ratio))
+                    if trim_ratio is not None
+                    else max(1, trim_turns)
+                )
+                trim_count = min(trim_count, len(turns) - 1)
+                turns = turns[trim_count:]
+                dropped_turns += trim_count
 
         # Build structured message pairs
         messages: list[dict[str, Any]] = []

@@ -2,6 +2,7 @@
 
 import pytest
 
+from shinbot.agent.context import ContextManager
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
@@ -9,6 +10,7 @@ from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, M
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import Session, SessionManager
+from shinbot.persistence import DatabaseManager
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, User
@@ -418,6 +420,33 @@ class TestMessagePipeline:
         )
         await self.pipeline.process_event(event, self.adapter)
         assert results == [0]
+
+    @pytest.mark.asyncio
+    async def test_pipeline_tracks_messages_in_context_manager(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        context_manager = ContextManager(db.message_logs)
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            context_manager=context_manager,
+        )
+
+        async def handler(ctx):
+            await ctx.send("reply from bot")
+
+        self.event_bus.on("message-created", handler)
+        event = make_event("hello tracked")
+        await pipeline.process_event(event, self.adapter)
+
+        turns = context_manager.get_context_inputs("test-bot:private:user-1")["history_turns"]
+        assert [turn["role"] for turn in turns] == ["user", "assistant"]
+        assert turns[0]["content"] == "hello tracked"
+        assert turns[1]["content"] == "reply from bot"
 
     def test_audit_message_modality_summary(self, tmp_path):
         audit = AuditLogger(tmp_path)

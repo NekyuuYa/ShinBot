@@ -30,6 +30,7 @@ from shinbot.utils.logger import get_logger
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
+    from shinbot.agent.context import ContextManager
     from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
@@ -93,6 +94,7 @@ class MessageContext:
         permissions: set[str],
         waiting_registry: WaitingInputRegistry | None = None,
         database: DatabaseManager | None = None,
+        context_manager: ContextManager | None = None,
     ):
         self.event = event
         self.message = message
@@ -101,6 +103,7 @@ class MessageContext:
         self.permissions = permissions
         self._waiting_registry = waiting_registry
         self._database = database
+        self._context_manager = context_manager
 
         # Command resolution result (set during dispatch)
         self.command_match: CommandMatch | None = None
@@ -317,25 +320,26 @@ class MessageContext:
         """
         if self._database is None:
             return
-        plain_text = Message.from_elements(elements).get_text()
+        plain_text = Message(elements=list(elements)).get_text()
         content_json = json.dumps(
             [el.model_dump(mode="json") for el in elements],
             ensure_ascii=False,
         )
-        self._database.message_logs.insert(
-            MessageLogRecord(
-                session_id=self.session.id,
-                platform_msg_id=handle.message_id if handle is not None else "",
-                sender_id=self.event.self_id,
-                sender_name="",
-                content_json=content_json,
-                raw_text=plain_text,
-                role="assistant",
-                is_read=True,
-                is_mentioned=False,
-                created_at=time.time() * 1000,
-            )
+        record = MessageLogRecord(
+            session_id=self.session.id,
+            platform_msg_id=handle.message_id if handle is not None else "",
+            sender_id=self.event.self_id,
+            sender_name="",
+            content_json=content_json,
+            raw_text=plain_text,
+            role="assistant",
+            is_read=True,
+            is_mentioned=False,
+            created_at=time.time() * 1000,
         )
+        record.id = self._database.message_logs.insert(record)
+        if self._context_manager is not None:
+            self._context_manager.track_message_record(record)
 
     def stop(self) -> None:
         """Signal that processing should stop (no further handlers)."""
@@ -424,6 +428,7 @@ class MessagePipeline:
         event_bus: EventBus,
         audit_logger: AuditLogger | None = None,
         database: DatabaseManager | None = None,
+        context_manager: ContextManager | None = None,
     ):
         self._adapter_manager = adapter_manager
         self._session_manager = session_manager
@@ -432,6 +437,7 @@ class MessagePipeline:
         self._event_bus = event_bus
         self._audit_logger = audit_logger
         self._database = database
+        self._context_manager = context_manager
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._waiting_registry = WaitingInputRegistry()
 
@@ -534,6 +540,7 @@ class MessagePipeline:
             permissions=permissions,
             waiting_registry=self._waiting_registry,
             database=self._database,
+            context_manager=self._context_manager,
         )
 
         # Persist incoming user message to message_logs
@@ -548,11 +555,11 @@ class MessagePipeline:
                     ensure_ascii=False,
                 )
                 msg_log_id = self._database.message_logs.insert(
-                    MessageLogRecord(
+                    record := MessageLogRecord(
                         session_id=session.id,
                         platform_msg_id=event.message.id if event.message is not None else "",
                         sender_id=event.sender_id or "",
-                        sender_name=(event.user.name if event.user is not None else ""),
+                        sender_name=((event.user.name or "") if event.user is not None else ""),
                         content_json=content_json,
                         raw_text=message.get_text(),
                         role="user",
@@ -561,6 +568,9 @@ class MessagePipeline:
                         created_at=time.time() * 1000,
                     )
                 )
+                record.id = msg_log_id
+                if self._context_manager is not None:
+                    self._context_manager.track_message_record(record)
                 bot._msg_log_id = msg_log_id
             except Exception:
                 logger.exception("Failed to persist user message to message_logs")

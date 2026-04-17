@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from shinbot.agent.context import ContextManager
 from shinbot.agent.model_runtime import ModelRuntime
 from shinbot.agent.prompting import PromptRegistry
 from shinbot.agent.tools import ToolManager, ToolRegistry
@@ -60,7 +61,10 @@ class ShinBot:
         self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.model_runtime = ModelRuntime(self.database)
-        self.prompt_registry = PromptRegistry()
+        self.context_manager = (
+            ContextManager(self.database.message_logs) if self.database is not None else None
+        )
+        self.prompt_registry = PromptRegistry(context_manager=self.context_manager)
         self.permission_engine = PermissionEngine()
         self.tool_registry = ToolRegistry()
         self.tool_manager = ToolManager(
@@ -84,6 +88,7 @@ class ShinBot:
             event_bus=self.event_bus,
             audit_logger=self.audit_logger,
             database=self.database,
+            context_manager=self.context_manager,
         )
 
     # ── Event ingress callback ───────────────────────────────────────

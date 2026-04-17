@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from abc import ABC, abstractmethod
 from dataclasses import asdict
 from typing import Any
 
@@ -33,6 +34,33 @@ def _json_loads(value: str | None, default: Any) -> Any:
     if not value:
         return default
     return json.loads(value)
+
+
+class ContextProvider(ABC):
+    """Standardized session context retrieval interface."""
+
+    @abstractmethod
+    def get_recent(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent session messages in chronological order."""
+
+    @abstractmethod
+    def get_by_time(
+        self,
+        session_id: str,
+        start: float,
+        end: float,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return session messages within a time range in chronological order."""
+
+    @abstractmethod
+    def search_context(
+        self,
+        session_id: str,
+        query: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return matching session messages for keyword/semantic retrieval."""
 
 
 class SessionRepository:
@@ -1231,7 +1259,7 @@ class ModelExecutionRepository:
         ]
 
 
-class MessageLogRepository:
+class MessageLogRepository(ContextProvider):
     """Persistence adapter for the full communication log."""
 
     def __init__(self, db: Any) -> None:
@@ -1302,6 +1330,56 @@ class MessageLogRepository:
                     (session_id, limit),
                 ).fetchall()
         return [self._row_to_dict(r) for r in rows]
+
+    def get_recent(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent messages for a session in chronological order."""
+        rows = self.list_by_session(session_id, limit=limit)
+        rows.reverse()
+        return rows
+
+    def get_by_time(
+        self,
+        session_id: str,
+        start: float,
+        end: float,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return messages within a time range in chronological order."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM message_logs
+                WHERE session_id = ? AND created_at >= ? AND created_at <= ?
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (session_id, start, end, limit),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def search_context(
+        self,
+        session_id: str,
+        query: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Basic keyword search placeholder for future semantic retrieval."""
+        needle = query.strip()
+        if not needle:
+            return []
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM message_logs
+                WHERE session_id = ? AND raw_text LIKE ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (session_id, f"%{needle}%", limit),
+            ).fetchall()
+        items = [self._row_to_dict(r) for r in rows]
+        items.reverse()
+        return items
 
     @staticmethod
     def _row_to_dict(row: Any) -> dict[str, Any]:

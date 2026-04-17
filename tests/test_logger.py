@@ -39,7 +39,7 @@ def test_normalize_log_level_aliases_warning_and_critical():
     assert logger_utils.normalize_log_level("info") == "INFO"
 
 
-def test_display_log_level_downgrades_noisy_uvicorn_info_to_debug():
+def test_downgrade_noisy_log_record_marks_transport_noise_as_debug():
     record = logging.LogRecord(
         name="uvicorn.error",
         level=logging.INFO,
@@ -50,7 +50,11 @@ def test_display_log_level_downgrades_noisy_uvicorn_info_to_debug():
         exc_info=None,
     )
 
-    assert logger_utils.display_log_level(record) == "DEBUG"
+    downgraded = logger_utils._downgrade_noisy_log_record(record)
+
+    assert downgraded.levelno == logging.DEBUG
+    assert downgraded.levelname == "DEBUG"
+    assert downgraded.__dict__["_shinbot_downgraded"] is True
 
 
 def test_display_log_level_preserves_app_info_logs():

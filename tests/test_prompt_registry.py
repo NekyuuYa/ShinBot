@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from shinbot.agent.context import ContextManager
 from shinbot.agent.prompting import (
     ContextStrategy,
     PromptAssemblyRequest,
@@ -11,6 +12,7 @@ from shinbot.agent.prompting import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.persistence import DatabaseManager, MessageLogRecord
 
 
 def test_prompt_component_rejects_invalid_external_stage() -> None:
@@ -315,6 +317,146 @@ def test_prompt_registry_builtin_sliding_window_budget_is_configurable() -> None
     assert component.metadata["budget"]["trigger_ratio"] == 0.9
     assert component.metadata["budget"]["trim_turns"] == 2
     assert component.metadata["resolver_output"]["dropped_turns"] == 0
+
+
+def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id="s-1",
+            role="user",
+            raw_text="from pool user",
+            created_at=1000,
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id="s-1",
+            role="assistant",
+            raw_text="from pool assistant",
+            created_at=2000,
+        )
+    )
+
+    registry = PromptRegistry(context_manager=ContextManager(db.message_logs))
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    result = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id="s-1",
+            context_inputs={"history_turns": [{"role": "user", "content": "stale"}]},
+        )
+    )
+
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    contents = [str(message["content"]) for message in context_stage.messages]
+    assert "from pool user" in contents
+    assert "from pool assistant" in contents
+    assert "stale" not in contents
+
+
+def test_prompt_registry_batch_ejects_from_active_pool(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    for idx in range(3):
+        db.message_logs.insert(
+            MessageLogRecord(
+                session_id="s-2",
+                role="user" if idx % 2 == 0 else "assistant",
+                raw_text=f"turn {idx} " + "word " * 6,
+                created_at=1000 + idx,
+            )
+        )
+
+    context_manager = ContextManager(db.message_logs)
+    registry = PromptRegistry(context_manager=context_manager)
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    result = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id="s-2",
+            model_context_window=12,
+        )
+    )
+
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    metadata = context_stage.components[0].metadata["resolver_output"]
+    assert metadata["dropped_turns"] >= 1
+    assert len(context_manager.get_recent_messages("s-2")) < 3
+    assert len(context_stage.messages) < 3
+
+
+def test_prompt_registry_syncs_session_policy_for_track_time_ejection(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id="s-3",
+            role="user",
+            raw_text="seed " + "word " * 6,
+            created_at=1000,
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id="s-3",
+            role="assistant",
+            raw_text="seed " + "word " * 6,
+            created_at=1001,
+        )
+    )
+
+    context_manager = ContextManager(db.message_logs)
+    registry = PromptRegistry(context_manager=context_manager)
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id="s-3",
+            model_context_window=12,
+        )
+    )
+    before = len(context_manager.get_recent_messages("s-3"))
+
+    context_manager.track_message_record(
+        MessageLogRecord(
+            session_id="s-3",
+            role="user",
+            raw_text="new " + "word " * 6,
+            created_at=1002,
+        )
+    )
+
+    after = len(context_manager.get_recent_messages("s-3"))
+    assert after <= before
 
 
 def test_prompt_registry_produces_chat_completions_structure() -> None:

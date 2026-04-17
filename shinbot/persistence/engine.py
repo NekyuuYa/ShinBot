@@ -81,14 +81,18 @@ class DatabaseManager:
 
     def _ensure_builtin_context_strategies(self) -> None:
         now = utc_now_iso()
+        strategy = PromptRegistry.build_builtin_sliding_window_strategy()
         self.context_strategies.upsert(
             ContextStrategyRecord(
-                uuid=PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
-                name="Sliding Window",
+                uuid=strategy.id,
+                name=strategy.display_name,
                 type="sliding_window",
-                resolver_ref=PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
-                description="Built-in context strategy based on a sliding window.",
-                config={"builtin": True, "default": True},
+                resolver_ref=strategy.resolver_ref,
+                description=strategy.description,
+                config={
+                    **strategy.metadata,
+                    "budget": strategy.budget.model_dump(mode="json"),
+                },
                 enabled=True,
                 created_at=now,
                 updated_at=now,

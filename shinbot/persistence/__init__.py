@@ -17,6 +17,7 @@ from shinbot.persistence.records import (
     PromptDefinitionRecord,
     PromptSnapshotRecord,
 )
+from shinbot.persistence.repos import ContextProvider
 
 __all__ = [
     "AIInteractionRecord",
@@ -25,6 +26,7 @@ __all__ = [
     "AgentRecord",
     "BotConfigRecord",
     "ContextStrategyRecord",
+    "ContextProvider",
     "MessageLogRecord",
     "ModelDefinitionRecord",
     "ModelExecutionRecord",
