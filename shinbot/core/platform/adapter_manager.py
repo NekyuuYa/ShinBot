@@ -155,7 +155,7 @@ class AdapterManager:
         The factory must be callable with signature:
             factory(instance_id, platform, **kwargs) -> BaseAdapter
 
-        Called by adapter plugins at load time via PluginContext.register_adapter_factory().
+        Called by adapter plugins at load time via Plugin.register_adapter_factory().
         """
         if not callable(factory):
             raise TypeError(f"{factory!r} must be a callable factory")

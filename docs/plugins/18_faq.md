@@ -28,7 +28,7 @@ async def handler(bot, args: str):
 
 ## Q4: 插件数据应该存哪里？
 
-放在 `ctx.data_dir`（`data/plugin_data/<plugin_id>/`）。
+放在 `plg.data_dir`（`data/plugin_data/<plugin_id>/`）。
 
 ## Q5: `teardown` 能写成 `teardown(ctx)` 吗？
 
@@ -62,7 +62,7 @@ async def handler(bot, args: str):
 
 1. `metadata.json` 是否存在
 2. `entry` 是否是插件目录内的相对路径
-3. 入口文件是否存在 `setup(ctx)`
+3. 入口文件是否存在 `setup(plg)`
 4. 日志里是否有导入异常
 
 ## Q10: 如何快速定位官方用法？

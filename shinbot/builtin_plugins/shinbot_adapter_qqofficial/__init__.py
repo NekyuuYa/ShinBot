@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 
 DEFAULT_QQOFFICIAL_INTENTS = (1 << 9) | (1 << 12) | (1 << 25) | (1 << 30)
 
@@ -77,7 +77,7 @@ __plugin_config_class__ = QQOfficialPluginConfig
 __plugin_adapter_platform__ = "qqofficial"
 
 
-def setup(ctx: PluginContext) -> None:
+def setup(plg: Plugin) -> None:
     """Register QQ Official adapter factories with the AdapterManager."""
     from .adapter import QQOfficialAdapter, QQOfficialConfig
 
@@ -118,11 +118,11 @@ def setup(ctx: PluginContext) -> None:
         return QQOfficialAdapter(instance_id=instance_id, platform=platform, config=cfg)
 
     # Register both spellings to make migration easier from existing configs.
-    ctx.register_adapter_factory("qqofficial", _qqofficial_factory)
-    ctx.register_adapter_factory("qq_official", _qqofficial_factory)
+    plg.register_adapter_factory("qqofficial", _qqofficial_factory)
+    plg.register_adapter_factory("qq_official", _qqofficial_factory)
 
 
-async def on_disable(ctx: PluginContext) -> None:
-    if ctx._adapter_manager is not None:
-        ctx._adapter_manager.unregister_adapter("qqofficial")
-        ctx._adapter_manager.unregister_adapter("qq_official")
+async def on_disable(plg: Plugin) -> None:
+    if plg._adapter_manager is not None:
+        plg._adapter_manager.unregister_adapter("qqofficial")
+        plg._adapter_manager.unregister_adapter("qq_official")

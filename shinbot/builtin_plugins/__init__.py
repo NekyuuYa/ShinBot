@@ -8,7 +8,7 @@ Plugin layout (naming is mandatory):
   shinbot/builtin_plugins/
     shinbot_adapter_<name>/   ← adapter drivers (protocol translators)
       metadata.json
-      __init__.py             ← must expose setup(ctx: PluginContext)
+      __init__.py             ← must expose setup(plg: Plugin)
     shinbot_plugin_<name>/    ← built-in logic plugins
       metadata.json
       __init__.py

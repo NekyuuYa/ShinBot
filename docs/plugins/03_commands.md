@@ -1,15 +1,15 @@
 # 命令系统
 
-ShinBot 的命令注册入口在 `PluginContext.on_command()`，运行时解析由 `CommandRegistry` + `MessagePipeline` 完成。
+ShinBot 的命令注册入口在 `Plugin.on_command()`，运行时解析由 `CommandRegistry` + `MessagePipeline` 完成。
 
 ## 1. 基础注册
 
 ```python
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 
 
-def setup(ctx: PluginContext) -> None:
-    @ctx.on_command("ping")
+def setup(plg: Plugin) -> None:
+    @plg.on_command("ping")
     async def ping(bot, args: str) -> None:
         await bot.send(f"pong: {args}" if args else "pong")
 ```
@@ -47,7 +47,7 @@ async def handler(bot, args: str) -> None:
 from shinbot.core.dispatch.command import CommandPriority
 
 
-@ctx.on_command("echo", aliases=["say"], priority=CommandPriority.P0_PREFIX)
+@plg.on_command("echo", aliases=["say"], priority=CommandPriority.P0_PREFIX)
 async def echo(bot, args: str) -> None:
     await bot.send(args or "(empty)")
 ```
@@ -61,7 +61,7 @@ async def echo(bot, args: str) -> None:
 from shinbot.core.dispatch.command import CommandPriority
 
 
-@ctx.on_command("菜单", priority=CommandPriority.P1_EXACT)
+@plg.on_command("菜单", priority=CommandPriority.P1_EXACT)
 async def menu(bot, args: str) -> None:
     await bot.send("显示菜单")
 ```
@@ -74,7 +74,7 @@ async def menu(bot, args: str) -> None:
 from shinbot.core.dispatch.command import CommandPriority
 
 
-@ctx.on_command(
+@plg.on_command(
     "dice",
     priority=CommandPriority.P2_REGEX,
     pattern=r"^(\d+)d(\d+)$",
@@ -93,7 +93,7 @@ async def dice(bot, args: str) -> None:
 ## 6. 权限控制
 
 ```python
-@ctx.on_command("admin", permission="admin.secret")
+@plg.on_command("admin", permission="admin.secret")
 async def admin_only(bot, args: str) -> None:
     await bot.send("ok")
 ```

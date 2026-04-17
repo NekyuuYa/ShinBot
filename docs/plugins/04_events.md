@@ -8,20 +8,20 @@ ShinBot 的事件分发由两部分组成：
 ## 1. 注册方式
 
 ```python
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 
 
-def setup(ctx: PluginContext) -> None:
-    @ctx.on_event("message-created")
+def setup(plg: Plugin) -> None:
+    @plg.on_event("message-created")
     async def on_message(bot) -> None:
         await bot.send(f"收到: {bot.text}")
 
-    @ctx.on_message()
+    @plg.on_message()
     async def on_message_alias(bot) -> None:
-        ctx.logger.info("message-created alias")
+        plg.logger.info("message-created alias")
 ```
 
-`@ctx.on_message()` 是 `@ctx.on_event("message-created")` 的别名。
+`@plg.on_message()` 是 `@plg.on_event("message-created")` 的别名。
 
 ## 2. 处理器参数类型
 
@@ -33,9 +33,9 @@ def setup(ctx: PluginContext) -> None:
 示例（通知事件）：
 
 ```python
-@ctx.on_event("guild-member-added")
+@plg.on_event("guild-member-added")
 async def on_member_added(event) -> None:
-    ctx.logger.info("member added: %s", event.sender_id)
+    plg.logger.info("member added: %s", event.sender_id)
 ```
 
 ## 3. 优先级
@@ -43,12 +43,12 @@ async def on_member_added(event) -> None:
 `EventBus` 规则是“数字越小越先执行”，默认 `priority=100`。
 
 ```python
-@ctx.on_event("message-created", priority=10)
+@plg.on_event("message-created", priority=10)
 async def first(bot):
     ...
 
 
-@ctx.on_event("message-created", priority=200)
+@plg.on_event("message-created", priority=200)
 async def later(bot):
     ...
 ```
@@ -58,13 +58,13 @@ async def later(bot):
 `"*"` 可以监听所有事件：
 
 ```python
-@ctx.on_event("*")
+@plg.on_event("*")
 async def on_any(event_obj) -> None:
     if hasattr(event_obj, "event"):
         event_type = event_obj.event.type
     else:
         event_type = event_obj.type
-    ctx.logger.info("event=%s", event_type)
+    plg.logger.info("event=%s", event_type)
 ```
 
 消息轨道与通知轨道都会进这里，因此参数类型可能不同。
@@ -77,7 +77,7 @@ async def on_any(event_obj) -> None:
 from shinbot.core.dispatch.event_bus import StopPropagation
 
 
-@ctx.on_event("message-created", priority=10)
+@plg.on_event("message-created", priority=10)
 async def guard(bot):
     if bot.text.startswith("/internal"):
         raise StopPropagation()

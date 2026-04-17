@@ -1,4 +1,4 @@
-"""Plugin runtime context and registration decorators."""
+"""Plugin runtime capability object and registration decorators."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ if TYPE_CHECKING:
     from shinbot.core.platform.adapter_manager import AdapterManager
 
 
-class PluginContext:
-    """Context object passed to plugins during initialization."""
+class Plugin:
+    """Capability object passed to plugins during initialization."""
 
     def __init__(
         self,
@@ -95,7 +95,7 @@ class PluginContext:
         if self._adapter_manager is None:
             raise RuntimeError(
                 f"Plugin {self.plugin_id!r} cannot register an adapter factory: "
-                "no AdapterManager is available in this PluginContext."
+                "no AdapterManager is available in this Plugin object."
             )
         self._adapter_manager.register_adapter(name, factory)
 

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 
 
 class OneBotV11PluginConfig(BaseModel):
@@ -77,7 +77,7 @@ class OneBotV11PluginConfig(BaseModel):
 __plugin_config_class__ = OneBotV11PluginConfig
 
 
-def setup(ctx: PluginContext) -> None:
+def setup(plg: Plugin) -> None:
     """Register the OneBot v11 adapter factory with the AdapterManager."""
     from .adapter import OneBotV11Adapter, OneBotV11Config
 
@@ -123,12 +123,12 @@ def setup(ctx: PluginContext) -> None:
         )
         return OneBotV11Adapter(instance_id=instance_id, platform=platform, config=cfg)
 
-    ctx.register_adapter_factory("onebot_v11", _onebot_factory)
+    plg.register_adapter_factory("onebot_v11", _onebot_factory)
 
 
-async def on_disable(ctx: PluginContext) -> None:
+async def on_disable(plg: Plugin) -> None:
     from .adapter import _GATEWAY
 
     await _GATEWAY.shutdown_all()
-    if ctx._adapter_manager is not None:
-        ctx._adapter_manager.unregister_adapter("onebot_v11")
+    if plg._adapter_manager is not None:
+        plg._adapter_manager.unregister_adapter("onebot_v11")

@@ -10,11 +10,11 @@ ShinBot 不强制插件使用某一种数据库，但有几条明确边界。
 data/plugin_data/<plugin_id>/
 ```
 
-在代码中通过 `ctx.data_dir` 使用：
+在代码中通过 `plg.data_dir` 使用：
 
 ```python
-def setup(ctx):
-    ctx.logger.info("data_dir=%s", ctx.data_dir)
+def setup(plg):
+    plg.logger.info("data_dir=%s", plg.data_dir)
 ```
 
 该目录由 `PluginManager` 在构建插件上下文时自动创建。
@@ -29,7 +29,7 @@ def setup(ctx):
 示例：
 
 ```python
-@ctx.on_command("counter")
+@plg.on_command("counter")
 async def counter(bot, args: str) -> None:
     current = int(bot.session.plugin_data.get("counter", 0))
     current += 1
@@ -69,9 +69,9 @@ def save_json(path, payload):
 import asyncio
 
 
-@ctx.on_command("save")
+@plg.on_command("save")
 async def save(bot, args: str) -> None:
-    target = ctx.data_dir / "notes.txt"
+    target = plg.data_dir / "notes.txt"
     await asyncio.to_thread(target.write_text, args, encoding="utf-8")
     await bot.send("saved")
 ```
@@ -86,7 +86,7 @@ async def save(bot, args: str) -> None:
 
 ## 5. 实践建议
 
-- 插件业务数据放在 `ctx.data_dir`
+- 插件业务数据放在 `plg.data_dir`
 - 避免写入插件代码目录
 - 高频更新建议用 SQLite
 - 多协程共享写文件时加锁，避免覆盖

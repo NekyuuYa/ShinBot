@@ -9,7 +9,7 @@
 顺序：
 
 1. 导入模块
-2. 调用 `setup(ctx)`
+2. 调用 `setup(plg)`
 3. 调用可选 `on_enable(...)`
 4. 标记插件为 `ACTIVE`
 
@@ -32,25 +32,25 @@
 
 1. 先执行一次停用链路
 2. `importlib.reload` 模块
-3. 再次执行 `setup(ctx)` + `on_enable(...)`
+3. 再次执行 `setup(plg)` + `on_enable(...)`
 
 ## 2. 钩子签名
 
 ### `setup`（必需）
 
 ```python
-def setup(ctx: PluginContext) -> None:
+def setup(plg: Plugin) -> None:
     ...
 ```
 
-也支持 `async def setup(ctx)`，框架会 await。
+也支持 `async def setup(plg)`，框架会 await。
 
 ### `on_enable`（可选）
 
 `PluginManager` 支持两种形式：
 
 - `def on_enable()` 或 `async def on_enable()`
-- `def on_enable(ctx)` 或 `async def on_enable(ctx)`
+- `def on_enable(plg)` 或 `async def on_enable(plg)`
 
 ### `on_disable`（可选）
 
@@ -75,18 +75,18 @@ import asyncio
 _task: asyncio.Task | None = None
 
 
-def setup(ctx):
+def setup(plg):
     global _task
-    _task = asyncio.create_task(_loop(ctx))
+    _task = asyncio.create_task(_loop(plg))
 
 
-async def _loop(ctx):
+async def _loop(plg):
     while True:
         await asyncio.sleep(5)
-        ctx.logger.debug("tick")
+        plg.logger.debug("tick")
 
 
-async def on_disable(ctx):
+async def on_disable(plg):
     global _task
     if _task is None:
         return

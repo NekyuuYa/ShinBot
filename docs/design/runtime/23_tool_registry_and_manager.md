@@ -238,15 +238,15 @@ Tool 相关职责应拆成三层：
 
 ### 5.2 插件上下文接口
 
-为了与现有插件注册体验保持一致，建议在 `PluginContext` 补一层包装接口：
+为了与现有插件注册体验保持一致，建议在 `Plugin` 补一层包装接口：
 
-- `ctx.tool(...)`
-- 或 `ctx.register_tool(...)`
+- `plg.tool(...)`
+- 或 `plg.register_tool(...)`
 
 推荐风格：
 
 ```python
-@ctx.tool(
+@plg.tool(
     name="weather_query",
     description="查询城市天气",
     permission="tools.weather.query",
@@ -395,7 +395,7 @@ ToolManager 在执行前必须：
 ### 7.1 注册时机
 
 - 内置 Tool：在应用启动时注册
-- 插件 Tool：在插件 `setup(ctx)` 阶段注册
+- 插件 Tool：在插件 `setup(plg)` 阶段注册
 - 桥接 Tool：在桥接模块完成能力发现后注册
 
 ### 7.2 停用规则
@@ -432,7 +432,7 @@ ToolManager 在执行前必须：
 应用装配建议：
 
 - 在 `ShinBot` 顶层实例中持有 `tool_registry` 与 `tool_manager`
-- `PluginContext` 注入 tool 注册接口
+- `Plugin` 注入 tool 注册接口
 - `PromptRegistry` 后续从 `ToolManager.export_model_tools()` 获取 `Abilities`
 - `Model Runtime` 在调用时接收筛选后的 `tools`
 
@@ -514,7 +514,7 @@ Tool 注册也必须满足同一原则：
    - 权限校验
    - 超时与异常映射
 3. 插件上下文接入
-   - 在 `PluginContext` 提供 `ctx.tool(...)`
+   - 在 `Plugin` 提供 `plg.tool(...)`
    - 插件卸载联动批量清理
 4. 模型运行时接入
    - 由 ToolManager 导出模型可见 Tool 集

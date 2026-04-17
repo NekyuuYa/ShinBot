@@ -640,7 +640,7 @@ class MessagePipeline:
                 handler_result = await match.command.handler(bot, match.raw_args)
                 if handler_result is not None:
                     logger.warning(
-                        "Command handler %s returned a value that was ignored; use ctx.send()",
+                        "Command handler %s returned a value that was ignored; use bot.send()",
                         match.command.name,
                     )
                 cmd_time = (time.monotonic() - cmd_start) * 1000.0
@@ -686,7 +686,7 @@ class MessagePipeline:
         event_results = await self._event_bus.emit(event.type, bot)
         if event_results:
             logger.warning(
-                "Event handlers returned values for %s; return values are ignored, use ctx.send()",
+                "Event handlers returned values for %s; return values are ignored, use bot.send()",
                 event.type,
             )
 

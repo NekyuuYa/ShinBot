@@ -27,7 +27,7 @@ ShinBot/
 │   │   ├── application/         # ShinBot 应用装配与 BootController
 │   │   ├── dispatch/            # Command/Event/Pipeline
 │   │   ├── platform/            # AdapterManager 与 BaseAdapter
-│   │   ├── plugins/             # PluginManager 与 PluginContext
+│   │   ├── plugins/             # PluginManager 与 Plugin
 │   │   ├── security/            # PermissionEngine 与 AuditLogger
 │   │   └── state/               # SessionManager 与会话模型
 │   ├── models/                  # 领域模型与协议资源模型

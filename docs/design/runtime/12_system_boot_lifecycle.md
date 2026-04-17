@@ -35,7 +35,7 @@
 - **动作**: 调用 `PluginManager` 先扫描 `shinbot/builtin_plugins/`，再扫描 `data/plugins/`。
 - **子任务**:
     1. 解析 `metadata.json`。
-    2. 导入 Python 模块并调用其 `setup(ctx)`。
+    2. 导入 Python 模块并调用其 `setup(plg)`。
     3. 此时所有指令和事件监听器已注册进核心引擎。
 - **失败影响**: 对应插件标记为 `LOAD_FAILED`，系统继续引导。
 

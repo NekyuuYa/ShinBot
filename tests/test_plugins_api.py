@@ -37,8 +37,8 @@ class _BootStub:
 def _make_plugin_module(name: str):
     mod = types.ModuleType(name)
 
-    def setup(ctx):
-        @ctx.on_command("demo")
+    def setup(plg):
+        @plg.on_command("demo")
         async def demo(c, args):
             return None
 
@@ -57,8 +57,8 @@ def _make_configurable_plugin_module(name: str):
         api_key: str = ""
         retry: RetryConfig = RetryConfig()
 
-    def setup(ctx):
-        @ctx.on_command("demo-config")
+    def setup(plg):
+        @plg.on_command("demo-config")
         async def demo(c, args):
             return None
 
@@ -172,8 +172,8 @@ def test_plugins_list_and_schema_apply_locale_translations(tmp_path: Path):
     class DemoPluginConfig(BaseModel):
         api_key: str = ""
 
-    def setup(ctx):
-        @ctx.on_command("demo-i18n")
+    def setup(plg):
+        @plg.on_command("demo-i18n")
         async def demo(c, args):
             return None
 
@@ -210,7 +210,9 @@ def test_plugins_list_and_schema_apply_locale_translations(tmp_path: Path):
             assert payload["name"] == "演示插件"
             assert payload["description"] == "演示描述"
             assert payload["metadata"]["config_schema"]["title"] == "演示配置"
-            assert payload["metadata"]["config_schema"]["properties"]["api_key"]["title"] == "接口密钥"
+            assert (
+                payload["metadata"]["config_schema"]["properties"]["api_key"]["title"] == "接口密钥"
+            )
 
             schema_resp = client.get("/api/v1/plugins/demo-i18n-plugin/schema", headers=headers)
             assert schema_resp.status_code == 200
@@ -241,8 +243,8 @@ def test_plugins_list_and_schema_load_locale_files(tmp_path: Path):
                 "",
                 "__plugin_config_class__ = DemoPluginConfig",
                 "",
-                "def setup(ctx):",
-                '    @ctx.on_command("demo-file")',
+                "def setup(plg):",
+                '    @plg.on_command("demo-file")',
                 "    async def demo(c, args):",
                 "        return None",
             ]

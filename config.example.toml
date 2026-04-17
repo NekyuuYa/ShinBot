@@ -52,7 +52,7 @@ reconnect_log_interval = 30.0
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
 # List Python modules to load as plugins on startup.
-# Each module must expose a setup(ctx: PluginContext) function.
+# Each module must expose a setup(plg: Plugin) function.
 
 # [[plugins]]
 # id     = "hello"

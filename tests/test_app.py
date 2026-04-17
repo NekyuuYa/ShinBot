@@ -8,7 +8,7 @@ import types
 import pytest
 
 from shinbot.core.application.app import ShinBot
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
 from tests.conftest import MockAdapter, make_message_event
 
@@ -36,9 +36,9 @@ class TestShinBotInit:
         """PluginManager must use the same registry as the pipeline."""
         bot = ShinBot()
         # Register a command via plugin and verify pipeline can resolve it
-        ctx = PluginContext("test", bot.command_registry, bot.event_bus)
+        plg = Plugin("test", bot.command_registry, bot.event_bus)
 
-        @ctx.on_command("ping")
+        @plg.on_command("ping")
         async def handler(c, args):
             pass
 
@@ -87,8 +87,8 @@ class TestLoadPlugin:
     def test_load_plugin_delegates_to_manager(self):
         bot = ShinBot()
 
-        def setup(ctx: PluginContext):
-            @ctx.on_command("greet")
+        def setup(plg: Plugin):
+            @plg.on_command("greet")
             async def greet(c, args):
                 pass
 
@@ -101,8 +101,8 @@ class TestLoadPlugin:
     async def test_load_plugin_async(self):
         bot = ShinBot()
 
-        async def async_setup(ctx: PluginContext):
-            @ctx.on_command("async_greet")
+        async def async_setup(plg: Plugin):
+            @plg.on_command("async_greet")
             async def h(c, args):
                 pass
 

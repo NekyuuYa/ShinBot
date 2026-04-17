@@ -5,11 +5,11 @@
 ## 示例 1：最小命令插件
 
 ```python
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 
 
-def setup(ctx: PluginContext) -> None:
-    @ctx.on_command("hello")
+def setup(plg: Plugin) -> None:
+    @plg.on_command("hello")
     async def hello(bot, args: str) -> None:
         name = args.strip() or "world"
         await bot.send(f"hello, {name}")
@@ -21,8 +21,8 @@ def setup(ctx: PluginContext) -> None:
 from shinbot.core.dispatch.command import CommandPriority
 
 
-def setup(ctx):
-    @ctx.on_command(
+def setup(plg):
+    @plg.on_command(
         "roll",
         priority=CommandPriority.P2_REGEX,
         pattern=r"^(\d+)d(\d+)$",
@@ -39,15 +39,15 @@ def setup(ctx):
 ## 示例 3：消息事件与通知事件
 
 ```python
-def setup(ctx):
-    @ctx.on_message()
+def setup(plg):
+    @plg.on_message()
     async def on_message(bot) -> None:
         if "ping" in bot.text:
             await bot.reply("pong")
 
-    @ctx.on_event("guild-member-added")
+    @plg.on_event("guild-member-added")
     async def on_member_added(event) -> None:
-        ctx.logger.info("member added: %s", event.sender_id)
+        plg.logger.info("member added: %s", event.sender_id)
 ```
 
 ## 示例 4：多轮输入
@@ -56,8 +56,8 @@ def setup(ctx):
 import asyncio
 
 
-def setup(ctx):
-    @ctx.on_command("ask")
+def setup(plg):
+    @plg.on_command("ask")
     async def ask(bot, args: str) -> None:
         try:
             name = await bot.wait_for_input("你的名字是？", timeout=30)
@@ -71,8 +71,8 @@ def setup(ctx):
 ## 示例 5：注册工具
 
 ```python
-def setup(ctx):
-    @ctx.tool(
+def setup(plg):
+    @plg.tool(
         name="weather_query",
         description="Query weather by city",
         input_schema={
@@ -96,19 +96,19 @@ def setup(ctx):
 ## 示例 6：适配器插件骨架
 
 ```python
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginRole
 
 __plugin_role__ = PluginRole.ADAPTER
 __plugin_adapter_platform__ = "demo"
 
 
-def setup(ctx: PluginContext) -> None:
+def setup(plg: Plugin) -> None:
     def factory(instance_id: str, platform: str, **kwargs):
         # 返回 BaseAdapter 子类实例
         raise NotImplementedError
 
-    ctx.register_adapter_factory("demo", factory)
+    plg.register_adapter_factory("demo", factory)
 ```
 
 ## 示例 7：声明配置模型与本地化

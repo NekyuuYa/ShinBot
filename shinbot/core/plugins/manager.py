@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from shinbot.agent.tools import ToolOwnerType, ToolRegistry
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
 from shinbot.utils.logger import get_logger
 
@@ -75,7 +75,7 @@ class PluginManager:
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._plugins: dict[str, PluginMeta] = {}
-        self._contexts: dict[str, PluginContext] = {}
+        self._plugin_objects: dict[str, Plugin] = {}
         self._modules: dict[str, Any] = {}
         self._declared_metadata: dict[str, dict[str, Any]] = {}
 
@@ -83,8 +83,8 @@ class PluginManager:
         self._plugin_data_root = self._root_data_dir / "plugin_data"
         self._plugin_data_root.mkdir(parents=True, exist_ok=True)
 
-    def _build_ctx(self, plugin_id: str) -> PluginContext:
-        return PluginContext(
+    def _build_plg(self, plugin_id: str) -> Plugin:
+        return Plugin(
             plugin_id,
             self._command_registry,
             self._event_bus,
@@ -126,13 +126,13 @@ class PluginManager:
             raise
 
         if not hasattr(module, "setup"):
-            raise AttributeError(f"Plugin module {module_path!r} must expose a setup(ctx) function")
+            raise AttributeError(f"Plugin module {module_path!r} must expose a setup(plg) function")
 
-        ctx = self._build_ctx(plugin_id)
+        plg = self._build_plg(plugin_id)
 
         try:
-            await self._invoke(module.setup, ctx)
-            await self._invoke_hook(module, "on_enable", ctx)
+            await self._invoke(module.setup, plg)
+            await self._invoke_hook(module, "on_enable", plg)
         except Exception:
             logger.exception("Error loading plugin %s", plugin_id)
             self._command_registry.unregister_by_owner(plugin_id)
@@ -145,12 +145,12 @@ class PluginManager:
             plugin_id,
             module_path,
             module,
-            ctx,
+            plg,
             declared_metadata=declared_metadata,
         )
 
         self._plugins[plugin_id] = meta
-        self._contexts[plugin_id] = ctx
+        self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
         if declared_metadata is not None:
             self._declared_metadata[plugin_id] = dict(declared_metadata)
@@ -234,12 +234,12 @@ class PluginManager:
             module = importlib.import_module(module_path)
 
         if not hasattr(module, "setup"):
-            raise AttributeError(f"Plugin module {module_path!r} must expose a setup(ctx) function")
+            raise AttributeError(f"Plugin module {module_path!r} must expose a setup(plg) function")
 
-        ctx = self._build_ctx(plugin_id)
+        plg = self._build_plg(plugin_id)
         try:
-            await self._invoke(module.setup, ctx)
-            await self._invoke_hook(module, "on_enable", ctx)
+            await self._invoke(module.setup, plg)
+            await self._invoke_hook(module, "on_enable", plg)
         except Exception:
             # Clean up any handlers registered by setup() so no ghost handlers
             # remain in the EventBus or CommandRegistry when enable fails.
@@ -261,10 +261,10 @@ class PluginManager:
         meta.author = author
         meta.role = role
         meta.state = PluginState.ACTIVE
-        meta.commands = list(ctx._registered_commands)
-        meta.event_types = list(ctx._registered_events)
-        meta.data_dir = str(ctx.data_dir)
-        self._contexts[plugin_id] = ctx
+        meta.commands = list(plg._registered_commands)
+        meta.event_types = list(plg._registered_events)
+        meta.data_dir = str(plg.data_dir)
+        self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
         logger.info("Enabled plugin %s", plugin_id)
         return meta
@@ -470,10 +470,10 @@ class PluginManager:
 
         logger.info("Reloading plugin %s", plugin_id)
 
-        ctx = self._build_ctx(plugin_id)
+        plg = self._build_plg(plugin_id)
         try:
-            await self._invoke(module.setup, ctx)
-            await self._invoke_hook(module, "on_enable", ctx)
+            await self._invoke(module.setup, plg)
+            await self._invoke_hook(module, "on_enable", plg)
         except Exception:
             logger.exception(
                 "Error during reload of plugin %s; reverting handler registrations", plugin_id
@@ -488,11 +488,11 @@ class PluginManager:
             plugin_id,
             module_path,
             module,
-            ctx,
+            plg,
             declared_metadata=declared_metadata,
         )
         self._plugins[plugin_id] = new_meta
-        self._contexts[plugin_id] = ctx
+        self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
         return new_meta
 
@@ -501,7 +501,7 @@ class PluginManager:
         plugin_id: str,
         module_path: str,
         module: Any,
-        ctx: PluginContext,
+        plg: Plugin,
         *,
         declared_metadata: dict[str, Any] | None = None,
     ) -> PluginMeta:
@@ -519,9 +519,9 @@ class PluginManager:
             role=role,
             state=PluginState.ACTIVE,
             module_path=module_path,
-            commands=list(ctx._registered_commands),
-            event_types=list(ctx._registered_events),
-            data_dir=str(ctx.data_dir),
+            commands=list(plg._registered_commands),
+            event_types=list(plg._registered_events),
+            data_dir=str(plg.data_dir),
         )
 
     def _resolve_identity_fields(
@@ -532,9 +532,7 @@ class PluginManager:
         declared_metadata: dict[str, Any] | None = None,
     ) -> tuple[str, str, str, str, PluginRole]:
         if declared_metadata is None:
-            logger.warning(
-                "Plugin %r loaded without metadata.json; using defaults", plugin_id
-            )
+            logger.warning("Plugin %r loaded without metadata.json; using defaults", plugin_id)
             declared_metadata = {}
         return (
             declared_metadata.get("name", plugin_id),
@@ -565,10 +563,10 @@ class PluginManager:
         remove_module: bool,
     ) -> tuple[int, int]:
         module = self._modules.get(plugin_id)
-        ctx = self._contexts.get(plugin_id)
+        plg = self._plugin_objects.get(plugin_id)
 
         try:
-            await self._invoke_hook(module, "on_disable", ctx)
+            await self._invoke_hook(module, "on_disable", plg)
         except Exception:
             logger.exception("Error in on_disable() for plugin %s", plugin_id)
 
@@ -584,7 +582,7 @@ class PluginManager:
                 logger.exception("Error in teardown() for plugin %s", plugin_id)
 
         self._modules.pop(plugin_id, None)
-        self._contexts.pop(plugin_id, None)
+        self._plugin_objects.pop(plugin_id, None)
 
         if remove_module and meta.module_path in sys.modules:
             del sys.modules[meta.module_path]
@@ -676,7 +674,7 @@ class PluginManager:
 
         return metadata
 
-    async def _invoke_hook(self, module: Any, hook_name: str, ctx: PluginContext | None) -> None:
+    async def _invoke_hook(self, module: Any, hook_name: str, plg: Plugin | None) -> None:
         if module is None or not hasattr(module, hook_name):
             return
         hook = getattr(module, hook_name)
@@ -685,9 +683,9 @@ class PluginManager:
             if len(sig.parameters) == 0:
                 await self._invoke(hook)
             else:
-                await self._invoke(hook, ctx)
+                await self._invoke(hook, plg)
         except (TypeError, ValueError):
-            await self._invoke(hook, ctx)
+            await self._invoke(hook, plg)
 
     async def _invoke(self, func: Callable[..., Any], *args: Any) -> Any:
         result = func(*args)

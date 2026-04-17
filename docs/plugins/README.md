@@ -37,9 +37,9 @@
 
 ## 快速事实
 
-- 插件入口必须提供 `setup(ctx)`。
+- 插件入口必须提供 `setup(plg)`。
 - 命令处理器当前签名是 `async def handler(bot, args: str)`。
-- `@ctx.on_message()` 等价于监听 `message-created`。
+- `@plg.on_message()` 等价于监听 `message-created`。
 - 插件数据目录是 `data/plugin_data/<plugin_id>/`。
 - `on_disable` 支持 0 或 1 个参数；`teardown` 当前按无参数调用。
 - 通过 `metadata.json` 扫描加载时，运行态插件名/版本/作者/描述/角色来自 `metadata.json`。

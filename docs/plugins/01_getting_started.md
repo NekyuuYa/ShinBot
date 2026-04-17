@@ -42,22 +42,22 @@ data/plugins/hello_demo/
 ## 3. 编写入口代码
 
 ```python
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 
 
-def setup(ctx: PluginContext) -> None:
-    @ctx.on_command("hello")
+def setup(plg: Plugin) -> None:
+    @plg.on_command("hello")
     async def hello(bot, args: str) -> None:
         # args 是命令名之后的原始文本
         name = args.strip() or "world"
         await bot.send(f"hello, {name}")
 
-    ctx.logger.info("hello_demo loaded")
+    plg.logger.info("hello_demo loaded")
 ```
 
 关键点：
 
-- `setup(ctx)` 必须存在。
+- `setup(plg)` 必须存在。
 - 命令处理器签名是 `async def handler(bot, args: str)`。
 - `bot` 是 `MessageContext`，用 `await bot.send(...)` 回复。
 - 展示字段（`name`/`version`/`author`/`description`/`role`）建议统一在 `metadata.json` 中声明。
@@ -96,7 +96,7 @@ hello, ShinBot
 
 - 一个可加载、可启用、可响应命令的插件
 - 一个独立数据目录：`data/plugin_data/hello_demo/`
-- 一个可扩展的 `PluginContext` 入口
+- 一个可扩展的 `Plugin` 入口
 
 下一步建议阅读：
 

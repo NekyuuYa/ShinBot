@@ -10,7 +10,7 @@ import pytest
 from shinbot.agent.tools import ToolRegistry
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.manager import PluginManager, _topo_sort
 from shinbot.core.plugins.types import PluginRole, PluginState
 
@@ -33,12 +33,12 @@ def _make_plugin_module(
     return mod
 
 
-class TestPluginContext:
+class TestPlugin:
     def setup_method(self):
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
         self.tool_registry = ToolRegistry()
-        self.ctx = PluginContext(
+        self.plg = Plugin(
             "test-plugin",
             self.cmd_reg,
             self.event_bus,
@@ -46,31 +46,31 @@ class TestPluginContext:
         )
 
     def test_on_command_decorator(self):
-        @self.ctx.on_command("hello", aliases=["hi"], permission="cmd.hello")
+        @self.plg.on_command("hello", aliases=["hi"], permission="cmd.hello")
         async def handler(ctx, args):
             pass
 
         assert self.cmd_reg.get("hello") is not None
         assert self.cmd_reg.get("hi") is not None
-        assert "hello" in self.ctx._registered_commands
+        assert "hello" in self.plg._registered_commands
 
     def test_on_event_decorator(self):
-        @self.ctx.on_event("message-created")
+        @self.plg.on_event("message-created")
         async def handler(event):
             pass
 
         assert self.event_bus.handler_count("message-created") == 1
-        assert "message-created" in self.ctx._registered_events
+        assert "message-created" in self.plg._registered_events
 
     def test_on_message_shorthand(self):
-        @self.ctx.on_message()
+        @self.plg.on_message()
         async def handler(event):
             pass
 
         assert self.event_bus.handler_count("message-created") == 1
 
     def test_tool_decorator_registers_tool(self):
-        @self.ctx.tool(
+        @self.plg.tool(
             name="weather_query",
             description="query weather",
             permission="tools.weather.query",
@@ -103,8 +103,8 @@ class TestPluginManager:
                 del sys.modules[key]
 
     def test_load_plugin(self):
-        def setup(ctx: PluginContext):
-            @ctx.on_command("greet")
+        def setup(plg: Plugin):
+            @plg.on_command("greet")
             async def greet(c, args):
                 pass
 
@@ -122,7 +122,7 @@ class TestPluginManager:
         assert self.cmd_reg.get("greet") is not None
 
     def test_load_duplicate_raises(self):
-        _make_plugin_module("test_plugin_dup", setup_fn=lambda ctx: None)
+        _make_plugin_module("test_plugin_dup", setup_fn=lambda plg: None)
         self.mgr.load_plugin("dup", "test_plugin_dup")
         with pytest.raises(ValueError, match="already loaded"):
             self.mgr.load_plugin("dup", "test_plugin_dup")
@@ -134,16 +134,16 @@ class TestPluginManager:
             self.mgr.load_plugin("nosetup", "test_plugin_nosetup")
 
     def test_unload_plugin(self):
-        def setup(ctx: PluginContext):
-            @ctx.on_command("bye")
+        def setup(plg: Plugin):
+            @plg.on_command("bye")
             async def bye(c, args):
                 pass
 
-            @ctx.on_event("test-event")
+            @plg.on_event("test-event")
             async def on_test(event):
                 pass
 
-            @ctx.tool(
+            @plg.tool(
                 name="bye_tool",
                 description="tool",
                 input_schema={"type": "object", "properties": {}},
@@ -169,12 +169,12 @@ class TestPluginManager:
         assert self.mgr.unload_plugin("nonexistent") is False
 
     def test_disable_plugin_keeps_metadata_and_unregisters_handlers(self):
-        def setup(ctx: PluginContext):
-            @ctx.on_command("sleep")
+        def setup(plg: Plugin):
+            @plg.on_command("sleep")
             async def sleep(c, args):
                 pass
 
-            @ctx.on_event("test-event")
+            @plg.on_event("test-event")
             async def on_test(event):
                 pass
 
@@ -189,8 +189,8 @@ class TestPluginManager:
         assert self.event_bus.handler_count("test-event") == 0
 
     def test_enable_plugin_restores_registrations(self):
-        def setup(ctx: PluginContext):
-            @ctx.on_command("wake")
+        def setup(plg: Plugin):
+            @plg.on_command("wake")
             async def wake(c, args):
                 pass
 
@@ -206,10 +206,10 @@ class TestPluginManager:
     def test_reload_plugin(self):
         call_count = {"n": 0}
 
-        def setup(ctx: PluginContext):
+        def setup(plg: Plugin):
             call_count["n"] += 1
 
-            @ctx.on_command("reload_test")
+            @plg.on_command("reload_test")
             async def handler(c, args):
                 pass
 
@@ -226,7 +226,7 @@ class TestPluginManager:
     def test_teardown_called_on_unload(self):
         torn_down = {"called": False}
 
-        def setup(ctx):
+        def setup(plg):
             pass
 
         def teardown():
@@ -238,22 +238,22 @@ class TestPluginManager:
         assert torn_down["called"] is True
 
     def test_all_plugins(self):
-        _make_plugin_module("test_plugin_a1", setup_fn=lambda ctx: None)
-        _make_plugin_module("test_plugin_b1", setup_fn=lambda ctx: None)
+        _make_plugin_module("test_plugin_a1", setup_fn=lambda plg: None)
+        _make_plugin_module("test_plugin_b1", setup_fn=lambda plg: None)
         self.mgr.load_plugin("a", "test_plugin_a1")
         self.mgr.load_plugin("b", "test_plugin_b1")
         assert len(self.mgr.all_plugins) == 2
 
     def test_get_plugin(self):
-        _make_plugin_module("test_plugin_get1", setup_fn=lambda ctx: None)
+        _make_plugin_module("test_plugin_get1", setup_fn=lambda plg: None)
         self.mgr.load_plugin("get1", "test_plugin_get1")
         assert self.mgr.get_plugin("get1") is not None
         assert self.mgr.get_plugin("nope") is None
 
     @pytest.mark.asyncio
     async def test_load_plugin_async(self):
-        async def async_setup(ctx: PluginContext):
-            @ctx.on_command("async_cmd")
+        async def async_setup(plg: Plugin):
+            @plg.on_command("async_cmd")
             async def handler(c, args):
                 pass
 
@@ -319,7 +319,7 @@ async def test_load_respects_dependency_order(tmp_path: Path):
     load_order: list[str] = []
 
     def _make_setup(pid: str):
-        def setup(ctx: PluginContext):
+        def setup(plg: Plugin):
             load_order.append(pid)
 
         return setup
@@ -389,7 +389,7 @@ async def test_load_all_async_includes_builtin_plugins(
     (builtin_plugin_dir / "__init__.py").write_text("")
 
     mod = types.ModuleType("shinbot.builtin_plugins.shinbot_plugin_builtin_demo")
-    mod.setup = lambda ctx: None  # type: ignore[attr-defined]
+    mod.setup = lambda plg: None  # type: ignore[attr-defined]
     sys.modules["shinbot.builtin_plugins.shinbot_plugin_builtin_demo"] = mod
 
     monkeypatch.setattr("shinbot.core.plugins.manager._BUILTIN_PLUGINS_DIR", builtin_root)
@@ -429,8 +429,8 @@ async def test_metadata_identity_overrides_module_identity_fields(tmp_path: Path
     module_name = f"{tmp_path.name}.{plugin_id}"
     mod = types.ModuleType(module_name)
 
-    def setup(ctx: PluginContext):
-        @ctx.on_command("meta_wins")
+    def setup(plg: Plugin):
+        @plg.on_command("meta_wins")
         async def meta_wins(c, args):
             return None
 

@@ -2,22 +2,22 @@
 
 本页只记录当前代码中的有效接口。
 
-## PluginContext
+## Plugin
 
-初始化时传入 `setup(ctx)`。
+初始化时传入 `setup(plg)`。
 
 ### 属性
 
 ```python
-ctx.plugin_id: str
-ctx.data_dir: Path
-ctx.logger
+plg.plugin_id: str
+plg.data_dir: Path
+plg.logger
 ```
 
 ### 命令注册
 
 ```python
-ctx.on_command(
+plg.on_command(
     name: str,
     *,
     aliases: list[str] | None = None,
@@ -33,8 +33,8 @@ ctx.on_command(
 ### 事件注册
 
 ```python
-ctx.on_event(event_type: str, *, priority: int = 100) -> Callable
-ctx.on_message(*, priority: int = 100) -> Callable
+plg.on_event(event_type: str, *, priority: int = 100) -> Callable
+plg.on_message(*, priority: int = 100) -> Callable
 ```
 
 `on_message` 等价于监听 `message-created`。
@@ -42,7 +42,7 @@ ctx.on_message(*, priority: int = 100) -> Callable
 ### 工具注册
 
 ```python
-ctx.tool(
+plg.tool(
     *,
     name: str,
     description: str,
@@ -73,7 +73,7 @@ async def handler(arguments: dict, runtime: ToolExecutionContext):
 ### 适配器工厂注册
 
 ```python
-ctx.register_adapter_factory(name: str, factory: Callable) -> None
+plg.register_adapter_factory(name: str, factory: Callable) -> None
 ```
 
 ## MessageContext（命令/消息处理器的 bot）
@@ -213,11 +213,11 @@ ToolVisibility.PUBLIC
 ## 生命周期钩子
 
 ```python
-def setup(ctx): ...                       # 必需
+def setup(plg): ...                       # 必需
 def on_enable(): ...                      # 可选
-def on_enable(ctx): ...                   # 可选
+def on_enable(plg): ...                   # 可选
 def on_disable(): ...                     # 可选
-def on_disable(ctx): ...                  # 可选
+def on_disable(plg): ...                  # 可选
 def teardown(): ...                       # 可选，当前无参数调用
 ```
 

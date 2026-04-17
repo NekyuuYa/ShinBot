@@ -68,15 +68,15 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ---
 
-## P6. Plugin Lifecycle via PluginContext
+## P6. Plugin Lifecycle via Plugin
 
-> "Plugin entry point is setup(ctx: PluginContext) — declarative, not global code execution." — internals/04_plugin_lifecycle.md
+> "Plugin entry point is setup(plg: Plugin) — declarative, not global code execution." — internals/04_plugin_lifecycle.md
 
-**Rule**: Plugins register capabilities (commands, event listeners, adapter factories) through `PluginContext` methods, not by mutating global state.
+**Rule**: Plugins register capabilities (commands, event listeners, adapter factories) through `Plugin` methods, not by mutating global state.
 
 **Rule**: On unload, the framework deregisters all stubs owned by the plugin. This prevents "duplicate commands after reload".
 
-**Contract**: `setup(ctx)` for initialization, optional `on_enable(ctx)` after activation, `on_disable(ctx)` for cleanup, and optional `teardown()` for final release.
+**Contract**: `setup(plg)` for initialization, optional `on_enable(plg)` after activation, `on_disable(plg)` for cleanup, and optional `teardown()` for final release.
 
 ---
 
@@ -122,7 +122,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 **Rule**: Plugin-owned file assets go to `data/plugin_data/{plugin_id}/`.
 
-**Rule**: Framework injects path via `ctx.data_dir`.
+**Rule**: Framework injects path via `plg.data_dir`.
 
 ---
 

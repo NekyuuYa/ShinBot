@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 
@@ -112,18 +112,18 @@ def _enqueue_record(target_file: Path, payload: dict[str, Any]) -> None:
     _WRITE_QUEUE.put_nowait((target_file, payload))
 
 
-def setup(ctx: PluginContext) -> None:
+def setup(plg: Plugin) -> None:
     global _WRITE_QUEUE, _WRITER_TASK
 
-    raw_target_file = ctx.data_dir / "raw_events.jsonl"
-    ast_target_file = ctx.data_dir / "ast_events.jsonl"
+    raw_target_file = plg.data_dir / "raw_events.jsonl"
+    ast_target_file = plg.data_dir / "ast_events.jsonl"
     _WRITE_QUEUE = asyncio.Queue(maxsize=2000)
     _WRITER_TASK = asyncio.create_task(_writer_loop())
 
-    @ctx.on_event("*")
+    @plg.on_event("*")
     async def _on_any_event(event_obj: Any) -> None:
         event_type, platform, self_id, _ = _extract_event_payload(event_obj)
-        ctx.logger.info(
+        plg.logger.info(
             "[debug_message] type=%s platform=%s self_id=%s",
             event_type,
             platform,
@@ -133,10 +133,10 @@ def setup(ctx: PluginContext) -> None:
             _enqueue_record(raw_target_file, _build_raw_record(event_obj))
             _enqueue_record(ast_target_file, _build_ast_record(event_obj))
         except asyncio.QueueFull:
-            ctx.logger.warning("[debug_message] queue full, dropping event %s", event_type)
+            plg.logger.warning("[debug_message] queue full, dropping event %s", event_type)
 
 
-async def on_disable(ctx: PluginContext) -> None:
+async def on_disable(plg: Plugin) -> None:
     global _WRITE_QUEUE, _WRITER_TASK
 
     if _WRITE_QUEUE is not None:
@@ -146,7 +146,7 @@ async def on_disable(ctx: PluginContext) -> None:
         try:
             await _WRITER_TASK
         except Exception:
-            ctx.logger.exception("[debug_message] writer task terminated unexpectedly")
+            plg.logger.exception("[debug_message] writer task terminated unexpectedly")
 
     _WRITE_QUEUE = None
     _WRITER_TASK = None

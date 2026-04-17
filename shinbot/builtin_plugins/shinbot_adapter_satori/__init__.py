@@ -7,9 +7,9 @@ it is discovered and loaded by PluginManager through metadata.json.
 
 from __future__ import annotations
 
-from shinbot.core.plugins.context import PluginContext
-
 from pydantic import BaseModel, Field
+
+from shinbot.core.plugins.context import Plugin
 
 
 class SatoriPluginConfig(BaseModel):
@@ -37,7 +37,7 @@ class SatoriPluginConfig(BaseModel):
 __plugin_config_class__ = SatoriPluginConfig
 
 
-def setup(ctx: PluginContext) -> None:
+def setup(plg: Plugin) -> None:
     """Register the Satori adapter factory with the AdapterManager."""
     from .adapter import SatoriAdapter, SatoriConfig
 
@@ -74,10 +74,10 @@ def setup(ctx: PluginContext) -> None:
         )
         return SatoriAdapter(instance_id=instance_id, platform=platform, config=cfg)
 
-    ctx.register_adapter_factory("satori", _satori_factory)
+    plg.register_adapter_factory("satori", _satori_factory)
 
 
-async def on_disable(ctx: PluginContext) -> None:
+async def on_disable(plg: Plugin) -> None:
     """Unregister the Satori factory on plugin unload / hot-reload."""
-    if ctx._adapter_manager is not None:
-        ctx._adapter_manager.unregister_adapter("satori")
+    if plg._adapter_manager is not None:
+        plg._adapter_manager.unregister_adapter("satori")

@@ -2,18 +2,18 @@
 
 本页是插件开发常用能力的快速索引。
 
-## 1. 插件入口能力（PluginContext）
+## 1. 插件入口能力（Plugin）
 
-在 `setup(ctx)` 中可使用：
+在 `setup(plg)` 中可使用：
 
-- `ctx.plugin_id`
-- `ctx.data_dir`
-- `ctx.logger`
-- `ctx.on_command(...)`
-- `ctx.on_event(...)`
-- `ctx.on_message(...)`
-- `ctx.tool(...)`
-- `ctx.register_adapter_factory(...)`（仅适配器插件场景）
+- `plg.plugin_id`
+- `plg.data_dir`
+- `plg.logger`
+- `plg.on_command(...)`
+- `plg.on_event(...)`
+- `plg.on_message(...)`
+- `plg.tool(...)`
+- `plg.register_adapter_factory(...)`（仅适配器插件场景）
 
 ## 2. 处理器运行态能力（MessageContext）
 
@@ -49,7 +49,7 @@
 
 ## 5. 数据与状态
 
-- 插件持久化目录：`ctx.data_dir`
+- 插件持久化目录：`plg.data_dir`
 - 会话状态：`bot.session.state`、`bot.session.plugin_data`
 
 ## 6. API 深入文档

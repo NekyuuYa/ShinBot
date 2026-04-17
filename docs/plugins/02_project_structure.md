@@ -90,14 +90,14 @@ data/plugins/my_plugin/
 在 `__init__.py` 里只保留注册逻辑，具体实现拆分到独立模块：
 
 ```python
-from shinbot.core.plugins.context import PluginContext
+from shinbot.core.plugins.context import Plugin
 from .commands import register_commands
 from .events import register_events
 
 
-def setup(ctx: PluginContext) -> None:
-    register_commands(ctx)
-    register_events(ctx)
+def setup(plg: Plugin) -> None:
+    register_commands(plg)
+    register_events(plg)
 ```
 
 下一步：阅读 [命令系统](./03_commands.md)。
