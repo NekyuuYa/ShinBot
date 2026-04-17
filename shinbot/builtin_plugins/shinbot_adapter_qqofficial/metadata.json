@@ -1,0 +1,10 @@
+{
+  "id": "shinbot_adapter_qqofficial",
+  "name": "QQ Official Adapter (Official)",
+  "version": "1.0.0",
+  "author": "ShinBot Team",
+  "description": "QQ Official Bot gateway + OpenAPI adapter for ShinBot.",
+  "entry": "__init__.py",
+  "role": "adapter",
+  "permissions": ["network.outbound"]
+}
