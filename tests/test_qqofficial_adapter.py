@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from unittest.mock import AsyncMock
 
 import pytest
@@ -13,6 +15,8 @@ from shinbot.builtin_plugins.shinbot_adapter_qqofficial.adapter import (
 )
 from shinbot.core.platform.adapter_manager import MessageHandle
 from shinbot.schema.elements import MessageElement
+from shinbot.schema.events import UnifiedEvent
+from shinbot.schema.resources import Channel, User
 
 
 @pytest.fixture
@@ -133,3 +137,66 @@ async def test_get_capabilities_contains_expected_actions(adapter: QQOfficialAda
     assert "actions" in caps
     assert "message.update" in caps["actions"]
     assert "qq:markdown" in caps["elements"]
+
+
+@pytest.mark.asyncio
+async def test_handle_dispatch_uses_worker_queue_when_available(adapter: QQOfficialAdapter):
+    received: list[UnifiedEvent] = []
+    done = asyncio.Event()
+
+    async def callback(event: UnifiedEvent):
+        received.append(event)
+        done.set()
+
+    adapter.set_event_callback(callback)
+    adapter._event_queue = asyncio.Queue(maxsize=8)
+    adapter._event_worker_task = asyncio.create_task(adapter._event_worker_loop())
+
+    payload = {
+        "id": "msg-1",
+        "event_id": "C2C_MESSAGE_CREATE:e-1",
+        "timestamp": "2026-04-17T13:00:00+08:00",
+        "author": {"user_openid": "user-openid-1"},
+        "content": "hello from c2c",
+    }
+
+    try:
+        await adapter._handle_dispatch("C2C_MESSAGE_CREATE", payload)
+        await asyncio.wait_for(done.wait(), timeout=1.0)
+    finally:
+        if adapter._event_worker_task is not None:
+            adapter._event_worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await adapter._event_worker_task
+
+    assert len(received) == 1
+    assert received[0].message is not None
+    assert received[0].message.id == "msg-1"
+
+
+def test_enqueue_event_drops_oldest_when_queue_is_full(adapter: QQOfficialAdapter):
+    adapter._event_queue = asyncio.Queue(maxsize=1)
+
+    first = UnifiedEvent(
+        type="message-created",
+        self_id="bot-1",
+        platform="qqofficial",
+        user=User(id="user-1"),
+        channel=Channel(id="private:user-1", type=1),
+        message={"id": "msg-1", "content": "first"},
+    )
+    second = UnifiedEvent(
+        type="message-created",
+        self_id="bot-1",
+        platform="qqofficial",
+        user=User(id="user-1"),
+        channel=Channel(id="private:user-1", type=1),
+        message={"id": "msg-2", "content": "second"},
+    )
+
+    adapter._enqueue_event(first)
+    adapter._enqueue_event(second)
+
+    queued = adapter._event_queue.get_nowait()
+    assert queued.message is not None
+    assert queued.message.id == "msg-2"

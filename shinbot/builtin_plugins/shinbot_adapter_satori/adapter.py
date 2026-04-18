@@ -45,6 +45,7 @@ OP_PONG = 6
 
 # Heartbeat interval in seconds (slightly less than typical server timeout)
 HEARTBEAT_INTERVAL = 10
+EVENT_QUEUE_MAXSIZE = 1024
 
 
 @dataclass
@@ -82,6 +83,8 @@ class SatoriAdapter(BaseAdapter):
         self._running = False
         self._recv_task: asyncio.Task | None = None
         self._ping_task: asyncio.Task | None = None
+        self._event_worker_task: asyncio.Task[None] | None = None
+        self._event_queue: asyncio.Queue[UnifiedEvent] | None = None
         self._http: httpx.AsyncClient | None = None
         self._resource_cache_dir = Path(self.config.resource_cache_dir)
         self._resource_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +95,11 @@ class SatoriAdapter(BaseAdapter):
         """Start the WebSocket listener in the background."""
         self._running = True
         self._http = httpx.AsyncClient(timeout=30.0)
+        self._event_queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAXSIZE)
+        self._event_worker_task = asyncio.create_task(
+            self._event_worker_loop(),
+            name=f"satori-events-{self.instance_id}",
+        )
         self._recv_task = asyncio.create_task(
             self._connection_loop(), name=f"satori-{self.instance_id}"
         )
@@ -104,11 +112,24 @@ class SatoriAdapter(BaseAdapter):
             self._ping_task.cancel()
         if self._recv_task and not self._recv_task.done():
             self._recv_task.cancel()
+        if self._event_worker_task and not self._event_worker_task.done():
+            self._event_worker_task.cancel()
         if self._ws:
             try:
                 await self._ws.close()
             except Exception:
                 pass
+        if self._event_worker_task is not None:
+            try:
+                await self._event_worker_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "Satori %s: event worker terminated unexpectedly", self.instance_id
+                )
+            self._event_worker_task = None
+        self._event_queue = None
         if self._http:
             await self._http.aclose()
         logger.info("Satori adapter %s shut down", self.instance_id)
@@ -351,6 +372,53 @@ class SatoriAdapter(BaseAdapter):
             except Exception:
                 logger.exception("Satori %s failed to download message resources", self.instance_id)
 
+        if self._event_queue is not None:
+            self._enqueue_event(event)
+            return
+
+        await self._dispatch_event(event)
+
+    async def _event_worker_loop(self) -> None:
+        """Drain normalized events and invoke callback outside receive loop."""
+        if self._event_queue is None:
+            return
+
+        while True:
+            event = await self._event_queue.get()
+            await self._dispatch_event(event)
+
+    def _enqueue_event(self, event: UnifiedEvent) -> None:
+        """Enqueue event without blocking receive loop.
+
+        On overflow, drop the oldest queued event and keep the newest one.
+        """
+        if self._event_queue is None:
+            return
+
+        try:
+            self._event_queue.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            pass
+
+        try:
+            _ = self._event_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            logger.warning(
+                "Satori %s event queue overflow; dropping event %s", self.instance_id, event.type
+            )
+            return
+
+        try:
+            self._event_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            logger.warning(
+                "Satori %s event queue overflow; dropping event %s", self.instance_id, event.type
+            )
+
+    async def _dispatch_event(self, event: UnifiedEvent) -> None:
+        if self._event_callback is None:
+            return
         try:
             await self._event_callback(event)
         except Exception:

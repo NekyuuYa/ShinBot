@@ -73,6 +73,7 @@ _MEDIA_FILE_TYPE: dict[str, int] = {
     "audio": 3,
     "file": 4,
 }
+EVENT_QUEUE_MAXSIZE = 1024
 
 _MENTION_PATTERN = re.compile(r"<@!?(?P<id>[^>]+)>")
 
@@ -126,6 +127,8 @@ class QQOfficialAdapter(BaseAdapter):
         self._http: httpx.AsyncClient | None = None
         self._recv_task: asyncio.Task[Any] | None = None
         self._heartbeat_task: asyncio.Task[Any] | None = None
+        self._event_worker_task: asyncio.Task[None] | None = None
+        self._event_queue: asyncio.Queue[UnifiedEvent] | None = None
 
         self._seq: int | None = None
         self._session_id: str = ""
@@ -147,6 +150,11 @@ class QQOfficialAdapter(BaseAdapter):
     async def start(self) -> None:
         self._running = True
         self._http = httpx.AsyncClient(timeout=self.config.request_timeout)
+        self._event_queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAXSIZE)
+        self._event_worker_task = asyncio.create_task(
+            self._event_worker_loop(),
+            name=f"qqofficial-events-{self.instance_id}",
+        )
         self._recv_task = asyncio.create_task(
             self._connection_loop(),
             name=f"qqofficial-{self.instance_id}",
@@ -160,6 +168,8 @@ class QQOfficialAdapter(BaseAdapter):
             self._heartbeat_task.cancel()
         if self._recv_task and not self._recv_task.done():
             self._recv_task.cancel()
+        if self._event_worker_task and not self._event_worker_task.done():
+            self._event_worker_task.cancel()
 
         if self._ws is not None:
             try:
@@ -171,6 +181,18 @@ class QQOfficialAdapter(BaseAdapter):
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+
+        if self._event_worker_task is not None:
+            try:
+                await self._event_worker_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception(
+                    "QQOfficial %s event worker terminated unexpectedly", self.instance_id
+                )
+            self._event_worker_task = None
+        self._event_queue = None
 
         logger.info("QQOfficial adapter %s shut down", self.instance_id)
 
@@ -485,6 +507,57 @@ class QQOfficialAdapter(BaseAdapter):
                     "QQOfficial %s failed to download message resources", self.instance_id
                 )
 
+        if self._event_queue is not None:
+            self._enqueue_event(event)
+            return
+
+        await self._dispatch_event(event)
+
+    async def _event_worker_loop(self) -> None:
+        """Drain normalized events and invoke callback outside gateway receive loop."""
+        if self._event_queue is None:
+            return
+
+        while True:
+            event = await self._event_queue.get()
+            await self._dispatch_event(event)
+
+    def _enqueue_event(self, event: UnifiedEvent) -> None:
+        """Enqueue event without blocking receive loop.
+
+        On overflow, drop the oldest queued event and keep the newest one.
+        """
+        if self._event_queue is None:
+            return
+
+        try:
+            self._event_queue.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            pass
+
+        try:
+            _ = self._event_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            logger.warning(
+                "QQOfficial %s event queue overflow; dropping event %s",
+                self.instance_id,
+                event.type,
+            )
+            return
+
+        try:
+            self._event_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            logger.warning(
+                "QQOfficial %s event queue overflow; dropping event %s",
+                self.instance_id,
+                event.type,
+            )
+
+    async def _dispatch_event(self, event: UnifiedEvent) -> None:
+        if self._event_callback is None:
+            return
         try:
             await self._event_callback(event)
         except Exception:
