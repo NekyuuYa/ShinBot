@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
 
 def plugin_module(plugin_manager: Any, plugin_id: str) -> Any | None:
     return plugin_manager._modules.get(plugin_id)

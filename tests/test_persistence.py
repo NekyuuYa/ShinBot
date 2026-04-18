@@ -90,7 +90,9 @@ class TestDatabaseManager:
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
-        payload = db.context_strategies.get(PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID)
+        payload = db.context_strategies.get(
+            PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID
+        )
         assert payload is not None
         assert payload["type"] == "sliding_window"
         assert payload["resolver_ref"] == PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER
@@ -478,6 +480,7 @@ class TestDatabaseManager:
         )
         db.prompt_snapshots.insert(expired_record)
         assert db.prompt_snapshots.get(expired_id) is None
+
     def test_session_roundtrip_via_database(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()

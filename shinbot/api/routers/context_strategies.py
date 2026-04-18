@@ -162,8 +162,8 @@ def patch_context_strategy(strategy_uuid: str, body: ContextStrategyPatchRequest
         )
 
     next_name = body.name if body.name is not None else str(current["name"])
-    next_resolver_ref = body.resolverRef if body.resolverRef is not None else str(
-        current["resolver_ref"]
+    next_resolver_ref = (
+        body.resolverRef if body.resolverRef is not None else str(current["resolver_ref"])
     )
     next_type = body.type if body.type is not None else str(current["type"])
     normalized_name, normalized_type, normalized_resolver = _normalize_strategy_input(

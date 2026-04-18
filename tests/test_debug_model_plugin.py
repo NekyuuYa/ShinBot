@@ -44,7 +44,9 @@ def test_build_model_record_preserves_request_payload():
 
 
 @pytest.mark.asyncio
-async def test_debug_model_plugin_persists_runtime_requests(tmp_path, monkeypatch: pytest.MonkeyPatch):
+async def test_debug_model_plugin_persists_runtime_requests(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
     bot = ShinBot(data_dir=tmp_path)
     metadata_path = (
         Path(__file__).resolve().parents[1]

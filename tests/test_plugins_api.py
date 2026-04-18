@@ -137,7 +137,10 @@ def test_builtin_adapter_plugins_expose_adapter_platform_metadata(tmp_path: Path
         ("shinbot_adapter_qqofficial", "shinbot.builtin_plugins.shinbot_adapter_qqofficial"),
     ):
         metadata_path = (
-            Path(__file__).resolve().parents[1] / "shinbot/builtin_plugins" / plugin_id / "metadata.json"
+            Path(__file__).resolve().parents[1]
+            / "shinbot/builtin_plugins"
+            / plugin_id
+            / "metadata.json"
         )
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         asyncio.run(
@@ -187,7 +190,9 @@ def test_onebot_builtin_adapter_plugin_schema_matches_runtime_fields(tmp_path: P
         response = client.get("/api/v1/plugins", headers=headers)
 
     assert response.status_code == 200
-    plugin = next(item for item in response.json()["data"] if item["id"] == "shinbot_adapter_onebot_v11")
+    plugin = next(
+        item for item in response.json()["data"] if item["id"] == "shinbot_adapter_onebot_v11"
+    )
     properties = plugin["metadata"]["config_schema"]["properties"]
     for field in (
         "auto_download_media",

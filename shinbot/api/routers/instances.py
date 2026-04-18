@@ -227,10 +227,7 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
         _serialize_instance_record(
             inst_entry,
             bot.adapter_manager,
-            {
-                item["instance_id"]: item
-                for item in bot.database.bot_configs.list()
-            },
+            {item["instance_id"]: item for item in bot.database.bot_configs.list()},
         )
     )
 
@@ -295,10 +292,7 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
         _serialize_instance_record(
             inst,
             bot.adapter_manager,
-            {
-                item["instance_id"]: item
-                for item in bot.database.bot_configs.list()
-            },
+            {item["instance_id"]: item for item in bot.database.bot_configs.list()},
         )
     )
 

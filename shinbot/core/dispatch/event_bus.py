@@ -23,8 +23,8 @@ EventHandler = Callable[..., Coroutine[Any, Any, Any]]
 # half-open state: the handler is tried once more.  Success closes it;
 # another failure re-opens it and resets the cooldown timer.
 
-_CB_THRESHOLD = 5       # consecutive failures before opening
-_CB_RESET_SEC = 60.0    # seconds before half-open retry
+_CB_THRESHOLD = 5  # consecutive failures before opening
+_CB_RESET_SEC = 60.0  # seconds before half-open retry
 
 
 class _CircuitState:

@@ -61,7 +61,9 @@ class _AsyncLogHandler(logging.Handler):
         # Keep downgraded transport noise visible in the dashboard, but still
         # avoid forwarding raw low-level transport debug chatter.
         if record.name.startswith(("uvicorn", "websockets")):
-            if record.levelno < logging.INFO and not record.__dict__.get("_shinbot_downgraded", False):
+            if record.levelno < logging.INFO and not record.__dict__.get(
+                "_shinbot_downgraded", False
+            ):
                 return
 
         try:

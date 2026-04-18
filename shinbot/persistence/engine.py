@@ -53,7 +53,9 @@ class DatabaseManager:
         url: str | None = None,
         snapshot_ttl: int | None = None,
     ) -> DatabaseManager:
-        return cls(DatabaseConfig.from_bootstrap(data_dir=data_dir, url=url, snapshot_ttl=snapshot_ttl))
+        return cls(
+            DatabaseConfig.from_bootstrap(data_dir=data_dir, url=url, snapshot_ttl=snapshot_ttl)
+        )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

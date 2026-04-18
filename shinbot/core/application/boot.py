@@ -298,8 +298,8 @@ class BootController:
             print(f"│  Username : {'admin':<42}│")
             print(f"│  Password : {generated:<42}│")
             print(f"├{border}┤")
-            print(f"│  Log in and change these credentials before       │")
-            print(f"│  exposing this server to a network.               │")
+            print("│  Log in and change these credentials before       │")
+            print("│  exposing this server to a network.               │")
             print(f"└{border}┘\n")
         if "jwt_expire_hours" not in admin_cfg:
             admin_cfg["jwt_expire_hours"] = 24
