@@ -17,13 +17,23 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.model_runtime import ModelCallError, ModelRuntime, ModelRuntimeCall
+from shinbot.agent.prompting import (
+    ContextStrategy,
+    ContextStrategyBudget,
+    PromptAssemblyRequest,
+    PromptComponent,
+    PromptComponentKind,
+    PromptRegistry,
+    PromptStage,
+)
 from shinbot.core.dispatch.command import CommandMatch, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine, check_permission
 from shinbot.core.state.session import Session, SessionManager, build_session_id
-from shinbot.persistence.records import MessageLogRecord
+from shinbot.persistence.records import MessageLogRecord, PromptSnapshotRecord
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.logger import get_logger
@@ -111,6 +121,7 @@ class MessageContext:
         # Tracking
         self.start_time: float = time.monotonic()
         self._sent_messages: list[MessageHandle] = []
+        self._assistant_log_ids: list[int] = []
         self._stopped: bool = False
 
         # Message log: id of the triggering user message in message_logs
@@ -142,6 +153,13 @@ class MessageContext:
     @property
     def is_private(self) -> bool:
         return self.session.is_private
+
+    @property
+    def is_mentioned(self) -> bool:
+        return any(
+            el.type == "at" and el.attrs.get("id") == self.event.self_id
+            for el in self.message.elements
+        )
 
     # ── Permission checking ──────────────────────────────────────────
 
@@ -312,14 +330,14 @@ class MessageContext:
         self,
         elements: list[MessageElement],
         handle: MessageHandle,
-    ) -> None:
+    ) -> int | None:
         """Insert an assistant message row into message_logs.
 
         Raises on DB failure — callers are responsible for catching and logging
         with appropriate context (e.g. "message was already delivered").
         """
         if self._database is None:
-            return
+            return None
         plain_text = Message(elements=list(elements)).get_text()
         content_json = json.dumps(
             [el.model_dump(mode="json") for el in elements],
@@ -338,8 +356,10 @@ class MessageContext:
             created_at=time.time() * 1000,
         )
         record.id = self._database.message_logs.insert(record)
+        self._assistant_log_ids.append(record.id)
         if self._context_manager is not None:
-            self._context_manager.track_message_record(record)
+            self._context_manager.track_message_record(record, platform=self.event.platform)
+        return record.id
 
     def stop(self) -> None:
         """Signal that processing should stop (no further handlers)."""
@@ -352,6 +372,12 @@ class MessageContext:
     @property
     def elapsed_ms(self) -> float:
         return (time.monotonic() - self.start_time) * 1000
+
+    @property
+    def last_response_log_id(self) -> int | None:
+        if not self._assistant_log_ids:
+            return None
+        return self._assistant_log_ids[-1]
 
     def mark_trigger_read(self) -> None:
         """Mark the triggering user message as read in message_logs.
@@ -429,6 +455,8 @@ class MessagePipeline:
         audit_logger: AuditLogger | None = None,
         database: DatabaseManager | None = None,
         context_manager: ContextManager | None = None,
+        prompt_registry: PromptRegistry | None = None,
+        model_runtime: ModelRuntime | None = None,
     ):
         self._adapter_manager = adapter_manager
         self._session_manager = session_manager
@@ -438,8 +466,354 @@ class MessagePipeline:
         self._audit_logger = audit_logger
         self._database = database
         self._context_manager = context_manager
+        self._prompt_registry = prompt_registry
+        self._model_runtime = model_runtime
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._waiting_registry = WaitingInputRegistry()
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return None
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        if isinstance(value, int | float):
+            return float(value)
+        return None
+
+    @staticmethod
+    def _dedupe_text_items(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            value = str(item).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+        return result
+
+    def _resolve_prompt_definition(self, prompt_ref: str) -> dict[str, Any] | None:
+        if self._database is None:
+            return None
+        payload = self._database.prompt_definitions.get(prompt_ref)
+        if payload is not None:
+            return payload
+        return self._database.prompt_definitions.get_by_prompt_id(prompt_ref)
+
+    def _sync_prompt_definition(self, payload: dict[str, Any]) -> str:
+        assert self._prompt_registry is not None
+        metadata = dict(payload.get("metadata") or {})
+        metadata.setdefault("display_name", str(payload.get("name", "")).strip())
+        metadata.setdefault("description", str(payload.get("description", "")).strip())
+        for source_key in ("owner_plugin_id", "owner_module", "module_path"):
+            source_value = str(payload.get(source_key, "") or "").strip()
+            if source_value:
+                metadata.setdefault(source_key, source_value)
+
+        component = PromptComponent(
+            id=str(payload["prompt_id"]),
+            stage=PromptStage(str(payload["stage"])),
+            kind=PromptComponentKind(str(payload["type"])),
+            version=str(payload.get("version", "1.0.0")),
+            priority=int(payload.get("priority", 100)),
+            enabled=bool(payload.get("enabled", True)),
+            content=str(payload.get("content", "")),
+            template_vars=list(payload.get("template_vars", [])),
+            resolver_ref=str(payload.get("resolver_ref", "")),
+            bundle_refs=list(payload.get("bundle_refs", [])),
+            tags=list(payload.get("tags", [])),
+            metadata=metadata,
+        )
+        self._prompt_registry.upsert_component(component)
+        return component.id
+
+    def _sync_context_strategy(self, payload: dict[str, Any]) -> str:
+        assert self._prompt_registry is not None
+        raw_config = dict(payload.get("config") or {})
+        budget_payload = raw_config.get("budget", raw_config)
+        if not isinstance(budget_payload, dict):
+            budget_payload = {}
+        budget = ContextStrategyBudget(
+            max_context_tokens=self._coerce_int(
+                budget_payload.get("max_context_tokens", budget_payload.get("maxContextTokens"))
+            ),
+            max_history_turns=self._coerce_int(
+                budget_payload.get("max_history_turns", budget_payload.get("maxHistoryTurns"))
+            ),
+            memory_summary_required=bool(
+                budget_payload.get(
+                    "memory_summary_required",
+                    budget_payload.get("memorySummaryRequired", False),
+                )
+            ),
+            truncate_policy=str(
+                budget_payload.get("truncate_policy", budget_payload.get("truncatePolicy", "tail"))
+            ),
+            trigger_ratio=float(
+                budget_payload.get("trigger_ratio", budget_payload.get("triggerRatio", 0.5))
+            ),
+            trim_ratio=self._coerce_float(
+                budget_payload.get("trim_ratio", budget_payload.get("trimRatio"))
+            ),
+            trim_turns=int(budget_payload.get("trim_turns", budget_payload.get("trimTurns", 2))),
+        )
+        strategy = ContextStrategy(
+            id=str(payload["uuid"]),
+            display_name=str(payload.get("name", "")),
+            description=str(payload.get("description", "")),
+            resolver_ref=str(payload["resolver_ref"]),
+            enabled=bool(payload.get("enabled", True)),
+            budget=budget,
+            metadata=raw_config,
+        )
+        self._prompt_registry.upsert_context_strategy(strategy)
+        return strategy.id
+
+    def _resolve_model_target(self, target: str) -> tuple[str, str, int | None]:
+        if self._database is None:
+            return "", "", None
+
+        route = self._database.model_registry.get_route(target)
+        if route is not None and route["enabled"]:
+            members = self._database.model_registry.list_route_members(target)
+            enabled_members = [member for member in members if member["enabled"]]
+            enabled_members.sort(
+                key=lambda item: (item["priority"], -item["weight"], item["model_id"])
+            )
+            for member in enabled_members:
+                model = self._database.model_registry.get_model(member["model_id"])
+                if model is not None and model["enabled"]:
+                    return target, "", model.get("context_window")
+            return target, "", None
+
+        model = self._database.model_registry.get_model(target)
+        if model is not None and model["enabled"]:
+            return "", target, model.get("context_window")
+
+        return "", "", None
+
+    def _should_run_fallback(
+        self,
+        bot: MessageContext,
+        bot_config: dict[str, Any],
+    ) -> bool:
+        if (
+            self._database is None
+            or self._prompt_registry is None
+            or self._model_runtime is None
+            or bot._sent_messages
+            or bot.is_stopped
+        ):
+            return False
+
+        if not str(bot_config.get("default_agent_uuid", "")).strip():
+            return False
+        if not str(bot_config.get("main_llm", "")).strip():
+            return False
+
+        config = dict(bot_config.get("config") or {})
+        reply_mode = str(config.get("reply_mode", "")).strip().lower()
+        if reply_mode in {"disabled", "off", "none"}:
+            return False
+        if bot.is_private:
+            return True
+        if reply_mode in {"group", "all", "always"}:
+            return True
+        return bot.is_mentioned
+
+    async def _run_fallback_responder(self, bot: MessageContext) -> bool:
+        if self._database is None or self._prompt_registry is None or self._model_runtime is None:
+            return False
+
+        bot_config = self._database.bot_configs.get_by_instance_id(bot.adapter.instance_id)
+        if bot_config is None or not self._should_run_fallback(bot, bot_config):
+            return False
+
+        agent_uuid = str(bot_config.get("default_agent_uuid", "")).strip()
+        model_target = str(bot_config.get("main_llm", "")).strip()
+        agent_payload = self._database.agents.get(agent_uuid)
+        if agent_payload is None:
+            logger.warning(
+                "Fallback responder skipped: default agent %s not found for instance %s",
+                agent_uuid,
+                bot.adapter.instance_id,
+            )
+            return False
+
+        persona_uuid = str(agent_payload.get("persona_uuid", "")).strip()
+        persona_payload = self._database.personas.get(persona_uuid) if persona_uuid else None
+        if persona_payload is None:
+            logger.warning(
+                "Fallback responder skipped: persona %s not found for agent %s",
+                persona_uuid,
+                agent_uuid,
+            )
+            return False
+
+        route_id, model_id, model_context_window = self._resolve_model_target(model_target)
+        if not route_id and not model_id:
+            logger.warning(
+                "Fallback responder skipped: main_llm target %s not found for instance %s",
+                model_target,
+                bot.adapter.instance_id,
+            )
+            return False
+
+        component_ids: list[str] = []
+        persona_prompt_uuid = str(persona_payload.get("prompt_definition_uuid", "")).strip()
+        if persona_prompt_uuid:
+            persona_prompt_payload = self._database.prompt_definitions.get(persona_prompt_uuid)
+            if persona_prompt_payload is not None:
+                component_ids.append(self._sync_prompt_definition(persona_prompt_payload))
+
+        for prompt_ref in agent_payload.get("prompts", []):
+            normalized_prompt_ref = str(prompt_ref).strip()
+            payload = self._resolve_prompt_definition(normalized_prompt_ref)
+            if payload is None and self._prompt_registry is not None:
+                component = self._prompt_registry.get_component(normalized_prompt_ref)
+                if component is not None:
+                    component_ids.append(component.id)
+                    continue
+            if payload is None:
+                logger.warning(
+                    "Fallback responder skipped missing prompt %s for agent %s",
+                    prompt_ref,
+                    agent_uuid,
+                )
+                continue
+            component_ids.append(self._sync_prompt_definition(payload))
+
+        component_ids = self._dedupe_text_items(component_ids)
+        if not component_ids:
+            logger.warning(
+                "Fallback responder skipped: agent %s has no resolvable prompt components",
+                agent_uuid,
+            )
+            return False
+
+        context_strategy_id = ""
+        strategy_ref = str((agent_payload.get("context_strategy") or {}).get("ref", "")).strip()
+        if strategy_ref:
+            strategy_payload = self._database.context_strategies.get(strategy_ref)
+            if strategy_payload is not None:
+                context_strategy_id = self._sync_context_strategy(strategy_payload)
+
+        request = PromptAssemblyRequest(
+            caller="pipeline.fallback_responder",
+            session_id=bot.session_id,
+            instance_id=bot.adapter.instance_id,
+            route_id=route_id,
+            model_id=model_id,
+            model_context_window=model_context_window,
+            context_strategy_id=context_strategy_id,
+            component_overrides=component_ids,
+            template_inputs={
+                "user_id": bot.user_id,
+                "session_id": bot.session_id,
+                "instance_id": bot.adapter.instance_id,
+                "platform": bot.platform,
+                "message_text": bot.text,
+            },
+            metadata={
+                "trigger": "pipeline_fallback",
+                "agent_uuid": agent_uuid,
+                "agent_id": str(agent_payload.get("agent_id", "")),
+                "persona_uuid": persona_uuid,
+                "bot_config_uuid": str(bot_config.get("uuid", "")),
+            },
+        )
+
+        try:
+            assembly = self._prompt_registry.assemble(request)
+        except Exception:
+            logger.exception(
+                "Fallback responder prompt assembly failed for session %s",
+                bot.session_id,
+            )
+            return False
+
+        snapshot = self._prompt_registry.create_snapshot(assembly, request)
+        try:
+            self._database.prompt_snapshots.insert(
+                PromptSnapshotRecord(
+                    id=snapshot.id,
+                    profile_id=snapshot.profile_id,
+                    caller=snapshot.caller,
+                    session_id=snapshot.session_id,
+                    instance_id=snapshot.instance_id,
+                    route_id=snapshot.route_id,
+                    model_id=snapshot.model_id,
+                    prompt_signature=snapshot.prompt_signature,
+                    cache_key=snapshot.cache_key,
+                    messages=snapshot.full_messages,
+                    tools=snapshot.full_tools,
+                    compatibility_used=snapshot.compatibility_used,
+                    created_at=snapshot.timestamp,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist prompt snapshot %s for session %s",
+                snapshot.id,
+                bot.session_id,
+            )
+
+        bot.mark_trigger_read()
+        try:
+            result = await self._model_runtime.generate(
+                ModelRuntimeCall(
+                    route_id=route_id or None,
+                    model_id=model_id or None,
+                    caller="pipeline.fallback_responder",
+                    session_id=bot.session_id,
+                    instance_id=bot.adapter.instance_id,
+                    purpose="default_reply",
+                    messages=assembly.messages,
+                    tools=assembly.tools,
+                    prompt_snapshot_id=snapshot.id,
+                    metadata={
+                        "agent_uuid": agent_uuid,
+                        "agent_id": str(agent_payload.get("agent_id", "")),
+                        "persona_uuid": persona_uuid,
+                        "bot_config_uuid": str(bot_config.get("uuid", "")),
+                    },
+                )
+            )
+        except ModelCallError:
+            logger.exception(
+                "Fallback responder model call failed for session %s",
+                bot.session_id,
+            )
+            await bot.send("抱歉，我现在暂时无法回复。")
+            return True
+
+        response_text = result.text.strip()
+        if not response_text:
+            logger.warning(
+                "Fallback responder produced an empty response for session %s",
+                bot.session_id,
+            )
+            return False
+
+        await bot.send(response_text)
+        if bot._msg_log_id is not None and bot.last_response_log_id is not None:
+            try:
+                self._database.ai_interactions.attach_message_links(
+                    result.execution_id,
+                    trigger_id=bot._msg_log_id,
+                    response_id=bot.last_response_log_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to attach message links for execution %s",
+                    result.execution_id,
+                )
+        return True
 
     # ── Interceptor registration ─────────────────────────────────────
 
@@ -507,10 +881,31 @@ class MessagePipeline:
                 return
 
         # Acquire the per-session lock for the remainder of processing.
-        # This serialises concurrent events for the same session so that
+        # This serialises stateful processing for the same session so that
         # coroutines cannot interleave reads and writes to session state.
         async with self._session_manager.session_lock(session_id):
-            await self._process_message_event(event, adapter, message, session_id)
+            bot, should_run_fallback = await self._process_message_event(
+                event,
+                adapter,
+                message,
+                session_id,
+            )
+
+        if bot is None:
+            return
+
+        # Run fallback responder outside the session lock so slow model calls
+        # do not serialize the entire session event stream.
+        if should_run_fallback:
+            await self._run_fallback_responder(bot)
+
+        if bot.command_match is None:
+            logger.debug(
+                "Processed event in %.1fms (session=%s, command=%s)",
+                bot.elapsed_ms,
+                bot.session.id,
+                "none",
+            )
 
     async def _process_message_event(
         self,
@@ -518,8 +913,14 @@ class MessagePipeline:
         adapter: BaseAdapter,
         message: Message,
         session_id: str,
-    ) -> None:
-        """Inner handler for message events, called while holding the session lock."""
+    ) -> tuple[MessageContext | None, bool]:
+        """Inner handler for message events, called while holding the session lock.
+
+        Returns:
+            tuple[MessageContext | None, bool]:
+                - MessageContext when processing reaches dispatch stages, else None.
+                - True when fallback responder should run after lock release.
+        """
 
         # Stage 2: Context enrichment
         session = self._session_manager.get_or_create(adapter.instance_id, event)
@@ -570,7 +971,7 @@ class MessagePipeline:
                 )
                 record.id = msg_log_id
                 if self._context_manager is not None:
-                    self._context_manager.track_message_record(record)
+                    self._context_manager.track_message_record(record, platform=event.platform)
                 bot._msg_log_id = msg_log_id
             except Exception:
                 logger.exception("Failed to persist user message to message_logs")
@@ -595,15 +996,15 @@ class MessagePipeline:
                 allow = await interceptor(bot)
                 if not allow:
                     logger.debug("Interceptor blocked event: %s", interceptor.__name__)
-                    return
+                    return None, False
             except Exception:
                 logger.exception("Interceptor error: %s", interceptor.__name__)
-                return
+                return None, False
 
         # Stage 3b: Check if session is muted
         if session.is_muted:
             logger.debug("Session %s is muted, skipping", session.id)
-            return
+            return None, False
 
         # Stage 3c: Command resolution
         plain_text = bot.text
@@ -638,7 +1039,7 @@ class MessagePipeline:
                             success=False,
                             error="Permission denied",
                         )
-                    return
+                    return None, False
 
             # Execute command handler
             cmd_start = time.monotonic()
@@ -690,7 +1091,7 @@ class MessagePipeline:
             # Persist session state changes made by the command handler.
             # (Previously missing — state modifications were lost after commands.)
             self._session_manager.update(session)
-            return
+            return bot, False
 
         # Stage 3d: No command matched — dispatch to event bus
         event_results = await self._event_bus.emit(event.type, bot)
@@ -703,9 +1104,4 @@ class MessagePipeline:
         # Stage 4: Post-processing
         self._session_manager.update(session)
 
-        logger.debug(
-            "Processed event in %.1fms (session=%s, command=%s)",
-            bot.elapsed_ms,
-            session.id,
-            bot.command_match.command.name if bot.command_match else "none",
-        )
+        return bot, (not bot._sent_messages and not bot.is_stopped)

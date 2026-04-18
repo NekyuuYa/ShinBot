@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ from shinbot.agent.prompting.schema import (
 
 if TYPE_CHECKING:
     from shinbot.agent.context import ContextManager
+    from shinbot.agent.identity import IdentityStore
 
 Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
 ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any]
@@ -42,6 +44,9 @@ class PromptRegistry:
 
     BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID = "builtin.context.sliding_window"
     BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER = "builtin.context.sliding_window"
+    BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID = "builtin.instructions.identity_map"
+    BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID = "builtin.constraints.identity_behavior"
+    BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER = "builtin.identity.map"
 
     @classmethod
     def build_builtin_sliding_window_strategy(
@@ -72,6 +77,7 @@ class PromptRegistry:
         fallback_context_trigger_ratio: float = 0.5,
         fallback_context_trim_turns: int = 2,
         context_manager: ContextManager | None = None,
+        identity_store: IdentityStore | None = None,
     ) -> None:
         self._components: dict[str, PromptComponent] = {}
         self._context_strategies: dict[str, ContextStrategy] = {}
@@ -79,16 +85,21 @@ class PromptRegistry:
         self._profiles: dict[str, PromptProfile] = {}
         self._resolvers: dict[str, Resolver] = {}
         self._context_manager = context_manager
+        self._identity_store = identity_store
         self._register_builtin_context_strategies(
             trigger_ratio=fallback_context_trigger_ratio,
             trim_turns=fallback_context_trim_turns,
         )
+        self._register_builtin_identity_prompts()
 
     # ── Registration ────────────────────────────────────────────────────
 
     def register_component(self, component: PromptComponent) -> None:
         if component.id in self._components:
             raise ValueError(f"Prompt component {component.id!r} is already registered")
+        self._components[component.id] = component
+
+    def upsert_component(self, component: PromptComponent) -> None:
         self._components[component.id] = component
 
     def register_profile(self, profile: PromptProfile) -> None:
@@ -101,9 +112,10 @@ class PromptRegistry:
             raise ValueError(f"Context strategy {strategy.id!r} is already registered")
         self._context_strategies[strategy.id] = strategy
 
-    def register_context_strategy_resolver(
-        self, name: str, fn: ContextStrategyResolver
-    ) -> None:
+    def upsert_context_strategy(self, strategy: ContextStrategy) -> None:
+        self._context_strategies[strategy.id] = strategy
+
+    def register_context_strategy_resolver(self, name: str, fn: ContextStrategyResolver) -> None:
         if name in self._context_strategy_resolvers:
             raise ValueError(f"Context strategy resolver {name!r} is already registered")
         self._context_strategy_resolvers[name] = fn
@@ -206,6 +218,8 @@ class PromptRegistry:
             self._expand_component(component, request, records_by_stage, ordered_records)
 
         self._inject_context_strategy(request, records_by_stage, ordered_records)
+        if request.identity_enabled:
+            self._inject_identity_prompts(request, records_by_stage, ordered_records)
         self._inject_payloads(request, records_by_stage, ordered_records)
 
         # ── Sort records within each stage ──────────────────────────────
@@ -224,9 +238,7 @@ class PromptRegistry:
         for stage in PROMPT_STAGE_ORDER:
             records = sorted_records_by_stage[stage]
 
-            if any(
-                r.source.source_type == PromptSourceType.UNKNOWN_SOURCE for r in records
-            ):
+            if any(r.source.source_type == PromptSourceType.UNKNOWN_SOURCE for r in records):
                 has_unknown_source = True
 
             if stage == PromptStage.ABILITIES:
@@ -252,9 +264,7 @@ class PromptRegistry:
                     )
                 )
             else:
-                rendered_text = "\n\n".join(
-                    r.rendered_text for r in records if r.rendered_text
-                )
+                rendered_text = "\n\n".join(r.rendered_text for r in records if r.rendered_text)
                 token_estimate = len(rendered_text.split()) if rendered_text else 0
                 stage_blocks.append(
                     PromptStageBlock(
@@ -268,8 +278,13 @@ class PromptRegistry:
         stage_by_name = {block.stage: block for block in stage_blocks}
 
         # Guard: require at least one system_base component
-        if not sorted_records_by_stage[PromptStage.SYSTEM_BASE]:
-            raise ValueError("Prompt assembly requires at least one system_base component")
+        has_system_stage = bool(sorted_records_by_stage[PromptStage.SYSTEM_BASE]) or bool(
+            sorted_records_by_stage[PromptStage.IDENTITY]
+        )
+        if not has_system_stage:
+            raise ValueError(
+                "Prompt assembly requires at least one component in SYSTEM_BASE or IDENTITY stage"
+            )
 
         # ── Compose Chat Completions structure ──────────────────────────
 
@@ -572,9 +587,7 @@ class PromptRegistry:
                 text = str(result.get("text", "")).strip()
                 if text:
                     rendered_messages = [{"role": "user", "content": text}]
-            resolver_metadata = {
-                k: v for k, v in result.items() if k not in ("text", "messages")
-            }
+            resolver_metadata = {k: v for k, v in result.items() if k not in ("text", "messages")}
             if policy_sync and int(policy_sync.get("dropped_turns", 0)) > int(
                 resolver_metadata.get("dropped_turns", 0)
             ):
@@ -595,6 +608,9 @@ class PromptRegistry:
 
         if not rendered_messages:
             return
+
+        if request.identity_enabled:
+            rendered_messages = self._inject_identity_layers_into_messages(rendered_messages)
 
         hash_input = json.dumps(rendered_messages, ensure_ascii=False, sort_keys=True)
         record = PromptComponentRecord(
@@ -620,6 +636,89 @@ class PromptRegistry:
         )
         records_by_stage[PromptStage.CONTEXT].append(record)
         ordered_records.append(record)
+
+    def _inject_identity_prompts(
+        self,
+        request: PromptAssemblyRequest,
+        records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
+        ordered_records: list[PromptComponentRecord],
+    ) -> None:
+        dynamic_component = self._components.get(self.BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID)
+        static_component = self._components.get(self.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID)
+        if dynamic_component is None or static_component is None:
+            return
+        if not dynamic_component.enabled:
+            return
+        has_dynamic_record = any(
+            record.component_id == dynamic_component.id and bool(record.rendered_text.strip())
+            for record in ordered_records
+        )
+        has_static_record = any(
+            record.component_id == static_component.id and bool(record.rendered_text.strip())
+            for record in ordered_records
+        )
+
+        hydrated_request = self._hydrate_request_context(request)
+        source = self._infer_source(dynamic_component)
+
+        resolver = self._resolvers.get(dynamic_component.resolver_ref)
+        if resolver is None:
+            raise ValueError(
+                f"Prompt resolver {dynamic_component.resolver_ref!r} is not registered"
+            )
+
+        resolver_output = resolver(hydrated_request, dynamic_component, source)
+        if isinstance(resolver_output, dict):
+            dynamic_text = str(resolver_output.get("text", "")).strip()
+            dynamic_metadata = {
+                key: value for key, value in resolver_output.items() if key != "text"
+            }
+        else:
+            dynamic_text = str(resolver_output).strip()
+            dynamic_metadata = {}
+
+        if not dynamic_text:
+            return
+
+        if not has_dynamic_record:
+            dynamic_record = PromptComponentRecord(
+                component_id=dynamic_component.id,
+                stage=dynamic_component.stage,
+                kind=dynamic_component.kind,
+                version=dynamic_component.version,
+                priority=dynamic_component.priority,
+                source=source,
+                rendered_text=dynamic_text,
+                text_hash=stable_text_hash(dynamic_text),
+                cache_stable=dynamic_component.cache_stable,
+                metadata={**dict(dynamic_component.metadata), **dynamic_metadata},
+            )
+            records_by_stage[PromptStage.INSTRUCTIONS].append(dynamic_record)
+            ordered_records.append(dynamic_record)
+
+        if not static_component.enabled:
+            return
+        if has_static_record:
+            return
+
+        static_source = self._infer_source(static_component)
+        static_text = self._render_component(static_component, hydrated_request, static_source)
+        if not static_text:
+            return
+        static_record = PromptComponentRecord(
+            component_id=static_component.id,
+            stage=static_component.stage,
+            kind=static_component.kind,
+            version=static_component.version,
+            priority=static_component.priority,
+            source=static_source,
+            rendered_text=static_text,
+            text_hash=stable_text_hash(static_text),
+            cache_stable=static_component.cache_stable,
+            metadata=dict(static_component.metadata),
+        )
+        records_by_stage[PromptStage.CONSTRAINTS].append(static_record)
+        ordered_records.append(static_record)
 
     def _make_payload_record(
         self,
@@ -737,7 +836,10 @@ class PromptRegistry:
         trim_turns = strategy.budget.trim_turns
         dropped_turns = 0
 
-        if strategy.budget.max_history_turns is not None and len(turns) > strategy.budget.max_history_turns:
+        if (
+            strategy.budget.max_history_turns is not None
+            and len(turns) > strategy.budget.max_history_turns
+        ):
             overflow = len(turns) - strategy.budget.max_history_turns
             turns = turns[overflow:]
             dropped_turns += overflow
@@ -781,7 +883,14 @@ class PromptRegistry:
             messages.append({"role": "user", "content": f"[Summary]\n{summary}"})
         for turn in turns:
             role = turn.get("role", "user") or "user"
-            messages.append({"role": role, "content": turn["content"]})
+            message: dict[str, Any] = {
+                "role": role,
+                "content": turn["content"],
+            }
+            sender_id = str(turn.get("sender_id", "") or "").strip()
+            if sender_id:
+                message["sender_id"] = sender_id
+            messages.append(message)
 
         return {
             "messages": messages,
@@ -790,12 +899,12 @@ class PromptRegistry:
             "remaining_turns": len(turns),
         }
 
-    def _normalize_history_turns(self, context_inputs: dict[str, Any]) -> list[dict[str, str]]:
+    def _normalize_history_turns(self, context_inputs: dict[str, Any]) -> list[dict[str, Any]]:
         raw_turns = context_inputs.get("history_turns", [])
         if not isinstance(raw_turns, list):
             return []
 
-        turns: list[dict[str, str]] = []
+        turns: list[dict[str, Any]] = []
         for item in raw_turns:
             if isinstance(item, str):
                 content = item.strip()
@@ -805,13 +914,35 @@ class PromptRegistry:
             if not isinstance(item, dict):
                 continue
             role = str(item.get("role", "")).strip()
-            content = str(item.get("content", "")).strip()
+            raw_content = item.get("content", "")
+            if isinstance(raw_content, list):
+                content_parts: list[str] = []
+                for block in raw_content:
+                    if isinstance(block, dict):
+                        block_text = block.get("text")
+                        if isinstance(block_text, str) and block_text.strip():
+                            content_parts.append(block_text.strip())
+                content = "\n".join(content_parts).strip()
+            else:
+                content = str(raw_content).strip()
             if not content:
                 continue
-            turns.append({"role": role, "content": content})
+            turn: dict[str, Any] = {"role": role, "content": content}
+            sender_id = str(
+                item.get("sender_id", item.get("senderId", item.get("name", ""))) or ""
+            ).strip()
+            if sender_id:
+                turn["sender_id"] = sender_id
+            sender_name = str(item.get("sender_name", item.get("senderName", "")) or "").strip()
+            if sender_name:
+                turn["sender_name"] = sender_name
+            platform = str(item.get("platform", "") or "").strip()
+            if platform:
+                turn["platform"] = platform
+            turns.append(turn)
         return turns
 
-    def _estimate_context_tokens(self, turns: list[dict[str, str]], summary: str) -> int:
+    def _estimate_context_tokens(self, turns: list[dict[str, Any]], summary: str) -> int:
         text_parts = [summary] if summary else []
         text_parts.extend(
             f"{turn['role']}: {turn['content']}" if turn["role"] else turn["content"]
@@ -862,3 +993,174 @@ class PromptRegistry:
             seen.add(item)
             result.append(item)
         return result
+
+    def _register_builtin_identity_prompts(self) -> None:
+        self.register_component(
+            PromptComponent(
+                id=self.BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID,
+                stage=PromptStage.INSTRUCTIONS,
+                kind=PromptComponentKind.RESOLVER,
+                resolver_ref=self.BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER,
+                priority=9000,
+                enabled=True,
+                metadata={
+                    "builtin": True,
+                    "display_name": "Identity Map (Dynamic)",
+                    "description": "Inject active participant identity mapping for current context.",
+                },
+            )
+        )
+        self.register_component(
+            PromptComponent(
+                id=self.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID,
+                stage=PromptStage.CONSTRAINTS,
+                kind=PromptComponentKind.STATIC_TEXT,
+                content=(
+                    "### 行为约束\n"
+                    "- 严禁在输出中包含任何 【ID】 格式的字符串或原始数字 ID。\n"
+                    "- 称呼他人时，必须使用上述参考表中的“昵称”或“别名”。\n"
+                    "- 若用户 ID 未出现在上表中，请用类似于“那个人”的称呼。"
+                ),
+                priority=9000,
+                enabled=True,
+                metadata={
+                    "builtin": True,
+                    "display_name": "Identity Behavior Constraints",
+                    "description": "Static constraints for identity-safe assistant replies.",
+                },
+            )
+        )
+        self.register_resolver(
+            self.BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER,
+            self._resolve_builtin_identity_map_prompt,
+        )
+
+    def _resolve_builtin_identity_map_prompt(
+        self,
+        request: PromptAssemblyRequest,
+        _component: PromptComponent,
+        _source: PromptSource,
+    ) -> dict[str, Any]:
+        turns = self._normalize_history_turns(request.context_inputs)
+        active_participants: dict[str, dict[str, str]] = {}
+        for turn in turns:
+            if str(turn.get("role", "")).strip() != "user":
+                continue
+            sender_id = str(turn.get("sender_id", "") or "").strip()
+            if not sender_id:
+                continue
+            participant = active_participants.setdefault(
+                sender_id, {"sender_name": "", "platform": ""}
+            )
+            sender_name = str(turn.get("sender_name", "") or "").strip()
+            if sender_name and not participant["sender_name"]:
+                participant["sender_name"] = sender_name
+            platform = str(turn.get("platform", "") or "").strip()
+            if platform and not participant["platform"]:
+                participant["platform"] = platform
+
+        if not active_participants:
+            return {"text": "", "active_user_ids": [], "mapped_user_ids": []}
+
+        context_platform = str(request.context_inputs.get("platform", "") or "").strip()
+        mapped_lines: list[str] = []
+        mapped_ids: list[str] = []
+
+        for user_id, participant in active_participants.items():
+            lookup_platform = context_platform or participant["platform"]
+            identity = None
+            if self._identity_store is not None:
+                identity = self._identity_store.get_identity(user_id, platform=lookup_platform)
+                if identity is None:
+                    self._identity_store.ensure_user(
+                        user_id=user_id,
+                        suggested_name=participant["sender_name"],
+                        platform=lookup_platform,
+                    )
+                    identity = self._identity_store.get_identity(user_id, platform=lookup_platform)
+
+            if identity is None:
+                continue
+
+            display_name = str(identity.get("name", "")).strip()
+            if not display_name:
+                continue
+
+            aliases = identity.get("aname", [])
+            if isinstance(aliases, str):
+                alias_list = [aliases.strip()] if aliases.strip() else []
+            elif isinstance(aliases, list):
+                alias_list = [str(alias).strip() for alias in aliases if str(alias).strip()]
+            else:
+                alias_list = []
+
+            note = str(identity.get("note", "")).strip()
+            line = f"- ID: {user_id} -> 昵称: {display_name}"
+            if alias_list:
+                line += f" 别名: {'/'.join(alias_list)}"
+            if note:
+                line += f" (备注: {note})"
+            mapped_lines.append(line)
+            mapped_ids.append(user_id)
+
+        if not mapped_lines:
+            return {
+                "text": "",
+                "active_user_ids": list(active_participants.keys()),
+                "mapped_user_ids": [],
+            }
+
+        text_lines = [
+            "### 参与者身份参考 (Identity Map)",
+            "以下是当前对话参与者的 ID 与你应当称呼他们的“昵称”映射：",
+            *mapped_lines,
+        ]
+        return {
+            "text": "\n".join(text_lines).strip(),
+            "active_user_ids": list(active_participants.keys()),
+            "mapped_user_ids": mapped_ids,
+        }
+
+    def _inject_identity_layers_into_messages(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        enriched: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+
+            payload = dict(message)
+            role = str(payload.get("role", "")).strip()
+            sender_id = str(payload.get("sender_id", "")).strip()
+
+            if role == "user" and sender_id:
+                payload["name"] = self._format_sender_name(sender_id)
+                content = payload.get("content")
+                if isinstance(content, str):
+                    payload["content"] = self._prefix_sender_id_inline(content, sender_id)
+
+            payload.pop("sender_id", None)
+            payload.pop("sender_name", None)
+            payload.pop("platform", None)
+            enriched.append(payload)
+
+        return enriched
+
+    def _prefix_sender_id_inline(self, content: str, sender_id: str) -> str:
+        body = content.strip()
+        if not body:
+            return body
+        marker = f"【{sender_id}】"
+        if body.startswith(marker):
+            return body
+        return f"{marker}{body}"
+
+    def _format_sender_name(self, sender_id: str) -> str:
+        normalized = re.sub(r"[^A-Za-z0-9_-]", "_", sender_id.strip())
+        normalized = normalized.strip("_")
+        if not normalized:
+            normalized = stable_text_hash(sender_id)[:12]
+        if normalized[0].isdigit():
+            normalized = f"u_{normalized}"
+        return normalized[:64]

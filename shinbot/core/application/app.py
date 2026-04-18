@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from shinbot.agent.context import ContextManager
+from shinbot.agent.identity import IdentityStore
 from shinbot.agent.model_runtime import ModelRuntime
 from shinbot.agent.prompting import PromptRegistry
 from shinbot.agent.tools import ToolManager, ToolRegistry
@@ -43,10 +44,10 @@ class ShinBot:
     ) -> None:
         # Core subsystems
         self.database: DatabaseManager | None = None
+        runtime_data_dir = Path(data_dir) if data_dir is not None else Path("data")
         session_repo = None
         audit_repo = None
         if data_dir is not None or database_url is not None:
-            runtime_data_dir = Path(data_dir) if data_dir is not None else Path("data")
             self.database = DatabaseManager.from_bootstrap(
                 data_dir=runtime_data_dir,
                 url=database_url,
@@ -61,10 +62,19 @@ class ShinBot:
         self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.model_runtime = ModelRuntime(self.database)
+        self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.context_manager = (
-            ContextManager(self.database.message_logs) if self.database is not None else None
+            ContextManager(
+                self.database.message_logs,
+                identity_store=self.identity_store,
+            )
+            if self.database is not None
+            else None
         )
-        self.prompt_registry = PromptRegistry(context_manager=self.context_manager)
+        self.prompt_registry = PromptRegistry(
+            context_manager=self.context_manager,
+            identity_store=self.identity_store,
+        )
         self.permission_engine = PermissionEngine()
         self.tool_registry = ToolRegistry()
         self.tool_manager = ToolManager(
@@ -90,6 +100,8 @@ class ShinBot:
             audit_logger=self.audit_logger,
             database=self.database,
             context_manager=self.context_manager,
+            prompt_registry=self.prompt_registry,
+            model_runtime=self.model_runtime,
         )
 
     # ── Event ingress callback ───────────────────────────────────────

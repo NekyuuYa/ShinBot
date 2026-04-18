@@ -1296,9 +1296,7 @@ class MessageLogRepository(ContextProvider):
 
     def get(self, msg_id: int) -> dict[str, Any] | None:
         with self._db.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM message_logs WHERE id = ?", (msg_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM message_logs WHERE id = ?", (msg_id,)).fetchone()
         if row is None:
             return None
         return self._row_to_dict(row)
@@ -1446,6 +1444,26 @@ class AIInteractionRepository:
         if row is None:
             return None
         return self._row_to_dict(row)
+
+    def attach_message_links(
+        self,
+        execution_id: str,
+        *,
+        trigger_id: int | None = None,
+        response_id: int | None = None,
+    ) -> bool:
+        with self._db.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE ai_interactions
+                SET
+                    trigger_id = COALESCE(?, trigger_id),
+                    response_id = COALESCE(?, response_id)
+                WHERE execution_id = ?
+                """,
+                (trigger_id, response_id, execution_id),
+            )
+            return cursor.rowcount > 0
 
     def list_by_session(
         self,

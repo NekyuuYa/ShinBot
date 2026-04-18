@@ -160,6 +160,7 @@ class ContextStrategy(BaseModel):
 class PromptAssemblyRequest(BaseModel):
     profile_id: str = ""
     context_strategy_id: str = ""
+    identity_enabled: bool = True
     caller: str = ""
     session_id: str = ""
     instance_id: str = ""
