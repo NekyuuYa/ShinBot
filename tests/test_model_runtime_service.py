@@ -203,6 +203,55 @@ async def test_embed_records_usage(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_generate_passes_custom_llm_provider_for_custom_openai(monkeypatch, tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    db.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id="custom-openai-main",
+            type="custom_openai",
+            display_name="Custom OpenAI Main",
+            base_url="https://api.example.com/v1",
+            auth={"api_key": "secret-key"},
+        )
+    )
+    db.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id="custom-openai-main/qwen",
+            provider_id="custom-openai-main",
+            litellm_model="qwen3.5-plus-2026-02-15",
+            display_name="Qwen",
+            capabilities=["chat"],
+        )
+    )
+    runtime = ModelRuntime(db)
+    captured: dict[str, object] = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {
+            "model": kwargs["model"],
+            "choices": [{"message": {"content": "hello from custom provider"}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 6},
+        }
+
+    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            model_id="custom-openai-main/qwen",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+    )
+
+    assert result.text == "hello from custom provider"
+    assert captured["model"] == "qwen3.5-plus-2026-02-15"
+    assert captured["api_base"] == "https://api.example.com/v1"
+    assert captured["custom_llm_provider"] == "openai"
+
+
+@pytest.mark.asyncio
 async def test_generate_requires_valid_target(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()

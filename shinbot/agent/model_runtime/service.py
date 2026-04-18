@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 ModelRuntimeObserver = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
+def _provider_type_for_litellm(provider_type: str) -> str | None:
+    if provider_type == "custom_openai":
+        return "openai"
+    if provider_type == "azure_openai":
+        return "azure"
+    return None
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -1166,6 +1174,9 @@ class ModelRuntime:
         kwargs: dict[str, Any] = {}
         if provider["base_url"]:
             kwargs["api_base"] = provider["base_url"]
+        custom_llm_provider = _provider_type_for_litellm(str(provider.get("type", "")))
+        if custom_llm_provider:
+            kwargs["custom_llm_provider"] = custom_llm_provider
 
         kwargs.update(provider.get("auth") or {})
         kwargs.update(provider.get("default_params") or {})

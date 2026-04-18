@@ -402,7 +402,9 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
                 body.displayName if body.displayName is not None else current["display_name"]
             ),
             capability_type=(
-                body.capabilityType if body.capabilityType is not None else current.get("capability_type", "completion")
+                body.capabilityType
+                if body.capabilityType is not None
+                else current.get("capability_type", "completion")
             ),
             base_url=body.baseUrl if body.baseUrl is not None else current["base_url"],
             auth=body.auth if body.auth is not None else current["auth"],
@@ -611,7 +613,9 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     provider = _require_provider(bot, provider_id)
     now = utc_now_iso()
     litellm_model = body.litellmModel if body.litellmModel is not None else current["litellm_model"]
-    context_window = body.contextWindow if body.contextWindow is not None else current["context_window"]
+    context_window = (
+        body.contextWindow if body.contextWindow is not None else current["context_window"]
+    )
     if body.contextWindow is None and (
         body.litellmModel is not None or body.providerId is not None or context_window is None
     ):
