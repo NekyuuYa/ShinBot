@@ -178,9 +178,7 @@ def _validate_sliding_window_params(params: dict[str, object]) -> None:
             },
         )
     trim_turns = params.get("trimTurns")
-    if trim_turns is not None and (
-        not isinstance(trim_turns, int) or trim_turns < 1
-    ):
+    if trim_turns is not None and (not isinstance(trim_turns, int) or trim_turns < 1):
         raise HTTPException(
             status_code=400,
             detail={
@@ -240,7 +238,11 @@ def _validate_agent_references(
         )
 
     for prompt_uuid in prompt_uuids:
-        if bot.database.prompt_definitions.get(prompt_uuid) is None:
+        if (
+            bot.database.prompt_definitions.get(prompt_uuid) is None
+            and bot.database.prompt_definitions.get_by_prompt_id(prompt_uuid) is None
+            and bot.prompt_registry.get_component(prompt_uuid) is None
+        ):
             raise HTTPException(
                 status_code=404,
                 detail={
@@ -279,15 +281,17 @@ def list_agents(bot=BotDep):
 
 @router.post("", status_code=201)
 def create_agent(body: AgentRequest, bot=BotDep):
-    agent_id, name, persona_uuid, prompts, tools, context_strategy, config, tags = _normalize_agent_input(
-        agent_id=body.agentId,
-        name=body.name,
-        persona_uuid=body.personaUuid,
-        prompts=body.prompts,
-        tools=body.tools,
-        context_strategy=body.contextStrategy,
-        config=body.config,
-        tags=body.tags,
+    agent_id, name, persona_uuid, prompts, tools, context_strategy, config, tags = (
+        _normalize_agent_input(
+            agent_id=body.agentId,
+            name=body.name,
+            persona_uuid=body.personaUuid,
+            prompts=body.prompts,
+            tools=body.tools,
+            context_strategy=body.contextStrategy,
+            config=body.config,
+            tags=body.tags,
+        )
     )
     if bot.database.agents.get_by_agent_id(agent_id) is not None:
         raise HTTPException(
@@ -358,15 +362,17 @@ def patch_agent(agent_uuid: str, body: AgentPatchRequest, bot=BotDep):
     )
     next_config = body.config if body.config is not None else dict(current["config"])
     next_tags = body.tags if body.tags is not None else list(current["tags"])
-    agent_id, name, persona_uuid, prompts, tools, context_strategy, config, tags = _normalize_agent_input(
-        agent_id=next_agent_id,
-        name=next_name,
-        persona_uuid=next_persona_uuid,
-        prompts=next_prompts,
-        tools=next_tools,
-        context_strategy=next_context_strategy,
-        config=next_config,
-        tags=next_tags,
+    agent_id, name, persona_uuid, prompts, tools, context_strategy, config, tags = (
+        _normalize_agent_input(
+            agent_id=next_agent_id,
+            name=next_name,
+            persona_uuid=next_persona_uuid,
+            prompts=next_prompts,
+            tools=next_tools,
+            context_strategy=next_context_strategy,
+            config=next_config,
+            tags=next_tags,
+        )
     )
 
     existing = bot.database.agents.get_by_agent_id(agent_id)

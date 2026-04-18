@@ -55,8 +55,13 @@ def test_prompts_list_route_returns_registered_prompt_components(tmp_path: Path)
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert len(payload) == 1
-    assert payload[0] == {
+    payload_by_id = {item["id"]: item for item in payload}
+    assert {
+        "prompt.identity.extra",
+        "builtin.instructions.identity_map",
+        "builtin.constraints.identity_behavior",
+    } <= set(payload_by_id)
+    assert payload_by_id["prompt.identity.extra"] == {
         "id": "prompt.identity.extra",
         "displayName": "Identity Extra",
         "description": "Additional identity prompt",

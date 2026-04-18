@@ -130,11 +130,7 @@ def _normalize_prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "display_name",
         "displayName",
     }
-    return {
-        str(key): value
-        for key, value in metadata.items()
-        if str(key) not in reserved_keys
-    }
+    return {str(key): value for key, value in metadata.items() if str(key) not in reserved_keys}
 
 
 def _normalize_prompt_input(
@@ -294,7 +290,10 @@ def get_prompt_definition(prompt_uuid: str, bot=BotDep):
     if payload is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": EC.PROMPT_NOT_FOUND, "message": f"Prompt {prompt_uuid!r} was not found"},
+            detail={
+                "code": EC.PROMPT_NOT_FOUND,
+                "message": f"Prompt {prompt_uuid!r} was not found",
+            },
         )
     return ok(_serialize_prompt(payload))
 
@@ -305,7 +304,10 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
     if current is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": EC.PROMPT_NOT_FOUND, "message": f"Prompt {prompt_uuid!r} was not found"},
+            detail={
+                "code": EC.PROMPT_NOT_FOUND,
+                "message": f"Prompt {prompt_uuid!r} was not found",
+            },
         )
 
     normalized = _normalize_prompt_input(
@@ -337,7 +339,9 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
         resolver_ref=(
             body.resolverRef if body.resolverRef is not None else str(current["resolver_ref"])
         ),
-        bundle_refs=body.bundleRefs if body.bundleRefs is not None else list(current["bundle_refs"]),
+        bundle_refs=body.bundleRefs
+        if body.bundleRefs is not None
+        else list(current["bundle_refs"]),
         config=body.config if body.config is not None else dict(current["config"]),
         tags=body.tags if body.tags is not None else list(current["tags"]),
         metadata=body.metadata if body.metadata is not None else dict(current["metadata"]),
@@ -368,7 +372,10 @@ def delete_prompt_definition(prompt_uuid: str, bot=BotDep):
     if current is None:
         raise HTTPException(
             status_code=404,
-            detail={"code": EC.PROMPT_NOT_FOUND, "message": f"Prompt {prompt_uuid!r} was not found"},
+            detail={
+                "code": EC.PROMPT_NOT_FOUND,
+                "message": f"Prompt {prompt_uuid!r} was not found",
+            },
         )
     bot.database.prompt_definitions.delete(prompt_uuid)
     return ok({"deleted": True, "uuid": prompt_uuid})

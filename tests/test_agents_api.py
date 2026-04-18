@@ -229,3 +229,47 @@ def test_agent_rejects_missing_persona_and_duplicate_agent_id(tmp_path: Path):
         )
         assert second_resp.status_code == 409
         assert second_resp.json()["error"]["code"] == "AGENT_ALREADY_EXISTS"
+
+
+def test_agent_accepts_builtin_prompt_component_refs(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    bot.database.prompt_definitions.upsert(
+        PromptDefinitionRecord(
+            uuid="prompt-persona-1",
+            prompt_id="persona.persona-1",
+            name="Assistant Persona Prompt",
+            source_type="persona",
+            source_id="persona-1",
+            stage="identity",
+            type="static_text",
+            content="You are helpful.",
+        )
+    )
+    bot.database.personas.upsert(
+        PersonaRecord(
+            uuid="persona-1",
+            name="Assistant Persona",
+            prompt_definition_uuid="prompt-persona-1",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        create_resp = client.post(
+            "/api/v1/agents",
+            headers=headers,
+            json={
+                "agentId": "agent.default",
+                "name": "Default Agent",
+                "personaUuid": "persona-1",
+                "prompts": ["builtin.instructions.identity_map"],
+                "tools": [],
+                "contextStrategy": {},
+            },
+        )
+
+    assert create_resp.status_code == 201
+    assert create_resp.json()["data"]["prompts"] == ["builtin.instructions.identity_map"]
