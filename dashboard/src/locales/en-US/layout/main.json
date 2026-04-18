@@ -9,6 +9,7 @@
     "pluginsManage": "Plugin Management",
     "toolsManage": "Tool Management",
     "agentsManage": "Agent Management",
+    "promptsManage": "Prompt Definitions",
     "personasManage": "Persona Management",
     "modelRuntime": "Model Runtime",
     "settings": "Settings",

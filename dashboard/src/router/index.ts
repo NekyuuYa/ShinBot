@@ -42,6 +42,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Agents.vue'),
       },
       {
+        path: 'prompts',
+        name: 'Prompts',
+        component: () => import('@/views/Prompts.vue'),
+      },
+      {
         path: 'personas',
         name: 'Personas',
         component: () => import('@/views/Personas.vue'),

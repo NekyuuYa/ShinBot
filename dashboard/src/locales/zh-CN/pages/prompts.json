@@ -1,0 +1,78 @@
+{
+  "kicker": "提示词工程",
+  "title": "Prompt 定义管理",
+  "subtitle": "按标签管理 Prompt 组件。支持新增、编辑、启用/禁用及删除。",
+  "actions": {
+    "refresh": "刷新",
+    "addPrompt": "添加 Prompt"
+  },
+  "tags": {
+    "title": "标签分类",
+    "all": "All",
+    "showAll": "显示全部 Prompt",
+    "filterByTag": "按标签筛选",
+    "untagged": "未打标签",
+    "empty": "当前没有可用标签"
+  },
+  "fields": {
+    "promptId": "Prompt ID",
+    "name": "显示名称",
+    "stage": "阶段",
+    "type": "类型",
+    "priority": "优先级",
+    "version": "版本",
+    "description": "描述",
+    "enabled": "已启用",
+    "content": "内容",
+    "templateVars": "模板变量",
+    "resolverRef": "Resolver 引用",
+    "bundleRefs": "Bundle 引用列表",
+    "tags": "标签",
+    "config": "配置（JSON）",
+    "metadata": "元数据（JSON）"
+  },
+  "stages": {
+    "system_base": "系统基础",
+    "identity": "身份",
+    "context": "上下文",
+    "abilities": "能力",
+    "compatibility": "兼容",
+    "instructions": "指令",
+    "constraints": "约束"
+  },
+  "kinds": {
+    "static_text": "静态文本",
+    "template": "模板",
+    "resolver": "Resolver",
+    "bundle": "Bundle",
+    "external_injection": "外部注入"
+  },
+  "overlay": {
+    "createTitle": "新增 Prompt 定义",
+    "editTitle": "编辑 Prompt 定义"
+  },
+  "empty": {
+    "title": "暂无 Prompt 定义",
+    "subtitle": "当前标签下没有可展示的 Prompt，点击右上角按钮创建一个。"
+  },
+  "hints": {
+    "content": "static_text 和 template 类型必填。",
+    "templateVars": "template 类型必填，按 Enter 逐个添加变量。",
+    "resolverRef": "resolver 类型必填。",
+    "bundleRefs": "bundle 类型必填，按 Enter 逐个添加引用。",
+    "config": "可留空；若填写需为对象 JSON。",
+    "metadata": "可留空；若填写需为对象 JSON。"
+  },
+  "messages": {
+    "loadFailed": "加载 Prompt 定义失败",
+    "created": "Prompt 定义已创建",
+    "updated": "Prompt 定义已更新",
+    "deleted": "Prompt 定义已删除",
+    "createFailed": "创建 Prompt 定义失败",
+    "updateFailed": "更新 Prompt 定义失败",
+    "deleteFailed": "删除 Prompt 定义失败",
+    "requiredFields": "请填写 Prompt ID、名称、阶段和类型",
+    "invalidJson": "JSON 格式无效，请检查后重试",
+    "confirmDelete": "确认删除 Prompt 定义「{name}」吗？"
+  }
+}

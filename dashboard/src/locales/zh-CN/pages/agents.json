@@ -22,12 +22,13 @@
     "personaPlaceholder": "请选择 Persona",
     "personaEmpty": "暂无可选 Persona，请先创建一个",
     "tags": "标签",
-    "prompts": "Prompt UUID 列表",
+    "prompts": "Prompt 组件",
+    "promptsEmpty": "暂无可选 Prompt 组件",
     "tools": "工具 ID 列表",
+    "toolsEmpty": "暂无可选工具",
     "contextStrategyRef": "上下文策略引用",
     "contextStrategyPlaceholder": "请选择上下文策略",
     "contextStrategyEmpty": "暂无可选上下文策略",
-    "contextStrategyType": "上下文策略类型",
     "contextStrategyParams": "上下文策略参数（JSON）",
     "config": "Agent 配置（JSON）"
   },
@@ -40,7 +41,6 @@
     "subtitle": "当前标签下没有可展示的 Agent，点击右上角按钮创建一个。"
   },
   "hints": {
-    "contextStrategyTypeAuto": "根据所选策略自动填写。",
     "contextStrategyParams": "可留空；若填写需为对象 JSON。",
     "config": "可留空；若填写需为对象 JSON。"
   },

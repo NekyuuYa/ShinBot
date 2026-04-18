@@ -173,7 +173,7 @@
               />
             </v-col>
             <v-col cols="12" md="4">
-              <v-combobox
+              <v-autocomplete
                 v-model="form.prompts"
                 multiple
                 chips
@@ -181,12 +181,17 @@
                 hide-selected
                 clearable
                 :label="$t('pages.agents.fields.prompts')"
+                :items="promptOptions"
+                item-title="title"
+                item-value="value"
+                :loading="isLoadingPrompts"
+                :no-data-text="$t('pages.agents.fields.promptsEmpty')"
                 variant="outlined"
                 density="comfortable"
               />
             </v-col>
             <v-col cols="12" md="4">
-              <v-combobox
+              <v-autocomplete
                 v-model="form.tools"
                 multiple
                 chips
@@ -194,12 +199,17 @@
                 hide-selected
                 clearable
                 :label="$t('pages.agents.fields.tools')"
+                :items="toolOptions"
+                item-title="title"
+                item-value="value"
+                :loading="isLoadingTools"
+                :no-data-text="$t('pages.agents.fields.toolsEmpty')"
                 variant="outlined"
                 density="comfortable"
               />
             </v-col>
 
-            <v-col cols="12" md="6">
+            <v-col cols="12" md="12">
               <v-select
                 :model-value="form.contextStrategyRef"
                 :label="$t('pages.agents.fields.contextStrategyRef')"
@@ -213,17 +223,6 @@
                 :placeholder="$t('pages.agents.fields.contextStrategyPlaceholder')"
                 :no-data-text="$t('pages.agents.fields.contextStrategyEmpty')"
                 @update:model-value="handleContextStrategyChange"
-              />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.contextStrategyType"
-                :label="$t('pages.agents.fields.contextStrategyType')"
-                variant="outlined"
-                density="comfortable"
-                :hint="$t('pages.agents.hints.contextStrategyTypeAuto')"
-                persistent-hint
-                readonly
               />
             </v-col>
             <v-col cols="12">
@@ -273,6 +272,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import type { Agent, AgentPayload } from '@/api/agents'
 import { contextStrategiesApi, type ContextStrategy } from '@/api/contextStrategies'
+import { promptsApi, type PromptCatalogItem } from '@/api/prompts'
+import { toolsApi, type ToolDefinition } from '@/api/tools'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
@@ -289,6 +290,11 @@ const editingAgentUuid = ref('')
 const localError = ref('')
 const contextStrategies = ref<ContextStrategy[]>([])
 const isLoadingContextStrategies = ref(false)
+const contextStrategyType = ref('')
+const promptCatalog = ref<PromptCatalogItem[]>([])
+const isLoadingPrompts = ref(false)
+const toolCatalog = ref<ToolDefinition[]>([])
+const isLoadingTools = ref(false)
 
 const form = reactive({
   agentId: '',
@@ -298,7 +304,6 @@ const form = reactive({
   prompts: [] as string[],
   tools: [] as string[],
   contextStrategyRef: '',
-  contextStrategyType: '',
   contextStrategyParamsJson: '',
   configJson: '',
 })
@@ -342,21 +347,54 @@ const contextStrategyOptions = computed(() => {
     options.push({
       title: form.contextStrategyRef,
       value: form.contextStrategyRef,
-      type: form.contextStrategyType,
+      type: contextStrategyType.value,
     })
   }
 
   return options
 })
 
+const promptOptions = computed(() => {
+  const options = promptCatalog.value
+    .map((item) => ({
+      title: `${item.displayName} (${item.id})`,
+      value: item.id,
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title))
+
+  // Include any values already in the form that aren't in catalog
+  for (const id of form.prompts) {
+    if (!options.some((o) => o.value === id)) {
+      options.push({ title: id, value: id })
+    }
+  }
+  return options
+})
+
+const toolOptions = computed(() => {
+  const options = toolCatalog.value
+    .map((item) => ({
+      title: `${item.displayName || item.name} (${item.id})`,
+      value: item.id,
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title))
+
+  for (const id of form.tools) {
+    if (!options.some((o) => o.value === id)) {
+      options.push({ title: id, value: id })
+    }
+  }
+  return options
+})
+
 const syncContextStrategyType = (strategyRef: string) => {
   const selected = contextStrategyOptions.value.find((option) => option.value === strategyRef)
   if (selected) {
-    form.contextStrategyType = selected.type
+    contextStrategyType.value = selected.type
     return
   }
   if (!strategyRef) {
-    form.contextStrategyType = ''
+    contextStrategyType.value = ''
   }
 }
 
@@ -387,6 +425,36 @@ const fetchContextStrategies = async () => {
   }
 }
 
+const fetchPromptCatalog = async () => {
+  isLoadingPrompts.value = true
+  try {
+    const response = await promptsApi.list()
+    if (response.data.success && response.data.data) {
+      promptCatalog.value = response.data.data
+      return
+    }
+  } catch {
+    // Non-critical: prompts field falls back to manual entry
+  } finally {
+    isLoadingPrompts.value = false
+  }
+}
+
+const fetchToolCatalog = async () => {
+  isLoadingTools.value = true
+  try {
+    const response = await toolsApi.list()
+    if (response.data.success && response.data.data) {
+      toolCatalog.value = response.data.data
+      return
+    }
+  } catch {
+    // Non-critical: tools field falls back to manual entry
+  } finally {
+    isLoadingTools.value = false
+  }
+}
+
 const parseJsonObject = (value: string, emptyFallback: Record<string, unknown>) => {
   const trimmed = value.trim()
   if (!trimmed) {
@@ -413,7 +481,7 @@ const resetForm = () => {
   form.prompts = []
   form.tools = []
   form.contextStrategyRef = ''
-  form.contextStrategyType = ''
+  contextStrategyType.value = ''
   form.contextStrategyParamsJson = ''
   form.configJson = ''
 }
@@ -435,7 +503,7 @@ const openEditAgent = (agent: Agent) => {
   form.prompts = [...agent.prompts]
   form.tools = [...agent.tools]
   form.contextStrategyRef = agent.contextStrategy?.ref || ''
-  form.contextStrategyType = agent.contextStrategy?.type || ''
+  contextStrategyType.value = agent.contextStrategy?.type || ''
   syncContextStrategyType(form.contextStrategyRef)
   form.contextStrategyParamsJson = agent.contextStrategy?.params
     ? JSON.stringify(agent.contextStrategy.params, null, 2)
@@ -454,7 +522,7 @@ const buildPayload = (): AgentPayload => {
   }
 
   const strategyRef = form.contextStrategyRef.trim()
-  const strategyType = form.contextStrategyType.trim()
+  const strategyType = contextStrategyType.value.trim()
   const strategyParams = parseJsonObject(form.contextStrategyParamsJson, {})
 
   if ((strategyRef && !strategyType) || (!strategyRef && strategyType)) {
@@ -508,6 +576,8 @@ const refreshAgents = async () => {
   await Promise.all([
     agentsStore.fetchAgents(),
     fetchContextStrategies(),
+    fetchPromptCatalog(),
+    fetchToolCatalog(),
   ])
 }
 
@@ -515,6 +585,8 @@ onMounted(() => {
   agentsStore.fetchAgents()
   personasStore.fetchPersonas()
   fetchContextStrategies()
+  fetchPromptCatalog()
+  fetchToolCatalog()
 })
 </script>
 

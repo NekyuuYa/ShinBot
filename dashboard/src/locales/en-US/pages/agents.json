@@ -22,12 +22,13 @@
     "personaPlaceholder": "Select a persona",
     "personaEmpty": "No personas are available yet. Create one first.",
     "tags": "Tags",
-    "prompts": "Prompt UUIDs",
+    "prompts": "Prompt Components",
+    "promptsEmpty": "No prompt components are available",
     "tools": "Tool IDs",
+    "toolsEmpty": "No tools are available",
     "contextStrategyRef": "Context Strategy Ref",
     "contextStrategyPlaceholder": "Select a context strategy",
     "contextStrategyEmpty": "No context strategies are available",
-    "contextStrategyType": "Context Strategy Type",
     "contextStrategyParams": "Context Strategy Params (JSON)",
     "config": "Agent Config (JSON)"
   },
@@ -40,7 +41,6 @@
     "subtitle": "No agents match the current tag. Create one from the top-right action."
   },
   "hints": {
-    "contextStrategyTypeAuto": "Auto-filled from the selected strategy.",
     "contextStrategyParams": "Optional. Must be a JSON object when provided.",
     "config": "Optional. Must be a JSON object when provided."
   },

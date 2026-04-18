@@ -1,0 +1,78 @@
+{
+  "kicker": "Prompt Engineering",
+  "title": "Prompt Definitions",
+  "subtitle": "Manage prompt components by tag. Create, edit, enable/disable or delete definitions.",
+  "actions": {
+    "refresh": "Refresh",
+    "addPrompt": "Add Prompt"
+  },
+  "tags": {
+    "title": "Tag Categories",
+    "all": "All",
+    "showAll": "Show all prompts",
+    "filterByTag": "Filter by tag",
+    "untagged": "Untagged",
+    "empty": "No tags are available yet"
+  },
+  "fields": {
+    "promptId": "Prompt ID",
+    "name": "Display Name",
+    "stage": "Stage",
+    "type": "Kind",
+    "priority": "Priority",
+    "version": "Version",
+    "description": "Description",
+    "enabled": "Enabled",
+    "content": "Content",
+    "templateVars": "Template Variables",
+    "resolverRef": "Resolver Ref",
+    "bundleRefs": "Bundle Refs",
+    "tags": "Tags",
+    "config": "Config (JSON)",
+    "metadata": "Metadata (JSON)"
+  },
+  "stages": {
+    "system_base": "System Base",
+    "identity": "Identity",
+    "context": "Context",
+    "abilities": "Abilities",
+    "compatibility": "Compatibility",
+    "instructions": "Instructions",
+    "constraints": "Constraints"
+  },
+  "kinds": {
+    "static_text": "Static Text",
+    "template": "Template",
+    "resolver": "Resolver",
+    "bundle": "Bundle",
+    "external_injection": "External Injection"
+  },
+  "overlay": {
+    "createTitle": "Create Prompt Definition",
+    "editTitle": "Edit Prompt Definition"
+  },
+  "empty": {
+    "title": "No Prompt Definitions",
+    "subtitle": "No prompt definitions match the current tag. Create one from the top-right action."
+  },
+  "hints": {
+    "content": "Required for static_text and template kinds.",
+    "templateVars": "Required for template kind. Press Enter to add each variable.",
+    "resolverRef": "Required for resolver kind.",
+    "bundleRefs": "Required for bundle kind. Press Enter to add each ref.",
+    "config": "Optional. Must be a JSON object when provided.",
+    "metadata": "Optional. Must be a JSON object when provided."
+  },
+  "messages": {
+    "loadFailed": "Failed to load prompt definitions",
+    "created": "Prompt definition created",
+    "updated": "Prompt definition updated",
+    "deleted": "Prompt definition deleted",
+    "createFailed": "Failed to create prompt definition",
+    "updateFailed": "Failed to update prompt definition",
+    "deleteFailed": "Failed to delete prompt definition",
+    "requiredFields": "Prompt ID, Name, Stage, and Kind are required",
+    "invalidJson": "Invalid JSON format",
+    "confirmDelete": "Delete prompt definition \"{name}\"?"
+  }
+}
