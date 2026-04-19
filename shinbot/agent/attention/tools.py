@@ -289,6 +289,7 @@ def register_attention_tools(
             description=(
                 "向当前会话发送一条回复消息。\n"
                 "这是你在注意力工作流中回复用户的唯一方式。\n"
+                "若你不调用该工具，而是使用裸文本直接回复，用户将不会收到任何消息"
                 "text: 要发送的回复文本内容。\n"
                 "terminate_round: 是否在发送后立即结束当前 workflow 轮次；"
                 "默认 true。若为 false，发送后允许模型继续后续推理或工具调用。\n"
