@@ -50,6 +50,7 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+
 class ModelRuntime:
     """Unified runtime for route-based LiteLLM calls."""
 
@@ -114,7 +115,12 @@ class ModelRuntime:
             try:
                 response = await asyncio.to_thread(litellm_adapter.completion, **kwargs)
                 finished = utc_now()
+                latency_ms = (finished - started).total_seconds() * 1000
+                response_payload = response_to_dict(response)
                 usage = extract_usage(response)
+                text = extract_text(response)
+                tool_calls = extract_tool_calls_list(response)
+                think_text = extract_think_text(response)
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -127,8 +133,8 @@ class ModelRuntime:
                     started_at=started_at,
                     first_token_at=finished.isoformat(),
                     finished_at=finished.isoformat(),
-                    latency_ms=(finished - started).total_seconds() * 1000,
-                    time_to_first_token_ms=(finished - started).total_seconds() * 1000,
+                    latency_ms=latency_ms,
+                    time_to_first_token_ms=latency_ms,
                     input_tokens=usage["input_tokens"],
                     output_tokens=usage["output_tokens"],
                     cache_hit=usage["cache_read_tokens"] > 0,
@@ -140,7 +146,7 @@ class ModelRuntime:
                     metadata={
                         "route_strategy": attempt["strategy"],
                         "response_model": maybe_get(response, "model"),
-                        "usage_raw": response_to_dict(response).get("usage"),
+                        "usage_raw": response_payload.get("usage"),
                         **call.metadata,
                     },
                     estimated_cost=extract_estimated_cost(response),
@@ -152,24 +158,52 @@ class ModelRuntime:
                     AIInteractionRecord(
                         execution_id=execution_id,
                         timestamp=started.timestamp(),
-                        latency_ms=(finished - started).total_seconds() * 1000,
+                        latency_ms=latency_ms,
                         input_tokens=usage["input_tokens"],
                         output_tokens=usage["output_tokens"],
                         cache_read_tokens=usage["cache_read_tokens"],
                         cache_write_tokens=usage["cache_write_tokens"],
                         model_id=attempt["model"]["id"],
                         provider_id=attempt["provider"]["id"],
-                        think_text=extract_think_text(response),
+                        think_text=think_text,
                         injected_context_json=extract_injected_context(call.messages),
-                        tool_calls_json=json.dumps(
-                            extract_tool_calls_list(response), ensure_ascii=False
-                        ),
+                        tool_calls_json=json.dumps(tool_calls, ensure_ascii=False),
                         prompt_snapshot_id=call.prompt_snapshot_id,
-                    )
+                    ),
+                )
+                await self._notify_observers(
+                    {
+                        "event": "model_runtime.response",
+                        "mode": "completion",
+                        "execution_id": execution_id,
+                        "caller": call.caller,
+                        "purpose": call.purpose,
+                        "session_id": call.session_id,
+                        "instance_id": call.instance_id,
+                        "route_id": call.route_id or "",
+                        "provider_id": attempt["provider"]["id"],
+                        "provider_type": attempt["provider"]["type"],
+                        "model_id": attempt["model"]["id"],
+                        "litellm_model": attempt["model"]["litellm_model"],
+                        "strategy": attempt["strategy"],
+                        "status": "success",
+                        "latency_ms": latency_ms,
+                        "usage": usage,
+                        "cache_hit": usage["cache_read_tokens"] > 0,
+                        "cache_read_tokens": usage["cache_read_tokens"],
+                        "cache_write_tokens": usage["cache_write_tokens"],
+                        "return": {
+                            "text": text,
+                            "tool_calls": tool_calls,
+                        },
+                        "response": response_payload,
+                        "metadata": dict(call.metadata),
+                        "prompt_snapshot_id": call.prompt_snapshot_id,
+                    }
                 )
                 return GenerateResult(
-                    text=extract_text(response),
-                    tool_calls=extract_tool_calls_list(response),
+                    text=text,
+                    tool_calls=tool_calls,
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -179,6 +213,7 @@ class ModelRuntime:
                 )
             except Exception as exc:  # noqa: BLE001
                 finished = utc_now()
+                latency_ms = (finished - started).total_seconds() * 1000
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -190,7 +225,7 @@ class ModelRuntime:
                     purpose=call.purpose,
                     started_at=started_at,
                     finished_at=finished.isoformat(),
-                    latency_ms=(finished - started).total_seconds() * 1000,
+                    latency_ms=latency_ms,
                     success=False,
                     error_code=type(exc).__name__,
                     error_message=str(exc),
@@ -203,6 +238,40 @@ class ModelRuntime:
                     },
                 )
                 persist_model_execution(self._database, record)
+                await self._notify_observers(
+                    {
+                        "event": "model_runtime.response",
+                        "mode": "completion",
+                        "execution_id": execution_id,
+                        "caller": call.caller,
+                        "purpose": call.purpose,
+                        "session_id": call.session_id,
+                        "instance_id": call.instance_id,
+                        "route_id": call.route_id or "",
+                        "provider_id": attempt["provider"]["id"],
+                        "provider_type": attempt["provider"]["type"],
+                        "model_id": attempt["model"]["id"],
+                        "litellm_model": attempt["model"]["litellm_model"],
+                        "strategy": attempt["strategy"],
+                        "status": "error",
+                        "latency_ms": latency_ms,
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cache_read_tokens": 0,
+                            "cache_write_tokens": 0,
+                        },
+                        "cache_hit": False,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "error": {
+                            "code": type(exc).__name__,
+                            "message": str(exc),
+                        },
+                        "metadata": dict(call.metadata),
+                        "prompt_snapshot_id": call.prompt_snapshot_id,
+                    }
+                )
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 

@@ -36,11 +36,53 @@ def test_build_model_record_preserves_request_payload():
     )
 
     assert record["event_type"] == "model_runtime.request"
+    assert record["phase"] == "request"
     assert record["mode"] == "completion"
     assert record["model_id"] == "openai-main/gpt-fast"
     assert record["request"]["messages"] == [{"role": "user", "content": "hello"}]
     assert record["request"]["params"] == {"max_tokens": 16}
     assert record["request"]["kwargs"]["api_key"] == "***"
+
+
+def test_build_model_record_preserves_response_payload():
+    record = _build_model_record(
+        {
+            "event": "model_runtime.response",
+            "mode": "completion",
+            "caller": "agent.runtime",
+            "purpose": "chat",
+            "session_id": "inst:group:1",
+            "instance_id": "inst",
+            "route_id": "agent.default_chat",
+            "provider_id": "openai-main",
+            "provider_type": "openai",
+            "model_id": "openai-main/gpt-fast",
+            "litellm_model": "openai/gpt-4.1-mini",
+            "execution_id": "exec-1",
+            "strategy": "priority",
+            "status": "success",
+            "latency_ms": 123.0,
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 6,
+                "cache_read_tokens": 3,
+                "cache_write_tokens": 1,
+            },
+            "cache_hit": True,
+            "return": {"text": "ok", "tool_calls": []},
+            "response": {"choices": [{"message": {"content": "ok"}}]},
+        }
+    )
+
+    assert record["event_type"] == "model_runtime.response"
+    assert record["phase"] == "response"
+    assert record["response"]["status"] == "success"
+    assert record["response"]["usage"]["input_tokens"] == 12
+    assert record["response"]["usage"]["output_tokens"] == 6
+    assert record["response"]["cache"]["hit"] is True
+    assert record["response"]["cache"]["read_tokens"] == 3
+    assert record["response"]["cache"]["write_tokens"] == 1
+    assert record["response"]["return"]["text"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -80,7 +122,12 @@ async def test_debug_model_plugin_persists_runtime_requests(
     def fake_completion(**kwargs):
         return {
             "choices": [{"message": {"content": "ok"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": 1},
+                "cache_creation_input_tokens": 3,
+            },
         }
 
     monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
@@ -101,11 +148,26 @@ async def test_debug_model_plugin_persists_runtime_requests(
 
     records_path = tmp_path / "plugin_data" / "shinbot_debug_model" / "model_requests.jsonl"
     lines = records_path.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 1
-    payload = json.loads(lines[0])
-    assert payload["event_type"] == "model_runtime.request"
-    assert payload["mode"] == "completion"
-    assert payload["caller"] == "agent.runtime"
-    assert payload["model_id"] == "openai-main/gpt-fast"
-    assert payload["request"]["messages"] == [{"role": "user", "content": "hello"}]
-    assert payload["request"]["kwargs"]["api_key"] == "***"
+    assert len(lines) == 2
+
+    request_payload = json.loads(lines[0])
+    response_payload = json.loads(lines[1])
+
+    assert request_payload["event_type"] == "model_runtime.request"
+    assert request_payload["mode"] == "completion"
+    assert request_payload["caller"] == "agent.runtime"
+    assert request_payload["model_id"] == "openai-main/gpt-fast"
+    assert request_payload["request"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert request_payload["request"]["kwargs"]["api_key"] == "***"
+
+    assert response_payload["event_type"] == "model_runtime.response"
+    assert response_payload["mode"] == "completion"
+    assert response_payload["caller"] == "agent.runtime"
+    assert response_payload["model_id"] == "openai-main/gpt-fast"
+    assert response_payload["response"]["status"] == "success"
+    assert response_payload["response"]["return"]["text"] == "ok"
+    assert response_payload["response"]["usage"]["input_tokens"] == 4
+    assert response_payload["response"]["usage"]["output_tokens"] == 2
+    assert response_payload["response"]["cache"]["hit"] is True
+    assert response_payload["response"]["cache"]["read_tokens"] == 1
+    assert response_payload["response"]["cache"]["write_tokens"] == 3

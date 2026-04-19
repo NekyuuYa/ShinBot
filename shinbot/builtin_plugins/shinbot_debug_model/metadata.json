@@ -3,7 +3,7 @@
   "name": "Model Debug Plugin",
   "version": "1.0.0",
   "author": "ShinBot Team",
-  "description": "Logs all model runtime requests and persists request payloads for debugging.",
+  "description": "Logs model runtime requests and responses with usage/cache metrics for debugging.",
   "entry": "__init__.py",
   "role": "logic",
   "permissions": []
