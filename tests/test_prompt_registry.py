@@ -22,6 +22,7 @@ from shinbot.agent.prompt_manager import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.persistence import DatabaseManager, MediaSemanticRecord, MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
 
@@ -836,6 +837,35 @@ def test_prompt_registry_dedupes_explicit_identity_components(tmp_path) -> None:
     component_ids = [record.component_id for record in result.ordered_components]
     assert component_ids.count(PromptRegistry.BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID) == 1
     assert component_ids.count(PromptRegistry.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID) == 1
+
+
+def test_prompt_registry_injects_current_time_prompt_into_constraints() -> None:
+    registry = PromptRegistry()
+    register_runtime_prompt_components(
+        registry,
+        current_time_resolver=registry.resolve_builtin_current_time_prompt,
+    )
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    result = registry.assemble(PromptAssemblyRequest(profile_id="agent.default"))
+
+    final_user_message = result.messages[-1]
+    assert final_user_message["role"] == "user"
+    final_texts = [str(block.get("text", "")) for block in final_user_message["content"]]
+    time_text = next(text for text in final_texts if "### 当前时间" in text)
+    assert "现在的本地时间" in time_text
+    assert "今天是" in time_text
+
+    component_ids = [record.component_id for record in result.ordered_components]
+    assert component_ids.count(PromptRegistry.BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID) == 1
 
 
 # ── ActiveContextPool incremental token tests ─────────────────────────

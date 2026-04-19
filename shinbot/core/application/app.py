@@ -21,6 +21,7 @@ from shinbot.agent.identity import IdentityStore, register_identity_prompt_compo
 from shinbot.agent.media import MediaInspectionRunner, MediaService, register_media_runtime
 from shinbot.agent.model_runtime import ModelRuntime
 from shinbot.agent.prompt_manager import PromptRegistry
+from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
 from shinbot.core.dispatch.command import CommandRegistry
@@ -90,6 +91,10 @@ class ShinBot:
         register_identity_prompt_components(
             self.prompt_registry,
             resolver=self.prompt_registry.resolve_builtin_identity_map_prompt,
+        )
+        register_runtime_prompt_components(
+            self.prompt_registry,
+            current_time_resolver=self.prompt_registry.resolve_builtin_current_time_prompt,
         )
         self.media_inspection_runner = (
             MediaInspectionRunner(

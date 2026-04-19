@@ -10,6 +10,7 @@ from shinbot.agent.identity import (
     inject_identity_layers_into_messages,
     resolve_identity_map_prompt,
 )
+from shinbot.agent.runtime import resolve_current_time_prompt
 from shinbot.agent.prompt_manager.context_strategies import (
     hydrate_request_context,
     resolve_builtin_sliding_window_context,
@@ -64,6 +65,8 @@ class PromptRegistry:
     BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID = "builtin.instructions.identity_map"
     BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID = "builtin.constraints.identity_behavior"
     BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER = "builtin.identity.map"
+    BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID = "builtin.constraints.current_time"
+    BUILTIN_CURRENT_TIME_PROMPT_RESOLVER = "builtin.runtime.current_time"
 
     @classmethod
     def build_builtin_sliding_window_strategy(
@@ -243,6 +246,7 @@ class PromptRegistry:
         self._inject_context_strategy(request, records_by_stage, ordered_records)
         if request.identity_enabled:
             self._inject_identity_prompts(request, records_by_stage, ordered_records)
+        self._inject_runtime_prompts(request, records_by_stage, ordered_records)
 
         # ── Sort records within each stage ──────────────────────────────
         sorted_records_by_stage: dict[PromptStage, list[PromptComponentRecord]] = {
@@ -542,6 +546,58 @@ class PromptRegistry:
         records_by_stage[PromptStage.CONSTRAINTS].append(static_record)
         ordered_records.append(static_record)
 
+    def _inject_runtime_prompts(
+        self,
+        request: PromptAssemblyRequest,
+        records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
+        ordered_records: list[PromptComponentRecord],
+    ) -> None:
+        component = self._components.get(self.BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID)
+        if component is None or not component.enabled:
+            return
+
+        has_record = any(
+            record.component_id == component.id and bool(record.rendered_text.strip())
+            for record in ordered_records
+        )
+        if has_record:
+            return
+
+        source = infer_component_source(component)
+        resolver = self._resolvers.get(component.resolver_ref)
+        if resolver is None:
+            raise ValueError(
+                f"Prompt resolver {component.resolver_ref!r} is not registered"
+            )
+
+        resolver_output = resolver(request, component, source)
+        if isinstance(resolver_output, dict):
+            rendered_text = str(resolver_output.get("text", "")).strip()
+            rendered_metadata = {
+                key: value for key, value in resolver_output.items() if key != "text"
+            }
+        else:
+            rendered_text = str(resolver_output).strip()
+            rendered_metadata = {}
+
+        if not rendered_text:
+            return
+
+        record = PromptComponentRecord(
+            component_id=component.id,
+            stage=component.stage,
+            kind=component.kind,
+            version=component.version,
+            priority=component.priority,
+            source=source,
+            rendered_text=rendered_text,
+            text_hash=stable_text_hash(rendered_text),
+            cache_stable=component.cache_stable,
+            metadata={**dict(component.metadata), **rendered_metadata},
+        )
+        records_by_stage[component.stage].append(record)
+        ordered_records.append(record)
+
     def _resolve_context_strategy(self, request: PromptAssemblyRequest) -> ContextStrategy | None:
         if request.context_strategy_id:
             strategy = self._context_strategies.get(request.context_strategy_id)
@@ -608,6 +664,18 @@ class PromptRegistry:
     ) -> dict[str, Any]:
         return resolve_identity_map_prompt(
             identity_store=self._identity_store,
+            request=request,
+            _component=component,
+            _source=source,
+        )
+
+    def resolve_builtin_current_time_prompt(
+        self,
+        request: PromptAssemblyRequest,
+        component: PromptComponent,
+        source: PromptSource,
+    ) -> dict[str, Any]:
+        return resolve_current_time_prompt(
             request=request,
             _component=component,
             _source=source,
