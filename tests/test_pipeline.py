@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+import time
 from uuid import uuid4
 
 import pytest
@@ -22,6 +23,7 @@ from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
     AgentRecord,
     BotConfigRecord,
+    MessageLogRecord,
     ModelDefinitionRecord,
     ModelProviderRecord,
     ModelRouteMemberRecord,
@@ -357,6 +359,66 @@ class TestMessageContext:
         self.ctx.stop()
         assert self.ctx.is_stopped is True
 
+    def test_is_reply_to_bot_detects_quoted_assistant_message(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        db.message_logs.insert(
+            MessageLogRecord(
+                session_id=self.session.id,
+                platform_msg_id="bot-msg-1",
+                sender_id="bot-1",
+                sender_name="Bot",
+                content_json="[]",
+                raw_text="earlier bot reply",
+                role="assistant",
+                is_read=True,
+                is_mentioned=False,
+                created_at=time.time() * 1000,
+            )
+        )
+        ctx = MessageContext(
+            event=self.event,
+            message=Message.from_elements(
+                MessageElement.quote("bot-msg-1"),
+                MessageElement.text(" follow-up"),
+            ),
+            session=self.session,
+            adapter=self.adapter,
+            permissions=set(),
+            database=db,
+        )
+        assert ctx.is_reply_to_bot() is True
+
+    def test_is_reply_to_bot_ignores_quoted_user_message(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        db.message_logs.insert(
+            MessageLogRecord(
+                session_id=self.session.id,
+                platform_msg_id="user-msg-1",
+                sender_id="user-2",
+                sender_name="Other User",
+                content_json="[]",
+                raw_text="earlier user message",
+                role="user",
+                is_read=True,
+                is_mentioned=False,
+                created_at=time.time() * 1000,
+            )
+        )
+        ctx = MessageContext(
+            event=self.event,
+            message=Message.from_elements(
+                MessageElement.quote("user-msg-1"),
+                MessageElement.text(" follow-up"),
+            ),
+            session=self.session,
+            adapter=self.adapter,
+            permissions=set(),
+            database=db,
+        )
+        assert ctx.is_reply_to_bot() is False
+
 
 class TestMessagePipeline:
     def setup_method(self):
@@ -500,6 +562,67 @@ class TestMessagePipeline:
         assert results == []
         # Should have sent a permission denied message
         assert len(self.adapter.sent) == 1
+
+    @pytest.mark.asyncio
+    async def test_attention_scheduler_receives_reply_to_bot_flag(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        session_id = "test-bot:group:group:1"
+        db.message_logs.insert(
+            MessageLogRecord(
+                session_id=session_id,
+                platform_msg_id="bot-msg-1",
+                sender_id="bot-1",
+                sender_name="Bot",
+                content_json="[]",
+                raw_text="earlier bot reply",
+                role="assistant",
+                is_read=True,
+                is_mentioned=False,
+                created_at=time.time() * 1000,
+            )
+        )
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def on_message(
+                self,
+                session_id: str,
+                msg_log_id: int,
+                sender_id: str,
+                *,
+                is_mentioned: bool = False,
+                is_reply_to_bot: bool = False,
+            ) -> None:
+                self.calls.append(
+                    {
+                        "session_id": session_id,
+                        "msg_log_id": msg_log_id,
+                        "sender_id": sender_id,
+                        "is_mentioned": is_mentioned,
+                        "is_reply_to_bot": is_reply_to_bot,
+                    }
+                )
+
+        scheduler = RecordingAttentionScheduler()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
+        )
+
+        event = make_event('<quote id="bot-msg-1"/>follow-up', channel_type=0)
+        await pipeline.process_event(event, self.adapter)
+        await asyncio.sleep(0)
+
+        assert len(scheduler.calls) == 1
+        assert scheduler.calls[0]["is_reply_to_bot"] is True
 
     @pytest.mark.asyncio
     async def test_non_message_event(self):

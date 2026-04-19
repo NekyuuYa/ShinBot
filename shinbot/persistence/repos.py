@@ -1301,6 +1301,27 @@ class MessageLogRepository(ContextProvider):
             return None
         return self._row_to_dict(row)
 
+    def get_by_platform_msg_id(
+        self,
+        session_id: str,
+        platform_msg_id: str,
+    ) -> dict[str, Any] | None:
+        if not session_id or not platform_msg_id:
+            return None
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM message_logs
+                WHERE session_id = ? AND platform_msg_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (session_id, platform_msg_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row)
+
     def list_by_session(
         self,
         session_id: str,

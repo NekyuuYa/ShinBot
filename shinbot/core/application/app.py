@@ -15,6 +15,10 @@ from shinbot.agent.identity import IdentityStore
 from shinbot.agent.model_runtime import ModelRuntime
 from shinbot.agent.prompting import PromptRegistry
 from shinbot.agent.tools import ToolManager, ToolRegistry
+from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
+from shinbot.agent.attention.scheduler import AttentionScheduler
+from shinbot.agent.attention.tools import register_attention_tools
+from shinbot.agent.attention.workflow import WorkflowRunner
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
@@ -91,6 +95,40 @@ class ShinBot:
             model_runtime=self.model_runtime,
             data_dir=data_dir,
         )
+
+        # ── Attention-driven conversation workflow ──────────────────
+        self.attention_config = AttentionConfig()
+        self.attention_engine: AttentionEngine | None = None
+        self.attention_scheduler: AttentionScheduler | None = None
+        self.workflow_runner: WorkflowRunner | None = None
+
+        if self.database is not None:
+            self.attention_engine = AttentionEngine(
+                self.attention_config,
+                self.database.attention,
+            )
+            self.attention_scheduler = AttentionScheduler(
+                self.attention_engine,
+                self.database,
+                self.attention_config,
+            )
+            self.workflow_runner = WorkflowRunner(
+                self.database,
+                self.prompt_registry,
+                self.model_runtime,
+                self.tool_manager,
+                self.attention_engine,
+                self.adapter_manager,
+            )
+            # Wire workflow dispatcher into the scheduler
+            self.attention_scheduler.set_workflow_dispatcher(
+                self._dispatch_attention_workflow,
+            )
+            # Register attention tools
+            register_attention_tools(
+                self.tool_registry, self.attention_engine, self.adapter_manager,
+            )
+
         self.pipeline = MessagePipeline(
             adapter_manager=self.adapter_manager,
             session_manager=self.session_manager,
@@ -102,6 +140,7 @@ class ShinBot:
             context_manager=self.context_manager,
             prompt_registry=self.prompt_registry,
             model_runtime=self.model_runtime,
+            attention_scheduler=self.attention_scheduler,
         )
 
     # ── Event ingress callback ───────────────────────────────────────
@@ -116,6 +155,34 @@ class ShinBot:
             await self.pipeline.process_event(event, adapter)
         except Exception:
             logger.exception("Unhandled error processing event: %s", event.type)
+
+    # ── Attention workflow dispatcher ────────────────────────────────
+
+    async def _dispatch_attention_workflow(
+        self,
+        session_id: str,
+        batch: list[dict[str, Any]],
+        attention_state: Any,
+    ) -> None:
+        """Callback for the attention scheduler to dispatch a workflow run."""
+        if self.workflow_runner is None:
+            return
+
+        # Resolve instance_id from session_id (format: {instance_id}:group:...)
+        parts = session_id.split(":", 2)
+        instance_id = parts[0] if parts else ""
+
+        try:
+            await self.workflow_runner.run(
+                session_id,
+                batch,
+                attention_state,
+                instance_id=instance_id,
+            )
+        except Exception:
+            logger.exception(
+                "Attention workflow failed for session %s", session_id
+            )
 
     # ── Adapter management shortcuts ─────────────────────────────────
 
@@ -154,5 +221,7 @@ class ShinBot:
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems."""
         logger.info("ShinBot shutting down...")
+        if self.attention_scheduler is not None:
+            await self.attention_scheduler.shutdown()
         await self.adapter_manager.shutdown_all()
         logger.info("ShinBot shut down complete")

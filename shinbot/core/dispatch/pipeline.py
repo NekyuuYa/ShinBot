@@ -41,6 +41,7 @@ from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
     from shinbot.agent.context import ContextManager
+    from shinbot.agent.attention.scheduler import AttentionScheduler
     from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
@@ -160,6 +161,36 @@ class MessageContext:
             el.type == "at" and el.attrs.get("id") == self.event.self_id
             for el in self.message.elements
         )
+
+    def _quoted_message_ids(self) -> list[str]:
+        ids: list[str] = []
+        stack = list(self.message.elements)
+        while stack:
+            element = stack.pop()
+            if element.type == "quote":
+                quote_id = str(element.attrs.get("id") or "").strip()
+                if quote_id:
+                    ids.append(quote_id)
+            if element.children:
+                stack.extend(element.children)
+        return ids
+
+    def is_reply_to_bot(self) -> bool:
+        """Return True when this message quotes a previously sent bot message."""
+        quote_ids = self._quoted_message_ids()
+        if not quote_ids or self._database is None:
+            return False
+
+        for quote_id in quote_ids:
+            record = self._database.message_logs.get_by_platform_msg_id(self.session_id, quote_id)
+            if record is None:
+                continue
+            if str(record.get("role") or "").strip() == "assistant":
+                return True
+            sender_id = str(record.get("sender_id") or "").strip()
+            if sender_id and sender_id == self.event.self_id:
+                return True
+        return False
 
     # ── Permission checking ──────────────────────────────────────────
 
@@ -457,6 +488,7 @@ class MessagePipeline:
         context_manager: ContextManager | None = None,
         prompt_registry: PromptRegistry | None = None,
         model_runtime: ModelRuntime | None = None,
+        attention_scheduler: AttentionScheduler | None = None,
     ):
         self._adapter_manager = adapter_manager
         self._session_manager = session_manager
@@ -468,6 +500,7 @@ class MessagePipeline:
         self._context_manager = context_manager
         self._prompt_registry = prompt_registry
         self._model_runtime = model_runtime
+        self._attention_scheduler = attention_scheduler
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._waiting_registry = WaitingInputRegistry()
 
@@ -1103,5 +1136,31 @@ class MessagePipeline:
 
         # Stage 4: Post-processing
         self._session_manager.update(session)
+
+        # For group messages with attention scheduler active, route to attention
+        # system instead of the legacy fallback responder.
+        if (
+            self._attention_scheduler is not None
+            and not bot.is_private
+            and not bot._sent_messages
+            and not bot.is_stopped
+            and bot._msg_log_id is not None
+        ):
+            is_mentioned = any(
+                el.type == "at" and el.attrs.get("id") == event.self_id
+                for el in message.elements
+            )
+            # Fire-and-forget: attention accumulation runs async
+            asyncio.create_task(
+                self._attention_scheduler.on_message(
+                    session_id,
+                    bot._msg_log_id,
+                    event.sender_id or "",
+                    is_mentioned=is_mentioned,
+                    is_reply_to_bot=bot.is_reply_to_bot(),
+                ),
+                name=f"attention-{session_id}",
+            )
+            return bot, False  # Don't run fallback responder
 
         return bot, (not bot._sent_messages and not bot.is_stopped)
