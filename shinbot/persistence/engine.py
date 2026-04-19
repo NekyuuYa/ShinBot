@@ -45,6 +45,12 @@ class DatabaseManager:
         self.ai_interactions = AIInteractionRepository(self)
         self.prompt_snapshots = PromptSnapshotRepository(self)
 
+        # Lazy-imported to avoid circular dependency (attention -> model_runtime -> persistence)
+        from shinbot.agent.attention.repository import AttentionRepository, WorkflowRunRepository
+
+        self.attention = AttentionRepository(self)
+        self.workflow_runs = WorkflowRunRepository(self)
+
     @classmethod
     def from_bootstrap(
         cls,

@@ -328,6 +328,62 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_prompt_snapshots_expires_at
     ON prompt_snapshots(expires_at)
     """,
+    # ── Attention-driven conversation workflow ──────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS session_attention_states (
+        session_id TEXT PRIMARY KEY,
+        attention_value REAL NOT NULL DEFAULT 0.0,
+        base_threshold REAL NOT NULL DEFAULT 5.0,
+        runtime_threshold_offset REAL NOT NULL DEFAULT 0.0,
+        cooldown_until REAL NOT NULL DEFAULT 0.0,
+        last_update_at REAL NOT NULL DEFAULT 0.0,
+        last_consumed_msg_log_id INTEGER,
+        last_trigger_msg_log_id INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sender_weight_states (
+        session_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        stable_weight REAL NOT NULL DEFAULT 0.0,
+        runtime_weight REAL NOT NULL DEFAULT 0.0,
+        last_runtime_adjust_at REAL NOT NULL DEFAULT 0.0,
+        PRIMARY KEY(session_id, sender_id),
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sender_weight_states_session_id
+    ON sender_weight_states(session_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        instance_id TEXT NOT NULL DEFAULT '',
+        batch_start_msg_id INTEGER,
+        batch_end_msg_id INTEGER,
+        batch_size INTEGER NOT NULL DEFAULT 0,
+        trigger_attention REAL NOT NULL DEFAULT 0.0,
+        effective_threshold REAL NOT NULL DEFAULT 0.0,
+        tool_calls_json TEXT NOT NULL DEFAULT '[]',
+        replied INTEGER NOT NULL DEFAULT 0,
+        response_summary TEXT NOT NULL DEFAULT '',
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_session_id
+    ON workflow_runs(session_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_started_at
+    ON workflow_runs(started_at)
+    """,
 )
 
 
