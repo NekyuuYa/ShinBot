@@ -49,6 +49,8 @@ class ShinBot:
         *,
         database_url: str | None = None,
         database_snapshot_ttl: int | None = None,
+        attention_config: AttentionConfig | None = None,
+        attention_debug: bool = False,
     ) -> None:
         # Core subsystems
         self.database: DatabaseManager | None = None
@@ -117,7 +119,9 @@ class ShinBot:
         )
 
         # ── Attention-driven conversation workflow ──────────────────
-        self.attention_config = AttentionConfig()
+        self.attention_config = attention_config or AttentionConfig()
+        if attention_debug:
+            self.attention_config.debug = True
         self.attention_engine: AttentionEngine | None = None
         self.attention_scheduler: AttentionScheduler | None = None
         self.workflow_runner: WorkflowRunner | None = None
@@ -211,9 +215,7 @@ class ShinBot:
                 response_profile=response_profile,
             )
         except Exception:
-            logger.exception(
-                "Attention workflow failed for session %s", session_id
-            )
+            logger.exception("Attention workflow failed for session %s", session_id)
 
     # ── Adapter management shortcuts ─────────────────────────────────
 

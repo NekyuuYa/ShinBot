@@ -950,6 +950,7 @@ class TestMessagePipeline:
         assert result.success is True
         assert len(self.adapter.sent) == 1
         assert result.output["message_log_id"] is not None
+        assert result.output["terminate_round"] is True
 
         row = db.message_logs.get(result.output["message_log_id"])
         assert row is not None

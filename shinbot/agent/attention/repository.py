@@ -168,6 +168,33 @@ class AttentionRepository:
             for row in rows
         ]
 
+    def commit_batch_consumption(
+        self,
+        session_id: str,
+        last_msg_id: int,
+        threshold_to_deduct: float,
+    ) -> None:
+        """Atomically advance cursor and deduct threshold from attention_value.
+
+        Uses a single UPDATE so it cannot race with apply_reply_fatigue, which
+        only touches runtime_threshold_offset and cooldown_until.  Safe to call
+        even if incremental-merge already advanced last_consumed_msg_log_id via
+        update_consumed_cursor (MAX guard prevents regression).
+        """
+        with self._db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE session_attention_states
+                SET attention_value = MAX(attention_value - ?, 0.0),
+                    last_trigger_msg_log_id = ?,
+                    last_consumed_msg_log_id = MAX(
+                        COALESCE(last_consumed_msg_log_id, 0), ?
+                    )
+                WHERE session_id = ?
+                """,
+                (threshold_to_deduct, last_msg_id, last_msg_id, session_id),
+            )
+
     def update_consumed_cursor(self, session_id: str, msg_log_id: int) -> None:
         """Atomically advance last_consumed_msg_log_id without touching other fields.
 

@@ -7,6 +7,7 @@ import types
 
 import pytest
 
+from shinbot.agent.attention.engine import AttentionConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
@@ -31,6 +32,19 @@ class TestShinBotInit:
         bot = ShinBot(data_dir=tmp_path)
         assert bot.database is not None
         assert (tmp_path / "db" / "shinbot.sqlite3").exists()
+
+    def test_attention_debug_parameter(self):
+        bot_no_debug = ShinBot(attention_debug=False)
+        assert bot_no_debug.attention_config.debug is False
+
+        bot_debug = ShinBot(attention_debug=True)
+        assert bot_debug.attention_config.debug is True
+
+    def test_attention_config_parameter(self):
+        config = AttentionConfig(decay_k=0.002, decay_idle_grace_seconds=300.0)
+        bot = ShinBot(attention_config=config)
+        assert bot.attention_config.decay_k == 0.002
+        assert bot.attention_config.decay_idle_grace_seconds == 300.0
 
     def test_plugin_manager_shares_registry(self):
         """PluginManager must use the same registry as the pipeline."""

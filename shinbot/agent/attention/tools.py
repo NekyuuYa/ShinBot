@@ -234,6 +234,7 @@ def register_attention_tools(
         text = str(arguments.get("text", "")).strip()
         if not text:
             return {"error": "text is required and must not be empty"}
+        terminate_round = bool(arguments.get("terminate_round", True))
 
         adapter = adapter_manager.get_instance(instance_id)
         if adapter is None:
@@ -277,6 +278,7 @@ def register_attention_tools(
             "length": len(text),
             "platform_msg_id": handle.message_id if handle is not None else "",
             "message_log_id": assistant_log_id,
+            "terminate_round": terminate_round,
             "hint": "消息已发送至会话。",
         }
 
@@ -288,6 +290,8 @@ def register_attention_tools(
                 "向当前会话发送一条回复消息。\n"
                 "这是你在注意力工作流中回复用户的唯一方式。\n"
                 "text: 要发送的回复文本内容。\n"
+                "terminate_round: 是否在发送后立即结束当前 workflow 轮次；"
+                "默认 true。若为 false，发送后允许模型继续后续推理或工具调用。\n"
                 "注意：每次调用都会实际发送消息，请确保内容准确后再调用。\n"
                 "如果你决定不回复，请使用 no_reply 工具代替。"
             ),
@@ -297,6 +301,13 @@ def register_attention_tools(
                     "text": {
                         "type": "string",
                         "description": "要发送的回复文本",
+                    },
+                    "terminate_round": {
+                        "type": "boolean",
+                        "description": (
+                            "是否在发送后立即结束当前 workflow 轮次。"
+                            "默认 true；若为 false，则允许模型继续本轮后续步骤。"
+                        ),
                     },
                 },
                 "required": ["text"],

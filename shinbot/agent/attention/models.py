@@ -22,11 +22,6 @@ class SessionAttentionState:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def effective_threshold(self) -> float:
-        """Compute the effective threshold with runtime offset applied."""
-        return self.base_threshold + self.runtime_threshold_offset
-
-    @property
     def is_cooling_down(self) -> bool:
         return time.time() < self.cooldown_until
 

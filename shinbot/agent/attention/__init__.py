@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from shinbot.agent.attention.debug import AttentionDebugTracer
 from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
 from shinbot.agent.attention.models import (
     SenderWeightState,
@@ -13,6 +14,7 @@ from shinbot.agent.attention.scheduler import AttentionScheduler
 
 __all__ = [
     "AttentionConfig",
+    "AttentionDebugTracer",
     "AttentionEngine",
     "AttentionScheduler",
     "SenderWeightState",

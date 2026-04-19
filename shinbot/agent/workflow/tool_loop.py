@@ -17,6 +17,7 @@ class WorkflowToolLoopResult:
     tool_calls_log: list[dict[str, Any]] = field(default_factory=list)
     no_reply: bool = False
     reply_sent: bool = False
+    terminate_round: bool = False
     internal_summary: str = ""
     response_summary: str = ""
 
@@ -74,6 +75,10 @@ async def execute_workflow_tool_calls(
         elif tool_name == "send_reply" and tool_result.success:
             outcome.reply_sent = True
             outcome.response_summary = str(tool_args.get("text", "") or "")[:200]
+            terminate_round = True
+            if isinstance(tool_result.output, dict):
+                terminate_round = bool(tool_result.output.get("terminate_round", True))
+            outcome.terminate_round = outcome.terminate_round or terminate_round
 
         outcome.tool_messages.append(
             {

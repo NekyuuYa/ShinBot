@@ -109,6 +109,9 @@ class AttentionScheduler:
                     "Workflow already running for session %s, skipping trigger",
                     session_id,
                 )
+                self._engine.tracer.trace_semantic_wait(
+                    session_id, action="skipped_running", sender_id=sender_id,
+                )
                 return
 
             # Triggered — manage semantic wait timer
@@ -124,8 +127,16 @@ class AttentionScheduler:
                         session_id,
                         sender_id,
                     )
+                    self._engine.tracer.trace_semantic_wait(
+                        session_id, action="reset", sender_id=sender_id,
+                    )
                 else:
                     # Different sender joined — let the existing timer run
+                    self._engine.tracer.trace_semantic_wait(
+                        session_id,
+                        action="skipped_different_sender",
+                        sender_id=sender_id,
+                    )
                     return
 
             self._trigger_sender[session_id] = sender_id
@@ -141,6 +152,13 @@ class AttentionScheduler:
                 profile_name,
                 profile_wait_ms,
                 profile_threshold,
+            )
+            self._engine.tracer.trace_semantic_wait(
+                session_id,
+                action="armed",
+                sender_id=sender_id,
+                wait_ms=profile_wait_ms,
+                profile=profile_name,
             )
 
     def _resolve_response_profile(self, response_profile: str) -> tuple[str, float, float]:
@@ -174,33 +192,60 @@ class AttentionScheduler:
 
     async def _do_dispatch(self, session_id: str, response_profile: str) -> None:
         """Claim the batch and dispatch to workflow runner."""
+        # Step 1: fetch pending messages (read-only, no DB writes yet)
+        async with self._get_lock(session_id):
+            batch, state, last_msg_id = self._fetch_pending_batch(session_id)
+
+        if not batch or last_msg_id is None:
+            logger.debug("Empty batch for session %s, skipping workflow", session_id)
+            self._engine.tracer.trace_dispatch(session_id, action="empty")
+            self._running_workflows.pop(session_id, None)
+            return
+
+        logger.info(
+            "Dispatching workflow: session=%s batch_size=%d attention=%.3f",
+            session_id,
+            len(batch),
+            state.attention_value,
+        )
+        self._engine.tracer.trace_dispatch(
+            session_id,
+            action="start",
+            batch_size=len(batch),
+            attention_value=state.attention_value,
+        )
+
+        # Step 2: dispatch — cursor NOT advanced yet.
+        # On success we commit; on failure we leave the cursor where it was so
+        # the next trigger can re-claim these messages.
+        dispatch_ok = False
         try:
-            async with self._get_lock(session_id):
-                batch, state = self._claim_batch(session_id)
-
-            if not batch:
-                logger.debug("Empty batch for session %s, skipping workflow", session_id)
-                return
-
-            logger.info(
-                "Dispatching workflow: session=%s batch_size=%d attention=%.3f",
-                session_id,
-                len(batch),
-                state.attention_value,
-            )
-
             if self._workflow_dispatcher is not None:
                 await self._workflow_dispatcher(session_id, batch, state, response_profile)
+            dispatch_ok = True
         except Exception:
             logger.exception("Workflow dispatch failed for session %s", session_id)
+            self._engine.tracer.trace_dispatch(session_id, action="error")
         finally:
             self._running_workflows.pop(session_id, None)
 
-    def _claim_batch(
+        # Step 3: commit cursor + consume attention only after successful dispatch.
+        if dispatch_ok:
+            threshold = self._engine.effective_threshold(state)
+            self._engine.repo.commit_batch_consumption(session_id, last_msg_id, threshold)
+            self._engine.tracer.trace_batch_claim(
+                session_id,
+                batch_size=len(batch),
+                cursor_before=state.last_consumed_msg_log_id,
+                cursor_after=last_msg_id,
+                residual_attention=max(state.attention_value - threshold, 0.0),
+            )
+
+    def _fetch_pending_batch(
         self,
         session_id: str,
-    ) -> tuple[list[dict[str, Any]], SessionAttentionState]:
-        """Claim unconsumed messages and update cursor positions."""
+    ) -> tuple[list[dict[str, Any]], SessionAttentionState, int | None]:
+        """Fetch unconsumed messages without modifying persistent state."""
         state = self._engine.repo.get_or_create_attention(
             session_id,
             base_threshold=self._config.base_threshold,
@@ -208,7 +253,6 @@ class AttentionScheduler:
 
         after_id = state.last_consumed_msg_log_id
 
-        # Fetch messages after the last consumed position
         with self._database.connect() as conn:
             if after_id is not None:
                 rows = conn.execute(
@@ -230,20 +274,10 @@ class AttentionScheduler:
                 ).fetchall()
 
         if not rows:
-            return [], state
+            return [], state, None
 
         batch = [dict(row) for row in rows]
-        last_msg_id = batch[-1]["id"]
-
-        # Update cursors
-        state.last_trigger_msg_log_id = last_msg_id
-        state.last_consumed_msg_log_id = last_msg_id
-
-        # Consume batch: deduct threshold, preserve residual
-        state = self._engine.consume_batch(state)
-        self._engine.repo.save_attention(state)
-
-        return batch, state
+        return batch, state, batch[-1]["id"]
 
     def _count_recent_mentions(
         self,

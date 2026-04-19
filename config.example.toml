@@ -8,6 +8,13 @@ level = "INFO"  # DEBUG | INFO | WARNING | ERROR
 url = "sqlite:///data/db/shinbot.sqlite3"
 snapshot_ttl = 10800  # Full prompt snapshot TTL in seconds (default 3 hours)
 
+[attention]
+# Exponential decay rate per second for session attention.
+# Half-life ~= ln(2) / decay_k, so 0.005 means about 139s half-life.
+decay_k = 0.005
+# Do not decay immediately; start decay only after this many seconds of silence.
+decay_idle_grace_seconds = 60.0
+
 
 # ─── Bot Instances ────────────────────────────────────────────────────────────
 # Each [[instances]] block represents a single bot account / connection.

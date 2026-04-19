@@ -9,6 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from shinbot.agent.attention import AttentionConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.utils.logger import get_logger, setup_logging
 
@@ -32,10 +33,12 @@ class BootController:
         config_path: Path | str,
         data_dir: Path | str = "data",
         log_level: str = "INFO",
+        attention_debug: bool = False,
     ) -> None:
         self.config_path = Path(config_path)
         self.data_dir = Path(data_dir)
         self.log_level = log_level
+        self.attention_debug = attention_debug
         self.state = BootState.UNINITIALIZED
         self.config: dict[str, Any] = {}
         self.bot: ShinBot | None = None
@@ -103,14 +106,69 @@ class BootController:
             db_cfg = self.config.get("database", {})
             database_url = db_cfg.get("url")
             snapshot_ttl = db_cfg.get("snapshot_ttl")
+            attention_config = self._resolve_attention_config()
             self.bot = ShinBot(
                 data_dir=self.data_dir,
                 database_url=database_url,
                 database_snapshot_ttl=snapshot_ttl,
+                attention_config=attention_config,
+                attention_debug=self.attention_debug,
             )
         except Exception:
             self.state = BootState.DEGRADED
             raise
+
+    def _resolve_attention_config(self) -> AttentionConfig:
+        """Build AttentionConfig from defaults and optional [attention] overrides."""
+        config = AttentionConfig(debug=self.attention_debug)
+        section = self.config.get("attention", {})
+
+        if not isinstance(section, dict):
+            logger.warning("[attention] must be a table; got %s", type(section).__name__)
+            return config
+
+        decay_k = section.get("decay_k")
+        if decay_k is not None:
+            try:
+                parsed = float(decay_k)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid attention.decay_k=%r; fallback to default %.4f",
+                    decay_k,
+                    config.decay_k,
+                )
+            else:
+                if parsed > 0:
+                    config.decay_k = parsed
+                else:
+                    logger.warning(
+                        "attention.decay_k must be > 0; got %r (using default %.4f)",
+                        decay_k,
+                        config.decay_k,
+                    )
+
+        idle_grace = section.get("decay_idle_grace_seconds")
+        if idle_grace is not None:
+            try:
+                parsed = float(idle_grace)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid attention.decay_idle_grace_seconds=%r; fallback to default %.1f",
+                    idle_grace,
+                    config.decay_idle_grace_seconds,
+                )
+            else:
+                if parsed >= 0:
+                    config.decay_idle_grace_seconds = parsed
+                else:
+                    logger.warning(
+                        "attention.decay_idle_grace_seconds must be >= 0; got %r "
+                        "(using default %.1f)",
+                        idle_grace,
+                        config.decay_idle_grace_seconds,
+                    )
+
+        return config
 
     def _init_dashboard_static_config(self) -> None:
         """Resolve and cache dashboard dist/index paths during infrastructure phase."""

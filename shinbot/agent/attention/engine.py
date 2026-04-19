@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from shinbot.agent.attention.debug import AttentionDebugTracer
 from shinbot.agent.attention.models import SenderWeightState, SessionAttentionState
 from shinbot.agent.attention.repository import AttentionRepository
 from shinbot.utils.logger import get_logger
@@ -24,7 +25,8 @@ class AttentionConfig:
     threshold_max: float = 20.0
 
     # Exponential decay constants (per second)
-    decay_k: float = 0.05
+    decay_k: float = 0.005
+    decay_idle_grace_seconds: float = 60.0
     runtime_weight_decay_k: float = 0.01
     runtime_threshold_decay_k: float = 0.008
 
@@ -36,6 +38,9 @@ class AttentionConfig:
     # Burst detection (Robust Interrupt)
     burst_window_seconds: float = 10.0
     burst_exponent: float = 1.5
+    # Cap on the burst amplification factor to prevent runaway contributions
+    # from coordinated mention storms.  burst_factor = min(n^exp, burst_cap).
+    burst_cap: float = 10.0
 
     # Reply fatigue
     fatigue_increment: float = 1.0
@@ -48,6 +53,9 @@ class AttentionConfig:
     # Sender weight bounds
     weight_min: float = -2.0
     weight_max: float = 2.0
+
+    # Debug mode — enable structured console traces for attention values
+    debug: bool = False
 
 
 def _clamp(value: float, lo: float, hi: float) -> tuple[float, str]:
@@ -74,6 +82,7 @@ class AttentionEngine:
     def __init__(self, config: AttentionConfig, repository: AttentionRepository) -> None:
         self.config = config
         self.repo = repository
+        self.tracer = AttentionDebugTracer(enabled=config.debug)
 
     # ── Time decay ──────────────────────────────────────────────────
 
@@ -89,13 +98,16 @@ class AttentionEngine:
         if dt <= 0:
             return state
 
-        # Exponential decay on attention value
-        state.attention_value *= math.exp(-self.config.decay_k * dt)
+        effective_dt = max(dt - self.config.decay_idle_grace_seconds, 0.0)
 
-        # Smooth regression of runtime_threshold_offset toward 0
-        if state.runtime_threshold_offset != 0.0:
-            decay_factor = math.exp(-self.config.runtime_threshold_decay_k * dt)
-            state.runtime_threshold_offset *= decay_factor
+        if effective_dt > 0:
+            # Only decay the portion of idle time that exceeds grace window.
+            state.attention_value *= math.exp(-self.config.decay_k * effective_dt)
+
+            # Smooth regression of runtime_threshold_offset toward 0
+            if state.runtime_threshold_offset != 0.0:
+                decay_factor = math.exp(-self.config.runtime_threshold_decay_k * effective_dt)
+                state.runtime_threshold_offset *= decay_factor
 
         state.last_update_at = now
         return state
@@ -145,7 +157,10 @@ class AttentionEngine:
 
         # Burst amplification: non-linear growth when multiple mentions occur
         if recent_mention_count > 1:
-            burst_factor = math.pow(recent_mention_count, self.config.burst_exponent)
+            burst_factor = min(
+                math.pow(recent_mention_count, self.config.burst_exponent),
+                self.config.burst_cap,
+            )
             feature_bonus *= burst_factor
 
         return base + feature_bonus
@@ -188,9 +203,14 @@ class AttentionEngine:
         if base_threshold is not None:
             state.base_threshold = base_threshold
 
+        # Capture pre-decay value for debug tracing
+        value_before_decay = state.attention_value
+
         # Apply time decay
         state = self.apply_time_decay(state, now)
         sw = self.apply_sender_weight_decay(sw, now)
+
+        value_after_decay = state.attention_value
 
         # Compute contribution
         sender_factor = self.compute_sender_factor(sw)
@@ -225,6 +245,21 @@ class AttentionEngine:
             triggered,
         )
 
+        self.tracer.trace_update(
+            session_id,
+            sender_id,
+            value_before_decay=value_before_decay,
+            value_after_decay=value_after_decay,
+            contribution=contribution,
+            value_after=state.attention_value,
+            threshold=threshold,
+            triggered=triggered,
+            sender_factor=sender_factor,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+            burst_count=recent_mention_count,
+        )
+
         return state, triggered
 
     # ── Post-trigger operations ─────────────────────────────────────
@@ -237,9 +272,16 @@ class AttentionEngine:
 
     def apply_reply_fatigue(self, state: SessionAttentionState) -> SessionAttentionState:
         """Increase threshold offset after a reply to prevent self-reinforcing storms."""
+        offset_before = state.runtime_threshold_offset
         state.runtime_threshold_offset += self.config.fatigue_increment
         state.cooldown_until = time.time() + self.config.cooldown_seconds
         self.repo.save_attention(state)
+        self.tracer.trace_fatigue(
+            state.session_id,
+            offset_before=offset_before,
+            offset_after=state.runtime_threshold_offset,
+            cooldown_until=state.cooldown_until,
+        )
         return state
 
     # ── Weight adjustment (for tools) ───────────────────────────────
@@ -293,7 +335,7 @@ class AttentionEngine:
         elif runtime_status == "clamped_to_min":
             hint_parts.append("临时权重已达下限。")
 
-        return {
+        result = {
             "target": f"sender:{sender_id}",
             "applied": {"stable": stable_status, "runtime": runtime_status},
             "current_band": {
@@ -302,6 +344,16 @@ class AttentionEngine:
             },
             "hint": " ".join(hint_parts) if hint_parts else "调整已生效。",
         }
+
+        self.tracer.trace_weight_adjust(
+            session_id,
+            sender_id,
+            stable_delta=stable_delta,
+            runtime_delta=runtime_delta,
+            result=result,
+        )
+
+        return result
 
     def adjust_session_threshold(
         self,
@@ -315,6 +367,7 @@ class AttentionEngine:
             base_threshold=self.config.base_threshold,
         )
 
+        effective_before = self.effective_threshold(state)
         new_offset = state.runtime_threshold_offset + offset_delta
         effective_raw = state.base_threshold + new_offset
         _, status = _clamp(effective_raw, self.config.threshold_min, self.config.threshold_max)
@@ -328,13 +381,19 @@ class AttentionEngine:
         state.runtime_threshold_offset = new_offset
         self.repo.save_attention(state)
 
+        self.tracer.trace_threshold_adjust(
+            session_id,
+            offset_delta=offset_delta,
+            effective_before=effective_before,
+            effective_after=self.effective_threshold(state),
+            status=status,
+        )
+
         return {
             "applied": status,
             "effective_threshold": self.effective_threshold(state),
             "runtime_offset": state.runtime_threshold_offset,
-            "hint": (
-                "阈值已达边界。" if status != "applied" else "阈值调整已生效。"
-            ),
+            "hint": ("阈值已达边界。" if status != "applied" else "阈值调整已生效。"),
         }
 
     # ── Inspection (for tools) ──────────────────────────────────────
@@ -365,11 +424,13 @@ class AttentionEngine:
         weight_summary = []
         for w in weights[:10]:
             score = w.stable_weight + w.runtime_weight
-            weight_summary.append({
-                "sender_id": w.sender_id,
-                "combined_score": round(score, 3),
-                "factor": round(weight_curve(score), 3),
-            })
+            weight_summary.append(
+                {
+                    "sender_id": w.sender_id,
+                    "combined_score": round(score, 3),
+                    "factor": round(weight_curve(score), 3),
+                }
+            )
 
         return {
             "session_id": session_id,

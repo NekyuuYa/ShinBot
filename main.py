@@ -14,11 +14,18 @@ from shinbot.core.application.boot import BootController
 logger = logging.getLogger("shinbot.main")
 
 
-async def _run(config_path: str, log_level: str, api_host: str, api_port: int) -> None:
+async def _run(
+    config_path: str,
+    log_level: str,
+    api_host: str,
+    api_port: int,
+    attention_debug: bool,
+) -> None:
     controller = BootController(
         config_path=config_path,
         data_dir="data",
         log_level=log_level,
+        attention_debug=attention_debug,
     )
     await controller.boot()
 
@@ -69,10 +76,23 @@ def main() -> None:
         metavar="PORT",
         help="Management API listen port (default: 3945)",
     )
+    parser.add_argument(
+        "--attention-debug",
+        action="store_true",
+        help="Enable attention system debug traces in console",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(_run(args.config, args.log_level, args.api_host, args.api_port))
+        asyncio.run(
+            _run(
+                args.config,
+                args.log_level,
+                args.api_host,
+                args.api_port,
+                args.attention_debug,
+            )
+        )
     except KeyboardInterrupt:
         pass
     except Exception:

@@ -83,15 +83,28 @@ class TestTimeDecay:
         result = engine.apply_time_decay(state, now)
         assert result.attention_value == 10.0
 
-    def test_exponential_decay(self, engine):
+    def test_no_decay_within_idle_grace(self, engine):
         now = time.time()
         state = SessionAttentionState(
             session_id="test",
             attention_value=10.0,
-            last_update_at=now - 10,  # 10 seconds ago
+            runtime_threshold_offset=3.0,
+            last_update_at=now - 40,
         )
         result = engine.apply_time_decay(state, now)
-        expected = 10.0 * math.exp(-engine.config.decay_k * 10)
+        assert result.attention_value == 10.0
+        assert result.runtime_threshold_offset == 3.0
+
+    def test_exponential_decay_after_idle_grace(self, engine):
+        now = time.time()
+        state = SessionAttentionState(
+            session_id="test",
+            attention_value=10.0,
+            last_update_at=now - 220,
+        )
+        result = engine.apply_time_decay(state, now)
+        effective_dt = 220 - engine.config.decay_idle_grace_seconds
+        expected = 10.0 * math.exp(-engine.config.decay_k * effective_dt)
         assert abs(result.attention_value - expected) < 1e-10
 
     def test_runtime_offset_regression(self, engine):
@@ -99,10 +112,11 @@ class TestTimeDecay:
         state = SessionAttentionState(
             session_id="test",
             runtime_threshold_offset=3.0,
-            last_update_at=now - 20,
+            last_update_at=now - 220,
         )
         result = engine.apply_time_decay(state, now)
-        expected_offset = 3.0 * math.exp(-engine.config.runtime_threshold_decay_k * 20)
+        effective_dt = 220 - engine.config.decay_idle_grace_seconds
+        expected_offset = 3.0 * math.exp(-engine.config.runtime_threshold_decay_k * effective_dt)
         assert abs(result.runtime_threshold_offset - expected_offset) < 1e-10
 
     def test_sender_weight_decay(self, engine):
@@ -233,7 +247,9 @@ class TestUpdateAttention:
             )
 
         state1, triggered1 = engine.update_attention(
-            "s1", sender_id="u1", msg_log_id=1,
+            "s1",
+            sender_id="u1",
+            msg_log_id=1,
         )
         assert state1.attention_value > 0
         assert not triggered1  # base_gain=1.0 < threshold=5.0
@@ -255,7 +271,10 @@ class TestUpdateAttention:
         triggered = False
         for i in range(10):
             state, t = engine.update_attention(
-                "s2", sender_id="u1", msg_log_id=i + 1, now=now,
+                "s2",
+                sender_id="u1",
+                msg_log_id=i + 1,
+                now=now,
             )
             if t:
                 triggered = True
@@ -278,8 +297,11 @@ class TestUpdateAttention:
 
         # Single mention should contribute more
         state, triggered = engine.update_attention(
-            "s3", sender_id="u1", msg_log_id=1,
-            is_mentioned=True, now=now,
+            "s3",
+            sender_id="u1",
+            msg_log_id=1,
+            is_mentioned=True,
+            now=now,
         )
         # base_gain(1.0) * factor(1.0) + mention_bonus(1.5) = 2.5
         assert abs(state.attention_value - 2.5) < 0.1
@@ -344,7 +366,10 @@ class TestWeightAdjustment:
             )
 
         result = engine.adjust_sender_weight(
-            "sw1", "user1", stable_delta=0.3, runtime_delta=0.5,
+            "sw1",
+            "user1",
+            stable_delta=0.3,
+            runtime_delta=0.5,
         )
         assert result["applied"]["stable"] == "applied"
         assert result["applied"]["runtime"] == "applied"
@@ -360,7 +385,9 @@ class TestWeightAdjustment:
             )
 
         result = engine.adjust_sender_weight(
-            "sw2", "user1", stable_delta=10.0,  # way over max
+            "sw2",
+            "user1",
+            stable_delta=10.0,  # way over max
         )
         assert result["applied"]["stable"] == "clamped_to_max"
         assert "上限" in result["hint"]

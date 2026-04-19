@@ -49,7 +49,8 @@ class WorkflowRunner:
     - Before the next LLM call, check for new messages that arrived during
       processing and merge them as incremental context.
     - The loop terminates when the model produces a final text response,
-      calls no_reply or send_reply, or max iterations are reached.
+      calls no_reply, calls send_reply with ``terminate_round=true``, or max
+      iterations are reached.
 
     All tool execution is routed through ToolManager for unified
     permission checking, auditing, and handler resolution.
@@ -215,6 +216,7 @@ class WorkflowRunner:
         tool_calls_log: list[dict[str, Any]] = []
         no_reply = False
         reply_sent = False
+        terminate_round = False
         internal_summary = ""
         iteration = 0
 
@@ -287,17 +289,19 @@ class WorkflowRunner:
                 run_id=run_id,
             )
             tool_calls_log.extend(tool_outcome.tool_calls_log)
-            no_reply = tool_outcome.no_reply
-            reply_sent = tool_outcome.reply_sent
-            internal_summary = tool_outcome.internal_summary
+            no_reply = no_reply or tool_outcome.no_reply
+            reply_sent = reply_sent or tool_outcome.reply_sent
+            terminate_round = terminate_round or tool_outcome.terminate_round
+            if tool_outcome.internal_summary:
+                internal_summary = tool_outcome.internal_summary
             if tool_outcome.response_summary:
                 record.replied = True
                 record.response_summary = tool_outcome.response_summary
 
             conversation_messages.extend(tool_outcome.tool_messages)
 
-            # If no_reply or send_reply was called, stop the loop
-            if no_reply or reply_sent:
+            # Stop only when the tool batch explicitly ends the round.
+            if no_reply or terminate_round:
                 break
 
             # ── Incremental Merging: fetch new messages ────────────
@@ -339,18 +343,28 @@ class WorkflowRunner:
         if reply_sent:
             # Reply already sent via send_reply tool; apply fatigue
             self._engine.apply_reply_fatigue(attention_state)
-        elif no_reply or not reply_sent:
-            if internal_summary:
-                # Atomically store summary without overwriting attention_value
-                self._engine.repo.set_metadata_key(
-                    session_id, "internal_summary", internal_summary,
-                )
+            record.replied = True
+        if no_reply and internal_summary:
+            # Atomically store summary without overwriting attention_value
+            self._engine.repo.set_metadata_key(
+                session_id, "internal_summary", internal_summary,
+            )
+        if not reply_sent:
             record.replied = False
             if not record.response_summary:
                 record.response_summary = internal_summary[:200] if internal_summary else ""
 
         record.finished_at = time.time()
         self._save_run(record)
+
+        self._engine.tracer.trace_workflow_result(
+            session_id,
+            run_id=run_id,
+            replied=record.replied,
+            tool_count=len(tool_calls_log),
+            iterations=iteration + 1,
+            duration_ms=(record.finished_at - record.started_at) * 1000,
+        )
 
         logger.info(
             "Workflow complete: session=%s replied=%s batch=%d tools=%d "
