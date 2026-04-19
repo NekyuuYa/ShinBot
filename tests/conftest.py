@@ -88,8 +88,8 @@ def adapter_manager() -> AdapterManager:
 
 
 @pytest.fixture
-def plugin_manager(command_registry, event_bus) -> PluginManager:
-    return PluginManager(command_registry=command_registry, event_bus=event_bus)
+def plugin_manager(command_registry, event_bus, tmp_path) -> PluginManager:
+    return PluginManager(command_registry=command_registry, event_bus=event_bus, data_dir=tmp_path)
 
 
 # ── Event builders ────────────────────────────────────────────────────────────

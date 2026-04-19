@@ -2,6 +2,7 @@
 
 import json
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -94,13 +95,21 @@ class TestPluginManager:
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
         self.tool_registry = ToolRegistry()
-        self.mgr = PluginManager(self.cmd_reg, self.event_bus, tool_registry=self.tool_registry)
+        self._tmp_data_dir_ctx = tempfile.TemporaryDirectory()
+        self._tmp_data_dir = Path(self._tmp_data_dir_ctx.name)
+        self.mgr = PluginManager(
+            self.cmd_reg,
+            self.event_bus,
+            tool_registry=self.tool_registry,
+            data_dir=self._tmp_data_dir,
+        )
 
     def teardown_method(self):
         # Clean up any test modules
         for key in list(sys.modules.keys()):
             if key.startswith("test_plugin_"):
                 del sys.modules[key]
+        self._tmp_data_dir_ctx.cleanup()
 
     def test_load_plugin(self):
         def setup(plg: Plugin):
@@ -359,7 +368,7 @@ async def test_load_respects_dependency_order(tmp_path: Path):
 
     cmd_reg = CommandRegistry()
     event_bus = EventBus()
-    mgr = PluginManager(cmd_reg, event_bus)
+    mgr = PluginManager(cmd_reg, event_bus, data_dir=tmp_path)
     await mgr.load_plugins_from_metadata_dir_async(tmp_path)
 
     assert load_order.index("plugin_z") < load_order.index("plugin_b")
@@ -396,7 +405,7 @@ async def test_load_all_async_includes_builtin_plugins(
 
     cmd_reg = CommandRegistry()
     event_bus = EventBus()
-    mgr = PluginManager(cmd_reg, event_bus)
+    mgr = PluginManager(cmd_reg, event_bus, data_dir=tmp_path)
 
     loaded = await mgr.load_all_async(tmp_path / "user_plugins")
 
@@ -448,7 +457,7 @@ async def test_metadata_identity_overrides_module_identity_fields(tmp_path: Path
 
     cmd_reg = CommandRegistry()
     event_bus = EventBus()
-    mgr = PluginManager(cmd_reg, event_bus)
+    mgr = PluginManager(cmd_reg, event_bus, data_dir=tmp_path)
 
     try:
         await mgr.load_plugins_from_metadata_dir_async(tmp_path)

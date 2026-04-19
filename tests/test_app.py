@@ -84,8 +84,8 @@ class TestLoadPlugin:
         sys.modules[name] = mod
         return mod
 
-    def test_load_plugin_delegates_to_manager(self):
-        bot = ShinBot()
+    def test_load_plugin_delegates_to_manager(self, tmp_path):
+        bot = ShinBot(data_dir=tmp_path)
 
         def setup(plg: Plugin):
             @plg.on_command("greet")
@@ -98,8 +98,8 @@ class TestLoadPlugin:
         assert meta.name == "greet"
 
     @pytest.mark.asyncio
-    async def test_load_plugin_async(self):
-        bot = ShinBot()
+    async def test_load_plugin_async(self, tmp_path):
+        bot = ShinBot(data_dir=tmp_path)
 
         async def async_setup(plg: Plugin):
             @plg.on_command("async_greet")
