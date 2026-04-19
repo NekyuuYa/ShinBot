@@ -169,6 +169,7 @@ class ModelRuntime:
                 )
                 return GenerateResult(
                     text=extract_text(response),
+                    tool_calls=extract_tool_calls_list(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],

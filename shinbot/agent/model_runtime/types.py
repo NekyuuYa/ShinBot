@@ -31,6 +31,7 @@ class ModelRuntimeCall:
 @dataclass(slots=True)
 class GenerateResult:
     text: str
+    tool_calls: list[dict[str, Any]]
     raw_response: Any
     execution_id: str
     route_id: str

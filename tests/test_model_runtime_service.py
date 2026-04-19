@@ -173,6 +173,58 @@ async def test_generate_falls_back_to_second_route_member(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_generate_returns_tool_calls(monkeypatch, tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db)
+
+    def fake_completion(**kwargs):
+        return {
+            "model": kwargs["model"],
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "workflow.send_reply",
+                                    "arguments": "{\"text\":\"pong\"}",
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+        }
+
+    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    )
+
+    assert result.tool_calls == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "workflow.send_reply",
+                "arguments": "{\"text\":\"pong\"}",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_embed_records_usage(monkeypatch, tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
