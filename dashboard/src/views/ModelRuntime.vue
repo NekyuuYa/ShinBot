@@ -501,6 +501,10 @@
                         :label="$t('pages.modelRuntime.fields.litellmModel')"
                         density="comfortable"
                         variant="outlined"
+                        append-inner-icon="mdi-database-search-outline"
+                        :hint="$t('pages.modelRuntime.hints.modelIdPicker')"
+                        persistent-hint
+                        @click:append-inner="openModelIdPicker"
                       />
                     </v-col>
                     <v-col cols="12" md="6">
@@ -609,6 +613,15 @@
     <v-alert v-if="store.error" type="error" class="mt-6">
       {{ store.error }}
     </v-alert>
+
+    <model-id-picker-dialog
+      :model-value="showModelIdPicker"
+      :current-value="modelForm.litellmModel"
+      :route-options="modelIdPickerRouteOptions"
+      :provider-groups="modelIdPickerProviderGroups"
+      @update:model-value="closeModelIdPicker"
+      @select="applyPickedModelId"
+    />
   </v-container>
 </template>
 
@@ -617,6 +630,7 @@ import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
 import KeyValueEditor from '@/components/model-runtime/KeyValueEditor.vue'
 import ModelMemberCard from '@/components/model-runtime/ModelMemberCard.vue'
+import ModelIdPickerDialog from '@/components/model-runtime/ModelIdPickerDialog.vue'
 import { useModelRuntimePage } from '@/composables/useModelRuntimePage'
 
 const {
@@ -667,11 +681,17 @@ const {
   providerCanManageModels,
   openInlineModelEditor,
   showInlineModelEditor,
+  showModelIdPicker,
   cancelInlineModelEditor,
   saveModel,
   inlineModelSaveLabel,
   editingModelId,
   modelForm,
+  modelIdPickerRouteOptions,
+  modelIdPickerProviderGroups,
+  openModelIdPicker,
+  closeModelIdPicker,
+  applyPickedModelId,
   selectedProviderModels,
   providerModelMeta,
   removeModel,

@@ -76,7 +76,8 @@
     "createRoute": "Create Route",
     "modelEditor": "Model Settings",
     "routeMemberEditor": "Route Member Settings",
-    "catalog": "Provider Catalog"
+    "catalog": "Provider Catalog",
+    "modelIdPicker": "Select Model ID"
   },
   "hints": {
     "token": "Leave empty to keep the stored credential unchanged.",
@@ -90,7 +91,10 @@
     "thinking": "Only shown when supported by the selected source.",
     "filters": "Only shown when supported by the selected source.",
     "noConfiguredModels": "There are no configured models for this tab yet.",
-    "noRouteModels": "There are no models in this domain that can be added to the route yet."
+    "noRouteModels": "There are no models in this domain that can be added to the route yet.",
+    "modelIdPicker": "You can still type directly, or pick a route ID / model ID from the dialog.",
+    "modelIdPickerEmpty": "There are no route IDs or model IDs available yet.",
+    "modelIdPickerNoMatches": "No matching options were found."
   },
   "labels": {
     "workspace": "Model Runtime",
@@ -108,7 +112,10 @@
     "image": "Image",
     "video": "Video",
     "other": "Other",
-    "executionCount": "Recent {count} calls"
+    "executionCount": "Recent {count} calls",
+    "routeTargets": "Routes",
+    "catalog": "Catalog",
+    "configured": "Configured"
   },
   "messages": {
     "loadFailed": "Failed to load model runtime data",

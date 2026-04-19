@@ -8,6 +8,7 @@ import {
   makeModelId,
   providerSourceTemplates,
   resolveProviderSource,
+  routeMatchesTab,
   tabToCapabilityType,
   type ModelRuntimeTab,
   type ProviderCapabilityType,
@@ -27,6 +28,7 @@ export function useModelRuntimePage() {
   const isCreatingProvider = ref(false)
   const isCreatingRoute = ref(false)
   const showInlineModelEditor = ref(false)
+  const showModelIdPicker = ref(false)
   const editingModelId = ref('')
 
   const runtimeTabs = computed(() => [
@@ -184,6 +186,13 @@ export function useModelRuntimePage() {
       activeRouteDomain.value
   )
 
+  const routeDomainLabels = computed(() =>
+    routeDomainOptions.value.reduce<Record<string, string>>((acc, item) => {
+      acc[item.value] = item.label
+      return acc
+    }, {})
+  )
+
   const availableRouteModels = computed(() => {
     const capabilityType = tabToCapabilityType(activeRouteDomain.value as ModelRuntimeTab)
     const providerIds = new Set(
@@ -227,6 +236,90 @@ export function useModelRuntimePage() {
           (model.id === generatedId || model.litellmModel === item.litellmModel)
       )
     })
+  })
+
+  const modelIdPickerRouteOptions = computed(() =>
+    store.routes
+      .filter((item) => routeMatchesTab(item.metadata, activeTab.value))
+      .map((item) => {
+        const domain =
+          typeof item.metadata.domain === 'string' && item.metadata.domain
+            ? item.metadata.domain
+            : activeTab.value
+        const domainLabel = routeDomainLabels.value[domain] || domain
+        return {
+          id: item.id,
+          title: item.id,
+          subtitle: item.purpose ? `${item.purpose} · ${domainLabel}` : domainLabel,
+          enabled: item.enabled,
+        }
+      })
+      .sort((left, right) => {
+        if (left.enabled !== right.enabled) {
+          return left.enabled ? -1 : 1
+        }
+        return left.title.localeCompare(right.title)
+      })
+  )
+
+  const modelIdPickerProviderGroups = computed(() => {
+    const capabilityType = tabToCapabilityType(activeTab.value)
+    return store.providers
+      .filter((provider) => provider.capabilityType === capabilityType)
+      .map((provider) => {
+        const items = new Map<
+          string,
+          {
+            value: string
+            title: string
+            subtitle: string
+            kind: 'catalog' | 'configured'
+          }
+        >()
+
+        for (const item of store.catalogItems[provider.id] || []) {
+          const value = item.litellmModel.trim()
+          if (!value) {
+            continue
+          }
+          items.set(value, {
+            value,
+            title: item.displayName || item.id || value,
+            subtitle: item.id && item.id !== value ? `${item.id} · ${value}` : value,
+            kind: 'catalog',
+          })
+        }
+
+        for (const model of store.modelsByProvider[provider.id] || []) {
+          const value = model.litellmModel.trim()
+          if (!value || items.has(value)) {
+            continue
+          }
+          items.set(value, {
+            value,
+            title: model.displayName || model.id,
+            subtitle: model.id !== value ? `${model.id} · ${value}` : value,
+            kind: 'configured',
+          })
+        }
+
+        return {
+          providerId: provider.id,
+          providerName: provider.displayName || provider.id,
+          providerType: resolveProviderSource(provider.type)?.label || provider.type,
+          items: [...items.values()].sort((left, right) => left.title.localeCompare(right.title)),
+        }
+      })
+      .filter((group) => group.items.length > 0)
+      .sort((left, right) => {
+        if (left.providerId === selectedProvider.value?.id) {
+          return -1
+        }
+        if (right.providerId === selectedProvider.value?.id) {
+          return 1
+        }
+        return left.providerName.localeCompare(right.providerName)
+      })
   })
 
   const providerSaveLabel = computed(() =>
@@ -396,12 +489,14 @@ export function useModelRuntimePage() {
 
   const selectProvider = (id: string) => {
     isCreatingProvider.value = false
+    showModelIdPicker.value = false
     selectedKind.value = 'provider'
     selectedId.value = id
   }
 
   const selectRoute = (id: string) => {
     isCreatingRoute.value = false
+    showModelIdPicker.value = false
     selectedKind.value = 'route'
     selectedId.value = id
   }
@@ -416,6 +511,7 @@ export function useModelRuntimePage() {
 
   const startCreateProvider = () => {
     isCreatingProvider.value = true
+    showModelIdPicker.value = false
     selectedKind.value = 'provider'
     selectedId.value = ''
     resetProviderForm()
@@ -424,6 +520,7 @@ export function useModelRuntimePage() {
 
   const startCreateRoute = () => {
     isCreatingRoute.value = true
+    showModelIdPicker.value = false
     selectedKind.value = 'route'
     selectedId.value = ''
     resetRouteForm()
@@ -622,6 +719,7 @@ export function useModelRuntimePage() {
   const openInlineModelEditor = (modelId = '') => {
     showInlineModelEditor.value = true
     editingModelId.value = modelId
+    showModelIdPicker.value = false
     if (!modelId) {
       resetModelForm()
       return
@@ -643,8 +741,22 @@ export function useModelRuntimePage() {
 
   const cancelInlineModelEditor = () => {
     showInlineModelEditor.value = false
+    showModelIdPicker.value = false
     editingModelId.value = ''
     resetModelForm()
+  }
+
+  const openModelIdPicker = () => {
+    showModelIdPicker.value = true
+  }
+
+  const closeModelIdPicker = () => {
+    showModelIdPicker.value = false
+  }
+
+  const applyPickedModelId = (value: string) => {
+    modelForm.value.litellmModel = value
+    showModelIdPicker.value = false
   }
 
   const saveModel = async () => {
@@ -788,6 +900,7 @@ export function useModelRuntimePage() {
 
   watch(activeTab, (nextTab, previousTab) => {
     showInlineModelEditor.value = false
+    showModelIdPicker.value = false
     editingModelId.value = ''
 
     if (nextTab !== previousTab) {
@@ -885,11 +998,17 @@ export function useModelRuntimePage() {
     providerCanManageModels,
     openInlineModelEditor,
     showInlineModelEditor,
+    showModelIdPicker,
     cancelInlineModelEditor,
     saveModel,
     inlineModelSaveLabel,
     editingModelId,
     modelForm,
+    modelIdPickerRouteOptions,
+    modelIdPickerProviderGroups,
+    openModelIdPicker,
+    closeModelIdPicker,
+    applyPickedModelId,
     selectedProviderModels,
     providerModelMeta,
     removeModel,

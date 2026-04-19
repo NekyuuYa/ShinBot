@@ -76,7 +76,8 @@
     "createRoute": "新建路由",
     "modelEditor": "模型配置",
     "routeMemberEditor": "路由成员配置",
-    "catalog": "供应商模型目录"
+    "catalog": "供应商模型目录",
+    "modelIdPicker": "选择模型标识"
   },
   "hints": {
     "token": "若留空，则保留当前已存储的凭据。",
@@ -90,7 +91,10 @@
     "thinking": "仅在当前来源支持时显示。",
     "filters": "仅在当前来源支持时显示。",
     "noConfiguredModels": "当前标签下还没有已配置模型。",
-    "noRouteModels": "当前归属域下还没有可加入路由的模型。"
+    "noRouteModels": "当前归属域下还没有可加入路由的模型。",
+    "modelIdPicker": "支持直接输入，也可以从弹窗里挑选路由 ID 或模型标识。",
+    "modelIdPickerEmpty": "当前还没有可用的路由或模型标识。",
+    "modelIdPickerNoMatches": "没有匹配到可选项。"
   },
   "labels": {
     "workspace": "Model Runtime",
@@ -108,7 +112,10 @@
     "image": "图片生成",
     "video": "视频生成",
     "other": "其他",
-    "executionCount": "最近 {count} 次调用"
+    "executionCount": "最近 {count} 次调用",
+    "routeTargets": "路由",
+    "catalog": "目录",
+    "configured": "已配置"
   },
   "messages": {
     "loadFailed": "加载模型管理数据失败",
