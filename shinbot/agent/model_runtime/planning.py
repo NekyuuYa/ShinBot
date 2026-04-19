@@ -125,6 +125,9 @@ def build_litellm_kwargs(
         kwargs["messages"] = call.messages
         if call.tools:
             kwargs["tools"] = call.tools
+            # Workflow-style tool orchestration expects the model to finish via
+            # tool calls instead of free-form assistant text.
+            kwargs["tool_choice"] = "required"
         if call.response_format is not None:
             kwargs["response_format"] = call.response_format
     elif mode in ("embedding", "speech"):

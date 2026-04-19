@@ -157,6 +157,22 @@ async def test_generate_falls_back_to_second_route_member(monkeypatch, tmp_path)
             route_id="agent.default_chat",
             caller="agent.runtime",
             messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "workflow.send_reply",
+                        "description": "Send a reply",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                            },
+                            "required": ["text"],
+                        },
+                    },
+                }
+            ],
         )
     )
 
@@ -178,8 +194,10 @@ async def test_generate_returns_tool_calls(monkeypatch, tmp_path):
     db.initialize()
     _seed_runtime(db)
     runtime = ModelRuntime(db)
+    captured: dict[str, object] = {}
 
     def fake_completion(**kwargs):
+        captured.update(kwargs)
         return {
             "model": kwargs["model"],
             "choices": [
@@ -209,6 +227,22 @@ async def test_generate_returns_tool_calls(monkeypatch, tmp_path):
             route_id="agent.default_chat",
             caller="agent.runtime",
             messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "workflow.send_reply",
+                        "description": "Send a reply",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                            },
+                            "required": ["text"],
+                        },
+                    },
+                }
+            ],
         )
     )
 
@@ -222,6 +256,7 @@ async def test_generate_returns_tool_calls(monkeypatch, tmp_path):
             },
         }
     ]
+    assert captured["tool_choice"] == "required"
 
 
 @pytest.mark.asyncio
