@@ -23,10 +23,12 @@
 3. `design/README.md`
 4. `design/core/00_core_philosophy.md`
 5. `design/core/01_message_workflow.md`
-6. `design/extensibility/07_plugin_system_design.md`
-7. `design/extensibility/09_adapter_interface_spec.md`
-8. `design/interfaces/13_webui_design_spec.md`
-9. `plugins/capabilities.md`
+6. `design/runtime/24_attention_driven_conversation_workflow.md`
+7. `design/runtime/25_media_semantics_and_meme_handling.md`
+8. `design/extensibility/07_plugin_system_design.md`
+9. `design/extensibility/09_adapter_interface_spec.md`
+10. `design/interfaces/13_webui_design_spec.md`
+11. `plugins/capabilities.md`
 
 ## 维护规则
 

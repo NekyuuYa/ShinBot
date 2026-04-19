@@ -37,6 +37,8 @@
 - `21_prompt_registry.md`
 - `22_prompt_registry_schema.md`
 - `23_tool_registry_and_manager.md`
+- `24_attention_driven_conversation_workflow.md`
+- `25_media_semantics_and_meme_handling.md`
 
 ### `extensibility/`
 

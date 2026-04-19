@@ -32,3 +32,6 @@ data/
 
 # local config
 config.toml
+
+# test
+.test/
