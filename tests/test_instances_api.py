@@ -210,7 +210,12 @@ def test_list_instances_includes_bot_config_summary(tmp_path: Path):
             instance_id="inst-1",
             default_agent_uuid="agent-uuid-1",
             main_llm="openai-main/gpt-fast",
-            config={},
+            config={
+                "response_profile": "balanced",
+                "response_profile_private": "immediate",
+                "response_profile_priority": "immediate",
+                "response_profile_group": "passive",
+            },
             tags=["prod"],
             created_at="2026-01-01T00:00:00+00:00",
             updated_at="2026-01-01T00:00:00+00:00",
@@ -242,6 +247,10 @@ def test_list_instances_includes_bot_config_summary(tmp_path: Path):
         "uuid": "bot-config-1",
         "defaultAgentUuid": "agent-uuid-1",
         "mainLlm": "openai-main/gpt-fast",
+        "responseProfile": "balanced",
+        "responseProfilePrivate": "immediate",
+        "responseProfilePriority": "immediate",
+        "responseProfileGroup": "passive",
         "tags": ["prod"],
     }
 

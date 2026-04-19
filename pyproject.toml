@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "litellm>=1.80.0",
     "lxml>=6.0.3",
+    "pillow>=11.2.1",
     "psutil>=6.0.0",
     "pydantic>=2.12.5",
     "pyjwt>=2.9.0",

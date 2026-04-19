@@ -2,16 +2,17 @@
 
 import asyncio
 import json
-import threading
 import time
-from uuid import uuid4
 
 import pytest
+from PIL import Image
 
+from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
+from shinbot.agent.attention.tools import register_attention_tools
 from shinbot.agent.context import ContextManager
 from shinbot.agent.identity import IdentityStore
-from shinbot.agent.model_runtime.service import ModelRuntime
-from shinbot.agent.prompting import PromptRegistry
+from shinbot.agent.media import MediaService
+from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
@@ -21,16 +22,8 @@ from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import Session, SessionManager
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
-    AgentRecord,
     BotConfigRecord,
     MessageLogRecord,
-    ModelDefinitionRecord,
-    ModelProviderRecord,
-    ModelRouteMemberRecord,
-    ModelRouteRecord,
-    PersonaRecord,
-    PromptDefinitionRecord,
-    utc_now_iso,
 )
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
@@ -78,107 +71,6 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
         ),
         message=MessagePayload(id="msg-1", content=content),
     )
-
-
-def seed_fallback_runtime(
-    db: DatabaseManager,
-    *,
-    instance_id: str,
-    reply_mode: str = "",
-) -> dict[str, str]:
-    now = utc_now_iso()
-    provider_id = "openai-main"
-    model_id = "openai-main/gpt-fast"
-    route_id = "agent.default_chat"
-    persona_prompt_uuid = str(uuid4())
-    persona_uuid = str(uuid4())
-    agent_uuid = str(uuid4())
-    bot_config_uuid = str(uuid4())
-
-    db.model_registry.upsert_provider(
-        ModelProviderRecord(
-            id=provider_id,
-            type="openai",
-            display_name="OpenAI Main",
-            base_url="https://api.openai.com/v1",
-            auth={"api_key": "secret-key"},
-        )
-    )
-    db.model_registry.upsert_model(
-        ModelDefinitionRecord(
-            id=model_id,
-            provider_id=provider_id,
-            litellm_model="openai/gpt-4.1-mini",
-            display_name="GPT Fast",
-            capabilities=["chat"],
-            context_window=64000,
-        )
-    )
-    db.model_registry.upsert_route(
-        ModelRouteRecord(id=route_id, purpose="chat", strategy="priority"),
-        members=[
-            ModelRouteMemberRecord(
-                route_id=route_id,
-                model_id=model_id,
-                priority=10,
-                weight=1.0,
-            )
-        ],
-    )
-
-    db.prompt_definitions.upsert(
-        PromptDefinitionRecord(
-            uuid=persona_prompt_uuid,
-            prompt_id=f"persona.{persona_uuid}",
-            name="Default Persona",
-            source_type="persona",
-            source_id=persona_uuid,
-            stage="identity",
-            type="static_text",
-            priority=100,
-            enabled=True,
-            content="You are a concise assistant.",
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    db.personas.upsert(
-        PersonaRecord(
-            uuid=persona_uuid,
-            name="Default Persona",
-            prompt_definition_uuid=persona_prompt_uuid,
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    db.agents.upsert(
-        AgentRecord(
-            uuid=agent_uuid,
-            agent_id="agent.default",
-            name="Default Agent",
-            persona_uuid=persona_uuid,
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    db.bot_configs.upsert(
-        BotConfigRecord(
-            uuid=bot_config_uuid,
-            instance_id=instance_id,
-            default_agent_uuid=agent_uuid,
-            main_llm=route_id,
-            config={"reply_mode": reply_mode} if reply_mode else {},
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    return {
-        "route_id": route_id,
-        "model_id": model_id,
-        "agent_uuid": agent_uuid,
-        "persona_uuid": persona_uuid,
-        "bot_config_uuid": bot_config_uuid,
-    }
 
 
 class TestMessageContext:
@@ -593,6 +485,7 @@ class TestMessagePipeline:
                 msg_log_id: int,
                 sender_id: str,
                 *,
+                response_profile: str = "balanced",
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
             ) -> None:
@@ -601,6 +494,7 @@ class TestMessagePipeline:
                         "session_id": session_id,
                         "msg_log_id": msg_log_id,
                         "sender_id": sender_id,
+                        "response_profile": response_profile,
                         "is_mentioned": is_mentioned,
                         "is_reply_to_bot": is_reply_to_bot,
                     }
@@ -692,6 +586,34 @@ class TestMessagePipeline:
         assert turns[1]["content"] == "reply from bot"
 
     @pytest.mark.asyncio
+    async def test_pipeline_tracks_image_messages_in_context_manager(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        media_service = MediaService(db)
+        context_manager = ContextManager(db.message_logs, media_service=media_service)
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            context_manager=context_manager,
+            media_service=media_service,
+        )
+
+        image_path = tmp_path / "assets" / "tracked.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), (0, 255, 0)).save(image_path)
+        event = make_event(Message.from_elements(MessageElement.img(str(image_path))).to_xml())
+
+        await pipeline.process_event(event, self.adapter)
+
+        turns = context_manager.get_context_inputs("test-bot:private:user-1")["history_turns"]
+        assert [turn["role"] for turn in turns] == ["user"]
+        assert turns[0]["content"] == "[图片]"
+
+    @pytest.mark.asyncio
     async def test_pipeline_updates_identity_store_from_user_messages(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
@@ -724,17 +646,36 @@ class TestMessagePipeline:
         assert entry["name"] == "咖啡猫"
 
     @pytest.mark.asyncio
-    async def test_pipeline_fallback_responder_generates_reply_and_closes_tracking_loop(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
+    async def test_pipeline_routes_private_messages_to_immediate_profile(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-        context_manager = ContextManager(db.message_logs)
-        prompt_registry = PromptRegistry(context_manager=context_manager)
-        model_runtime = ModelRuntime(db)
-        seed_fallback_runtime(db, instance_id=self.adapter.instance_id)
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def on_message(
+                self,
+                session_id: str,
+                msg_log_id: int,
+                sender_id: str,
+                *,
+                response_profile: str = "balanced",
+                is_mentioned: bool = False,
+                is_reply_to_bot: bool = False,
+            ) -> None:
+                self.calls.append(
+                    {
+                        "session_id": session_id,
+                        "msg_log_id": msg_log_id,
+                        "sender_id": sender_id,
+                        "response_profile": response_profile,
+                        "is_mentioned": is_mentioned,
+                        "is_reply_to_bot": is_reply_to_bot,
+                    }
+                )
+
+        scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
             adapter_manager=self.adapter_mgr,
             session_manager=self.session_mgr,
@@ -742,68 +683,42 @@ class TestMessagePipeline:
             command_registry=self.cmd_registry,
             event_bus=self.event_bus,
             database=db,
-            context_manager=context_manager,
-            prompt_registry=prompt_registry,
-            model_runtime=model_runtime,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
         )
 
-        def fake_completion(**kwargs):
-            assert kwargs["model"] == "openai/gpt-4.1-mini"
-            assert kwargs["messages"][0]["role"] == "system"
-            return {
-                "model": kwargs["model"],
-                "choices": [{"message": {"content": "fallback reply"}}],
-                "usage": {"prompt_tokens": 9, "completion_tokens": 7},
-            }
+        await pipeline.process_event(make_event("hello private"), self.adapter)
+        await asyncio.sleep(0)
 
-        monkeypatch.setattr(
-            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
-        )
-
-        await pipeline.process_event(make_event("hello fallback"), self.adapter)
-
-        assert len(self.adapter.sent) == 1
-        assert Message(elements=self.adapter.sent[0][1]).get_text() == "fallback reply"
-
-        session_id = "test-bot:private:user-1"
-        turns = context_manager.get_context_inputs(session_id)["history_turns"]
-        assert [turn["role"] for turn in turns] == ["user", "assistant"]
-
-        interactions = db.ai_interactions.list_by_session(session_id)
-        assert len(interactions) == 1
-        assert interactions[0]["trigger_id"] is not None
-        assert interactions[0]["response_id"] is not None
-        assert db.prompt_snapshots.get(interactions[0]["prompt_snapshot_id"]) is not None
+        assert len(scheduler.calls) == 1
+        assert scheduler.calls[0]["response_profile"] == "immediate"
 
     @pytest.mark.asyncio
-    async def test_pipeline_fallback_responder_resolves_builtin_prompt_component_refs(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
+    async def test_pipeline_routes_group_messages_to_balanced_profile_by_default(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-        context_manager = ContextManager(db.message_logs)
-        prompt_registry = PromptRegistry(context_manager=context_manager)
-        model_runtime = ModelRuntime(db)
-        seeded = seed_fallback_runtime(db, instance_id=self.adapter.instance_id)
-        agent_payload = db.agents.get(seeded["agent_uuid"])
-        assert agent_payload is not None
-        db.agents.upsert(
-            AgentRecord(
-                uuid=seeded["agent_uuid"],
-                agent_id=str(agent_payload["agent_id"]),
-                name=str(agent_payload["name"]),
-                persona_uuid=str(agent_payload["persona_uuid"]),
-                prompts=[PromptRegistry.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID],
-                tools=list(agent_payload["tools"]),
-                context_strategy=dict(agent_payload["context_strategy"]),
-                config=dict(agent_payload["config"]),
-                tags=list(agent_payload["tags"]),
-                created_at=str(agent_payload["created_at"]),
-                updated_at=utc_now_iso(),
-            )
-        )
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def on_message(
+                self,
+                session_id: str,
+                msg_log_id: int,
+                sender_id: str,
+                *,
+                response_profile: str = "balanced",
+                is_mentioned: bool = False,
+                is_reply_to_bot: bool = False,
+            ) -> None:
+                self.calls.append(
+                    {
+                        "response_profile": response_profile,
+                        "is_mentioned": is_mentioned,
+                    }
+                )
+
+        scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
             adapter_manager=self.adapter_mgr,
             session_manager=self.session_mgr,
@@ -811,86 +726,43 @@ class TestMessagePipeline:
             command_registry=self.cmd_registry,
             event_bus=self.event_bus,
             database=db,
-            context_manager=context_manager,
-            prompt_registry=prompt_registry,
-            model_runtime=model_runtime,
-        )
-
-        def fake_completion(**kwargs):
-            final_message = kwargs["messages"][-1]
-            content = final_message["content"]
-            assert any(
-                "### 行为约束" in str(block.get("text", ""))
-                for block in content
-                if isinstance(block, dict)
-            )
-            return {
-                "model": kwargs["model"],
-                "choices": [{"message": {"content": "fallback reply"}}],
-                "usage": {"prompt_tokens": 9, "completion_tokens": 7},
-            }
-
-        monkeypatch.setattr(
-            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
-        )
-
-        await pipeline.process_event(make_event("hello builtin prompt"), self.adapter)
-
-        assert len(self.adapter.sent) == 1
-        assert Message(elements=self.adapter.sent[0][1]).get_text() == "fallback reply"
-
-    @pytest.mark.asyncio
-    async def test_pipeline_fallback_responder_requires_group_mention_by_default(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
-        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
-        db.initialize()
-        context_manager = ContextManager(db.message_logs)
-        prompt_registry = PromptRegistry(context_manager=context_manager)
-        model_runtime = ModelRuntime(db)
-        seed_fallback_runtime(db, instance_id=self.adapter.instance_id)
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
-            context_manager=context_manager,
-            prompt_registry=prompt_registry,
-            model_runtime=model_runtime,
-        )
-
-        def fake_completion(**kwargs):
-            return {
-                "model": kwargs["model"],
-                "choices": [{"message": {"content": "should not happen"}}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-            }
-
-        monkeypatch.setattr(
-            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
         )
 
         await pipeline.process_event(make_event("hello group", channel_type=0), self.adapter)
+        await asyncio.sleep(0)
 
-        assert self.adapter.sent == []
-        assert db.ai_interactions.list_by_session("test-bot:group:group:1") == []
+        assert len(scheduler.calls) == 1
+        assert scheduler.calls[0]["response_profile"] == "balanced"
+        assert scheduler.calls[0]["is_mentioned"] is False
 
     @pytest.mark.asyncio
-    async def test_pipeline_fallback_responder_skips_when_plugin_already_replied(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
+    async def test_pipeline_routes_priority_group_messages_to_immediate_profile(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-        context_manager = ContextManager(db.message_logs)
-        prompt_registry = PromptRegistry(context_manager=context_manager)
-        model_runtime = ModelRuntime(db)
-        seed_fallback_runtime(db, instance_id=self.adapter.instance_id)
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def on_message(
+                self,
+                session_id: str,
+                msg_log_id: int,
+                sender_id: str,
+                *,
+                response_profile: str = "balanced",
+                is_mentioned: bool = False,
+                is_reply_to_bot: bool = False,
+            ) -> None:
+                self.calls.append(
+                    {
+                        "response_profile": response_profile,
+                        "is_mentioned": is_mentioned,
+                    }
+                )
+
+        scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
             adapter_manager=self.adapter_mgr,
             session_manager=self.session_mgr,
@@ -898,24 +770,144 @@ class TestMessagePipeline:
             command_registry=self.cmd_registry,
             event_bus=self.event_bus,
             database=db,
-            context_manager=context_manager,
-            prompt_registry=prompt_registry,
-            model_runtime=model_runtime,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
         )
 
-        call_count = 0
+        await pipeline.process_event(
+            make_event('<at id="bot-1"/>hello group', channel_type=0),
+            self.adapter,
+        )
+        await asyncio.sleep(0)
 
-        def fake_completion(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            return {
-                "model": kwargs["model"],
-                "choices": [{"message": {"content": "fallback reply"}}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-            }
+        assert len(scheduler.calls) == 1
+        assert scheduler.calls[0]["response_profile"] == "immediate"
+        assert scheduler.calls[0]["is_mentioned"] is True
 
-        monkeypatch.setattr(
-            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
+    @pytest.mark.asyncio
+    async def test_pipeline_uses_canonical_private_response_profile_config(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        db.bot_configs.upsert(
+            BotConfigRecord(
+                uuid="cfg-private-profile",
+                instance_id=self.adapter.instance_id,
+                config={"response_profile_private": "passive"},
+            )
+        )
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def on_message(
+                self,
+                session_id: str,
+                msg_log_id: int,
+                sender_id: str,
+                *,
+                response_profile: str = "balanced",
+                is_mentioned: bool = False,
+                is_reply_to_bot: bool = False,
+            ) -> None:
+                self.calls.append({"response_profile": response_profile})
+
+        scheduler = RecordingAttentionScheduler()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
+        )
+
+        await pipeline.process_event(make_event("hello private"), self.adapter)
+        await asyncio.sleep(0)
+
+        assert len(scheduler.calls) == 1
+        assert scheduler.calls[0]["response_profile"] == "passive"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_uses_canonical_group_and_priority_profiles(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        db.bot_configs.upsert(
+            BotConfigRecord(
+                uuid="cfg-group-profile",
+                instance_id=self.adapter.instance_id,
+                config={
+                    "response_profile_group": "passive",
+                    "response_profile_priority": "balanced",
+                },
+            )
+        )
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def on_message(
+                self,
+                session_id: str,
+                msg_log_id: int,
+                sender_id: str,
+                *,
+                response_profile: str = "balanced",
+                is_mentioned: bool = False,
+                is_reply_to_bot: bool = False,
+            ) -> None:
+                self.calls.append(
+                    {
+                        "response_profile": response_profile,
+                        "is_mentioned": is_mentioned,
+                    }
+                )
+
+        scheduler = RecordingAttentionScheduler()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
+        )
+
+        await pipeline.process_event(make_event("hello group", channel_type=0), self.adapter)
+        await pipeline.process_event(
+            make_event('<at id="bot-1"/>hello group', channel_type=0),
+            self.adapter,
+        )
+        await asyncio.sleep(0)
+
+        assert len(scheduler.calls) == 2
+        assert scheduler.calls[0]["response_profile"] == "passive"
+        assert scheduler.calls[1]["response_profile"] == "balanced"
+        assert scheduler.calls[1]["is_mentioned"] is True
+
+    @pytest.mark.asyncio
+    async def test_pipeline_attention_scheduler_skips_when_plugin_already_replied(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def on_message(self, *args, **kwargs) -> None:
+                self.calls += 1
+
+        scheduler = RecordingAttentionScheduler()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
         )
 
         async def handler(ctx):
@@ -923,66 +915,49 @@ class TestMessagePipeline:
 
         self.event_bus.on("message-created", handler)
         await pipeline.process_event(make_event("hello plugin"), self.adapter)
+        await asyncio.sleep(0)
 
         assert len(self.adapter.sent) == 1
         assert Message(elements=self.adapter.sent[0][1]).get_text() == "plugin reply"
-        assert call_count == 0
+        assert scheduler.calls == 0
 
     @pytest.mark.asyncio
-    async def test_pipeline_fallback_responder_runs_model_calls_concurrently_per_session(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
+    async def test_attention_send_reply_tool_persists_message_log(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         context_manager = ContextManager(db.message_logs)
-        prompt_registry = PromptRegistry(context_manager=context_manager)
-        model_runtime = ModelRuntime(db)
-        seed_fallback_runtime(db, instance_id=self.adapter.instance_id)
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
-            context_manager=context_manager,
-            prompt_registry=prompt_registry,
-            model_runtime=model_runtime,
+        self.adapter_mgr._instances[self.adapter.instance_id] = self.adapter
+        registry = ToolRegistry()
+        manager = ToolManager(registry, permission_engine=self.perm_engine)
+        register_attention_tools(
+            registry,
+            AttentionEngine(AttentionConfig(), db.attention),
+            self.adapter_mgr,
+            db,
+            context_manager,
         )
 
-        barrier = threading.Barrier(2)
-        call_count = 0
-        call_count_lock = threading.Lock()
-
-        def fake_completion(**kwargs):
-            nonlocal call_count
-            with call_count_lock:
-                call_count += 1
-            try:
-                barrier.wait(timeout=2.0)
-            except threading.BrokenBarrierError as exc:
-                raise AssertionError(
-                    "Fallback model calls were serialized by the session lock"
-                ) from exc
-            return {
-                "model": kwargs["model"],
-                "choices": [{"message": {"content": "fallback reply"}}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-            }
-
-        monkeypatch.setattr(
-            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
+        result = await manager.execute(
+            ToolCallRequest(
+                tool_name="send_reply",
+                arguments={"text": "workflow reply"},
+                caller="attention.workflow_runner",
+                instance_id=self.adapter.instance_id,
+                session_id="test-bot:private:user-1",
+            )
         )
 
-        await asyncio.gather(
-            pipeline.process_event(make_event("hello fallback one"), self.adapter),
-            pipeline.process_event(make_event("hello fallback two"), self.adapter),
-        )
+        assert result.success is True
+        assert len(self.adapter.sent) == 1
+        assert result.output["message_log_id"] is not None
 
-        assert call_count == 2
-        assert len(self.adapter.sent) == 2
+        row = db.message_logs.get(result.output["message_log_id"])
+        assert row is not None
+        assert row["role"] == "assistant"
+        assert row["raw_text"] == "workflow reply"
+
+        turns = context_manager.get_context_inputs("test-bot:private:user-1")["history_turns"]
+        assert turns[-1]["content"] == "workflow reply"
 
     def test_audit_message_modality_summary(self, tmp_path):
         audit = AuditLogger(tmp_path)

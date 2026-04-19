@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall, litellm_adapter
+from shinbot.agent.model_runtime.admin import (
+    ModelRuntimeAdminError,
+    fetch_provider_catalog,
+    get_model_or_raise,
+    get_provider_or_raise,
+    get_route_or_raise,
+    infer_context_window,
+    probe_provider_runtime,
+    validate_route_member_ids,
+)
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, ok
 from shinbot.persistence.records import (
@@ -190,159 +198,47 @@ def _serialize_execution(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _provider_request_headers(payload: dict[str, Any]) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    auth = payload.get("auth") or {}
-    default_params = payload.get("default_params") or {}
-    api_key = auth.get("api_key")
-    if api_key and payload["type"] == "azure_openai":
-        headers["api-key"] = str(api_key)
-    elif api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    request_headers = default_params.get("requestHeaders")
-    if isinstance(request_headers, dict):
-        for key, value in request_headers.items():
-            if value is None:
-                continue
-            headers[str(key)] = str(value)
-    return headers
+def _raise_admin_http_error(exc: ModelRuntimeAdminError) -> None:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": exc.message},
+    ) from exc
 
 
-def _provider_type_for_model_info(provider_type: str) -> str | None:
-    if provider_type == "custom_openai":
-        return "openai"
-    if provider_type == "azure_openai":
-        return "azure"
-    if provider_type in {"openai", "openrouter", "ollama"}:
-        return None
-    return None
-
-
-def _infer_context_window(provider: dict[str, Any], litellm_model: str) -> int | None:
+def _require_provider(database: Any, provider_id: str) -> dict[str, Any]:
     try:
-        model_info = litellm_adapter.get_model_info(
-            litellm_model,
-            custom_llm_provider=_provider_type_for_model_info(provider["type"]),
-            api_base=provider.get("base_url") or None,
-        )
-    except Exception:
-        return None
-
-    max_input_tokens = model_info.get("max_input_tokens")
-    if isinstance(max_input_tokens, int) and max_input_tokens > 0:
-        return max_input_tokens
-
-    max_tokens = model_info.get("max_tokens")
-    if isinstance(max_tokens, int) and max_tokens > 0:
-        return max_tokens
-
-    return None
+        return get_provider_or_raise(database, provider_id)
+    except ModelRuntimeAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
-def _normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[str, Any]]:
-    provider_type = payload["type"]
-    if provider_type == "ollama":
-        models = []
-        for item in body.get("models", []):
-            model_id = item.get("name")
-            if not model_id:
-                continue
-            models.append(
-                {
-                    "id": str(model_id),
-                    "displayName": str(model_id),
-                    "litellmModel": f"ollama/{model_id}",
-                    "contextWindow": _infer_context_window(payload, f"ollama/{model_id}"),
-                }
-            )
-        return models
-
-    items = body.get("data", [])
-    models: list[dict[str, Any]] = []
-    for item in items:
-        model_id = item.get("id")
-        if not model_id:
-            continue
-        litellm_model = str(model_id)
-        if provider_type == "openrouter":
-            litellm_model = f"openrouter/{model_id}"
-        models.append(
-            {
-                "id": str(model_id),
-                "displayName": str(item.get("name") or model_id),
-                "litellmModel": litellm_model,
-                "contextWindow": _infer_context_window(payload, litellm_model),
-            }
-        )
-    return models
+def _require_model(database: Any, model_id: str) -> dict[str, Any]:
+    try:
+        return get_model_or_raise(database, model_id)
+    except ModelRuntimeAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
-async def _fetch_provider_catalog(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    provider_type = payload["type"]
-    base_url = (payload.get("base_url") or "").rstrip("/")
-    if not base_url:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": EC.INVALID_ACTION, "message": "Provider base URL is required"},
-        )
-
-    if provider_type == "ollama":
-        url = f"{base_url}/api/tags"
-    elif provider_type in {"openai", "openrouter", "custom_openai", "azure_openai"}:
-        url = f"{base_url}/models"
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": EC.INVALID_ACTION,
-                "message": f"Provider type {provider_type!r} does not support catalog fetch",
-            },
-        )
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(url, headers=_provider_request_headers(payload))
-        response.raise_for_status()
-        body = response.json()
-    return _normalize_provider_catalog(payload, body)
+def _require_route(database: Any, route_id: str) -> dict[str, Any]:
+    try:
+        return get_route_or_raise(database, route_id)
+    except ModelRuntimeAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
-def _require_provider(bot: Any, provider_id: str) -> dict[str, Any]:
-    payload = bot.database.model_registry.get_provider(provider_id)
-    if payload is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": EC.PROVIDER_NOT_FOUND,
-                "message": f"Provider {provider_id!r} not found",
-            },
-        )
-    return payload
+def _validate_route_members(database: Any, members: list[RouteMemberRequest]) -> None:
+    try:
+        validate_route_member_ids(database, [member.modelId for member in members])
+    except ModelRuntimeAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
-def _require_model(bot: Any, model_id: str) -> dict[str, Any]:
-    payload = bot.database.model_registry.get_model(model_id)
-    if payload is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": EC.MODEL_NOT_FOUND, "message": f"Model {model_id!r} not found"},
-        )
-    return payload
-
-
-def _require_route(bot: Any, route_id: str) -> dict[str, Any]:
-    payload = bot.database.model_registry.get_route(route_id)
-    if payload is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": EC.ROUTE_NOT_FOUND, "message": f"Route {route_id!r} not found"},
-        )
-    return payload
-
-
-def _validate_route_members(bot: Any, members: list[RouteMemberRequest]) -> None:
-    for member in members:
-        _require_model(bot, member.modelId)
+async def _fetch_provider_catalog(database: Any, provider_id: str) -> list[dict[str, Any]]:
+    try:
+        provider = get_provider_or_raise(database, provider_id)
+        return await fetch_provider_catalog(provider)
+    except ModelRuntimeAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
 @router.get("/providers")
@@ -374,12 +270,12 @@ async def create_provider(body: ProviderRequest, bot=BotDep):
             enabled=body.enabled,
         )
     )
-    return ok(_serialize_provider(_require_provider(bot, body.id)))
+    return ok(_serialize_provider(_require_provider(bot.database, body.id)))
 
 
 @router.patch("/providers/{provider_id:path}")
 async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotDep):
-    current = _require_provider(bot, provider_id)
+    current = _require_provider(bot.database, provider_id)
     next_id = body.id if body.id is not None else provider_id
     if next_id != provider_id and bot.database.model_registry.get_provider(next_id) is not None:
         raise HTTPException(
@@ -392,7 +288,7 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
     if next_id != provider_id:
         bot.database.model_registry.rename_provider(provider_id, next_id)
         provider_id = next_id
-        current = _require_provider(bot, provider_id)
+        current = _require_provider(bot.database, provider_id)
     now = utc_now_iso()
     bot.database.model_registry.upsert_provider(
         ModelProviderRecord(
@@ -416,152 +312,41 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
             updated_at=now,
         )
     )
-    return ok(_serialize_provider(_require_provider(bot, provider_id)))
+    return ok(_serialize_provider(_require_provider(bot.database, provider_id)))
 
 
 @router.delete("/providers/{provider_id:path}")
 async def delete_provider(provider_id: str, bot=BotDep):
-    _require_provider(bot, provider_id)
+    _require_provider(bot.database, provider_id)
     bot.database.model_registry.delete_provider(provider_id)
     return ok({"id": provider_id, "deleted": True})
 
 
 @router.get("/providers/{provider_id:path}/catalog")
 async def get_provider_catalog(provider_id: str, bot=BotDep):
-    provider = _require_provider(bot, provider_id)
-    catalog = await _fetch_provider_catalog(provider)
+    catalog = await _fetch_provider_catalog(bot.database, provider_id)
     return ok(catalog)
 
 
 @router.post("/providers/{provider_id:path}/probe")
 async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDep):
-    provider = _require_provider(bot, provider_id)
-
-    if body.modelId:
-        model = _require_model(bot, body.modelId)
-        if model["provider_id"] != provider_id:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": EC.INVALID_ACTION,
-                    "message": f"Model {body.modelId!r} does not belong to provider {provider_id!r}",
-                },
-            )
-    else:
-        models = [
-            item
-            for item in bot.database.model_registry.list_models(provider_id=provider_id)
-            if item["enabled"]
-        ]
-        model = models[0] if models else None
-
-    started_at = utc_now_iso()
-
-    if model is None:
-        catalog = await _fetch_provider_catalog(provider)
-        return ok(
-            {
-                "success": True,
-                "providerId": provider_id,
-                "mode": "catalog",
-                "checkedAt": started_at,
-                "latencyMs": 0,
-                "catalogSize": len(catalog),
-            }
-        )
-
-    capability_type = provider.get("capability_type", "completion")
-
-    if capability_type == "embedding" or "embedding" in model["capabilities"]:
-        try:
-            result = await bot.model_runtime.embed(
-                ModelRuntimeCall(
-                    model_id=model["id"],
-                    caller="webui.provider_probe",
-                    purpose="provider_probe",
-                    input_data="ping",
-                    metadata={"probe": True},
-                )
-            )
-        except ModelCallError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "code": EC.INTERNAL_ERROR,
-                    "message": f"Provider probe failed: {exc}",
-                },
-            ) from exc
-        return ok(
-            {
-                "success": True,
-                "providerId": provider_id,
-                "modelId": model["id"],
-                "mode": "embedding",
-                "checkedAt": started_at,
-                "executionId": result.execution_id,
-            }
-        )
-
-    if capability_type == "completion":
-        try:
-            result = await bot.model_runtime.generate(
-                ModelRuntimeCall(
-                    model_id=model["id"],
-                    caller="webui.provider_probe",
-                    purpose="provider_probe",
-                    messages=[{"role": "user", "content": "ping"}],
-                    params={"max_tokens": 1, "drop_params": True},
-                    metadata={"probe": True},
-                )
-            )
-        except ModelCallError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "code": EC.INTERNAL_ERROR,
-                    "message": f"Provider probe failed: {exc}",
-                },
-            ) from exc
-        return ok(
-            {
-                "success": True,
-                "providerId": provider_id,
-                "modelId": model["id"],
-                "mode": "chat",
-                "checkedAt": started_at,
-                "executionId": result.execution_id,
-            }
-        )
-
-    # For rerank/tts/stt/image and other non-completion types: try catalog probe.
-    # If catalog isn't supported, return a basic connectivity indication.
     try:
-        catalog = await _fetch_provider_catalog(provider)
         return ok(
-            {
-                "success": True,
-                "providerId": provider_id,
-                "modelId": model["id"],
-                "mode": "catalog",
-                "checkedAt": started_at,
-                "catalogSize": len(catalog),
-            }
+            await probe_provider_runtime(
+                database=bot.database,
+                model_runtime=bot.model_runtime,
+                provider_id=provider_id,
+                model_id=body.modelId,
+                checked_at=utc_now_iso(),
+            )
         )
-    except Exception:
-        return ok(
-            {
-                "success": True,
-                "providerId": provider_id,
-                "modelId": model["id"],
-                "mode": "skipped",
-                "checkedAt": started_at,
-            }
-        )
+    except ModelRuntimeAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
 @router.get("/providers/{provider_id:path}")
 async def get_provider(provider_id: str, bot=BotDep):
-    return ok(_serialize_provider(_require_provider(bot, provider_id)))
+    return ok(_serialize_provider(_require_provider(bot.database, provider_id)))
 
 
 @router.get("/models")
@@ -580,10 +365,10 @@ async def create_model(body: ModelRequest, bot=BotDep):
                 "message": f"Model {body.id!r} already exists",
             },
         )
-    provider = _require_provider(bot, body.providerId)
+    provider = _require_provider(bot.database, body.providerId)
     context_window = body.contextWindow
     if context_window is None:
-        context_window = _infer_context_window(provider, body.litellmModel)
+        context_window = infer_context_window(provider, body.litellmModel)
 
     bot.database.model_registry.upsert_model(
         ModelDefinitionRecord(
@@ -598,19 +383,19 @@ async def create_model(body: ModelRequest, bot=BotDep):
             enabled=body.enabled,
         )
     )
-    return ok(_serialize_model(_require_model(bot, body.id)))
+    return ok(_serialize_model(_require_model(bot.database, body.id)))
 
 
 @router.get("/models/{model_id:path}")
 async def get_model(model_id: str, bot=BotDep):
-    return ok(_serialize_model(_require_model(bot, model_id)))
+    return ok(_serialize_model(_require_model(bot.database, model_id)))
 
 
 @router.patch("/models/{model_id:path}")
 async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
-    current = _require_model(bot, model_id)
+    current = _require_model(bot.database, model_id)
     provider_id = body.providerId if body.providerId is not None else current["provider_id"]
-    provider = _require_provider(bot, provider_id)
+    provider = _require_provider(bot.database, provider_id)
     now = utc_now_iso()
     litellm_model = body.litellmModel if body.litellmModel is not None else current["litellm_model"]
     context_window = (
@@ -619,7 +404,7 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     if body.contextWindow is None and (
         body.litellmModel is not None or body.providerId is not None or context_window is None
     ):
-        inferred_context_window = _infer_context_window(provider, litellm_model)
+        inferred_context_window = infer_context_window(provider, litellm_model)
         if inferred_context_window is not None or context_window is None:
             context_window = inferred_context_window
 
@@ -646,12 +431,12 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
             updated_at=now,
         )
     )
-    return ok(_serialize_model(_require_model(bot, model_id)))
+    return ok(_serialize_model(_require_model(bot.database, model_id)))
 
 
 @router.delete("/models/{model_id:path}")
 async def delete_model(model_id: str, bot=BotDep):
-    _require_model(bot, model_id)
+    _require_model(bot.database, model_id)
     bot.database.model_registry.delete_model(model_id)
     return ok({"id": model_id, "deleted": True})
 
@@ -677,7 +462,7 @@ async def create_route(body: RouteRequest, bot=BotDep):
                 "message": f"Route {body.id!r} already exists",
             },
         )
-    _validate_route_members(bot, body.members)
+    _validate_route_members(bot.database, body.members)
     now = utc_now_iso()
     bot.database.model_registry.upsert_route(
         ModelRouteRecord(
@@ -703,20 +488,20 @@ async def create_route(body: RouteRequest, bot=BotDep):
             for member in body.members
         ],
     )
-    route = _require_route(bot, body.id)
+    route = _require_route(bot.database, body.id)
     return ok(_serialize_route(route, bot.database.model_registry.list_route_members(body.id)))
 
 
 @router.get("/routes/{route_id:path}")
 async def get_route(route_id: str, bot=BotDep):
-    route = _require_route(bot, route_id)
+    route = _require_route(bot.database, route_id)
     members = bot.database.model_registry.list_route_members(route_id)
     return ok(_serialize_route(route, members))
 
 
 @router.patch("/routes/{route_id:path}")
 async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
-    current = _require_route(bot, route_id)
+    current = _require_route(bot.database, route_id)
     next_id = body.id if body.id is not None else route_id
     if next_id != route_id and bot.database.model_registry.get_route(next_id) is not None:
         raise HTTPException(
@@ -729,10 +514,10 @@ async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
     if next_id != route_id:
         bot.database.model_registry.rename_route(route_id, next_id)
         route_id = next_id
-        current = _require_route(bot, route_id)
+        current = _require_route(bot.database, route_id)
     members = body.members
     if members is not None:
-        _validate_route_members(bot, members)
+        _validate_route_members(bot.database, members)
 
     now = utc_now_iso()
     bot.database.model_registry.upsert_route(
@@ -765,13 +550,13 @@ async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
         if members is not None
         else None,
     )
-    route = _require_route(bot, route_id)
+    route = _require_route(bot.database, route_id)
     return ok(_serialize_route(route, bot.database.model_registry.list_route_members(route_id)))
 
 
 @router.delete("/routes/{route_id:path}")
 async def delete_route(route_id: str, bot=BotDep):
-    _require_route(bot, route_id)
+    _require_route(bot.database, route_id)
     bot.database.model_registry.delete_route(route_id)
     return ok({"id": route_id, "deleted": True})
 

@@ -1,7 +1,7 @@
 """Agent-related runtime services.
 
 Keep package exports lazy so importing a submodule such as
-``shinbot.agent.prompting`` does not eagerly import the full runtime graph.
+``shinbot.agent.prompt_manager`` does not eagerly import the full runtime graph.
 That avoids circular imports during application bootstrap.
 """
 
@@ -12,9 +12,14 @@ from typing import Any
 
 __all__ = [
     "ActiveContextPool",
+    "BUILTIN_MEDIA_INSPECTION_AGENT_REF",
+    "BUILTIN_MEDIA_INSPECTION_LLM_REF",
     "ContextManager",
     "EmbedResult",
     "GenerateResult",
+    "MediaFingerprint",
+    "MediaInspectionRunner",
+    "MediaService",
     "ModelCallError",
     "ModelRuntime",
     "ModelRuntimeCall",
@@ -34,6 +39,8 @@ __all__ = [
     "PromptSourceType",
     "PromptStage",
     "PromptStageBlock",
+    "ResolvedMediaInspectionConfig",
+    "register_media_tools",
     "ToolCallRequest",
     "ToolCallResult",
     "ToolDefinition",
@@ -43,32 +50,40 @@ __all__ = [
     "ToolRegistry",
     "ToolRiskLevel",
     "ToolVisibility",
+    "WorkflowRunner",
 ]
 
 _EXPORT_MODULES = {
     "ActiveContextPool": "shinbot.agent.context",
+    "BUILTIN_MEDIA_INSPECTION_AGENT_REF": "shinbot.agent.media",
+    "BUILTIN_MEDIA_INSPECTION_LLM_REF": "shinbot.agent.media",
     "ContextManager": "shinbot.agent.context",
     "EmbedResult": "shinbot.agent.model_runtime",
     "GenerateResult": "shinbot.agent.model_runtime",
+    "MediaFingerprint": "shinbot.agent.media",
+    "MediaInspectionRunner": "shinbot.agent.media",
+    "MediaService": "shinbot.agent.media",
     "ModelCallError": "shinbot.agent.model_runtime",
     "ModelRuntime": "shinbot.agent.model_runtime",
     "ModelRuntimeCall": "shinbot.agent.model_runtime",
-    "ContextStrategy": "shinbot.agent.prompting",
-    "ContextStrategyBudget": "shinbot.agent.prompting",
-    "PromptAssemblyRequest": "shinbot.agent.prompting",
-    "PromptAssemblyResult": "shinbot.agent.prompting",
-    "PromptComponent": "shinbot.agent.prompting",
-    "PromptComponentKind": "shinbot.agent.prompting",
-    "PromptComponentRecord": "shinbot.agent.prompting",
-    "PromptLogger": "shinbot.agent.prompting",
-    "PromptLoggerRecord": "shinbot.agent.prompting",
-    "PromptProfile": "shinbot.agent.prompting",
-    "PromptRegistry": "shinbot.agent.prompting",
-    "PromptSnapshot": "shinbot.agent.prompting",
-    "PromptSource": "shinbot.agent.prompting",
-    "PromptSourceType": "shinbot.agent.prompting",
-    "PromptStage": "shinbot.agent.prompting",
-    "PromptStageBlock": "shinbot.agent.prompting",
+    "ContextStrategy": "shinbot.agent.prompt_manager",
+    "ContextStrategyBudget": "shinbot.agent.prompt_manager",
+    "PromptAssemblyRequest": "shinbot.agent.prompt_manager",
+    "PromptAssemblyResult": "shinbot.agent.prompt_manager",
+    "PromptComponent": "shinbot.agent.prompt_manager",
+    "PromptComponentKind": "shinbot.agent.prompt_manager",
+    "PromptComponentRecord": "shinbot.agent.prompt_manager",
+    "PromptLogger": "shinbot.agent.prompt_manager",
+    "PromptLoggerRecord": "shinbot.agent.prompt_manager",
+    "PromptProfile": "shinbot.agent.prompt_manager",
+    "PromptRegistry": "shinbot.agent.prompt_manager",
+    "PromptSnapshot": "shinbot.agent.prompt_manager",
+    "PromptSource": "shinbot.agent.prompt_manager",
+    "PromptSourceType": "shinbot.agent.prompt_manager",
+    "PromptStage": "shinbot.agent.prompt_manager",
+    "PromptStageBlock": "shinbot.agent.prompt_manager",
+    "ResolvedMediaInspectionConfig": "shinbot.agent.media",
+    "register_media_tools": "shinbot.agent.media",
     "ToolCallRequest": "shinbot.agent.tools",
     "ToolCallResult": "shinbot.agent.tools",
     "ToolDefinition": "shinbot.agent.tools",
@@ -78,6 +93,7 @@ _EXPORT_MODULES = {
     "ToolRegistry": "shinbot.agent.tools",
     "ToolRiskLevel": "shinbot.agent.tools",
     "ToolVisibility": "shinbot.agent.tools",
+    "WorkflowRunner": "shinbot.agent.workflow",
 }
 
 
@@ -89,4 +105,3 @@ def __getattr__(name: str) -> Any:
     value = getattr(module, name)
     globals()[name] = value
     return value
-

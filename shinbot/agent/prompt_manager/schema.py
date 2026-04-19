@@ -158,6 +158,8 @@ class ContextStrategy(BaseModel):
 
 
 class PromptAssemblyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
     profile_id: str = ""
     context_strategy_id: str = ""
     identity_enabled: bool = True
@@ -170,12 +172,9 @@ class PromptAssemblyRequest(BaseModel):
     task_id: str = ""
     component_overrides: list[str] = Field(default_factory=list)
     disabled_components: list[str] = Field(default_factory=list)
-    instruction_payload: str | dict[str, Any] | None = None
-    constraint_payload: str | dict[str, Any] | None = None
     template_inputs: dict[str, Any] = Field(default_factory=dict)
     context_inputs: dict[str, Any] = Field(default_factory=dict)
     abilities_inputs: dict[str, Any] = Field(default_factory=dict)
-    compatibility_payloads: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

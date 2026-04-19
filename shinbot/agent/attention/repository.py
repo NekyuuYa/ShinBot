@@ -256,16 +256,18 @@ class WorkflowRunRepository:
                 """
                 INSERT INTO workflow_runs (
                     id, session_id, instance_id,
+                    response_profile,
                     batch_start_msg_id, batch_end_msg_id, batch_size,
                     trigger_attention, effective_threshold,
                     tool_calls_json, replied, response_summary,
                     started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
                     record.session_id,
                     record.instance_id,
+                    record.response_profile,
                     record.batch_start_msg_id,
                     record.batch_end_msg_id,
                     record.batch_size,
@@ -299,6 +301,7 @@ class WorkflowRunRepository:
                 "id": row["id"],
                 "session_id": row["session_id"],
                 "instance_id": row["instance_id"],
+                "response_profile": row["response_profile"],
                 "batch_start_msg_id": row["batch_start_msg_id"],
                 "batch_end_msg_id": row["batch_end_msg_id"],
                 "batch_size": row["batch_size"],

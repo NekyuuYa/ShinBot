@@ -49,6 +49,7 @@ class WorkflowRunRecord:
     id: str
     session_id: str
     instance_id: str = ""
+    response_profile: str = "balanced"
     batch_start_msg_id: int | None = None
     batch_end_msg_id: int | None = None
     batch_size: int = 0

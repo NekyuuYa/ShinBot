@@ -67,8 +67,8 @@ def test_tools_list_route_returns_registered_tools(tmp_path: Path):
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert len(payload) == 1
-    assert payload[0] == {
+    weather_tool = next(item for item in payload if item["id"] == "builtin.weather.query")
+    assert weather_tool == {
         "id": "builtin.weather.query",
         "name": "weather_query",
         "displayName": "Weather Query",

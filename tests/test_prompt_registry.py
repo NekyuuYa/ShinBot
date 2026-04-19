@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from shinbot.agent.context import ContextManager
-from shinbot.agent.identity import IdentityStore
-from shinbot.agent.prompting import (
+from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
+from shinbot.agent.media import (
+    BUILTIN_MEDIA_INSPECTION_AGENT_REF,
+    BUILTIN_MEDIA_INSPECTION_LLM_REF,
+    MediaService,
+)
+from shinbot.agent.prompt_manager import (
     ContextStrategy,
     PromptAssemblyRequest,
     PromptComponent,
@@ -15,7 +22,14 @@ from shinbot.agent.prompting import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.persistence import DatabaseManager, MessageLogRecord
+from shinbot.persistence import DatabaseManager, MediaSemanticRecord, MessageLogRecord
+from shinbot.schema.elements import Message, MessageElement
+
+
+def _write_png(path: Path, color: tuple[int, int, int] = (255, 0, 0)) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), color).save(path)
+    return path
 
 
 def test_prompt_component_rejects_invalid_external_stage() -> None:
@@ -26,6 +40,15 @@ def test_prompt_component_rejects_invalid_external_stage() -> None:
             kind=PromptComponentKind.EXTERNAL_INJECTION,
             content="x",
         )
+
+
+def test_prompt_assembly_request_rejects_removed_payload_fields() -> None:
+    with pytest.raises(ValueError):
+        PromptAssemblyRequest(instruction_payload="should fail")
+    with pytest.raises(ValueError):
+        PromptAssemblyRequest(constraint_payload="should fail")
+    with pytest.raises(ValueError):
+        PromptAssemblyRequest(compatibility_payloads=[{"text": "should fail"}])
 
 
 def test_prompt_registry_assembles_in_fixed_stage_order() -> None:
@@ -386,6 +409,73 @@ def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
     assert "stale" not in contents
 
 
+def test_prompt_registry_includes_media_digest_from_context_pool(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    media_service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "digest.png", color=(10, 20, 30))
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    message_log_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id="s-media",
+            role="user",
+            content_json=json.dumps(
+                [element.model_dump(mode="json") for element in message.elements],
+                ensure_ascii=False,
+            ),
+            raw_text="",
+            created_at=1000,
+        )
+    )
+    items = media_service.ingest_message_media(
+        session_id="s-media",
+        sender_id="user-1",
+        platform_msg_id="msg-media-1",
+        elements=message.elements,
+        message_log_id=message_log_id,
+        seen_at=1_000.0,
+    )
+    db.media_semantics.upsert(
+        MediaSemanticRecord(
+            raw_hash=items[0].raw_hash,
+            kind="meme_image",
+            digest="熊猫头无语",
+            verified_by_model=True,
+            inspection_agent_ref=BUILTIN_MEDIA_INSPECTION_AGENT_REF,
+            inspection_llm_ref=BUILTIN_MEDIA_INSPECTION_LLM_REF,
+            metadata={},
+            first_seen_at=1_000.0,
+            last_seen_at=1_000.0,
+            expire_at=1_000.0 + 180 * 24 * 60 * 60,
+        )
+    )
+
+    registry = PromptRegistry(
+        context_manager=ContextManager(db.message_logs, media_service=media_service)
+    )
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    result = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id="s-media",
+        )
+    )
+
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    contents = [str(message["content"]) for message in context_stage.messages]
+    assert any("[表情: 熊猫头无语]" in content for content in contents)
+
+
 def test_prompt_registry_batch_ejects_from_active_pool(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
@@ -639,6 +729,10 @@ def test_prompt_registry_injects_dynamic_identity_map_and_static_constraints(tmp
         encoding="utf-8",
     )
     registry = PromptRegistry(identity_store=IdentityStore(identities_path))
+    register_identity_prompt_components(
+        registry,
+        resolver=registry.resolve_builtin_identity_map_prompt,
+    )
     registry.register_component(
         PromptComponent(
             id="system",
@@ -703,6 +797,10 @@ def test_prompt_registry_dedupes_explicit_identity_components(tmp_path) -> None:
         encoding="utf-8",
     )
     registry = PromptRegistry(identity_store=IdentityStore(identities_path))
+    register_identity_prompt_components(
+        registry,
+        resolver=registry.resolve_builtin_identity_map_prompt,
+    )
     registry.register_component(
         PromptComponent(
             id="system",

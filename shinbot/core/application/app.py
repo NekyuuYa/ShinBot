@@ -10,15 +10,19 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from shinbot.agent.attention import (
+    AttentionConfig,
+    AttentionEngine,
+    AttentionScheduler,
+    register_attention_runtime,
+)
 from shinbot.agent.context import ContextManager
-from shinbot.agent.identity import IdentityStore
+from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
+from shinbot.agent.media import MediaInspectionRunner, MediaService, register_media_runtime
 from shinbot.agent.model_runtime import ModelRuntime
-from shinbot.agent.prompting import PromptRegistry
+from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.tools import ToolManager, ToolRegistry
-from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
-from shinbot.agent.attention.scheduler import AttentionScheduler
-from shinbot.agent.attention.tools import register_attention_tools
-from shinbot.agent.attention.workflow import WorkflowRunner
+from shinbot.agent.workflow import WorkflowRunner
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
@@ -67,10 +71,12 @@ class ShinBot:
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.model_runtime = ModelRuntime(self.database)
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
+        self.media_service = MediaService(self.database) if self.database is not None else None
         self.context_manager = (
             ContextManager(
                 self.database.message_logs,
                 identity_store=self.identity_store,
+                media_service=self.media_service,
             )
             if self.database is not None
             else None
@@ -78,6 +84,20 @@ class ShinBot:
         self.prompt_registry = PromptRegistry(
             context_manager=self.context_manager,
             identity_store=self.identity_store,
+        )
+        register_identity_prompt_components(
+            self.prompt_registry,
+            resolver=self.prompt_registry.resolve_builtin_identity_map_prompt,
+        )
+        self.media_inspection_runner = (
+            MediaInspectionRunner(
+                self.database,
+                self.prompt_registry,
+                self.model_runtime,
+                self.media_service,
+            )
+            if self.database is not None and self.media_service is not None
+            else None
         )
         self.permission_engine = PermissionEngine()
         self.tool_registry = ToolRegistry()
@@ -119,14 +139,23 @@ class ShinBot:
                 self.tool_manager,
                 self.attention_engine,
                 self.adapter_manager,
+                self.media_service,
             )
             # Wire workflow dispatcher into the scheduler
             self.attention_scheduler.set_workflow_dispatcher(
                 self._dispatch_attention_workflow,
             )
-            # Register attention tools
-            register_attention_tools(
-                self.tool_registry, self.attention_engine, self.adapter_manager,
+            register_attention_runtime(
+                self.tool_registry,
+                engine=self.attention_engine,
+                adapter_manager=self.adapter_manager,
+                database=self.database,
+                context_manager=self.context_manager,
+            )
+            register_media_runtime(
+                self.tool_registry,
+                media_service=self.media_service,
+                inspection_runner=self.media_inspection_runner,
             )
 
         self.pipeline = MessagePipeline(
@@ -138,9 +167,9 @@ class ShinBot:
             audit_logger=self.audit_logger,
             database=self.database,
             context_manager=self.context_manager,
-            prompt_registry=self.prompt_registry,
-            model_runtime=self.model_runtime,
             attention_scheduler=self.attention_scheduler,
+            media_service=self.media_service,
+            media_inspection_runner=self.media_inspection_runner,
         )
 
     # ── Event ingress callback ───────────────────────────────────────
@@ -163,6 +192,7 @@ class ShinBot:
         session_id: str,
         batch: list[dict[str, Any]],
         attention_state: Any,
+        response_profile: str,
     ) -> None:
         """Callback for the attention scheduler to dispatch a workflow run."""
         if self.workflow_runner is None:
@@ -178,6 +208,7 @@ class ShinBot:
                 batch,
                 attention_state,
                 instance_id=instance_id,
+                response_profile=response_profile,
             )
         except Exception:
             logger.exception(
@@ -223,5 +254,7 @@ class ShinBot:
         logger.info("ShinBot shutting down...")
         if self.attention_scheduler is not None:
             await self.attention_scheduler.shutdown()
+        if self.media_inspection_runner is not None:
+            await self.media_inspection_runner.shutdown()
         await self.adapter_manager.shutdown_all()
         logger.info("ShinBot shut down complete")

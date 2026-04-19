@@ -363,6 +363,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         instance_id TEXT NOT NULL DEFAULT '',
+        response_profile TEXT NOT NULL DEFAULT 'balanced',
         batch_start_msg_id INTEGER,
         batch_end_msg_id INTEGER,
         batch_size INTEGER NOT NULL DEFAULT 0,
@@ -383,6 +384,89 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_workflow_runs_started_at
     ON workflow_runs(started_at)
+    """,
+    # ── Media semantics & meme handling ───────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS media_assets (
+        raw_hash TEXT PRIMARY KEY,
+        element_type TEXT NOT NULL DEFAULT 'img',
+        storage_path TEXT NOT NULL DEFAULT '',
+        mime_type TEXT NOT NULL DEFAULT '',
+        file_size INTEGER NOT NULL DEFAULT 0,
+        strict_dhash TEXT NOT NULL DEFAULT '',
+        width INTEGER,
+        height INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        first_seen_at REAL NOT NULL,
+        last_seen_at REAL NOT NULL,
+        expire_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_media_assets_expire_at
+    ON media_assets(expire_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS message_media_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_log_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        platform_msg_id TEXT NOT NULL DEFAULT '',
+        raw_hash TEXT NOT NULL,
+        media_index INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        FOREIGN KEY(message_log_id) REFERENCES message_logs(id) ON DELETE CASCADE,
+        FOREIGN KEY(raw_hash) REFERENCES media_assets(raw_hash) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_message_media_links_message_log_id
+    ON message_media_links(message_log_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_message_media_links_session_id_message_log_id
+    ON message_media_links(session_id, message_log_id DESC, media_index ASC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_message_media_links_session_id_platform_msg_id
+    ON message_media_links(session_id, platform_msg_id, message_log_id DESC, media_index ASC)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS session_media_occurrences (
+        session_id TEXT NOT NULL,
+        raw_hash TEXT NOT NULL,
+        strict_dhash TEXT NOT NULL DEFAULT '',
+        last_sender_id TEXT NOT NULL DEFAULT '',
+        last_platform_msg_id TEXT NOT NULL DEFAULT '',
+        recent_timestamps_json TEXT NOT NULL DEFAULT '[]',
+        occurrence_count INTEGER NOT NULL DEFAULT 0,
+        first_seen_at REAL NOT NULL,
+        last_seen_at REAL NOT NULL,
+        expire_at REAL NOT NULL,
+        PRIMARY KEY(session_id, raw_hash)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_session_media_occurrences_expire_at
+    ON session_media_occurrences(expire_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS media_semantics (
+        raw_hash TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT '',
+        digest TEXT NOT NULL DEFAULT '',
+        verified_by_model INTEGER NOT NULL DEFAULT 0,
+        inspection_agent_ref TEXT NOT NULL DEFAULT '',
+        inspection_llm_ref TEXT NOT NULL DEFAULT '',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        first_seen_at REAL NOT NULL,
+        last_seen_at REAL NOT NULL,
+        expire_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_media_semantics_expire_at
+    ON media_semantics(expire_at)
     """,
 )
 
@@ -693,6 +777,19 @@ def _migrate_ai_interactions_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE ai_interactions ADD COLUMN {col} {spec}")
 
 
+def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "workflow_runs")
+    if not columns:
+        return
+    if "response_profile" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE workflow_runs
+            ADD COLUMN response_profile TEXT NOT NULL DEFAULT 'balanced'
+            """
+        )
+
+
 def _migrate_provider_capability_type(conn: sqlite3.Connection) -> None:
     """Add capability_type column and migrate data from defaultParams._tab."""
     import json
@@ -743,3 +840,4 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_bot_configs_schema(conn)
     _migrate_model_execution_records_schema(conn)
     _migrate_ai_interactions_schema(conn)
+    _migrate_workflow_runs_schema(conn)

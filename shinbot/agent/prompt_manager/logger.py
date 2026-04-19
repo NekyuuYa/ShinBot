@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from shinbot.agent.prompting.schema import PromptLoggerRecord
+from shinbot.agent.prompt_manager.schema import PromptLoggerRecord
 from shinbot.utils.logger import format_log_event
 
 logger = logging.getLogger(__name__)

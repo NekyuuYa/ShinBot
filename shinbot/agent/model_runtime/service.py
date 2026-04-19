@@ -8,333 +8,47 @@ import json
 import logging
 import random
 import uuid
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecutionRecord
 
 from . import litellm_adapter
+from .extraction import (
+    extract_embedding,
+    extract_estimated_cost,
+    extract_image_urls,
+    extract_injected_context,
+    extract_rerank_results,
+    extract_speech_bytes,
+    extract_text,
+    extract_think_text,
+    extract_tool_calls_list,
+    extract_transcription_text,
+    extract_usage,
+    maybe_get,
+    response_to_dict,
+    utc_now,
+)
+from .persistence import persist_ai_interaction, persist_model_execution
+from .planning import (
+    build_litellm_kwargs,
+    resolve_runtime_targets,
+    sanitize_litellm_kwargs,
+)
+from .types import (
+    EmbedResult,
+    GenerateResult,
+    ImageResult,
+    ModelCallError,
+    ModelRuntimeCall,
+    ModelRuntimeObserver,
+    RerankResult,
+    SpeechResult,
+    TranscriptionResult,
+    VideoResult,
+)
 
 logger = logging.getLogger(__name__)
-
-ModelRuntimeObserver = Callable[[dict[str, Any]], Awaitable[None] | None]
-
-
-def _provider_type_for_litellm(provider_type: str) -> str | None:
-    if provider_type == "custom_openai":
-        return "openai"
-    if provider_type == "azure_openai":
-        return "azure"
-    return None
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def _utc_now_iso() -> str:
-    return _utc_now().isoformat()
-
-
-def _maybe_get(mapping: Any, key: str, default: Any = None) -> Any:
-    if mapping is None:
-        return default
-    if isinstance(mapping, dict):
-        return mapping.get(key, default)
-    return getattr(mapping, key, default)
-
-
-def _response_to_dict(response: Any) -> dict[str, Any]:
-    if hasattr(response, "model_dump"):
-        return response.model_dump()  # type: ignore[no-any-return]
-    if isinstance(response, dict):
-        return response
-    if hasattr(response, "__dict__"):
-        return dict(response.__dict__)
-    return {}
-
-
-def _extract_text(response: Any) -> str:
-    payload = _response_to_dict(response)
-    choices = payload.get("choices") or []
-    if not choices:
-        return ""
-
-    message = (choices[0] or {}).get("message") or {}
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "".join(parts)
-    return ""
-
-
-def _extract_embedding(response: Any) -> list[float]:
-    payload = _response_to_dict(response)
-    data = payload.get("data") or []
-    if not data:
-        return []
-    embedding = (data[0] or {}).get("embedding")
-    if isinstance(embedding, list):
-        return [float(item) for item in embedding]
-    return []
-
-
-def _extract_rerank_results(response: Any) -> list[dict[str, Any]]:
-    payload = _response_to_dict(response)
-    results = payload.get("results") or []
-    normalized = []
-    for item in results:
-        normalized.append(
-            {
-                "index": int(item.get("index", 0)),
-                "relevance_score": float(item.get("relevance_score", 0.0)),
-                "document": item.get("document"),
-            }
-        )
-    return normalized
-
-
-def _extract_speech_bytes(response: Any) -> bytes:
-    if hasattr(response, "read"):
-        return bytes(response.read())
-    if hasattr(response, "content") and isinstance(response.content, bytes):
-        return response.content
-    if isinstance(response, bytes):
-        return response
-    return b""
-
-
-def _extract_transcription_text(response: Any) -> str:
-    if hasattr(response, "text"):
-        return str(response.text)
-    payload = _response_to_dict(response)
-    text = payload.get("text")
-    if isinstance(text, str):
-        return text
-    return ""
-
-
-def _extract_image_urls(response: Any) -> list[str]:
-    payload = _response_to_dict(response)
-    data = payload.get("data") or []
-    urls = []
-    for item in data:
-        if isinstance(item, dict):
-            url = item.get("url") or item.get("b64_json")
-            if url:
-                urls.append(str(url))
-    return urls
-
-
-def _extract_usage(response: Any) -> dict[str, Any]:
-    payload = _response_to_dict(response)
-    usage = payload.get("usage") or {}
-    prompt_details = usage.get("prompt_tokens_details") or {}
-    return {
-        "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-        "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
-        "cache_read_tokens": int(
-            prompt_details.get("cached_tokens")
-            or usage.get("cache_read_input_tokens")
-            or usage.get("cache_read_tokens")
-            or 0
-        ),
-        "cache_write_tokens": int(
-            usage.get("cache_creation_input_tokens")
-            or usage.get("cache_write_input_tokens")
-            or usage.get("cache_write_tokens")
-            or 0
-        ),
-    }
-
-
-def _extract_estimated_cost(response: Any) -> float | None:
-    payload = _response_to_dict(response)
-    if isinstance(payload.get("response_cost"), (int, float)):
-        return float(payload["response_cost"])
-
-    hidden = payload.get("_hidden_params")
-    if isinstance(hidden, dict) and isinstance(hidden.get("response_cost"), (int, float)):
-        return float(hidden["response_cost"])
-
-    hidden_attr = _maybe_get(response, "_hidden_params")
-    if isinstance(hidden_attr, dict) and isinstance(hidden_attr.get("response_cost"), (int, float)):
-        return float(hidden_attr["response_cost"])
-    return None
-
-
-def _extract_think_text(response: Any) -> str:
-    """Extract model reasoning/thinking text, handling multi-provider response shapes."""
-    payload = _response_to_dict(response)
-    choices = payload.get("choices") or []
-    if not choices:
-        return ""
-    message = (choices[0] or {}).get("message") or {}
-
-    # OpenAI reasoning models: reasoning_content / reasoning
-    for key in ("reasoning_content", "reasoning"):
-        value = message.get(key)
-        if isinstance(value, str) and value:
-            return value
-
-    # Anthropic: content array may contain thinking blocks
-    content = message.get("content")
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "thinking":
-                text = block.get("thinking") or block.get("text") or ""
-                if text:
-                    parts.append(str(text))
-        if parts:
-            return "\n".join(parts)
-
-    # Some providers: think / thought field directly on message
-    for key in ("think", "thought"):
-        value = message.get(key)
-        if isinstance(value, str) and value:
-            return value
-
-    return ""
-
-
-def _extract_tool_calls_list(response: Any) -> list[dict[str, Any]]:
-    """Extract tool calls from the model response as a list of plain dicts."""
-    payload = _response_to_dict(response)
-    choices = payload.get("choices") or []
-    if not choices:
-        return []
-    message = (choices[0] or {}).get("message") or {}
-    tool_calls = message.get("tool_calls")
-    if not isinstance(tool_calls, list):
-        return []
-    result: list[dict[str, Any]] = []
-    for tc in tool_calls:
-        if isinstance(tc, dict):
-            result.append(tc)
-        elif hasattr(tc, "__dict__"):
-            result.append(dict(tc.__dict__))
-    return result
-
-
-def _extract_injected_context(messages: list[dict[str, Any]]) -> str:
-    """Return the content array of the last user message as a JSON string."""
-    for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            content = msg.get("content")
-            if content is None:
-                content = []
-            elif isinstance(content, str):
-                content = [{"type": "text", "text": content}]
-            return json.dumps(content, ensure_ascii=False)
-    return "[]"
-
-
-@dataclass(slots=True)
-class ModelRuntimeCall:
-    """Normalized runtime call input."""
-
-    caller: str
-    route_id: str | None = None
-    model_id: str | None = None
-    session_id: str = ""
-    instance_id: str = ""
-    prompt_snapshot_id: str = ""
-    purpose: str = ""
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    input_data: str | list[str] | None = None
-    tools: list[dict[str, Any]] = field(default_factory=list)
-    response_format: dict[str, Any] | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    params: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class GenerateResult:
-    text: str
-    raw_response: Any
-    execution_id: str
-    route_id: str
-    provider_id: str
-    model_id: str
-    usage: dict[str, Any]
-
-
-@dataclass(slots=True)
-class EmbedResult:
-    embedding: list[float]
-    raw_response: Any
-    execution_id: str
-    route_id: str
-    provider_id: str
-    model_id: str
-    usage: dict[str, Any]
-
-
-@dataclass(slots=True)
-class RerankResult:
-    results: list[dict[str, Any]]
-    raw_response: Any
-    execution_id: str
-    route_id: str
-    provider_id: str
-    model_id: str
-    usage: dict[str, Any]
-
-
-@dataclass(slots=True)
-class SpeechResult:
-    audio_bytes: bytes
-    raw_response: Any
-    execution_id: str
-    route_id: str
-    provider_id: str
-    model_id: str
-
-
-@dataclass(slots=True)
-class TranscriptionResult:
-    text: str
-    raw_response: Any
-    execution_id: str
-    route_id: str
-    provider_id: str
-    model_id: str
-    usage: dict[str, Any]
-
-
-@dataclass(slots=True)
-class ImageResult:
-    urls: list[str]
-    raw_response: Any
-    execution_id: str
-    route_id: str
-    provider_id: str
-    model_id: str
-
-
-@dataclass(slots=True)
-class VideoResult:
-    urls: list[str]
-    raw_response: Any
-    execution_id: str
-    route_id: str
-    provider_id: str
-    model_id: str
-
-
-class ModelCallError(RuntimeError):
-    """Model invocation failure after route resolution/fallback."""
-
 
 class ModelRuntime:
     """Unified runtime for route-based LiteLLM calls."""
@@ -355,15 +69,19 @@ class ModelRuntime:
         if not call.route_id and not call.model_id:
             raise ValueError("generate() requires route_id or model_id")
 
-        attempts = self._resolve_targets(call)
+        attempts = resolve_runtime_targets(
+            database=self._database,
+            call=call,
+            picker=self._random,
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
             execution_id = str(uuid.uuid4())
-            started = _utc_now()
+            started = utc_now()
             started_at = started.isoformat()
-            kwargs = self._build_litellm_kwargs(
+            kwargs = build_litellm_kwargs(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
@@ -389,14 +107,14 @@ class ModelRuntime:
                     "response_format": call.response_format,
                     "params": dict(call.params),
                     "metadata": dict(call.metadata),
-                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "kwargs": sanitize_litellm_kwargs(kwargs),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                 }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.completion, **kwargs)
-                finished = _utc_now()
-                usage = _extract_usage(response)
+                finished = utc_now()
+                usage = extract_usage(response)
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -421,15 +139,16 @@ class ModelRuntime:
                     prompt_snapshot_id=call.prompt_snapshot_id,
                     metadata={
                         "route_strategy": attempt["strategy"],
-                        "response_model": _maybe_get(response, "model"),
-                        "usage_raw": _response_to_dict(response).get("usage"),
+                        "response_model": maybe_get(response, "model"),
+                        "usage_raw": response_to_dict(response).get("usage"),
                         **call.metadata,
                     },
-                    estimated_cost=_extract_estimated_cost(response),
+                    estimated_cost=extract_estimated_cost(response),
                     currency="USD",
                 )
-                self._persist_execution(record)
-                self._persist_ai_interaction(
+                persist_model_execution(self._database, record)
+                persist_ai_interaction(
+                    self._database,
                     AIInteractionRecord(
                         execution_id=execution_id,
                         timestamp=started.timestamp(),
@@ -440,16 +159,16 @@ class ModelRuntime:
                         cache_write_tokens=usage["cache_write_tokens"],
                         model_id=attempt["model"]["id"],
                         provider_id=attempt["provider"]["id"],
-                        think_text=_extract_think_text(response),
-                        injected_context_json=_extract_injected_context(call.messages),
+                        think_text=extract_think_text(response),
+                        injected_context_json=extract_injected_context(call.messages),
                         tool_calls_json=json.dumps(
-                            _extract_tool_calls_list(response), ensure_ascii=False
+                            extract_tool_calls_list(response), ensure_ascii=False
                         ),
                         prompt_snapshot_id=call.prompt_snapshot_id,
                     )
                 )
                 return GenerateResult(
-                    text=_extract_text(response),
+                    text=extract_text(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -458,7 +177,7 @@ class ModelRuntime:
                     usage=usage,
                 )
             except Exception as exc:  # noqa: BLE001
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -482,7 +201,7 @@ class ModelRuntime:
                         **call.metadata,
                     },
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -491,15 +210,19 @@ class ModelRuntime:
     async def embed(self, call: ModelRuntimeCall) -> EmbedResult:
         if not call.route_id and not call.model_id:
             raise ValueError("embed() requires route_id or model_id")
-        attempts = self._resolve_targets(call)
+        attempts = resolve_runtime_targets(
+            database=self._database,
+            call=call,
+            picker=self._random,
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
             execution_id = str(uuid.uuid4())
-            started = _utc_now()
+            started = utc_now()
             started_at = started.isoformat()
-            kwargs = self._build_litellm_kwargs(
+            kwargs = build_litellm_kwargs(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
@@ -524,14 +247,14 @@ class ModelRuntime:
                     "input_data": call.input_data,
                     "params": dict(call.params),
                     "metadata": dict(call.metadata),
-                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "kwargs": sanitize_litellm_kwargs(kwargs),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                 }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.embedding, **kwargs)
-                finished = _utc_now()
-                usage = _extract_usage(response)
+                finished = utc_now()
+                usage = extract_usage(response)
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -553,15 +276,15 @@ class ModelRuntime:
                     fallback_from_model_id=previous_model_id,
                     metadata={
                         "route_strategy": attempt["strategy"],
-                        "usage_raw": _response_to_dict(response).get("usage"),
+                        "usage_raw": response_to_dict(response).get("usage"),
                         **call.metadata,
                     },
-                    estimated_cost=_extract_estimated_cost(response),
+                    estimated_cost=extract_estimated_cost(response),
                     currency="USD",
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 return EmbedResult(
-                    embedding=_extract_embedding(response),
+                    embedding=extract_embedding(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -570,7 +293,7 @@ class ModelRuntime:
                     usage=usage,
                 )
             except Exception as exc:  # noqa: BLE001
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -590,7 +313,7 @@ class ModelRuntime:
                     fallback_reason="provider_error" if previous_model_id else "",
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -599,15 +322,19 @@ class ModelRuntime:
     async def rerank(self, call: ModelRuntimeCall) -> RerankResult:
         if not call.route_id and not call.model_id:
             raise ValueError("rerank() requires route_id or model_id")
-        attempts = self._resolve_targets(call)
+        attempts = resolve_runtime_targets(
+            database=self._database,
+            call=call,
+            picker=self._random,
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
             execution_id = str(uuid.uuid4())
-            started = _utc_now()
+            started = utc_now()
             started_at = started.isoformat()
-            kwargs = self._build_litellm_kwargs(
+            kwargs = build_litellm_kwargs(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
@@ -632,14 +359,14 @@ class ModelRuntime:
                     "input_data": call.input_data,
                     "params": dict(call.params),
                     "metadata": dict(call.metadata),
-                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "kwargs": sanitize_litellm_kwargs(kwargs),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                 }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.rerank, **kwargs)
-                finished = _utc_now()
-                usage = _extract_usage(response)
+                finished = utc_now()
+                usage = extract_usage(response)
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -657,12 +384,12 @@ class ModelRuntime:
                     success=True,
                     fallback_from_model_id=previous_model_id,
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
-                    estimated_cost=_extract_estimated_cost(response),
+                    estimated_cost=extract_estimated_cost(response),
                     currency="USD",
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 return RerankResult(
-                    results=_extract_rerank_results(response),
+                    results=extract_rerank_results(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -671,7 +398,7 @@ class ModelRuntime:
                     usage=usage,
                 )
             except Exception as exc:  # noqa: BLE001
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -691,7 +418,7 @@ class ModelRuntime:
                     fallback_reason="provider_error" if previous_model_id else "",
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -701,15 +428,19 @@ class ModelRuntime:
         """Text-to-speech via litellm.speech."""
         if not call.route_id and not call.model_id:
             raise ValueError("speak() requires route_id or model_id")
-        attempts = self._resolve_targets(call)
+        attempts = resolve_runtime_targets(
+            database=self._database,
+            call=call,
+            picker=self._random,
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
             execution_id = str(uuid.uuid4())
-            started = _utc_now()
+            started = utc_now()
             started_at = started.isoformat()
-            kwargs = self._build_litellm_kwargs(
+            kwargs = build_litellm_kwargs(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
@@ -734,13 +465,13 @@ class ModelRuntime:
                     "input_data": call.input_data,
                     "params": dict(call.params),
                     "metadata": dict(call.metadata),
-                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "kwargs": sanitize_litellm_kwargs(kwargs),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                 }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.speech, **kwargs)
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -757,9 +488,9 @@ class ModelRuntime:
                     fallback_from_model_id=previous_model_id,
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 return SpeechResult(
-                    audio_bytes=_extract_speech_bytes(response),
+                    audio_bytes=extract_speech_bytes(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -767,7 +498,7 @@ class ModelRuntime:
                     model_id=attempt["model"]["id"],
                 )
             except Exception as exc:  # noqa: BLE001
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -787,7 +518,7 @@ class ModelRuntime:
                     fallback_reason="provider_error" if previous_model_id else "",
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -797,15 +528,19 @@ class ModelRuntime:
         """Speech-to-text via litellm.transcription."""
         if not call.route_id and not call.model_id:
             raise ValueError("transcribe() requires route_id or model_id")
-        attempts = self._resolve_targets(call)
+        attempts = resolve_runtime_targets(
+            database=self._database,
+            call=call,
+            picker=self._random,
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
             execution_id = str(uuid.uuid4())
-            started = _utc_now()
+            started = utc_now()
             started_at = started.isoformat()
-            kwargs = self._build_litellm_kwargs(
+            kwargs = build_litellm_kwargs(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
@@ -830,14 +565,14 @@ class ModelRuntime:
                     "input_data": call.input_data,
                     "params": dict(call.params),
                     "metadata": dict(call.metadata),
-                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "kwargs": sanitize_litellm_kwargs(kwargs),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                 }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.transcription, **kwargs)
-                finished = _utc_now()
-                usage = _extract_usage(response)
+                finished = utc_now()
+                usage = extract_usage(response)
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -855,12 +590,12 @@ class ModelRuntime:
                     success=True,
                     fallback_from_model_id=previous_model_id,
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
-                    estimated_cost=_extract_estimated_cost(response),
+                    estimated_cost=extract_estimated_cost(response),
                     currency="USD",
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 return TranscriptionResult(
-                    text=_extract_transcription_text(response),
+                    text=extract_transcription_text(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -869,7 +604,7 @@ class ModelRuntime:
                     usage=usage,
                 )
             except Exception as exc:  # noqa: BLE001
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -889,7 +624,7 @@ class ModelRuntime:
                     fallback_reason="provider_error" if previous_model_id else "",
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -899,15 +634,19 @@ class ModelRuntime:
         """Image generation via litellm.image_generation."""
         if not call.route_id and not call.model_id:
             raise ValueError("generate_image() requires route_id or model_id")
-        attempts = self._resolve_targets(call)
+        attempts = resolve_runtime_targets(
+            database=self._database,
+            call=call,
+            picker=self._random,
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
             execution_id = str(uuid.uuid4())
-            started = _utc_now()
+            started = utc_now()
             started_at = started.isoformat()
-            kwargs = self._build_litellm_kwargs(
+            kwargs = build_litellm_kwargs(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
@@ -932,13 +671,13 @@ class ModelRuntime:
                     "input_data": call.input_data,
                     "params": dict(call.params),
                     "metadata": dict(call.metadata),
-                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "kwargs": sanitize_litellm_kwargs(kwargs),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                 }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.image_generation, **kwargs)
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -954,12 +693,12 @@ class ModelRuntime:
                     success=True,
                     fallback_from_model_id=previous_model_id,
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
-                    estimated_cost=_extract_estimated_cost(response),
+                    estimated_cost=extract_estimated_cost(response),
                     currency="USD",
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 return ImageResult(
-                    urls=_extract_image_urls(response),
+                    urls=extract_image_urls(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -967,7 +706,7 @@ class ModelRuntime:
                     model_id=attempt["model"]["id"],
                 )
             except Exception as exc:  # noqa: BLE001
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -987,7 +726,7 @@ class ModelRuntime:
                     fallback_reason="provider_error" if previous_model_id else "",
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
@@ -997,15 +736,19 @@ class ModelRuntime:
         """Video generation via litellm.video_generation."""
         if not call.route_id and not call.model_id:
             raise ValueError("generate_video() requires route_id or model_id")
-        attempts = self._resolve_targets(call)
+        attempts = resolve_runtime_targets(
+            database=self._database,
+            call=call,
+            picker=self._random,
+        )
         last_error: Exception | None = None
         previous_model_id = ""
 
         for attempt in attempts:
             execution_id = str(uuid.uuid4())
-            started = _utc_now()
+            started = utc_now()
             started_at = started.isoformat()
-            kwargs = self._build_litellm_kwargs(
+            kwargs = build_litellm_kwargs(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
@@ -1030,13 +773,13 @@ class ModelRuntime:
                     "input_data": call.input_data,
                     "params": dict(call.params),
                     "metadata": dict(call.metadata),
-                    "kwargs": self._sanitize_kwargs(kwargs),
+                    "kwargs": sanitize_litellm_kwargs(kwargs),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                 }
             )
             try:
                 response = await asyncio.to_thread(litellm_adapter.video_generation, **kwargs)
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -1052,12 +795,12 @@ class ModelRuntime:
                     success=True,
                     fallback_from_model_id=previous_model_id,
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
-                    estimated_cost=_extract_estimated_cost(response),
+                    estimated_cost=extract_estimated_cost(response),
                     currency="USD",
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 return VideoResult(
-                    urls=_extract_image_urls(response),
+                    urls=extract_image_urls(response),
                     raw_response=response,
                     execution_id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -1065,7 +808,7 @@ class ModelRuntime:
                     model_id=attempt["model"]["id"],
                 )
             except Exception as exc:  # noqa: BLE001
-                finished = _utc_now()
+                finished = utc_now()
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=call.route_id or attempt["model"]["id"],
@@ -1085,143 +828,11 @@ class ModelRuntime:
                     fallback_reason="provider_error" if previous_model_id else "",
                     metadata={"route_strategy": attempt["strategy"], **call.metadata},
                 )
-                self._persist_execution(record)
+                persist_model_execution(self._database, record)
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
 
         raise ModelCallError(str(last_error) if last_error else "Video generation call failed")
-
-    def _resolve_targets(self, call: ModelRuntimeCall) -> list[dict[str, Any]]:
-        if self._database is None:
-            raise ModelCallError("Database-backed model registry is not initialized")
-
-        registry = self._database.model_registry
-        if call.model_id:
-            model = registry.get_model(call.model_id)
-            if model is None:
-                raise ModelCallError(f"Model {call.model_id!r} not found")
-            provider = registry.get_provider(model["provider_id"])
-            if provider is None:
-                raise ModelCallError(f"Provider {model['provider_id']!r} not found")
-            if not provider["enabled"] or not model["enabled"]:
-                raise ModelCallError(f"Model {call.model_id!r} is disabled")
-            return [
-                {
-                    "provider": provider,
-                    "model": model,
-                    "timeout_override": None,
-                    "strategy": "direct",
-                }
-            ]
-
-        assert call.route_id is not None
-        route = self._database.model_registry.get_route(call.route_id)
-        if route is None or not route["enabled"]:
-            raise ModelCallError(f"Route {call.route_id!r} not found or disabled")
-
-        members = self._database.model_registry.list_route_members(call.route_id)
-        candidates: list[dict[str, Any]] = []
-        for member in members:
-            if not member["enabled"]:
-                continue
-            model = registry.get_model(member["model_id"])
-            if model is None or not model["enabled"]:
-                continue
-            provider = registry.get_provider(model["provider_id"])
-            if provider is None or not provider["enabled"]:
-                continue
-            candidates.append(
-                {
-                    "provider": provider,
-                    "model": model,
-                    "timeout_override": member["timeout_override"],
-                    "priority": member["priority"],
-                    "weight": member["weight"],
-                    "strategy": route["strategy"],
-                }
-            )
-
-        if not candidates:
-            raise ModelCallError(f"Route {call.route_id!r} has no available models")
-
-        if route["strategy"] == "weighted":
-            first = self._weighted_pick(candidates)
-            rest = [item for item in candidates if item["model"]["id"] != first["model"]["id"]]
-            rest.sort(key=lambda item: (item["priority"], -item["weight"], item["model"]["id"]))
-            return [first, *rest]
-
-        candidates.sort(key=lambda item: (item["priority"], -item["weight"], item["model"]["id"]))
-        return candidates
-
-    def _weighted_pick(self, candidates: list[dict[str, Any]]) -> dict[str, Any]:
-        weights = [max(float(item["weight"]), 0.0) for item in candidates]
-        if all(weight == 0.0 for weight in weights):
-            return sorted(
-                candidates,
-                key=lambda item: (item["priority"], -item["weight"], item["model"]["id"]),
-            )[0]
-        return self._random.choices(candidates, weights=weights, k=1)[0]
-
-    def _build_litellm_kwargs(
-        self,
-        *,
-        provider: dict[str, Any],
-        model: dict[str, Any],
-        call: ModelRuntimeCall,
-        timeout_override: float | None,
-        mode: str = "completion",
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
-        if provider["base_url"]:
-            kwargs["api_base"] = provider["base_url"]
-        custom_llm_provider = _provider_type_for_litellm(str(provider.get("type", "")))
-        if custom_llm_provider:
-            kwargs["custom_llm_provider"] = custom_llm_provider
-
-        kwargs.update(provider.get("auth") or {})
-        kwargs.update(provider.get("default_params") or {})
-        kwargs.update(model.get("default_params") or {})
-        kwargs.update(call.params)
-        kwargs["model"] = model["litellm_model"]
-
-        if timeout_override is not None:
-            kwargs["timeout"] = timeout_override
-
-        if mode == "completion":
-            kwargs["messages"] = call.messages
-            if call.tools:
-                kwargs["tools"] = call.tools
-            if call.response_format is not None:
-                kwargs["response_format"] = call.response_format
-        elif mode in ("embedding", "speech"):
-            kwargs["input"] = call.input_data if call.input_data is not None else ""
-
-        return kwargs
-
-    def _persist_execution(self, record: ModelExecutionRecord) -> None:
-        if self._database is None:
-            return
-        try:
-            self._database.model_executions.insert(record)
-        except Exception:
-            logger.exception(
-                "Failed to persist model execution %s (caller=%s, success=%s);"
-                " API quota may have been consumed without a corresponding record",
-                record.id,
-                record.caller,
-                record.success,
-            )
-
-    def _persist_ai_interaction(self, record: AIInteractionRecord) -> None:
-        if self._database is None:
-            return
-        try:
-            self._database.ai_interactions.insert(record)
-        except Exception:
-            logger.exception(
-                "Failed to persist AI interaction for execution %s",
-                record.execution_id,
-            )
 
     async def _notify_observers(self, payload: dict[str, Any]) -> None:
         if not self._observers:
@@ -1233,18 +844,3 @@ class ModelRuntime:
                     await result
             except Exception:
                 logger.exception("Model runtime observer failed for event %s", payload.get("event"))
-
-    def _sanitize_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        redacted = dict(kwargs)
-        for key in (
-            "api_key",
-            "api_token",
-            "access_token",
-            "authorization",
-            "Authorization",
-            "app_secret",
-            "api_secret",
-        ):
-            if key in redacted and redacted[key]:
-                redacted[key] = "***"
-        return redacted

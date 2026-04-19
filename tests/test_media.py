@@ -1,0 +1,695 @@
+"""Tests for media fingerprinting and inspection config resolution."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
+from shinbot.agent.media import (
+    BUILTIN_MEDIA_INSPECTION_AGENT_REF,
+    BUILTIN_MEDIA_INSPECTION_LLM_REF,
+    MediaInspectionRunner,
+    MediaService,
+    register_media_tools,
+    resolve_media_inspection_config,
+)
+from shinbot.agent.prompt_manager import PromptRegistry
+from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
+from shinbot.agent.workflow import WorkflowRunner
+from shinbot.agent.workflow.formatting import format_batch_context
+from shinbot.core.dispatch.command import CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.pipeline import MessagePipeline
+from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.security.permission import PermissionEngine
+from shinbot.core.state.session import SessionManager
+from shinbot.persistence import (
+    AgentRecord,
+    BotConfigRecord,
+    DatabaseManager,
+    MediaSemanticRecord,
+    MessageLogRecord,
+    ModelDefinitionRecord,
+    ModelProviderRecord,
+    ModelRouteMemberRecord,
+    ModelRouteRecord,
+    PersonaRecord,
+    PromptDefinitionRecord,
+)
+from shinbot.persistence.records import utc_now_iso
+from shinbot.schema.elements import Message, MessageElement
+from shinbot.schema.events import MessagePayload, UnifiedEvent
+from shinbot.schema.resources import Channel, User
+
+
+class MockAdapter(BaseAdapter):
+    def __init__(self, instance_id: str = "test-bot", platform: str = "mock", **kwargs):
+        super().__init__(instance_id, platform)
+        self.sent: list[tuple[str, list[MessageElement]]] = []
+
+    async def start(self):
+        pass
+
+    async def shutdown(self):
+        pass
+
+    async def send(self, target_session, elements):
+        self.sent.append((target_session, elements))
+        return MessageHandle(message_id=f"sent-{len(self.sent)}", adapter_ref=self)
+
+    async def call_api(self, method, params):
+        return {"ok": True}
+
+    async def get_capabilities(self):
+        return {"elements": ["text", "img"], "actions": [], "limits": {}}
+
+
+def _make_group_event(
+    content: str,
+    *,
+    user_id: str = "user-1",
+    message_id: str = "msg-1",
+) -> UnifiedEvent:
+    return UnifiedEvent(
+        type="message-created",
+        self_id="bot-1",
+        platform="mock",
+        user=User(id=user_id, name="Tester"),
+        channel=Channel(id="group:1", type=0),
+        message=MessagePayload(id=message_id, content=content),
+    )
+
+
+def _write_png(path: Path, color: tuple[int, int, int] = (255, 0, 0)) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), color).save(path)
+    return path
+
+
+def _seed_media_runtime(
+    db: DatabaseManager,
+    *,
+    instance_id: str,
+    llm_ref: str = "route.media.inspect",
+    media_agent_ref: str | None = None,
+) -> None:
+    now = utc_now_iso()
+    provider_id = "openai-media"
+    model_id = "openai-media/gpt-vision"
+    route_id = "route.media.inspect"
+    config: dict[str, str] = {"media_inspection_llm": llm_ref}
+    if media_agent_ref is not None:
+        config["media_inspection_agent"] = media_agent_ref
+
+    db.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id=provider_id,
+            type="openai",
+            display_name="OpenAI Media",
+            base_url="https://api.openai.com/v1",
+            auth={"api_key": "secret-key"},
+        )
+    )
+    db.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id=model_id,
+            provider_id=provider_id,
+            litellm_model="openai/gpt-4.1-mini",
+            display_name="GPT Vision",
+            capabilities=["chat"],
+            context_window=64000,
+        )
+    )
+    db.model_registry.upsert_route(
+        ModelRouteRecord(id=route_id, purpose="media_inspection", strategy="priority"),
+        members=[
+            ModelRouteMemberRecord(
+                route_id=route_id,
+                model_id=model_id,
+                priority=10,
+                weight=1.0,
+            )
+        ],
+    )
+    db.bot_configs.upsert(
+        BotConfigRecord(
+            uuid="bot-config-media",
+            instance_id=instance_id,
+            main_llm=route_id,
+            config=config,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+
+def _seed_custom_media_agent(db: DatabaseManager, *, agent_ref: str) -> None:
+    now = utc_now_iso()
+    prompt_uuid = "prompt-media-custom"
+    persona_uuid = "persona-media-custom"
+    agent_uuid = "agent-media-custom-uuid"
+    db.prompt_definitions.upsert(
+        PromptDefinitionRecord(
+            uuid=prompt_uuid,
+            prompt_id="prompt.media.custom",
+            name="Custom Media Inspector",
+            source_type="agent_plugin",
+            source_id=agent_uuid,
+            stage="identity",
+            type="static_text",
+            priority=100,
+            enabled=True,
+            content="You are a custom media inspector.",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.personas.upsert(
+        PersonaRecord(
+            uuid=persona_uuid,
+            name="Media Persona",
+            prompt_definition_uuid=prompt_uuid,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db.agents.upsert(
+        AgentRecord(
+            uuid=agent_uuid,
+            agent_id=agent_ref,
+            name="Media Agent",
+            persona_uuid=persona_uuid,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+
+class FakeModelRuntime:
+    def __init__(self, response_text: str) -> None:
+        self.response_text = response_text
+        self.calls = []
+
+    async def generate(self, call):
+        self.calls.append(call)
+        return type(
+            "Result",
+            (),
+            {
+                "text": self.response_text,
+                "execution_id": "exec-media",
+                "route_id": call.route_id or "",
+                "provider_id": "provider",
+                "model_id": call.model_id or "",
+                "usage": {},
+            },
+        )()
+
+
+class FakeInspectionRunner:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def schedule_items(self, *, instance_id: str, session_id: str, items) -> None:
+        self.calls.append(
+            {
+                "instance_id": instance_id,
+                "session_id": session_id,
+                "items": items,
+            }
+        )
+
+    async def answer_question(
+        self,
+        *,
+        instance_id: str,
+        session_id: str,
+        raw_hash: str,
+        question: str,
+    ) -> dict[str, str]:
+        self.calls.append(
+            {
+                "instance_id": instance_id,
+                "session_id": session_id,
+                "raw_hash": raw_hash,
+                "question": question,
+            }
+        )
+        return {
+            "raw_hash": raw_hash,
+            "answer": f"回答: {question}",
+            "inspection_agent_ref": BUILTIN_MEDIA_INSPECTION_AGENT_REF,
+            "inspection_llm_ref": BUILTIN_MEDIA_INSPECTION_LLM_REF,
+        }
+
+
+def test_media_inspection_config_uses_builtin_fallback():
+    resolved = resolve_media_inspection_config(None)
+
+    assert resolved.agent_ref == BUILTIN_MEDIA_INSPECTION_AGENT_REF
+    assert resolved.llm_ref == BUILTIN_MEDIA_INSPECTION_LLM_REF
+    assert resolved.uses_builtin_agent is True
+    assert resolved.uses_builtin_llm is True
+    assert "digest no longer than 50" in resolved.builtin_prompt
+
+
+def test_media_inspection_config_prefers_user_overrides():
+    resolved = resolve_media_inspection_config(
+        {
+            "config": {
+                "media_inspection_agent": "agent.custom.media",
+                "media_inspection_llm": "route.media.fast",
+            }
+        }
+    )
+
+    assert resolved.agent_ref == "agent.custom.media"
+    assert resolved.llm_ref == "route.media.fast"
+    assert resolved.uses_builtin_agent is False
+    assert resolved.uses_builtin_llm is False
+
+
+def test_media_service_tracks_repeat_threshold_and_sliding_ttl(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "meme.png")
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    late_seen_at = 1_200.0 + 15 * 24 * 60 * 60
+
+    first = service.ingest_message_media(
+        session_id="inst:group:1",
+        sender_id="user-1",
+        platform_msg_id="msg-1",
+        elements=message.elements,
+        seen_at=1_000.0,
+    )
+    second = service.ingest_message_media(
+        session_id="inst:group:1",
+        sender_id="user-2",
+        platform_msg_id="msg-2",
+        elements=message.elements,
+        seen_at=1_100.0,
+    )
+    third = service.ingest_message_media(
+        session_id="inst:group:1",
+        sender_id="user-3",
+        platform_msg_id="msg-3",
+        elements=message.elements,
+        seen_at=1_200.0,
+    )
+    late = service.ingest_message_media(
+        session_id="inst:group:1",
+        sender_id="user-4",
+        platform_msg_id="msg-4",
+        elements=message.elements,
+        seen_at=late_seen_at,
+    )
+
+    assert len(first) == 1
+    assert first[0].occurrence_count == 1
+    assert first[0].should_request_inspection is False
+    assert second[0].occurrence_count == 2
+    assert second[0].should_request_inspection is False
+    assert third[0].occurrence_count == 3
+    assert third[0].should_request_inspection is True
+    assert late[0].occurrence_count == 1
+    assert late[0].should_request_inspection is False
+
+    asset = db.media_assets.get(third[0].raw_hash)
+    occurrence = db.session_media_occurrences.get("inst:group:1", third[0].raw_hash)
+
+    assert asset is not None
+    assert asset["storage_path"] == str(image_path.resolve())
+    assert asset["file_size"] > 0
+    assert asset["strict_dhash"]
+    assert asset["expire_at"] == pytest.approx(late_seen_at + 30 * 24 * 60 * 60)
+
+    assert occurrence is not None
+    assert occurrence["occurrence_count"] == 1
+    assert occurrence["last_sender_id"] == "user-4"
+    assert occurrence["last_platform_msg_id"] == "msg-4"
+    assert occurrence["expire_at"] == pytest.approx(late_seen_at + 60 * 24 * 60 * 60)
+    assert occurrence["recent_timestamps"] == pytest.approx([late_seen_at])
+
+
+def test_media_service_persists_message_links_and_resolves_by_message_log_id(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "linked.png", color=(5, 15, 25))
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    message_log_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id="inst-linked:group:1",
+            role="user",
+            created_at=1_500.0 * 1000,
+            platform_msg_id="linked-msg-1",
+            sender_id="user-1",
+            sender_name="Tester",
+            content_json=json.dumps(
+                [element.model_dump(mode="json") for element in message.elements],
+                ensure_ascii=False,
+            ),
+            raw_text="[图片]",
+            is_read=False,
+            is_mentioned=False,
+        )
+    )
+
+    items = service.ingest_message_media(
+        session_id="inst-linked:group:1",
+        sender_id="user-1",
+        platform_msg_id="linked-msg-1",
+        elements=message.elements,
+        message_log_id=message_log_id,
+        seen_at=1_500.0,
+    )
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE message_logs SET content_json = '[]' WHERE id = ?",
+            (message_log_id,),
+        )
+
+    links = db.message_media_links.list_by_message_log_id(message_log_id)
+    resolved = service.resolve_message_raw_hash(
+        session_id="inst-linked:group:1",
+        message_log_id=message_log_id,
+    )
+
+    assert len(items) == 1
+    assert len(links) == 1
+    assert links[0]["raw_hash"] == items[0].raw_hash
+    assert resolved == items[0].raw_hash
+
+
+@pytest.mark.asyncio
+async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_media_runtime(db, instance_id="inst-media")
+    media_service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "inspect.png")
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    items = None
+    for offset in range(3):
+        items = media_service.ingest_message_media(
+            session_id="inst-media:group:1",
+            sender_id=f"user-{offset}",
+            platform_msg_id=f"msg-{offset}",
+            elements=message.elements,
+            seen_at=1_000.0 + offset,
+        )
+
+    assert items is not None
+    target = items[0]
+    runtime = FakeModelRuntime(
+        '{"kind":"meme_image","digest":"熊猫头无语，像在吐槽对方","confidence_band":"high","reason":"同会话重复出现且表达情绪明确"}'
+    )
+    runner = MediaInspectionRunner(
+        db,
+        PromptRegistry(),
+        runtime,
+        media_service,
+    )
+
+    result = await runner.inspect_raw_hash(
+        instance_id="inst-media",
+        session_id="inst-media:group:1",
+        raw_hash=target.raw_hash,
+    )
+
+    assert result is not None
+    assert result["kind"] == "meme_image"
+    assert result["verified_by_model"] is True
+    assert result["inspection_agent_ref"] == BUILTIN_MEDIA_INSPECTION_AGENT_REF
+    assert result["inspection_llm_ref"] == "route.media.inspect"
+    assert result["digest"] == "熊猫头无语，像在吐槽对方"
+    assert len(runtime.calls) == 1
+    call = runtime.calls[0]
+    assert call.caller == "media.inspection_runner"
+    assert call.response_format["type"] == "json_schema"
+    assert call.messages[0]["role"] == "system"
+    user_content = call.messages[-1]["content"]
+    assert user_content[0]["type"] == "text"
+    assert "repeat_count_14d=3" in user_content[0]["text"]
+    assert user_content[1]["type"] == "image_url"
+    assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_media_inspection_runner_supports_custom_agent_id(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_custom_media_agent(db, agent_ref="agent.media.custom")
+    _seed_media_runtime(
+        db,
+        instance_id="inst-media-custom",
+        media_agent_ref="agent.media.custom",
+    )
+    media_service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "inspect-custom.png", color=(0, 0, 255))
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    items = None
+    for offset in range(3):
+        items = media_service.ingest_message_media(
+            session_id="inst-media-custom:group:1",
+            sender_id=f"user-{offset}",
+            platform_msg_id=f"msg-{offset}",
+            elements=message.elements,
+            seen_at=2_000.0 + offset,
+        )
+
+    runtime = FakeModelRuntime(
+        '{"kind":"generic_image","digest":"蓝色方块示例图","confidence_band":"medium","reason":"重复出现但画面更像普通示例图"}'
+    )
+    runner = MediaInspectionRunner(
+        db,
+        PromptRegistry(),
+        runtime,
+        media_service,
+    )
+
+    await runner.inspect_raw_hash(
+        instance_id="inst-media-custom",
+        session_id="inst-media-custom:group:1",
+        raw_hash=items[0].raw_hash,
+    )
+
+    assert len(runtime.calls) == 1
+    rendered_text = json.dumps(runtime.calls[0].messages, ensure_ascii=False)
+    assert "You are a custom media inspector." in rendered_text
+
+
+@pytest.mark.asyncio
+async def test_pipeline_ingests_local_image_media(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    adapter = MockAdapter()
+    pipeline = MessagePipeline(
+        adapter_manager=AdapterManager(),
+        session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        command_registry=CommandRegistry(),
+        event_bus=EventBus(),
+        database=db,
+        media_service=MediaService(db),
+    )
+
+    image_path = _write_png(tmp_path / "assets" / "pipeline.png", color=(0, 255, 0))
+    content = Message.from_elements(MessageElement.img(str(image_path))).to_xml()
+    await pipeline.process_event(_make_group_event(content), adapter)
+
+    session_id = "test-bot:group:group:1"
+    rows = db.message_logs.get_recent(session_id, limit=5)
+    assert len(rows) == 1
+
+    with db.connect() as conn:
+        asset_count = conn.execute("SELECT COUNT(*) AS cnt FROM media_assets").fetchone()["cnt"]
+        link_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM message_media_links"
+        ).fetchone()["cnt"]
+        occ_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM session_media_occurrences"
+        ).fetchone()["cnt"]
+        raw_hash = conn.execute("SELECT raw_hash FROM media_assets").fetchone()["raw_hash"]
+
+    assert asset_count == 1
+    assert link_count == 1
+    assert occ_count == 1
+    occurrence = db.session_media_occurrences.get(session_id, raw_hash)
+    links = db.message_media_links.list_by_message_log_id(rows[0]["id"])
+    assert occurrence is not None
+    assert len(links) == 1
+    assert links[0]["raw_hash"] == raw_hash
+    assert occurrence["occurrence_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_schedules_media_inspection_on_third_repeat(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    media_service = MediaService(db)
+    inspection_runner = FakeInspectionRunner()
+
+    adapter = MockAdapter()
+    pipeline = MessagePipeline(
+        adapter_manager=AdapterManager(),
+        session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        command_registry=CommandRegistry(),
+        event_bus=EventBus(),
+        database=db,
+        media_service=media_service,
+        media_inspection_runner=inspection_runner,
+    )
+
+    image_path = _write_png(tmp_path / "assets" / "repeat.png", color=(64, 64, 64))
+    content = Message.from_elements(MessageElement.img(str(image_path))).to_xml()
+    for index in range(3):
+        await pipeline.process_event(
+            _make_group_event(
+                content,
+                user_id=f"user-{index}",
+                message_id=f"msg-repeat-{index}",
+            ),
+            adapter,
+        )
+
+    assert len(inspection_runner.calls) == 1
+    scheduled = inspection_runner.calls[0]
+    assert scheduled["instance_id"] == "test-bot"
+    assert scheduled["session_id"] == "test-bot:group:group:1"
+    assert len(scheduled["items"]) == 1
+    assert scheduled["items"][0].occurrence_count == 3
+    assert scheduled["items"][0].should_request_inspection is True
+
+
+@pytest.mark.asyncio
+async def test_media_tool_inspect_original_uses_latest_session_image(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    media_service = MediaService(db)
+    inspection_runner = FakeInspectionRunner()
+    registry = ToolRegistry()
+    manager = ToolManager(registry, permission_engine=PermissionEngine())
+    register_media_tools(registry, media_service, inspection_runner)
+
+    image_path = _write_png(tmp_path / "assets" / "tool.png", color=(128, 0, 128))
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    items = media_service.ingest_message_media(
+        session_id="inst-tool:group:1",
+        sender_id="user-1",
+        platform_msg_id="tool-msg-1",
+        elements=message.elements,
+        seen_at=3_000.0,
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id="inst-tool:group:1",
+            role="user",
+            created_at=3_000.0 * 1000,
+            platform_msg_id="tool-msg-1",
+            sender_id="user-1",
+            sender_name="Tester",
+            content_json=json.dumps(
+                [element.model_dump(mode="json") for element in message.elements],
+                ensure_ascii=False,
+            ),
+            raw_text="这是谁",
+            is_read=False,
+            is_mentioned=False,
+        )
+    )
+
+    result = await manager.execute(
+        ToolCallRequest(
+            tool_name="media.inspect_original",
+            arguments={"question": "这张图里是谁？"},
+            caller="attention.workflow_runner",
+            instance_id="inst-tool",
+            session_id="inst-tool:group:1",
+        )
+    )
+
+    assert result.success is True
+    assert result.output["answer"] == "回答: 这张图里是谁？"
+    assert inspection_runner.calls[0]["raw_hash"] == items[0].raw_hash
+
+
+def test_workflow_runner_formats_media_digest_in_batch_context(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    media_service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "digest.png", color=(10, 20, 30))
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    items = None
+    for offset in range(3):
+        items = media_service.ingest_message_media(
+            session_id="inst-workflow:group:1",
+            sender_id=f"user-{offset}",
+            platform_msg_id=f"wf-msg-{offset}",
+            elements=message.elements,
+            seen_at=4_000.0 + offset,
+        )
+    db.media_semantics.upsert(
+        MediaSemanticRecord(
+            raw_hash=items[0].raw_hash,
+            kind="meme_image",
+            digest="熊猫头无语",
+            verified_by_model=True,
+            inspection_agent_ref=BUILTIN_MEDIA_INSPECTION_AGENT_REF,
+            inspection_llm_ref=BUILTIN_MEDIA_INSPECTION_LLM_REF,
+            metadata={},
+            first_seen_at=4_010.0,
+            last_seen_at=4_010.0,
+            expire_at=4_010.0 + 180 * 24 * 60 * 60,
+        )
+    )
+    batch = [
+        {
+            "id": 1,
+            "session_id": "inst-workflow:group:1",
+            "platform_msg_id": "wf-msg-0",
+            "sender_id": "user-1",
+            "sender_name": "Tester",
+            "raw_text": "哈哈",
+            "is_mentioned": 0,
+            "content_json": json.dumps(
+                [element.model_dump(mode="json") for element in message.elements],
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    runner = WorkflowRunner(
+        db,
+        PromptRegistry(),
+        FakeModelRuntime("{}"),
+        ToolManager(ToolRegistry(), permission_engine=PermissionEngine()),
+        AttentionEngine(AttentionConfig(), db.attention),
+        AdapterManager(),
+        media_service,
+    )
+
+    text = format_batch_context(
+        batch,
+        session_id="inst-workflow:group:1",
+        attention_repo=runner._engine.repo,
+        media_service=media_service,
+    )
+
+    assert "[表情: 熊猫头无语]" in text
+    assert "media.inspect_original" in text
+    assert "message_log_id=1" in text
+    assert "platform_msg_id=wf-msg-0" in text

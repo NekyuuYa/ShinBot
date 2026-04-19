@@ -123,7 +123,7 @@ def test_create_model_auto_infers_context_window(tmp_path: Path, monkeypatch: py
     headers = _auth_headers(app)
 
     monkeypatch.setattr(
-        "shinbot.api.routers.model_runtime._infer_context_window",
+        "shinbot.api.routers.model_runtime.infer_context_window",
         lambda provider, litellm_model: 128000,
     )
 
@@ -319,7 +319,7 @@ def test_provider_catalog_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         )
         assert create_resp.status_code == 201
 
-        async def fake_catalog(_payload):
+        async def fake_catalog(_database, _provider_id):
             return [
                 {
                     "id": "gpt-4.1-mini",
@@ -356,7 +356,7 @@ def test_update_model_reinfers_context_window_when_model_changes(
         "openrouter/anthropic/claude-3.7-sonnet": 200000,
     }
     monkeypatch.setattr(
-        "shinbot.api.routers.model_runtime._infer_context_window",
+        "shinbot.api.routers.model_runtime.infer_context_window",
         lambda provider, litellm_model: inference_values.get(litellm_model),
     )
 
@@ -410,7 +410,7 @@ def test_update_model_keeps_existing_context_window_when_reinference_fails(
     headers = _auth_headers(app)
 
     monkeypatch.setattr(
-        "shinbot.api.routers.model_runtime._infer_context_window",
+        "shinbot.api.routers.model_runtime.infer_context_window",
         lambda provider, litellm_model: None,
     )
 

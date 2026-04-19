@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
+import json
+import time
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.tools.schema import (
@@ -13,9 +14,11 @@ from shinbot.agent.tools.schema import (
 )
 
 if TYPE_CHECKING:
-    from shinbot.agent.tools.registry import ToolRegistry
     from shinbot.agent.attention.engine import AttentionEngine
+    from shinbot.agent.context import ContextManager
+    from shinbot.agent.tools.registry import ToolRegistry
     from shinbot.core.platform.adapter_manager import AdapterManager
+    from shinbot.persistence.engine import DatabaseManager
 
 _OWNER_TYPE = ToolOwnerType.BUILTIN_MODULE
 _OWNER_ID = "shinbot.agent.attention"
@@ -26,6 +29,8 @@ def register_attention_tools(
     registry: ToolRegistry,
     engine: AttentionEngine,
     adapter_manager: AdapterManager,
+    database: DatabaseManager | None = None,
+    context_manager: ContextManager | None = None,
 ) -> None:
     """Register all attention-related tools into the tool registry."""
 
@@ -239,12 +244,39 @@ def register_attention_tools(
         from shinbot.schema.elements import MessageElement
 
         elements = [MessageElement.text(text)]
-        await adapter.send(session_id, elements)
+        handle = await adapter.send(session_id, elements)
+
+        assistant_log_id = None
+        if database is not None:
+            content_json = json.dumps(
+                [element.model_dump(mode="json") for element in elements],
+                ensure_ascii=False,
+            )
+            from shinbot.persistence.records import MessageLogRecord
+
+            record = MessageLogRecord(
+                session_id=session_id,
+                platform_msg_id=handle.message_id if handle is not None else "",
+                sender_id=adapter.instance_id,
+                sender_name="",
+                content_json=content_json,
+                raw_text=text,
+                role="assistant",
+                is_read=True,
+                is_mentioned=False,
+                created_at=time.time() * 1000,
+            )
+            assistant_log_id = database.message_logs.insert(record)
+            record.id = assistant_log_id
+            if context_manager is not None:
+                context_manager.track_message_record(record, platform=adapter.platform)
 
         return {
             "action": "send_reply",
             "sent": True,
             "length": len(text),
+            "platform_msg_id": handle.message_id if handle is not None else "",
+            "message_log_id": assistant_log_id,
             "hint": "消息已发送至会话。",
         }
 

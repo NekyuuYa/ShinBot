@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from shinbot.agent.attention.models import SenderWeightState, SessionAttentionState
@@ -165,6 +165,7 @@ class AttentionEngine:
         *,
         sender_id: str,
         msg_log_id: int,
+        base_threshold: float | None = None,
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
         recent_mention_count: int = 0,
@@ -180,9 +181,12 @@ class AttentionEngine:
         # Load states
         state = self.repo.get_or_create_attention(
             session_id,
-            base_threshold=self.config.base_threshold,
+            base_threshold=base_threshold or self.config.base_threshold,
         )
         sw = self.repo.get_or_create_sender_weight(session_id, sender_id)
+
+        if base_threshold is not None:
+            state.base_threshold = base_threshold
 
         # Apply time decay
         state = self.apply_time_decay(state, now)

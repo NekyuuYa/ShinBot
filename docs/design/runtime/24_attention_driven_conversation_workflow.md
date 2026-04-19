@@ -34,7 +34,8 @@
 ### 1.4 与现有系统共存但不双轨聊天
 - 现有 `MessagePipeline` 继续承担 ingress、命令、权限、`wait_for_input`、事件分发与消息持久化。
 - 群聊自然语言的“聊天引擎”只保留一套，即本 attention-driven workflow。
-- 旧的逐消息 fallback responder 只应作为迁移期兼容实现，而不应与新 workflow 同时争抢同一类消息。
+- 不再保留旧的逐消息 fallback responder 聊天链路。
+- 所有“即时响应”需求也必须通过 workflow 配置表达，而不是回退到另一套 legacy responder。
 
 ---
 
@@ -60,7 +61,7 @@
 - `message_logs`、审计日志、Prompt Snapshot 等持久化
 
 ### 3.2 被替换的职责
-以下职责不再由“逐消息 fallback responder”承担：
+以下职责不再由“逐消息 fallback responder”承担，而应完全收敛到 workflow：
 - 每条群聊消息单独判断是否拉起模型
 - 模型直接产出文本后立刻发送
 - `@bot` 作为单独的聊天触发分支
@@ -75,6 +76,12 @@
 - 同一类消息只能归一个聊天引擎处理
 - 不允许新旧两套聊天引擎并行争抢同一条群聊自然语言消息
 - “共存”仅指基础设施共存，不指两套聊天决策共存
+- 即时响应、主动响应、被动响应都只是同一 workflow 的调度配置差异，而不是不同聊天引擎
+
+### 3.4 迭代优先于兼容
+- 当前阶段的目标是尽快收敛到单一工作流架构，而不是维持 legacy 行为兼容。
+- 若兼容逻辑只为保留旧设计而存在、且会增加维护成本或理解复杂度，应优先删除而不是继续保留。
+- 数据结构、调度行为与工具协议允许在迭代过程中发生不兼容调整。
 
 ---
 
@@ -166,6 +173,32 @@ contribution = base_gain * sender_factor + feature_bonus
 
 ## 6. Workflow 触发规则
 
+### 6.0 响应策略配置 (Response Profiles)
+系统必须支持通过配置表达不同的响应风格，而不是保留 legacy 聊天链路。
+
+推荐引入 `attention_profile` / `response_profile` 概念，例如：
+- `passive`
+- `balanced`
+- `immediate`
+
+这些 profile 共享同一套 workflow，只调整下列参数：
+- `base_threshold`
+- `runtime_threshold_offset` 的默认范围
+- `mention_bonus` / `reply_bonus`
+- `semantic_wait_ms`
+- `cooldown_seconds`
+- 可选的 fast-dispatch 条件
+
+目标：
+- `passive`: 倾向观望与批处理
+- `balanced`: 默认群聊风格
+- `immediate`: 接近 legacy 的即时响应体验，但仍然走 workflow
+
+关键约束：
+- `immediate` 不等于恢复“每条消息都直接调用 LLM”的旧 pipeline
+- 它只表示注意力更容易越过阈值、沉淀窗口更短、对高优先级信号更敏感
+- 即使在 `immediate` 模式下，输出仍必须通过 Tool 执行
+
 ### 6.1 消息到达时的标准流程
 1. 消息归一化并写入 `message_logs`。
 2. 对当前 Session 状态做时间推进（衰减与回归）。
@@ -176,6 +209,20 @@ contribution = base_gain * sender_factor + feature_bonus
    - 如果期间该 Sender 仍在持续发送消息，则等待其发送结束再进行 Batch Claim。
    - 作用：有效解决“分条发送”问题，确保 LLM 拿到完整的语义块。
 5. Claim 消息批次并启动 Workflow。
+
+### 6.1.1 Fast Dispatch 也是 Workflow
+若用户需要“几乎即时”的响应体验，应通过 workflow 的快速调度策略实现，而不是恢复 legacy responder。
+
+允许的实现方式包括：
+- 降低 `base_threshold`
+- 缩短 `semantic_wait_ms`
+- 提高 `mention_bonus` / `reply_bonus`
+- 允许某些高优先级信号直接把注意力推到阈值以上
+
+但必须保持：
+- 统一的 attention 状态管理
+- 统一的 workflow runner
+- 统一的 Tool 输出约束
 
 ### 6.2 触发后的 Attention 处理
 - 触发后默认不应直接清零。
@@ -258,7 +305,13 @@ contribution = base_gain * sender_factor + feature_bonus
 ### 10.1 替换逻辑
 - `MessagePipeline` 的最终 Fallback 环节由“逐消息回复”改为“更新注意力”。
 - 只有触发逻辑判定为 `True` 时，才拉起 Workflow 调度器。
-- 保证私聊或命令依然走原有的高优先级、即时响应路径。
+- 命令与 `wait_for_input` 继续保留各自的原有控制流。
+- 私聊、`@bot`、回复 Bot 等“高即时性”需求，应通过更激进的 workflow profile 实现，而不是保留第二套聊天 responder。
+
+### 10.2 Legacy 下线原则
+- legacy prompt pipeline 不应继续作为自然语言聊天的兜底链路存在。
+- 若某些场景需要 legacy 级别的即时性，应先尝试用 profile / fast dispatch / 阈值配置实现。
+- 只有命令系统、挂起输入恢复、事件总线等非聊天职责可以保留原控制流。
 
 ---
 
@@ -274,3 +327,4 @@ contribution = base_gain * sender_factor + feature_bonus
 3. 实现基于沉淀窗口的消息 Claim 逻辑。
 4. 接入首版 `attention.*` Tool 集并实现显式的 Clamp 反馈。
 5. 引入回复疲劳机制和 Cross-talk 标注。
+6. 删除 legacy 自然语言 fallback responder，并补齐 `response_profile` 配置。

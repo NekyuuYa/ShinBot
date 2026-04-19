@@ -8,8 +8,8 @@ from shinbot.agent.attention.models import (
     SessionAttentionState,
     WorkflowRunRecord,
 )
+from shinbot.agent.attention.registration import register_attention_runtime
 from shinbot.agent.attention.scheduler import AttentionScheduler
-from shinbot.agent.attention.workflow import WorkflowRunner
 
 __all__ = [
     "AttentionConfig",
@@ -18,5 +18,5 @@ __all__ = [
     "SenderWeightState",
     "SessionAttentionState",
     "WorkflowRunRecord",
-    "WorkflowRunner",
+    "register_attention_runtime",
 ]

@@ -477,6 +477,7 @@ class TestRepository:
             id="run-001",
             session_id="repo4",
             instance_id="inst1",
+            response_profile="immediate",
             batch_size=5,
             trigger_attention=6.0,
             effective_threshold=5.0,
@@ -489,4 +490,5 @@ class TestRepository:
         runs = db.workflow_runs.list_by_session("repo4")
         assert len(runs) == 1
         assert runs[0]["batch_size"] == 5
+        assert runs[0]["response_profile"] == "immediate"
         assert runs[0]["replied"] is True

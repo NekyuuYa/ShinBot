@@ -7,12 +7,13 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.prompting.schema import ContextStrategy
+from shinbot.agent.prompt_manager.schema import ContextStrategy
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.persistence.repos import ContextProvider
 
 if TYPE_CHECKING:
     from shinbot.agent.identity import IdentityStore
+    from shinbot.agent.media import MediaService
 
 
 def _estimate_single_turn_tokens(role: str, content: str) -> int:
@@ -44,7 +45,7 @@ def _record_to_turn(item: dict[str, Any]) -> dict[str, Any] | None:
     Returns None if the item has no usable content.
     """
     role = str(item.get("role", "") or "").strip()
-    content = str(item.get("raw_text") or item.get("content") or "").strip()
+    content = str(item.get("content") or item.get("raw_text") or "").strip()
     if not content:
         return None
     turn: dict[str, Any] = {"role": role, "content": content}
@@ -177,11 +178,13 @@ class ContextManager:
         preload_limit: int = 50,
         max_pool_messages: int = 200,
         identity_store: IdentityStore | None = None,
+        media_service: MediaService | None = None,
     ) -> None:
         self._provider = provider
         self._preload_limit = preload_limit
         self._max_pool_messages = max_pool_messages
         self._identity_store = identity_store
+        self._media_service = media_service
         self._pools: dict[str, ActiveContextPool] = {}
         self._session_policies: dict[str, dict[str, Any]] = {}
 
@@ -191,7 +194,7 @@ class ContextManager:
             return pool
         items = self._provider.get_recent(session_id, limit=self._preload_limit)
         pool = ActiveContextPool(session_id=session_id, max_messages=self._max_pool_messages)
-        pool.load(items)
+        pool.load([self._build_pool_payload(item) for item in items])
         self._pools[session_id] = pool
         return pool
 
@@ -199,17 +202,20 @@ class ContextManager:
         if not record.session_id:
             return
         pool = self.get_pool(record.session_id)
-        payload = {
-            "id": record.id,
-            "session_id": record.session_id,
-            "role": record.role,
-            "raw_text": record.raw_text,
-            "created_at": record.created_at,
-            "sender_id": record.sender_id,
-            "sender_name": record.sender_name,
-            "platform_msg_id": record.platform_msg_id,
-            "platform": platform,
-        }
+        payload = self._build_pool_payload(
+            {
+                "id": record.id,
+                "session_id": record.session_id,
+                "role": record.role,
+                "raw_text": record.raw_text,
+                "content_json": record.content_json,
+                "created_at": record.created_at,
+                "sender_id": record.sender_id,
+                "sender_name": record.sender_name,
+                "platform_msg_id": record.platform_msg_id,
+                "platform": platform,
+            }
+        )
         pool.append(payload)
 
         if self._identity_store is not None and record.role == "user" and record.sender_id.strip():
@@ -220,6 +226,36 @@ class ContextManager:
             )
 
         self._apply_session_policy(record.session_id)
+
+    def _build_pool_payload(self, item: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "id": item.get("id"),
+            "session_id": item.get("session_id", ""),
+            "role": item.get("role", ""),
+            "raw_text": item.get("raw_text", ""),
+            "created_at": item.get("created_at"),
+            "sender_id": item.get("sender_id", ""),
+            "sender_name": item.get("sender_name", ""),
+            "platform_msg_id": item.get("platform_msg_id", ""),
+            "platform": item.get("platform", ""),
+            "content_json": item.get("content_json", "[]"),
+        }
+        merged_content = self._compose_content(payload)
+        if merged_content:
+            payload["content"] = merged_content
+        return payload
+
+    def _compose_content(self, item: dict[str, Any]) -> str:
+        text = str(item.get("raw_text") or "").strip()
+        if self._media_service is None:
+            return text
+
+        media_notes = self._media_service.summarize_message_media(item)
+        if text and media_notes:
+            return f"{text} {' '.join(media_notes)}"
+        if media_notes:
+            return " ".join(media_notes)
+        return text
 
     def get_recent_messages(
         self, session_id: str, *, limit: int | None = None

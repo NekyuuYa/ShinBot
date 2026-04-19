@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from shinbot.agent.prompting import PromptRegistry
+from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.persistence.config import DatabaseConfig
 from shinbot.persistence.records import ContextStrategyRecord, utc_now_iso
 from shinbot.persistence.repos import (
@@ -16,12 +16,16 @@ from shinbot.persistence.repos import (
     AuditRepository,
     BotConfigRepository,
     ContextStrategyRepository,
+    MediaAssetRepository,
+    MediaSemanticRepository,
     MessageLogRepository,
+    MessageMediaLinkRepository,
     ModelExecutionRepository,
     ModelRegistryRepository,
     PersonaRepository,
     PromptDefinitionRepository,
     PromptSnapshotRepository,
+    SessionMediaOccurrenceRepository,
     SessionRepository,
 )
 from shinbot.persistence.schema import apply_schema
@@ -44,6 +48,10 @@ class DatabaseManager:
         self.message_logs = MessageLogRepository(self)
         self.ai_interactions = AIInteractionRepository(self)
         self.prompt_snapshots = PromptSnapshotRepository(self)
+        self.media_assets = MediaAssetRepository(self)
+        self.message_media_links = MessageMediaLinkRepository(self)
+        self.session_media_occurrences = SessionMediaOccurrenceRepository(self)
+        self.media_semantics = MediaSemanticRepository(self)
 
         # Lazy-imported to avoid circular dependency (attention -> model_runtime -> persistence)
         from shinbot.agent.attention.repository import AttentionRepository, WorkflowRunRepository

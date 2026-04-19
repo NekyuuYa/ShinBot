@@ -7,7 +7,10 @@ from shinbot.persistence.records import (
     AIInteractionRecord,
     BotConfigRecord,
     ContextStrategyRecord,
+    MediaAssetRecord,
+    MediaSemanticRecord,
     MessageLogRecord,
+    MessageMediaLinkRecord,
     ModelDefinitionRecord,
     ModelExecutionRecord,
     ModelProviderRecord,
@@ -16,6 +19,7 @@ from shinbot.persistence.records import (
     PersonaRecord,
     PromptDefinitionRecord,
     PromptSnapshotRecord,
+    SessionMediaOccurrenceRecord,
 )
 from shinbot.persistence.repos import ContextProvider
 
@@ -27,7 +31,10 @@ __all__ = [
     "BotConfigRecord",
     "ContextStrategyRecord",
     "ContextProvider",
+    "MediaAssetRecord",
+    "MediaSemanticRecord",
     "MessageLogRecord",
+    "MessageMediaLinkRecord",
     "ModelDefinitionRecord",
     "ModelExecutionRecord",
     "ModelProviderRecord",
@@ -36,6 +43,7 @@ __all__ = [
     "PersonaRecord",
     "PromptDefinitionRecord",
     "PromptSnapshotRecord",
+    "SessionMediaOccurrenceRecord",
     "default_database_path",
     "default_database_url",
 ]

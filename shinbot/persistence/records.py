@@ -230,3 +230,57 @@ class PromptSnapshotRecord:
     compatibility_used: bool = False
     created_at: float = field(default_factory=time.time)
     expires_at: float | None = None
+
+
+@dataclass(slots=True)
+class MediaAssetRecord:
+    raw_hash: str
+    element_type: str = "img"
+    storage_path: str = ""
+    mime_type: str = ""
+    file_size: int = 0
+    strict_dhash: str = ""
+    width: int | None = None
+    height: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    first_seen_at: float = field(default_factory=time.time)
+    last_seen_at: float = field(default_factory=time.time)
+    expire_at: float = field(default_factory=time.time)
+
+
+@dataclass(slots=True)
+class MessageMediaLinkRecord:
+    message_log_id: int
+    session_id: str
+    raw_hash: str
+    platform_msg_id: str = ""
+    media_index: int = 0
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass(slots=True)
+class SessionMediaOccurrenceRecord:
+    session_id: str
+    raw_hash: str
+    strict_dhash: str = ""
+    last_sender_id: str = ""
+    last_platform_msg_id: str = ""
+    recent_timestamps: list[float] = field(default_factory=list)
+    occurrence_count: int = 0
+    first_seen_at: float = field(default_factory=time.time)
+    last_seen_at: float = field(default_factory=time.time)
+    expire_at: float = field(default_factory=time.time)
+
+
+@dataclass(slots=True)
+class MediaSemanticRecord:
+    raw_hash: str
+    kind: str = ""
+    digest: str = ""
+    verified_by_model: bool = False
+    inspection_agent_ref: str = ""
+    inspection_llm_ref: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    first_seen_at: float = field(default_factory=time.time)
+    last_seen_at: float = field(default_factory=time.time)
+    expire_at: float = field(default_factory=time.time)

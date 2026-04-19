@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from shinbot.agent.prompting import PromptComponent, PromptComponentKind, PromptStage
+from shinbot.agent.prompt_manager import PromptComponent, PromptComponentKind, PromptStage
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 

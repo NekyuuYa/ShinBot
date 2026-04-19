@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 # Type for the workflow dispatch callback
 WorkflowDispatcher = Callable[
-    [str, list[dict[str, Any]], SessionAttentionState],
+    [str, list[dict[str, Any]], SessionAttentionState, str],
     Coroutine[Any, Any, None],
 ]
 
@@ -69,6 +69,7 @@ class AttentionScheduler:
         msg_log_id: int,
         sender_id: str,
         *,
+        response_profile: str = "balanced",
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
     ) -> None:
@@ -77,6 +78,9 @@ class AttentionScheduler:
         Computes attention contribution and manages the semantic wait timer.
         """
         async with self._get_lock(session_id):
+            profile_name, profile_threshold, profile_wait_ms = self._resolve_response_profile(
+                response_profile
+            )
             # Count recent mentions in the burst window for robust interrupt.
             # The current message is already persisted in message_logs before
             # on_message is called, so the DB count already includes it.
@@ -89,6 +93,7 @@ class AttentionScheduler:
                 session_id,
                 sender_id=sender_id,
                 msg_log_id=msg_log_id,
+                base_threshold=profile_threshold,
                 is_mentioned=is_mentioned,
                 is_reply_to_bot=is_reply_to_bot,
                 recent_mention_count=recent_mention_count,
@@ -124,17 +129,33 @@ class AttentionScheduler:
                     return
 
             self._trigger_sender[session_id] = sender_id
-            wait_seconds = self._config.semantic_wait_ms / 1000.0
+            wait_seconds = profile_wait_ms / 1000.0
             task = asyncio.create_task(
-                self._semantic_wait_then_dispatch(session_id, wait_seconds),
+                self._semantic_wait_then_dispatch(session_id, wait_seconds, profile_name),
                 name=f"attention-wait-{session_id}",
             )
             self._pending_timers[session_id] = task
+            logger.debug(
+                "Attention trigger armed: session=%s profile=%s wait_ms=%.0f threshold=%.2f",
+                session_id,
+                profile_name,
+                profile_wait_ms,
+                profile_threshold,
+            )
+
+    def _resolve_response_profile(self, response_profile: str) -> tuple[str, float, float]:
+        profile = str(response_profile or "").strip().lower()
+        if profile == "immediate":
+            return "immediate", 1.0, 0.0
+        if profile == "passive":
+            return "passive", 8.0, max(self._config.semantic_wait_ms, 1500.0)
+        return "balanced", self._config.base_threshold, self._config.semantic_wait_ms
 
     async def _semantic_wait_then_dispatch(
         self,
         session_id: str,
         wait_seconds: float,
+        response_profile: str,
     ) -> None:
         """Wait for the semantic boundary, then claim and dispatch."""
         try:
@@ -146,12 +167,12 @@ class AttentionScheduler:
             self._trigger_sender.pop(session_id, None)
 
         task = asyncio.create_task(
-            self._do_dispatch(session_id),
+            self._do_dispatch(session_id, response_profile),
             name=f"attention-dispatch-{session_id}",
         )
         self._running_workflows[session_id] = task
 
-    async def _do_dispatch(self, session_id: str) -> None:
+    async def _do_dispatch(self, session_id: str, response_profile: str) -> None:
         """Claim the batch and dispatch to workflow runner."""
         try:
             async with self._get_lock(session_id):
@@ -169,7 +190,7 @@ class AttentionScheduler:
             )
 
             if self._workflow_dispatcher is not None:
-                await self._workflow_dispatcher(session_id, batch, state)
+                await self._workflow_dispatcher(session_id, batch, state, response_profile)
         except Exception:
             logger.exception("Workflow dispatch failed for session %s", session_id)
         finally:

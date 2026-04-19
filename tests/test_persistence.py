@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from shinbot.agent.prompting import PromptRegistry
+from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (

@@ -76,6 +76,10 @@ def test_bot_config_crud_roundtrip(tmp_path: Path):
                 "instanceId": "inst-1",
                 "defaultAgentUuid": "agent-uuid-1",
                 "mainLlm": "openai-main/gpt-fast",
+                "responseProfile": "balanced",
+                "responseProfilePrivate": "immediate",
+                "responseProfilePriority": "immediate",
+                "responseProfileGroup": "passive",
                 "config": {"replyMode": "group"},
                 "tags": ["prod", "prod", "default"],
             },
@@ -85,6 +89,10 @@ def test_bot_config_crud_roundtrip(tmp_path: Path):
         assert created["instanceId"] == "inst-1"
         assert created["defaultAgentUuid"] == "agent-uuid-1"
         assert created["mainLlm"] == "openai-main/gpt-fast"
+        assert created["responseProfile"] == "balanced"
+        assert created["responseProfilePrivate"] == "immediate"
+        assert created["responseProfilePriority"] == "immediate"
+        assert created["responseProfileGroup"] == "passive"
         assert created["config"]["replyMode"] == "group"
         assert created["tags"] == ["prod", "default"]
 
@@ -95,6 +103,7 @@ def test_bot_config_crud_roundtrip(tmp_path: Path):
             headers=headers,
             json={
                 "mainLlm": "openai-main/gpt-backup",
+                "responseProfileGroup": "balanced",
                 "config": {"replyMode": "private"},
                 "tags": ["staging"],
             },
@@ -102,6 +111,10 @@ def test_bot_config_crud_roundtrip(tmp_path: Path):
         assert patch_resp.status_code == 200
         patched = patch_resp.json()["data"]
         assert patched["mainLlm"] == "openai-main/gpt-backup"
+        assert patched["responseProfile"] == "balanced"
+        assert patched["responseProfilePrivate"] == "immediate"
+        assert patched["responseProfilePriority"] == "immediate"
+        assert patched["responseProfileGroup"] == "balanced"
         assert patched["config"]["replyMode"] == "private"
         assert patched["tags"] == ["staging"]
 

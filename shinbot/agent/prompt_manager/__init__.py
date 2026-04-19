@@ -1,8 +1,8 @@
-"""Prompt registry primitives and assembly service."""
+"""Prompt management primitives and assembly service."""
 
-from shinbot.agent.prompting.logger import PromptLogger
-from shinbot.agent.prompting.registry import PromptRegistry
-from shinbot.agent.prompting.schema import (
+from shinbot.agent.prompt_manager.logger import PromptLogger
+from shinbot.agent.prompt_manager.registry import PromptRegistry
+from shinbot.agent.prompt_manager.schema import (
     ContextStrategy,
     ContextStrategyBudget,
     PromptAssemblyRequest,
