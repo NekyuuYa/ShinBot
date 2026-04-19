@@ -26,7 +26,7 @@
         variant="outlined"
         hide-details
         rounded="lg"
-        bg-color="white"
+        bg-color="surface"
         class="mb-3"
       />
 
@@ -116,10 +116,10 @@ const filteredItems = computed(() => {
 
 <style scoped>
 .sidebar-card {
-  border: 1px solid rgba(120, 86, 0, 0.12);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
   border-radius: 24px;
-  background: linear-gradient(180deg, #fffef6 0%, #ffffff 100%);
-  box-shadow: 0 10px 28px rgba(145, 103, 0, 0.06);
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
+  box-shadow: 0 10px 28px rgba(var(--v-theme-primary), 0.06);
 }
 
 .sidebar-add-btn {
@@ -127,18 +127,18 @@ const filteredItems = computed(() => {
 }
 
 .sidebar-item {
-  border: 1px solid rgba(120, 86, 0, 0.08);
-  background: rgba(255, 252, 244, 0.66);
+  border: 1px solid rgba(var(--v-theme-primary), 0.08);
+  background: rgba(var(--v-theme-surface), 0.66);
   transition: border-color 0.18s ease, background-color 0.18s ease;
 }
 
 .sidebar-item:hover {
-  border-color: rgba(120, 86, 0, 0.16);
-  background: rgba(255, 249, 232, 0.92);
+  border-color: rgba(var(--v-theme-primary), 0.16);
+  background: rgba(var(--v-theme-surface), 0.92);
 }
 
 :deep(.v-list-item--active) {
-  background: linear-gradient(180deg, rgba(255, 229, 153, 0.45) 0%, rgba(255, 241, 208, 0.92) 100%);
-  border-color: rgba(120, 86, 0, 0.18);
+  background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.3) 0%, rgba(var(--v-theme-primary), 0.16) 100%);
+  border-color: rgba(var(--v-theme-primary), 0.18);
 }
 </style>

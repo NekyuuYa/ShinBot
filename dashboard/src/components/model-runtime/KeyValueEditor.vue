@@ -8,7 +8,7 @@
         variant="outlined"
         hide-details
         rounded="lg"
-        bg-color="white"
+        bg-color="surface"
         class="flex-grow-1"
       />
       <v-text-field
@@ -18,7 +18,7 @@
         variant="outlined"
         hide-details
         rounded="lg"
-        bg-color="white"
+        bg-color="surface"
         class="flex-grow-1"
       />
       <v-btn
@@ -77,15 +77,15 @@ const removeRow = (index: number) => {
 <style scoped>
 .key-value-editor {
   padding: 14px;
-  border: 1px solid rgba(120, 86, 0, 0.12);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
   border-radius: 20px;
-  background: rgba(255, 252, 244, 0.72);
+  background: rgba(var(--v-theme-surface), 0.72);
 }
 
 .key-value-row {
   padding: 10px;
-  border: 1px solid rgba(120, 86, 0, 0.08);
+  border: 1px solid rgba(var(--v-theme-primary), 0.08);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(var(--v-theme-surface), 0.82);
 }
 </style>

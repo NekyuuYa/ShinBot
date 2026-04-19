@@ -31,7 +31,6 @@
         :color="instance.status === 'running' ? 'success' : 'error'"
         class="mb-3"
         small
-        text-color="white"
       >
         <template #prepend>
           <span
@@ -127,7 +126,7 @@ const handleStop = async () => {
 
 .instance-card:hover {
   transform: translateY(-6px);
-  box-shadow: 0 16px 28px rgba(99, 96, 77, 0.2);
+  box-shadow: 0 16px 28px rgba(var(--v-theme-on-surface), 0.2);
 }
 
 .status-indicator {
@@ -139,38 +138,38 @@ const handleStop = async () => {
 }
 
 .status-running {
-  background: radial-gradient(circle, #ecfff2 0%, #4caf50 75%);
-  box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.65);
+  background: radial-gradient(circle, rgba(var(--v-theme-success), 0.2) 0%, rgb(var(--v-theme-success)) 75%);
+  box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.65);
   animation: pulse-running 1.8s infinite;
 }
 
 .status-stopped {
-  background: radial-gradient(circle, #fff0ef 0%, #ef5350 75%);
-  box-shadow: 0 0 0 0 rgba(239, 83, 80, 0.45);
+  background: radial-gradient(circle, rgba(var(--v-theme-error), 0.2) 0%, rgb(var(--v-theme-error)) 75%);
+  box-shadow: 0 0 0 0 rgba(var(--v-theme-error), 0.45);
   animation: pulse-stopped 2.2s infinite;
 }
 
 @keyframes pulse-running {
   0% {
-    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.6);
+    box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.6);
   }
   70% {
-    box-shadow: 0 0 0 7px rgba(76, 175, 80, 0);
+    box-shadow: 0 0 0 7px rgba(var(--v-theme-success), 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+    box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0);
   }
 }
 
 @keyframes pulse-stopped {
   0% {
-    box-shadow: 0 0 0 0 rgba(239, 83, 80, 0.5);
+    box-shadow: 0 0 0 0 rgba(var(--v-theme-error), 0.5);
   }
   70% {
-    box-shadow: 0 0 0 6px rgba(239, 83, 80, 0);
+    box-shadow: 0 0 0 6px rgba(var(--v-theme-error), 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(239, 83, 80, 0);
+    box-shadow: 0 0 0 0 rgba(var(--v-theme-error), 0);
   }
 }
 </style>

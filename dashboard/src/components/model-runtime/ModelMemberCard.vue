@@ -99,12 +99,12 @@ defineEmits<{
 <style scoped>
 .member-card {
   border-radius: 20px;
-  border-color: rgba(120, 86, 0, 0.14);
-  background: rgba(255, 252, 244, 0.82);
+  border-color: rgba(var(--v-theme-primary), 0.14);
+  background: rgba(var(--v-theme-surface), 0.82);
 }
 
 .member-avatar {
-  box-shadow: inset 0 0 0 1px rgba(120, 86, 0, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.08);
 }
 
 .member-card :deep(.v-card-actions) {

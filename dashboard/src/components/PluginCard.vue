@@ -37,7 +37,6 @@
         :color="plugin.status === 'enabled' ? 'success' : 'grey'"
         class="mb-3"
         small
-        text-color="white"
       >
         {{
           plugin.status === 'enabled'

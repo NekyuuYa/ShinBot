@@ -1,6 +1,6 @@
 <template>
   <!-- 1. 顶栏：全宽布局 -->
-  <v-app-bar color="#FFFDE7" elevation="0" height="64" class="px-0">
+  <v-app-bar color="surface" elevation="0" height="64" class="px-0">
     <div class="toggle-box">
       <v-app-bar-nav-icon @click="uiStore.toggleRail" icon="mdi-menu" />
     </div>
@@ -19,6 +19,13 @@
     </v-breadcrumbs>
 
     <v-spacer />
+
+    <v-btn
+      :icon="uiStore.isDarkMode ? 'mdi-weather-night' : 'mdi-white-balance-sunny'"
+      variant="text"
+      class="me-2"
+      @click="toggleDarkMode"
+    />
 
     <v-menu location="bottom end">
       <template #activator="{ props }">
@@ -39,7 +46,7 @@
     :rail="uiStore.isRail"
     rail-width="72"
     width="260"
-    color="#FFFDE7"
+    color="surface"
     elevation="0"
     border="0"
   >
@@ -109,11 +116,13 @@
 import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useTheme } from 'vuetify'
 import CredentialsUpdateForm from '@/components/CredentialsUpdateForm.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useMonitoringStore } from '@/stores/monitoring'
 import { useInstancesStore } from '@/stores/instances'
 import { useUiStore } from '@/stores/ui'
+import { resolveThemeName } from '@/theme/themes'
 
 const router = useRouter()
 const route = useRoute()
@@ -121,6 +130,7 @@ const authStore = useAuthStore()
 const monitoringStore = useMonitoringStore()
 const instancesStore = useInstancesStore()
 const uiStore = useUiStore()
+const theme = useTheme()
 const { t } = useI18n()
 
 const drawer = ref(true)
@@ -169,7 +179,18 @@ const statusChipColor = computed(() =>
   monitoringStore.isOnline ? 'success' : 'error'
 )
 
+const applyTheme = (isDarkMode: boolean) => {
+  theme.global.name.value = resolveThemeName(isDarkMode)
+}
+
+const toggleDarkMode = () => {
+  const nextValue = !uiStore.isDarkMode
+  uiStore.setDarkMode(nextValue)
+  applyTheme(nextValue)
+}
+
 onMounted(() => {
+  applyTheme(uiStore.isDarkMode)
   monitoringStore.connectLogs()
   monitoringStore.connectStatus()
   instancesStore.fetchInstances()
@@ -195,7 +216,7 @@ const handleLogout = () => {
 }
 
 .bg-base {
-  background-color: #FFFDE7 !important;
+  background-color: rgb(var(--v-theme-surface)) !important;
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -203,12 +224,12 @@ const handleLogout = () => {
 
 .content-island {
   flex: 1;
-  background: #FFFFF8;
+  background: rgba(var(--v-theme-surface), 0.94);
   margin-right: 10px;
   margin-bottom: 10px;
   border-radius: 16px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 4px 16px rgba(var(--v-theme-on-surface), 0.04);
   overflow-y: auto;
   overflow-x: hidden;
   padding: 24px !important;
@@ -242,10 +263,10 @@ const handleLogout = () => {
 }
 /* 激活状态：使用更有质感的深黄色 */
 .nav-item-active {
-  background-color: #FFE082 !important; /* 暖黄色 */
-  color: #3f3112 !important; /* 深褐色文字，更具质感 */
+  background-color: rgba(var(--v-theme-primary), 0.2) !important;
+  color: rgba(var(--v-theme-on-surface), 0.94) !important;
   font-weight: 800;
-  box-shadow: 0 4px 12px rgba(199, 144, 0, 0.15) !important;
+  box-shadow: 0 4px 12px rgba(var(--v-theme-primary), 0.15) !important;
 }
 
 </style>

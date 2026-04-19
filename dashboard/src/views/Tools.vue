@@ -51,7 +51,7 @@
               density="comfortable"
               hide-details
               rounded="lg"
-              bg-color="white"
+              bg-color="surface"
             />
           </v-col>
           <v-col cols="12" sm="6" md="3" class="pa-2">
@@ -65,7 +65,7 @@
               density="comfortable"
               hide-details
               rounded="lg"
-              bg-color="white"
+              bg-color="surface"
             />
           </v-col>
           <v-col cols="12" sm="6" md="3" class="pa-2">
@@ -79,7 +79,7 @@
               density="comfortable"
               hide-details
               rounded="lg"
-              bg-color="white"
+              bg-color="surface"
             />
           </v-col>
           <v-col cols="12" md="2" class="pa-2 d-flex justify-end">
@@ -197,7 +197,7 @@ const handleLayoutChange = (mode: ToolLayoutMode) => {
 <style scoped>
 .summary-card,
 .filter-card {
-  border: 1px solid rgba(120, 86, 0, 0.12);
-  background: linear-gradient(180deg, #fffef4 0%, #fffdf8 100%);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
 }
 </style>

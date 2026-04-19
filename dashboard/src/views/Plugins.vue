@@ -25,7 +25,7 @@
           hide-details
           density="comfortable"
           variant="outlined"
-          bg-color="white"
+          bg-color="surface"
           rounded="lg"
         />
       </v-col>

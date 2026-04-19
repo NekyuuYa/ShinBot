@@ -1,15 +1,15 @@
 {
   "kicker": "人格中心",
-  "title": "Persona 管理",
-  "subtitle": "按标签组织 Persona，并通过弹出层创建或编辑人格设定。",
+  "title": "人格管理",
+  "subtitle": "按标签组织人格，并通过弹出层创建或编辑人格设定。",
   "actions": {
     "refresh": "刷新",
-    "addPersona": "添加 Persona"
+    "addPersona": "添加人格"
   },
   "tags": {
     "title": "标签分类",
     "all": "All",
-    "showAll": "显示全部 Persona",
+    "showAll": "显示全部人格",
     "filterByTag": "按标签筛选",
     "untagged": "未打标签",
     "empty": "当前没有可用标签"
@@ -21,30 +21,30 @@
     "enabled": "启用"
   },
   "overlay": {
-    "createTitle": "新增 Persona",
-    "editTitle": "编辑 Persona"
+    "createTitle": "新增人格",
+    "editTitle": "编辑人格"
   },
   "state": {
     "enabled": "已启用",
     "disabled": "已禁用"
   },
   "empty": {
-    "title": "暂无 Persona",
-    "subtitle": "当前标签下没有可展示的 Persona，点击右上角按钮创建一个。"
+    "title": "暂无人格",
+    "subtitle": "当前标签下没有可展示的人格，点击右上角按钮创建一个。"
   },
   "hints": {
     "promptText": "用于定义人格设定；支持多行文本。"
   },
   "messages": {
-    "loadFailed": "加载 Persona 列表失败",
-    "created": "Persona 已创建",
-    "updated": "Persona 已更新",
-    "deleted": "Persona 已删除",
-    "createFailed": "创建 Persona 失败",
-    "updateFailed": "更新 Persona 失败",
-    "deleteFailed": "删除 Persona 失败",
+    "loadFailed": "加载人格列表失败",
+    "created": "人格已创建",
+    "updated": "人格已更新",
+    "deleted": "人格已删除",
+    "createFailed": "创建人格失败",
+    "updateFailed": "更新人格失败",
+    "deleteFailed": "删除人格失败",
     "requiredFields": "请填写名称和人格 Prompt",
-    "confirmDelete": "确认删除 Persona {name} 吗？",
+    "confirmDelete": "确认删除人格 {name} 吗？",
     "emptyPrompt": "暂无人格提示词"
   }
 }

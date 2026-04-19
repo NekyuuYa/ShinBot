@@ -1,7 +1,8 @@
 import { createVuetify } from 'vuetify'
 import { aliases, mdi } from 'vuetify/iconsets/mdi'
-import 'vuetify/styles'
+import 'vuetify/lib/styles/main.css'
 import '@mdi/font/css/materialdesignicons.css'
+import { SHINBOT_THEME_NAMES, shinbotThemes } from '@/theme/themes'
 
 const vuetify = createVuetify({
   icons: {
@@ -12,23 +13,8 @@ const vuetify = createVuetify({
     },
   },
   theme: {
-    defaultTheme: 'shinbotTheme',
-    themes: {
-      shinbotTheme: {
-        colors: {
-          primary: '#C79000',
-          secondary: '#5F5A4F',
-          accent: '#FFE082',
-          surface: '#FFFDE7',
-          background: '#FFFDF5',
-          appBar: '#FFF9C4',
-          error: '#f44336',
-          warning: '#fb8c00',
-          info: '#2196f3',
-          success: '#4caf50',
-        },
-      },
-    },
+    defaultTheme: SHINBOT_THEME_NAMES.light,
+    themes: shinbotThemes,
   },
   defaults: {
     VCard: {

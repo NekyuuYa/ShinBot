@@ -59,8 +59,8 @@ defineProps<Props>()
 
 <style scoped>
 .tool-card {
-  border: 1px solid rgba(120, 86, 0, 0.12);
-  background: linear-gradient(180deg, #fffef4 0%, #fffdf8 100%);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
 }
 
 .tool-description {
@@ -79,7 +79,7 @@ defineProps<Props>()
 
 .tool-fact span {
   font-size: 0.78rem;
-  color: rgba(0, 0, 0, 0.56);
+  color: rgba(var(--v-theme-on-surface), 0.56);
 }
 
 .tool-fact code {

@@ -1,6 +1,6 @@
 {
   "kicker": "提示词工程",
-  "title": "Prompt 定义管理",
+  "title": "提示词定义管理",
   "subtitle": "按标签管理 Prompt 组件。支持新增、编辑、启用/禁用及删除。",
   "actions": {
     "refresh": "刷新",

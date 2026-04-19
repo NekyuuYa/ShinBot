@@ -609,9 +609,9 @@ onMounted(() => {
 }
 
 .agent-card {
-  border: 1px solid rgba(120, 86, 0, 0.12);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
   border-radius: 20px;
-  background: linear-gradient(180deg, #fffef6 0%, #ffffff 100%);
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
 }
 
 @media (max-width: 960px) {

@@ -7,6 +7,7 @@ import i18n from '@/plugins/i18n'
 import vuetify from '@/plugins/vuetify'
 import { apiClient } from '@/api/client'
 import { useUiStore } from '@/stores/ui'
+import { resolveThemeName } from '@/theme/themes'
 
 const app = createApp(App)
 
@@ -24,6 +25,8 @@ app.use(i18n)
 app.use(vuetify)
 
 const uiStore = useUiStore(pinia)
+vuetify.theme.global.name.value = resolveThemeName(uiStore.isDarkMode)
+
 apiClient.setRequestTracker({
 	start: uiStore.startLoading,
 	stop: uiStore.stopLoading,

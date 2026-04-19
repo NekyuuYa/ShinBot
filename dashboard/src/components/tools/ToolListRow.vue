@@ -38,8 +38,8 @@ defineProps<Props>()
 
 <style scoped>
 .tool-row {
-  border: 1px solid rgba(120, 86, 0, 0.12);
-  background: #fffef8;
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
+  background: rgba(var(--v-theme-surface), 0.95);
 }
 
 .tool-row-grid {

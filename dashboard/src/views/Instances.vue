@@ -22,7 +22,7 @@
           hide-details
           density="comfortable"
           variant="outlined"
-          bg-color="white"
+          bg-color="surface"
           rounded="lg"
         />
       </v-col>
@@ -79,7 +79,6 @@
           <template #item.status="{ item }">
             <v-chip
               :color="instancesStore.pendingActions[tableRow(item).id] ? 'warning' : tableRow(item).status === 'running' ? 'success' : 'error'"
-              text-color="white"
               size="small"
             >
               {{

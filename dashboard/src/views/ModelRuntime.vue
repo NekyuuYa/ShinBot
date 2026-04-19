@@ -692,9 +692,9 @@ const {
 
 .runtime-toolbar {
   padding: 14px 14px;
-  border: 1px solid rgba(120, 86, 0, 0.12);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
   border-radius: 24px;
-  background: linear-gradient(180deg, #fffef4 0%, #fffdf8 100%);
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
 }
 
 .runtime-tab-toggle {
@@ -715,13 +715,13 @@ const {
   justify-content: center;
   min-height: 44px;
   padding-inline: 6px;
-  border: 1px solid rgba(120, 86, 0, 0.14);
+  border: 1px solid rgba(var(--v-theme-primary), 0.14);
   border-radius: 16px;
   font-weight: 700;
   font-size: 0.8rem;
   line-height: 1.1;
   text-transform: none;
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(var(--v-theme-surface), 0.88);
   white-space: nowrap;
 }
 
@@ -736,15 +736,15 @@ const {
 }
 
 .runtime-tab-toggle :deep(.v-btn--active) {
-  background: linear-gradient(180deg, rgba(255, 229, 153, 0.5) 0%, rgba(255, 241, 208, 0.9) 100%);
-  color: rgba(82, 61, 9, 0.95);
+  background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.3) 0%, rgba(var(--v-theme-primary), 0.18) 100%);
+  color: rgba(var(--v-theme-on-surface), 0.95);
 }
 
 .editor-card {
-  border: 1px solid rgba(120, 86, 0, 0.12);
+  border: 1px solid rgba(var(--v-theme-primary), 0.12);
   border-radius: 24px;
-  background: linear-gradient(180deg, #fffef6 0%, #ffffff 100%);
-  box-shadow: 0 10px 28px rgba(145, 103, 0, 0.06);
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
+  box-shadow: 0 10px 28px rgba(var(--v-theme-primary), 0.06);
 }
 
 .editor-card :deep(.v-card-item) {
@@ -753,20 +753,20 @@ const {
 
 .runtime-main-pane :deep(.v-field--variant-outlined .v-field__outline) {
   --v-field-border-opacity: 1;
-  color: rgba(120, 86, 0, 0.16);
+  color: rgba(var(--v-theme-primary), 0.16);
 }
 
 .runtime-main-pane :deep(.v-field) {
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(var(--v-theme-surface), 0.92);
 }
 
 .runtime-main-pane :deep(.v-field__input) {
-  color: rgba(26, 23, 16, 0.92);
+  color: rgba(var(--v-theme-on-surface), 0.92);
 }
 
 .runtime-main-pane :deep(.v-label.v-field-label) {
-  color: rgba(84, 73, 49, 0.74);
+  color: rgba(var(--v-theme-on-surface), 0.74);
 }
 
 .runtime-main-pane :deep(.v-input__details) {
@@ -774,15 +774,15 @@ const {
 }
 
 .runtime-main-pane :deep(.v-messages__message) {
-  color: rgba(120, 86, 0, 0.72);
+  color: rgba(var(--v-theme-primary), 0.72);
 }
 
 .route-member-row,
 .catalog-item-card,
 .model-editor-card {
   border-radius: 20px;
-  border-color: rgba(120, 86, 0, 0.14);
-  background: rgba(255, 252, 244, 0.78);
+  border-color: rgba(var(--v-theme-primary), 0.14);
+  background: rgba(var(--v-theme-surface), 0.78);
 }
 
 .section-label {
@@ -790,12 +790,12 @@ const {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(120, 86, 0, 0.68);
+  color: rgba(var(--v-theme-primary), 0.68);
 }
 
 .empty-state-panel {
-  border: 1px dashed rgba(120, 86, 0, 0.16);
-  background: linear-gradient(180deg, rgba(255, 252, 244, 0.95) 0%, rgba(255, 248, 232, 0.72) 100%);
+  border: 1px dashed rgba(var(--v-theme-primary), 0.16);
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.95) 0%, rgba(var(--v-theme-surface), 0.78) 100%);
 }
 
 .empty-provider-panel {

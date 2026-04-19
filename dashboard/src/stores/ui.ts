@@ -12,6 +12,7 @@ export const useUiStore = defineStore(
     const snackbarTimeout = ref(3500)
     const loadingCount = ref(0)
     const isRail = ref(false)
+    const isDarkMode = ref(false)
 
     const isLoading = computed(() => loadingCount.value > 0)
 
@@ -42,6 +43,10 @@ export const useUiStore = defineStore(
       isRail.value = !isRail.value
     }
 
+    const setDarkMode = (value: boolean) => {
+      isDarkMode.value = value
+    }
+
     return {
       snackbarVisible,
       snackbarMessage,
@@ -50,12 +55,14 @@ export const useUiStore = defineStore(
       loadingCount,
       isLoading,
       isRail,
+      isDarkMode,
       showSnackbar,
       hideSnackbar,
       startLoading,
       stopLoading,
       resetLoading,
       toggleRail,
+      setDarkMode,
     }
   },
   {

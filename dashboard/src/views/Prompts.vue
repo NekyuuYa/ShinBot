@@ -519,9 +519,9 @@ onMounted(() => store.fetchItems())
 }
 
 .prompt-card {
-  border: 1px solid rgba(0, 86, 120, 0.12);
+  border: 1px solid rgba(var(--v-theme-info), 0.12);
   border-radius: 20px;
-  background: linear-gradient(180deg, #f6fcff 0%, #ffffff 100%);
+  background: linear-gradient(180deg, rgba(var(--v-theme-info), 0.08) 0%, rgba(var(--v-theme-background), 0.98) 100%);
 }
 
 @media (max-width: 960px) {

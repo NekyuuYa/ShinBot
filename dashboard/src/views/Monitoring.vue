@@ -147,10 +147,10 @@ const formatTime = (timestamp: number) => new Date(timestamp).toLocaleTimeString
 
 .monitor-log-scroll {
   padding: 12px 14px;
-  background: rgba(199, 144, 0, 0.07);
+  background: rgba(var(--v-theme-primary), 0.07);
   border-radius: 16px;
-  border: 1px solid rgba(199, 144, 0, 0.1);
-  box-shadow: inset 0 -1px 0 rgba(199, 144, 0, 0.08);
+  border: 1px solid rgba(var(--v-theme-primary), 0.1);
+  box-shadow: inset 0 -1px 0 rgba(var(--v-theme-primary), 0.08);
 }
 
 .monitor-log-scroll :deep(.v-virtual-scroll__container) {
@@ -158,7 +158,7 @@ const formatTime = (timestamp: number) => new Date(timestamp).toLocaleTimeString
 }
 
 .log-row {
-  border: 1px solid rgba(199, 144, 0, 0.14);
+  border: 1px solid rgba(var(--v-theme-primary), 0.14);
   box-shadow: none;
   margin-inline: 2px;
 }
@@ -166,6 +166,6 @@ const formatTime = (timestamp: number) => new Date(timestamp).toLocaleTimeString
 .log-message {
   word-break: break-word;
   line-height: 1.4;
-  color: rgba(0, 0, 0, 0.82);
+  color: rgba(var(--v-theme-on-surface), 0.82);
 }
 </style>
