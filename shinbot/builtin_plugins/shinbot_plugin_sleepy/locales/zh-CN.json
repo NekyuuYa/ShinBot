@@ -1,0 +1,19 @@
+{
+  "meta.name": "Sleepy 时段调度器",
+  "meta.description": "按时段自动调整注意力阈值，让 Bot 在特定时段更活跃或更安静。",
+  "config.title": "Sleepy 时段调度配置",
+  "config.description": "配置各时段的注意力阈值偏移量。正值使 Bot 更难被触发（更安静），负值使 Bot 更容易被触发（更活跃）。多个重叠时段的偏移量会叠加。",
+  "config.fields.enabled.label": "启用插件",
+  "config.fields.enabled.description": "关闭后所有时段规则将停止生效",
+  "config.fields.schedules.label": "时段规则",
+  "config.fields.schedules.description": "每行为一条时段规则，支持跨零点时段",
+  "config.fields.schedules.name.label": "名称",
+  "config.fields.schedules.name.description": "便于识别的规则名称",
+  "config.fields.schedules.start_time.label": "开始时间",
+  "config.fields.schedules.start_time.description": "24小时制，格式 HH:MM",
+  "config.fields.schedules.end_time.label": "结束时间",
+  "config.fields.schedules.end_time.description": "24小时制，格式 HH:MM；允许跨越零点",
+  "config.fields.schedules.threshold_delta.label": "阈值偏移",
+  "config.fields.schedules.threshold_delta.description": "正值 = 提高阈值（更安静），负值 = 降低阈值（更活跃）",
+  "config.fields.schedules.enabled.label": "启用"
+}

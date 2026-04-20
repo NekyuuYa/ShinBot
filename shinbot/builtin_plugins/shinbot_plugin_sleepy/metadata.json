@@ -1,0 +1,10 @@
+{
+  "id": "shinbot_plugin_sleepy",
+  "name": "Sleepy Scheduler",
+  "version": "1.0.0",
+  "author": "ShinBot Team",
+  "description": "Time-based attention threshold scheduler. Raises or lowers the response threshold during configured time periods.",
+  "entry": "__init__.py",
+  "role": "logic",
+  "permissions": []
+}

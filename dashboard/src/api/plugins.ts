@@ -26,6 +26,7 @@ export interface JsonSchemaProperty {
   description?: string
   modes?: Array<'forward' | 'reverse' | string>
   ui_group?: 'basic' | 'advanced' | string
+  ui_component?: string
   enum?: Array<string | number | boolean>
   enum_titles?: string[]
   default?: string | number | boolean | null

@@ -127,6 +127,7 @@ class ShinBot:
             tool_registry=self.tool_registry,
             model_runtime=self.model_runtime,
             data_dir=data_dir,
+            database=self.database,
         )
 
         # ── Attention-driven conversation workflow ──────────────────

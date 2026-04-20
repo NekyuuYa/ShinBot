@@ -74,7 +74,39 @@ def plugin_config_schema(plugin_manager: Any, plugin_id: str) -> dict[str, Any] 
     cfg_cls = plugin_config_class(plugin_manager, plugin_id)
     if cfg_cls is None or not hasattr(cfg_cls, "model_json_schema"):
         return None
-    return cfg_cls.model_json_schema()
+    schema = cfg_cls.model_json_schema()
+    return _resolve_refs(schema)
+
+
+def _resolve_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inline all $ref definitions so the frontend never sees $ref or $defs."""
+    defs = schema.get("$defs", {})
+    if not defs:
+        return schema
+
+    import copy
+
+    resolved = copy.deepcopy(schema)
+
+    def _inline(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            ref_path = node["$ref"]
+            if ref_path.startswith("#/$defs/"):
+                def_name = ref_path[len("#/$defs/"):]
+                if def_name in defs:
+                    inlined = _inline(copy.deepcopy(defs[def_name]))
+                    # Merge any sibling keys from the original ref node (e.g. title overrides)
+                    extra = {k: v for k, v in node.items() if k != "$ref"}
+                    if extra:
+                        inlined = {**inlined, **extra}
+                    return inlined
+        return {k: _inline(v) for k, v in node.items()}
+
+    result = _inline(resolved)
+    result.pop("$defs", None)
+    return result
 
 
 def plugin_config_store(boot: Any) -> dict[str, Any]:

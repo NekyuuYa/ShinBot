@@ -15,6 +15,7 @@ from shinbot.utils.logger import get_plugin_logger
 
 if TYPE_CHECKING:
     from shinbot.core.platform.adapter_manager import AdapterManager, MessageHandle
+    from shinbot.persistence.engine import DatabaseManager
 
 
 class Plugin:
@@ -30,6 +31,7 @@ class Plugin:
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntime | None = None,
+        database: DatabaseManager | None = None,
     ):
         self.plugin_id = plugin_id
         self._command_registry = command_registry
@@ -37,6 +39,7 @@ class Plugin:
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
+        self.database = database
         self.data_dir = (
             Path(data_dir) if data_dir is not None else Path("data") / "plugin_data" / plugin_id
         )

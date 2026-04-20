@@ -1,0 +1,19 @@
+{
+  "meta.name": "Sleepy Scheduler",
+  "meta.description": "Automatically shifts the attention threshold during configured time periods.",
+  "config.title": "Sleepy Schedule Configuration",
+  "config.description": "Define time periods that raise or lower the bot's response threshold. Positive delta = quieter, negative delta = more active. Overlapping slots are summed.",
+  "config.fields.enabled.label": "Enable plugin",
+  "config.fields.enabled.description": "When disabled, all schedule rules are suspended",
+  "config.fields.schedules.label": "Schedule rules",
+  "config.fields.schedules.description": "Each row is one time-based rule. Midnight wrap-around is supported.",
+  "config.fields.schedules.name.label": "Name",
+  "config.fields.schedules.name.description": "Human-readable label for this rule",
+  "config.fields.schedules.start_time.label": "Start",
+  "config.fields.schedules.start_time.description": "24-hour time, HH:MM",
+  "config.fields.schedules.end_time.label": "End",
+  "config.fields.schedules.end_time.description": "24-hour time, HH:MM; wrap past midnight is allowed",
+  "config.fields.schedules.threshold_delta.label": "Delta",
+  "config.fields.schedules.threshold_delta.description": "Positive = raise threshold (quieter), negative = lower threshold (more active)",
+  "config.fields.schedules.enabled.label": "Active"
+}

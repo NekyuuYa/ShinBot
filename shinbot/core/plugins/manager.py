@@ -71,12 +71,14 @@ class PluginManager:
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntime | None = None,
+        database: Any | None = None,
     ):
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
+        self._database = database
         self._plugins: dict[str, PluginMeta] = {}
         self._plugin_objects: dict[str, Plugin] = {}
         self._modules: dict[str, Any] = {}
@@ -95,6 +97,7 @@ class PluginManager:
             adapter_manager=self._adapter_manager,
             tool_registry=self._tool_registry,
             model_runtime=self._model_runtime,
+            database=self._database,
         )
 
     @property

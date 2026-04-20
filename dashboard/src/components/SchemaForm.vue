@@ -1,9 +1,19 @@
 <template>
   <div class="d-flex flex-column ga-4">
     <v-row>
-      <v-col v-for="field in basicFields" :key="field.key" cols="12" md="6">
+      <v-col v-for="field in basicFields" :key="field.key" :cols="field.component === 'schedule_table' ? 12 : 12" :md="field.component === 'schedule_table' ? 12 : 6">
+        <schedule-table
+          v-if="field.component === 'schedule_table'"
+          :field-key="field.key"
+          :label="field.label"
+          :description="field.description"
+          :items-schema="field.itemsSchema"
+          :model-value="tableValue(field.key)"
+          @update:model-value="(value) => updateField(field.key, value)"
+        />
+
         <v-select
-          v-if="field.component === 'select'"
+          v-else-if="field.component === 'select'"
           :model-value="selectValue(field.key, field.multiple)"
           :items="field.options"
           :label="field.label"
@@ -46,9 +56,19 @@
         </v-expansion-panel-title>
         <v-expansion-panel-text>
           <v-row>
-            <v-col v-for="field in advancedFields" :key="field.key" cols="12" md="6">
+            <v-col v-for="field in advancedFields" :key="field.key" :cols="field.component === 'schedule_table' ? 12 : 12" :md="field.component === 'schedule_table' ? 12 : 6">
+              <schedule-table
+                v-if="field.component === 'schedule_table'"
+                :field-key="field.key"
+                :label="field.label"
+                :description="field.description"
+                :items-schema="field.itemsSchema"
+                :model-value="tableValue(field.key)"
+                @update:model-value="(value) => updateField(field.key, value)"
+              />
+
               <v-select
-                v-if="field.component === 'select'"
+                v-else-if="field.component === 'select'"
                 :model-value="selectValue(field.key, field.multiple)"
                 :items="field.options"
                 :label="field.label"
@@ -91,17 +111,19 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { PluginConfigSchema, JsonSchemaProperty } from '@/api/plugins'
+import ScheduleTable from '@/components/ScheduleTable.vue'
 
 interface FlatField {
   key: string
   label: string
   description: string
   group: 'basic' | 'advanced'
-  component: 'input' | 'switch' | 'select'
+  component: 'input' | 'switch' | 'select' | 'schedule_table'
   inputType: 'text' | 'number' | 'password'
   kind: 'string' | 'number' | 'integer' | 'boolean' | 'array'
   options?: Array<string | number | boolean | { title: string; value: string | number | boolean }>
   multiple?: boolean
+  itemsSchema?: JsonSchemaProperty
 }
 
 interface Props {
@@ -144,6 +166,25 @@ function flattenProperties(
     const group = property.ui_group === 'advanced' ? 'advanced' : 'basic'
 
     if (kind === 'array') {
+      // schedule_table: array of objects with items.properties
+      if (
+        property.ui_component === 'schedule_table' &&
+        property.items?.type === 'object' &&
+        property.items?.properties
+      ) {
+        result.push({
+          key: fieldKey,
+          label,
+          description,
+          group,
+          component: 'schedule_table',
+          inputType: 'text',
+          kind: 'array',
+          itemsSchema: property.items,
+        })
+        continue
+      }
+
       const arrayOptions = property.items?.enum?.map((value) => ({
         title: String(value),
         value,
@@ -218,6 +259,11 @@ const advancedFields = computed(() =>
 )
 
 const fieldValue = (key: string) => props.modelValue[key]
+
+const tableValue = (key: string): Array<Record<string, unknown>> => {
+  const value = props.modelValue[key]
+  return Array.isArray(value) ? (value as Array<Record<string, unknown>>) : []
+}
 
 const selectValue = (
   key: string,
