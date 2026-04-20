@@ -39,7 +39,7 @@ class AttentionConfig:
     mention_other_multiplier: float = 0.6
 
     # Burst detection (Robust Interrupt)
-    burst_window_seconds: float = 10.0
+    burst_window_seconds: float = 8.0
     burst_exponent: float = 1.5
     # Cap on the burst amplification factor to prevent runaway contributions
     # from coordinated mention storms.  burst_factor = min(n^exp, burst_cap).
@@ -48,7 +48,7 @@ class AttentionConfig:
     # Mention chain escalation (unanswered consecutive @ bot)
     # When the bot keeps not replying, each next mention can escalate
     # contribution by 2^(streak-1), capped by this multiplier.
-    mention_chain_multiplier_cap: float = 16.0
+    mention_chain_multiplier_cap: float = 15.0
 
     # Reply fatigue
     fatigue_increment: float = 1.0

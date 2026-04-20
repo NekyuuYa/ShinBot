@@ -58,21 +58,38 @@ ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any
 # Keep a safety margin to avoid running exactly on the provider boundary.
 DEFAULT_CONTEXT_CACHE_BLOCK_GAP = 18
 DEFAULT_EXPLICIT_CACHE_MIN_TOKENS = 1024
+DEFAULT_CONTEXT_TRIGGER_TOKENS = 15_000
+DEFAULT_CONTEXT_TARGET_TOKENS = 6_000
+
+
+def _is_cjk_character(character: str) -> bool:
+    return (
+        "\u3400" <= character <= "\u4dbf"  # CJK Unified Ideographs Extension A
+        or "\u4e00" <= character <= "\u9fff"  # CJK Unified Ideographs
+        or "\uf900" <= character <= "\ufaff"  # CJK Compatibility Ideographs
+        or "\u3040" <= character <= "\u30ff"  # Hiragana + Katakana
+        or "\uac00" <= character <= "\ud7af"  # Hangul Syllables
+    )
 
 
 def _estimate_text_tokens(text: str) -> int:
-    """Estimate token count with a conservative heuristic.
+    """Estimate token count with conservative heuristics.
 
-    This follows the same project-wide rough strategy used elsewhere:
-    max(word_count, ceil(char_count / 4)).
+    The estimate keeps the existing Latin-friendly heuristic and adds a
+    CJK-aware branch so dense CJK text is not heavily undercounted.
     """
 
     text = text.strip()
     if not text:
         return 0
+
     word_estimate = len(text.split())
     char_estimate = math.ceil(len(text) / 4)
-    return max(word_estimate, char_estimate)
+    cjk_char_count = sum(1 for character in text if _is_cjk_character(character))
+    non_cjk_char_count = len(text) - cjk_char_count
+    cjk_aware_char_estimate = cjk_char_count + math.ceil(non_cjk_char_count / 4)
+
+    return max(word_estimate, char_estimate, cjk_aware_char_estimate)
 
 
 def _estimate_content_blocks_tokens(content_blocks: list[dict[str, Any]], block_count: int) -> int:
@@ -233,9 +250,11 @@ class PromptRegistry:
     def build_builtin_sliding_window_strategy(
         cls,
         *,
-        trigger_ratio: float = 0.5,
+        trigger_ratio: float = 1.0,
         trim_turns: int = 2,
         trim_ratio: float | None = None,
+        max_context_tokens: int = DEFAULT_CONTEXT_TRIGGER_TOKENS,
+        target_context_tokens: int | None = DEFAULT_CONTEXT_TARGET_TOKENS,
     ) -> ContextStrategy:
         return ContextStrategy(
             id=cls.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
@@ -246,6 +265,8 @@ class PromptRegistry:
             metadata={"builtin": True, "default": True},
             budget={
                 "truncate_policy": "sliding_window",
+                "max_context_tokens": max_context_tokens,
+                "target_context_tokens": target_context_tokens,
                 "trigger_ratio": trigger_ratio,
                 "trim_ratio": trim_ratio,
                 "trim_turns": trim_turns,
@@ -255,8 +276,10 @@ class PromptRegistry:
     def __init__(
         self,
         *,
-        fallback_context_trigger_ratio: float = 0.5,
+        fallback_context_trigger_ratio: float = 1.0,
         fallback_context_trim_turns: int = 2,
+        fallback_context_max_tokens: int = DEFAULT_CONTEXT_TRIGGER_TOKENS,
+        fallback_context_target_tokens: int | None = DEFAULT_CONTEXT_TARGET_TOKENS,
         context_manager: ContextManager | None = None,
         identity_store: IdentityStore | None = None,
     ) -> None:
@@ -270,6 +293,8 @@ class PromptRegistry:
         self._register_builtin_context_strategies(
             trigger_ratio=fallback_context_trigger_ratio,
             trim_turns=fallback_context_trim_turns,
+            max_context_tokens=fallback_context_max_tokens,
+            target_context_tokens=fallback_context_target_tokens,
         )
 
     # ── Registration ────────────────────────────────────────────────────
@@ -802,11 +827,15 @@ class PromptRegistry:
         *,
         trigger_ratio: float,
         trim_turns: int,
+        max_context_tokens: int,
+        target_context_tokens: int | None,
     ) -> None:
         self.register_context_strategy(
             self.build_builtin_sliding_window_strategy(
                 trigger_ratio=trigger_ratio,
                 trim_turns=trim_turns,
+                max_context_tokens=max_context_tokens,
+                target_context_tokens=target_context_tokens,
             )
         )
         self.register_context_strategy_resolver(

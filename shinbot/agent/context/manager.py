@@ -39,6 +39,15 @@ def estimate_context_tokens(turns: list[dict[str, Any]], summary: str = "") -> i
     return max(word_estimate, char_estimate)
 
 
+def _resolve_effective_context_window(
+    strategy_max_context_tokens: int | None,
+    model_context_window: int | None,
+) -> int | None:
+    if strategy_max_context_tokens is not None and model_context_window is not None:
+        return min(strategy_max_context_tokens, model_context_window)
+    return strategy_max_context_tokens or model_context_window
+
+
 def _record_to_turn(item: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a raw message record dict into a pre-processed turn dict.
 
@@ -177,6 +186,17 @@ class ActiveContextPool:
             return 0
         count = min(n - 1, max(1, math.floor(n * ratio)))
         return self.trim_turns(count)
+
+    def trim_to_token_budget(self, target_tokens: int) -> int:
+        if target_tokens < 1:
+            return 0
+        removed = 0
+        while self.token_estimate > target_tokens and len(self.messages) > 1:
+            self.token_estimate -= self._per_turn_tokens[0]
+            self._per_turn_tokens.popleft()
+            self.messages.popleft()
+            removed += 1
+        return removed
 
 
 class ContextManager:
@@ -338,7 +358,10 @@ class ContextManager:
         turns = pool.export_turns()
         current_tokens = pool.token_estimate
         trigger_ratio = strategy.budget.trigger_ratio
-        max_context_tokens = strategy.budget.max_context_tokens or model_context_window
+        max_context_tokens = _resolve_effective_context_window(
+            strategy.budget.max_context_tokens,
+            model_context_window,
+        )
         if max_context_tokens is None:
             return {
                 "dropped_turns": 0,
@@ -354,10 +377,21 @@ class ContextManager:
                 "trigger_tokens": trigger_tokens,
             }
 
+        target_context_tokens = strategy.budget.target_context_tokens
+        effective_target_tokens = (
+            target_context_tokens
+            if target_context_tokens is not None and target_context_tokens < trigger_tokens
+            else None
+        )
         trim_ratio = strategy.budget.trim_ratio
         trim_turns = strategy.budget.trim_turns
-        if trim_ratio is not None:
+        trim_mode = "turns"
+        if effective_target_tokens is not None:
+            dropped = pool.trim_to_token_budget(effective_target_tokens)
+            trim_mode = "token_budget"
+        elif trim_ratio is not None:
             dropped = pool.trim_ratio(trim_ratio)
+            trim_mode = "ratio"
         else:
             dropped = pool.trim_turns(trim_turns)
 
@@ -366,7 +400,8 @@ class ContextManager:
             "remaining_turns": len(pool.export_turns()),
             "current_tokens": pool.token_estimate,
             "trigger_tokens": trigger_tokens,
-            "trim_mode": "ratio" if trim_ratio is not None else "turns",
+            "target_tokens": effective_target_tokens,
+            "trim_mode": trim_mode,
         }
 
     def _apply_session_policy(self, session_id: str) -> dict[str, Any]:

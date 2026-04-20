@@ -112,6 +112,19 @@ def ensure_runtime_context_strategy(
     if not isinstance(budget_payload, dict):
         budget_payload = {}
 
+    def _optional_positive_int(key: str) -> int | None:
+        value = budget_payload.get(key)
+        if value in (None, ""):
+            return None
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+
+    def _optional_ratio(key: str) -> float | None:
+        value = budget_payload.get(key)
+        if value is None:
+            return None
+        return float(value)
+
     strategy = ContextStrategy(
         id=str(strategy_payload.get("uuid") or strategy_ref),
         display_name=str(strategy_payload.get("name", "")),
@@ -120,10 +133,12 @@ def ensure_runtime_context_strategy(
         enabled=bool(strategy_payload.get("enabled", True)),
         priority=int(strategy_payload.get("priority", 100)),
         budget=ContextStrategyBudget(
-            max_context_tokens=int(budget_payload.get("max_context_tokens", 0) or 0),
-            max_history_turns=int(budget_payload.get("max_history_turns", 0) or 0),
+            max_context_tokens=_optional_positive_int("max_context_tokens"),
+            target_context_tokens=_optional_positive_int("target_context_tokens"),
+            max_history_turns=_optional_positive_int("max_history_turns"),
             truncate_policy=str(budget_payload.get("truncate_policy", "tail")),
             trigger_ratio=float(budget_payload.get("trigger_ratio", 0.5)),
+            trim_ratio=_optional_ratio("trim_ratio"),
             trim_turns=int(budget_payload.get("trim_turns", 2)),
         ),
         metadata=raw_config,

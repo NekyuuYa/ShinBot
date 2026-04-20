@@ -17,7 +17,11 @@ from shinbot.agent.attention import (
     register_attention_runtime,
 )
 from shinbot.agent.context import ContextManager
-from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
+from shinbot.agent.identity import (
+    IdentityStore,
+    register_identity_prompt_components,
+    register_identity_tools,
+)
 from shinbot.agent.media import MediaInspectionRunner, MediaService, register_media_runtime
 from shinbot.agent.model_runtime import ModelRuntime
 from shinbot.agent.prompt_manager import PromptRegistry
@@ -114,6 +118,7 @@ class ShinBot:
             permission_engine=self.permission_engine,
             audit_logger=self.audit_logger,
         )
+        register_identity_tools(self.tool_registry, self.identity_store)
         self.adapter_manager = AdapterManager()
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,

@@ -219,6 +219,8 @@ class AttentionScheduler:
             batch_size=len(batch),
             attention_value=state.attention_value,
         )
+        threshold = self._engine.effective_threshold(state)
+        self._engine.repo.consume_trigger_attention(session_id, threshold)
 
         # Step 2: dispatch — cursor NOT advanced yet.
         # On success we commit; on failure we leave the cursor where it was so
@@ -234,10 +236,11 @@ class AttentionScheduler:
         finally:
             self._running_workflows.pop(session_id, None)
 
-        # Step 3: commit cursor + consume attention only after successful dispatch.
+        # Step 3: commit cursor only after successful dispatch. Attention was
+        # already consumed when the trigger dispatch started, so incoming
+        # messages during the workflow cannot keep the trigger value pinned high.
         if dispatch_ok:
-            threshold = self._engine.effective_threshold(state)
-            self._engine.repo.commit_batch_consumption(session_id, last_msg_id, threshold)
+            self._engine.repo.commit_batch_cursor(session_id, last_msg_id)
             if self._context_manager is not None:
                 self._context_manager.mark_read_until(session_id, last_msg_id)
             self._engine.tracer.trace_batch_claim(

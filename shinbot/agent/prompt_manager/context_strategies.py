@@ -8,17 +8,22 @@ from typing import Any
 from shinbot.agent.prompt_manager.schema import ContextStrategy, PromptAssemblyRequest
 
 
+def _resolve_effective_context_window(
+    strategy_max_context_tokens: int | None,
+    model_context_window: int | None,
+) -> int | None:
+    if strategy_max_context_tokens is not None and model_context_window is not None:
+        return min(strategy_max_context_tokens, model_context_window)
+    return strategy_max_context_tokens or model_context_window
+
+
 def hydrate_request_context(
     context_manager: Any,
     request: PromptAssemblyRequest,
 ) -> PromptAssemblyRequest:
     """Hydrate context inputs from the active context manager when available."""
 
-    if (
-        context_manager is None
-        or not request.session_id
-        or not request.hydrate_session_context
-    ):
+    if context_manager is None or not request.session_id or not request.hydrate_session_context:
         return request
     context_inputs = context_manager.get_context_inputs(
         request.session_id,
@@ -34,11 +39,7 @@ def sync_context_policy(
 ) -> dict[str, Any]:
     """Sync session-level context trimming policy before resolver execution."""
 
-    if (
-        context_manager is None
-        or not request.session_id
-        or not request.hydrate_session_context
-    ):
+    if context_manager is None or not request.session_id or not request.hydrate_session_context:
         return {}
     return context_manager.set_session_policy(
         request.session_id,
@@ -57,8 +58,12 @@ def resolve_builtin_sliding_window_context(
 
     turns = normalize_history_turns(request.context_inputs)
     summary = str(request.context_inputs.get("summary", "")).strip()
-    model_context_window = request.model_context_window or strategy.budget.max_context_tokens
+    max_context_tokens = _resolve_effective_context_window(
+        strategy.budget.max_context_tokens,
+        request.model_context_window,
+    )
     trigger_ratio = strategy.budget.trigger_ratio
+    target_context_tokens = strategy.budget.target_context_tokens
     trim_ratio = strategy.budget.trim_ratio
     trim_turns = strategy.budget.trim_turns
     dropped_turns = 0
@@ -72,16 +77,19 @@ def resolve_builtin_sliding_window_context(
         dropped_turns += overflow
 
     trigger_tokens = (
-        max(1, math.floor(model_context_window * trigger_ratio))
-        if model_context_window is not None
+        max(1, math.floor(max_context_tokens * trigger_ratio))
+        if max_context_tokens is not None
+        else None
+    )
+    effective_target_tokens = (
+        target_context_tokens
+        if target_context_tokens is not None
+        and trigger_tokens is not None
+        and target_context_tokens < trigger_tokens
         else None
     )
 
-    if (
-        context_manager is not None
-        and request.session_id
-        and request.hydrate_session_context
-    ):
+    if context_manager is not None and request.session_id and request.hydrate_session_context:
         ejection = context_manager.apply_batch_ejection(
             request.session_id,
             strategy=strategy,
@@ -95,10 +103,19 @@ def resolve_builtin_sliding_window_context(
             )
         )
     else:
-        while trigger_tokens is not None and len(turns) > 1:
+        while len(turns) > 1:
             current_tokens = estimate_context_tokens(turns, summary)
-            if current_tokens < trigger_tokens:
+
+            if effective_target_tokens is not None:
+                if current_tokens <= effective_target_tokens:
+                    break
+                turns = turns[1:]
+                dropped_turns += 1
+                continue
+
+            if trigger_tokens is None or current_tokens < trigger_tokens:
                 break
+
             trim_count = (
                 max(1, math.floor(len(turns) * trim_ratio))
                 if trim_ratio is not None
@@ -126,6 +143,7 @@ def resolve_builtin_sliding_window_context(
         "messages": messages,
         "dropped_turns": dropped_turns,
         "trigger_tokens": trigger_tokens,
+        "target_tokens": effective_target_tokens,
         "remaining_turns": len(turns),
     }
 
@@ -181,8 +199,7 @@ def estimate_context_tokens(turns: list[dict[str, Any]], summary: str) -> int:
 
     text_parts = [summary] if summary else []
     text_parts.extend(
-        f"{turn['role']}: {turn['content']}" if turn["role"] else turn["content"]
-        for turn in turns
+        f"{turn['role']}: {turn['content']}" if turn["role"] else turn["content"] for turn in turns
     )
     text = "\n".join(part for part in text_parts if part).strip()
     if not text:

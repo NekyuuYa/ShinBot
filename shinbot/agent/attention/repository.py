@@ -203,6 +203,42 @@ class AttentionRepository:
                 (session_id, last_msg_id),
             )
 
+    def consume_trigger_attention(self, session_id: str, threshold_to_deduct: float) -> None:
+        """Deduct a trigger threshold and clamp attention below the effective threshold."""
+        normal_ceiling = max(threshold_to_deduct - 1e-6, 0.0)
+        with self._db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE session_attention_states
+                SET attention_value = MIN(MAX(attention_value - ?, 0.0), ?)
+                WHERE session_id = ?
+                """,
+                (threshold_to_deduct, normal_ceiling, session_id),
+            )
+
+    def commit_batch_cursor(self, session_id: str, last_msg_id: int) -> None:
+        """Atomically advance cursor for a successfully dispatched batch."""
+        with self._db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE session_attention_states
+                SET last_trigger_msg_log_id = ?,
+                    last_consumed_msg_log_id = MAX(
+                        COALESCE(last_consumed_msg_log_id, 0), ?
+                    )
+                WHERE session_id = ?
+                """,
+                (last_msg_id, last_msg_id, session_id),
+            )
+            conn.execute(
+                """
+                UPDATE message_logs
+                SET is_read = 1
+                WHERE session_id = ? AND id <= ? AND role = 'user'
+                """,
+                (session_id, last_msg_id),
+            )
+
     def update_consumed_cursor(self, session_id: str, msg_log_id: int) -> None:
         """Atomically advance last_consumed_msg_log_id without touching other fields.
 
@@ -218,6 +254,35 @@ class AttentionRepository:
                 WHERE session_id = ?
                 """,
                 (msg_log_id, session_id),
+            )
+            conn.execute(
+                """
+                UPDATE message_logs
+                SET is_read = 1
+                WHERE session_id = ? AND id <= ? AND role = 'user'
+                """,
+                (session_id, msg_log_id),
+            )
+
+    def update_consumed_cursor_and_cap_attention(
+        self,
+        session_id: str,
+        msg_log_id: int,
+        attention_ceiling: float,
+    ) -> None:
+        """Advance consumed cursor and keep attention below the active threshold."""
+        normal_ceiling = max(attention_ceiling - 1e-6, 0.0)
+        with self._db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE session_attention_states
+                SET attention_value = MIN(attention_value, ?),
+                    last_consumed_msg_log_id = MAX(
+                        COALESCE(last_consumed_msg_log_id, 0), ?
+                    )
+                WHERE session_id = ?
+                """,
+                (normal_ceiling, msg_log_id, session_id),
             )
             conn.execute(
                 """

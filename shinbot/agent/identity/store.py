@@ -113,6 +113,73 @@ class IdentityStore:
 
             return dict(target)
 
+    def set_nickname(
+        self,
+        *,
+        user_id: str,
+        nickname: str,
+        platform: str = "",
+        aliases: list[str] | None = None,
+        note: str | None = None,
+        locked: bool = True,
+    ) -> dict[str, Any] | None:
+        """Set a user-visible nickname and optionally lock it against auto updates."""
+
+        normalized_user_id = str(user_id).strip()
+        if not normalized_user_id:
+            return None
+
+        cleaned_name = self.sanitize_name(nickname)
+        if not cleaned_name:
+            return None
+
+        normalized_platform = str(platform).strip()
+        cleaned_aliases = [
+            alias
+            for alias in (self.sanitize_name(str(item)) for item in (aliases or []))
+            if alias and alias != cleaned_name
+        ]
+
+        with self._lock:
+            payload = self._load_payload()
+            stored_platform = str(payload.get("platform", "")).strip()
+            if normalized_platform and not stored_platform:
+                payload["platform"] = normalized_platform
+                stored_platform = normalized_platform
+
+            if normalized_platform and stored_platform and stored_platform != normalized_platform:
+                return None
+
+            users = self._normalize_users(payload.get("users"))
+            target = next((item for item in users if item["user_id"] == normalized_user_id), None)
+            if target is None:
+                target = {
+                    "user_id": normalized_user_id,
+                    "name": cleaned_name,
+                    "aname": [],
+                    "note": "",
+                    "locked": bool(locked),
+                }
+                users.append(target)
+
+            target["name"] = cleaned_name
+            target["locked"] = bool(locked)
+            if cleaned_aliases:
+                existing_aliases = [
+                    self.sanitize_name(str(alias)) for alias in target.get("aname", [])
+                ]
+                target["aname"] = [
+                    alias
+                    for alias in dict.fromkeys([*existing_aliases, *cleaned_aliases])
+                    if alias and alias != cleaned_name
+                ]
+            if note is not None:
+                target["note"] = str(note).strip()
+
+            payload["users"] = users
+            self._write_payload(payload)
+            return dict(target)
+
     def _ensure_file_exists(self) -> None:
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
         if self._file_path.exists():

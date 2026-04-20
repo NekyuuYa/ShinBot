@@ -325,8 +325,13 @@ class WorkflowRunner:
             new_msgs = self._fetch_incremental_messages(session_id, cursor_msg_id)
             if new_msgs:
                 cursor_msg_id = new_msgs[-1]["id"]
-                # Atomically advance cursor — safe against concurrent on_message
-                self._engine.repo.update_consumed_cursor(session_id, cursor_msg_id)
+                # Atomically advance cursor and keep attention below the active
+                # threshold for messages consumed by this in-flight workflow.
+                self._engine.repo.update_consumed_cursor_and_cap_attention(
+                    session_id,
+                    cursor_msg_id,
+                    effective_threshold,
+                )
                 if self._context_manager is not None:
                     self._context_manager.mark_read_until(session_id, cursor_msg_id)
 
@@ -358,8 +363,8 @@ class WorkflowRunner:
 
         if reply_sent:
             # Reply already sent via send_reply tool; apply fatigue
-            self._engine.reset_unanswered_mention_streak(session_id)
             self._engine.apply_reply_fatigue(attention_state)
+            self._engine.reset_unanswered_mention_streak(session_id)
             record.replied = True
         elif no_reply:
             # A no_reply decision closes the current loop as well. Reset streak so

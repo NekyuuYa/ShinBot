@@ -22,6 +22,7 @@ from shinbot.agent.prompt_manager import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.prompt_manager.context_strategies import estimate_context_tokens
 from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.persistence import DatabaseManager, MediaSemanticRecord, MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
@@ -49,6 +50,11 @@ def _cache_marker_positions(messages: list[dict]) -> list[int]:
 def _long_cache_eligible_text() -> str:
     # Keep this comfortably above the 1024-token minimum used by explicit cache.
     return ("stable system block " * 320).strip()
+
+
+def _long_cache_eligible_cjk_text() -> str:
+    # CJK-heavy content can be undercounted by char/4; keep this well above 1024 chars.
+    return ("\u7f13\u5b58\u547d\u4e2d\u9a8c\u8bc1" * 360).strip()
 
 
 def test_prompt_component_rejects_invalid_external_stage() -> None:
@@ -115,6 +121,38 @@ def test_prompt_registry_assembles_in_fixed_stage_order() -> None:
 def test_prompt_registry_marks_stable_system_base_cache_boundary() -> None:
     registry = PromptRegistry()
     stable_system = _long_cache_eligible_text()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content=stable_system,
+        )
+    )
+    registry.register_component(
+        PromptComponent(
+            id="identity",
+            stage=PromptStage.IDENTITY,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="dynamic identity",
+        )
+    )
+    registry.register_profile(
+        PromptProfile(id="agent.default", base_components=["system", "identity"])
+    )
+
+    result = registry.assemble(PromptAssemblyRequest(profile_id="agent.default"))
+
+    system_content = result.messages[0]["content"]
+    assert system_content[0]["text"] == stable_system
+    assert system_content[0]["cache_control"] == {"type": "ephemeral"}
+    assert system_content[1]["text"] == "dynamic identity"
+    assert "cache_control" not in system_content[1]
+
+
+def test_prompt_registry_marks_stable_cjk_system_base_cache_boundary() -> None:
+    registry = PromptRegistry()
+    stable_system = _long_cache_eligible_cjk_text()
     registry.register_component(
         PromptComponent(
             id="system",
@@ -551,6 +589,48 @@ def test_prompt_registry_builtin_sliding_window_budget_is_configurable() -> None
     assert component.metadata["budget"]["trigger_ratio"] == 0.9
     assert component.metadata["budget"]["trim_turns"] == 2
     assert component.metadata["resolver_output"]["dropped_turns"] == 0
+
+
+def test_prompt_registry_builtin_sliding_window_respects_target_context_tokens() -> None:
+    registry = PromptRegistry(
+        fallback_context_trigger_ratio=1.0,
+        fallback_context_max_tokens=15000,
+        fallback_context_target_tokens=6000,
+        fallback_context_trim_turns=2,
+    )
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    long_turn = " ".join(["token"] * 320)
+    request = PromptAssemblyRequest(
+        profile_id="agent.default",
+        model_context_window=20000,
+        context_inputs={
+            "history_turns": [{"role": "user", "content": long_turn} for _ in range(120)],
+        },
+    )
+    result = registry.assemble(request)
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    component = context_stage.components[0]
+
+    resolver_output = component.metadata["resolver_output"]
+    assert resolver_output["trigger_tokens"] == 15000
+    assert resolver_output["target_tokens"] == 6000
+    assert resolver_output["dropped_turns"] > 0
+
+    output_turns = [
+        {"role": str(message.get("role", "")), "content": str(message.get("content", ""))}
+        for message in context_stage.messages
+    ]
+    output_tokens = estimate_context_tokens(output_turns, "")
+    assert output_tokens <= 6000
 
 
 def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:

@@ -120,6 +120,7 @@ class PromptProfile(BaseModel):
 
 class ContextStrategyBudget(BaseModel):
     max_context_tokens: int | None = None
+    target_context_tokens: int | None = None
     max_history_turns: int | None = None
     memory_summary_required: bool = False
     truncate_policy: str = "tail"
@@ -135,6 +136,18 @@ class ContextStrategyBudget(BaseModel):
             raise ValueError("ContextStrategyBudget.trim_ratio must be within (0, 1)")
         if self.trim_turns < 1:
             raise ValueError("ContextStrategyBudget.trim_turns must be greater than or equal to 1")
+        if self.max_context_tokens is not None and self.max_context_tokens < 1:
+            raise ValueError("ContextStrategyBudget.max_context_tokens must be >= 1")
+        if self.target_context_tokens is not None and self.target_context_tokens < 1:
+            raise ValueError("ContextStrategyBudget.target_context_tokens must be >= 1")
+        if (
+            self.max_context_tokens is not None
+            and self.target_context_tokens is not None
+            and self.target_context_tokens >= self.max_context_tokens
+        ):
+            raise ValueError(
+                "ContextStrategyBudget.target_context_tokens must be smaller than max_context_tokens"
+            )
         return self
 
 

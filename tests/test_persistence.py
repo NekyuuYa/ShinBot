@@ -99,7 +99,9 @@ class TestDatabaseManager:
         assert payload["config"]["builtin"] is True
         assert payload["config"]["default"] is True
         assert payload["config"]["budget"]["truncate_policy"] == "sliding_window"
-        assert payload["config"]["budget"]["trigger_ratio"] == 0.5
+        assert payload["config"]["budget"]["trigger_ratio"] == 1.0
+        assert payload["config"]["budget"]["max_context_tokens"] == 15000
+        assert payload["config"]["budget"]["target_context_tokens"] == 6000
         assert payload["config"]["budget"]["trim_turns"] == 2
 
     def test_initialize_migrates_model_registry_to_provider_uuid(self, tmp_path):

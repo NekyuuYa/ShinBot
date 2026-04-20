@@ -44,7 +44,9 @@ def test_context_strategy_crud_roundtrip(tmp_path: Path):
         assert builtin_resp.json()["data"]["resolverRef"] == (
             PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER
         )
-        assert builtin_resp.json()["data"]["config"]["budget"]["trigger_ratio"] == 0.5
+        assert builtin_resp.json()["data"]["config"]["budget"]["trigger_ratio"] == 1.0
+        assert builtin_resp.json()["data"]["config"]["budget"]["max_context_tokens"] == 15000
+        assert builtin_resp.json()["data"]["config"]["budget"]["target_context_tokens"] == 6000
         assert builtin_resp.json()["data"]["config"]["budget"]["trim_turns"] == 2
 
         create_resp = client.post(

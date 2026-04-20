@@ -191,6 +191,7 @@ async def test_workflow_runner_continues_after_send_reply_when_not_terminating(t
         attention_value=6.0,
         last_consumed_msg_log_id=1,
         last_trigger_msg_log_id=1,
+        metadata={"unanswered_mention_streak": 3},
     )
     attention_engine.repo.save_attention(attention_state)
 
@@ -277,6 +278,9 @@ async def test_workflow_runner_continues_after_send_reply_when_not_terminating(t
         "第一条回复",
         "第二条回复",
     ]
+    refreshed = attention_engine.repo.get_attention(session_id)
+    assert refreshed is not None
+    assert refreshed.metadata.get("unanswered_mention_streak") == 0
 
 
 @pytest.mark.asyncio
