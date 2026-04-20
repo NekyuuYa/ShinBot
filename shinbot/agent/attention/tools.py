@@ -343,10 +343,10 @@ def register_attention_tools(
             }
 
         params: dict[str, Any] = {"user_id": user_id}
-        session_parts = session_id.split(":", 2)
-        session_type = session_parts[1] if len(session_parts) > 1 else ""
-        if session_type == "group" and len(session_parts) > 2:
-            params["group_id"] = session_parts[2]
+        session_type = _session_type(session_id)
+        group_id = _group_id_from_session(session_id)
+        if group_id:
+            params["group_id"] = group_id
 
         result = await adapter.call_api(f"internal.{adapter.platform}.poke", params)
 
@@ -397,3 +397,25 @@ def register_attention_tools(
                 tags=[_TAG],
             )
         )
+
+
+def _session_type(session_id: str) -> str:
+    rest = _session_rest(session_id)
+    if ":" not in rest:
+        return rest
+    return rest.split(":", 1)[0]
+
+
+def _group_id_from_session(session_id: str) -> str:
+    rest = _session_rest(session_id)
+    if not rest.startswith("group:"):
+        return ""
+    group_part = rest[len("group:") :]
+    return group_part.rsplit(":", 1)[-1].strip()
+
+
+def _session_rest(session_id: str) -> str:
+    colon_pos = session_id.find(":")
+    if colon_pos == -1:
+        return session_id
+    return session_id[colon_pos + 1 :]

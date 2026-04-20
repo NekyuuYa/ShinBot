@@ -156,9 +156,7 @@ class WorkflowRunner:
 
         topic_count = crosstalk_detect(batch)
         if topic_count > 1:
-            crosstalk_hint = (
-                f"[系统提示：检测到当前批次可能包含 {topic_count} 个不相关话题线索]"
-            )
+            crosstalk_hint = f"[系统提示：检测到当前批次可能包含 {topic_count} 个不相关话题线索]"
             batch_context_blocks.append({"type": "text", "text": crosstalk_hint})
             batch_context += f"\n{crosstalk_hint}"
 
@@ -260,7 +258,8 @@ class WorkflowRunner:
             except ModelCallError:
                 logger.exception(
                     "Workflow model call failed (iteration %d) for session %s",
-                    iteration, session_id,
+                    iteration,
+                    session_id,
                 )
                 record.finished_at = time.time()
                 self._save_run(record)
@@ -278,7 +277,8 @@ class WorkflowRunner:
                         "Model produced raw text without send_reply tool for "
                         "session %s (iteration %d). Text will be discarded. "
                         "Model should use send_reply tool instead.",
-                        session_id, iteration,
+                        session_id,
+                        iteration,
                     )
                 break
 
@@ -338,14 +338,18 @@ class WorkflowRunner:
                     new_msgs,
                     media_service=self._media_service,
                 )
-                conversation_messages.append({
-                    "role": "system",
-                    "content": incremental_text,
-                })
+                conversation_messages.append(
+                    {
+                        "role": "system",
+                        "content": incremental_text,
+                    }
+                )
 
                 logger.debug(
                     "Merged %d incremental messages for session %s (iteration %d)",
-                    len(new_msgs), session_id, iteration,
+                    len(new_msgs),
+                    session_id,
+                    iteration,
                 )
 
         # ── End of loop ────────────────────────────────────────────
@@ -354,12 +358,15 @@ class WorkflowRunner:
 
         if reply_sent:
             # Reply already sent via send_reply tool; apply fatigue
+            self._engine.reset_unanswered_mention_streak(session_id)
             self._engine.apply_reply_fatigue(attention_state)
             record.replied = True
         if no_reply and internal_summary:
             # Atomically store summary without overwriting attention_value
             self._engine.repo.set_metadata_key(
-                session_id, "internal_summary", internal_summary,
+                session_id,
+                "internal_summary",
+                internal_summary,
             )
         if not reply_sent:
             record.replied = False

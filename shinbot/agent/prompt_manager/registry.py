@@ -53,6 +53,122 @@ Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
 ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any]
 
 
+def _mark_ephemeral_cache_boundary(
+    content_blocks: list[dict[str, Any]],
+    records: list[PromptComponentRecord],
+) -> None:
+    """Mark the end of the stable SYSTEM_BASE prefix as an ephemeral cache boundary."""
+
+    stable_prefix_len = 0
+    for record in records:
+        if not record.rendered_text:
+            continue
+        if not record.cache_stable:
+            break
+        stable_prefix_len += 1
+
+    if stable_prefix_len <= 0:
+        return
+
+    marker_index = stable_prefix_len - 1
+    if marker_index >= len(content_blocks):
+        return
+    content_blocks[marker_index]["cache_control"] = {"type": "ephemeral"}
+
+
+def _mark_ephemeral_context_cache_boundaries(
+    system_message: dict[str, Any],
+    context_messages: list[dict[str, Any]],
+    context_records: list[PromptComponentRecord],
+    *,
+    max_markers: int = 4,
+    max_content_block_gap: int = 20,
+) -> None:
+    """Add cache boundaries through long context without exceeding provider limits."""
+
+    if not _context_cache_stable_enough(context_records):
+        return
+
+    remaining_markers = max_markers - _count_cache_control_markers([system_message])
+    if remaining_markers <= 0:
+        return
+
+    blocks_since_marker = _blocks_after_last_cache_marker(system_message)
+    for message in context_messages:
+        if remaining_markers <= 0:
+            break
+        content = message.get("content")
+        if isinstance(content, str):
+            blocks_since_marker += 1
+            if blocks_since_marker >= max_content_block_gap:
+                message["content"] = [
+                    {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+                remaining_markers -= 1
+                blocks_since_marker = 0
+            continue
+
+        if not isinstance(content, list):
+            continue
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            blocks_since_marker += 1
+            if block.get("cache_control"):
+                blocks_since_marker = 0
+                continue
+            if blocks_since_marker >= max_content_block_gap:
+                block["cache_control"] = {"type": "ephemeral"}
+                remaining_markers -= 1
+                blocks_since_marker = 0
+                if remaining_markers <= 0:
+                    break
+
+
+def _blocks_after_last_cache_marker(message: dict[str, Any]) -> int:
+    blocks_since_marker = 0
+    for block in _iter_content_blocks(message):
+        blocks_since_marker += 1
+        if isinstance(block, dict) and block.get("cache_control"):
+            blocks_since_marker = 0
+    return blocks_since_marker
+
+
+def _count_cache_control_markers(messages: list[dict[str, Any]]) -> int:
+    count = 0
+    for message in messages:
+        for block in _iter_content_blocks(message):
+            if isinstance(block, dict) and block.get("cache_control"):
+                count += 1
+    return count
+
+
+def _iter_content_blocks(message: dict[str, Any]) -> list[Any]:
+    content = message.get("content")
+    if isinstance(content, list):
+        return list(content)
+    if content is None:
+        return []
+    return [content]
+
+
+def _context_cache_stable_enough(records: list[PromptComponentRecord]) -> bool:
+    """Return False when this prompt assembly just shifted the context window."""
+
+    for record in records:
+        resolver_output = record.metadata.get("resolver_output")
+        if not isinstance(resolver_output, dict):
+            continue
+        if int(resolver_output.get("dropped_turns", 0) or 0) > 0:
+            return False
+    return True
+
+
 class PromptRegistry:
     """In-memory prompt registry with deterministic assembly.
 
@@ -323,6 +439,11 @@ class PromptRegistry:
             for record in block.components:
                 if record.rendered_text:
                     system_content.append({"type": "text", "text": record.rendered_text})
+            if stage_key == PromptStage.SYSTEM_BASE:
+                _mark_ephemeral_cache_boundary(
+                    system_content,
+                    block.components,
+                )
 
         system_message: dict[str, Any] = {"role": "system", "content": system_content}
 
@@ -330,7 +451,13 @@ class PromptRegistry:
         tools = list(stage_by_name[PromptStage.ABILITIES].tools)
 
         # Context messages: CONTEXT
-        context_messages = list(stage_by_name[PromptStage.CONTEXT].messages)
+        context_stage = stage_by_name[PromptStage.CONTEXT]
+        context_messages = list(context_stage.messages)
+        _mark_ephemeral_context_cache_boundaries(
+            system_message,
+            context_messages,
+            context_stage.components,
+        )
 
         # Final user message: COMPATIBILITY → INSTRUCTIONS → CONSTRAINTS
         final_content: list[dict[str, Any]] = []

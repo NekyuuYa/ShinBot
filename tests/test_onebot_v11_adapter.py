@@ -409,6 +409,29 @@ async def test_call_api_internal_poke_maps_to_onebot_action(
 
 
 @pytest.mark.asyncio
+async def test_call_api_internal_poke_falls_back_to_send_poke(
+    adapter: OneBotV11Adapter, monkeypatch: pytest.MonkeyPatch
+):
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_call(action: str, params: dict):
+        calls.append((action, params))
+        if action == "group_poke":
+            raise RuntimeError("OneBot action failed: retcode=1200 msg=None")
+        return {"ok": True}
+
+    monkeypatch.setattr(adapter, "_call_ob11_api", _fake_call)
+
+    result = await adapter.call_api("internal.qq.poke", {"group_id": 9988, "user_id": 1234})
+
+    assert result == {"ok": True}
+    assert calls == [
+        ("group_poke", {"group_id": 9988, "user_id": 1234}),
+        ("send_poke", {"group_id": 9988, "user_id": 1234}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_call_api_member_list_maps_to_onebot_action(
     adapter: OneBotV11Adapter, monkeypatch: pytest.MonkeyPatch
 ):

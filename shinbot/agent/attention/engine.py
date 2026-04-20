@@ -45,6 +45,11 @@ class AttentionConfig:
     # from coordinated mention storms.  burst_factor = min(n^exp, burst_cap).
     burst_cap: float = 10.0
 
+    # Mention chain escalation (unanswered consecutive @ bot)
+    # When the bot keeps not replying, each next mention can escalate
+    # contribution by 2^(streak-1), capped by this multiplier.
+    mention_chain_multiplier_cap: float = 16.0
+
     # Reply fatigue
     fatigue_increment: float = 1.0
     fatigue_decay_k: float = 0.02
@@ -83,6 +88,7 @@ class AttentionEngine:
     """Stateless computation engine for session attention."""
 
     FIXED_BASE_THRESHOLD_METADATA_KEY = "fixed_base_threshold"
+    UNANSWERED_MENTION_STREAK_METADATA_KEY = "unanswered_mention_streak"
 
     def __init__(self, config: AttentionConfig, repository: AttentionRepository) -> None:
         self.config = config
@@ -147,11 +153,13 @@ class AttentionEngine:
         is_mentioned: bool,
         is_reply_to_bot: bool,
         recent_mention_count: int,
+        mention_streak: int = 0,
         attention_multiplier: float = 1.0,
     ) -> float:
         """Compute a single message's contribution to session attention.
 
         recent_mention_count: how many mentions/replies occurred in the burst window.
+        mention_streak: unanswered consecutive @ count in this session.
         """
         base = self.config.base_gain * sender_factor
 
@@ -161,15 +169,48 @@ class AttentionEngine:
         if is_reply_to_bot:
             feature_bonus += self.config.reply_bonus
 
+        # Mention-chain escalation: if previous mentions still did not produce a
+        # visible reply, each next mention doubles the contribution.
+        mention_chain_multiplier = 1.0
+        if is_mentioned and mention_streak > 1:
+            mention_chain_multiplier = min(
+                math.pow(2.0, mention_streak - 1),
+                self.config.mention_chain_multiplier_cap,
+            )
+
         # Burst amplification: non-linear growth when multiple mentions occur
-        if recent_mention_count > 1:
+        # Keep burst for mention storms, but avoid stacking with mention-chain
+        # escalation to prevent runaway growth.
+        if recent_mention_count > 1 and mention_chain_multiplier <= 1.0:
             burst_factor = min(
                 math.pow(recent_mention_count, self.config.burst_exponent),
                 self.config.burst_cap,
             )
             feature_bonus *= burst_factor
 
-        return (base + feature_bonus) * attention_multiplier
+        return (base + feature_bonus) * attention_multiplier * mention_chain_multiplier
+
+    def _get_unanswered_mention_streak(self, state: SessionAttentionState) -> int:
+        raw = state.metadata.get(self.UNANSWERED_MENTION_STREAK_METADATA_KEY, 0)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 0
+        return max(value, 0)
+
+    def reset_unanswered_mention_streak(self, session_id: str) -> None:
+        """Reset unanswered consecutive mention streak after a visible reply."""
+        state = self.repo.get_or_create_attention(
+            session_id,
+            base_threshold=self.config.base_threshold,
+        )
+        if self._get_unanswered_mention_streak(state) <= 0:
+            return
+        self.repo.set_metadata_key(
+            session_id,
+            self.UNANSWERED_MENTION_STREAK_METADATA_KEY,
+            0,
+        )
 
     # ── Effective threshold ─────────────────────────────────────────
 
@@ -226,6 +267,11 @@ class AttentionEngine:
         elif base_threshold is not None:
             state.base_threshold = base_threshold
 
+        mention_streak = self._get_unanswered_mention_streak(state)
+        if is_mentioned:
+            mention_streak += 1
+            state.metadata[self.UNANSWERED_MENTION_STREAK_METADATA_KEY] = mention_streak
+
         # Capture pre-decay value for debug tracing
         value_before_decay = state.attention_value
 
@@ -242,6 +288,7 @@ class AttentionEngine:
             is_mentioned=is_mentioned,
             is_reply_to_bot=is_reply_to_bot,
             recent_mention_count=recent_mention_count,
+            mention_streak=mention_streak,
             attention_multiplier=attention_multiplier,
         )
 
@@ -468,6 +515,7 @@ class AttentionEngine:
             "attention_band": attention_band,
             "attention_ratio": round(ratio, 3),
             "runtime_threshold_offset": round(state.runtime_threshold_offset, 3),
+            "unanswered_mention_streak": self._get_unanswered_mention_streak(state),
             "fixed_base_threshold": (
                 round(self.resolved_base_threshold(state), 3)
                 if self.FIXED_BASE_THRESHOLD_METADATA_KEY in state.metadata

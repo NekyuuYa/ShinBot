@@ -525,17 +525,29 @@ class OneBotV11Adapter(BaseAdapter):
                 group_id = params.get("group_id") or params.get("guild_id")
                 user_id = params.get("user_id")
                 if group_id is not None:
-                    return await self._call_ob11_api(
-                        "group_poke",
-                        {
-                            "group_id": int(group_id) if str(group_id).isdigit() else group_id,
-                            "user_id": int(user_id) if str(user_id).isdigit() else user_id,
-                        },
+                    poke_params = {
+                        "group_id": int(group_id) if str(group_id).isdigit() else group_id,
+                        "user_id": int(user_id) if str(user_id).isdigit() else user_id,
+                    }
+                    try:
+                        return await self._call_ob11_api("group_poke", poke_params)
+                    except Exception:
+                        logger.debug(
+                            "OneBot v11 %s group_poke failed; trying send_poke",
+                            self.instance_id,
+                            exc_info=True,
+                        )
+                        return await self._call_ob11_api("send_poke", poke_params)
+                poke_params = {"user_id": int(user_id) if str(user_id).isdigit() else user_id}
+                try:
+                    return await self._call_ob11_api("friend_poke", poke_params)
+                except Exception:
+                    logger.debug(
+                        "OneBot v11 %s friend_poke failed; trying send_poke",
+                        self.instance_id,
+                        exc_info=True,
                     )
-                return await self._call_ob11_api(
-                    "friend_poke",
-                    {"user_id": int(user_id) if str(user_id).isdigit() else user_id},
-                )
+                    return await self._call_ob11_api("send_poke", poke_params)
 
             internal_action = method.split(".", 2)[-1]
             if internal_action == "set_group_name":

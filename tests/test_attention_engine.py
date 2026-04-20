@@ -207,6 +207,23 @@ class TestContribution:
         )
         assert c == (engine.config.base_gain + engine.config.mention_bonus) * 0.2
 
+    def test_unanswered_mention_streak_doubles_contribution(self, engine):
+        c1 = engine.compute_contribution(
+            sender_factor=1.0,
+            is_mentioned=True,
+            is_reply_to_bot=False,
+            recent_mention_count=0,
+            mention_streak=1,
+        )
+        c2 = engine.compute_contribution(
+            sender_factor=1.0,
+            is_mentioned=True,
+            is_reply_to_bot=False,
+            recent_mention_count=0,
+            mention_streak=2,
+        )
+        assert c2 == pytest.approx(c1 * 2.0)
+
 
 # ── Effective threshold tests ───────────────────────────────────────
 
@@ -324,6 +341,91 @@ class TestUpdateAttention:
         )
         # base_gain(1.0) * factor(1.0) + mention_bonus(1.5) = 2.5
         assert abs(state.attention_value - 2.5) < 0.1
+
+    def test_consecutive_mentions_double_until_reset(self, engine, db):
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (id, instance_id, session_type, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("s4", "inst1", "group", time.time(), time.time()),
+            )
+
+        now = time.time()
+        state1, _ = engine.update_attention(
+            "s4",
+            sender_id="u1",
+            msg_log_id=1,
+            is_mentioned=True,
+            now=now,
+        )
+        contribution1 = state1.attention_value
+
+        state2, _ = engine.update_attention(
+            "s4",
+            sender_id="u1",
+            msg_log_id=2,
+            is_mentioned=True,
+            now=now,
+        )
+        contribution2 = state2.attention_value - state1.attention_value
+        assert contribution2 == pytest.approx(contribution1 * 2.0)
+
+        # Simulate that workflow produced a visible reply.
+        engine.reset_unanswered_mention_streak("s4")
+
+        state3, _ = engine.update_attention(
+            "s4",
+            sender_id="u1",
+            msg_log_id=3,
+            is_mentioned=True,
+            now=now,
+        )
+        contribution3 = state3.attention_value - state2.attention_value
+        assert contribution3 == pytest.approx(contribution1)
+
+    def test_mention_chain_only_counts_mentions_to_bot(self, engine, db):
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (id, instance_id, session_type, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("s5", "inst1", "group", time.time(), time.time()),
+            )
+
+        now = time.time()
+        state1, _ = engine.update_attention(
+            "s5",
+            sender_id="u1",
+            msg_log_id=1,
+            is_mentioned=True,
+            now=now,
+        )
+        contribution1 = state1.attention_value
+
+        # Simulate "@other" in group chat: not a mention to bot.
+        state2, _ = engine.update_attention(
+            "s5",
+            sender_id="u1",
+            msg_log_id=2,
+            is_mentioned=False,
+            attention_multiplier=engine.config.mention_other_multiplier,
+            now=now,
+        )
+        _ = state2.attention_value - state1.attention_value
+
+        # Next "@bot" should be second effective bot-mention, so x2 (not x4).
+        state3, _ = engine.update_attention(
+            "s5",
+            sender_id="u1",
+            msg_log_id=3,
+            is_mentioned=True,
+            now=now,
+        )
+        contribution3 = state3.attention_value - state2.attention_value
+        assert contribution3 == pytest.approx(contribution1 * 2.0)
 
 
 # ── Reply fatigue tests ────────────────────────────────────────────

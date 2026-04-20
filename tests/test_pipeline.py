@@ -1108,7 +1108,7 @@ class TestMessagePipeline:
         assert result.output["terminate_round"] is True
         assert self.adapter.api_calls[-1] == (
             "internal.mock.poke",
-            {"user_id": "user-2", "group_id": "group:1"},
+            {"user_id": "user-2", "group_id": "1"},
         )
 
         result_alias = await manager.execute(
