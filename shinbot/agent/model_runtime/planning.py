@@ -125,15 +125,38 @@ def build_litellm_kwargs(
         kwargs["messages"] = call.messages
         if call.tools:
             kwargs["tools"] = call.tools
-            # Workflow-style tool orchestration expects the model to finish via
-            # tool calls instead of free-form assistant text.
-            kwargs["tool_choice"] = "required"
+            # Some OpenAI-compatible backends reject tool_choice=required when
+            # provider-specific thinking/reasoning mode is enabled.
+            if not _is_thinking_mode_enabled(kwargs):
+                # Workflow-style tool orchestration expects the model to finish via
+                # tool calls instead of free-form assistant text.
+                kwargs["tool_choice"] = "required"
         if call.response_format is not None:
             kwargs["response_format"] = call.response_format
     elif mode in ("embedding", "speech"):
         kwargs["input"] = call.input_data if call.input_data is not None else ""
 
     return kwargs
+
+
+def _is_thinking_mode_enabled(kwargs: dict[str, Any]) -> bool:
+    """Best-effort detection for provider thinking/reasoning mode switches."""
+
+    thinking = kwargs.get("thinking")
+    if isinstance(thinking, dict):
+        if thinking:
+            return True
+    elif thinking not in (None, False):
+        return True
+
+    reasoning = kwargs.get("reasoning")
+    if isinstance(reasoning, dict):
+        if reasoning:
+            return True
+    elif reasoning not in (None, False):
+        return True
+
+    return False
 
 
 def sanitize_litellm_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:

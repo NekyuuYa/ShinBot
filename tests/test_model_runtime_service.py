@@ -260,6 +260,53 @@ async def test_generate_returns_tool_calls(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_generate_omits_required_tool_choice_in_thinking_mode(monkeypatch, tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db)
+    captured: dict[str, object] = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {
+            "model": kwargs["model"],
+            "choices": [{"message": {"content": "hello from model"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+        }
+
+    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "workflow.send_reply",
+                        "description": "Send a reply",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                            },
+                            "required": ["text"],
+                        },
+                    },
+                }
+            ],
+            params={"thinking": {"type": "enabled"}},
+        )
+    )
+
+    assert result.text == "hello from model"
+    assert "tool_choice" not in captured
+
+
+@pytest.mark.asyncio
 async def test_embed_records_usage(monkeypatch, tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
