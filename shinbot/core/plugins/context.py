@@ -10,10 +10,11 @@ from shinbot.agent.model_runtime import ModelRuntime, ModelRuntimeObserver
 from shinbot.agent.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
 from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.schema.elements import MessageElement
 from shinbot.utils.logger import get_plugin_logger
 
 if TYPE_CHECKING:
-    from shinbot.core.platform.adapter_manager import AdapterManager
+    from shinbot.core.platform.adapter_manager import AdapterManager, MessageHandle
 
 
 class Plugin:
@@ -94,6 +95,33 @@ class Plugin:
 
     def on_message(self, *, priority: int = 100) -> Callable:
         return self.on_event("message-created", priority=priority)
+
+    async def send_to(self, session_id: str, elements: list[MessageElement]) -> MessageHandle:
+        """Send a message to an arbitrary session by its URN.
+
+        Intended for proactive (out-of-context) sends — e.g. from a scheduled
+        task or a non-message event handler.  For in-command replies prefer
+        ``ctx.send()`` on the ``MessageContext``.
+
+        Args:
+            session_id: Session URN (``{instance_id}:{type}:{target}``).
+            elements:   Message element list to send.
+
+        Raises:
+            RuntimeError: If no AdapterManager is available, or no adapter
+                          is registered for the given session's instance_id.
+        """
+        if self._adapter_manager is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot send proactively: "
+                "no AdapterManager is available in this Plugin object."
+            )
+        adapter = self._adapter_manager.get_instance_by_session(session_id)
+        if adapter is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r}: no adapter found for session {session_id!r}"
+            )
+        return await adapter.send(session_id, elements)
 
     def register_adapter_factory(self, name: str, factory: Callable) -> None:
         if self._adapter_manager is None:

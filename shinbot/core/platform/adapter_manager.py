@@ -213,6 +213,15 @@ class AdapterManager:
     def get_instances_by_platform(self, platform: str) -> list[BaseAdapter]:
         return [a for a in self._instances.values() if a.platform == platform]
 
+    def get_instance_by_session(self, session_id: str) -> BaseAdapter | None:
+        """Look up an adapter instance by a session URN.
+
+        Session URN format: ``{instance_id}:{type}:{target}``
+        The leading segment before the first colon is the instance_id.
+        """
+        instance_id = session_id.split(":", 1)[0]
+        return self._instances.get(instance_id)
+
     @property
     def all_instances(self) -> list[BaseAdapter]:
         return list(self._instances.values())
