@@ -1030,6 +1030,65 @@ class TestMessagePipeline:
         turns = context_manager.get_context_inputs("test-bot:private:user-1")["history_turns"]
         assert turns[-1]["content"] == "workflow reply"
 
+    @pytest.mark.asyncio
+    async def test_attention_poke_tools_call_internal_api(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        self.adapter_mgr._instances[self.adapter.instance_id] = self.adapter
+        registry = ToolRegistry()
+        manager = ToolManager(registry, permission_engine=self.perm_engine)
+        register_attention_tools(
+            registry,
+            AttentionEngine(AttentionConfig(), db.attention),
+            self.adapter_mgr,
+            db,
+        )
+
+        exported_names = {
+            str(tool.get("function", {}).get("name", ""))
+            for tool in manager.export_model_tools(
+                caller="attention.workflow_runner",
+                instance_id=self.adapter.instance_id,
+                session_id="test-bot:group:group:1",
+                tags={"attention"},
+            )
+        }
+        assert {"send_poke", "poke_user"} <= exported_names
+
+        result = await manager.execute(
+            ToolCallRequest(
+                tool_name="send_poke",
+                arguments={"user_id": "user-2"},
+                caller="attention.workflow_runner",
+                instance_id=self.adapter.instance_id,
+                session_id="test-bot:group:group:1",
+            )
+        )
+
+        assert result.success is True
+        assert result.output["terminate_round"] is True
+        assert self.adapter.api_calls[-1] == (
+            "internal.mock.poke",
+            {"user_id": "user-2", "group_id": "group:1"},
+        )
+
+        result_alias = await manager.execute(
+            ToolCallRequest(
+                tool_name="poke_user",
+                arguments={"user_id": "user-3", "terminate_round": False},
+                caller="attention.workflow_runner",
+                instance_id=self.adapter.instance_id,
+                session_id="test-bot:private:user-1",
+            )
+        )
+
+        assert result_alias.success is True
+        assert result_alias.output["terminate_round"] is False
+        assert self.adapter.api_calls[-1] == (
+            "internal.mock.poke",
+            {"user_id": "user-3"},
+        )
+
     def test_audit_message_modality_summary(self, tmp_path):
         audit = AuditLogger(tmp_path)
         summary = summarize_message_modalities(

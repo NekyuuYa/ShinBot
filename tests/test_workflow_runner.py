@@ -36,6 +36,7 @@ class MockAdapter(BaseAdapter):
     def __init__(self, instance_id: str = "inst-workflow", platform: str = "mock"):
         super().__init__(instance_id, platform)
         self.sent: list[tuple[str, list[MessageElement]]] = []
+        self.api_calls: list[tuple[str, dict[str, object]]] = []
 
     async def start(self):
         pass
@@ -48,6 +49,7 @@ class MockAdapter(BaseAdapter):
         return MessageHandle(message_id=f"sent-{len(self.sent)}", adapter_ref=self)
 
     async def call_api(self, method, params):
+        self.api_calls.append((method, params))
         return {"ok": True}
 
     async def get_capabilities(self):
@@ -432,3 +434,98 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
     assert any("### 行为约束" in text for text in final_texts)
     assert any("### 当前时间" in text for text in final_texts)
     assert not any("旧上下文" in text for text in final_texts)
+
+
+@pytest.mark.asyncio
+async def test_workflow_runner_poke_tool_counts_as_visible_action(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    instance_id = "inst-workflow"
+    session_id = f"{instance_id}:group:1"
+    _seed_workflow_runtime(db, instance_id=instance_id)
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id=instance_id,
+            session_type="group",
+            platform="mock",
+            channel_id="1",
+        )
+    )
+
+    attention_engine = AttentionEngine(AttentionConfig(), db.attention)
+    attention_state = SessionAttentionState(
+        session_id=session_id,
+        attention_value=6.0,
+        last_consumed_msg_log_id=1,
+        last_trigger_msg_log_id=1,
+    )
+    attention_engine.repo.save_attention(attention_state)
+
+    adapter = MockAdapter(instance_id=instance_id)
+    adapter_manager = AdapterManager()
+    adapter_manager._instances[instance_id] = adapter
+
+    registry = ToolRegistry()
+    register_attention_tools(registry, attention_engine, adapter_manager, db)
+    tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    runtime = QueuedModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-poke",
+                        "type": "function",
+                        "function": {
+                            "name": "send_poke",
+                            "arguments": json.dumps(
+                                {"user_id": "user-2", "terminate_round": True},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+
+    runner = WorkflowRunner(
+        db,
+        PromptRegistry(),
+        runtime,
+        tool_manager,
+        attention_engine,
+        adapter_manager,
+    )
+
+    batch = [
+        {
+            "id": 1,
+            "session_id": session_id,
+            "platform_msg_id": "msg-1",
+            "sender_id": "user-1",
+            "sender_name": "Tester",
+            "raw_text": "戳一下他",
+            "is_mentioned": 0,
+            "content_json": json.dumps(
+                [MessageElement.text("戳一下他").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    record = await runner.run(
+        session_id,
+        batch,
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    assert record is not None
+    assert record.replied is True
+    assert record.response_summary == "戳一戳"
+    assert adapter.api_calls == [
+        ("internal.mock.poke", {"user_id": "user-2", "group_id": "1"})
+    ]

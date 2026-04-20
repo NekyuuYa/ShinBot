@@ -320,3 +320,80 @@ def register_attention_tools(
             tags=[_TAG],
         )
     )
+
+    # ── send_poke / poke_user ───────────────────────────────────────
+
+    async def _send_poke(arguments: dict[str, Any], ctx: ToolExecutionContext) -> Any:
+        session_id = ctx.session_id
+        instance_id = ctx.instance_id
+        if not session_id:
+            return {"error": "session_id not available in execution context"}
+        if not instance_id:
+            return {"error": "instance_id not available in execution context"}
+
+        user_id = str(arguments.get("user_id", "") or "").strip()
+        if not user_id:
+            return {"error": "user_id is required"}
+        terminate_round = bool(arguments.get("terminate_round", True))
+
+        adapter = adapter_manager.get_instance(instance_id)
+        if adapter is None:
+            return {
+                "error": f"Adapter not found for instance {instance_id}",
+            }
+
+        params: dict[str, Any] = {"user_id": user_id}
+        session_parts = session_id.split(":", 2)
+        session_type = session_parts[1] if len(session_parts) > 1 else ""
+        if session_type == "group" and len(session_parts) > 2:
+            params["group_id"] = session_parts[2]
+
+        result = await adapter.call_api(f"internal.{adapter.platform}.poke", params)
+
+        return {
+            "action": "send_poke",
+            "sent": True,
+            "user_id": user_id,
+            "session_type": session_type or "unknown",
+            "terminate_round": terminate_round,
+            "adapter_result": result,
+            "hint": "戳一戳已发送。",
+        }
+
+    poke_description = (
+        "向当前会话中的某个用户发送一次“戳一戳”互动。\n"
+        "适合轻量调侃、回应对方戳你、或用非文本方式做简短互动。\n"
+        "user_id: 目标用户 ID，必须使用上下文中出现的原始用户 ID；"
+        "不要把昵称填到 user_id。\n"
+        "terminate_round: 是否在发送后结束当前 workflow 轮次，默认 true。\n"
+        "注意：不要连续或无理由地戳同一个人；如果需要正常表达内容，请使用 send_reply。"
+    )
+    poke_schema = {
+        "type": "object",
+        "properties": {
+            "user_id": {
+                "type": "string",
+                "description": "要戳一戳的目标用户 ID",
+            },
+            "terminate_round": {
+                "type": "boolean",
+                "description": "是否在发送后立即结束当前 workflow 轮次，默认 true",
+            },
+        },
+        "required": ["user_id"],
+    }
+
+    for tool_name in ("send_poke", "poke_user"):
+        registry.register_tool(
+            ToolDefinition(
+                id=f"{_OWNER_ID}.{tool_name}",
+                name=tool_name,
+                description=poke_description,
+                input_schema=poke_schema,
+                handler=_send_poke,
+                owner_type=_OWNER_TYPE,
+                owner_id=_OWNER_ID,
+                visibility=ToolVisibility.PUBLIC,
+                tags=[_TAG],
+            )
+        )
