@@ -171,8 +171,8 @@ class WorkflowRunner:
             route_id=route_id,
             model_id=model_id,
             model_context_window=model_context_window,
-            hydrate_session_context=False,
-            include_context_messages=False,
+            hydrate_session_context=True,
+            include_context_messages=True,
             context_strategy_id=context_strategy_id,
             component_overrides=component_ids,
             template_inputs={
@@ -460,6 +460,10 @@ class WorkflowRunner:
         return {
             "platform": platform,
             "history_turns": turns,
+            # Hydrated session context replaces history_turns with read history.
+            # Keep the active batch separately so identity prompts still learn
+            # the current speakers without duplicating the batch as history.
+            "identity_turns": turns,
         }
 
     def _save_run(self, record: WorkflowRunRecord) -> None:

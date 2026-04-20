@@ -27,7 +27,7 @@ from shinbot.persistence.records import (
 )
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
-from shinbot.schema.resources import Channel, Guild, User
+from shinbot.schema.resources import Channel, Guild, Member, User
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
 # ── Mock adapter for testing ─────────────────────────────────────────
@@ -646,6 +646,44 @@ class TestMessagePipeline:
         assert payload["platform"] == "qq"
         entry = next(item for item in payload["users"] if item["user_id"] == "user-1")
         assert entry["name"] == "咖啡猫"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_uses_group_member_nick_for_sender_name(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        identity_store = IdentityStore(tmp_path / "identities.json")
+        context_manager = ContextManager(db.message_logs, identity_store=identity_store)
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            context_manager=context_manager,
+        )
+
+        event = make_event("hello group", channel_type=0)
+        event = event.model_copy(
+            update={
+                "platform": "qq",
+                "guild": Guild(id="group-1"),
+                "user": User(id="user-1", name="用户昵称"),
+                "member": Member(nick="群内昵称"),
+            }
+        )
+
+        await pipeline.process_event(event, self.adapter)
+
+        rows = db.message_logs.get_recent("test-bot:group:group-1:group:1", limit=1)
+        assert rows[0]["sender_name"] == "群内昵称"
+        turns = context_manager.get_context_inputs("test-bot:group:group-1:group:1")[
+            "history_turns"
+        ]
+        assert turns[0]["sender_name"] == "群内昵称"
+        payload = json.loads(identity_store.file_path.read_text(encoding="utf-8"))
+        entry = next(item for item in payload["users"] if item["user_id"] == "user-1")
+        assert entry["name"] == "群内昵称"
 
     @pytest.mark.asyncio
     async def test_pipeline_routes_private_messages_to_immediate_profile(self, tmp_path):

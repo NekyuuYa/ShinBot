@@ -112,6 +112,21 @@ class TestUnifiedEvent:
         assert event.message_content == "hello"
         assert event.is_private is False
 
+    def test_sender_name_prefers_group_member_nick(self):
+        event = UnifiedEvent(
+            type="message-created",
+            user=User(id="user-1", name="AccountName", nick="AccountNick"),
+            member=Member(nick="GroupNick"),
+        )
+        assert event.sender_name == "GroupNick"
+
+    def test_sender_name_falls_back_to_user_nick(self):
+        event = UnifiedEvent(
+            type="message-created",
+            user=User(id="user-1", name="AccountName", nick="AccountNick"),
+        )
+        assert event.sender_name == "AccountNick"
+
     def test_private_message(self):
         event = UnifiedEvent(
             type="message-created",

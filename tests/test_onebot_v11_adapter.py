@@ -72,10 +72,77 @@ async def test_decode_message_with_rich_segments(adapter: OneBotV11Adapter):
     assert event is not None
     assert event.type == "message-created"
     assert event.guild_id == "778899"
+    assert event.user is not None
+    assert event.user.nick == "Alice"
+    assert event.member is not None
+    assert event.member.nick == "AliceCard"
     assert event.message is not None
     assert "qq:markdown" in event.message.content
     assert "qq:mface" in event.message.content
     assert "qq:keyboard" in event.message.content
+
+
+@pytest.mark.asyncio
+async def test_decode_group_message_fetches_member_card_when_sender_card_missing(
+    adapter: OneBotV11Adapter,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    called: dict[str, object] = {}
+
+    async def _fake_call(action: str, params: dict[str, object]):
+        called["action"] = action
+        called["params"] = params
+        return {"card": "GroupAlice", "nickname": "Alice"}
+
+    monkeypatch.setattr(adapter, "_call_ob11_api", _fake_call)
+
+    payload = {
+        "post_type": "message",
+        "message_type": "group",
+        "self_id": 10001,
+        "time": 1711111111,
+        "message_id": 223,
+        "group_id": 778899,
+        "user_id": 123456,
+        "sender": {"nickname": "Alice"},
+        "message": [{"type": "text", "data": {"text": "hello"}}],
+    }
+
+    event = await adapter._decode_event(payload)
+
+    assert called["action"] == "get_group_member_info"
+    assert called["params"] == {"group_id": 778899, "user_id": 123456}
+    assert event is not None
+    assert event.user is not None
+    assert event.user.nick == "Alice"
+    assert event.member is not None
+    assert event.member.nick == "GroupAlice"
+
+
+@pytest.mark.asyncio
+async def test_decode_message_inserts_at_other_tag(adapter: OneBotV11Adapter):
+    payload = {
+        "post_type": "message",
+        "message_type": "group",
+        "self_id": 10001,
+        "time": 1711111111,
+        "message_id": 224,
+        "group_id": 778899,
+        "user_id": 123456,
+        "sender": {"nickname": "Alice", "card": "AliceCard"},
+        "message": [
+            {"type": "at", "data": {"qq": "2345", "name": "Bob"}},
+            {"type": "text", "data": {"text": " hello"}},
+        ],
+    }
+
+    event = await adapter._decode_event(payload)
+
+    assert event is not None
+    assert event.message is not None
+    assert '<at id="2345" name="Bob"/>' in event.message.content
+    parsed = Message.from_xml(event.message.content)
+    assert parsed.get_text(self_id=event.self_id) == "[@Bob(2345)] hello"
 
 
 @pytest.mark.asyncio
@@ -358,6 +425,25 @@ async def test_call_api_member_list_maps_to_onebot_action(
 
     assert called["action"] == "get_group_member_list"
     assert called["params"] == {"group_id": 9988}
+
+
+@pytest.mark.asyncio
+async def test_call_api_member_get_maps_to_onebot_action(
+    adapter: OneBotV11Adapter, monkeypatch: pytest.MonkeyPatch
+):
+    called: dict[str, object] = {}
+
+    async def _fake_call(action: str, params: dict):
+        called["action"] = action
+        called["params"] = params
+        return {"card": "GroupAlice"}
+
+    monkeypatch.setattr(adapter, "_call_ob11_api", _fake_call)
+
+    await adapter.call_api("guild.member.get", {"guild_id": 9988, "user_id": 1234})
+
+    assert called["action"] == "get_group_member_info"
+    assert called["params"] == {"group_id": 9988, "user_id": 1234}
 
 
 @pytest.mark.asyncio

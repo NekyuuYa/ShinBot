@@ -24,6 +24,9 @@ def resolve_identity_map_prompt(
     """Build the dynamic identity map prompt payload for current participants."""
 
     turns = normalize_history_turns(request.context_inputs)
+    identity_turns = request.context_inputs.get("identity_turns", [])
+    if identity_turns:
+        turns.extend(normalize_history_turns({"history_turns": identity_turns}))
     active_participants: dict[str, dict[str, str]] = {}
     for turn in turns:
         if str(turn.get("role", "")).strip() != "user":

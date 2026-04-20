@@ -139,6 +139,26 @@ class UnifiedEvent(BaseModel):
         return self.user.id if self.user else None
 
     @property
+    def sender_name(self) -> str | None:
+        """Get the sender display name for user-facing context.
+
+        Guild member metadata is more specific than account metadata, so group
+        chats should prefer member nicknames over platform-wide user nicknames.
+        """
+        member_user = self.member.user if self.member is not None else None
+        for value in (
+            self.member.nick if self.member is not None else None,
+            member_user.nick if member_user is not None else None,
+            member_user.name if member_user is not None else None,
+            self.user.nick if self.user is not None else None,
+            self.user.name if self.user is not None else None,
+        ):
+            text = str(value or "").strip()
+            if text:
+                return text
+        return None
+
+    @property
     def operator_id(self) -> str | None:
         """Get the user ID of the operator (for notice events)."""
         return self.operator.id if self.operator else None

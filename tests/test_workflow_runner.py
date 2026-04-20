@@ -298,12 +298,13 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
         MessageLogRecord(
             session_id=session_id,
             role="user",
-            raw_text="旧上下文，不该作为拆开的 history_turns 再进来",
+            raw_text="旧上下文，应该作为历史 context 进来",
             sender_id="legacy-user",
             sender_name="Legacy",
             created_at=1000,
             content_json="[]",
             platform_msg_id="legacy-1",
+            is_read=True,
         )
     )
 
@@ -412,9 +413,11 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
     assert len(runtime.calls) == 1
 
     call_messages = runtime.calls[0].messages
-    initial_messages = call_messages[:2]
-    assert [message["role"] for message in initial_messages] == ["system", "user"]
-    assert all("name" not in message for message in initial_messages)
+    initial_messages = call_messages[:3]
+    assert [message["role"] for message in initial_messages] == ["system", "user", "user"]
+    assert "name" not in initial_messages[0]
+    assert "旧上下文，应该作为历史 context 进来" in str(initial_messages[1]["content"])
+    assert "name" not in initial_messages[2]
 
     final_user_message = initial_messages[-1]
     final_texts = [str(block.get("text", "")) for block in final_user_message["content"]]

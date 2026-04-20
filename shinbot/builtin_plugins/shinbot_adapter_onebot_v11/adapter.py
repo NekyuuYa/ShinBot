@@ -492,6 +492,17 @@ class OneBotV11Adapter(BaseAdapter):
                 {"group_id": int(group_id) if str(group_id).isdigit() else group_id},
             )
 
+        if method == "guild.member.get":
+            group_id = params.get("guild_id") or params.get("group_id")
+            user_id = params.get("user_id")
+            return await self._call_ob11_api(
+                "get_group_member_info",
+                {
+                    "group_id": int(group_id) if str(group_id).isdigit() else group_id,
+                    "user_id": int(user_id) if str(user_id).isdigit() else user_id,
+                },
+            )
+
         if method in {"guild.update", "channel.update"}:
             group_id = params.get("guild_id") or params.get("group_id") or params.get("channel_id")
             group_name = params.get("name") or params.get("group_name")
@@ -565,6 +576,8 @@ class OneBotV11Adapter(BaseAdapter):
             "actions": [
                 "channel.message.create",
                 "message.delete",
+                "guild.member.get",
+                "guild.member.list",
                 "member.kick",
                 "member.mute",
                 "friend.approve",
@@ -715,11 +728,16 @@ class OneBotV11Adapter(BaseAdapter):
         if self.config.download_resources or self.config.auto_download_media:
             elements = await download_resource_elements(elements, self._resource_cache_dir)
         content_xml = elements_to_xml(elements)
+        member_nick: str | None = None
+        group_id = str(payload.get("group_id", "")) if message_type == "group" else ""
+        user_nick = self._first_non_empty(sender.get("nickname"))
+        if message_type == "group":
+            member_nick = await self._resolve_group_member_nick(group_id, user_id, sender)
 
         user = User(
             id=user_id,
-            name=sender.get("nickname"),
-            nick=sender.get("card") or sender.get("nickname"),
+            name=user_nick,
+            nick=user_nick,
             is_bot=False,
         )
 
@@ -727,10 +745,9 @@ class OneBotV11Adapter(BaseAdapter):
         guild: Guild | None = None
         member: Member | None = None
         if message_type == "group":
-            group_id = str(payload.get("group_id", ""))
             channel = Channel(id=group_id, name=str(payload.get("group_name", "")) or None, type=0)
             guild = Guild(id=group_id)
-            member = Member(nick=sender.get("card") or sender.get("nickname"))
+            member = Member(nick=member_nick, user=user)
         else:
             channel = Channel(id=f"private:{user_id}", type=1)
 
@@ -746,6 +763,46 @@ class OneBotV11Adapter(BaseAdapter):
             guild=guild,
             message=MessagePayload(id=message_id, content=content_xml),
         )
+
+    @staticmethod
+    def _first_non_empty(*values: Any) -> str | None:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return None
+
+    async def _resolve_group_member_nick(
+        self,
+        group_id: str,
+        user_id: str,
+        sender: dict[str, Any],
+    ) -> str | None:
+        local_nick = self._first_non_empty(sender.get("card"), sender.get("nickname"))
+        if self._first_non_empty(sender.get("card")) or not group_id or not user_id:
+            return local_nick
+
+        try:
+            remote = await self._call_ob11_api(
+                "get_group_member_info",
+                {
+                    "group_id": int(group_id) if group_id.isdigit() else group_id,
+                    "user_id": int(user_id) if user_id.isdigit() else user_id,
+                },
+            )
+        except Exception:
+            logger.debug(
+                "OneBot v11 %s could not fetch group member info for %s/%s",
+                self.instance_id,
+                group_id,
+                user_id,
+                exc_info=True,
+            )
+            return local_nick
+
+        if not isinstance(remote, dict):
+            return local_nick
+        return self._first_non_empty(remote.get("card"), remote.get("nickname"), local_nick)
 
     def _decode_poke_notice(self, payload: dict[str, Any]) -> UnifiedEvent:
         user_id = str(payload.get("user_id", ""))

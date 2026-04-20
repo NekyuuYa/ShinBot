@@ -631,7 +631,7 @@ class MessagePipeline:
                         session_id=session.id,
                         platform_msg_id=event.message.id if event.message is not None else "",
                         sender_id=event.sender_id or "",
-                        sender_name=((event.user.name or "") if event.user is not None else ""),
+                        sender_name=event.sender_name or "",
                         content_json=content_json,
                         raw_text=message.get_text(self_id=event.self_id),
                         role="user",
