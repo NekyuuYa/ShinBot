@@ -361,6 +361,10 @@ class WorkflowRunner:
             self._engine.reset_unanswered_mention_streak(session_id)
             self._engine.apply_reply_fatigue(attention_state)
             record.replied = True
+        elif no_reply:
+            # A no_reply decision closes the current loop as well. Reset streak so
+            # the next round does not inherit capped mention escalation.
+            self._engine.reset_unanswered_mention_streak(session_id)
         if no_reply and internal_summary:
             # Atomically store summary without overwriting attention_value
             self._engine.repo.set_metadata_key(

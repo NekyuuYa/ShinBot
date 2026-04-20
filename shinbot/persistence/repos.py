@@ -1261,6 +1261,81 @@ class ModelExecutionRepository:
             for row in rows
         ]
 
+    def summarize_tokens(
+        self,
+        *,
+        since: str | None = None,
+        top_model_limit: int = 5,
+    ) -> dict[str, Any]:
+        where_clause = "WHERE started_at >= ?" if since else ""
+        params: tuple[Any, ...] = (since,) if since else ()
+
+        with self._db.connect() as conn:
+            summary = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total_calls,
+                    COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) AS successful_calls,
+                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                    COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                    COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                    COALESCE(SUM(estimated_cost), 0) AS estimated_cost
+                FROM model_execution_records
+                {where_clause}
+                """,
+                params,
+            ).fetchone()
+            model_rows = conn.execute(
+                f"""
+                SELECT
+                    provider_id,
+                    model_id,
+                    COUNT(*) AS total_calls,
+                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                    COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                    COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens
+                FROM model_execution_records
+                {where_clause}
+                GROUP BY provider_id, model_id
+                ORDER BY
+                    (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)) DESC,
+                    total_calls DESC,
+                    model_id ASC
+                LIMIT ?
+                """,
+                (*params, top_model_limit),
+            ).fetchall()
+
+        input_tokens = int(summary["input_tokens"] or 0)
+        output_tokens = int(summary["output_tokens"] or 0)
+        cache_read_tokens = int(summary["cache_read_tokens"] or 0)
+        cache_write_tokens = int(summary["cache_write_tokens"] or 0)
+        return {
+            "total_calls": int(summary["total_calls"] or 0),
+            "successful_calls": int(summary["successful_calls"] or 0),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "estimated_cost": float(summary["estimated_cost"] or 0),
+            "top_models": [
+                {
+                    "provider_id": row["provider_id"],
+                    "model_id": row["model_id"],
+                    "total_calls": int(row["total_calls"] or 0),
+                    "input_tokens": int(row["input_tokens"] or 0),
+                    "output_tokens": int(row["output_tokens"] or 0),
+                    "total_tokens": int(row["input_tokens"] or 0) + int(row["output_tokens"] or 0),
+                    "cache_read_tokens": int(row["cache_read_tokens"] or 0),
+                    "cache_write_tokens": int(row["cache_write_tokens"] or 0),
+                }
+                for row in model_rows
+            ],
+        }
+
 
 class MessageLogRepository(ContextProvider):
     """Persistence adapter for the full communication log."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -195,6 +196,40 @@ def _serialize_execution(payload: dict[str, Any]) -> dict[str, Any]:
         "estimatedCost": payload["estimated_cost"],
         "currency": payload["currency"],
         "metadata": payload["metadata"],
+    }
+
+
+def _serialize_token_summary(
+    payload: dict[str, Any],
+    *,
+    days: int,
+    since: str,
+) -> dict[str, Any]:
+    return {
+        "windowDays": days,
+        "since": since,
+        "totalCalls": payload["total_calls"],
+        "successfulCalls": payload["successful_calls"],
+        "inputTokens": payload["input_tokens"],
+        "outputTokens": payload["output_tokens"],
+        "totalTokens": payload["total_tokens"],
+        "cacheReadTokens": payload["cache_read_tokens"],
+        "cacheWriteTokens": payload["cache_write_tokens"],
+        "estimatedCost": payload["estimated_cost"],
+        "currency": "USD",
+        "topModels": [
+            {
+                "providerId": item["provider_id"],
+                "modelId": item["model_id"],
+                "totalCalls": item["total_calls"],
+                "inputTokens": item["input_tokens"],
+                "outputTokens": item["output_tokens"],
+                "totalTokens": item["total_tokens"],
+                "cacheReadTokens": item["cache_read_tokens"],
+                "cacheWriteTokens": item["cache_write_tokens"],
+            }
+            for item in payload["top_models"]
+        ],
     }
 
 
@@ -565,3 +600,10 @@ async def delete_route(route_id: str, bot=BotDep):
 async def list_model_executions(limit: int = Query(default=50, ge=1, le=200), bot=BotDep):
     records = bot.database.model_executions.list_recent(limit=limit)
     return ok([_serialize_execution(item) for item in records])
+
+
+@router.get("/token-summary")
+async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotDep):
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    summary = bot.database.model_executions.summarize_tokens(since=since)
+    return ok(_serialize_token_summary(summary, days=days, since=since))

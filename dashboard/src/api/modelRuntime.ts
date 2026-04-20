@@ -79,6 +79,32 @@ export interface ModelExecutionRecord {
   metadata: Record<string, unknown>
 }
 
+export interface ModelTokenSummaryModel {
+  providerId: string
+  modelId: string
+  totalCalls: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+}
+
+export interface ModelTokenSummary {
+  windowDays: number
+  since: string
+  totalCalls: number
+  successfulCalls: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedCost: number
+  currency: string
+  topModels: ModelTokenSummaryModel[]
+}
+
 export interface ProviderCatalogItem {
   id: string
   displayName: string
@@ -207,6 +233,12 @@ export const modelRuntimeApi = {
   listExecutions(limit = 50) {
     return apiClient.get<ModelExecutionRecord[]>('/model-runtime/executions', {
       params: { limit },
+    })
+  },
+
+  getTokenSummary(days = 7) {
+    return apiClient.get<ModelTokenSummary>('/model-runtime/token-summary', {
+      params: { days },
     })
   },
 }

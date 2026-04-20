@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -299,6 +300,70 @@ def test_model_execution_list_endpoint(tmp_path: Path):
     assert payload["id"] == "exec-1"
     assert payload["cacheHit"] is True
     assert payload["metadata"]["trace_id"] == "trace-1"
+
+
+def test_model_token_summary_endpoint(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    recent_started_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    old_started_at = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-recent-1",
+            started_at=recent_started_at,
+            provider_id="openai-main",
+            model_id="openai-main/gpt-fast",
+            success=True,
+            input_tokens=10,
+            output_tokens=20,
+            cache_read_tokens=3,
+            cache_write_tokens=2,
+            estimated_cost=0.12,
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-recent-2",
+            started_at=recent_started_at,
+            provider_id="openai-main",
+            model_id="openai-main/gpt-fast",
+            success=False,
+            input_tokens=5,
+            output_tokens=0,
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-old",
+            started_at=old_started_at,
+            provider_id="openai-main",
+            model_id="openai-main/gpt-old",
+            success=True,
+            input_tokens=1000,
+            output_tokens=1000,
+        )
+    )
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/model-runtime/token-summary",
+            params={"days": 7},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["windowDays"] == 7
+    assert payload["totalCalls"] == 2
+    assert payload["successfulCalls"] == 1
+    assert payload["inputTokens"] == 15
+    assert payload["outputTokens"] == 20
+    assert payload["totalTokens"] == 35
+    assert payload["cacheReadTokens"] == 3
+    assert payload["cacheWriteTokens"] == 2
+    assert payload["topModels"][0]["modelId"] == "openai-main/gpt-fast"
+    assert payload["topModels"][0]["totalTokens"] == 35
 
 
 def test_provider_catalog_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

@@ -26,7 +26,7 @@ class AttentionConfig:
 
     # Exponential decay constants (per second)
     decay_k: float = 0.005
-    decay_idle_grace_seconds: float = 60.0
+    decay_idle_grace_seconds: float = 30.0
     runtime_weight_decay_k: float = 0.01
     runtime_threshold_decay_k: float = 0.008
 

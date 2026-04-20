@@ -11,6 +11,19 @@
     "statusOnline": "Status: {value}",
     "memoryUsageMb": "Memory: {value} MB"
   },
+  "tokenStats": {
+    "kicker": "Last {days} days",
+    "title": "Model Token Usage",
+    "subtitle": "Calls and token totals from model execution records",
+    "totalTokens": "Total Tokens",
+    "inputTokens": "Input",
+    "outputTokens": "Output",
+    "cacheTokens": "Cache",
+    "calls": "Calls",
+    "callCount": "{success}/{total} successful",
+    "topModel": "Top Model",
+    "noModel": "No model calls yet"
+  },
   "quickActions": {
     "title": "Quick Actions",
     "instancesTitle": "Manage Instances",

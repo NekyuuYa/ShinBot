@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -53,9 +54,46 @@ Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
 ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any]
 
 
+# DashScope explicit cache matches backwards within up to 20 content blocks.
+# Keep a safety margin to avoid running exactly on the provider boundary.
+DEFAULT_CONTEXT_CACHE_BLOCK_GAP = 18
+DEFAULT_EXPLICIT_CACHE_MIN_TOKENS = 1024
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """Estimate token count with a conservative heuristic.
+
+    This follows the same project-wide rough strategy used elsewhere:
+    max(word_count, ceil(char_count / 4)).
+    """
+
+    text = text.strip()
+    if not text:
+        return 0
+    word_estimate = len(text.split())
+    char_estimate = math.ceil(len(text) / 4)
+    return max(word_estimate, char_estimate)
+
+
+def _estimate_content_blocks_tokens(content_blocks: list[dict[str, Any]], block_count: int) -> int:
+    if block_count <= 0:
+        return 0
+
+    text_parts: list[str] = []
+    for block in content_blocks[:block_count]:
+        if not isinstance(block, dict):
+            continue
+        text = str(block.get("text") or "").strip()
+        if text:
+            text_parts.append(text)
+    return _estimate_text_tokens("\n".join(text_parts))
+
+
 def _mark_ephemeral_cache_boundary(
     content_blocks: list[dict[str, Any]],
     records: list[PromptComponentRecord],
+    *,
+    min_cache_tokens: int = DEFAULT_EXPLICIT_CACHE_MIN_TOKENS,
 ) -> None:
     """Mark the end of the stable SYSTEM_BASE prefix as an ephemeral cache boundary."""
 
@@ -73,6 +111,11 @@ def _mark_ephemeral_cache_boundary(
     marker_index = stable_prefix_len - 1
     if marker_index >= len(content_blocks):
         return
+
+    stable_prefix_tokens = _estimate_content_blocks_tokens(content_blocks, stable_prefix_len)
+    if stable_prefix_tokens < min_cache_tokens:
+        return
+
     content_blocks[marker_index]["cache_control"] = {"type": "ephemeral"}
 
 
@@ -82,7 +125,7 @@ def _mark_ephemeral_context_cache_boundaries(
     context_records: list[PromptComponentRecord],
     *,
     max_markers: int = 4,
-    max_content_block_gap: int = 20,
+    max_content_block_gap: int = DEFAULT_CONTEXT_CACHE_BLOCK_GAP,
 ) -> None:
     """Add cache boundaries through long context without exceeding provider limits."""
 
@@ -705,9 +748,7 @@ class PromptRegistry:
             source = infer_component_source(component)
             resolver = self._resolvers.get(component.resolver_ref)
             if resolver is None:
-                raise ValueError(
-                    f"Prompt resolver {component.resolver_ref!r} is not registered"
-                )
+                raise ValueError(f"Prompt resolver {component.resolver_ref!r} is not registered")
 
             resolver_output = resolver(request, component, source)
             if isinstance(resolver_output, dict):

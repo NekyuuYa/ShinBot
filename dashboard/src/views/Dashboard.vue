@@ -74,6 +74,100 @@
       </v-col>
     </v-row>
 
+    <v-row class="mb-6">
+      <v-col cols="12" lg="7">
+        <v-card class="token-usage-card pa-5" elevation="8">
+          <div class="d-flex align-start justify-space-between ga-4 flex-wrap">
+            <div>
+              <div class="text-overline token-usage-kicker">
+                {{ $t('pages.dashboard.tokenStats.kicker', { days: tokenSummary?.windowDays ?? 7 }) }}
+              </div>
+              <div class="text-h6 mb-1">{{ $t('pages.dashboard.tokenStats.title') }}</div>
+              <div class="text-caption token-usage-muted">
+                {{ $t('pages.dashboard.tokenStats.subtitle') }}
+              </div>
+            </div>
+            <v-avatar color="white" variant="tonal" size="48" class="token-usage-icon">
+              <v-icon icon="mdi-counter" size="28" />
+            </v-avatar>
+          </div>
+
+          <div class="mt-5">
+            <div class="token-usage-total">{{ formatCompactNumber(tokenTotal) }}</div>
+            <div class="text-caption token-usage-muted">
+              {{ $t('pages.dashboard.tokenStats.totalTokens') }}
+            </div>
+          </div>
+
+          <v-progress-linear
+            class="my-5 token-usage-progress"
+            :model-value="tokenOutputShare"
+            height="8"
+            rounded
+          />
+
+          <v-row dense>
+            <v-col cols="12" sm="4">
+              <div class="token-usage-metric">
+                <div class="text-caption token-usage-muted">
+                  {{ $t('pages.dashboard.tokenStats.inputTokens') }}
+                </div>
+                <div class="text-subtitle-1 font-weight-bold">
+                  {{ formatNumber(tokenSummary?.inputTokens ?? 0) }}
+                </div>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="4">
+              <div class="token-usage-metric">
+                <div class="text-caption token-usage-muted">
+                  {{ $t('pages.dashboard.tokenStats.outputTokens') }}
+                </div>
+                <div class="text-subtitle-1 font-weight-bold">
+                  {{ formatNumber(tokenSummary?.outputTokens ?? 0) }}
+                </div>
+              </div>
+            </v-col>
+            <v-col cols="12" sm="4">
+              <div class="token-usage-metric">
+                <div class="text-caption token-usage-muted">
+                  {{ $t('pages.dashboard.tokenStats.cacheTokens') }}
+                </div>
+                <div class="text-subtitle-1 font-weight-bold">
+                  {{ formatNumber(tokenCacheTotal) }}
+                </div>
+              </div>
+            </v-col>
+          </v-row>
+
+          <v-divider class="my-4 token-usage-divider" />
+
+          <div class="d-flex align-center justify-space-between ga-4 flex-wrap">
+            <div>
+              <div class="text-caption token-usage-muted">
+                {{ $t('pages.dashboard.tokenStats.calls') }}
+              </div>
+              <div class="text-body-2">
+                {{
+                  $t('pages.dashboard.tokenStats.callCount', {
+                    success: tokenSummary?.successfulCalls ?? 0,
+                    total: tokenSummary?.totalCalls ?? 0,
+                  })
+                }}
+              </div>
+            </div>
+            <div class="text-sm-right">
+              <div class="text-caption token-usage-muted">
+                {{ $t('pages.dashboard.tokenStats.topModel') }}
+              </div>
+              <div class="text-body-2 font-weight-medium">
+                {{ topTokenModel?.modelId || $t('pages.dashboard.tokenStats.noModel') }}
+              </div>
+            </div>
+          </div>
+        </v-card>
+      </v-col>
+    </v-row>
+
     <v-row>
       <v-col cols="12">
         <h2 class="text-h6 mb-4">{{ $t('pages.dashboard.quickActions.title') }}</h2>
@@ -104,7 +198,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import AppPageHeader from '@/components/AppPageHeader.vue'
@@ -112,13 +206,15 @@ import { useAuthStore } from '@/stores/auth'
 import { useInstancesStore } from '@/stores/instances'
 import { usePluginsStore } from '@/stores/plugins'
 import { useMonitoringStore } from '@/stores/monitoring'
+import { modelRuntimeApi, type ModelTokenSummary } from '@/api/modelRuntime'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const instancesStore = useInstancesStore()
 const pluginsStore = usePluginsStore()
 const monitoringStore = useMonitoringStore()
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const tokenSummary = ref<ModelTokenSummary | null>(null)
 
 const runningInstances = computed(() =>
   instancesStore.instances.filter((instance: (typeof instancesStore.instances)[number]) => instance.status === 'running').length
@@ -128,9 +224,40 @@ const enabledPlugins = computed(() =>
   pluginsStore.plugins.filter((plugin: (typeof pluginsStore.plugins)[number]) => plugin.status === 'enabled').length
 )
 
+const tokenTotal = computed(() => tokenSummary.value?.totalTokens ?? 0)
+
+const tokenCacheTotal = computed(
+  () => (tokenSummary.value?.cacheReadTokens ?? 0) + (tokenSummary.value?.cacheWriteTokens ?? 0)
+)
+
+const tokenOutputShare = computed(() => {
+  if (!tokenTotal.value) return 0
+  return Math.round(((tokenSummary.value?.outputTokens ?? 0) / tokenTotal.value) * 100)
+})
+
+const topTokenModel = computed(() => tokenSummary.value?.topModels[0] ?? null)
+
+const formatNumber = (value: number) =>
+  new Intl.NumberFormat(locale.value, { maximumFractionDigits: 0 }).format(value)
+
+const formatCompactNumber = (value: number) =>
+  new Intl.NumberFormat(locale.value, {
+    maximumFractionDigits: 1,
+    notation: 'compact',
+  }).format(value)
+
+const fetchTokenSummary = async () => {
+  const response = await modelRuntimeApi.getTokenSummary(7)
+  tokenSummary.value = response.data.data ?? null
+}
+
 onMounted(async () => {
   try {
-    await Promise.all([instancesStore.fetchInstances(), pluginsStore.fetchPlugins()])
+    await Promise.all([
+      instancesStore.fetchInstances(),
+      pluginsStore.fetchPlugins(),
+      fetchTokenSummary(),
+    ])
   } catch (err) {
     console.error(t('pages.dashboard.loadFailed'), err)
   }
@@ -140,3 +267,48 @@ const navigateTo = (path: string) => {
   router.push(path)
 }
 </script>
+
+<style scoped>
+.token-usage-card {
+  background:
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.3), transparent 34%),
+    linear-gradient(135deg, #183a37 0%, #285d4f 48%, #c88b39 100%);
+  color: white;
+  overflow: hidden;
+}
+
+.token-usage-kicker,
+.token-usage-muted {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.token-usage-icon {
+  color: #183a37;
+}
+
+.token-usage-total {
+  font-size: clamp(2.4rem, 7vw, 4.6rem);
+  font-weight: 800;
+  letter-spacing: -0.08em;
+  line-height: 0.95;
+}
+
+.token-usage-progress :deep(.v-progress-linear__determinate) {
+  background: rgba(255, 255, 255, 0.92) !important;
+}
+
+.token-usage-progress {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.token-usage-metric {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  padding: 14px 16px;
+}
+
+.token-usage-divider {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+</style>
