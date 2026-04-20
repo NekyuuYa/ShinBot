@@ -254,7 +254,8 @@ class AttentionDebugTracer:
             )
         elif action == "empty":
             _debug_logger.debug(
-                "%s dispatch SKIP (empty batch)", _c(_DIM, f"[{session_id}]"),
+                "%s dispatch SKIP (empty batch)",
+                _c(_DIM, f"[{session_id}]"),
             )
         elif action == "error":
             _debug_logger.debug(
@@ -345,8 +346,7 @@ class AttentionDebugTracer:
         if not self._enabled:
             return
         _debug_logger.debug(
-            "%s weight-adjust  %s  stable_delta=%+.3f  runtime_delta=%+.3f  "
-            "band=%s  %s",
+            "%s weight-adjust  %s  stable_delta=%+.3f  runtime_delta=%+.3f  band=%s  %s",
             _c(_BLUE, f"[{session_id}]"),
             _c(_CYAN, sender_id),
             stable_delta,

@@ -41,9 +41,7 @@ def resolve_media_inspection_config(
 
     config = dict((bot_config or {}).get("config") or {})
     agent_ref = str(
-        config.get("media_inspection_agent")
-        or config.get("media_inspection_agent_uuid")
-        or ""
+        config.get("media_inspection_agent") or config.get("media_inspection_agent_uuid") or ""
     ).strip()
     llm_ref = str(config.get("media_inspection_llm") or "").strip()
 

@@ -13,9 +13,9 @@ if TYPE_CHECKING:
 # ── CJK-aware tokenization for cross-talk detection ──────────────────
 
 _CJK_RANGES = (
-    "\u4e00-\u9fff"    # CJK Unified Ideographs
-    "\u3400-\u4dbf"    # CJK Unified Ideographs Extension A
-    "\uf900-\ufaff"    # CJK Compatibility Ideographs
+    "\u4e00-\u9fff"  # CJK Unified Ideographs
+    "\u3400-\u4dbf"  # CJK Unified Ideographs Extension A
+    "\uf900-\ufaff"  # CJK Compatibility Ideographs
     "\U00020000-\U0002a6df"  # Extension B
     "\U0002a700-\U0002b73f"  # Extension C
 )

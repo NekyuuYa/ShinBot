@@ -33,7 +33,7 @@ def _dhash_channel(pixels: list[int], width: int, hash_size: int) -> str:
 
     hex_string = ""
     for index in range(0, len(difference), 4):
-        chunk = difference[index:index + 4]
+        chunk = difference[index : index + 4]
         decimal_val = sum(int(bit) << shift for shift, bit in enumerate(chunk))
         hex_string += hex(decimal_val)[2:]
     return hex_string

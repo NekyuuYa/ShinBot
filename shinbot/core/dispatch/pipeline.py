@@ -652,9 +652,8 @@ class MessagePipeline:
                             message_log_id=msg_log_id,
                             seen_at=observed_at,
                         )
-                        if (
-                            self._media_inspection_runner is not None
-                            and any(item.should_request_inspection for item in ingested_items)
+                        if self._media_inspection_runner is not None and any(
+                            item.should_request_inspection for item in ingested_items
                         ):
                             self._media_inspection_runner.schedule_items(
                                 instance_id=adapter.instance_id,
@@ -810,8 +809,7 @@ class MessagePipeline:
         )
         if should_schedule_attention:
             is_mentioned = any(
-                el.type == "at" and el.attrs.get("id") == event.self_id
-                for el in message.elements
+                el.type == "at" and el.attrs.get("id") == event.self_id for el in message.elements
             )
             attention_multiplier = self._resolve_attention_multiplier(message, event.self_id)
             response_profile = self._resolve_response_profile(bot)

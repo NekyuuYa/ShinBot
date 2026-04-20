@@ -67,9 +67,7 @@ def register_attention_tools(
 
     # ── attention.adjust_sender_weight ──────────────────────────────
 
-    def _adjust_sender_weight(
-        arguments: dict[str, Any], ctx: ToolExecutionContext
-    ) -> Any:
+    def _adjust_sender_weight(arguments: dict[str, Any], ctx: ToolExecutionContext) -> Any:
         session_id = ctx.session_id
         if not session_id:
             return {"error": "session_id not available in execution context"}
@@ -128,9 +126,7 @@ def register_attention_tools(
 
     # ── attention.adjust_session_threshold ───────────────────────────
 
-    def _adjust_session_threshold(
-        arguments: dict[str, Any], ctx: ToolExecutionContext
-    ) -> Any:
+    def _adjust_session_threshold(arguments: dict[str, Any], ctx: ToolExecutionContext) -> Any:
         session_id = ctx.session_id
         if not session_id:
             return {"error": "session_id not available in execution context"}
@@ -183,7 +179,9 @@ def register_attention_tools(
         internal_summary = str(arguments.get("internal_summary", ""))
         if internal_summary:
             engine.repo.set_metadata_key(
-                session_id, "internal_summary", internal_summary,
+                session_id,
+                "internal_summary",
+                internal_summary,
             )
 
         return {

@@ -162,7 +162,9 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
             enabled=body.enabled if body.enabled is not None else bool(current["enabled"]),
             content=body.content if body.content is not None else str(current["content"]),
             template_vars=(
-                body.templateVars if body.templateVars is not None else list(current["template_vars"])
+                body.templateVars
+                if body.templateVars is not None
+                else list(current["template_vars"])
             ),
             resolver_ref=(
                 body.resolverRef if body.resolverRef is not None else str(current["resolver_ref"])

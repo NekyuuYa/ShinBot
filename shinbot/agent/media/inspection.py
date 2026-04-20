@@ -72,7 +72,9 @@ class MediaInspectionRunner:
                 name=f"media-inspect-{item.raw_hash[:12]}",
             )
             self._inflight[item.raw_hash] = task
-            task.add_done_callback(lambda _task, raw_hash=item.raw_hash: self._inflight.pop(raw_hash, None))
+            task.add_done_callback(
+                lambda _task, raw_hash=item.raw_hash: self._inflight.pop(raw_hash, None)
+            )
 
     async def inspect_raw_hash(
         self,

@@ -18,9 +18,7 @@ def resolve_model_target(
     if route is not None and route["enabled"]:
         members = database.model_registry.list_route_members(target)
         enabled_members = [member for member in members if member["enabled"]]
-        enabled_members.sort(
-            key=lambda item: (item["priority"], -item["weight"], item["model_id"])
-        )
+        enabled_members.sort(key=lambda item: (item["priority"], -item["weight"], item["model_id"]))
         for member in enabled_members:
             model = database.model_registry.get_model(member["model_id"])
             if model is not None and model["enabled"]:

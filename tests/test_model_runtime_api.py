@@ -670,7 +670,9 @@ def test_provider_probe_custom_openai_uses_openai_provider_hint(
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1},
             }
 
-        monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
+        monkeypatch.setattr(
+            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
+        )
 
         response = client.post(
             "/api/v1/model-runtime/providers/custom-openai-main/probe",

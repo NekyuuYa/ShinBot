@@ -115,7 +115,9 @@ class AttentionScheduler:
                     session_id,
                 )
                 self._engine.tracer.trace_semantic_wait(
-                    session_id, action="skipped_running", sender_id=sender_id,
+                    session_id,
+                    action="skipped_running",
+                    sender_id=sender_id,
                 )
                 return
 
@@ -133,7 +135,9 @@ class AttentionScheduler:
                         sender_id,
                     )
                     self._engine.tracer.trace_semantic_wait(
-                        session_id, action="reset", sender_id=sender_id,
+                        session_id,
+                        action="reset",
+                        sender_id=sender_id,
                     )
                 else:
                     # Different sender joined — let the existing timer run
@@ -312,9 +316,7 @@ class AttentionScheduler:
             task.cancel()
         for task in self._running_workflows.values():
             task.cancel()
-        all_tasks = list(self._pending_timers.values()) + list(
-            self._running_workflows.values()
-        )
+        all_tasks = list(self._pending_timers.values()) + list(self._running_workflows.values())
         if all_tasks:
             await asyncio.gather(*all_tasks, return_exceptions=True)
         self._pending_timers.clear()

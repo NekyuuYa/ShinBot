@@ -99,9 +99,7 @@ def serialize_instance_record(
         "adapterType": item.get("adapterType", getattr(adapter, "platform", "satori")),
         "status": status,
         "config": config,
-        "botConfig": serialize_bot_config_summary(
-            bot_configs_by_instance_id.get(str(instance_id))
-        ),
+        "botConfig": serialize_bot_config_summary(bot_configs_by_instance_id.get(str(instance_id))),
         "createdAt": item.get("createdAt", 0),
         "lastModified": item.get("lastModified", 0),
     }
@@ -193,13 +191,17 @@ def build_instance_record(
     }
 
 
-def get_instance_for_update(*, bot: Any, boot: Any, instance_id: str) -> tuple[Any | None, int | None, dict[str, Any] | None]:
+def get_instance_for_update(
+    *, bot: Any, boot: Any, instance_id: str
+) -> tuple[Any | None, int | None, dict[str, Any] | None]:
     adapter = bot.adapter_manager.get_instance(instance_id)
     index, inst = find_instance_record(boot, instance_id)
     return adapter, index, inst
 
 
-def ensure_persisted_instance_record(*, boot: Any, instance_id: str, adapter: Any) -> tuple[int, dict[str, Any]]:
+def ensure_persisted_instance_record(
+    *, boot: Any, instance_id: str, adapter: Any
+) -> tuple[int, dict[str, Any]]:
     inst = build_instance_record(
         instance_id=instance_id,
         name=instance_id,

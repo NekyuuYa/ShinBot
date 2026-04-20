@@ -210,7 +210,7 @@ async def test_generate_returns_tool_calls(monkeypatch, tmp_path):
                                 "type": "function",
                                 "function": {
                                     "name": "workflow.send_reply",
-                                    "arguments": "{\"text\":\"pong\"}",
+                                    "arguments": '{"text":"pong"}',
                                 },
                             }
                         ],
@@ -252,7 +252,7 @@ async def test_generate_returns_tool_calls(monkeypatch, tmp_path):
             "type": "function",
             "function": {
                 "name": "workflow.send_reply",
-                "arguments": "{\"text\":\"pong\"}",
+                "arguments": '{"text":"pong"}',
             },
         }
     ]

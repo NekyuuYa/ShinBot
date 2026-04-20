@@ -29,6 +29,7 @@ router = APIRouter(
     dependencies=AuthRequired,
 )
 
+
 def _raise_admin_http_error(exc: PluginAdminError) -> None:
     raise HTTPException(
         status_code=exc.status_code,

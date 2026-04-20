@@ -53,9 +53,7 @@ def _raise_admin_http_error(exc: ContextStrategyAdminError) -> None:
 
 @router.get("")
 def list_context_strategies(bot=BotDep):
-    return ok(
-        [serialize_context_strategy(item) for item in bot.database.context_strategies.list()]
-    )
+    return ok([serialize_context_strategy(item) for item in bot.database.context_strategies.list()])
 
 
 @router.post("", status_code=201)

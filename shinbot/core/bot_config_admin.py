@@ -181,7 +181,9 @@ def get_bot_config_or_raise(database: Any, config_uuid: str) -> dict[str, Any]:
     return payload
 
 
-def assert_bot_config_instance_available(database: Any, instance_id: str, *, current_uuid: str | None) -> None:
+def assert_bot_config_instance_available(
+    database: Any, instance_id: str, *, current_uuid: str | None
+) -> None:
     existing = database.bot_configs.get_by_instance_id(instance_id)
     if existing is not None and existing["uuid"] != current_uuid:
         raise BotConfigAdminError(

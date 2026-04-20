@@ -105,9 +105,10 @@ class MediaService:
                 known_kind = str(semantics.get("kind") or "")
                 known_digest = str(semantics.get("digest") or "")
 
-            should_request_inspection = (
-                occurrence["occurrence_count"] >= MEME_VERIFICATION_THRESHOLD
-                and not bool(semantics and semantics.get("verified_by_model"))
+            should_request_inspection = occurrence[
+                "occurrence_count"
+            ] >= MEME_VERIFICATION_THRESHOLD and not bool(
+                semantics and semantics.get("verified_by_model")
             )
 
             results.append(
@@ -250,7 +251,9 @@ class MediaService:
                 last_platform_msg_id=platform_msg_id,
                 recent_timestamps=pruned,
                 occurrence_count=len(pruned),
-                first_seen_at=float(existing.get("first_seen_at", seen_at)) if existing else seen_at,
+                first_seen_at=float(existing.get("first_seen_at", seen_at))
+                if existing
+                else seen_at,
                 last_seen_at=seen_at,
                 expire_at=seen_at + SESSION_OCCURRENCE_TTL_SECONDS,
             )

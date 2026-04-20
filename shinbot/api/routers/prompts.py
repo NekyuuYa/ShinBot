@@ -44,7 +44,9 @@ def _prompt_definition_dict(payload: dict[str, Any]) -> dict[str, Any]:
     metadata = dict(payload.get("metadata") or {})
     return {
         "id": payload["prompt_id"],
-        "displayName": str(metadata.get("display_name") or payload.get("name") or payload["prompt_id"]),
+        "displayName": str(
+            metadata.get("display_name") or payload.get("name") or payload["prompt_id"]
+        ),
         "description": str(metadata.get("description") or payload.get("description") or ""),
         "stage": payload["stage"],
         "type": payload["type"],
@@ -69,8 +71,7 @@ def _prompt_definition_dict(payload: dict[str, Any]) -> dict[str, Any]:
 async def list_prompts(bot=BotDep):
     """List all registered prompt components for dashboard selection."""
     items_by_id: dict[str, dict[str, Any]] = {
-        item["id"]: _prompt_dict(item)
-        for item in bot.prompt_registry.list_component_catalog()
+        item["id"]: _prompt_dict(item) for item in bot.prompt_registry.list_component_catalog()
     }
 
     if bot.database is not None:

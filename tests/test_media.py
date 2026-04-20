@@ -516,9 +516,9 @@ async def test_pipeline_ingests_local_image_media(tmp_path):
 
     with db.connect() as conn:
         asset_count = conn.execute("SELECT COUNT(*) AS cnt FROM media_assets").fetchone()["cnt"]
-        link_count = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM message_media_links"
-        ).fetchone()["cnt"]
+        link_count = conn.execute("SELECT COUNT(*) AS cnt FROM message_media_links").fetchone()[
+            "cnt"
+        ]
         occ_count = conn.execute(
             "SELECT COUNT(*) AS cnt FROM session_media_occurrences"
         ).fetchone()["cnt"]

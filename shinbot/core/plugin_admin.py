@@ -48,11 +48,7 @@ def plugin_dict(
         cfg_schema = plugin_config_schema(bot.plugin_manager, plugin_meta.id)
     except Exception:
         logger.exception("Failed to build config schema for plugin %s", plugin_meta.id)
-    status = (
-        "enabled"
-        if plugin_meta.state.value in ("active", "loaded", "running")
-        else "disabled"
-    )
+    status = "enabled" if plugin_meta.state.value in ("active", "loaded", "running") else "disabled"
     resolved_translations = translations or {}
 
     metadata: dict[str, Any] = {}
@@ -90,7 +86,9 @@ def get_plugin_or_raise(plugin_manager: Any, plugin_id: str) -> Any:
     return plugin
 
 
-def get_plugin_schema_or_raise(bot: Any, plugin_id: str, translations: dict[str, str]) -> dict[str, Any]:
+def get_plugin_schema_or_raise(
+    bot: Any, plugin_id: str, translations: dict[str, str]
+) -> dict[str, Any]:
     plugin = get_plugin_or_raise(bot.plugin_manager, plugin_id)
     if plugin.role.value == "adapter":
         raise PluginAdminError(
@@ -133,7 +131,9 @@ async def rescan_plugins(bot: Any, boot: Any) -> list[dict[str, Any]]:
     return [plugin_dict(bot, plugin_meta) for plugin_meta in loaded]
 
 
-def update_plugin_config_or_raise(bot: Any, boot: Any, plugin_id: str, config: dict[str, Any]) -> Any:
+def update_plugin_config_or_raise(
+    bot: Any, boot: Any, plugin_id: str, config: dict[str, Any]
+) -> Any:
     plugin = get_plugin_or_raise(bot.plugin_manager, plugin_id)
     if plugin.role.value == "adapter":
         raise PluginAdminError(

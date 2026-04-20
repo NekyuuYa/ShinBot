@@ -48,21 +48,30 @@ def test_select_response_profile_uses_message_priority_order() -> None:
         }
     }
 
-    assert select_response_profile(
-        payload,
-        is_private=True,
-        is_mentioned=False,
-        is_reply_to_bot=False,
-    ) == "immediate"
-    assert select_response_profile(
-        payload,
-        is_private=False,
-        is_mentioned=True,
-        is_reply_to_bot=False,
-    ) == "passive"
-    assert select_response_profile(
-        payload,
-        is_private=False,
-        is_mentioned=False,
-        is_reply_to_bot=False,
-    ) == "balanced"
+    assert (
+        select_response_profile(
+            payload,
+            is_private=True,
+            is_mentioned=False,
+            is_reply_to_bot=False,
+        )
+        == "immediate"
+    )
+    assert (
+        select_response_profile(
+            payload,
+            is_private=False,
+            is_mentioned=True,
+            is_reply_to_bot=False,
+        )
+        == "passive"
+    )
+    assert (
+        select_response_profile(
+            payload,
+            is_private=False,
+            is_mentioned=False,
+            is_reply_to_bot=False,
+        )
+        == "balanced"
+    )
