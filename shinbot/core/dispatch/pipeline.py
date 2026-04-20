@@ -125,7 +125,7 @@ class MessageContext:
     @property
     def text(self) -> str:
         """Plain text content of the message."""
-        return self.message.get_text()
+        return self.message.get_text(self_id=self.event.self_id)
 
     @property
     def elements(self) -> list[MessageElement]:

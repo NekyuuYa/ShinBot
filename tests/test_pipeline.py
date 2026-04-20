@@ -849,6 +849,7 @@ class TestMessagePipeline:
         rows = db.message_logs.get_recent("test-bot:group:group:1", limit=3)
         assert rows[0]["raw_text"] == "[戳一戳: 戳了你一下]"
         assert rows[1]["raw_text"] == "[戳一戳: 戳了用户 user-2 一下]"
+        assert rows[2]["raw_text"] == "[@用户 user-2]hello"
 
     @pytest.mark.asyncio
     async def test_pipeline_uses_canonical_private_response_profile_config(self, tmp_path):

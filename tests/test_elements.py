@@ -122,7 +122,17 @@ class TestMessage:
             MessageElement.at(id="123"),
             MessageElement.text(" world"),
         )
-        assert msg.get_text() == "hello  world"
+        assert msg.get_text() == "hello [@用户 123] world"
+
+    def test_get_text_at_self_and_named_target(self):
+        msg = Message.from_elements(
+            MessageElement.at(id="bot-1"),
+            MessageElement.text(" "),
+            MessageElement.at(id="456", name="Alice"),
+            MessageElement.text(" "),
+            MessageElement.at(type="all"),
+        )
+        assert msg.get_text(self_id="bot-1") == "[@你] [@Alice(456)] [@全体成员]"
 
     def test_get_text_with_br(self):
         msg = Message.from_elements(

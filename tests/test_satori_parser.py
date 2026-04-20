@@ -238,7 +238,7 @@ class TestMessageFromXML:
     def test_from_xml(self):
         msg = Message.from_xml('hello <at id="123"/> world')
         assert len(msg) == 3
-        assert msg.get_text() == "hello  world"
+        assert msg.get_text() == "hello [@用户 123] world"
 
     def test_to_xml(self):
         msg = Message.from_elements(

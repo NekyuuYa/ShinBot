@@ -226,6 +226,8 @@ def _collect_text(elements: list[MessageElement], parts: list[str], self_id: str
             parts.append(str(el.attrs.get("content", "")))
         elif el.type == "br":
             parts.append("\n")
+        elif el.type == "at":
+            parts.append(_format_at_text(el, self_id=self_id))
         elif el.type == "sb:poke":
             target = str(el.attrs.get("target", "") or "").strip()
             if target and self_id and target == self_id:
@@ -236,3 +238,21 @@ def _collect_text(elements: list[MessageElement], parts: list[str], self_id: str
                 parts.append("[戳一戳]")
         if el.children:
             _collect_text(el.children, parts, self_id)
+
+
+def _format_at_text(element: MessageElement, *, self_id: str = "") -> str:
+    at_type = str(element.attrs.get("type", "") or "").strip().lower()
+    if at_type in {"all", "everyone", "here"}:
+        return "[@全体成员]"
+
+    target_id = str(element.attrs.get("id", "") or "").strip()
+    target_name = str(element.attrs.get("name", "") or "").strip()
+    if target_id and self_id and target_id == self_id:
+        return "[@你]"
+    if target_name and target_id:
+        return f"[@{target_name}({target_id})]"
+    if target_name:
+        return f"[@{target_name}]"
+    if target_id:
+        return f"[@用户 {target_id}]"
+    return "[@某人]"

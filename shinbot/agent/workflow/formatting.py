@@ -171,7 +171,6 @@ def format_message_line(
 ) -> str:
     sender_name = str(msg.get("sender_name", "") or msg.get("sender_id", "unknown"))
     text = str(msg.get("raw_text", "") or "").strip() or "[无文本]"
-    mentioned = " (@bot)" if msg.get("is_mentioned") else ""
     media_suffix = ""
     media_ref_suffix = ""
     if media_service is not None:
@@ -179,7 +178,7 @@ def format_message_line(
         if media_notes:
             media_suffix = " " + " ".join(media_notes)
             media_ref_suffix = format_media_reference(msg)
-    return f"{sender_name}{mentioned}: {text}{media_suffix}{media_ref_suffix}"
+    return f"{sender_name}: {text}{media_suffix}{media_ref_suffix}"
 
 
 def format_relative_message_time(msg: dict[str, Any], *, now_ms: float | None = None) -> str:
