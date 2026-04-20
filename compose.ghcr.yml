@@ -1,0 +1,15 @@
+name: shinbot
+
+services:
+  shinbot:
+    image: ${SHINBOT_IMAGE:-ghcr.io/nekyuuya/shinbot:latest}
+    container_name: shinbot
+    restart: unless-stopped
+    ports:
+      - "${SHINBOT_API_PORT:-3945}:3945"
+      # Optional: expose OneBot reverse listener only when needed.
+      # - "8082:8082"
+    volumes:
+      - ./data:/app/data
+      - ./config.toml:/app/config.toml:ro
+    command: ["python", "main.py", "--config", "config.toml", "--api-host", "0.0.0.0", "--api-port", "3945"]

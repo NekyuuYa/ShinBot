@@ -1,0 +1,22 @@
+.git
+.gitignore
+.github
+.vscode
+.idea
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.so
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+build
+dist
+node_modules
+
+# Runtime data and local artifacts
+config.toml
+data/
