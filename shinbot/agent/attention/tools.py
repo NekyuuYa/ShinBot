@@ -233,6 +233,13 @@ def register_attention_tools(
         if not text:
             return {"error": "text is required and must not be empty"}
         terminate_round = bool(arguments.get("terminate_round", True))
+        quote_message_id = _resolve_quote_message_id(
+            arguments,
+            database=database,
+            session_id=session_id,
+        )
+        if isinstance(quote_message_id, dict):
+            raise ValueError(str(quote_message_id.get("error", "invalid quote target")))
 
         adapter = adapter_manager.get_instance(instance_id)
         if adapter is None:
@@ -242,7 +249,10 @@ def register_attention_tools(
 
         from shinbot.schema.elements import MessageElement
 
-        elements = [MessageElement.text(text)]
+        elements = []
+        if quote_message_id:
+            elements.append(MessageElement.quote(quote_message_id))
+        elements.append(MessageElement.text(text))
         handle = await adapter.send(session_id, elements)
 
         assistant_log_id = None
@@ -276,6 +286,7 @@ def register_attention_tools(
             "length": len(text),
             "platform_msg_id": handle.message_id if handle is not None else "",
             "message_log_id": assistant_log_id,
+            "quote_message_id": quote_message_id,
             "terminate_round": terminate_round,
             "hint": "消息已发送至会话。",
         }
@@ -287,8 +298,11 @@ def register_attention_tools(
             description=(
                 "向当前会话发送一条回复消息。\n"
                 "这是你在注意力工作流中回复用户的唯一方式。\n"
-                "若你不调用该工具，而是使用裸文本直接回复，用户将不会收到任何消息"
+                "若你不调用该工具，而是使用裸文本直接回复，用户将不会收到任何消息。\n"
                 "text: 要发送的回复文本内容。\n"
+                "quote_message_id: 可选，要引用回复的原平台消息 ID；"
+                "quote_message_log_id: 可选，要引用回复的 ShinBot message_logs 行 ID，"
+                "系统会自动解析为平台消息 ID。\n"
                 "terminate_round: 是否在发送后立即结束当前 workflow 轮次；"
                 "默认 true。若为 false，发送后允许模型继续后续推理或工具调用。\n"
                 "注意：每次调用都会实际发送消息，请确保内容准确后再调用。\n"
@@ -300,6 +314,20 @@ def register_attention_tools(
                     "text": {
                         "type": "string",
                         "description": "要发送的回复文本",
+                    },
+                    "quote_message_id": {
+                        "type": "string",
+                        "description": (
+                            "可选。要引用回复的原平台消息 ID，通常来自上下文里的 "
+                            "platform_msg_id。"
+                        ),
+                    },
+                    "quote_message_log_id": {
+                        "type": "integer",
+                        "description": (
+                            "可选。要引用回复的 ShinBot message_logs 行 ID，通常来自上下文里的 "
+                            "message_log_id；系统会自动解析对应 platform_msg_id。"
+                        ),
                     },
                     "terminate_round": {
                         "type": "boolean",
@@ -417,3 +445,64 @@ def _session_rest(session_id: str) -> str:
     if colon_pos == -1:
         return session_id
     return session_id[colon_pos + 1 :]
+
+
+def _resolve_quote_message_id(
+    arguments: dict[str, Any],
+    *,
+    database: DatabaseManager | None,
+    session_id: str,
+) -> str | dict[str, str]:
+    quote_message_id = _first_non_empty_str(
+        arguments,
+        "quote_message_id",
+        "reply_to_message_id",
+        "quote_platform_msg_id",
+    )
+    if quote_message_id:
+        return quote_message_id
+
+    raw_log_id = _first_present(
+        arguments,
+        "quote_message_log_id",
+        "reply_to_message_log_id",
+    )
+    if raw_log_id in (None, ""):
+        return ""
+    if database is None:
+        return {"error": "database not available to resolve quote_message_log_id"}
+
+    try:
+        message_log_id = int(raw_log_id)
+    except (TypeError, ValueError):
+        return {"error": "quote_message_log_id must be an integer"}
+    if message_log_id <= 0:
+        return {"error": "quote_message_log_id must be positive"}
+
+    record = database.message_logs.get(message_log_id)
+    if record is None:
+        return {"error": f"message_log_id {message_log_id} not found"}
+    if str(record.get("session_id") or "") != session_id:
+        return {"error": f"message_log_id {message_log_id} is not in current session"}
+
+    platform_msg_id = str(record.get("platform_msg_id") or "").strip()
+    if not platform_msg_id:
+        return {
+            "error": (
+                f"message_log_id {message_log_id} has no platform_msg_id "
+                "and cannot be quoted"
+            )
+        }
+    return platform_msg_id
+
+
+def _first_non_empty_str(arguments: dict[str, Any], *keys: str) -> str:
+    value = _first_present(arguments, *keys)
+    return str(value or "").strip()
+
+
+def _first_present(arguments: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in arguments:
+            return arguments[key]
+    return None

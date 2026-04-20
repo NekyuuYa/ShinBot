@@ -1070,6 +1070,59 @@ class TestMessagePipeline:
         assert turns[-1]["content"] == "workflow reply"
 
     @pytest.mark.asyncio
+    async def test_attention_send_reply_tool_can_quote_message_log(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        self.adapter_mgr._instances[self.adapter.instance_id] = self.adapter
+        registry = ToolRegistry()
+        manager = ToolManager(registry, permission_engine=self.perm_engine)
+        register_attention_tools(
+            registry,
+            AttentionEngine(AttentionConfig(), db.attention),
+            self.adapter_mgr,
+            db,
+        )
+        quoted_log_id = db.message_logs.insert(
+            MessageLogRecord(
+                session_id="test-bot:private:user-1",
+                platform_msg_id="quoted-platform-msg",
+                sender_id="user-1",
+                sender_name="Tester",
+                content_json="[]",
+                raw_text="please answer this",
+                role="user",
+                is_read=True,
+                is_mentioned=False,
+                created_at=time.time() * 1000,
+            )
+        )
+
+        result = await manager.execute(
+            ToolCallRequest(
+                tool_name="send_reply",
+                arguments={
+                    "text": "workflow quoted reply",
+                    "quote_message_log_id": quoted_log_id,
+                },
+                caller="attention.workflow_runner",
+                instance_id=self.adapter.instance_id,
+                session_id="test-bot:private:user-1",
+            )
+        )
+
+        assert result.success is True
+        assert result.output["quote_message_id"] == "quoted-platform-msg"
+        elements = self.adapter.sent[0][1]
+        assert elements[0] == MessageElement.quote("quoted-platform-msg")
+        assert elements[1] == MessageElement.text("workflow quoted reply")
+
+        row = db.message_logs.get(result.output["message_log_id"])
+        assert row is not None
+        persisted_elements = json.loads(row["content_json"])
+        assert persisted_elements[0]["type"] == "quote"
+        assert persisted_elements[0]["attrs"]["id"] == "quoted-platform-msg"
+
+    @pytest.mark.asyncio
     async def test_attention_poke_tools_call_internal_api(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()

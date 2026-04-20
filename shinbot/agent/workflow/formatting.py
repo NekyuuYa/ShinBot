@@ -127,7 +127,7 @@ def format_batch_context_blocks(
             {
                 "type": "text",
                 "text": (
-                    f"{format_message_line(msg, media_service)}\n"
+                    f"{format_message_line(msg, media_service, include_message_reference=True)}\n"
                     f"时间: {format_relative_message_time(msg, now_ms=now_ms)}"
                 ),
             }
@@ -168,6 +168,8 @@ def batch_contains_media(
 def format_message_line(
     msg: dict[str, Any],
     media_service: MediaService | None = None,
+    *,
+    include_message_reference: bool = False,
 ) -> str:
     sender_name = str(msg.get("sender_name", "") or msg.get("sender_id", "unknown"))
     text = str(msg.get("raw_text", "") or "").strip() or "[无文本]"
@@ -177,8 +179,12 @@ def format_message_line(
         media_notes = media_service.summarize_message_media(msg)
         if media_notes:
             media_suffix = " " + " ".join(media_notes)
-            media_ref_suffix = format_media_reference(msg)
-    return f"{sender_name}: {text}{media_suffix}{media_ref_suffix}"
+            if include_message_reference:
+                media_ref_suffix = format_media_reference(msg)
+    reference_suffix = ""
+    if include_message_reference:
+        reference_suffix = media_ref_suffix or format_message_reference(msg)
+    return f"{sender_name}: {text}{media_suffix}{reference_suffix}"
 
 
 def format_relative_message_time(msg: dict[str, Any], *, now_ms: float | None = None) -> str:
@@ -208,6 +214,20 @@ def format_relative_message_time(msg: dict[str, Any], *, now_ms: float | None = 
 
 
 def format_media_reference(msg: dict[str, Any]) -> str:
+    refs = _message_reference_parts(msg)
+    if not refs:
+        return ""
+    return " [媒体引用: " + " ".join(refs) + "]"
+
+
+def format_message_reference(msg: dict[str, Any]) -> str:
+    refs = _message_reference_parts(msg)
+    if not refs:
+        return ""
+    return " [" + " ".join(refs) + "]"
+
+
+def _message_reference_parts(msg: dict[str, Any]) -> list[str]:
     refs: list[str] = []
     msg_id = msg.get("id")
     if isinstance(msg_id, int):
@@ -215,6 +235,4 @@ def format_media_reference(msg: dict[str, Any]) -> str:
     platform_msg_id = str(msg.get("platform_msg_id", "") or "").strip()
     if platform_msg_id:
         refs.append(f"platform_msg_id={platform_msg_id}")
-    if not refs:
-        return ""
-    return " [媒体引用: " + " ".join(refs) + "]"
+    return refs

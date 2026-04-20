@@ -20,7 +20,7 @@ from shinbot.agent.media import (
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
-from shinbot.agent.workflow.formatting import format_batch_context
+from shinbot.agent.workflow.formatting import format_batch_context, format_incremental_messages
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
@@ -693,3 +693,22 @@ def test_workflow_runner_formats_media_digest_in_batch_context(tmp_path):
     assert "media.inspect_original" in text
     assert "message_log_id=1" in text
     assert "platform_msg_id=wf-msg-0" in text
+
+
+def test_incremental_workflow_context_does_not_include_message_ids():
+    text = format_incremental_messages(
+        [
+            {
+                "id": 2,
+                "session_id": "inst-workflow:group:1",
+                "platform_msg_id": "wf-msg-2",
+                "sender_id": "user-2",
+                "sender_name": "Tester",
+                "raw_text": "补充消息",
+            }
+        ]
+    )
+
+    assert "Tester: 补充消息" in text
+    assert "message_log_id=2" not in text
+    assert "platform_msg_id=wf-msg-2" not in text

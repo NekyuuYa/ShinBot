@@ -284,6 +284,111 @@ async def test_workflow_runner_continues_after_send_reply_when_not_terminating(t
 
 
 @pytest.mark.asyncio
+async def test_workflow_runner_send_reply_can_quote_platform_message(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    instance_id = "inst-workflow"
+    session_id = f"{instance_id}:group:1"
+    _seed_workflow_runtime(db, instance_id=instance_id)
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id=instance_id,
+            session_type="group",
+            platform="mock",
+            channel_id="1",
+        )
+    )
+
+    attention_engine = AttentionEngine(AttentionConfig(), db.attention)
+    attention_state = SessionAttentionState(
+        session_id=session_id,
+        attention_value=6.0,
+        last_consumed_msg_log_id=1,
+        last_trigger_msg_log_id=1,
+    )
+    attention_engine.repo.save_attention(attention_state)
+
+    adapter = MockAdapter(instance_id=instance_id)
+    adapter_manager = AdapterManager()
+    adapter_manager._instances[instance_id] = adapter
+
+    registry = ToolRegistry()
+    register_attention_tools(registry, attention_engine, adapter_manager, db)
+    tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    runtime = QueuedModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-quote",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps(
+                                {
+                                    "text": "引用这条回复",
+                                    "quote_message_id": "msg-to-quote",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+
+    runner = WorkflowRunner(
+        db,
+        PromptRegistry(),
+        runtime,
+        tool_manager,
+        attention_engine,
+        adapter_manager,
+    )
+    batch = [
+        {
+            "id": 1,
+            "session_id": session_id,
+            "platform_msg_id": "msg-to-quote",
+            "sender_id": "user-1",
+            "sender_name": "Tester",
+            "raw_text": "请引用我",
+            "is_mentioned": 0,
+            "content_json": json.dumps(
+                [MessageElement.text("请引用我").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    record = await runner.run(
+        session_id,
+        batch,
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    assert record is not None
+    assert record.replied is True
+    assert len(adapter.sent) == 1
+    sent_elements = adapter.sent[0][1]
+    assert sent_elements[0] == MessageElement.quote("msg-to-quote")
+    assert sent_elements[1] == MessageElement.text("引用这条回复")
+
+    assistant_rows = [
+        row for row in db.message_logs.list_by_session(session_id) if row["role"] == "assistant"
+    ]
+    assert len(assistant_rows) == 1
+    persisted_elements = json.loads(assistant_rows[0]["content_json"])
+    assert persisted_elements[0]["type"] == "quote"
+    assert persisted_elements[0]["attrs"]["id"] == "msg-to-quote"
+
+
+@pytest.mark.asyncio
 async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
@@ -431,8 +536,12 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
 
     assert final_texts[0] == "[以下是会话中 2 条未消费消息]"
     assert "UNOwen: 或许要攒够5条" in final_texts[1]
+    assert "message_log_id=11" in final_texts[1]
+    assert "platform_msg_id=msg-11" in final_texts[1]
     assert "时间: " in final_texts[1]
     assert "Ginkoro: 但是at是有特殊权重的" in final_texts[2]
+    assert "message_log_id=12" in final_texts[2]
+    assert "platform_msg_id=msg-12" in final_texts[2]
     assert "时间: " in final_texts[2]
     assert not any(
         "UNOwen: 或许要攒够5条" in text and "Ginkoro: 但是at是有特殊权重的" in text
