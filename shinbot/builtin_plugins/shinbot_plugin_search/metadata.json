@@ -1,0 +1,10 @@
+{
+  "id": "shinbot_plugin_search",
+  "name": "Web Search Plugin",
+  "version": "1.0.0",
+  "author": "ShinBot Team",
+  "description": "Provides a Tavily-powered tavily_search tool for agent workflows.",
+  "entry": "__init__.py",
+  "role": "logic",
+  "permissions": []
+}
