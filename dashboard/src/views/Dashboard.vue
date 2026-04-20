@@ -75,93 +75,95 @@
     </v-row>
 
     <v-row class="mb-6">
-      <v-col cols="12" lg="7">
-        <v-card class="token-usage-card pa-5" elevation="8">
-          <div class="d-flex align-start justify-space-between ga-4 flex-wrap">
+      <v-col cols="12">
+        <v-card class="pa-4" elevation="6">
+          <div class="d-flex align-center justify-space-between mb-4">
             <div>
-              <div class="text-overline token-usage-kicker">
+              <div class="text-caption text-primary font-weight-bold text-uppercase">
                 {{ $t('pages.dashboard.tokenStats.kicker', { days: tokenSummary?.windowDays ?? 7 }) }}
               </div>
-              <div class="text-h6 mb-1">{{ $t('pages.dashboard.tokenStats.title') }}</div>
-              <div class="text-caption token-usage-muted">
+              <div class="text-h6">{{ $t('pages.dashboard.tokenStats.title') }}</div>
+              <div class="text-caption text-medium-emphasis">
                 {{ $t('pages.dashboard.tokenStats.subtitle') }}
               </div>
             </div>
-            <v-avatar color="white" variant="tonal" size="48" class="token-usage-icon">
+            <v-avatar color="primary" variant="tonal" size="48">
               <v-icon icon="mdi-counter" size="28" />
             </v-avatar>
           </div>
 
-          <div class="mt-5">
-            <div class="token-usage-total">{{ formatCompactNumber(tokenTotal) }}</div>
-            <div class="text-caption token-usage-muted">
-              {{ $t('pages.dashboard.tokenStats.totalTokens') }}
-            </div>
-          </div>
-
-          <v-progress-linear
-            class="my-5 token-usage-progress"
-            :model-value="tokenOutputShare"
-            height="8"
-            rounded
-          />
-
-          <v-row dense>
-            <v-col cols="12" sm="4">
-              <div class="token-usage-metric">
-                <div class="text-caption token-usage-muted">
-                  {{ $t('pages.dashboard.tokenStats.inputTokens') }}
-                </div>
-                <div class="text-subtitle-1 font-weight-bold">
-                  {{ formatNumber(tokenSummary?.inputTokens ?? 0) }}
-                </div>
+          <v-row align="center">
+            <v-col cols="12" md="4" class="text-center text-md-left">
+              <div class="text-h3 font-weight-bold text-primary">
+                {{ formatCompactNumber(tokenTotal) }}
+              </div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                {{ $t('pages.dashboard.tokenStats.totalTokens') }}
               </div>
             </v-col>
-            <v-col cols="12" sm="4">
-              <div class="token-usage-metric">
-                <div class="text-caption token-usage-muted">
-                  {{ $t('pages.dashboard.tokenStats.outputTokens') }}
-                </div>
-                <div class="text-subtitle-1 font-weight-bold">
-                  {{ formatNumber(tokenSummary?.outputTokens ?? 0) }}
-                </div>
-              </div>
-            </v-col>
-            <v-col cols="12" sm="4">
-              <div class="token-usage-metric">
-                <div class="text-caption token-usage-muted">
-                  {{ $t('pages.dashboard.tokenStats.cacheTokens') }}
-                </div>
-                <div class="text-subtitle-1 font-weight-bold">
-                  {{ formatNumber(tokenCacheTotal) }}
-                </div>
-              </div>
+
+            <v-col cols="12" md="8">
+              <v-progress-linear
+                class="mb-4"
+                :model-value="tokenOutputShare"
+                color="success"
+                bg-color="info"
+                height="8"
+                rounded
+              />
+              <v-row dense>
+                <v-col cols="12" sm="4">
+                  <v-card variant="tonal" color="info" class="pa-3 text-center">
+                    <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold mb-1">
+                      {{ $t('pages.dashboard.tokenStats.inputTokens') }}
+                    </div>
+                    <div class="text-subtitle-1 font-weight-bold">
+                      {{ formatNumber(tokenSummary?.inputTokens ?? 0) }}
+                    </div>
+                  </v-card>
+                </v-col>
+                <v-col cols="12" sm="4">
+                  <v-card variant="tonal" color="success" class="pa-3 text-center">
+                    <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold mb-1">
+                      {{ $t('pages.dashboard.tokenStats.outputTokens') }}
+                    </div>
+                    <div class="text-subtitle-1 font-weight-bold">
+                      {{ formatNumber(tokenSummary?.outputTokens ?? 0) }}
+                    </div>
+                  </v-card>
+                </v-col>
+                <v-col cols="12" sm="4">
+                  <v-card variant="tonal" color="secondary" class="pa-3 text-center">
+                    <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold mb-1">
+                      {{ $t('pages.dashboard.tokenStats.cacheTokens') }}
+                    </div>
+                    <div class="text-subtitle-1 font-weight-bold">
+                      {{ formatNumber(tokenCacheTotal) }}
+                    </div>
+                  </v-card>
+                </v-col>
+              </v-row>
             </v-col>
           </v-row>
 
-          <v-divider class="my-4 token-usage-divider" />
+          <v-divider class="my-4" />
 
-          <div class="d-flex align-center justify-space-between ga-4 flex-wrap">
+          <div class="d-flex align-center justify-space-between text-caption text-medium-emphasis">
             <div>
-              <div class="text-caption token-usage-muted">
-                {{ $t('pages.dashboard.tokenStats.calls') }}
-              </div>
-              <div class="text-body-2">
-                {{
-                  $t('pages.dashboard.tokenStats.callCount', {
-                    success: tokenSummary?.successfulCalls ?? 0,
-                    total: tokenSummary?.totalCalls ?? 0,
-                  })
-                }}
-              </div>
+              <v-icon icon="mdi-api" size="small" class="mr-1" />
+              {{
+                $t('pages.dashboard.tokenStats.callCount', {
+                  success: tokenSummary?.successfulCalls ?? 0,
+                  total: tokenSummary?.totalCalls ?? 0,
+                })
+              }}
             </div>
-            <div class="text-sm-right">
-              <div class="text-caption token-usage-muted">
-                {{ $t('pages.dashboard.tokenStats.topModel') }}
-              </div>
-              <div class="text-body-2 font-weight-medium">
+            <div>
+              <v-icon icon="mdi-brain" size="small" class="mr-1" />
+              {{ $t('pages.dashboard.tokenStats.topModel') }}:
+              <span class="font-weight-medium text-high-emphasis">
                 {{ topTokenModel?.modelId || $t('pages.dashboard.tokenStats.noModel') }}
-              </div>
+              </span>
             </div>
           </div>
         </v-card>
@@ -269,46 +271,4 @@ const navigateTo = (path: string) => {
 </script>
 
 <style scoped>
-.token-usage-card {
-  background:
-    radial-gradient(circle at top right, rgba(255, 255, 255, 0.3), transparent 34%),
-    linear-gradient(135deg, #183a37 0%, #285d4f 48%, #c88b39 100%);
-  color: white;
-  overflow: hidden;
-}
-
-.token-usage-kicker,
-.token-usage-muted {
-  color: rgba(255, 255, 255, 0.72);
-}
-
-.token-usage-icon {
-  color: #183a37;
-}
-
-.token-usage-total {
-  font-size: clamp(2.4rem, 7vw, 4.6rem);
-  font-weight: 800;
-  letter-spacing: -0.08em;
-  line-height: 0.95;
-}
-
-.token-usage-progress :deep(.v-progress-linear__determinate) {
-  background: rgba(255, 255, 255, 0.92) !important;
-}
-
-.token-usage-progress {
-  background: rgba(255, 255, 255, 0.18);
-}
-
-.token-usage-metric {
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 18px;
-  padding: 14px 16px;
-}
-
-.token-usage-divider {
-  border-color: rgba(255, 255, 255, 0.24);
-}
 </style>
