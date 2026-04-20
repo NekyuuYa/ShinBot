@@ -230,6 +230,7 @@ import KeyValueEditor from '@/components/model-runtime/KeyValueEditor.vue'
 import GenericPickerDialog, {
   type GenericPickerSection,
 } from '@/components/model-runtime/GenericPickerDialog.vue'
+import { resolveProviderSource } from '@/utils/modelRuntimeSources'
 import type { Instance, InstanceConfig, UpdateInstanceRequest } from '@/api/instances'
 import type { PluginConfigSchema } from '@/api/plugins'
 import { useUiStore } from '@/stores/ui'
@@ -252,12 +253,11 @@ const botConfigEntries = ref<Array<{ key: string; value: string }>>([])
 const showMainLlmPicker = ref(false)
 
 const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
+  const result: GenericPickerSection[] = []
+
   const routes = modelRuntimeStore.routes
-  if (routes.length === 0) {
-    return []
-  }
-  return [
-    {
+  if (routes.length > 0) {
+    result.push({
       id: 'routes',
       label: t('pages.modelRuntime.labels.routeTargets'),
       items: [...routes]
@@ -278,8 +278,67 @@ const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
             : t('pages.modelRuntime.labels.disabled'),
           tagColor: route.enabled ? 'primary' : 'default',
         })),
-    },
-  ]
+    })
+  }
+
+  const providerGroups = modelRuntimeStore.providers
+    .map((provider) => {
+      const items = new Map<string, { value: string; title: string; subtitle: string; kind: 'catalog' | 'configured' }>()
+
+      for (const item of modelRuntimeStore.catalogItems[provider.id] || []) {
+        const value = item.litellmModel.trim()
+        if (!value) continue
+        items.set(value, {
+          value,
+          title: item.displayName || item.id || value,
+          subtitle: item.id && item.id !== value ? `${item.id} · ${value}` : value,
+          kind: 'catalog',
+        })
+      }
+
+      for (const model of modelRuntimeStore.modelsByProvider[provider.id] || []) {
+        const value = model.litellmModel.trim()
+        if (!value || items.has(value)) continue
+        items.set(value, {
+          value,
+          title: model.displayName || model.id,
+          subtitle: model.id !== value ? `${model.id} · ${value}` : value,
+          kind: 'configured',
+        })
+      }
+
+      return {
+        id: provider.id,
+        title: provider.displayName || provider.id,
+        subtitle: resolveProviderSource(provider.type)?.label || provider.type,
+        items: [...items.values()]
+          .sort((a, b) => a.title.localeCompare(b.title))
+          .map((item) => ({
+            value: item.value,
+            title: item.title,
+            subtitle: item.subtitle,
+            icon: 'mdi-cube-outline',
+            iconColor: 'secondary',
+            tag:
+              item.kind === 'catalog'
+                ? t('pages.modelRuntime.labels.catalog')
+                : t('pages.modelRuntime.labels.configured'),
+            tagColor: item.kind === 'catalog' ? 'info' : 'primary',
+          })),
+      }
+    })
+    .filter((group) => group.items.length > 0)
+    .sort((a, b) => a.title.localeCompare(b.title))
+
+  if (providerGroups.length > 0) {
+    result.push({
+      id: 'providers',
+      label: t('pages.modelRuntime.sidebar.providers'),
+      groups: providerGroups,
+    })
+  }
+
+  return result
 })
 
 const form = ref({

@@ -173,39 +173,35 @@
               />
             </v-col>
             <v-col cols="12" md="4">
-              <v-autocomplete
-                v-model="form.prompts"
-                multiple
-                chips
-                closable-chips
-                hide-selected
-                clearable
+              <v-text-field
+                :model-value="promptSummary"
                 :label="$t('pages.agents.fields.prompts')"
-                :items="promptOptions"
-                item-title="title"
-                item-value="value"
+                :placeholder="$t('pages.agents.fields.promptsEmpty')"
                 :loading="isLoadingPrompts"
-                :no-data-text="$t('pages.agents.fields.promptsEmpty')"
+                :clearable="form.prompts.length > 0"
+                readonly
                 variant="outlined"
                 density="comfortable"
+                append-inner-icon="mdi-menu-open"
+                @click="showPromptPicker = true"
+                @click:append-inner="showPromptPicker = true"
+                @click:clear.stop="form.prompts = []"
               />
             </v-col>
             <v-col cols="12" md="4">
-              <v-autocomplete
-                v-model="form.tools"
-                multiple
-                chips
-                closable-chips
-                hide-selected
-                clearable
+              <v-text-field
+                :model-value="toolSummary"
                 :label="$t('pages.agents.fields.tools')"
-                :items="toolOptions"
-                item-title="title"
-                item-value="value"
+                :placeholder="$t('pages.agents.fields.toolsEmpty')"
                 :loading="isLoadingTools"
-                :no-data-text="$t('pages.agents.fields.toolsEmpty')"
+                :clearable="form.tools.length > 0"
+                readonly
                 variant="outlined"
                 density="comfortable"
+                append-inner-icon="mdi-menu-open"
+                @click="showToolPicker = true"
+                @click:append-inner="showToolPicker = true"
+                @click:clear.stop="form.tools = []"
               />
             </v-col>
 
@@ -264,11 +260,34 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <generic-picker-dialog
+      v-model="showPromptPicker"
+      :title="$t('pages.agents.fields.prompts')"
+      :sections="promptPickerSections"
+      :selected="form.prompts"
+      :empty-text="$t('pages.agents.fields.promptsEmpty')"
+      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
+      multiple
+      @update:selected="(vals) => { form.prompts = vals }"
+    />
+
+    <generic-picker-dialog
+      v-model="showToolPicker"
+      :title="$t('pages.agents.fields.tools')"
+      :sections="toolPickerSections"
+      :selected="form.tools"
+      :empty-text="$t('pages.agents.fields.toolsEmpty')"
+      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
+      multiple
+      @update:selected="(vals) => { form.tools = vals }"
+    />
   </v-container>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import type { Agent, AgentPayload } from '@/api/agents'
 import { contextStrategiesApi, type ContextStrategy } from '@/api/contextStrategies'
@@ -276,12 +295,16 @@ import { promptsApi, type PromptCatalogItem } from '@/api/prompts'
 import { toolsApi, type ToolDefinition } from '@/api/tools'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
+import GenericPickerDialog, {
+  type GenericPickerSection,
+} from '@/components/model-runtime/GenericPickerDialog.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
 import { useAgentsStore } from '@/stores/agents'
 import { usePersonasStore } from '@/stores/personas'
 import { normalizeStringList } from '@/utils/stringList'
 
+const { t } = useI18n()
 const agentsStore = useAgentsStore()
 const personasStore = usePersonasStore()
 
@@ -295,6 +318,8 @@ const promptCatalog = ref<PromptCatalogItem[]>([])
 const isLoadingPrompts = ref(false)
 const toolCatalog = ref<ToolDefinition[]>([])
 const isLoadingTools = ref(false)
+const showPromptPicker = ref(false)
+const showToolPicker = ref(false)
 
 const form = reactive({
   agentId: '',
@@ -385,6 +410,44 @@ const toolOptions = computed(() => {
     }
   }
   return options
+})
+
+const promptPickerSections = computed<GenericPickerSection[]>(() => [
+  {
+    id: 'prompts',
+    label: t('pages.agents.fields.prompts'),
+    items: promptOptions.value.map((opt) => ({
+      value: opt.value,
+      title: opt.title,
+      icon: 'mdi-text-box-outline',
+      iconColor: 'primary',
+    })),
+  },
+])
+
+const toolPickerSections = computed<GenericPickerSection[]>(() => [
+  {
+    id: 'tools',
+    label: t('pages.agents.fields.tools'),
+    items: toolOptions.value.map((opt) => ({
+      value: opt.value,
+      title: opt.title,
+      icon: 'mdi-tools',
+      iconColor: 'secondary',
+    })),
+  },
+])
+
+const promptSummary = computed(() => {
+  if (form.prompts.length === 0) return ''
+  const first = promptOptions.value.find((o) => o.value === form.prompts[0])?.title ?? form.prompts[0]
+  return form.prompts.length === 1 ? first : `${first} (+${form.prompts.length - 1})`
+})
+
+const toolSummary = computed(() => {
+  if (form.tools.length === 0) return ''
+  const first = toolOptions.value.find((o) => o.value === form.tools[0])?.title ?? form.tools[0]
+  return form.tools.length === 1 ? first : `${first} (+${form.tools.length - 1})`
 })
 
 const syncContextStrategyType = (strategyRef: string) => {
