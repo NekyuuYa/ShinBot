@@ -52,7 +52,20 @@
   >
     <v-list nav class="px-3">
       <v-list-item
-        v-for="item in navItems"
+        v-for="item in primaryNavItems"
+        :key="item.to"
+        :to="item.to"
+        :prepend-icon="item.icon"
+        :title="t(item.title)"
+        class="nav-item mb-1"
+        active-class="nav-item-active"
+      />
+    </v-list>
+
+    <v-list nav class="px-3 pt-0">
+      <v-list-subheader v-if="!uiStore.isRail" class="text-caption">{{ t('layout.main.nav.agentCore') }}</v-list-subheader>
+      <v-list-item
+        v-for="item in agentCoreNavItems"
         :key="item.to"
         :to="item.to"
         :prepend-icon="item.icon"
@@ -135,16 +148,25 @@ const { t } = useI18n()
 
 const drawer = ref(true)
 
-const navItems = [
+type NavItem = {
+  to: string
+  icon: string
+  title: string
+}
+
+const primaryNavItems: NavItem[] = [
   { to: '/dashboard', icon: 'mdi-view-dashboard-outline', title: 'layout.main.nav.dashboard' },
   { to: '/instances', icon: 'mdi-robot-outline', title: 'layout.main.nav.instancesManage' },
   { to: '/plugins', icon: 'mdi-puzzle-outline', title: 'layout.main.nav.pluginsManage' },
-  { to: '/tools', icon: 'mdi-tools', title: 'layout.main.nav.toolsManage' },
-  { to: '/agents', icon: 'mdi-account-group-outline', title: 'layout.main.nav.agentsManage' },
-  { to: '/prompts', icon: 'mdi-text-box-multiple-outline', title: 'layout.main.nav.promptsManage' },
-  { to: '/personas', icon: 'mdi-account-badge-outline', title: 'layout.main.nav.personasManage' },
-  { to: '/model-runtime', icon: 'mdi-router-network', title: 'layout.main.nav.modelRuntime' },
   { to: '/monitoring', icon: 'mdi-monitor-dashboard', title: 'layout.main.nav.monitoring' },
+]
+
+const agentCoreNavItems: NavItem[] = [
+  { to: '/model-runtime', icon: 'mdi-router-network', title: 'layout.main.nav.modelRuntime' },
+  { to: '/agents', icon: 'mdi-account-group-outline', title: 'layout.main.nav.agentsManage' },
+  { to: '/personas', icon: 'mdi-account-badge-outline', title: 'layout.main.nav.personasManage' },
+  { to: '/prompts', icon: 'mdi-text-box-multiple-outline', title: 'layout.main.nav.promptsManage' },
+  { to: '/tools', icon: 'mdi-tools', title: 'layout.main.nav.toolsManage' },
 ]
 
 const routeTitleMap: Record<string, string> = {
