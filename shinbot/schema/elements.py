@@ -172,10 +172,10 @@ class Message(BaseModel):
 
     # ── Dual-view API ────────────────────────────────────────────────
 
-    def get_text(self) -> str:
+    def get_text(self, *, self_id: str = "") -> str:
         """Extract concatenated plain text from all text elements (recursive)."""
         parts: list[str] = []
-        _collect_text(self.elements, parts)
+        _collect_text(self.elements, parts, self_id=str(self_id or ""))
         return "".join(parts)
 
     @property
@@ -219,12 +219,20 @@ class Message(BaseModel):
         return f"Message(elements=[...{len(self.elements)}])"
 
 
-def _collect_text(elements: list[MessageElement], parts: list[str]) -> None:
+def _collect_text(elements: list[MessageElement], parts: list[str], self_id: str = "") -> None:
     """Recursively collect text content from element tree."""
     for el in elements:
         if el.type == "text":
             parts.append(str(el.attrs.get("content", "")))
         elif el.type == "br":
             parts.append("\n")
+        elif el.type == "sb:poke":
+            target = str(el.attrs.get("target", "") or "").strip()
+            if target and self_id and target == self_id:
+                parts.append("[戳一戳: 戳了你一下]")
+            elif target:
+                parts.append(f"[戳一戳: 戳了用户 {target} 一下]")
+            else:
+                parts.append("[戳一戳]")
         if el.children:
-            _collect_text(el.children, parts)
+            _collect_text(el.children, parts, self_id)

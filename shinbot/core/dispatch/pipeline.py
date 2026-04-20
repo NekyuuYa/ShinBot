@@ -633,7 +633,7 @@ class MessagePipeline:
                         sender_id=event.sender_id or "",
                         sender_name=((event.user.name or "") if event.user is not None else ""),
                         content_json=content_json,
-                        raw_text=message.get_text(),
+                        raw_text=message.get_text(self_id=event.self_id),
                         role="user",
                         is_read=False,
                         is_mentioned=is_mentioned,
@@ -802,16 +802,18 @@ class MessagePipeline:
         # Route natural-language sessions to the attention scheduler. Different
         # immediacy requirements are expressed through response profiles on the
         # same workflow engine.
-        if (
+        should_schedule_attention = (
             self._attention_scheduler is not None
             and not bot._sent_messages
             and not bot.is_stopped
             and bot._msg_log_id is not None
-        ):
+        )
+        if should_schedule_attention:
             is_mentioned = any(
                 el.type == "at" and el.attrs.get("id") == event.self_id
                 for el in message.elements
             )
+            attention_multiplier = self._resolve_attention_multiplier(message, event.self_id)
             response_profile = self._resolve_response_profile(bot)
             # Fire-and-forget: attention accumulation runs async
             asyncio.create_task(
@@ -822,9 +824,14 @@ class MessagePipeline:
                     response_profile=response_profile,
                     is_mentioned=is_mentioned,
                     is_reply_to_bot=bot.is_reply_to_bot(),
+                    attention_multiplier=attention_multiplier,
                 ),
                 name=f"attention-{session_id}",
             )
+        elif self._database is not None and bot._msg_log_id is not None:
+            self._database.message_logs.mark_read(bot._msg_log_id)
+            if self._context_manager is not None:
+                self._context_manager.mark_read_until(session_id, bot._msg_log_id)
         return bot
 
     def _resolve_response_profile(self, bot: MessageContext) -> str:
@@ -838,3 +845,36 @@ class MessagePipeline:
             is_mentioned=bot.is_mentioned,
             is_reply_to_bot=bot.is_reply_to_bot(),
         )
+
+    @staticmethod
+    def _resolve_attention_multiplier(message: Message, self_id: str) -> float:
+        self_id = str(self_id or "").strip()
+        has_poke_self = False
+        has_poke_other = False
+        has_at_self = False
+        has_at_other = False
+
+        stack = list(message.elements)
+        while stack:
+            element = stack.pop()
+            if element.type == "sb:poke":
+                target = str(element.attrs.get("target", "") or "").strip()
+                if target and self_id and target == self_id:
+                    has_poke_self = True
+                else:
+                    has_poke_other = True
+            elif element.type == "at":
+                target = str(element.attrs.get("id", "") or "").strip()
+                if target and self_id and target == self_id:
+                    has_at_self = True
+                elif target:
+                    has_at_other = True
+            stack.extend(element.children)
+
+        if has_poke_self:
+            return 2.0
+        if has_poke_other:
+            return 0.2
+        if has_at_other and not has_at_self:
+            return 0.6
+        return 1.0

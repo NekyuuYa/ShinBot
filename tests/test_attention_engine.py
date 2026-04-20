@@ -197,6 +197,16 @@ class TestContribution:
         assert c_low == engine.config.base_gain * 0.25
         assert c_high == engine.config.base_gain * 4.0
 
+    def test_attention_multiplier_scales_whole_contribution(self, engine):
+        c = engine.compute_contribution(
+            sender_factor=1.0,
+            is_mentioned=True,
+            is_reply_to_bot=False,
+            recent_mention_count=0,
+            attention_multiplier=0.2,
+        )
+        assert c == (engine.config.base_gain + engine.config.mention_bonus) * 0.2
+
 
 # ── Effective threshold tests ───────────────────────────────────────
 

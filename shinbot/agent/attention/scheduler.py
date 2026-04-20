@@ -75,6 +75,7 @@ class AttentionScheduler:
         response_profile: str = "balanced",
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
+        attention_multiplier: float = 1.0,
     ) -> None:
         """Called by the pipeline for each incoming group message after persistence.
 
@@ -100,6 +101,7 @@ class AttentionScheduler:
                 is_mentioned=is_mentioned,
                 is_reply_to_bot=is_reply_to_bot,
                 recent_mention_count=recent_mention_count,
+                attention_multiplier=attention_multiplier,
             )
 
             if not triggered:

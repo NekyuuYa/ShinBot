@@ -14,13 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from shinbot.agent.attention.models import (
-        SenderWeightState,
-        SessionAttentionState,
-    )
+from typing import Any
 
 # Dedicated logger — independent of the module-level loggers so it can be
 # enabled/disabled and formatted separately.  When debug mode is active we
@@ -105,6 +99,7 @@ class AttentionDebugTracer:
         threshold: float,
         triggered: bool,
         sender_factor: float,
+        attention_multiplier: float,
         is_mentioned: bool,
         is_reply_to_bot: bool,
         burst_count: int,
@@ -119,7 +114,8 @@ class AttentionDebugTracer:
         lines = [
             "",
             _c(_BOLD, f"┌─ Attention Update: {session_id} ─────────────"),
-            f"│ Sender:       {_c(_CYAN, sender_id)}  (factor={sender_factor:.3f})",
+            f"│ Sender:       {_c(_CYAN, sender_id)}  "
+            f"(factor={sender_factor:.3f}, multiplier={attention_multiplier:.3f})",
             f"│ Flags:        mention={is_mentioned}  reply={is_reply_to_bot}  burst={burst_count}",
             f"│ Decay:        {value_before_decay:.4f} → {value_after_decay:.4f}  ({decay_delta:+.4f})",
             f"│ Contribution: {_c(_YELLOW, f'+{contribution:.4f}')}",

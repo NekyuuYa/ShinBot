@@ -488,6 +488,7 @@ class TestMessagePipeline:
                 response_profile: str = "balanced",
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
+                attention_multiplier: float = 1.0,
             ) -> None:
                 self.calls.append(
                     {
@@ -497,6 +498,7 @@ class TestMessagePipeline:
                         "response_profile": response_profile,
                         "is_mentioned": is_mentioned,
                         "is_reply_to_bot": is_reply_to_bot,
+                        "attention_multiplier": attention_multiplier,
                     }
                 )
 
@@ -663,6 +665,7 @@ class TestMessagePipeline:
                 response_profile: str = "balanced",
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
+                attention_multiplier: float = 1.0,
             ) -> None:
                 self.calls.append(
                     {
@@ -672,6 +675,7 @@ class TestMessagePipeline:
                         "response_profile": response_profile,
                         "is_mentioned": is_mentioned,
                         "is_reply_to_bot": is_reply_to_bot,
+                        "attention_multiplier": attention_multiplier,
                     }
                 )
 
@@ -710,11 +714,13 @@ class TestMessagePipeline:
                 response_profile: str = "balanced",
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
+                attention_multiplier: float = 1.0,
             ) -> None:
                 self.calls.append(
                     {
                         "response_profile": response_profile,
                         "is_mentioned": is_mentioned,
+                        "attention_multiplier": attention_multiplier,
                     }
                 )
 
@@ -754,11 +760,13 @@ class TestMessagePipeline:
                 response_profile: str = "balanced",
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
+                attention_multiplier: float = 1.0,
             ) -> None:
                 self.calls.append(
                     {
                         "response_profile": response_profile,
                         "is_mentioned": is_mentioned,
+                        "attention_multiplier": attention_multiplier,
                     }
                 )
 
@@ -782,6 +790,65 @@ class TestMessagePipeline:
         assert len(scheduler.calls) == 1
         assert scheduler.calls[0]["response_profile"] == "immediate"
         assert scheduler.calls[0]["is_mentioned"] is True
+
+    @pytest.mark.asyncio
+    async def test_pipeline_attention_multiplier_for_poke_and_at_other(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        class RecordingAttentionScheduler:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            async def on_message(
+                self,
+                session_id: str,
+                msg_log_id: int,
+                sender_id: str,
+                *,
+                response_profile: str = "balanced",
+                is_mentioned: bool = False,
+                is_reply_to_bot: bool = False,
+                attention_multiplier: float = 1.0,
+            ) -> None:
+                self.calls.append(
+                    {
+                        "is_mentioned": is_mentioned,
+                        "attention_multiplier": attention_multiplier,
+                    }
+                )
+
+        scheduler = RecordingAttentionScheduler()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
+        )
+
+        await pipeline.process_event(
+            make_event('<sb:poke target="bot-1" type="poke"/>', channel_type=0),
+            self.adapter,
+        )
+        await pipeline.process_event(
+            make_event('<sb:poke target="user-2" type="poke"/>', channel_type=0),
+            self.adapter,
+        )
+        await pipeline.process_event(
+            make_event('<at id="user-2"/>hello', channel_type=0),
+            self.adapter,
+        )
+        await asyncio.sleep(0)
+
+        assert [call["attention_multiplier"] for call in scheduler.calls] == [2.0, 0.2, 0.6]
+        assert [call["is_mentioned"] for call in scheduler.calls] == [False, False, False]
+
+        rows = db.message_logs.get_recent("test-bot:group:group:1", limit=3)
+        assert rows[0]["raw_text"] == "[戳一戳: 戳了你一下]"
+        assert rows[1]["raw_text"] == "[戳一戳: 戳了用户 user-2 一下]"
 
     @pytest.mark.asyncio
     async def test_pipeline_uses_canonical_private_response_profile_config(self, tmp_path):
@@ -808,6 +875,7 @@ class TestMessagePipeline:
                 response_profile: str = "balanced",
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
+                attention_multiplier: float = 1.0,
             ) -> None:
                 self.calls.append({"response_profile": response_profile})
 
@@ -856,11 +924,13 @@ class TestMessagePipeline:
                 response_profile: str = "balanced",
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
+                attention_multiplier: float = 1.0,
             ) -> None:
                 self.calls.append(
                     {
                         "response_profile": response_profile,
                         "is_mentioned": is_mentioned,
+                        "attention_multiplier": attention_multiplier,
                     }
                 )
 

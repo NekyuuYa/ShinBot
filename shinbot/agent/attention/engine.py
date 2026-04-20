@@ -34,6 +34,9 @@ class AttentionConfig:
     base_gain: float = 1.0
     mention_bonus: float = 1.5
     reply_bonus: float = 1.2
+    poke_self_multiplier: float = 2.0
+    poke_other_multiplier: float = 0.2
+    mention_other_multiplier: float = 0.6
 
     # Burst detection (Robust Interrupt)
     burst_window_seconds: float = 10.0
@@ -144,6 +147,7 @@ class AttentionEngine:
         is_mentioned: bool,
         is_reply_to_bot: bool,
         recent_mention_count: int,
+        attention_multiplier: float = 1.0,
     ) -> float:
         """Compute a single message's contribution to session attention.
 
@@ -165,7 +169,7 @@ class AttentionEngine:
             )
             feature_bonus *= burst_factor
 
-        return base + feature_bonus
+        return (base + feature_bonus) * attention_multiplier
 
     # ── Effective threshold ─────────────────────────────────────────
 
@@ -199,6 +203,7 @@ class AttentionEngine:
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
         recent_mention_count: int = 0,
+        attention_multiplier: float = 1.0,
         now: float | None = None,
     ) -> tuple[SessionAttentionState, bool]:
         """Process a new message and return (updated_state, should_trigger).
@@ -237,6 +242,7 @@ class AttentionEngine:
             is_mentioned=is_mentioned,
             is_reply_to_bot=is_reply_to_bot,
             recent_mention_count=recent_mention_count,
+            attention_multiplier=attention_multiplier,
         )
 
         state.attention_value += contribution
@@ -273,6 +279,7 @@ class AttentionEngine:
             threshold=threshold,
             triggered=triggered,
             sender_factor=sender_factor,
+            attention_multiplier=attention_multiplier,
             is_mentioned=is_mentioned,
             is_reply_to_bot=is_reply_to_bot,
             burst_count=recent_mention_count,
