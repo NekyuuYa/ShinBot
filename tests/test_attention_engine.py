@@ -230,6 +230,15 @@ class TestEffectiveThreshold:
         )
         assert engine.effective_threshold(state) == engine.config.threshold_min
 
+    def test_fixed_base_threshold_metadata_overrides_state_value(self, engine):
+        state = SessionAttentionState(
+            session_id="test",
+            base_threshold=5.0,
+            runtime_threshold_offset=2.0,
+            metadata={engine.FIXED_BASE_THRESHOLD_METADATA_KEY: 15.0},
+        )
+        assert engine.effective_threshold(state) == 17.0
+
 
 # ── Integration: update_attention ───────────────────────────────────
 
@@ -423,6 +432,67 @@ class TestThresholdAdjustment:
 
         result = engine.adjust_session_threshold("th2", offset_delta=100.0)
         assert result["effective_threshold"] == engine.config.threshold_max
+
+    def test_adjust_threshold_uses_fixed_base_threshold(self, engine, db):
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (id, instance_id, session_type, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("th3", "inst1", "group", time.time(), time.time()),
+            )
+
+        state = engine.repo.get_or_create_attention("th3")
+        state.metadata[engine.FIXED_BASE_THRESHOLD_METADATA_KEY] = 15.0
+        engine.repo.save_attention(state)
+
+        result = engine.adjust_session_threshold("th3", offset_delta=1.0)
+        assert result["effective_threshold"] == 16.0
+
+
+class TestFixedThresholdOverride:
+    def test_update_attention_keeps_fixed_base_threshold(self, engine, db):
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (id, instance_id, session_type, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("ft1", "inst1", "group", time.time(), time.time()),
+            )
+
+        state = engine.repo.get_or_create_attention("ft1")
+        state.metadata[engine.FIXED_BASE_THRESHOLD_METADATA_KEY] = 15.0
+        engine.repo.save_attention(state)
+
+        updated, _ = engine.update_attention(
+            "ft1",
+            sender_id="u1",
+            msg_log_id=1,
+            base_threshold=1.0,
+        )
+
+        assert updated.base_threshold == 15.0
+        assert engine.effective_threshold(updated) == 15.0
+
+    def test_inspect_state_reports_fixed_base_threshold(self, engine, db):
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (id, instance_id, session_type, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("ft2", "inst1", "group", time.time(), time.time()),
+            )
+
+        state = engine.repo.get_or_create_attention("ft2")
+        state.metadata[engine.FIXED_BASE_THRESHOLD_METADATA_KEY] = 15.0
+        engine.repo.save_attention(state)
+
+        inspected = engine.inspect_state("ft2")
+        assert inspected["base_threshold"] == 15.0
+        assert inspected["fixed_base_threshold"] == 15.0
 
 
 # ── Repository tests ────────────────────────────────────────────────

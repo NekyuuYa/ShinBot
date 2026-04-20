@@ -79,6 +79,8 @@ def weight_curve(sender_score: float) -> float:
 class AttentionEngine:
     """Stateless computation engine for session attention."""
 
+    FIXED_BASE_THRESHOLD_METADATA_KEY = "fixed_base_threshold"
+
     def __init__(self, config: AttentionConfig, repository: AttentionRepository) -> None:
         self.config = config
         self.repo = repository
@@ -167,8 +169,21 @@ class AttentionEngine:
 
     # ── Effective threshold ─────────────────────────────────────────
 
+    def resolved_base_threshold(self, state: SessionAttentionState) -> float:
+        """Return the session base threshold after applying fixed overrides."""
+
+        raw = state.base_threshold
+        fixed_value = state.metadata.get(self.FIXED_BASE_THRESHOLD_METADATA_KEY)
+        if fixed_value is not None:
+            try:
+                raw = float(fixed_value)
+            except (TypeError, ValueError):
+                raw = state.base_threshold
+        clamped, _ = _clamp(raw, self.config.threshold_min, self.config.threshold_max)
+        return clamped
+
     def effective_threshold(self, state: SessionAttentionState) -> float:
-        raw = state.base_threshold + state.runtime_threshold_offset
+        raw = self.resolved_base_threshold(state) + state.runtime_threshold_offset
         clamped, _ = _clamp(raw, self.config.threshold_min, self.config.threshold_max)
         return clamped
 
@@ -200,7 +215,10 @@ class AttentionEngine:
         )
         sw = self.repo.get_or_create_sender_weight(session_id, sender_id)
 
-        if base_threshold is not None:
+        fixed_base_threshold = state.metadata.get(self.FIXED_BASE_THRESHOLD_METADATA_KEY)
+        if fixed_base_threshold is not None:
+            state.base_threshold = self.resolved_base_threshold(state)
+        elif base_threshold is not None:
             state.base_threshold = base_threshold
 
         # Capture pre-decay value for debug tracing
@@ -368,17 +386,19 @@ class AttentionEngine:
         )
 
         effective_before = self.effective_threshold(state)
+        base_threshold_value = self.resolved_base_threshold(state)
         new_offset = state.runtime_threshold_offset + offset_delta
-        effective_raw = state.base_threshold + new_offset
+        effective_raw = base_threshold_value + new_offset
         _, status = _clamp(effective_raw, self.config.threshold_min, self.config.threshold_max)
 
         # Clamp the offset such that effective stays within bounds
         if effective_raw < self.config.threshold_min:
-            new_offset = self.config.threshold_min - state.base_threshold
+            new_offset = self.config.threshold_min - base_threshold_value
         elif effective_raw > self.config.threshold_max:
-            new_offset = self.config.threshold_max - state.base_threshold
+            new_offset = self.config.threshold_max - base_threshold_value
 
         state.runtime_threshold_offset = new_offset
+        state.base_threshold = base_threshold_value
         self.repo.save_attention(state)
 
         self.tracer.trace_threshold_adjust(
@@ -405,6 +425,7 @@ class AttentionEngine:
             base_threshold=self.config.base_threshold,
         )
         state = self.apply_time_decay(state)
+        state.base_threshold = self.resolved_base_threshold(state)
         self.repo.save_attention(state)
 
         threshold = self.effective_threshold(state)
@@ -435,10 +456,16 @@ class AttentionEngine:
         return {
             "session_id": session_id,
             "attention_value": round(state.attention_value, 3),
+            "base_threshold": round(state.base_threshold, 3),
             "effective_threshold": round(threshold, 3),
             "attention_band": attention_band,
             "attention_ratio": round(ratio, 3),
             "runtime_threshold_offset": round(state.runtime_threshold_offset, 3),
+            "fixed_base_threshold": (
+                round(self.resolved_base_threshold(state), 3)
+                if self.FIXED_BASE_THRESHOLD_METADATA_KEY in state.metadata
+                else None
+            ),
             "cooldown_active": state.is_cooling_down,
             "last_consumed_msg_log_id": state.last_consumed_msg_log_id,
             "sender_weights": weight_summary,
