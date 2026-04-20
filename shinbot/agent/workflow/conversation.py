@@ -16,7 +16,7 @@ from shinbot.agent.prompt_manager.runtime_sync import (
 )
 from shinbot.agent.workflow.formatting import (
     crosstalk_detect,
-    format_batch_context,
+    format_batch_context_blocks,
     format_incremental_messages,
 )
 from shinbot.agent.workflow.model_resolution import resolve_model_target
@@ -29,6 +29,7 @@ from shinbot.core.bot_config import resolve_bot_runtime_config
 from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from shinbot.agent.context import ContextManager
     from shinbot.agent.media import MediaService
     from shinbot.agent.model_runtime import ModelRuntime
     from shinbot.agent.tools import ToolManager
@@ -65,6 +66,7 @@ class WorkflowRunner:
         attention_engine: AttentionEngine,
         adapter_manager: AdapterManager,
         media_service: MediaService | None = None,
+        context_manager: ContextManager | None = None,
     ) -> None:
         self._database = database
         self._prompt_registry = prompt_registry
@@ -73,6 +75,7 @@ class WorkflowRunner:
         self._engine = attention_engine
         self._adapter_manager = adapter_manager
         self._media_service = media_service
+        self._context_manager = context_manager
 
     async def run(
         self,
@@ -143,18 +146,21 @@ class WorkflowRunner:
 
         # ── Build initial batch context ────────────────────────────
 
-        batch_context = format_batch_context(
+        batch_context_blocks = format_batch_context_blocks(
             batch,
             session_id=session_id,
             attention_repo=self._engine.repo,
             media_service=self._media_service,
         )
+        batch_context = "\n".join(block["text"] for block in batch_context_blocks)
 
         topic_count = crosstalk_detect(batch)
         if topic_count > 1:
-            batch_context += (
-                f"\n[系统提示：检测到当前批次可能包含 {topic_count} 个不相关话题线索]"
+            crosstalk_hint = (
+                f"[系统提示：检测到当前批次可能包含 {topic_count} 个不相关话题线索]"
             )
+            batch_context_blocks.append({"type": "text", "text": crosstalk_hint})
+            batch_context += f"\n{crosstalk_hint}"
 
         # ── Initial prompt assembly ────────────────────────────────
 
@@ -165,6 +171,8 @@ class WorkflowRunner:
             route_id=route_id,
             model_id=model_id,
             model_context_window=model_context_window,
+            hydrate_session_context=False,
+            include_context_messages=False,
             context_strategy_id=context_strategy_id,
             component_overrides=component_ids,
             template_inputs={
@@ -172,8 +180,10 @@ class WorkflowRunner:
                 "instance_id": instance_id,
                 "platform": "",
                 "message_text": batch_context,
+                "message_blocks": batch_context_blocks,
                 "user_id": "",
             },
+            context_inputs=self._build_batch_context_inputs(session_id, batch),
             metadata={
                 "trigger": "attention_workflow",
                 "agent_uuid": agent_uuid,
@@ -317,6 +327,8 @@ class WorkflowRunner:
                 cursor_msg_id = new_msgs[-1]["id"]
                 # Atomically advance cursor — safe against concurrent on_message
                 self._engine.repo.update_consumed_cursor(session_id, cursor_msg_id)
+                if self._context_manager is not None:
+                    self._context_manager.mark_read_until(session_id, cursor_msg_id)
 
                 # Update record to reflect the expanded batch
                 record.batch_end_msg_id = cursor_msg_id
@@ -423,6 +435,32 @@ class WorkflowRunner:
             self._prompt_registry,
             agent=agent,
         )
+
+    def _build_batch_context_inputs(
+        self,
+        session_id: str,
+        batch: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        session = self._database.sessions.get(session_id)
+        platform = str((session or {}).get("platform", "") or "").strip()
+        turns: list[dict[str, Any]] = []
+        for msg in batch:
+            text = str(msg.get("raw_text", "") or "").strip()
+            if not text:
+                text = "[无文本]"
+            turns.append(
+                {
+                    "role": "user",
+                    "content": text,
+                    "sender_id": str(msg.get("sender_id", "") or "").strip(),
+                    "sender_name": str(msg.get("sender_name", "") or "").strip(),
+                    "platform": platform,
+                }
+            )
+        return {
+            "platform": platform,
+            "history_turns": turns,
+        }
 
     def _save_run(self, record: WorkflowRunRecord) -> None:
         try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -82,25 +83,56 @@ def format_batch_context(
 ) -> str:
     """Render the primary unread batch into workflow-facing text context."""
 
-    lines: list[str] = []
+    blocks = format_batch_context_blocks(
+        batch,
+        session_id=session_id,
+        attention_repo=attention_repo,
+        media_service=media_service,
+    )
+    return "\n".join(str(block["text"]) for block in blocks)
+
+
+def format_batch_context_blocks(
+    batch: list[dict[str, Any]],
+    *,
+    session_id: str,
+    attention_repo: AttentionRepository,
+    media_service: MediaService | None = None,
+) -> list[dict[str, str]]:
+    """Render the primary unread batch into separate workflow-facing text blocks."""
+
+    blocks: list[dict[str, str]] = []
     state = attention_repo.get_attention(session_id)
     prev_summary = ""
     if state is not None:
         prev_summary = str(state.metadata.get("internal_summary", "") or "")
     if prev_summary:
-        lines.append(f"[上轮观察摘要：{prev_summary}]")
-        lines.append("")
+        blocks.append({"type": "text", "text": f"[上轮观察摘要：{prev_summary}]"})
         attention_repo.clear_metadata_key(session_id, "internal_summary")
 
-    lines.append(f"[以下是会话中 {len(batch)} 条未消费消息]")
+    blocks.append({"type": "text", "text": f"[以下是会话中 {len(batch)} 条未消费消息]"})
     if batch_contains_media(batch, media_service):
-        lines.append(
-            "[提示：若需重新识别某条消息中的原图，请调用 media.inspect_original，"
-            "并优先传入该消息行里的 message_log_id。]"
+        blocks.append(
+            {
+                "type": "text",
+                "text": (
+                    "[提示：若需重新识别某条消息中的原图，请调用 media.inspect_original，"
+                    "并优先传入该消息行里的 message_log_id。]"
+                ),
+            }
         )
+    now_ms = time.time() * 1000
     for msg in batch:
-        lines.append(format_message_line(msg, media_service))
-    return "\n".join(lines)
+        blocks.append(
+            {
+                "type": "text",
+                "text": (
+                    f"{format_message_line(msg, media_service)}\n"
+                    f"时间: {format_relative_message_time(msg, now_ms=now_ms)}"
+                ),
+            }
+        )
+    return blocks
 
 
 def format_incremental_messages(
@@ -148,6 +180,32 @@ def format_message_line(
             media_suffix = " " + " ".join(media_notes)
             media_ref_suffix = format_media_reference(msg)
     return f"{sender_name}{mentioned}: {text}{media_suffix}{media_ref_suffix}"
+
+
+def format_relative_message_time(msg: dict[str, Any], *, now_ms: float | None = None) -> str:
+    raw_created_at = msg.get("created_at")
+    if raw_created_at is None:
+        return "未知"
+    try:
+        created_at = float(raw_created_at)
+    except (TypeError, ValueError):
+        return "未知"
+
+    created_at_ms = created_at if created_at > 10_000_000_000 else created_at * 1000
+    current_ms = now_ms if now_ms is not None else time.time() * 1000
+    elapsed_seconds = max(0, int((current_ms - created_at_ms) / 1000))
+    if elapsed_seconds < 5:
+        return "刚刚"
+    if elapsed_seconds < 60:
+        return f"{elapsed_seconds}秒前"
+    elapsed_minutes = elapsed_seconds // 60
+    if elapsed_minutes < 60:
+        return f"{elapsed_minutes}分钟前"
+    elapsed_hours = elapsed_minutes // 60
+    if elapsed_hours < 48:
+        return f"{elapsed_hours}小时前"
+    elapsed_days = elapsed_hours // 24
+    return f"{elapsed_days}天前"
 
 
 def format_media_reference(msg: dict[str, Any]) -> str:

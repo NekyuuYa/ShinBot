@@ -94,6 +94,7 @@ class ShinBot:
         )
         register_runtime_prompt_components(
             self.prompt_registry,
+            message_text_resolver=self.prompt_registry.resolve_builtin_message_text_prompt,
             current_time_resolver=self.prompt_registry.resolve_builtin_current_time_prompt,
         )
         self.media_inspection_runner = (
@@ -140,6 +141,7 @@ class ShinBot:
                 self.attention_engine,
                 self.database,
                 self.attention_config,
+                context_manager=self.context_manager,
             )
             self.workflow_runner = WorkflowRunner(
                 self.database,
@@ -149,6 +151,7 @@ class ShinBot:
                 self.attention_engine,
                 self.adapter_manager,
                 self.media_service,
+                self.context_manager,
             )
             # Wire workflow dispatcher into the scheduler
             self.attention_scheduler.set_workflow_dispatcher(

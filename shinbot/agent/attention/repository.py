@@ -194,6 +194,14 @@ class AttentionRepository:
                 """,
                 (threshold_to_deduct, last_msg_id, last_msg_id, session_id),
             )
+            conn.execute(
+                """
+                UPDATE message_logs
+                SET is_read = 1
+                WHERE session_id = ? AND id <= ? AND role = 'user'
+                """,
+                (session_id, last_msg_id),
+            )
 
     def update_consumed_cursor(self, session_id: str, msg_log_id: int) -> None:
         """Atomically advance last_consumed_msg_log_id without touching other fields.
@@ -210,6 +218,14 @@ class AttentionRepository:
                 WHERE session_id = ?
                 """,
                 (msg_log_id, session_id),
+            )
+            conn.execute(
+                """
+                UPDATE message_logs
+                SET is_read = 1
+                WHERE session_id = ? AND id <= ? AND role = 'user'
+                """,
+                (session_id, msg_log_id),
             )
 
     def update_metadata(self, session_id: str, metadata: dict[str, Any]) -> None:

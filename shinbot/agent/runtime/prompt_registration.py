@@ -17,15 +17,39 @@ if TYPE_CHECKING:
 
 
 def register_runtime_prompt_components(
-    registry: "PromptRegistry",
+    registry: PromptRegistry,
     *,
+    message_text_resolver: Callable[
+        [PromptAssemblyRequest, PromptComponent, PromptSource],
+        dict[str, Any],
+    ],
     current_time_resolver: Callable[
-        ["PromptAssemblyRequest", PromptComponent, "PromptSource"],
+        [PromptAssemblyRequest, PromptComponent, PromptSource],
         dict[str, Any],
     ],
 ) -> None:
     """Register built-in runtime prompt components."""
 
+    registry.register_component(
+        PromptComponent(
+            id=registry.BUILTIN_MESSAGE_TEXT_PROMPT_COMPONENT_ID,
+            stage=PromptStage.INSTRUCTIONS,
+            kind=PromptComponentKind.RESOLVER,
+            resolver_ref=registry.BUILTIN_MESSAGE_TEXT_PROMPT_RESOLVER,
+            priority=8_800,
+            enabled=True,
+            cache_stable=False,
+            metadata={
+                "builtin": True,
+                "display_name": "Workflow Message Batch",
+                "description": "Inject the caller-provided message batch as one text block.",
+            },
+        )
+    )
+    registry.register_resolver(
+        registry.BUILTIN_MESSAGE_TEXT_PROMPT_RESOLVER,
+        message_text_resolver,
+    )
     registry.register_component(
         PromptComponent(
             id=registry.BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID,

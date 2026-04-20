@@ -169,6 +169,8 @@ class PromptAssemblyRequest(BaseModel):
     route_id: str = ""
     model_id: str = ""
     model_context_window: int | None = None
+    hydrate_session_context: bool = True
+    include_context_messages: bool = True
     task_id: str = ""
     component_overrides: list[str] = Field(default_factory=list)
     disabled_components: list[str] = Field(default_factory=list)
@@ -189,6 +191,7 @@ class PromptComponentRecord(BaseModel):
     rendered_text: str = ""
     rendered_data: list[dict[str, Any]] | None = None
     rendered_messages: list[dict[str, Any]] | None = None
+    rendered_content_blocks: list[dict[str, Any]] | None = None
     text_hash: str = ""
     cache_stable: bool = True
     truncated: bool = False

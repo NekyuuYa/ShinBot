@@ -373,6 +373,7 @@ def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
             role="user",
             raw_text="from pool user",
             created_at=1000,
+            is_read=True,
         )
     )
     db.message_logs.insert(
@@ -381,6 +382,7 @@ def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
             role="assistant",
             raw_text="from pool assistant",
             created_at=2000,
+            is_read=True,
         )
     )
 
@@ -410,6 +412,30 @@ def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
     assert "stale" not in contents
 
 
+def test_context_manager_exports_only_read_messages(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    msg_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id="s-read-filter",
+            role="user",
+            raw_text="pending unread",
+            sender_id="user-1",
+            created_at=1000,
+            is_read=False,
+        )
+    )
+
+    context_manager = ContextManager(db.message_logs)
+    assert context_manager.get_context_inputs("s-read-filter")["history_turns"] == []
+
+    db.message_logs.mark_read(msg_id)
+    context_manager.mark_read_until("s-read-filter", msg_id)
+
+    turns = context_manager.get_context_inputs("s-read-filter")["history_turns"]
+    assert [turn["content"] for turn in turns] == ["pending unread"]
+
+
 def test_prompt_registry_includes_media_digest_from_context_pool(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
@@ -427,6 +453,7 @@ def test_prompt_registry_includes_media_digest_from_context_pool(tmp_path) -> No
             ),
             raw_text="",
             created_at=1000,
+            is_read=True,
         )
     )
     items = media_service.ingest_message_media(
@@ -487,6 +514,7 @@ def test_prompt_registry_batch_ejects_from_active_pool(tmp_path) -> None:
                 role="user" if idx % 2 == 0 else "assistant",
                 raw_text=f"turn {idx} " + "word " * 6,
                 created_at=1000 + idx,
+                is_read=True,
             )
         )
 
@@ -526,6 +554,7 @@ def test_prompt_registry_syncs_session_policy_for_track_time_ejection(tmp_path) 
             role="user",
             raw_text="seed " + "word " * 6,
             created_at=1000,
+            is_read=True,
         )
     )
     db.message_logs.insert(
@@ -534,6 +563,7 @@ def test_prompt_registry_syncs_session_policy_for_track_time_ejection(tmp_path) 
             role="assistant",
             raw_text="seed " + "word " * 6,
             created_at=1001,
+            is_read=True,
         )
     )
 
@@ -843,6 +873,7 @@ def test_prompt_registry_injects_current_time_prompt_into_constraints() -> None:
     registry = PromptRegistry()
     register_runtime_prompt_components(
         registry,
+        message_text_resolver=registry.resolve_builtin_message_text_prompt,
         current_time_resolver=registry.resolve_builtin_current_time_prompt,
     )
     registry.register_component(

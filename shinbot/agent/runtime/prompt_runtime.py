@@ -25,9 +25,9 @@ _WEEKDAY_NAMES = (
 
 
 def resolve_current_time_prompt(
-    request: "PromptAssemblyRequest",
-    _component: "PromptComponent",
-    _source: "PromptSource",
+    request: PromptAssemblyRequest,
+    _component: PromptComponent,
+    _source: PromptSource,
 ) -> dict[str, Any]:
     """Render a dynamic local-time hint for the current prompt assembly."""
 
@@ -52,4 +52,20 @@ def resolve_current_time_prompt(
         "now_iso": now.isoformat(),
         "timezone": timezone_name,
         "utc_offset": offset_text,
+    }
+
+
+def resolve_message_text_prompt(
+    request: PromptAssemblyRequest,
+    _component: PromptComponent,
+    _source: PromptSource,
+) -> dict[str, Any]:
+    """Render the caller-provided message batch as one instruction block."""
+
+    text = str(request.template_inputs.get("message_text", "") or "").strip()
+    content_blocks = request.template_inputs.get("message_blocks")
+    return {
+        "text": text,
+        "content_blocks": content_blocks,
+        "has_message_text": bool(text),
     }

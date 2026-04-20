@@ -14,7 +14,11 @@ def hydrate_request_context(
 ) -> PromptAssemblyRequest:
     """Hydrate context inputs from the active context manager when available."""
 
-    if context_manager is None or not request.session_id:
+    if (
+        context_manager is None
+        or not request.session_id
+        or not request.hydrate_session_context
+    ):
         return request
     context_inputs = context_manager.get_context_inputs(
         request.session_id,
@@ -30,7 +34,11 @@ def sync_context_policy(
 ) -> dict[str, Any]:
     """Sync session-level context trimming policy before resolver execution."""
 
-    if context_manager is None or not request.session_id:
+    if (
+        context_manager is None
+        or not request.session_id
+        or not request.hydrate_session_context
+    ):
         return {}
     return context_manager.set_session_policy(
         request.session_id,
@@ -69,7 +77,11 @@ def resolve_builtin_sliding_window_context(
         else None
     )
 
-    if context_manager is not None and request.session_id:
+    if (
+        context_manager is not None
+        and request.session_id
+        and request.hydrate_session_context
+    ):
         ejection = context_manager.apply_batch_ejection(
             request.session_id,
             strategy=strategy,

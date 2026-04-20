@@ -7,7 +7,10 @@ import pytest
 from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
 from shinbot.agent.attention.models import SessionAttentionState
 from shinbot.agent.attention.tools import register_attention_tools
+from shinbot.agent.context import ContextManager
+from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
 from shinbot.agent.prompt_manager import PromptRegistry
+from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
@@ -17,6 +20,7 @@ from shinbot.persistence import (
     AgentRecord,
     BotConfigRecord,
     DatabaseManager,
+    MessageLogRecord,
     ModelDefinitionRecord,
     ModelProviderRecord,
     ModelRouteMemberRecord,
@@ -268,3 +272,163 @@ async def test_workflow_runner_continues_after_send_reply_when_not_terminating(t
     assert record.response_summary == "第二条回复"
     assert len(runtime.calls) == 2
     assert [elements[0].text_content for _, elements in adapter.sent] == ["第一条回复", "第二条回复"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    instance_id = "inst-workflow"
+    session_id = f"{instance_id}:group:1"
+    _seed_workflow_runtime(db, instance_id=instance_id)
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id=instance_id,
+            session_type="group",
+            platform="qq",
+            channel_id="1",
+        )
+    )
+
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="旧上下文，不该作为拆开的 history_turns 再进来",
+            sender_id="legacy-user",
+            sender_name="Legacy",
+            created_at=1000,
+            content_json="[]",
+            platform_msg_id="legacy-1",
+        )
+    )
+
+    attention_engine = AttentionEngine(AttentionConfig(), db.attention)
+    attention_state = SessionAttentionState(
+        session_id=session_id,
+        attention_value=6.0,
+        last_consumed_msg_log_id=10,
+        last_trigger_msg_log_id=10,
+    )
+    attention_engine.repo.save_attention(attention_state)
+
+    adapter = MockAdapter(instance_id=instance_id, platform="qq")
+    adapter_manager = AdapterManager()
+    adapter_manager._instances[instance_id] = adapter
+
+    registry = ToolRegistry()
+    register_attention_tools(registry, attention_engine, adapter_manager, db)
+    tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    identity_store = IdentityStore(tmp_path / "identities.json")
+    context_manager = ContextManager(db.message_logs, identity_store=identity_store)
+    prompt_registry = PromptRegistry(
+        context_manager=context_manager,
+        identity_store=identity_store,
+    )
+    register_identity_prompt_components(
+        prompt_registry,
+        resolver=prompt_registry.resolve_builtin_identity_map_prompt,
+    )
+    register_runtime_prompt_components(
+        prompt_registry,
+        message_text_resolver=prompt_registry.resolve_builtin_message_text_prompt,
+        current_time_resolver=prompt_registry.resolve_builtin_current_time_prompt,
+    )
+
+    runtime = QueuedModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps(
+                                {"text": "收到", "terminate_round": True},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+
+    runner = WorkflowRunner(
+        db,
+        prompt_registry,
+        runtime,
+        tool_manager,
+        attention_engine,
+        adapter_manager,
+    )
+
+    batch = [
+        {
+            "id": 11,
+            "session_id": session_id,
+            "platform_msg_id": "msg-11",
+            "sender_id": "602190328",
+            "sender_name": "UNOwen",
+            "raw_text": "或许要攒够5条",
+            "is_mentioned": 0,
+            "created_at": 1_000.0,
+            "content_json": json.dumps(
+                [MessageElement.text("或许要攒够5条").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "id": 12,
+            "session_id": session_id,
+            "platform_msg_id": "msg-12",
+            "sender_id": "1917419834",
+            "sender_name": "Ginkoro",
+            "raw_text": "但是at是有特殊权重的",
+            "is_mentioned": 0,
+            "created_at": 2_000.0,
+            "content_json": json.dumps(
+                [MessageElement.text("但是at是有特殊权重的").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+    record = await runner.run(
+        session_id,
+        batch,
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    assert record is not None
+    assert record.replied is True
+    assert len(runtime.calls) == 1
+
+    call_messages = runtime.calls[0].messages
+    initial_messages = call_messages[:2]
+    assert [message["role"] for message in initial_messages] == ["system", "user"]
+    assert all("name" not in message for message in initial_messages)
+
+    final_user_message = initial_messages[-1]
+    final_texts = [str(block.get("text", "")) for block in final_user_message["content"]]
+
+    assert final_texts[0] == "[以下是会话中 2 条未消费消息]"
+    assert "UNOwen: 或许要攒够5条" in final_texts[1]
+    assert "时间: " in final_texts[1]
+    assert "Ginkoro: 但是at是有特殊权重的" in final_texts[2]
+    assert "时间: " in final_texts[2]
+    assert not any(
+        "UNOwen: 或许要攒够5条" in text and "Ginkoro: 但是at是有特殊权重的" in text
+        for text in final_texts
+    )
+    assert any("### 参与者身份参考 (Identity Map)" in text for text in final_texts)
+    assert any("ID: 602190328 -> 昵称: UNOwen" in text for text in final_texts)
+    assert any("ID: 1917419834 -> 昵称: Ginkoro" in text for text in final_texts)
+    assert any("### 行为约束" in text for text in final_texts)
+    assert any("### 当前时间" in text for text in final_texts)
+    assert not any("旧上下文" in text for text in final_texts)

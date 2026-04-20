@@ -12,6 +12,7 @@ from shinbot.agent.attention.models import SessionAttentionState
 from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from shinbot.agent.context import ContextManager
     from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
@@ -39,11 +40,13 @@ class AttentionScheduler:
         database: DatabaseManager,
         config: AttentionConfig,
         *,
+        context_manager: ContextManager | None = None,
         workflow_dispatcher: WorkflowDispatcher | None = None,
     ) -> None:
         self._engine = engine
         self._database = database
         self._config = config
+        self._context_manager = context_manager
         self._workflow_dispatcher = workflow_dispatcher
 
         # Per-session pending timer tasks
@@ -233,6 +236,8 @@ class AttentionScheduler:
         if dispatch_ok:
             threshold = self._engine.effective_threshold(state)
             self._engine.repo.commit_batch_consumption(session_id, last_msg_id, threshold)
+            if self._context_manager is not None:
+                self._context_manager.mark_read_until(session_id, last_msg_id)
             self._engine.tracer.trace_batch_claim(
                 session_id,
                 batch_size=len(batch),

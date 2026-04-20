@@ -65,6 +65,8 @@ def _record_to_turn(item: dict[str, Any]) -> dict[str, Any] | None:
     created_at = item.get("created_at")
     if created_at is not None:
         turn["_created_at"] = created_at
+    if "is_read" in item:
+        turn["_is_read"] = bool(item.get("is_read"))
     return turn
 
 
@@ -137,7 +139,7 @@ class ActiveContextPool:
         self._per_turn_tokens.append(tokens)
         self.token_estimate += tokens
 
-    def export_turns(self) -> list[dict[str, Any]]:
+    def export_turns(self, *, read_only: bool = True) -> list[dict[str, Any]]:
         """Return turn dicts suitable for prompt assembly.
 
         Internal bookkeeping keys (``_record_id``, ``_created_at``) are
@@ -145,9 +147,18 @@ class ActiveContextPool:
         """
         turns: list[dict[str, Any]] = []
         for item in self.messages:
+            if read_only and not bool(item.get("_is_read", True)):
+                continue
             turn = {k: v for k, v in item.items() if not k.startswith("_")}
             turns.append(turn)
         return turns
+
+    def mark_read_until(self, msg_id: int) -> None:
+        """Mark buffered message turns as readable up to the consumed cursor."""
+        for item in self.messages:
+            record_id = item.get("_record_id")
+            if isinstance(record_id, int) and record_id <= msg_id:
+                item["_is_read"] = True
 
     def trim_turns(self, count: int) -> int:
         removed = 0
@@ -214,6 +225,7 @@ class ContextManager:
                 "sender_name": record.sender_name,
                 "platform_msg_id": record.platform_msg_id,
                 "platform": platform,
+                "is_read": record.is_read,
             }
         )
         pool.append(payload)
@@ -225,7 +237,8 @@ class ContextManager:
                 platform=platform,
             )
 
-        self._apply_session_policy(record.session_id)
+        if record.is_read:
+            self._apply_session_policy(record.session_id)
 
     def _build_pool_payload(self, item: dict[str, Any]) -> dict[str, Any]:
         payload = {
@@ -238,6 +251,7 @@ class ContextManager:
             "sender_name": item.get("sender_name", ""),
             "platform_msg_id": item.get("platform_msg_id", ""),
             "platform": item.get("platform", ""),
+            "is_read": bool(item.get("is_read", False)),
             "content_json": item.get("content_json", "[]"),
         }
         merged_content = self._compose_content(payload)
@@ -258,10 +272,14 @@ class ContextManager:
         return text
 
     def get_recent_messages(
-        self, session_id: str, *, limit: int | None = None
+        self,
+        session_id: str,
+        *,
+        limit: int | None = None,
+        read_only: bool = True,
     ) -> list[dict[str, Any]]:
         pool = self.get_pool(session_id)
-        items = list(pool.messages)
+        items = pool.export_turns(read_only=read_only)
         if limit is not None:
             items = items[-limit:]
         return items
@@ -285,6 +303,12 @@ class ContextManager:
         payload["current_tokens"] = pool.token_estimate
         payload["context_source"] = "active_context_pool"
         return payload
+
+    def mark_read_until(self, session_id: str, msg_id: int) -> None:
+        if not session_id:
+            return
+        pool = self.get_pool(session_id)
+        pool.mark_read_until(msg_id)
 
     def set_session_policy(
         self,

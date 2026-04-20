@@ -10,7 +10,6 @@ from shinbot.agent.identity import (
     inject_identity_layers_into_messages,
     resolve_identity_map_prompt,
 )
-from shinbot.agent.runtime import resolve_current_time_prompt
 from shinbot.agent.prompt_manager.context_strategies import (
     hydrate_request_context,
     resolve_builtin_sliding_window_context,
@@ -44,6 +43,7 @@ from shinbot.agent.prompt_manager.snapshots import (
     build_prompt_signature,
     create_prompt_snapshot,
 )
+from shinbot.agent.runtime import resolve_current_time_prompt, resolve_message_text_prompt
 
 if TYPE_CHECKING:
     from shinbot.agent.context import ContextManager
@@ -65,6 +65,8 @@ class PromptRegistry:
     BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID = "builtin.instructions.identity_map"
     BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID = "builtin.constraints.identity_behavior"
     BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER = "builtin.identity.map"
+    BUILTIN_MESSAGE_TEXT_PROMPT_COMPONENT_ID = "builtin.instructions.message_text"
+    BUILTIN_MESSAGE_TEXT_PROMPT_RESOLVER = "builtin.runtime.message_text"
     BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID = "builtin.constraints.current_time"
     BUILTIN_CURRENT_TIME_PROMPT_RESOLVER = "builtin.runtime.current_time"
 
@@ -339,6 +341,9 @@ class PromptRegistry:
         ):
             block = stage_by_name[stage_key]
             for record in block.components:
+                if record.rendered_content_blocks:
+                    final_content.extend(record.rendered_content_blocks)
+                    continue
                 if record.rendered_text:
                     final_content.append({"type": "text", "text": record.rendered_text})
 
@@ -384,6 +389,9 @@ class PromptRegistry:
         records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
         ordered_records: list[PromptComponentRecord],
     ) -> None:
+        if not request.include_context_messages:
+            return
+
         strategy = self._resolve_context_strategy(request)
         if strategy is None:
             return
@@ -552,51 +560,62 @@ class PromptRegistry:
         records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
         ordered_records: list[PromptComponentRecord],
     ) -> None:
-        component = self._components.get(self.BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID)
-        if component is None or not component.enabled:
-            return
+        for component_id in (
+            self.BUILTIN_MESSAGE_TEXT_PROMPT_COMPONENT_ID,
+            self.BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID,
+        ):
+            component = self._components.get(component_id)
+            if component is None or not component.enabled:
+                continue
 
-        has_record = any(
-            record.component_id == component.id and bool(record.rendered_text.strip())
-            for record in ordered_records
-        )
-        if has_record:
-            return
-
-        source = infer_component_source(component)
-        resolver = self._resolvers.get(component.resolver_ref)
-        if resolver is None:
-            raise ValueError(
-                f"Prompt resolver {component.resolver_ref!r} is not registered"
+            has_record = any(
+                record.component_id == component.id and bool(record.rendered_text.strip())
+                for record in ordered_records
             )
+            if has_record:
+                continue
 
-        resolver_output = resolver(request, component, source)
-        if isinstance(resolver_output, dict):
-            rendered_text = str(resolver_output.get("text", "")).strip()
-            rendered_metadata = {
-                key: value for key, value in resolver_output.items() if key != "text"
-            }
-        else:
-            rendered_text = str(resolver_output).strip()
-            rendered_metadata = {}
+            source = infer_component_source(component)
+            resolver = self._resolvers.get(component.resolver_ref)
+            if resolver is None:
+                raise ValueError(
+                    f"Prompt resolver {component.resolver_ref!r} is not registered"
+                )
 
-        if not rendered_text:
-            return
+            resolver_output = resolver(request, component, source)
+            if isinstance(resolver_output, dict):
+                rendered_text = str(resolver_output.get("text", "")).strip()
+                rendered_content_blocks = _normalize_content_blocks(
+                    resolver_output.get("content_blocks")
+                )
+                rendered_metadata = {
+                    key: value
+                    for key, value in resolver_output.items()
+                    if key not in ("text", "content_blocks")
+                }
+            else:
+                rendered_text = str(resolver_output).strip()
+                rendered_content_blocks = None
+                rendered_metadata = {}
 
-        record = PromptComponentRecord(
-            component_id=component.id,
-            stage=component.stage,
-            kind=component.kind,
-            version=component.version,
-            priority=component.priority,
-            source=source,
-            rendered_text=rendered_text,
-            text_hash=stable_text_hash(rendered_text),
-            cache_stable=component.cache_stable,
-            metadata={**dict(component.metadata), **rendered_metadata},
-        )
-        records_by_stage[component.stage].append(record)
-        ordered_records.append(record)
+            if not rendered_text:
+                continue
+
+            record = PromptComponentRecord(
+                component_id=component.id,
+                stage=component.stage,
+                kind=component.kind,
+                version=component.version,
+                priority=component.priority,
+                source=source,
+                rendered_text=rendered_text,
+                rendered_content_blocks=rendered_content_blocks,
+                text_hash=stable_text_hash(rendered_text),
+                cache_stable=component.cache_stable,
+                metadata={**dict(component.metadata), **rendered_metadata},
+            )
+            records_by_stage[component.stage].append(record)
+            ordered_records.append(record)
 
     def _resolve_context_strategy(self, request: PromptAssemblyRequest) -> ContextStrategy | None:
         if request.context_strategy_id:
@@ -680,3 +699,30 @@ class PromptRegistry:
             _component=component,
             _source=source,
         )
+
+    def resolve_builtin_message_text_prompt(
+        self,
+        request: PromptAssemblyRequest,
+        component: PromptComponent,
+        source: PromptSource,
+    ) -> dict[str, Any]:
+        return resolve_message_text_prompt(
+            request=request,
+            _component=component,
+            _source=source,
+        )
+
+
+def _normalize_content_blocks(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+
+    blocks: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        block_type = str(item.get("type", "text") or "text").strip()
+        text = str(item.get("text", "") or "").strip()
+        if block_type == "text" and text:
+            blocks.append({"type": "text", "text": text})
+    return blocks or None
