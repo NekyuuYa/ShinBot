@@ -348,6 +348,8 @@ export const useModelRuntimeStore = defineStore(
     }
   },
   {
-    persist: true,
+    persist: {
+      paths: ['selectedTab', 'selectedKind', 'selectedId'],
+    },
   }
 )

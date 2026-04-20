@@ -25,6 +25,7 @@ export function useModelRuntimePage() {
   const selectedId = ref('')
   const probingProviderId = ref('')
   const catalogLoading = ref(false)
+  const catalogSearch = ref('')
   const isCreatingProvider = ref(false)
   const isCreatingRoute = ref(false)
   const showInlineModelEditor = ref(false)
@@ -236,6 +237,16 @@ export function useModelRuntimePage() {
           (model.id === generatedId || model.litellmModel === item.litellmModel)
       )
     })
+  })
+
+  const filteredCatalogItems = computed(() => {
+    const keyword = catalogSearch.value.trim().toLowerCase()
+    if (!keyword) {
+      return availableCatalogItems.value
+    }
+    return availableCatalogItems.value.filter((item) =>
+      `${item.displayName} ${item.id} ${item.litellmModel}`.toLowerCase().includes(keyword)
+    )
   })
 
   const modelIdPickerRouteOptions = computed(() =>
@@ -490,6 +501,7 @@ export function useModelRuntimePage() {
   const selectProvider = (id: string) => {
     isCreatingProvider.value = false
     showModelIdPicker.value = false
+    catalogSearch.value = ''
     selectedKind.value = 'provider'
     selectedId.value = id
   }
@@ -995,6 +1007,7 @@ export function useModelRuntimePage() {
     providerHeaderRows,
     fetchCatalogInline,
     catalogLoading,
+    catalogSearch,
     providerCanManageModels,
     openInlineModelEditor,
     showInlineModelEditor,
@@ -1014,6 +1027,7 @@ export function useModelRuntimePage() {
     removeModel,
     toggleModel,
     availableCatalogItems,
+    filteredCatalogItems,
     importCatalogItem,
     deleteCurrentProvider,
     saveProvider,

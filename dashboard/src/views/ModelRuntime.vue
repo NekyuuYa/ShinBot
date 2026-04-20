@@ -569,12 +569,27 @@
 
               <div v-if="availableCatalogItems.length > 0">
                 <v-divider class="mb-4" />
-                <div class="section-label mb-3">
-                  {{ $t('pages.modelRuntime.cards.availableModels') }}
+                <div class="d-flex align-center justify-space-between mb-3">
+                  <span class="section-label">
+                    {{ $t('pages.modelRuntime.cards.availableModels') }}
+                  </span>
+                  <span class="text-caption text-medium-emphasis">
+                    {{ filteredCatalogItems.length }} / {{ availableCatalogItems.length }}
+                  </span>
                 </div>
+                <v-text-field
+                  v-model="catalogSearch"
+                  :placeholder="$t('common.actions.action.search')"
+                  prepend-inner-icon="mdi-magnify"
+                  variant="outlined"
+                  density="compact"
+                  clearable
+                  hide-details
+                  class="mb-3"
+                />
                 <div class="d-flex flex-column ga-3">
                   <v-card
-                    v-for="item in availableCatalogItems"
+                    v-for="item in filteredCatalogItems"
                     :key="item.id"
                     variant="outlined"
                     class="catalog-item-card"
@@ -697,6 +712,8 @@ const {
   removeModel,
   toggleModel,
   availableCatalogItems,
+  filteredCatalogItems,
+  catalogSearch,
   importCatalogItem,
   deleteCurrentProvider,
   saveProvider,

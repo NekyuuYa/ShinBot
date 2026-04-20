@@ -167,6 +167,8 @@
                 v-model="form.botConfig.mainLlm"
                 :label="$t('pages.instances.form.mainLlm')"
                 placeholder="openai-main/gpt-fast"
+                append-inner-icon="mdi-database-search-outline"
+                @click:append-inner="showMainLlmPicker = true"
               />
             </v-col>
             <v-col cols="12">
@@ -194,6 +196,16 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <generic-picker-dialog
+      v-model="showMainLlmPicker"
+      :title="$t('pages.instances.form.mainLlm')"
+      :sections="mainLlmPickerSections"
+      :selected="form.botConfig.mainLlm ? [form.botConfig.mainLlm] : []"
+      :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
+      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
+      @update:selected="(vals) => { form.botConfig.mainLlm = vals[0] ?? '' }"
+    />
   </v-container>
 </template>
 
@@ -209,11 +221,15 @@ import {
 } from '@/api/botConfigs'
 import { useInstancesStore } from '@/stores/instances'
 import { usePluginsStore } from '@/stores/plugins'
+import { useModelRuntimeStore } from '@/stores/modelRuntime'
 import InstanceCard from '@/components/InstanceCard.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import LayoutModeButton from '@/components/LayoutModeButton.vue'
 import KeyValueEditor from '@/components/model-runtime/KeyValueEditor.vue'
+import GenericPickerDialog, {
+  type GenericPickerSection,
+} from '@/components/model-runtime/GenericPickerDialog.vue'
 import type { Instance, InstanceConfig, UpdateInstanceRequest } from '@/api/instances'
 import type { PluginConfigSchema } from '@/api/plugins'
 import { useUiStore } from '@/stores/ui'
@@ -223,6 +239,7 @@ const { t } = useI18n()
 const instancesStore = useInstancesStore()
 const pluginsStore = usePluginsStore()
 const uiStore = useUiStore()
+const modelRuntimeStore = useModelRuntimeStore()
 
 const searchQuery = ref('')
 const viewMode = ref<'card' | 'list'>('list')
@@ -232,6 +249,38 @@ const editingId = ref('')
 const agents = ref<AgentSummary[]>([])
 const botConfigs = ref<BotConfig[]>([])
 const botConfigEntries = ref<Array<{ key: string; value: string }>>([])
+const showMainLlmPicker = ref(false)
+
+const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
+  const routes = modelRuntimeStore.routes
+  if (routes.length === 0) {
+    return []
+  }
+  return [
+    {
+      id: 'routes',
+      label: t('pages.modelRuntime.labels.routeTargets'),
+      items: [...routes]
+        .sort((a, b) => {
+          if (a.enabled !== b.enabled) {
+            return a.enabled ? -1 : 1
+          }
+          return a.id.localeCompare(b.id)
+        })
+        .map((route) => ({
+          value: route.id,
+          title: route.id,
+          subtitle: route.purpose || route.strategy,
+          icon: 'mdi-transit-connection-variant',
+          iconColor: route.enabled ? 'primary' : 'surface-variant',
+          tag: route.enabled
+            ? t('pages.modelRuntime.labels.enabled')
+            : t('pages.modelRuntime.labels.disabled'),
+          tagColor: route.enabled ? 'primary' : 'default',
+        })),
+    },
+  ]
+})
 
 const form = ref({
   name: '',
@@ -307,6 +356,7 @@ onMounted(() => {
     pluginsStore.fetchPlugins(),
     fetchAgents(),
     fetchBotConfigs(),
+    modelRuntimeStore.routes.length === 0 ? modelRuntimeStore.fetchAll() : Promise.resolve(),
   ])
 })
 
