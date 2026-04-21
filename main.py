@@ -10,6 +10,7 @@ import sys
 import uvicorn
 
 from shinbot.core.application.boot import BootController
+from shinbot.core.cli import serve_with_operator_cli
 
 logger = logging.getLogger("shinbot.main")
 
@@ -20,6 +21,7 @@ async def _run(
     api_host: str,
     api_port: int,
     attention_debug: bool,
+    operator_cli: bool,
 ) -> None:
     controller = BootController(
         config_path=config_path,
@@ -43,7 +45,15 @@ async def _run(
     logger.info("Management API starting on http://%s:%d", api_host, api_port)
 
     try:
-        await server.serve()
+        if operator_cli:
+            await serve_with_operator_cli(
+                boot=controller,
+                api_host=api_host,
+                api_port=api_port,
+                server=server,
+            )
+        else:
+            await server.serve()
     finally:
         await controller.shutdown()
         logger.info("Goodbye.")
@@ -81,6 +91,11 @@ def main() -> None:
         action="store_true",
         help="Enable attention system debug traces in console",
     )
+    parser.add_argument(
+        "--operator-cli",
+        action="store_true",
+        help="Attach an interactive operator CLI for live runtime control",
+    )
     args = parser.parse_args()
 
     try:
@@ -91,6 +106,7 @@ def main() -> None:
                 args.api_host,
                 args.api_port,
                 args.attention_debug,
+                args.operator_cli,
             )
         )
     except KeyboardInterrupt:

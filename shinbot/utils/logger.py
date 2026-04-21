@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Iterable
+from typing import Any, TextIO
 
 _CONFIGURED = False
 _log_handler_installer: Callable[[], None] | None = None
@@ -130,6 +130,10 @@ class _ColorFormatter(logging.Formatter):
         return f"{color}{message}{self._RESET}"
 
 
+class _PlainFormatter(logging.Formatter):
+    pass
+
+
 class _ReadableContextFilter(logging.Filter):
     def __init__(self, *, keep_logger_parts: int = 3) -> None:
         super().__init__()
@@ -139,6 +143,32 @@ class _ReadableContextFilter(logging.Filter):
         record.level_tag = display_log_level(record)
         record.short_name = shorten_logger_name(record.name, keep_parts=self._keep_logger_parts)
         return True
+
+
+def build_console_handler(
+    level: int,
+    *,
+    stream: TextIO | None = None,
+    use_color: bool = True,
+) -> logging.Handler:
+    console = logging.StreamHandler(stream)
+    console.setLevel(level)
+    console.addFilter(_ReadableContextFilter())
+    formatter_cls = _ColorFormatter if use_color else _PlainFormatter
+    console.setFormatter(
+        formatter_cls(
+            "%(asctime)s | %(level_tag)-5s | %(short_name)-30s | %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    console._shinbot_console_handler = True  # type: ignore[attr-defined]
+    return console
+
+
+def _iter_console_handlers(root: logging.Logger) -> Iterable[logging.Handler]:
+    for handler in root.handlers:
+        if getattr(handler, "_shinbot_console_handler", False):
+            yield handler
 
 
 def setup_logging(level_name: str = "INFO") -> None:
@@ -153,15 +183,7 @@ def setup_logging(level_name: str = "INFO") -> None:
     root = logging.getLogger()
     root.setLevel(level)
 
-    console = logging.StreamHandler()
-    console.setLevel(level)
-    console.addFilter(_ReadableContextFilter())
-    console.setFormatter(
-        _ColorFormatter(
-            "%(asctime)s | %(level_tag)-5s | %(short_name)-30s | %(message)s",
-            datefmt="%H:%M:%S",
-        )
-    )
+    console = build_console_handler(level)
     root.addHandler(console)
     _configure_third_party_loggers(level)
 
@@ -182,6 +204,31 @@ def _configure_third_party_loggers(root_level: int) -> None:
     for name in _NOISY_THIRD_PARTY_LOGGERS:
         logger = logging.getLogger(name)
         logger.setLevel(third_party_level)
+
+
+def replace_console_handler(*, stream: TextIO | None = None, use_color: bool = True) -> None:
+    """Replace ShinBot's console handler while keeping other handlers attached."""
+    root = logging.getLogger()
+    handlers = list(_iter_console_handlers(root))
+    for handler in handlers:
+        root.removeHandler(handler)
+    root.addHandler(build_console_handler(root.level, stream=stream, use_color=use_color))
+
+
+def set_root_log_level(level_name: str) -> str:
+    """Update root and known dependency loggers to a new level."""
+    normalized = level_name.upper()
+    level = getattr(logging, normalized, None)
+    if not isinstance(level, int):
+        raise ValueError(f"Unsupported log level: {level_name}")
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    for handler in root.handlers:
+        if getattr(handler, "_shinbot_console_handler", False):
+            handler.setLevel(level)
+    _configure_third_party_loggers(level)
+    return normalized
 
 
 def get_logger(name: str) -> logging.Logger:
