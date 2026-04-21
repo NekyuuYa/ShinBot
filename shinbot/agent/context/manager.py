@@ -7,7 +7,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.prompt_manager.schema import ContextStrategy
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.persistence.repos import ContextProvider
 
@@ -37,15 +36,6 @@ def estimate_context_tokens(turns: list[dict[str, Any]], summary: str = "") -> i
     word_estimate = len(text.split())
     char_estimate = math.ceil(len(text) / 4)
     return max(word_estimate, char_estimate)
-
-
-def _resolve_effective_context_window(
-    strategy_max_context_tokens: int | None,
-    model_context_window: int | None,
-) -> int | None:
-    if strategy_max_context_tokens is not None and model_context_window is not None:
-        return min(strategy_max_context_tokens, model_context_window)
-    return strategy_max_context_tokens or model_context_window
 
 
 def _record_to_turn(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -169,34 +159,6 @@ class ActiveContextPool:
             if isinstance(record_id, int) and record_id <= msg_id:
                 item["_is_read"] = True
 
-    def trim_turns(self, count: int) -> int:
-        removed = 0
-        while removed < count and len(self.messages) > 1:
-            self.token_estimate -= self._per_turn_tokens[0]
-            self._per_turn_tokens.popleft()
-            self.messages.popleft()
-            removed += 1
-        return removed
-
-    def trim_ratio(self, ratio: float) -> int:
-        if ratio <= 0:
-            return 0
-        n = len(self.messages)
-        if n <= 1:
-            return 0
-        count = min(n - 1, max(1, math.floor(n * ratio)))
-        return self.trim_turns(count)
-
-    def trim_to_token_budget(self, target_tokens: int) -> int:
-        if target_tokens < 1:
-            return 0
-        removed = 0
-        while self.token_estimate > target_tokens and len(self.messages) > 1:
-            self.token_estimate -= self._per_turn_tokens[0]
-            self._per_turn_tokens.popleft()
-            self.messages.popleft()
-            removed += 1
-        return removed
 
 
 class ContextManager:
@@ -217,7 +179,6 @@ class ContextManager:
         self._identity_store = identity_store
         self._media_service = media_service
         self._pools: dict[str, ActiveContextPool] = {}
-        self._session_policies: dict[str, dict[str, Any]] = {}
 
     def get_pool(self, session_id: str) -> ActiveContextPool:
         pool = self._pools.get(session_id)
@@ -258,7 +219,7 @@ class ContextManager:
             )
 
         if record.is_read:
-            self._apply_session_policy(record.session_id)
+            return
 
     def _build_pool_payload(self, item: dict[str, Any]) -> dict[str, Any]:
         payload = {
@@ -330,91 +291,3 @@ class ContextManager:
         pool = self.get_pool(session_id)
         pool.mark_read_until(msg_id)
 
-    def set_session_policy(
-        self,
-        session_id: str,
-        *,
-        strategy: ContextStrategy,
-        model_context_window: int | None,
-    ) -> dict[str, Any]:
-        if not session_id:
-            return {"dropped_turns": 0, "remaining_turns": 0, "current_tokens": 0}
-        self._session_policies[session_id] = {
-            "strategy": strategy,
-            "model_context_window": model_context_window,
-        }
-        return self._apply_session_policy(session_id)
-
-    def apply_batch_ejection(
-        self,
-        session_id: str,
-        *,
-        strategy: ContextStrategy,
-        model_context_window: int | None,
-    ) -> dict[str, Any]:
-        if not session_id:
-            return {"dropped_turns": 0, "remaining_turns": 0, "current_tokens": 0}
-        pool = self.get_pool(session_id)
-        turns = pool.export_turns()
-        current_tokens = pool.token_estimate
-        trigger_ratio = strategy.budget.trigger_ratio
-        max_context_tokens = _resolve_effective_context_window(
-            strategy.budget.max_context_tokens,
-            model_context_window,
-        )
-        if max_context_tokens is None:
-            return {
-                "dropped_turns": 0,
-                "remaining_turns": len(turns),
-                "current_tokens": current_tokens,
-            }
-        trigger_tokens = max(1, math.floor(max_context_tokens * trigger_ratio))
-        if current_tokens < trigger_tokens or len(turns) <= 1:
-            return {
-                "dropped_turns": 0,
-                "remaining_turns": len(turns),
-                "current_tokens": current_tokens,
-                "trigger_tokens": trigger_tokens,
-            }
-
-        target_context_tokens = strategy.budget.target_context_tokens
-        effective_target_tokens = (
-            target_context_tokens
-            if target_context_tokens is not None and target_context_tokens < trigger_tokens
-            else None
-        )
-        trim_ratio = strategy.budget.trim_ratio
-        trim_turns = strategy.budget.trim_turns
-        trim_mode = "turns"
-        if effective_target_tokens is not None:
-            dropped = pool.trim_to_token_budget(effective_target_tokens)
-            trim_mode = "token_budget"
-        elif trim_ratio is not None:
-            dropped = pool.trim_ratio(trim_ratio)
-            trim_mode = "ratio"
-        else:
-            dropped = pool.trim_turns(trim_turns)
-
-        return {
-            "dropped_turns": dropped,
-            "remaining_turns": len(pool.export_turns()),
-            "current_tokens": pool.token_estimate,
-            "trigger_tokens": trigger_tokens,
-            "target_tokens": effective_target_tokens,
-            "trim_mode": trim_mode,
-        }
-
-    def _apply_session_policy(self, session_id: str) -> dict[str, Any]:
-        policy = self._session_policies.get(session_id)
-        if policy is None:
-            pool = self.get_pool(session_id)
-            return {
-                "dropped_turns": 0,
-                "remaining_turns": len(pool.export_turns()),
-                "current_tokens": pool.token_estimate,
-            }
-        return self.apply_batch_ejection(
-            session_id,
-            strategy=policy["strategy"],
-            model_context_window=policy["model_context_window"],
-        )

@@ -7,7 +7,6 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from shinbot.agent.attention.repository import AttentionRepository
     from shinbot.agent.media import MediaService
 
 # ── CJK-aware tokenization for cross-talk detection ──────────────────
@@ -72,69 +71,6 @@ def crosstalk_detect(batch: list[dict[str, Any]]) -> int:
     if low_overlap_pairs / total_pairs > 0.5:
         return min(len(sender_keywords), 3)
     return 1
-
-
-def format_batch_context(
-    batch: list[dict[str, Any]],
-    *,
-    session_id: str,
-    attention_repo: AttentionRepository,
-    media_service: MediaService | None = None,
-) -> str:
-    """Render the primary unread batch into workflow-facing text context."""
-
-    blocks = format_batch_context_blocks(
-        batch,
-        session_id=session_id,
-        attention_repo=attention_repo,
-        media_service=media_service,
-    )
-    return "\n".join(str(block["text"]) for block in blocks)
-
-
-def format_batch_context_blocks(
-    batch: list[dict[str, Any]],
-    *,
-    session_id: str,
-    attention_repo: AttentionRepository,
-    media_service: MediaService | None = None,
-) -> list[dict[str, Any]]:
-    """Render the primary unread batch into separate workflow-facing text blocks."""
-
-    blocks: list[dict[str, Any]] = []
-    state = attention_repo.get_attention(session_id)
-    prev_summary = ""
-    if state is not None:
-        prev_summary = str(state.metadata.get("internal_summary", "") or "")
-    if prev_summary:
-        blocks.append({"type": "text", "text": f"[上轮观察摘要：{prev_summary}]"})
-        attention_repo.clear_metadata_key(session_id, "internal_summary")
-
-    blocks.append({"type": "text", "text": f"[以下是会话中 {len(batch)} 条未消费消息]"})
-    if batch_contains_media(batch, media_service):
-        blocks.append(
-            {
-                "type": "text",
-                "text": (
-                    "[提示：若需重新识别某条消息中的原图，请调用 media.inspect_original，"
-                    "并优先传入该消息行里的 message_log_id。]"
-                ),
-            }
-        )
-    now_ms = time.time() * 1000
-    for msg in batch:
-        blocks.append(
-            {
-                "type": "text",
-                "text": (
-                    f"{format_message_line(msg, media_service, include_message_reference=True)}\n"
-                    f"时间: {format_relative_message_time(msg, now_ms=now_ms)}"
-                ),
-            }
-        )
-        if media_service is not None:
-            blocks.extend(media_service.get_message_image_data_urls(msg))
-    return blocks
 
 
 def format_incremental_messages(

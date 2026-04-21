@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.identity import (
-    inject_identity_layers_into_messages,
     resolve_identity_map_prompt,
-)
-from shinbot.agent.prompt_manager.context_strategies import (
-    hydrate_request_context,
-    resolve_builtin_sliding_window_context,
-    sync_context_policy,
 )
 from shinbot.agent.prompt_manager.rendering import (
     expand_component_tree,
@@ -22,11 +15,9 @@ from shinbot.agent.prompt_manager.rendering import (
 )
 from shinbot.agent.prompt_manager.schema import (
     PROMPT_STAGE_ORDER,
-    ContextStrategy,
     PromptAssemblyRequest,
     PromptAssemblyResult,
     PromptComponent,
-    PromptComponentKind,
     PromptComponentRecord,
     PromptLoggerRecord,
     PromptProfile,
@@ -49,11 +40,6 @@ if TYPE_CHECKING:
     from shinbot.agent.identity import IdentityStore
 
 Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
-ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any]
-
-
-DEFAULT_CONTEXT_TRIGGER_TOKENS = 15_000
-DEFAULT_CONTEXT_TARGET_TOKENS = 6_000
 
 
 class PromptRegistry:
@@ -63,8 +49,6 @@ class PromptRegistry:
     API format instead of a flat prompt string.
     """
 
-    BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID = "builtin.context.sliding_window"
-    BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER = "builtin.context.sliding_window"
     BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID = "builtin.instructions.identity_map"
     BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID = "builtin.constraints.identity_behavior"
     BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER = "builtin.identity.map"
@@ -73,56 +57,17 @@ class PromptRegistry:
     BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID = "builtin.constraints.current_time"
     BUILTIN_CURRENT_TIME_PROMPT_RESOLVER = "builtin.runtime.current_time"
 
-    @classmethod
-    def build_builtin_sliding_window_strategy(
-        cls,
-        *,
-        trigger_ratio: float = 1.0,
-        trim_turns: int = 2,
-        trim_ratio: float | None = None,
-        max_context_tokens: int = DEFAULT_CONTEXT_TRIGGER_TOKENS,
-        target_context_tokens: int | None = DEFAULT_CONTEXT_TARGET_TOKENS,
-    ) -> ContextStrategy:
-        return ContextStrategy(
-            id=cls.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
-            display_name="Sliding Window",
-            description="Built-in context strategy based on a sliding window.",
-            resolver_ref=cls.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
-            priority=10_000,
-            metadata={"builtin": True, "default": True},
-            budget={
-                "truncate_policy": "sliding_window",
-                "max_context_tokens": max_context_tokens,
-                "target_context_tokens": target_context_tokens,
-                "trigger_ratio": trigger_ratio,
-                "trim_ratio": trim_ratio,
-                "trim_turns": trim_turns,
-            },
-        )
-
     def __init__(
         self,
         *,
-        fallback_context_trigger_ratio: float = 1.0,
-        fallback_context_trim_turns: int = 2,
-        fallback_context_max_tokens: int = DEFAULT_CONTEXT_TRIGGER_TOKENS,
-        fallback_context_target_tokens: int | None = DEFAULT_CONTEXT_TARGET_TOKENS,
         context_manager: ContextManager | None = None,
         identity_store: IdentityStore | None = None,
     ) -> None:
         self._components: dict[str, PromptComponent] = {}
-        self._context_strategies: dict[str, ContextStrategy] = {}
-        self._context_strategy_resolvers: dict[str, ContextStrategyResolver] = {}
         self._profiles: dict[str, PromptProfile] = {}
         self._resolvers: dict[str, Resolver] = {}
         self._context_manager = context_manager
         self._identity_store = identity_store
-        self._register_builtin_context_strategies(
-            trigger_ratio=fallback_context_trigger_ratio,
-            trim_turns=fallback_context_trim_turns,
-            max_context_tokens=fallback_context_max_tokens,
-            target_context_tokens=fallback_context_target_tokens,
-        )
 
     # ── Registration ────────────────────────────────────────────────────
 
@@ -138,19 +83,6 @@ class PromptRegistry:
         if profile.id in self._profiles:
             raise ValueError(f"Prompt profile {profile.id!r} is already registered")
         self._profiles[profile.id] = profile
-
-    def register_context_strategy(self, strategy: ContextStrategy) -> None:
-        if strategy.id in self._context_strategies:
-            raise ValueError(f"Context strategy {strategy.id!r} is already registered")
-        self._context_strategies[strategy.id] = strategy
-
-    def upsert_context_strategy(self, strategy: ContextStrategy) -> None:
-        self._context_strategies[strategy.id] = strategy
-
-    def register_context_strategy_resolver(self, name: str, fn: ContextStrategyResolver) -> None:
-        if name in self._context_strategy_resolvers:
-            raise ValueError(f"Context strategy resolver {name!r} is already registered")
-        self._context_strategy_resolvers[name] = fn
 
     def register_resolver(self, name: str, fn: Resolver) -> None:
         if name in self._resolvers:
@@ -168,20 +100,11 @@ class PromptRegistry:
     def get_profile(self, profile_id: str) -> PromptProfile | None:
         return self._profiles.get(profile_id)
 
-    def get_context_strategy(self, strategy_id: str) -> ContextStrategy | None:
-        return self._context_strategies.get(strategy_id)
-
     def list_components(self, stage: PromptStage | None = None) -> list[PromptComponent]:
         components = list(self._components.values())
         if stage is not None:
             components = [component for component in components if component.stage == stage]
         return sorted(components, key=lambda item: (item.priority, item.id, item.version))
-
-    def list_context_strategies(self) -> list[ContextStrategy]:
-        return sorted(
-            self._context_strategies.values(),
-            key=lambda item: (item.priority, item.id),
-        )
 
     def list_profiles(self) -> list[PromptProfile]:
         return list(self._profiles.values())
@@ -255,10 +178,8 @@ class PromptRegistry:
                 ordered_records=ordered_records,
             )
 
-        self._inject_context_strategy(request, records_by_stage, ordered_records)
         if request.identity_enabled:
-            self._inject_identity_prompts(request, records_by_stage, ordered_records)
-        self._inject_runtime_prompts(request, records_by_stage, ordered_records)
+            self._inject_identity_prompts(request, records_by_stage)
 
         # ── Sort records within each stage ──────────────────────────────
         sorted_records_by_stage: dict[PromptStage, list[PromptComponentRecord]] = {
@@ -389,90 +310,6 @@ class PromptRegistry:
     ) -> PromptLoggerRecord:
         return build_prompt_log_record(result, request)
 
-    # ── Internal: context strategy ──────────────────────────────────────
-
-    def _inject_context_strategy(
-        self,
-        request: PromptAssemblyRequest,
-        records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
-        ordered_records: list[PromptComponentRecord],
-    ) -> None:
-        if not request.include_context_messages:
-            return
-
-        strategy = self._resolve_context_strategy(request)
-        if strategy is None:
-            return
-        if not strategy.enabled:
-            return
-
-        policy_sync = sync_context_policy(self._context_manager, request, strategy)
-        request = hydrate_request_context(self._context_manager, request)
-
-        resolver = self._context_strategy_resolvers.get(strategy.resolver_ref)
-        if resolver is None:
-            raise ValueError(
-                f"Context strategy resolver {strategy.resolver_ref!r} is not registered"
-            )
-        result = resolver(request, strategy)
-
-        # Extract structured messages from the resolver result
-        if isinstance(result, dict):
-            rendered_messages: list[dict[str, Any]] = result.get("messages", [])
-            # Fallback: if resolver returns {"text": "..."} without "messages"
-            if not rendered_messages:
-                text = str(result.get("text", "")).strip()
-                if text:
-                    rendered_messages = [{"role": "user", "content": text}]
-            resolver_metadata = {k: v for k, v in result.items() if k not in ("text", "messages")}
-            if policy_sync and int(policy_sync.get("dropped_turns", 0)) > int(
-                resolver_metadata.get("dropped_turns", 0)
-            ):
-                resolver_metadata["dropped_turns"] = int(policy_sync["dropped_turns"])
-                resolver_metadata["remaining_turns"] = int(policy_sync["remaining_turns"])
-                resolver_metadata["current_tokens"] = int(policy_sync["current_tokens"])
-                if "trigger_tokens" in policy_sync:
-                    resolver_metadata["trigger_tokens"] = int(policy_sync["trigger_tokens"])
-                if "trim_mode" in policy_sync:
-                    resolver_metadata["trim_mode"] = str(policy_sync["trim_mode"])
-        elif isinstance(result, str):
-            text = result.strip()
-            rendered_messages = [{"role": "user", "content": text}] if text else []
-            resolver_metadata = {}
-        else:
-            rendered_messages = []
-            resolver_metadata = {}
-
-        if not rendered_messages:
-            return
-
-        if request.identity_enabled:
-            rendered_messages = inject_identity_layers_into_messages(rendered_messages)
-
-        hash_input = json.dumps(rendered_messages, ensure_ascii=False, sort_keys=True)
-        record = PromptComponentRecord(
-            component_id=f"__context_strategy__:{strategy.id}",
-            stage=PromptStage.CONTEXT,
-            kind=PromptComponentKind.RESOLVER,
-            version="1.0.0",
-            priority=strategy.priority,
-            source=PromptSource(
-                source_type=PromptSourceType.CONTEXT_PLUGIN,
-                source_id=strategy.id,
-                resolver_name=strategy.resolver_ref,
-                metadata={"strategy_metadata": dict(strategy.metadata)},
-            ),
-            rendered_messages=rendered_messages,
-            text_hash=stable_text_hash(hash_input),
-            metadata={
-                "context_strategy_id": strategy.id,
-                "budget": strategy.budget.model_dump(mode="json"),
-                "resolver_output": resolver_metadata,
-            },
-        )
-        records_by_stage[PromptStage.CONTEXT].append(record)
-        ordered_records.append(record)
-
     def _inject_identity_prompts(
         self,
         request: PromptAssemblyRequest,
@@ -494,7 +331,13 @@ class PromptRegistry:
             for record in ordered_records
         )
 
-        hydrated_request = hydrate_request_context(self._context_manager, request)
+        hydrated_request = request
+        if self._context_manager is not None and request.session_id:
+            context_inputs = self._context_manager.get_context_inputs(
+                request.session_id,
+                fallback=request.context_inputs,
+            )
+            hydrated_request = request.model_copy(update={"context_inputs": context_inputs})
         source = infer_component_source(dynamic_component)
 
         resolver = self._resolvers.get(dynamic_component.resolver_ref)
@@ -618,50 +461,6 @@ class PromptRegistry:
             )
             records_by_stage[component.stage].append(record)
             ordered_records.append(record)
-
-    def _resolve_context_strategy(self, request: PromptAssemblyRequest) -> ContextStrategy | None:
-        if request.context_strategy_id:
-            strategy = self._context_strategies.get(request.context_strategy_id)
-            if strategy is None:
-                raise ValueError(
-                    f"Context strategy {request.context_strategy_id!r} is not registered"
-                )
-            return strategy
-        return self._context_strategies.get(self.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID)
-
-    # ── Builtin context strategy ────────────────────────────────────────
-
-    def _register_builtin_context_strategies(
-        self,
-        *,
-        trigger_ratio: float,
-        trim_turns: int,
-        max_context_tokens: int,
-        target_context_tokens: int | None,
-    ) -> None:
-        self.register_context_strategy(
-            self.build_builtin_sliding_window_strategy(
-                trigger_ratio=trigger_ratio,
-                trim_turns=trim_turns,
-                max_context_tokens=max_context_tokens,
-                target_context_tokens=target_context_tokens,
-            )
-        )
-        self.register_context_strategy_resolver(
-            self.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
-            self._resolve_builtin_sliding_window_context,
-        )
-
-    def _resolve_builtin_sliding_window_context(
-        self,
-        request: PromptAssemblyRequest,
-        strategy: ContextStrategy,
-    ) -> dict[str, Any]:
-        return resolve_builtin_sliding_window_context(
-            context_manager=self._context_manager,
-            request=request,
-            strategy=strategy,
-        )
 
     # ── Internal: signature ──────────────────────────────────────────────
 
