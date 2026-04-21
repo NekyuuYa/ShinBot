@@ -34,6 +34,7 @@ from shinbot.api.routers import personas as personas_router
 from shinbot.api.routers import plugins as plugins_router
 from shinbot.api.routers import prompt_definitions as prompt_definitions_router
 from shinbot.api.routers import prompts as prompts_router
+from shinbot.api.routers import system as system_router
 from shinbot.api.routers import tools as tools_router
 from shinbot.api.ws_manager import (
     install_log_handler,
@@ -51,11 +52,12 @@ register_log_handler_installer(install_log_handler)
 if TYPE_CHECKING:
     from shinbot.core.application.app import ShinBot
     from shinbot.core.application.boot import BootController
+    from shinbot.core.application.runtime_control import RuntimeControl
 
 logger = logging.getLogger(__name__)
 
 
-def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
+def create_api_app(bot: ShinBot, boot: BootController, runtime_control: RuntimeControl) -> FastAPI:
     """Create and configure the ShinBot management API FastAPI application.
 
     Args:
@@ -95,6 +97,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
 
     app.state.bot = bot
     app.state.boot_controller = boot
+    app.state.runtime_control = runtime_control
     app.state.auth_config = AuthConfig(boot.config, boot.data_dir)
 
     # ── CORS ─────────────────────────────────────────────────────────
@@ -154,6 +157,7 @@ def create_api_app(bot: ShinBot, boot: BootController) -> FastAPI:
     app.include_router(prompt_definitions_router.router, prefix=api_prefix)
     app.include_router(prompts_router.router, prefix=api_prefix)
     app.include_router(plugins_router.router, prefix=api_prefix)
+    app.include_router(system_router.router, prefix=api_prefix)
     app.include_router(tools_router.router, prefix=api_prefix)
 
     # ── WebSocket: /ws/logs ───────────────────────────────────────────
@@ -330,6 +334,10 @@ def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> di
 
     total_instances = len(instances)
     running_instances = sum(1 for instance in instances if instance["running"])
+    restart_request = None
+    runtime_control = getattr(bot, "runtime_control", None)
+    if runtime_control is not None and hasattr(runtime_control, "snapshot"):
+        restart_request = runtime_control.snapshot()
 
     return {
         "totalInstances": total_instances,
@@ -340,6 +348,8 @@ def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> di
         "cpuUsage": cpu,
         "memoryUsage": mem_mb,  # 现在是 MB 单位
         "online": True,
+        "restartRequested": restart_request is not None,
+        "restartRequest": restart_request,
         "instances": instances,
         "timestamp": int(time.time()),
     }

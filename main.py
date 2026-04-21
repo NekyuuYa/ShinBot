@@ -10,6 +10,7 @@ import sys
 import uvicorn
 
 from shinbot.core.application.boot import BootController
+from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.cli import serve_with_operator_cli
 
 logger = logging.getLogger("shinbot.main")
@@ -22,7 +23,8 @@ async def _run(
     api_port: int,
     attention_debug: bool,
     operator_cli: bool,
-) -> None:
+) -> int:
+    runtime_control = RuntimeControl()
     controller = BootController(
         config_path=config_path,
         data_dir="data",
@@ -31,7 +33,7 @@ async def _run(
     )
     await controller.boot()
 
-    api_app = controller.create_api_app()
+    api_app = controller.create_api_app(runtime_control)
 
     uv_cfg = uvicorn.Config(
         api_app,
@@ -41,6 +43,18 @@ async def _run(
         access_log=False,
     )
     server = uvicorn.Server(uv_cfg)
+
+    async def _watch_restart_requests() -> None:
+        request = await runtime_control.wait_for_restart()
+        logger.warning(
+            "Restart requested: reason=%s requested_by=%s source=%s",
+            request.reason,
+            request.requested_by or "-",
+            request.source or "-",
+        )
+        server.should_exit = True
+
+    restart_task = asyncio.create_task(_watch_restart_requests())
 
     logger.info("Management API starting on http://%s:%d", api_host, api_port)
 
@@ -55,8 +69,15 @@ async def _run(
         else:
             await server.serve()
     finally:
+        restart_task.cancel()
+        try:
+            await restart_task
+        except asyncio.CancelledError:
+            pass
         await controller.shutdown()
         logger.info("Goodbye.")
+
+    return runtime_control.exit_code()
 
 
 def main() -> None:
@@ -99,7 +120,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        asyncio.run(
+        exit_code = asyncio.run(
             _run(
                 args.config,
                 args.log_level,
@@ -109,6 +130,8 @@ def main() -> None:
                 args.operator_cli,
             )
         )
+        if exit_code:
+            sys.exit(exit_code)
     except KeyboardInterrupt:
         pass
     except Exception:

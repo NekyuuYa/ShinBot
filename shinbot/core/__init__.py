@@ -2,6 +2,12 @@
 
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot import BootController, BootState
+from shinbot.core.application.runtime_control import (
+    ProcessExitCode,
+    RestartReason,
+    RestartRequest,
+    RuntimeControl,
+)
 from shinbot.core.dispatch.command import (
     CommandDef,
     CommandMatch,
@@ -27,6 +33,10 @@ __all__ = [
     "ShinBot",
     "BootController",
     "BootState",
+    "RuntimeControl",
+    "RestartRequest",
+    "RestartReason",
+    "ProcessExitCode",
     "AdapterManager",
     "BaseAdapter",
     "MessageHandle",

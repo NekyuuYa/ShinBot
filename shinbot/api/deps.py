@@ -28,6 +28,10 @@ async def _boot_controller(request: Request):
     return request.app.state.boot_controller
 
 
+async def _runtime_control(request: Request):
+    return request.app.state.runtime_control
+
+
 # ── Auth dependency ──────────────────────────────────────────────────
 
 
@@ -65,3 +69,4 @@ def require_auth(
 AuthRequired = [Depends(require_auth)]
 BotDep = Depends(_bot)
 BootDep = Depends(_boot_controller)
+RuntimeControlDep = Depends(_runtime_control)

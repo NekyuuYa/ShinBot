@@ -11,6 +11,7 @@ from typing import Any
 
 from shinbot.agent.attention import AttentionConfig
 from shinbot.core.application.app import ShinBot
+from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.utils.logger import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -388,7 +389,7 @@ class BootController:
     # The import is deferred to method scope to keep core's module-level
     # dependency graph free of api references. Do not move to module level.
 
-    def create_api_app(self) -> Any:
+    def create_api_app(self, runtime_control: RuntimeControl) -> Any:
         """Create the FastAPI management control plane app with bot injected.
 
         Must be called after ``boot()`` has completed successfully.
@@ -397,7 +398,9 @@ class BootController:
             raise RuntimeError("Cannot create API app before boot() completes")
         from shinbot.api.app import create_api_app as _create
 
-        return _create(self.bot, self)
+        self.bot.runtime_control = runtime_control
+
+        return _create(self.bot, self, runtime_control)
 
     def save_config(self) -> bool:
         """Persist the current in-memory config dict back to the physical config file."""

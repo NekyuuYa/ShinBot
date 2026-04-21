@@ -59,6 +59,7 @@ class ShinBot:
     ) -> None:
         # Core subsystems
         self.database: DatabaseManager | None = None
+        self.runtime_control: Any | None = None
         runtime_data_dir = Path(data_dir) if data_dir is not None else Path("data")
         session_repo = None
         audit_repo = None
