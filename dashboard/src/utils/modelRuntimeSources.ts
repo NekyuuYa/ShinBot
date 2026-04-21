@@ -128,6 +128,16 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     supportsFilters: false,
   },
   {
+    key: 'dashscope',
+    label: 'DashScope (Qwen)',
+    type: 'dashscope',
+    defaultBaseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    supportsToken: true,
+    supportsCatalog: true,
+    supportsThinking: true,
+    supportsFilters: false,
+  },
+  {
     key: 'custom_openai',
     label: 'Custom OpenAI Compatible',
     type: 'custom_openai',

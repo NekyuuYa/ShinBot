@@ -160,7 +160,7 @@ async def fetch_provider_catalog(payload: dict[str, Any]) -> list[dict[str, Any]
 
     if provider_type == "ollama":
         url = f"{base_url}/api/tags"
-    elif provider_type in {"openai", "openrouter", "custom_openai", "azure_openai"}:
+    elif provider_type in {"openai", "openrouter", "custom_openai", "azure_openai", "dashscope"}:
         url = f"{base_url}/models"
     else:
         raise ModelRuntimeAdminError(
