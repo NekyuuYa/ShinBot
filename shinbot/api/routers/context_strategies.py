@@ -7,11 +7,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.agent.prompt_manager.registry import PromptRegistry
 from shinbot.api.deps import AuthRequired, BotDep
-from shinbot.api.models import EC, ok
+from shinbot.api.models import ok
 from shinbot.core.context_strategy_admin import (
     ContextStrategyAdminError,
+    assert_context_strategy_mutable,
     assert_context_strategy_name_available,
     build_context_strategy_record,
     get_context_strategy_or_raise,
@@ -94,16 +94,9 @@ def get_context_strategy(strategy_uuid: str, bot=BotDep):
 
 @router.patch("/{strategy_uuid}")
 def patch_context_strategy(strategy_uuid: str, body: ContextStrategyPatchRequest, bot=BotDep):
-    if strategy_uuid == PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": EC.INVALID_ACTION,
-                "message": "Built-in context strategy cannot be modified",
-            },
-        )
     try:
         current = get_context_strategy_or_raise(bot.database, strategy_uuid)
+        assert_context_strategy_mutable(current)
         next_name = body.name if body.name is not None else str(current["name"])
         next_resolver_ref = (
             body.resolverRef if body.resolverRef is not None else str(current["resolver_ref"])
@@ -142,16 +135,9 @@ def patch_context_strategy(strategy_uuid: str, body: ContextStrategyPatchRequest
 
 @router.delete("/{strategy_uuid}")
 def delete_context_strategy(strategy_uuid: str, bot=BotDep):
-    if strategy_uuid == PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": EC.INVALID_ACTION,
-                "message": "Built-in context strategy cannot be deleted",
-            },
-        )
     try:
-        get_context_strategy_or_raise(bot.database, strategy_uuid)
+        current = get_context_strategy_or_raise(bot.database, strategy_uuid)
+        assert_context_strategy_mutable(current)
     except ContextStrategyAdminError as exc:
         _raise_admin_http_error(exc)
     bot.database.context_strategies.delete(strategy_uuid)

@@ -235,6 +235,18 @@ class MediaService:
                 parts.append("[图片]")
         return parts
 
+    def get_media_semantic(
+        self,
+        raw_hash: str,
+    ) -> dict[str, object] | None:
+        normalized = raw_hash.strip()
+        if not normalized:
+            return None
+        semantics = self._database.media_semantics.get(normalized)
+        if semantics is None:
+            return None
+        return semantics
+
     def get_message_image_data_urls(
         self,
         record: dict[str, object] | None,

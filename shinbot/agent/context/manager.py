@@ -2,50 +2,45 @@
 
 from __future__ import annotations
 
-import math
+import re
+import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.prompt_manager.schema import ContextStrategy
-from shinbot.persistence.records import MessageLogRecord
-from shinbot.persistence.repos import ContextProvider
+from shinbot.agent.context.alias_table import SessionAliasTable
+from shinbot.agent.context.context_stage_builder import ContextStageBuilder
+from shinbot.agent.context.eviction import (
+    ContextEvictionConfig,
+    evict_context_blocks,
+    extract_total_tokens,
+    select_blocks_for_eviction,
+)
+from shinbot.agent.context.instruction_stage_builder import InstructionStageBuilder
+from shinbot.agent.context.state_store import (
+    ContextBlockState,
+    ContextSessionState,
+    ContextStateStore,
+)
+from shinbot.agent.context.token_utils import estimate_role_content_tokens, estimate_text_tokens
 
 if TYPE_CHECKING:
     from shinbot.agent.identity import IdentityStore
     from shinbot.agent.media import MediaService
-
-
-def _estimate_single_turn_tokens(role: str, content: str) -> int:
-    """Estimate tokens for a single turn using the standard heuristic."""
-    text = f"{role}: {content}" if role else content
-    if not text:
-        return 0
-    return max(len(text.split()), math.ceil(len(text) / 4))
+    from shinbot.persistence.records import MessageLogRecord
+    from shinbot.persistence.repos import ContextProvider
 
 
 def estimate_context_tokens(turns: list[dict[str, Any]], summary: str = "") -> int:
-    """Estimate token usage using the same heuristic as prompt assembly."""
+    """Estimate token usage using the shared context packing heuristic."""
     text_parts = [summary] if summary else []
     text_parts.extend(
         f"{turn['role']}: {turn['content']}" if turn.get("role") else turn.get("content", "")
         for turn in turns
     )
     text = "\n".join(part for part in text_parts if part).strip()
-    if not text:
-        return 0
-    word_estimate = len(text.split())
-    char_estimate = math.ceil(len(text) / 4)
-    return max(word_estimate, char_estimate)
-
-
-def _resolve_effective_context_window(
-    strategy_max_context_tokens: int | None,
-    model_context_window: int | None,
-) -> int | None:
-    if strategy_max_context_tokens is not None and model_context_window is not None:
-        return min(strategy_max_context_tokens, model_context_window)
-    return strategy_max_context_tokens or model_context_window
+    return estimate_text_tokens(text)
 
 
 def _record_to_turn(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -111,7 +106,7 @@ class ActiveContextPool:
         tail = turns[-self.max_messages :] if len(turns) > self.max_messages else turns
         self.messages = deque(tail, maxlen=self.max_messages)
         self._per_turn_tokens = deque(
-            (_estimate_single_turn_tokens(t.get("role", ""), t["content"]) for t in tail),
+            (estimate_role_content_tokens(t.get("role", ""), t["content"]) for t in tail),
             maxlen=self.max_messages,
         )
         self.token_estimate = sum(self._per_turn_tokens)
@@ -136,7 +131,7 @@ class ActiveContextPool:
             ):
                 return
 
-        tokens = _estimate_single_turn_tokens(turn.get("role", ""), turn["content"])
+        tokens = estimate_role_content_tokens(turn.get("role", ""), turn["content"])
 
         # If deque is at max capacity, the leftmost element is auto-evicted.
         if self.messages.maxlen and len(self.messages) >= self.messages.maxlen:
@@ -169,35 +164,6 @@ class ActiveContextPool:
             if isinstance(record_id, int) and record_id <= msg_id:
                 item["_is_read"] = True
 
-    def trim_turns(self, count: int) -> int:
-        removed = 0
-        while removed < count and len(self.messages) > 1:
-            self.token_estimate -= self._per_turn_tokens[0]
-            self._per_turn_tokens.popleft()
-            self.messages.popleft()
-            removed += 1
-        return removed
-
-    def trim_ratio(self, ratio: float) -> int:
-        if ratio <= 0:
-            return 0
-        n = len(self.messages)
-        if n <= 1:
-            return 0
-        count = min(n - 1, max(1, math.floor(n * ratio)))
-        return self.trim_turns(count)
-
-    def trim_to_token_budget(self, target_tokens: int) -> int:
-        if target_tokens < 1:
-            return 0
-        removed = 0
-        while self.token_estimate > target_tokens and len(self.messages) > 1:
-            self.token_estimate -= self._per_turn_tokens[0]
-            self._per_turn_tokens.popleft()
-            self.messages.popleft()
-            removed += 1
-        return removed
-
 
 class ContextManager:
     """Observer-backed session context manager with hot pools."""
@@ -206,6 +172,7 @@ class ContextManager:
         self,
         provider: ContextProvider,
         *,
+        data_dir: Path | str | None = "data",
         preload_limit: int = 50,
         max_pool_messages: int = 200,
         identity_store: IdentityStore | None = None,
@@ -216,8 +183,11 @@ class ContextManager:
         self._max_pool_messages = max_pool_messages
         self._identity_store = identity_store
         self._media_service = media_service
+        self._state_store = ContextStateStore(data_dir=data_dir)
+        self._session_states: dict[str, ContextSessionState] = {}
+        self._context_builder = ContextStageBuilder(media_service=self._media_service)
+        self._instruction_builder = InstructionStageBuilder(media_service=self._media_service)
         self._pools: dict[str, ActiveContextPool] = {}
-        self._session_policies: dict[str, dict[str, Any]] = {}
 
     def get_pool(self, session_id: str) -> ActiveContextPool:
         pool = self._pools.get(session_id)
@@ -228,6 +198,278 @@ class ContextManager:
         pool.load([self._build_pool_payload(item) for item in items])
         self._pools[session_id] = pool
         return pool
+
+    def get_alias_table(self, session_id: str) -> SessionAliasTable:
+        return self.get_session_state(session_id).alias_table
+
+    def get_session_state(self, session_id: str) -> ContextSessionState:
+        state = self._session_states.get(session_id)
+        if state is not None:
+            return state
+        loaded = self._state_store.load(session_id)
+        state = loaded or ContextSessionState(session_id=session_id)
+        if not state.session_id:
+            state.session_id = session_id
+        if not state.alias_table.session_id:
+            state.alias_table.session_id = session_id
+        self._session_states[session_id] = state
+        return state
+
+    def rebuild_alias_table(
+        self,
+        session_id: str,
+        *,
+        now_ms: int,
+        force: bool = False,
+    ) -> SessionAliasTable:
+        pool = self.get_pool(session_id)
+        state = self.get_session_state(session_id)
+        table = state.alias_table
+        if not force and table.entries and not table.should_rebuild(now_ms):
+            return table
+        table.rebuild_from_messages(list(pool.messages), now_ms=now_ms)
+        self._save_session_state(session_id)
+        return table
+
+    def build_context_stage_messages(
+        self,
+        session_id: str,
+        *,
+        self_platform_id: str = "",
+        now_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not session_id:
+            return []
+        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        state = self.get_session_state(session_id)
+        alias_rebuild_due = not bool(state.alias_table.entries) or state.alias_table.should_rebuild(
+            timestamp_ms
+        )
+        alias_table = self.rebuild_alias_table(
+            session_id,
+            now_ms=timestamp_ms,
+            force=alias_rebuild_due,
+        )
+        read_history = self.get_recent_messages(session_id, read_only=True)
+        latest_history_id = _latest_record_id(read_history)
+        latest_block_id = _latest_block_record_id(state.blocks)
+        should_rebuild_blocks = (
+            alias_rebuild_due or not state.blocks or latest_history_id > latest_block_id
+        )
+
+        if should_rebuild_blocks:
+            messages = self._context_builder.build_prompt_messages(
+                read_history,
+                alias_table=alias_table,
+                session_state=state,
+                self_platform_id=self_platform_id,
+            )
+        else:
+            messages = [{"role": "user", "content": list(block.contents)} for block in state.blocks]
+        compressed_messages = self._build_compressed_memory_messages(state)
+        self._save_session_state(session_id)
+        return [*compressed_messages, *messages]
+
+    def build_instruction_stage_content(
+        self,
+        session_id: str,
+        unread_records: list[dict[str, Any]],
+        *,
+        previous_summary: str = "",
+        self_platform_id: str = "",
+        now_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not session_id:
+            return []
+        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        state = self.get_session_state(session_id)
+        alias_table = self.rebuild_alias_table(
+            session_id,
+            now_ms=timestamp_ms,
+            force=not bool(state.alias_table.entries),
+        )
+        content_blocks = self._instruction_builder.build_content_blocks(
+            unread_records,
+            alias_table=alias_table,
+            session_state=state,
+            previous_summary=previous_summary,
+            self_platform_id=self_platform_id,
+            now_ms=timestamp_ms,
+        )
+        self._save_session_state(session_id)
+        return content_blocks
+
+    def build_inactive_alias_context_message(
+        self,
+        session_id: str,
+        *,
+        now_ms: int | None = None,
+    ) -> dict[str, Any] | None:
+        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        table = self.rebuild_alias_table(
+            session_id,
+            now_ms=timestamp_ms,
+            force=not bool(self.get_alias_table(session_id).entries),
+        )
+        inactive_entries, _active_entries = table.split_by_activity(now_ms=timestamp_ms)
+        if not inactive_entries:
+            return None
+        lines = ["### 会话历史成员映射"]
+        for entry in inactive_entries:
+            alias_id = entry.alias or entry.platform_id
+            display_name = entry.display_name or entry.platform_id
+            lines.append(f"{alias_id} = {display_name} / {entry.platform_id}")
+        return {"role": "user", "content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    def build_active_alias_constraint_text(
+        self,
+        session_id: str,
+        *,
+        now_ms: int | None = None,
+    ) -> str:
+        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        table = self.rebuild_alias_table(
+            session_id,
+            now_ms=timestamp_ms,
+            force=not bool(self.get_alias_table(session_id).entries),
+        )
+        _inactive_entries, active_entries = table.split_by_activity(now_ms=timestamp_ms)
+        if not active_entries:
+            return ""
+        lines = [
+            "### 当前活跃成员映射",
+            "如需称呼用户，优先使用有意义的称呼(display_name)而非代称。",
+        ]
+        for entry in active_entries:
+            alias_id = entry.alias or entry.platform_id
+            display_name = entry.display_name or entry.platform_id
+            lines.append(f"{alias_id} = {display_name} / {entry.platform_id}")
+        return "\n".join(lines)
+
+    def apply_usage_eviction(
+        self,
+        session_id: str,
+        usage: dict[str, Any] | None,
+        *,
+        max_context_tokens: int = 32_000,
+        evict_ratio: float = 0.6,
+        compressed_text: str = "",
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        if not session_id:
+            return {"triggered": False, "evicted_count": 0, "remaining_count": 0}
+        state = self.get_session_state(session_id)
+        result = evict_context_blocks(
+            state,
+            total_tokens=extract_total_tokens(usage),
+            config=ContextEvictionConfig(
+                max_context_tokens=max_context_tokens,
+                evict_ratio=evict_ratio,
+            ),
+            compressed_text=compressed_text,
+            created_at_ms=now_ms,
+        )
+        self._save_session_state(session_id)
+        return result
+
+    def preview_usage_eviction(
+        self,
+        session_id: str,
+        usage: dict[str, Any] | None,
+        *,
+        max_context_tokens: int = 32_000,
+        evict_ratio: float = 0.6,
+    ) -> dict[str, Any]:
+        if not session_id:
+            return {"triggered": False, "evicted_count": 0, "remaining_count": 0}
+        state = self.get_session_state(session_id)
+        total_tokens = extract_total_tokens(usage)
+        config = ContextEvictionConfig(
+            max_context_tokens=max_context_tokens,
+            evict_ratio=evict_ratio,
+        )
+        evicted_blocks = select_blocks_for_eviction(
+            state,
+            total_tokens=total_tokens,
+            config=config,
+        )
+        if not evicted_blocks:
+            return {
+                "triggered": False,
+                "total_tokens": total_tokens,
+                "evicted_count": 0,
+                "remaining_count": len(state.blocks),
+                "source_text": "",
+                "source_block_ids": [],
+            }
+
+        return {
+            "triggered": True,
+            "total_tokens": total_tokens,
+            "evicted_count": len(evicted_blocks),
+            "remaining_count": max(0, len(state.blocks) - len(evicted_blocks)),
+            "source_text": self._build_compression_source_text(state, evicted_blocks),
+            "source_block_ids": [block.block_id for block in evicted_blocks],
+        }
+
+    def _save_session_state(self, session_id: str) -> None:
+        state = self._session_states.get(session_id)
+        if state is None:
+            return
+        self._state_store.save(state)
+
+    def _build_compression_source_text(
+        self,
+        state: ContextSessionState,
+        blocks: list[ContextBlockState],
+    ) -> str:
+        alias_lines: list[str] = []
+        alias_entries = sorted(
+            state.alias_table.entries.values(),
+            key=lambda item: (item.alias.startswith("P"), item.alias, item.platform_id),
+        )
+        for entry in alias_entries:
+            alias_id = entry.alias.strip()
+            if not alias_id:
+                continue
+            display_name = entry.display_name or entry.platform_id
+            alias_lines.append(f"{alias_id} = {display_name} / {entry.platform_id}")
+
+        context_lines: list[str] = []
+        for block in blocks:
+            for content_block in block.contents:
+                if str(content_block.get("type") or "") != "text":
+                    continue
+                text = str(content_block.get("text") or "").strip()
+                if not text:
+                    continue
+                context_lines.append(_expand_aliases_for_compression(text, state.alias_table))
+
+        sections: list[str] = []
+        if alias_lines:
+            sections.append("### 成员映射\n" + "\n".join(alias_lines))
+        if context_lines:
+            sections.append("### 待压缩上下文\n" + "\n".join(context_lines))
+        return "\n\n".join(sections).strip()
+
+    @staticmethod
+    def _build_compressed_memory_messages(state: ContextSessionState) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for item in state.compressed_memories:
+            if not item.text.strip():
+                continue
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"### 压缩记忆\n{item.text}",
+                        }
+                    ],
+                }
+            )
+        return messages
 
     def track_message_record(self, record: MessageLogRecord, *, platform: str = "") -> None:
         if not record.session_id:
@@ -249,6 +491,8 @@ class ContextManager:
             }
         )
         pool.append(payload)
+        self.get_alias_table(record.session_id).note_activity(record.created_at)
+        self._save_session_state(record.session_id)
 
         if self._identity_store is not None and record.role == "user" and record.sender_id.strip():
             self._identity_store.ensure_user(
@@ -258,7 +502,7 @@ class ContextManager:
             )
 
         if record.is_read:
-            self._apply_session_policy(record.session_id)
+            return
 
     def _build_pool_payload(self, item: dict[str, Any]) -> dict[str, Any]:
         payload = {
@@ -329,92 +573,49 @@ class ContextManager:
             return
         pool = self.get_pool(session_id)
         pool.mark_read_until(msg_id)
+        self._save_session_state(session_id)
 
-    def set_session_policy(
-        self,
-        session_id: str,
-        *,
-        strategy: ContextStrategy,
-        model_context_window: int | None,
-    ) -> dict[str, Any]:
-        if not session_id:
-            return {"dropped_turns": 0, "remaining_turns": 0, "current_tokens": 0}
-        self._session_policies[session_id] = {
-            "strategy": strategy,
-            "model_context_window": model_context_window,
-        }
-        return self._apply_session_policy(session_id)
 
-    def apply_batch_ejection(
-        self,
-        session_id: str,
-        *,
-        strategy: ContextStrategy,
-        model_context_window: int | None,
-    ) -> dict[str, Any]:
-        if not session_id:
-            return {"dropped_turns": 0, "remaining_turns": 0, "current_tokens": 0}
-        pool = self.get_pool(session_id)
-        turns = pool.export_turns()
-        current_tokens = pool.token_estimate
-        trigger_ratio = strategy.budget.trigger_ratio
-        max_context_tokens = _resolve_effective_context_window(
-            strategy.budget.max_context_tokens,
-            model_context_window,
+def _latest_record_id(records: list[dict[str, Any]]) -> int:
+    record_ids = [int(item["id"]) for item in records if isinstance(item.get("id"), int)]
+    return max(record_ids, default=0)
+
+
+def _latest_block_record_id(blocks: list[ContextBlockState]) -> int:
+    latest = 0
+    for block in blocks:
+        record_ids = block.metadata.get("record_ids", [])
+        if not isinstance(record_ids, list):
+            continue
+        numeric_ids = [int(item) for item in record_ids if isinstance(item, int)]
+        if numeric_ids:
+            latest = max(latest, max(numeric_ids))
+    return latest
+
+
+_MESSAGE_ALIAS_PREFIX_PATTERN = re.compile(r"^(\[msgid: \d+\])(?P<alias>[AP]\d+)(?=: )")
+
+
+def _expand_aliases_for_compression(text: str, alias_table: SessionAliasTable) -> str:
+    alias_map = {
+        entry.alias: (entry.display_name or entry.platform_id or entry.alias)
+        for entry in alias_table.entries.values()
+        if entry.alias
+    }
+    if not alias_map:
+        return text
+
+    expanded = _MESSAGE_ALIAS_PREFIX_PATTERN.sub(
+        lambda match: (
+            f"{match.group(1)}{alias_map.get(match.group('alias'), match.group('alias'))}"
+        ),
+        text,
+    )
+    for alias, display_name in alias_map.items():
+        escaped = re.escape(alias)
+        expanded = re.sub(
+            rf"(?<![A-Za-z0-9_]){escaped}(?=(?:/|\]))",
+            display_name,
+            expanded,
         )
-        if max_context_tokens is None:
-            return {
-                "dropped_turns": 0,
-                "remaining_turns": len(turns),
-                "current_tokens": current_tokens,
-            }
-        trigger_tokens = max(1, math.floor(max_context_tokens * trigger_ratio))
-        if current_tokens < trigger_tokens or len(turns) <= 1:
-            return {
-                "dropped_turns": 0,
-                "remaining_turns": len(turns),
-                "current_tokens": current_tokens,
-                "trigger_tokens": trigger_tokens,
-            }
-
-        target_context_tokens = strategy.budget.target_context_tokens
-        effective_target_tokens = (
-            target_context_tokens
-            if target_context_tokens is not None and target_context_tokens < trigger_tokens
-            else None
-        )
-        trim_ratio = strategy.budget.trim_ratio
-        trim_turns = strategy.budget.trim_turns
-        trim_mode = "turns"
-        if effective_target_tokens is not None:
-            dropped = pool.trim_to_token_budget(effective_target_tokens)
-            trim_mode = "token_budget"
-        elif trim_ratio is not None:
-            dropped = pool.trim_ratio(trim_ratio)
-            trim_mode = "ratio"
-        else:
-            dropped = pool.trim_turns(trim_turns)
-
-        return {
-            "dropped_turns": dropped,
-            "remaining_turns": len(pool.export_turns()),
-            "current_tokens": pool.token_estimate,
-            "trigger_tokens": trigger_tokens,
-            "target_tokens": effective_target_tokens,
-            "trim_mode": trim_mode,
-        }
-
-    def _apply_session_policy(self, session_id: str) -> dict[str, Any]:
-        policy = self._session_policies.get(session_id)
-        if policy is None:
-            pool = self.get_pool(session_id)
-            return {
-                "dropped_turns": 0,
-                "remaining_turns": len(pool.export_turns()),
-                "current_tokens": pool.token_estimate,
-            }
-        return self.apply_batch_ejection(
-            session_id,
-            strategy=policy["strategy"],
-            model_context_window=policy["model_context_window"],
-        )
+    return expanded

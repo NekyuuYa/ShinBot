@@ -7,10 +7,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.persistence.config import DatabaseConfig
-from shinbot.persistence.records import ContextStrategyRecord, utc_now_iso
-from shinbot.persistence.repos import (
+from shinbot.persistence.defaults import builtin_sliding_window_context_strategy
+from shinbot.persistence.records import utc_now_iso
+from shinbot.persistence.schema import apply_schema
+
+from .repositories import (
     AgentRepository,
     AIInteractionRepository,
     AuditRepository,
@@ -28,7 +30,6 @@ from shinbot.persistence.repos import (
     SessionMediaOccurrenceRepository,
     SessionRepository,
 )
-from shinbot.persistence.schema import apply_schema
 
 
 class DatabaseManager:
@@ -97,20 +98,4 @@ class DatabaseManager:
 
     def _ensure_builtin_context_strategies(self) -> None:
         now = utc_now_iso()
-        strategy = PromptRegistry.build_builtin_sliding_window_strategy()
-        self.context_strategies.upsert(
-            ContextStrategyRecord(
-                uuid=strategy.id,
-                name=strategy.display_name,
-                type="sliding_window",
-                resolver_ref=strategy.resolver_ref,
-                description=strategy.description,
-                config={
-                    **strategy.metadata,
-                    "budget": strategy.budget.model_dump(mode="json"),
-                },
-                enabled=True,
-                created_at=now,
-                updated_at=now,
-            )
-        )
+        self.context_strategies.upsert(builtin_sliding_window_context_strategy(now))

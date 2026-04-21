@@ -8,6 +8,9 @@ from typing import Any
 BUILTIN_MEDIA_INSPECTION_AGENT_REF = "builtin.media_inspection.agent"
 BUILTIN_MEDIA_INSPECTION_LLM_REF = "builtin.media_inspection.default"
 BUILTIN_MEDIA_INSPECTION_PROMPT_ID = "builtin.prompt.media_inspection"
+BUILTIN_STICKER_SUMMARY_AGENT_REF = "builtin.media_inspection.sticker_agent"
+BUILTIN_STICKER_SUMMARY_LLM_REF = "builtin.media_inspection.sticker_default"
+BUILTIN_STICKER_SUMMARY_PROMPT_ID = "builtin.prompt.sticker_summary"
 BUILTIN_MEDIA_INSPECTION_PROMPT = """
 You are ShinBot's media inspection agent.
 
@@ -21,6 +24,15 @@ Prefer concise, dialogue-oriented descriptions that preserve the main attitude, 
 Return structured results only.
 """.strip()
 
+BUILTIN_STICKER_SUMMARY_PROMPT = """
+You are ShinBot's sticker summary agent.
+
+Treat the supplied image as a user-custom sticker or emoji-like reaction.
+Focus on the emotional expression, attitude, pose, visible text, and likely chat intent.
+Prefer concise Chinese descriptions that sound natural in conversation.
+Return structured results only.
+""".strip()
+
 
 @dataclass(slots=True)
 class ResolvedMediaInspectionConfig:
@@ -30,8 +42,14 @@ class ResolvedMediaInspectionConfig:
     llm_ref: str
     uses_builtin_agent: bool
     uses_builtin_llm: bool
+    sticker_agent_ref: str
+    sticker_llm_ref: str
+    uses_builtin_sticker_agent: bool
+    uses_builtin_sticker_llm: bool
     builtin_prompt_id: str = BUILTIN_MEDIA_INSPECTION_PROMPT_ID
     builtin_prompt: str = BUILTIN_MEDIA_INSPECTION_PROMPT
+    builtin_sticker_prompt_id: str = BUILTIN_STICKER_SUMMARY_PROMPT_ID
+    builtin_sticker_prompt: str = BUILTIN_STICKER_SUMMARY_PROMPT
 
 
 def resolve_media_inspection_config(
@@ -44,10 +62,21 @@ def resolve_media_inspection_config(
         config.get("media_inspection_agent") or config.get("media_inspection_agent_uuid") or ""
     ).strip()
     llm_ref = str(config.get("media_inspection_llm") or "").strip()
+    sticker_agent_ref = str(
+        config.get("sticker_summary_agent")
+        or config.get("sticker_summary_agent_uuid")
+        or agent_ref
+        or ""
+    ).strip()
+    sticker_llm_ref = str(config.get("sticker_summary_llm") or llm_ref or "").strip()
 
     return ResolvedMediaInspectionConfig(
         agent_ref=agent_ref or BUILTIN_MEDIA_INSPECTION_AGENT_REF,
         llm_ref=llm_ref or BUILTIN_MEDIA_INSPECTION_LLM_REF,
         uses_builtin_agent=not bool(agent_ref),
         uses_builtin_llm=not bool(llm_ref),
+        sticker_agent_ref=sticker_agent_ref or BUILTIN_STICKER_SUMMARY_AGENT_REF,
+        sticker_llm_ref=sticker_llm_ref or BUILTIN_STICKER_SUMMARY_LLM_REF,
+        uses_builtin_sticker_agent=not bool(sticker_agent_ref),
+        uses_builtin_sticker_llm=not bool(sticker_llm_ref),
     )

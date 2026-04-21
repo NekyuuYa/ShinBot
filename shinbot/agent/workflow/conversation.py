@@ -12,11 +12,8 @@ from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_manager import PromptAssemblyRequest, PromptRegistry
 from shinbot.agent.prompt_manager.runtime_sync import (
     build_runtime_component_ids,
-    ensure_runtime_context_strategy,
 )
 from shinbot.agent.workflow.formatting import (
-    crosstalk_detect,
-    format_batch_context_blocks,
     format_incremental_messages,
 )
 from shinbot.agent.workflow.model_resolution import resolve_model_target
@@ -40,6 +37,14 @@ logger = get_logger(__name__)
 
 # Maximum number of LLM round-trips per workflow run to prevent runaway loops.
 _MAX_ITERATIONS = 5
+
+CONTEXT_COMPRESSION_SYSTEM_PROMPT = """
+You compress evicted ShinBot conversation context for later recall.
+
+Keep only facts that matter for future turns: user preferences, unresolved tasks,
+promises, relationship cues, notable emotions, key msgids, and media/sticker summaries.
+Do not invent details. Prefer concise Chinese output.
+""".strip()
 
 
 class WorkflowRunner:
@@ -114,6 +119,9 @@ class WorkflowRunner:
         resolved_config = resolve_bot_runtime_config(bot_config)
         agent_uuid = resolved_config.default_agent_uuid
         model_target = resolved_config.main_llm
+        runtime_config = dict(resolved_config.config)
+        max_context_tokens = int(runtime_config.get("max_context_tokens") or 32_000)
+        evict_ratio = float(runtime_config.get("context_evict_ratio") or 0.6)
         if not agent_uuid or not model_target:
             logger.warning("Workflow skipped: missing agent or model config")
             return None
@@ -142,24 +150,6 @@ class WorkflowRunner:
             logger.warning("Workflow skipped: no resolvable prompt components")
             return None
 
-        context_strategy_id = self._resolve_context_strategy(agent)
-
-        # ── Build initial batch context ────────────────────────────
-
-        batch_context_blocks = format_batch_context_blocks(
-            batch,
-            session_id=session_id,
-            attention_repo=self._engine.repo,
-            media_service=self._media_service,
-        )
-        batch_context = "\n".join(block["text"] for block in batch_context_blocks)
-
-        topic_count = crosstalk_detect(batch)
-        if topic_count > 1:
-            crosstalk_hint = f"[系统提示：检测到当前批次可能包含 {topic_count} 个不相关话题线索]"
-            batch_context_blocks.append({"type": "text", "text": crosstalk_hint})
-            batch_context += f"\n{crosstalk_hint}"
-
         # ── Initial prompt assembly ────────────────────────────────
 
         request = PromptAssemblyRequest(
@@ -169,19 +159,20 @@ class WorkflowRunner:
             route_id=route_id,
             model_id=model_id,
             model_context_window=model_context_window,
-            hydrate_session_context=True,
-            include_context_messages=True,
-            context_strategy_id=context_strategy_id,
             component_overrides=component_ids,
             template_inputs={
                 "session_id": session_id,
                 "instance_id": instance_id,
                 "platform": "",
-                "message_text": batch_context,
-                "message_blocks": batch_context_blocks,
+                "message_text": "",
+                "message_blocks": [],
                 "user_id": "",
             },
-            context_inputs=self._build_batch_context_inputs(session_id, batch),
+            context_inputs=self._build_identity_context_inputs(
+                session_id,
+                batch,
+                previous_summary=str(attention_state.metadata.get("internal_summary", "") or ""),
+            ),
             metadata={
                 "trigger": "attention_workflow",
                 "agent_uuid": agent_uuid,
@@ -189,6 +180,7 @@ class WorkflowRunner:
                 "workflow_run_id": run_id,
                 "batch_size": len(batch),
                 "response_profile": response_profile,
+                "now_ms": int(time.time() * 1000),
             },
         )
 
@@ -267,6 +259,26 @@ class WorkflowRunner:
 
             has_tool_calls = bool(result.tool_calls)
             response_text = result.text.strip() if result.text else ""
+            if self._context_manager is not None:
+                compressed_text = await self._maybe_build_context_compression(
+                    session_id=session_id,
+                    instance_id=instance_id,
+                    run_id=run_id,
+                    usage=result.usage,
+                    runtime_config=runtime_config,
+                    default_route_id=route_id,
+                    default_model_id=model_id,
+                    default_model_context_window=model_context_window,
+                    default_model_target=model_target,
+                )
+                self._context_manager.apply_usage_eviction(
+                    session_id,
+                    result.usage,
+                    max_context_tokens=max_context_tokens,
+                    evict_ratio=evict_ratio,
+                    compressed_text=compressed_text,
+                    now_ms=int(time.time() * 1000),
+                )
 
             # ── No tool calls → terminal stop ──────────────────────
             if not has_tool_calls:
@@ -445,29 +457,21 @@ class WorkflowRunner:
             logger.warning("Skipped unresolvable prompt ref: %s", prompt_ref)
         return component_ids
 
-    def _resolve_context_strategy(self, agent: dict[str, Any]) -> str:
-        return ensure_runtime_context_strategy(
-            self._database,
-            self._prompt_registry,
-            agent=agent,
-        )
-
-    def _build_batch_context_inputs(
+    def _build_identity_context_inputs(
         self,
         session_id: str,
         batch: list[dict[str, Any]],
+        *,
+        previous_summary: str = "",
     ) -> dict[str, Any]:
         session = self._database.sessions.get(session_id)
         platform = str((session or {}).get("platform", "") or "").strip()
         turns: list[dict[str, Any]] = []
         for msg in batch:
-            text = str(msg.get("raw_text", "") or "").strip()
-            if not text:
-                text = "[无文本]"
             turns.append(
                 {
                     "role": "user",
-                    "content": text,
+                    "content": str(msg.get("raw_text", "") or "").strip() or "[无文本]",
                     "sender_id": str(msg.get("sender_id", "") or "").strip(),
                     "sender_name": str(msg.get("sender_name", "") or "").strip(),
                     "platform": platform,
@@ -475,15 +479,113 @@ class WorkflowRunner:
             )
         return {
             "platform": platform,
-            "history_turns": turns,
-            # Hydrated session context replaces history_turns with read history.
-            # Keep the active batch separately so identity prompts still learn
-            # the current speakers without duplicating the batch as history.
             "identity_turns": turns,
+            "unread_records": [dict(msg) for msg in batch],
+            "previous_summary": previous_summary.strip(),
         }
+
+    async def _maybe_build_context_compression(
+        self,
+        *,
+        session_id: str,
+        instance_id: str,
+        run_id: str,
+        usage: dict[str, Any] | None,
+        runtime_config: dict[str, Any],
+        default_route_id: str,
+        default_model_id: str,
+        default_model_context_window: int | None,
+        default_model_target: str,
+    ) -> str:
+        if self._context_manager is None:
+            return ""
+
+        preview = self._context_manager.preview_usage_eviction(
+            session_id,
+            usage,
+            max_context_tokens=int(runtime_config.get("max_context_tokens") or 32_000),
+            evict_ratio=float(runtime_config.get("context_evict_ratio") or 0.6),
+        )
+        if not preview.get("triggered"):
+            return ""
+
+        source_text = str(preview.get("source_text") or "").strip()
+        if not source_text:
+            return ""
+
+        route_id = default_route_id
+        model_id = default_model_id
+        model_context_window = default_model_context_window
+        resolved_target = default_model_target
+
+        compression_target = str(runtime_config.get("context_compression_llm") or "").strip()
+        if compression_target:
+            resolved_route_id, resolved_model_id, resolved_window = resolve_model_target(
+                self._database,
+                compression_target,
+            )
+            if resolved_route_id or resolved_model_id:
+                route_id = resolved_route_id
+                model_id = resolved_model_id
+                model_context_window = resolved_window
+                resolved_target = compression_target
+            else:
+                logger.warning(
+                    "Context compression llm %s unavailable for instance %s; using %s",
+                    compression_target,
+                    instance_id,
+                    default_model_target,
+                )
+
+        max_chars = int(runtime_config.get("context_compression_max_chars") or 240)
+        user_prompt = (
+            "请压缩下面这批即将被淘汰的历史上下文，供后续对话快速回忆。\n"
+            "要求：\n"
+            "1. 保留用户偏好、未完成事项、承诺、关键情绪和关系线索。\n"
+            "2. 保留关键 msgid、图片/表情摘要和时间信息。\n"
+            "3. 不要虚构，没有就省略。\n"
+            f"4. 输出控制在 {max_chars} 个汉字以内。\n\n"
+            f"{source_text}"
+        )
+
+        try:
+            result = await self._model_runtime.generate(
+                ModelRuntimeCall(
+                    route_id=route_id or None,
+                    model_id=model_id or None,
+                    caller="attention.workflow_runner",
+                    session_id=session_id,
+                    instance_id=instance_id,
+                    purpose="context_compression",
+                    model_context_window=model_context_window,
+                    messages=[
+                        {"role": "system", "content": CONTEXT_COMPRESSION_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    metadata={
+                        "workflow_run_id": run_id,
+                        "compression_target": resolved_target,
+                        "source_block_ids": list(preview.get("source_block_ids") or []),
+                    },
+                )
+            )
+        except ModelCallError:
+            logger.exception("Context compression model call failed for session %s", session_id)
+            return ""
+
+        return _clip_context_compression_text(result.text or "", max_chars)
 
     def _save_run(self, record: WorkflowRunRecord) -> None:
         try:
             persist_workflow_run(self._database, record)
         except Exception:
             logger.exception("Failed to save workflow run %s", record.id)
+
+
+def _clip_context_compression_text(text: str, max_chars: int) -> str:
+    normalized = text.strip()
+    if not normalized or max_chars <= 0 or len(normalized) <= max_chars:
+        return normalized
+    if max_chars <= 3:
+        return normalized[:max_chars]
+    return normalized[: max_chars - 3].rstrip() + "..."

@@ -1,28 +1,23 @@
-"""Compatibility facade for persistence repository classes.
+"""Repository implementations grouped by persistence domain."""
 
-The implementations live under ``shinbot.persistence.repositories`` grouped by
-persistence domain.  This module remains for older imports.
-"""
-
-from .repositories import (
+from .admin import (
     AgentRepository,
-    AIInteractionRepository,
-    AuditRepository,
     BotConfigRepository,
-    ContextProvider,
     ContextStrategyRepository,
-    MediaAssetRepository,
-    MediaSemanticRepository,
-    MessageLogRepository,
-    MessageMediaLinkRepository,
-    ModelExecutionRepository,
-    ModelRegistryRepository,
     PersonaRepository,
     PromptDefinitionRepository,
-    PromptSnapshotRepository,
-    SessionMediaOccurrenceRepository,
-    SessionRepository,
 )
+from .ai import AIInteractionRepository, PromptSnapshotRepository
+from .base import ContextProvider
+from .media import (
+    MediaAssetRepository,
+    MediaSemanticRepository,
+    MessageMediaLinkRepository,
+    SessionMediaOccurrenceRepository,
+)
+from .messages import MessageLogRepository
+from .model import ModelExecutionRepository, ModelRegistryRepository
+from .sessions import AuditRepository, SessionRepository
 
 __all__ = [
     "AgentRepository",

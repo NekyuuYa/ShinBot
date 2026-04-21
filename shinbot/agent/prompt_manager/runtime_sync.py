@@ -5,8 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from shinbot.agent.prompt_manager.schema import (
-    ContextStrategy,
-    ContextStrategyBudget,
     PromptComponent,
     PromptComponentKind,
     PromptStage,
@@ -90,58 +88,3 @@ def sync_prompt_definition_component(
     )
     prompt_registry.upsert_component(component)
     return component.id
-
-
-def ensure_runtime_context_strategy(
-    database: DatabaseManager,
-    prompt_registry: PromptRegistry,
-    *,
-    agent: dict[str, object] | None,
-) -> str:
-    """Resolve an agent's context strategy into a registered strategy id."""
-
-    strategy_ref = str(((agent or {}).get("context_strategy") or {}).get("ref", "")).strip()
-    if not strategy_ref:
-        return ""
-    strategy_payload = database.context_strategies.get(strategy_ref)
-    if strategy_payload is None:
-        return ""
-
-    raw_config = dict(strategy_payload.get("config") or {})
-    budget_payload = raw_config.get("budget", raw_config)
-    if not isinstance(budget_payload, dict):
-        budget_payload = {}
-
-    def _optional_positive_int(key: str) -> int | None:
-        value = budget_payload.get(key)
-        if value in (None, ""):
-            return None
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-
-    def _optional_ratio(key: str) -> float | None:
-        value = budget_payload.get(key)
-        if value is None:
-            return None
-        return float(value)
-
-    strategy = ContextStrategy(
-        id=str(strategy_payload.get("uuid") or strategy_ref),
-        display_name=str(strategy_payload.get("name", "")),
-        description=str(strategy_payload.get("description", "")),
-        resolver_ref=str(strategy_payload.get("resolver_ref", "")),
-        enabled=bool(strategy_payload.get("enabled", True)),
-        priority=int(strategy_payload.get("priority", 100)),
-        budget=ContextStrategyBudget(
-            max_context_tokens=_optional_positive_int("max_context_tokens"),
-            target_context_tokens=_optional_positive_int("target_context_tokens"),
-            max_history_turns=_optional_positive_int("max_history_turns"),
-            truncate_policy=str(budget_payload.get("truncate_policy", "tail")),
-            trigger_ratio=float(budget_payload.get("trigger_ratio", 0.5)),
-            trim_ratio=_optional_ratio("trim_ratio"),
-            trim_turns=int(budget_payload.get("trim_turns", 2)),
-        ),
-        metadata=raw_config,
-    )
-    prompt_registry.upsert_context_strategy(strategy)
-    return strategy.id

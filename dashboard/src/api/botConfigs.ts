@@ -6,6 +6,11 @@ export interface BotConfig {
   defaultAgentUuid: string
   mainLlm: string
   mediaInspectionLlm: string
+  stickerSummaryLlm: string
+  contextCompressionLlm: string
+  maxContextTokens: number | null
+  contextEvictRatio: number | null
+  contextCompressionMaxChars: number | null
   config: Record<string, unknown>
   tags: string[]
   createdAt: string
@@ -17,6 +22,11 @@ export interface BotConfigSummary {
   defaultAgentUuid: string
   mainLlm: string
   mediaInspectionLlm: string
+  stickerSummaryLlm: string
+  contextCompressionLlm: string
+  maxContextTokens: number | null
+  contextEvictRatio: number | null
+  contextCompressionMaxChars: number | null
   tags: string[]
 }
 
@@ -24,7 +34,12 @@ export interface CreateBotConfigRequest {
   instanceId: string
   defaultAgentUuid?: string
   mainLlm?: string
-  mediaInspectionLlm?: string
+  mediaInspectionLlm?: string | null
+  stickerSummaryLlm?: string | null
+  contextCompressionLlm?: string | null
+  maxContextTokens?: number | null
+  contextEvictRatio?: number | null
+  contextCompressionMaxChars?: number | null
   config?: Record<string, unknown>
   tags?: string[]
 }
@@ -33,7 +48,12 @@ export interface UpdateBotConfigRequest {
   instanceId?: string
   defaultAgentUuid?: string
   mainLlm?: string
-  mediaInspectionLlm?: string
+  mediaInspectionLlm?: string | null
+  stickerSummaryLlm?: string | null
+  contextCompressionLlm?: string | null
+  maxContextTokens?: number | null
+  contextEvictRatio?: number | null
+  contextCompressionMaxChars?: number | null
   config?: Record<string, unknown>
   tags?: string[]
 }

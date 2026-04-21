@@ -17,7 +17,8 @@ import json
 import sys
 import tomllib
 from collections.abc import Sequence
-from datetime import datetime, time as dt_time
+from datetime import datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
 

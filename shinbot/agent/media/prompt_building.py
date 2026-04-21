@@ -5,7 +5,10 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from shinbot.agent.media.config import BUILTIN_MEDIA_INSPECTION_PROMPT
+from shinbot.agent.media.config import (
+    BUILTIN_MEDIA_INSPECTION_PROMPT,
+    BUILTIN_STICKER_SUMMARY_PROMPT,
+)
 from shinbot.agent.prompt_manager import PromptAssemblyRequest
 
 MEDIA_REANALYSIS_SYSTEM_PROMPT = """
@@ -34,7 +37,6 @@ def build_media_inspection_messages(
     resolve_agent: Any,
     resolve_model_target: Any,
     build_component_ids: Any,
-    resolve_context_strategy: Any,
 ) -> list[dict[str, Any]]:
     """Build inspection messages, falling back to builtin prompt when needed."""
 
@@ -44,6 +46,87 @@ def build_media_inspection_messages(
         asset=asset,
         occurrence=occurrence,
     )
+    return _build_media_prompt_messages(
+        builtin_prompt=BUILTIN_MEDIA_INSPECTION_PROMPT,
+        instruction_text=instruction_text,
+        resolved_agent_ref=resolved_agent_ref,
+        resolved_llm_ref=resolved_llm_ref,
+        uses_builtin_agent=uses_builtin_agent,
+        prompt_registry=prompt_registry,
+        database=database,
+        instance_id=instance_id,
+        session_id=session_id,
+        raw_hash=raw_hash,
+        asset=asset,
+        model_context_window=model_context_window,
+        resolve_agent=resolve_agent,
+        resolve_model_target=resolve_model_target,
+        build_component_ids=build_component_ids,
+    )
+
+
+def build_sticker_summary_messages(
+    *,
+    resolved_agent_ref: str,
+    resolved_llm_ref: str,
+    uses_builtin_agent: bool,
+    prompt_registry: Any,
+    database: Any,
+    instance_id: str,
+    session_id: str,
+    raw_hash: str,
+    asset: dict[str, Any],
+    occurrence: dict[str, Any] | None,
+    model_context_window: int | None,
+    resolve_agent: Any,
+    resolve_model_target: Any,
+    build_component_ids: Any,
+) -> list[dict[str, Any]]:
+    """Build custom-sticker summary messages with a dedicated builtin prompt fallback."""
+
+    instruction_text = build_sticker_summary_instruction_text(
+        session_id=session_id,
+        raw_hash=raw_hash,
+        asset=asset,
+        occurrence=occurrence,
+    )
+    return _build_media_prompt_messages(
+        builtin_prompt=BUILTIN_STICKER_SUMMARY_PROMPT,
+        instruction_text=instruction_text,
+        resolved_agent_ref=resolved_agent_ref,
+        resolved_llm_ref=resolved_llm_ref,
+        uses_builtin_agent=uses_builtin_agent,
+        prompt_registry=prompt_registry,
+        database=database,
+        instance_id=instance_id,
+        session_id=session_id,
+        raw_hash=raw_hash,
+        asset=asset,
+        model_context_window=model_context_window,
+        resolve_agent=resolve_agent,
+        resolve_model_target=resolve_model_target,
+        build_component_ids=build_component_ids,
+    )
+
+
+def _build_media_prompt_messages(
+    *,
+    builtin_prompt: str,
+    instruction_text: str,
+    resolved_agent_ref: str,
+    resolved_llm_ref: str,
+    uses_builtin_agent: bool,
+    prompt_registry: Any,
+    database: Any,
+    instance_id: str,
+    session_id: str,
+    raw_hash: str,
+    asset: dict[str, Any],
+    model_context_window: int | None,
+    resolve_agent: Any,
+    resolve_model_target: Any,
+    build_component_ids: Any,
+) -> list[dict[str, Any]]:
     multimodal_user_message = {
         "role": "user",
         "content": [
@@ -56,26 +139,25 @@ def build_media_inspection_messages(
         return [
             {
                 "role": "system",
-                "content": [{"type": "text", "text": BUILTIN_MEDIA_INSPECTION_PROMPT}],
+                "content": [{"type": "text", "text": builtin_prompt}],
             },
             multimodal_user_message,
         ]
 
     agent = resolve_agent(resolved_agent_ref)
     if agent is None:
-        return _builtin_messages(BUILTIN_MEDIA_INSPECTION_PROMPT, multimodal_user_message)
+        return _builtin_messages(builtin_prompt, multimodal_user_message)
 
     persona_uuid = str(agent.get("persona_uuid") or "").strip()
     persona = database.personas.get(persona_uuid) if persona_uuid else None
     if persona is None:
-        return _builtin_messages(BUILTIN_MEDIA_INSPECTION_PROMPT, multimodal_user_message)
+        return _builtin_messages(builtin_prompt, multimodal_user_message)
 
     route_id, model_id, _, _ = resolve_model_target(
         instance_id=instance_id,
         llm_ref=resolved_llm_ref,
     )
     component_ids = build_component_ids(agent, persona)
-    context_strategy_id = resolve_context_strategy(agent)
     request = PromptAssemblyRequest(
         caller="media.inspection_runner",
         session_id=session_id,
@@ -83,7 +165,6 @@ def build_media_inspection_messages(
         route_id=route_id,
         model_id=model_id,
         model_context_window=model_context_window,
-        context_strategy_id=context_strategy_id,
         component_overrides=component_ids,
         template_inputs={
             "session_id": session_id,
@@ -102,7 +183,7 @@ def build_media_inspection_messages(
     try:
         assembly = prompt_registry.assemble(request)
     except Exception:
-        return _builtin_messages(BUILTIN_MEDIA_INSPECTION_PROMPT, multimodal_user_message)
+        return _builtin_messages(builtin_prompt, multimodal_user_message)
     return [*assembly.messages, multimodal_user_message]
 
 
@@ -122,7 +203,6 @@ def build_media_reanalysis_messages(
     resolve_agent: Any,
     resolve_model_target: Any,
     build_component_ids: Any,
-    resolve_context_strategy: Any,
 ) -> list[dict[str, Any]]:
     """Build media reanalysis messages, falling back to builtin prompt when needed."""
 
@@ -157,7 +237,6 @@ def build_media_reanalysis_messages(
         llm_ref=resolved_llm_ref,
     )
     component_ids = build_component_ids(agent, persona)
-    context_strategy_id = resolve_context_strategy(agent)
     request = PromptAssemblyRequest(
         caller="media.reanalysis_runner",
         session_id=session_id,
@@ -165,7 +244,6 @@ def build_media_reanalysis_messages(
         route_id=route_id,
         model_id=model_id,
         model_context_window=model_context_window,
-        context_strategy_id=context_strategy_id,
         component_overrides=component_ids,
         template_inputs={
             "session_id": session_id,
@@ -204,6 +282,32 @@ def build_media_inspection_instruction_text(
     return (
         "请判断这张图片应归类为 generic_image、meme_image 或 emoji_native。\n"
         "这是一次会话内重复触发的媒体检定，请综合重复性与图像内容判断。\n"
+        f"session_id={session_id}\n"
+        f"raw_hash={raw_hash}\n"
+        f"repeat_count_14d={count}\n"
+        f"mime_type={mime_type or 'unknown'}\n"
+        f"size={width or '?'}x{height or '?'}\n"
+        "请始终返回 JSON，并将 digest 控制在 50 个汉字以内。"
+    )
+
+
+def build_sticker_summary_instruction_text(
+    *,
+    session_id: str,
+    raw_hash: str,
+    asset: dict[str, Any],
+    occurrence: dict[str, Any] | None,
+) -> str:
+    """Build the text instruction for one custom-sticker inspection call."""
+
+    count = int((occurrence or {}).get("occurrence_count") or 0)
+    width = asset.get("width")
+    height = asset.get("height")
+    mime_type = str(asset.get("mime_type") or "")
+    return (
+        "请把这张图当作用户自定义表情或反应图来理解。\n"
+        "重点描述其情绪、态度、动作、姿势、显著文字和可能的聊天语气。\n"
+        "如果像普通图片而不像表情，也要如实说明。\n"
         f"session_id={session_id}\n"
         f"raw_hash={raw_hash}\n"
         f"repeat_count_14d={count}\n"

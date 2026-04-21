@@ -117,63 +117,10 @@ class PromptProfile(BaseModel):
     default_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ContextStrategyBudget(BaseModel):
-    max_context_tokens: int | None = None
-    target_context_tokens: int | None = None
-    max_history_turns: int | None = None
-    memory_summary_required: bool = False
-    truncate_policy: str = "tail"
-    trigger_ratio: float = 0.5
-    trim_ratio: float | None = None
-    trim_turns: int = 2
-
-    @model_validator(mode="after")
-    def validate_budget(self) -> ContextStrategyBudget:
-        if not 0 < self.trigger_ratio <= 1:
-            raise ValueError("ContextStrategyBudget.trigger_ratio must be within (0, 1]")
-        if self.trim_ratio is not None and not 0 < self.trim_ratio < 1:
-            raise ValueError("ContextStrategyBudget.trim_ratio must be within (0, 1)")
-        if self.trim_turns < 1:
-            raise ValueError("ContextStrategyBudget.trim_turns must be greater than or equal to 1")
-        if self.max_context_tokens is not None and self.max_context_tokens < 1:
-            raise ValueError("ContextStrategyBudget.max_context_tokens must be >= 1")
-        if self.target_context_tokens is not None and self.target_context_tokens < 1:
-            raise ValueError("ContextStrategyBudget.target_context_tokens must be >= 1")
-        if (
-            self.max_context_tokens is not None
-            and self.target_context_tokens is not None
-            and self.target_context_tokens >= self.max_context_tokens
-        ):
-            raise ValueError(
-                "ContextStrategyBudget.target_context_tokens must be smaller than max_context_tokens"
-            )
-        return self
-
-
-class ContextStrategy(BaseModel):
-    id: str
-    display_name: str = ""
-    description: str = ""
-    resolver_ref: str
-    enabled: bool = True
-    priority: int = 100
-    budget: ContextStrategyBudget = Field(default_factory=ContextStrategyBudget)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def validate_strategy_shape(self) -> ContextStrategy:
-        if not self.id.strip():
-            raise ValueError("ContextStrategy.id must not be empty")
-        if not self.resolver_ref.strip():
-            raise ValueError("ContextStrategy.resolver_ref must not be empty")
-        return self
-
-
 class PromptAssemblyRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     profile_id: str = ""
-    context_strategy_id: str = ""
     identity_enabled: bool = True
     caller: str = ""
     session_id: str = ""
@@ -181,8 +128,6 @@ class PromptAssemblyRequest(BaseModel):
     route_id: str = ""
     model_id: str = ""
     model_context_window: int | None = None
-    hydrate_session_context: bool = True
-    include_context_messages: bool = True
     task_id: str = ""
     component_overrides: list[str] = Field(default_factory=list)
     disabled_components: list[str] = Field(default_factory=list)
