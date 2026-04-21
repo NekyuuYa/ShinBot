@@ -271,8 +271,10 @@ export const useMonitoringStore = defineStore('monitoring', () => {
 
   const isOnline = computed(() => statusConnected.value && status.value.online)
 
+  const MAX_LOG_ENTRIES = 100
+
   const pushLogs = (entries: MonitoringLogEntry[]) => {
-    logs.value = [...entries, ...logs.value].slice(0, 1000)
+    logs.value = [...entries, ...logs.value].slice(0, MAX_LOG_ENTRIES)
   }
 
   const clearLogTimers = () => {

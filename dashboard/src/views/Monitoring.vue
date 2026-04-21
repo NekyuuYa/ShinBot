@@ -65,28 +65,23 @@
       </v-row>
 
       <div class="monitor-log-container">
-        <template v-for="item in filteredLogs" :key="item.id">
-          <v-card class="mb-2 log-row" variant="tonal" :color="logCardColor(item.level)">
-            <v-card-text class="py-3 px-4">
-              <v-row align="start" no-gutters>
-                <v-col cols="12" md="2" class="d-flex align-center">
-                  <v-chip size="small" variant="flat" :color="logColor(item.level)" class="font-weight-bold">{{ displayLogLevel(item.level) }}</v-chip>
-                </v-col>
-                <v-col cols="12" md="2" class="text-caption text-medium-emphasis d-flex align-center">
-                  {{ formatTime(item.timestamp) }}
-                </v-col>
-                <v-col cols="12" md="2" class="text-caption text-medium-emphasis d-flex align-center">
-                  {{ item.source ?? '-' }}
-                </v-col>
-                <v-col cols="12" md="6" class="log-message">
-                  {{ item.message }}
-                </v-col>
-              </v-row>
-            </v-card-text>
-          </v-card>
-        </template>
+        <div v-if="filteredLogs.length > 0" class="log-scroll-area">
+          <div
+            v-for="item in filteredLogs"
+            :key="item.id"
+            class="log-row"
+            :class="`log-row--${item.level.toLowerCase()}`"
+          >
+            <span class="log-col-level">
+              <v-chip size="x-small" variant="flat" :color="logColor(item.level)" class="font-weight-bold">{{ displayLogLevel(item.level) }}</v-chip>
+            </span>
+            <span class="log-col-time text-caption text-medium-emphasis">{{ formatTime(item.timestamp) }}</span>
+            <span class="log-col-source text-caption text-medium-emphasis">{{ item.source ?? '-' }}</span>
+            <span class="log-col-message">{{ item.message }}</span>
+          </div>
+        </div>
         <v-empty-state
-          v-if="filteredLogs.length === 0"
+          v-else
           icon="mdi-text-search"
           :title="$t('pages.monitoring.noData')"
           variant="plain"
@@ -124,13 +119,6 @@ const logColor = (level: string) => {
   return 'grey'
 }
 
-const logCardColor = (level: string) => {
-  if (level === 'ERROR') return 'error'
-  if (level === 'WARN') return 'warning'
-  // Keep INFO/DEBUG rows neutral to avoid heavy blue tint and improve readability.
-  return 'surface'
-}
-
 const formatTime = (timestamp: number) => new Date(timestamp).toLocaleTimeString()
 </script>
 
@@ -145,27 +133,55 @@ const formatTime = (timestamp: number) => new Date(timestamp).toLocaleTimeString
   margin: 2px;
 }
 
-.monitor-log-scroll {
-  padding: 12px 14px;
-  background: rgba(var(--v-theme-primary), 0.07);
-  border-radius: 16px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.1);
-  box-shadow: inset 0 -1px 0 rgba(var(--v-theme-primary), 0.08);
-}
-
-.monitor-log-scroll :deep(.v-virtual-scroll__container) {
-  padding: 0;
+.log-scroll-area {
+  max-height: 600px;
+  overflow-y: auto;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.1);
+  border-radius: 8px;
+  font-family: 'Roboto Mono', monospace, sans-serif;
+  font-size: 0.78rem;
 }
 
 .log-row {
-  border: 1px solid rgba(var(--v-theme-primary), 0.14);
-  box-shadow: none;
-  margin-inline: 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 12px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  line-height: 1.5;
 }
 
-.log-message {
+.log-row:last-child {
+  border-bottom: none;
+}
+
+.log-row--error {
+  background: rgba(var(--v-theme-error), 0.06);
+}
+
+.log-row--warn {
+  background: rgba(var(--v-theme-warning), 0.06);
+}
+
+.log-col-level {
+  flex: 0 0 72px;
+}
+
+.log-col-time {
+  flex: 0 0 90px;
+  white-space: nowrap;
+}
+
+.log-col-source {
+  flex: 0 0 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-col-message {
+  flex: 1;
   word-break: break-word;
-  line-height: 1.4;
   color: rgba(var(--v-theme-on-surface), 0.82);
 }
 </style>
