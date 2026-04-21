@@ -83,6 +83,7 @@ class ShinBot:
         self.context_manager = (
             ContextManager(
                 self.database.message_logs,
+                data_dir=runtime_data_dir,
                 identity_store=self.identity_store,
                 media_service=self.media_service,
             )

@@ -180,6 +180,53 @@
                 @click:append-inner="showMediaInspectionLlmPicker = true"
               />
             </v-col>
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.botConfig.stickerSummaryLlm"
+                :label="$t('pages.instances.form.stickerSummaryLlm')"
+                placeholder="openai-main/gpt-4o-mini"
+                append-inner-icon="mdi-database-search-outline"
+                @click:append-inner="showStickerSummaryLlmPicker = true"
+              />
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.botConfig.contextCompressionLlm"
+                :label="$t('pages.instances.form.contextCompressionLlm')"
+                placeholder="openai-main/gpt-4.1-mini"
+                append-inner-icon="mdi-database-search-outline"
+                @click:append-inner="showContextCompressionLlmPicker = true"
+              />
+            </v-col>
+            <v-col cols="12" md="4">
+              <v-text-field
+                v-model="form.botConfig.maxContextTokens"
+                :label="$t('pages.instances.form.maxContextTokens')"
+                placeholder="32000"
+                type="number"
+                min="1"
+              />
+            </v-col>
+            <v-col cols="12" md="4">
+              <v-text-field
+                v-model="form.botConfig.contextEvictRatio"
+                :label="$t('pages.instances.form.contextEvictRatio')"
+                placeholder="0.6"
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+              />
+            </v-col>
+            <v-col cols="12" md="4">
+              <v-text-field
+                v-model="form.botConfig.contextCompressionMaxChars"
+                :label="$t('pages.instances.form.contextCompressionMaxChars')"
+                placeholder="240"
+                type="number"
+                min="1"
+              />
+            </v-col>
             <v-col cols="12">
               <v-combobox
                 v-model="form.botConfig.tags"
@@ -223,6 +270,24 @@
       :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
       :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.mediaInspectionLlm = vals[0] ?? '' }"
+    />
+    <generic-picker-dialog
+      v-model="showStickerSummaryLlmPicker"
+      :title="$t('pages.instances.form.stickerSummaryLlm')"
+      :sections="mainLlmPickerSections"
+      :selected="form.botConfig.stickerSummaryLlm ? [form.botConfig.stickerSummaryLlm] : []"
+      :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
+      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
+      @update:selected="(vals) => { form.botConfig.stickerSummaryLlm = vals[0] ?? '' }"
+    />
+    <generic-picker-dialog
+      v-model="showContextCompressionLlmPicker"
+      :title="$t('pages.instances.form.contextCompressionLlm')"
+      :sections="mainLlmPickerSections"
+      :selected="form.botConfig.contextCompressionLlm ? [form.botConfig.contextCompressionLlm] : []"
+      :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
+      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
+      @update:selected="(vals) => { form.botConfig.contextCompressionLlm = vals[0] ?? '' }"
     />
   </v-container>
 </template>
@@ -270,6 +335,8 @@ const botConfigs = ref<BotConfig[]>([])
 const botConfigEntries = ref<Array<{ key: string; value: string }>>([])
 const showMainLlmPicker = ref(false)
 const showMediaInspectionLlmPicker = ref(false)
+const showStickerSummaryLlmPicker = ref(false)
+const showContextCompressionLlmPicker = ref(false)
 
 const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
   const result: GenericPickerSection[] = []
@@ -369,6 +436,11 @@ const form = ref({
     defaultAgentUuid: '',
     mainLlm: '',
     mediaInspectionLlm: '',
+    stickerSummaryLlm: '',
+    contextCompressionLlm: '',
+    maxContextTokens: '',
+    contextEvictRatio: '',
+    contextCompressionMaxChars: '',
     tags: [] as string[],
   },
 })
@@ -480,6 +552,11 @@ const showCreateDialog = () => {
       defaultAgentUuid: '',
       mainLlm: '',
       mediaInspectionLlm: '',
+      stickerSummaryLlm: '',
+      contextCompressionLlm: '',
+      maxContextTokens: '',
+      contextEvictRatio: '',
+      contextCompressionMaxChars: '',
       tags: [],
     },
   }
@@ -501,6 +578,18 @@ const editInstance = (instance: Instance) => {
       defaultAgentUuid: currentBotConfig?.defaultAgentUuid ?? instance.botConfig?.defaultAgentUuid ?? '',
       mainLlm: currentBotConfig?.mainLlm ?? instance.botConfig?.mainLlm ?? '',
       mediaInspectionLlm: currentBotConfig?.mediaInspectionLlm ?? instance.botConfig?.mediaInspectionLlm ?? '',
+      stickerSummaryLlm: currentBotConfig?.stickerSummaryLlm ?? instance.botConfig?.stickerSummaryLlm ?? '',
+      contextCompressionLlm:
+        currentBotConfig?.contextCompressionLlm ?? instance.botConfig?.contextCompressionLlm ?? '',
+      maxContextTokens: formatOptionalNumber(
+        currentBotConfig?.maxContextTokens ?? instance.botConfig?.maxContextTokens,
+      ),
+      contextEvictRatio: formatOptionalNumber(
+        currentBotConfig?.contextEvictRatio ?? instance.botConfig?.contextEvictRatio,
+      ),
+      contextCompressionMaxChars: formatOptionalNumber(
+        currentBotConfig?.contextCompressionMaxChars ?? instance.botConfig?.contextCompressionMaxChars,
+      ),
       tags: [...(currentBotConfig?.tags ?? instance.botConfig?.tags ?? [])],
     },
   }
@@ -576,18 +665,55 @@ const fetchBotConfigs = async () => {
 }
 
 const saveBotConfig = async (instanceId: string) => {
-  const payloadBase = {
-    instanceId,
-    defaultAgentUuid: form.value.botConfig.defaultAgentUuid,
-    mainLlm: form.value.botConfig.mainLlm.trim(),
-    mediaInspectionLlm: form.value.botConfig.mediaInspectionLlm.trim() || undefined,
-    config: entriesToObject(botConfigEntries.value),
-    tags: form.value.botConfig.tags.map((tag) => tag.trim()).filter(Boolean),
+  let payloadBase: {
+    instanceId: string
+    defaultAgentUuid: string
+    mainLlm: string
+    mediaInspectionLlm: string | null
+    stickerSummaryLlm: string | null
+    contextCompressionLlm: string | null
+    maxContextTokens: number | null
+    contextEvictRatio: number | null
+    contextCompressionMaxChars: number | null
+    config: Record<string, unknown>
+    tags: string[]
+  }
+  try {
+    payloadBase = {
+      instanceId,
+      defaultAgentUuid: form.value.botConfig.defaultAgentUuid,
+      mainLlm: form.value.botConfig.mainLlm.trim(),
+      mediaInspectionLlm: normalizeNullableString(form.value.botConfig.mediaInspectionLlm),
+      stickerSummaryLlm: normalizeNullableString(form.value.botConfig.stickerSummaryLlm),
+      contextCompressionLlm: normalizeNullableString(form.value.botConfig.contextCompressionLlm),
+      maxContextTokens: parseOptionalInteger(
+        form.value.botConfig.maxContextTokens,
+        'pages.instances.form.maxContextTokens',
+      ),
+      contextEvictRatio: parseOptionalFloat(
+        form.value.botConfig.contextEvictRatio,
+        'pages.instances.form.contextEvictRatio',
+      ),
+      contextCompressionMaxChars: parseOptionalInteger(
+        form.value.botConfig.contextCompressionMaxChars,
+        'pages.instances.form.contextCompressionMaxChars',
+      ),
+      config: entriesToObject(botConfigEntries.value),
+      tags: form.value.botConfig.tags.map((tag) => tag.trim()).filter(Boolean),
+    }
+  } catch (error) {
+    uiStore.showSnackbar(getErrorMessage(error, t('pages.instances.botConfigSaveFailed')), 'error')
+    return false
   }
   const hasMeaningfulBotConfig =
     Boolean(payloadBase.defaultAgentUuid) ||
     Boolean(payloadBase.mainLlm) ||
     Boolean(payloadBase.mediaInspectionLlm) ||
+    Boolean(payloadBase.stickerSummaryLlm) ||
+    Boolean(payloadBase.contextCompressionLlm) ||
+    payloadBase.maxContextTokens !== null ||
+    payloadBase.contextEvictRatio !== null ||
+    payloadBase.contextCompressionMaxChars !== null ||
     payloadBase.tags.length > 0 ||
     Object.keys(payloadBase.config).length > 0
 
@@ -635,5 +761,37 @@ const entriesToObject = (rows: Array<{ key: string; value: string }>) => {
     }
   }
   return output
+}
+
+const formatOptionalNumber = (value: number | null | undefined) =>
+  value === null || value === undefined ? '' : String(value)
+
+const normalizeNullableString = (value: string) => {
+  const normalized = value.trim()
+  return normalized || null
+}
+
+const parseOptionalInteger = (value: string, labelKey: string) => {
+  const normalized = value.trim()
+  if (!normalized) {
+    return null
+  }
+  const parsed = Number.parseInt(normalized, 10)
+  if (!Number.isFinite(parsed)) {
+    throw new Error(t('pages.instances.form.invalidNumericValue', { field: t(labelKey) }))
+  }
+  return parsed
+}
+
+const parseOptionalFloat = (value: string, labelKey: string) => {
+  const normalized = value.trim()
+  if (!normalized) {
+    return null
+  }
+  const parsed = Number.parseFloat(normalized)
+  if (!Number.isFinite(parsed)) {
+    throw new Error(t('pages.instances.form.invalidNumericValue', { field: t(labelKey) }))
+  }
+  return parsed
 }
 </script>

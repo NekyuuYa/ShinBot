@@ -14,6 +14,7 @@ from shinbot.agent.media.parsing import (
 from shinbot.agent.media.prompt_building import (
     build_media_inspection_messages,
     build_media_reanalysis_messages,
+    build_sticker_summary_messages,
 )
 from shinbot.agent.media.service import (
     SEMANTIC_TTL_SECONDS,
@@ -22,10 +23,7 @@ from shinbot.agent.media.service import (
 )
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntime, ModelRuntimeCall
 from shinbot.agent.prompt_manager import PromptRegistry
-from shinbot.agent.prompt_manager.runtime_sync import (
-    build_runtime_component_ids,
-    ensure_runtime_context_strategy,
-)
+from shinbot.agent.prompt_manager.runtime_sync import build_runtime_component_ids
 from shinbot.core.bot_config import resolve_bot_runtime_config
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import MediaSemanticRecord
@@ -68,6 +66,7 @@ class MediaInspectionRunner:
                     instance_id=instance_id,
                     session_id=session_id,
                     raw_hash=item.raw_hash,
+                    prefer_sticker_model=item.is_custom_emoji,
                 ),
                 name=f"media-inspect-{item.raw_hash[:12]}",
             )
@@ -82,6 +81,7 @@ class MediaInspectionRunner:
         instance_id: str,
         session_id: str,
         raw_hash: str,
+        prefer_sticker_model: bool = False,
     ) -> dict[str, Any] | None:
         semantics = self._database.media_semantics.get(raw_hash)
         if semantics is not None and bool(semantics.get("verified_by_model")):
@@ -94,36 +94,58 @@ class MediaInspectionRunner:
 
         occurrence = self._database.session_media_occurrences.get(session_id, raw_hash)
         resolved = self._media_service.resolve_inspection_config(instance_id)
+        selected_agent_ref = resolved.sticker_agent_ref if prefer_sticker_model else resolved.agent_ref
+        selected_llm_ref = resolved.sticker_llm_ref if prefer_sticker_model else resolved.llm_ref
+        uses_builtin_agent = (
+            resolved.uses_builtin_sticker_agent if prefer_sticker_model else resolved.uses_builtin_agent
+        )
         route_id, model_id, model_context_window, resolved_llm_ref = self._resolve_model_target(
             instance_id=instance_id,
-            llm_ref=resolved.llm_ref,
+            llm_ref=selected_llm_ref,
         )
         if not route_id and not model_id:
             logger.warning(
                 "Media inspection skipped: no model target available for instance %s (llm=%s)",
                 instance_id,
-                resolved.llm_ref,
+                selected_llm_ref,
             )
             return None
 
         try:
-            messages = build_media_inspection_messages(
-                resolved_agent_ref=resolved.agent_ref,
-                resolved_llm_ref=resolved_llm_ref,
-                uses_builtin_agent=resolved.uses_builtin_agent,
-                prompt_registry=self._prompt_registry,
-                database=self._database,
-                instance_id=instance_id,
-                session_id=session_id,
-                raw_hash=raw_hash,
-                asset=asset,
-                occurrence=occurrence,
-                model_context_window=model_context_window,
-                resolve_agent=self._resolve_agent,
-                resolve_model_target=self._resolve_model_target,
-                build_component_ids=self._build_component_ids,
-                resolve_context_strategy=self._resolve_context_strategy,
-            )
+            if prefer_sticker_model:
+                messages = build_sticker_summary_messages(
+                    resolved_agent_ref=selected_agent_ref,
+                    resolved_llm_ref=resolved_llm_ref,
+                    uses_builtin_agent=uses_builtin_agent,
+                    prompt_registry=self._prompt_registry,
+                    database=self._database,
+                    instance_id=instance_id,
+                    session_id=session_id,
+                    raw_hash=raw_hash,
+                    asset=asset,
+                    occurrence=occurrence,
+                    model_context_window=model_context_window,
+                    resolve_agent=self._resolve_agent,
+                    resolve_model_target=self._resolve_model_target,
+                    build_component_ids=self._build_component_ids,
+                )
+            else:
+                messages = build_media_inspection_messages(
+                    resolved_agent_ref=selected_agent_ref,
+                    resolved_llm_ref=resolved_llm_ref,
+                    uses_builtin_agent=uses_builtin_agent,
+                    prompt_registry=self._prompt_registry,
+                    database=self._database,
+                    instance_id=instance_id,
+                    session_id=session_id,
+                    raw_hash=raw_hash,
+                    asset=asset,
+                    occurrence=occurrence,
+                    model_context_window=model_context_window,
+                    resolve_agent=self._resolve_agent,
+                    resolve_model_target=self._resolve_model_target,
+                    build_component_ids=self._build_component_ids,
+                )
         except FileNotFoundError:
             logger.warning("Media inspection skipped: cached file missing for %s", raw_hash)
             return None
@@ -144,8 +166,9 @@ class MediaInspectionRunner:
                     response_format=MEDIA_INSPECTION_RESPONSE_FORMAT,
                     metadata={
                         "raw_hash": raw_hash,
-                        "inspection_agent_ref": resolved.agent_ref,
+                        "inspection_agent_ref": selected_agent_ref,
                         "inspection_llm_ref": resolved_llm_ref,
+                        "summary_mode": "sticker" if prefer_sticker_model else "image",
                     },
                 )
             )
@@ -165,13 +188,15 @@ class MediaInspectionRunner:
             kind=str(payload.get("kind") or ""),
             digest=digest,
             verified_by_model=True,
-            inspection_agent_ref=resolved.agent_ref,
+            inspection_agent_ref=selected_agent_ref,
             inspection_llm_ref=resolved_llm_ref,
             metadata={
                 "confidence_band": str(payload.get("confidence_band") or ""),
                 "reason": str(payload.get("reason") or ""),
                 "session_id": session_id,
                 "occurrence_count": int((occurrence or {}).get("occurrence_count") or 0),
+                "summary_mode": "sticker" if prefer_sticker_model else "image",
+                "is_custom_emoji": prefer_sticker_model,
             },
             first_seen_at=now,
             last_seen_at=now,
@@ -222,7 +247,6 @@ class MediaInspectionRunner:
                 resolve_agent=self._resolve_agent,
                 resolve_model_target=self._resolve_model_target,
                 build_component_ids=self._build_component_ids,
-                resolve_context_strategy=self._resolve_context_strategy,
             )
         except FileNotFoundError:
             logger.warning("Media reanalysis skipped: cached file missing for %s", raw_hash)
@@ -277,12 +301,14 @@ class MediaInspectionRunner:
         instance_id: str,
         session_id: str,
         raw_hash: str,
+        prefer_sticker_model: bool,
     ) -> None:
         try:
             await self.inspect_raw_hash(
                 instance_id=instance_id,
                 session_id=session_id,
                 raw_hash=raw_hash,
+                prefer_sticker_model=prefer_sticker_model,
             )
         except Exception:
             logger.exception("Unhandled media inspection failure for %s", raw_hash)
@@ -351,10 +377,3 @@ class MediaInspectionRunner:
         for prompt_ref in unresolved_refs:
             logger.warning("Skipped unresolvable media inspection prompt ref: %s", prompt_ref)
         return component_ids
-
-    def _resolve_context_strategy(self, agent: dict[str, Any]) -> str:
-        return ensure_runtime_context_strategy(
-            self._database,
-            self._prompt_registry,
-            agent=agent,
-        )

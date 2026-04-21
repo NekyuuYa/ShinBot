@@ -37,11 +37,55 @@ def normalize_optional_string(value: Any) -> str | None:
     return normalized or None
 
 
+def normalize_optional_int(value: Any, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        value = normalized
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise BotConfigAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message=f"BotConfig {field_name} must be an integer",
+        ) from exc
+    return parsed
+
+
+def normalize_optional_float(value: Any, *, field_name: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        value = normalized
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise BotConfigAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message=f"BotConfig {field_name} must be a number",
+        ) from exc
+    return parsed
+
+
 def assign_optional_profile(config: dict[str, Any], key: str, value: Any) -> None:
     normalized = normalize_optional_string(value)
     if normalized is None:
         return
     config[key] = normalized
+
+
+def assign_optional_numeric(config: dict[str, Any], key: str, value: int | float | None) -> None:
+    if value is None:
+        return
+    config[key] = value
 
 
 def extract_response_profiles(config: dict[str, Any]) -> dict[str, str | None]:
@@ -68,9 +112,45 @@ def extract_media_inspection_llm(config: dict[str, Any]) -> str:
     return str(config.get("media_inspection_llm") or "").strip()
 
 
+def extract_sticker_summary_llm(config: dict[str, Any]) -> str:
+    return str(config.get("sticker_summary_llm") or "").strip()
+
+
+def extract_context_compression_llm(config: dict[str, Any]) -> str:
+    return str(config.get("context_compression_llm") or "").strip()
+
+
+def extract_max_context_tokens(config: dict[str, Any]) -> int | None:
+    return normalize_optional_int(config.get("max_context_tokens"), field_name="max_context_tokens")
+
+
+def extract_context_evict_ratio(config: dict[str, Any]) -> float | None:
+    return normalize_optional_float(
+        config.get("context_evict_ratio"),
+        field_name="context_evict_ratio",
+    )
+
+
+def extract_context_compression_max_chars(config: dict[str, Any]) -> int | None:
+    return normalize_optional_int(
+        config.get("context_compression_max_chars"),
+        field_name="context_compression_max_chars",
+    )
+
+
 def strip_media_inspection_llm(config: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(config)
     cleaned.pop("media_inspection_llm", None)
+    return cleaned
+
+
+def strip_explicit_context_fields(config: dict[str, Any]) -> dict[str, Any]:
+    cleaned = strip_media_inspection_llm(config)
+    cleaned.pop("sticker_summary_llm", None)
+    cleaned.pop("context_compression_llm", None)
+    cleaned.pop("max_context_tokens", None)
+    cleaned.pop("context_evict_ratio", None)
+    cleaned.pop("context_compression_max_chars", None)
     return cleaned
 
 
@@ -82,8 +162,13 @@ def serialize_bot_config(payload: dict[str, Any]) -> dict[str, Any]:
         "defaultAgentUuid": payload["default_agent_uuid"],
         "mainLlm": payload["main_llm"],
         "mediaInspectionLlm": extract_media_inspection_llm(config),
+        "stickerSummaryLlm": extract_sticker_summary_llm(config),
+        "contextCompressionLlm": extract_context_compression_llm(config),
+        "maxContextTokens": extract_max_context_tokens(config),
+        "contextEvictRatio": extract_context_evict_ratio(config),
+        "contextCompressionMaxChars": extract_context_compression_max_chars(config),
         **extract_response_profiles(config),
-        "config": strip_response_profiles(strip_media_inspection_llm(config)),
+        "config": strip_response_profiles(strip_explicit_context_fields(config)),
         "tags": payload["tags"],
         "createdAt": payload["created_at"],
         "lastModified": payload["updated_at"],
@@ -106,6 +191,11 @@ def normalize_bot_config_input(
     response_profile_priority: str | None,
     response_profile_group: str | None,
     media_inspection_llm: str | None = None,
+    sticker_summary_llm: str | None = None,
+    context_compression_llm: str | None = None,
+    max_context_tokens: Any = None,
+    context_evict_ratio: Any = None,
+    context_compression_max_chars: Any = None,
     config: dict[str, Any],
     tags: list[str],
 ) -> NormalizedBotConfigInput:
@@ -127,6 +217,47 @@ def normalize_bot_config_input(
     normalized_config.pop("response_profile_priority", None)
     normalized_config.pop("response_profile_group", None)
     normalized_config.pop("media_inspection_llm", None)
+    normalized_config.pop("sticker_summary_llm", None)
+    normalized_config.pop("context_compression_llm", None)
+    normalized_config.pop("max_context_tokens", None)
+    normalized_config.pop("context_evict_ratio", None)
+    normalized_config.pop("context_compression_max_chars", None)
+
+    normalized_max_context_tokens = normalize_optional_int(
+        max_context_tokens,
+        field_name="max_context_tokens",
+    )
+    if normalized_max_context_tokens is not None and normalized_max_context_tokens <= 0:
+        raise BotConfigAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="BotConfig max_context_tokens must be greater than 0",
+        )
+
+    normalized_context_evict_ratio = normalize_optional_float(
+        context_evict_ratio,
+        field_name="context_evict_ratio",
+    )
+    if normalized_context_evict_ratio is not None and not 0 < normalized_context_evict_ratio <= 1:
+        raise BotConfigAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="BotConfig context_evict_ratio must be between 0 and 1",
+        )
+
+    normalized_context_compression_max_chars = normalize_optional_int(
+        context_compression_max_chars,
+        field_name="context_compression_max_chars",
+    )
+    if (
+        normalized_context_compression_max_chars is not None
+        and normalized_context_compression_max_chars <= 0
+    ):
+        raise BotConfigAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="BotConfig context_compression_max_chars must be greater than 0",
+        )
 
     assign_optional_profile(normalized_config, "response_profile", response_profile)
     assign_optional_profile(
@@ -145,6 +276,27 @@ def normalize_bot_config_input(
         response_profile_group,
     )
     assign_optional_profile(normalized_config, "media_inspection_llm", media_inspection_llm)
+    assign_optional_profile(normalized_config, "sticker_summary_llm", sticker_summary_llm)
+    assign_optional_profile(
+        normalized_config,
+        "context_compression_llm",
+        context_compression_llm,
+    )
+    assign_optional_numeric(
+        normalized_config,
+        "max_context_tokens",
+        normalized_max_context_tokens,
+    )
+    assign_optional_numeric(
+        normalized_config,
+        "context_evict_ratio",
+        normalized_context_evict_ratio,
+    )
+    assign_optional_numeric(
+        normalized_config,
+        "context_compression_max_chars",
+        normalized_context_compression_max_chars,
+    )
 
     deduped_tags: list[str] = []
     seen_tags: set[str] = set()

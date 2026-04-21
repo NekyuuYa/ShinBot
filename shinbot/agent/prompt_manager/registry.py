@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,7 @@ from shinbot.agent.prompt_manager.schema import (
     PromptAssemblyRequest,
     PromptAssemblyResult,
     PromptComponent,
+    PromptComponentKind,
     PromptComponentRecord,
     PromptLoggerRecord,
     PromptProfile,
@@ -52,6 +54,9 @@ class PromptRegistry:
     BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID = "builtin.instructions.identity_map"
     BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID = "builtin.constraints.identity_behavior"
     BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER = "builtin.identity.map"
+    BUILTIN_CONTEXT_PACKED_HISTORY_COMPONENT_ID = "builtin.context.packed_history"
+    BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID = "builtin.instructions.unread_messages"
+    BUILTIN_CONSTRAINT_ACTIVE_ALIAS_COMPONENT_ID = "builtin.constraints.active_aliases"
     BUILTIN_MESSAGE_TEXT_PROMPT_COMPONENT_ID = "builtin.instructions.message_text"
     BUILTIN_MESSAGE_TEXT_PROMPT_RESOLVER = "builtin.runtime.message_text"
     BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID = "builtin.constraints.current_time"
@@ -178,8 +183,9 @@ class PromptRegistry:
                 ordered_records=ordered_records,
             )
 
+        self._inject_context_management_records(request, records_by_stage, ordered_records)
         if request.identity_enabled:
-            self._inject_identity_prompts(request, records_by_stage)
+            self._inject_identity_prompts(request, records_by_stage, ordered_records)
 
         # ── Sort records within each stage ──────────────────────────────
         sorted_records_by_stage: dict[PromptStage, list[PromptComponentRecord]] = {
@@ -402,6 +408,108 @@ class PromptRegistry:
         records_by_stage[PromptStage.CONSTRAINTS].append(static_record)
         ordered_records.append(static_record)
 
+    def _inject_context_management_records(
+        self,
+        request: PromptAssemblyRequest,
+        records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
+        ordered_records: list[PromptComponentRecord],
+    ) -> None:
+        if self._context_manager is None or not request.session_id:
+            return
+
+        context_inputs = dict(request.context_inputs)
+        self_platform_id = str(request.template_inputs.get("user_id", "") or "").strip()
+        if not self_platform_id:
+            self_platform_id = str(context_inputs.get("self_user_id", "") or "").strip()
+        now_ms = _resolve_now_ms(request.metadata.get("now_ms"))
+
+        inactive_alias_message = self._context_manager.build_inactive_alias_context_message(
+            request.session_id,
+            now_ms=now_ms,
+        )
+        context_messages = self._context_manager.build_context_stage_messages(
+            request.session_id,
+            self_platform_id=self_platform_id,
+            now_ms=now_ms,
+        )
+        if inactive_alias_message is not None:
+            context_messages = [inactive_alias_message, *context_messages]
+        if context_messages:
+            hash_input = json.dumps(context_messages, ensure_ascii=False, sort_keys=True)
+            context_record = PromptComponentRecord(
+                component_id=self.BUILTIN_CONTEXT_PACKED_HISTORY_COMPONENT_ID,
+                stage=PromptStage.CONTEXT,
+                kind=PromptComponentKind.EXTERNAL_INJECTION,
+                version="1.0.0",
+                priority=10,
+                source=PromptSource(
+                    source_type=PromptSourceType.BUILTIN_SYSTEM,
+                    source_id=self.BUILTIN_CONTEXT_PACKED_HISTORY_COMPONENT_ID,
+                    is_builtin=True,
+                ),
+                rendered_messages=context_messages,
+                text_hash=stable_text_hash(hash_input),
+                metadata={"session_id": request.session_id},
+            )
+            records_by_stage[PromptStage.CONTEXT].append(context_record)
+            ordered_records.append(context_record)
+
+        unread_records = context_inputs.get("unread_records")
+        if isinstance(unread_records, list) and unread_records:
+            content_blocks = self._context_manager.build_instruction_stage_content(
+                request.session_id,
+                unread_records,
+                previous_summary=str(context_inputs.get("previous_summary", "") or ""),
+                self_platform_id=self_platform_id,
+                now_ms=now_ms,
+            )
+            if content_blocks:
+                hash_input = json.dumps(content_blocks, ensure_ascii=False, sort_keys=True)
+                instruction_record = PromptComponentRecord(
+                    component_id=self.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID,
+                    stage=PromptStage.INSTRUCTIONS,
+                    kind=PromptComponentKind.EXTERNAL_INJECTION,
+                    version="1.0.0",
+                    priority=10,
+                    source=PromptSource(
+                        source_type=PromptSourceType.BUILTIN_SYSTEM,
+                        source_id=self.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID,
+                        is_builtin=True,
+                    ),
+                    rendered_text="[builtin unread messages]",
+                    rendered_content_blocks=content_blocks,
+                    text_hash=stable_text_hash(hash_input),
+                    metadata={
+                        "session_id": request.session_id,
+                        "message_count": len(unread_records),
+                    },
+                )
+                records_by_stage[PromptStage.INSTRUCTIONS].append(instruction_record)
+                ordered_records.append(instruction_record)
+
+        active_alias_text = self._context_manager.build_active_alias_constraint_text(
+            request.session_id,
+            now_ms=now_ms,
+        )
+        if active_alias_text:
+            constraint_record = PromptComponentRecord(
+                component_id=self.BUILTIN_CONSTRAINT_ACTIVE_ALIAS_COMPONENT_ID,
+                stage=PromptStage.CONSTRAINTS,
+                kind=PromptComponentKind.EXTERNAL_INJECTION,
+                version="1.0.0",
+                priority=10,
+                source=PromptSource(
+                    source_type=PromptSourceType.BUILTIN_SYSTEM,
+                    source_id=self.BUILTIN_CONSTRAINT_ACTIVE_ALIAS_COMPONENT_ID,
+                    is_builtin=True,
+                ),
+                rendered_text=active_alias_text,
+                text_hash=stable_text_hash(active_alias_text),
+                metadata={"session_id": request.session_id},
+            )
+            records_by_stage[PromptStage.CONSTRAINTS].append(constraint_record)
+            ordered_records.append(constraint_record)
+
     def _inject_runtime_prompts(
         self,
         request: PromptAssemblyRequest,
@@ -519,3 +627,13 @@ def _normalize_content_blocks(value: Any) -> list[dict[str, Any]] | None:
     from shinbot.agent.prompt_manager.rendering import _extract_content_blocks
 
     return _extract_content_blocks(value)
+
+
+def _resolve_now_ms(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(raw if raw > 10_000_000_000 else raw * 1000)

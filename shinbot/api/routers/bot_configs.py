@@ -31,6 +31,11 @@ class BotConfigRequest(BaseModel):
     defaultAgentUuid: str = ""
     mainLlm: str = ""
     mediaInspectionLlm: str | None = None
+    stickerSummaryLlm: str | None = None
+    contextCompressionLlm: str | None = None
+    maxContextTokens: int | None = None
+    contextEvictRatio: float | None = None
+    contextCompressionMaxChars: int | None = None
     responseProfile: str | None = None
     responseProfilePrivate: str | None = None
     responseProfilePriority: str | None = None
@@ -44,6 +49,11 @@ class BotConfigPatchRequest(BaseModel):
     defaultAgentUuid: str | None = None
     mainLlm: str | None = None
     mediaInspectionLlm: str | None = None
+    stickerSummaryLlm: str | None = None
+    contextCompressionLlm: str | None = None
+    maxContextTokens: int | None = None
+    contextEvictRatio: float | None = None
+    contextCompressionMaxChars: int | None = None
     responseProfile: str | None = None
     responseProfilePrivate: str | None = None
     responseProfilePriority: str | None = None
@@ -59,6 +69,12 @@ def _raise_admin_http_error(exc: BotConfigAdminError) -> None:
     ) from exc
 
 
+def _patch_value(body: BotConfigPatchRequest, field_name: str, current_value: Any) -> Any:
+    if field_name in body.model_fields_set:
+        return getattr(body, field_name)
+    return current_value
+
+
 @router.get("")
 def list_bot_configs(bot=BotDep):
     return ok([serialize_bot_config(item) for item in bot.database.bot_configs.list()])
@@ -72,6 +88,11 @@ def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
             default_agent_uuid=body.defaultAgentUuid,
             main_llm=body.mainLlm,
             media_inspection_llm=body.mediaInspectionLlm,
+            sticker_summary_llm=body.stickerSummaryLlm,
+            context_compression_llm=body.contextCompressionLlm,
+            max_context_tokens=body.maxContextTokens,
+            context_evict_ratio=body.contextEvictRatio,
+            context_compression_max_chars=body.contextCompressionMaxChars,
             response_profile=body.responseProfile,
             response_profile_private=body.responseProfilePrivate,
             response_profile_priority=body.responseProfilePriority,
@@ -113,43 +134,65 @@ def get_bot_config(config_uuid: str, bot=BotDep):
 def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, boot=BootDep):
     try:
         current = get_bot_config_or_raise(bot.database, config_uuid)
+        current_config = dict(current["config"])
         normalized = normalize_bot_config_input(
-            instance_id=(
-                body.instanceId if body.instanceId is not None else str(current["instance_id"])
+            instance_id=str(_patch_value(body, "instanceId", current["instance_id"]) or ""),
+            default_agent_uuid=str(
+                _patch_value(body, "defaultAgentUuid", current["default_agent_uuid"]) or ""
             ),
-            default_agent_uuid=(
-                body.defaultAgentUuid
-                if body.defaultAgentUuid is not None
-                else str(current["default_agent_uuid"])
+            main_llm=str(_patch_value(body, "mainLlm", current["main_llm"]) or ""),
+            media_inspection_llm=_patch_value(
+                body,
+                "mediaInspectionLlm",
+                current_config.get("media_inspection_llm"),
             ),
-            main_llm=body.mainLlm if body.mainLlm is not None else str(current["main_llm"]),
-            media_inspection_llm=(
-                body.mediaInspectionLlm
-                if body.mediaInspectionLlm is not None
-                else dict(current["config"]).get("media_inspection_llm")
+            sticker_summary_llm=_patch_value(
+                body,
+                "stickerSummaryLlm",
+                current_config.get("sticker_summary_llm"),
             ),
-            response_profile=(
-                body.responseProfile
-                if body.responseProfile is not None
-                else dict(current["config"]).get("response_profile")
+            context_compression_llm=_patch_value(
+                body,
+                "contextCompressionLlm",
+                current_config.get("context_compression_llm"),
             ),
-            response_profile_private=(
-                body.responseProfilePrivate
-                if body.responseProfilePrivate is not None
-                else dict(current["config"]).get("response_profile_private")
+            max_context_tokens=_patch_value(
+                body,
+                "maxContextTokens",
+                current_config.get("max_context_tokens"),
             ),
-            response_profile_priority=(
-                body.responseProfilePriority
-                if body.responseProfilePriority is not None
-                else dict(current["config"]).get("response_profile_priority")
+            context_evict_ratio=_patch_value(
+                body,
+                "contextEvictRatio",
+                current_config.get("context_evict_ratio"),
             ),
-            response_profile_group=(
-                body.responseProfileGroup
-                if body.responseProfileGroup is not None
-                else dict(current["config"]).get("response_profile_group")
+            context_compression_max_chars=_patch_value(
+                body,
+                "contextCompressionMaxChars",
+                current_config.get("context_compression_max_chars"),
             ),
-            config=body.config if body.config is not None else dict(current["config"]),
-            tags=body.tags if body.tags is not None else list(current["tags"]),
+            response_profile=_patch_value(
+                body,
+                "responseProfile",
+                current_config.get("response_profile"),
+            ),
+            response_profile_private=_patch_value(
+                body,
+                "responseProfilePrivate",
+                current_config.get("response_profile_private"),
+            ),
+            response_profile_priority=_patch_value(
+                body,
+                "responseProfilePriority",
+                current_config.get("response_profile_priority"),
+            ),
+            response_profile_group=_patch_value(
+                body,
+                "responseProfileGroup",
+                current_config.get("response_profile_group"),
+            ),
+            config=_patch_value(body, "config", current_config) or {},
+            tags=_patch_value(body, "tags", list(current["tags"])) or [],
         )
         assert_bot_config_instance_available(
             bot.database,
