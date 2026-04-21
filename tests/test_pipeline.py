@@ -1145,7 +1145,7 @@ class TestMessagePipeline:
                 tags={"attention"},
             )
         }
-        assert {"send_poke", "poke_user"} <= exported_names
+        assert "send_poke" in exported_names
 
         result = await manager.execute(
             ToolCallRequest(
@@ -1164,9 +1164,9 @@ class TestMessagePipeline:
             {"user_id": "user-2", "group_id": "1"},
         )
 
-        result_alias = await manager.execute(
+        result_no_terminate = await manager.execute(
             ToolCallRequest(
-                tool_name="poke_user",
+                tool_name="send_poke",
                 arguments={"user_id": "user-3", "terminate_round": False},
                 caller="attention.workflow_runner",
                 instance_id=self.adapter.instance_id,
@@ -1174,8 +1174,8 @@ class TestMessagePipeline:
             )
         )
 
-        assert result_alias.success is True
-        assert result_alias.output["terminate_round"] is False
+        assert result_no_terminate.success is True
+        assert result_no_terminate.output["terminate_round"] is False
         assert self.adapter.api_calls[-1] == (
             "internal.mock.poke",
             {"user_id": "user-3"},

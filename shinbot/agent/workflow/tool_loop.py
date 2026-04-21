@@ -79,7 +79,7 @@ async def execute_workflow_tool_calls(
             if isinstance(tool_result.output, dict):
                 terminate_round = bool(tool_result.output.get("terminate_round", True))
             outcome.terminate_round = outcome.terminate_round or terminate_round
-        elif tool_name in {"send_poke", "poke_user"} and tool_result.success:
+        elif tool_name == "send_poke" and tool_result.success:
             outcome.reply_sent = True
             outcome.response_summary = "戳一戳"
             terminate_round = True

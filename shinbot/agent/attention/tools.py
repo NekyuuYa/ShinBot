@@ -409,20 +409,19 @@ def register_attention_tools(
         "required": ["user_id"],
     }
 
-    for tool_name in ("send_poke", "poke_user"):
-        registry.register_tool(
-            ToolDefinition(
-                id=f"{_OWNER_ID}.{tool_name}",
-                name=tool_name,
-                description=poke_description,
-                input_schema=poke_schema,
-                handler=_send_poke,
-                owner_type=_OWNER_TYPE,
-                owner_id=_OWNER_ID,
-                visibility=ToolVisibility.PUBLIC,
-                tags=[_TAG],
-            )
+    registry.register_tool(
+        ToolDefinition(
+            id=f"{_OWNER_ID}.send_poke",
+            name="send_poke",
+            description=poke_description,
+            input_schema=poke_schema,
+            handler=_send_poke,
+            owner_type=_OWNER_TYPE,
+            owner_id=_OWNER_ID,
+            visibility=ToolVisibility.PUBLIC,
+            tags=[_TAG],
         )
+    )
 
 
 def _session_type(session_id: str) -> str:
