@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from shinbot.persistence.records import ContextStrategyRecord, utc_now_iso
+from shinbot.schema.context_strategies import BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID
 
 
 @dataclass(slots=True)
@@ -74,6 +75,19 @@ def get_context_strategy_or_raise(database: Any, strategy_uuid: str) -> dict[str
             message=f"Context strategy {strategy_uuid!r} was not found",
         )
     return payload
+
+
+def assert_context_strategy_mutable(payload: dict[str, Any]) -> None:
+    config = payload.get("config")
+    is_builtin = payload.get("uuid") == BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID
+    if isinstance(config, dict):
+        is_builtin = is_builtin or bool(config.get("builtin"))
+    if is_builtin:
+        raise ContextStrategyAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="Built-in context strategies cannot be modified",
+        )
 
 
 def assert_context_strategy_name_available(

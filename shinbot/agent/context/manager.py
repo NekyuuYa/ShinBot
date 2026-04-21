@@ -165,7 +165,6 @@ class ActiveContextPool:
                 item["_is_read"] = True
 
 
-
 class ContextManager:
     """Observer-backed session context manager with hot pools."""
 
@@ -607,7 +606,9 @@ def _expand_aliases_for_compression(text: str, alias_table: SessionAliasTable) -
         return text
 
     expanded = _MESSAGE_ALIAS_PREFIX_PATTERN.sub(
-        lambda match: f"{match.group(1)}{alias_map.get(match.group('alias'), match.group('alias'))}",
+        lambda match: (
+            f"{match.group(1)}{alias_map.get(match.group('alias'), match.group('alias'))}"
+        ),
         text,
     )
     for alias, display_name in alias_map.items():
@@ -618,4 +619,3 @@ def _expand_aliases_for_compression(text: str, alias_table: SessionAliasTable) -
             expanded,
         )
     return expanded
-

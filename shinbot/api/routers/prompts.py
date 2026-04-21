@@ -26,6 +26,7 @@ def _prompt_dict(payload: dict[str, Any]) -> dict[str, Any]:
         "version": payload["version"],
         "priority": payload["priority"],
         "enabled": payload["enabled"],
+        "cacheStable": bool(payload.get("cache_stable", True)),
         "resolverRef": payload["resolver_ref"],
         "templateVars": payload["template_vars"],
         "bundleRefs": payload["bundle_refs"],

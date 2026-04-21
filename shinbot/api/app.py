@@ -57,16 +57,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def create_api_app(bot: ShinBot, boot: BootController, runtime_control: RuntimeControl) -> FastAPI:
+def create_api_app(
+    bot: ShinBot,
+    boot: BootController,
+    runtime_control: RuntimeControl | None = None,
+) -> FastAPI:
     """Create and configure the ShinBot management API FastAPI application.
 
     Args:
         bot: The running ShinBot core instance.
         boot: The BootController providing config access and persistence.
+        runtime_control: Optional process lifecycle controller. A default
+            controller is created for tests and embedded API instances.
 
     Returns:
         Configured FastAPI application ready for uvicorn.
     """
+    if runtime_control is None:
+        from shinbot.core.application.runtime_control import RuntimeControl
+
+        runtime_control = RuntimeControl()
+    bot.runtime_control = runtime_control
 
     # ── Lifespan (startup / shutdown hooks) ──────────────────────────
 
