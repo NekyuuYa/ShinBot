@@ -911,15 +911,6 @@ class PromptRegistry:
 
 
 def _normalize_content_blocks(value: Any) -> list[dict[str, Any]] | None:
-    if not isinstance(value, list):
-        return None
+    from shinbot.agent.prompt_manager.rendering import _extract_content_blocks
 
-    blocks: list[dict[str, Any]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        block_type = str(item.get("type", "text") or "text").strip()
-        text = str(item.get("text", "") or "").strip()
-        if block_type == "text" and text:
-            blocks.append({"type": "text", "text": text})
-    return blocks or None
+    return _extract_content_blocks(value)

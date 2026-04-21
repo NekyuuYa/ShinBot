@@ -45,6 +45,7 @@
     "defaultAgent": "Default Agent",
     "noDefaultAgent": "No default agent",
     "mainLlm": "Default Main LLM",
+    "mediaInspectionLlm": "Media Inspection LLM",
     "botTags": "Instance Tags",
     "botConfigFields": "Additional Parameters",
     "advancedConfig": "Advanced Parameters",

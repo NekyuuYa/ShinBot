@@ -45,6 +45,7 @@
     "defaultAgent": "默认 Agent",
     "noDefaultAgent": "不设置默认 Agent",
     "mainLlm": "默认主模型",
+    "mediaInspectionLlm": "图片识别模型",
     "botTags": "实例标签",
     "botConfigFields": "附加参数",
     "advancedConfig": "高级参数",

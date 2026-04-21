@@ -30,6 +30,7 @@ class BotConfigRequest(BaseModel):
     instanceId: str
     defaultAgentUuid: str = ""
     mainLlm: str = ""
+    mediaInspectionLlm: str | None = None
     responseProfile: str | None = None
     responseProfilePrivate: str | None = None
     responseProfilePriority: str | None = None
@@ -42,6 +43,7 @@ class BotConfigPatchRequest(BaseModel):
     instanceId: str | None = None
     defaultAgentUuid: str | None = None
     mainLlm: str | None = None
+    mediaInspectionLlm: str | None = None
     responseProfile: str | None = None
     responseProfilePrivate: str | None = None
     responseProfilePriority: str | None = None
@@ -69,6 +71,7 @@ def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
             instance_id=body.instanceId,
             default_agent_uuid=body.defaultAgentUuid,
             main_llm=body.mainLlm,
+            media_inspection_llm=body.mediaInspectionLlm,
             response_profile=body.responseProfile,
             response_profile_private=body.responseProfilePrivate,
             response_profile_priority=body.responseProfilePriority,
@@ -120,6 +123,11 @@ def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, 
                 else str(current["default_agent_uuid"])
             ),
             main_llm=body.mainLlm if body.mainLlm is not None else str(current["main_llm"]),
+            media_inspection_llm=(
+                body.mediaInspectionLlm
+                if body.mediaInspectionLlm is not None
+                else dict(current["config"]).get("media_inspection_llm")
+            ),
             response_profile=(
                 body.responseProfile
                 if body.responseProfile is not None

@@ -171,6 +171,15 @@
                 @click:append-inner="showMainLlmPicker = true"
               />
             </v-col>
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.botConfig.mediaInspectionLlm"
+                :label="$t('pages.instances.form.mediaInspectionLlm')"
+                placeholder="openai-main/gpt-4o"
+                append-inner-icon="mdi-database-search-outline"
+                @click:append-inner="showMediaInspectionLlmPicker = true"
+              />
+            </v-col>
             <v-col cols="12">
               <v-combobox
                 v-model="form.botConfig.tags"
@@ -205,6 +214,15 @@
       :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
       :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.mainLlm = vals[0] ?? '' }"
+    />
+    <generic-picker-dialog
+      v-model="showMediaInspectionLlmPicker"
+      :title="$t('pages.instances.form.mediaInspectionLlm')"
+      :sections="mainLlmPickerSections"
+      :selected="form.botConfig.mediaInspectionLlm ? [form.botConfig.mediaInspectionLlm] : []"
+      :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
+      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
+      @update:selected="(vals) => { form.botConfig.mediaInspectionLlm = vals[0] ?? '' }"
     />
   </v-container>
 </template>
@@ -251,6 +269,7 @@ const agents = ref<AgentSummary[]>([])
 const botConfigs = ref<BotConfig[]>([])
 const botConfigEntries = ref<Array<{ key: string; value: string }>>([])
 const showMainLlmPicker = ref(false)
+const showMediaInspectionLlmPicker = ref(false)
 
 const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
   const result: GenericPickerSection[] = []
@@ -349,6 +368,7 @@ const form = ref({
     uuid: '',
     defaultAgentUuid: '',
     mainLlm: '',
+    mediaInspectionLlm: '',
     tags: [] as string[],
   },
 })
@@ -459,6 +479,7 @@ const showCreateDialog = () => {
       uuid: '',
       defaultAgentUuid: '',
       mainLlm: '',
+      mediaInspectionLlm: '',
       tags: [],
     },
   }
@@ -479,6 +500,7 @@ const editInstance = (instance: Instance) => {
       uuid: currentBotConfig?.uuid ?? '',
       defaultAgentUuid: currentBotConfig?.defaultAgentUuid ?? instance.botConfig?.defaultAgentUuid ?? '',
       mainLlm: currentBotConfig?.mainLlm ?? instance.botConfig?.mainLlm ?? '',
+      mediaInspectionLlm: currentBotConfig?.mediaInspectionLlm ?? instance.botConfig?.mediaInspectionLlm ?? '',
       tags: [...(currentBotConfig?.tags ?? instance.botConfig?.tags ?? [])],
     },
   }
@@ -558,12 +580,14 @@ const saveBotConfig = async (instanceId: string) => {
     instanceId,
     defaultAgentUuid: form.value.botConfig.defaultAgentUuid,
     mainLlm: form.value.botConfig.mainLlm.trim(),
+    mediaInspectionLlm: form.value.botConfig.mediaInspectionLlm.trim() || undefined,
     config: entriesToObject(botConfigEntries.value),
     tags: form.value.botConfig.tags.map((tag) => tag.trim()).filter(Boolean),
   }
   const hasMeaningfulBotConfig =
     Boolean(payloadBase.defaultAgentUuid) ||
     Boolean(payloadBase.mainLlm) ||
+    Boolean(payloadBase.mediaInspectionLlm) ||
     payloadBase.tags.length > 0 ||
     Object.keys(payloadBase.config).length > 0
 

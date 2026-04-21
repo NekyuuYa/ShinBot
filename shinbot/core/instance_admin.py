@@ -65,6 +65,7 @@ def serialize_bot_config_summary(payload: dict[str, Any] | None) -> dict[str, An
         "uuid": serialized["uuid"],
         "defaultAgentUuid": serialized["defaultAgentUuid"],
         "mainLlm": serialized["mainLlm"],
+        "mediaInspectionLlm": serialized["mediaInspectionLlm"],
         "responseProfile": serialized["responseProfile"],
         "responseProfilePrivate": serialized["responseProfilePrivate"],
         "responseProfilePriority": serialized["responseProfilePriority"],

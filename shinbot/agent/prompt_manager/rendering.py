@@ -20,6 +20,30 @@ from shinbot.agent.prompt_manager.schema import (
 Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
 
 
+def _extract_content_blocks(value: Any) -> list[dict[str, Any]] | None:
+    """Normalise raw content-block lists from resolver output.
+
+    Passes through ``text`` blocks with non-empty text and ``image_url`` blocks
+    that carry a non-empty URL.  All other entries are discarded.
+    """
+    if not isinstance(value, list):
+        return None
+    blocks: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        block_type = str(item.get("type", "text") or "text").strip()
+        if block_type == "text":
+            text = str(item.get("text", "") or "").strip()
+            if text:
+                blocks.append({"type": "text", "text": text})
+        elif block_type == "image_url":
+            image_url = item.get("image_url")
+            if isinstance(image_url, dict) and str(image_url.get("url", "")).strip():
+                blocks.append({"type": "image_url", "image_url": dict(image_url)})
+    return blocks or None
+
+
 def infer_component_source(component: PromptComponent) -> PromptSource:
     """Infer prompt source metadata from a component definition."""
 
@@ -162,12 +186,29 @@ def expand_component_tree(
         ordered_records.append(record)
         return
 
-    rendered_text = render_component_text(
-        component=component,
-        request=request,
-        source=source,
-        resolvers=resolvers,
-    )
+    # For RESOLVER components outside ABILITIES/CONTEXT, call the resolver once and
+    # extract both rendered_text and rendered_content_blocks from the result.
+    rendered_content_blocks: list[dict[str, Any]] | None = None
+    if component.kind == PromptComponentKind.RESOLVER and component.stage not in (
+        PromptStage.ABILITIES,
+        PromptStage.CONTEXT,
+    ):
+        resolver = resolvers.get(component.resolver_ref)
+        if resolver is None:
+            raise ValueError(f"Prompt resolver {component.resolver_ref!r} is not registered")
+        raw_result = resolver(request, component, source)
+        if isinstance(raw_result, dict):
+            rendered_text = str(raw_result.get("text", "")).strip()
+            rendered_content_blocks = _extract_content_blocks(raw_result.get("content_blocks"))
+        else:
+            rendered_text = str(raw_result).strip()
+    else:
+        rendered_text = render_component_text(
+            component=component,
+            request=request,
+            source=source,
+            resolvers=resolvers,
+        )
 
     if component.stage == PromptStage.CONTEXT and rendered_text:
         rendered_messages = [{"role": "user", "content": rendered_text}]
@@ -197,6 +238,7 @@ def expand_component_tree(
         priority=component.priority,
         source=source,
         rendered_text=rendered_text,
+        rendered_content_blocks=rendered_content_blocks,
         text_hash=stable_text_hash(rendered_text),
         cache_stable=component.cache_stable,
         metadata=dict(component.metadata),

@@ -64,6 +64,16 @@ def strip_response_profiles(config: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def extract_media_inspection_llm(config: dict[str, Any]) -> str:
+    return str(config.get("media_inspection_llm") or "").strip()
+
+
+def strip_media_inspection_llm(config: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(config)
+    cleaned.pop("media_inspection_llm", None)
+    return cleaned
+
+
 def serialize_bot_config(payload: dict[str, Any]) -> dict[str, Any]:
     config = dict(payload["config"])
     return {
@@ -71,8 +81,9 @@ def serialize_bot_config(payload: dict[str, Any]) -> dict[str, Any]:
         "instanceId": payload["instance_id"],
         "defaultAgentUuid": payload["default_agent_uuid"],
         "mainLlm": payload["main_llm"],
+        "mediaInspectionLlm": extract_media_inspection_llm(config),
         **extract_response_profiles(config),
-        "config": strip_response_profiles(config),
+        "config": strip_response_profiles(strip_media_inspection_llm(config)),
         "tags": payload["tags"],
         "createdAt": payload["created_at"],
         "lastModified": payload["updated_at"],
@@ -94,6 +105,7 @@ def normalize_bot_config_input(
     response_profile_private: str | None,
     response_profile_priority: str | None,
     response_profile_group: str | None,
+    media_inspection_llm: str | None = None,
     config: dict[str, Any],
     tags: list[str],
 ) -> NormalizedBotConfigInput:
@@ -114,6 +126,7 @@ def normalize_bot_config_input(
     normalized_config.pop("response_profile_private", None)
     normalized_config.pop("response_profile_priority", None)
     normalized_config.pop("response_profile_group", None)
+    normalized_config.pop("media_inspection_llm", None)
 
     assign_optional_profile(normalized_config, "response_profile", response_profile)
     assign_optional_profile(
@@ -131,6 +144,7 @@ def normalize_bot_config_input(
         "response_profile_group",
         response_profile_group,
     )
+    assign_optional_profile(normalized_config, "media_inspection_llm", media_inspection_llm)
 
     deduped_tags: list[str] = []
     seen_tags: set[str] = set()

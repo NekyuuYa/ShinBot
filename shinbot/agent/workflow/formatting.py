@@ -98,10 +98,10 @@ def format_batch_context_blocks(
     session_id: str,
     attention_repo: AttentionRepository,
     media_service: MediaService | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Render the primary unread batch into separate workflow-facing text blocks."""
 
-    blocks: list[dict[str, str]] = []
+    blocks: list[dict[str, Any]] = []
     state = attention_repo.get_attention(session_id)
     prev_summary = ""
     if state is not None:
@@ -132,6 +132,8 @@ def format_batch_context_blocks(
                 ),
             }
         )
+        if media_service is not None:
+            blocks.extend(media_service.get_message_image_data_urls(msg))
     return blocks
 
 

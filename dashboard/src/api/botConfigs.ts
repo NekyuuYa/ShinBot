@@ -5,6 +5,7 @@ export interface BotConfig {
   instanceId: string
   defaultAgentUuid: string
   mainLlm: string
+  mediaInspectionLlm: string
   config: Record<string, unknown>
   tags: string[]
   createdAt: string
@@ -15,6 +16,7 @@ export interface BotConfigSummary {
   uuid: string
   defaultAgentUuid: string
   mainLlm: string
+  mediaInspectionLlm: string
   tags: string[]
 }
 
@@ -22,6 +24,7 @@ export interface CreateBotConfigRequest {
   instanceId: string
   defaultAgentUuid?: string
   mainLlm?: string
+  mediaInspectionLlm?: string
   config?: Record<string, unknown>
   tags?: string[]
 }
@@ -30,6 +33,7 @@ export interface UpdateBotConfigRequest {
   instanceId?: string
   defaultAgentUuid?: string
   mainLlm?: string
+  mediaInspectionLlm?: string
   config?: Record<string, unknown>
   tags?: string[]
 }

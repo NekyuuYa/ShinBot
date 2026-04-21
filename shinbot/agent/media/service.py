@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.media.config import (
     ResolvedMediaInspectionConfig,
@@ -36,6 +37,7 @@ class IngestedMediaItem:
     should_request_inspection: bool
     known_kind: str = ""
     known_digest: str = ""
+    is_custom_emoji: bool = False
 
 
 class MediaService:
@@ -62,7 +64,7 @@ class MediaService:
         results: list[IngestedMediaItem] = []
         linked_raw_hashes: list[str] = []
 
-        for source_path in self._iter_local_image_paths(elements):
+        for source_path, is_custom_emoji in self._iter_local_image_paths(elements):
             fingerprint = fingerprint_image_file(source_path)
             if fingerprint is None:
                 continue
@@ -105,11 +107,16 @@ class MediaService:
                 known_kind = str(semantics.get("kind") or "")
                 known_digest = str(semantics.get("digest") or "")
 
-            should_request_inspection = occurrence[
-                "occurrence_count"
-            ] >= MEME_VERIFICATION_THRESHOLD and not bool(
-                semantics and semantics.get("verified_by_model")
-            )
+            already_verified = bool(semantics and semantics.get("verified_by_model"))
+            if is_custom_emoji:
+                # Custom stickers/emoji: inspect on first appearance; skip if already verified.
+                should_request_inspection = not already_verified
+            else:
+                # Normal images: only inspect after repeated occurrences.
+                should_request_inspection = (
+                    occurrence["occurrence_count"] >= MEME_VERIFICATION_THRESHOLD
+                    and not already_verified
+                )
 
             results.append(
                 IngestedMediaItem(
@@ -120,6 +127,7 @@ class MediaService:
                     should_request_inspection=should_request_inspection,
                     known_kind=known_kind,
                     known_digest=known_digest,
+                    is_custom_emoji=is_custom_emoji,
                 )
             )
 
@@ -227,6 +235,31 @@ class MediaService:
                 parts.append("[图片]")
         return parts
 
+    def get_message_image_data_urls(
+        self,
+        record: dict[str, object] | None,
+    ) -> list[dict[str, Any]]:
+        """Return image_url content blocks for all image assets linked to a message."""
+        raw_hashes = self._resolve_record_raw_hashes(record)
+        blocks: list[dict[str, Any]] = []
+        for raw_hash in raw_hashes:
+            asset = self._database.media_assets.get(raw_hash)
+            if asset is None:
+                continue
+            storage_path = str(asset.get("storage_path") or "").strip()
+            if not storage_path:
+                continue
+            try:
+                with open(storage_path, "rb") as fh:
+                    data = fh.read()
+                mime_type = str(asset.get("mime_type") or "").strip() or "image/jpeg"
+                encoded = base64.b64encode(data).decode("ascii")
+                url = f"data:{mime_type};base64,{encoded}"
+                blocks.append({"type": "image_url", "image_url": {"url": url}})
+            except OSError:
+                pass
+        return blocks
+
     def _record_session_occurrence(
         self,
         *,
@@ -319,15 +352,17 @@ class MediaService:
             raw_hashes.append(fingerprint.raw_hash)
         return raw_hashes
 
-    def _iter_local_image_paths(self, elements: list[MessageElement]) -> list[Path]:
-        paths: list[Path] = []
+    def _iter_local_image_paths(self, elements: list[MessageElement]) -> list[tuple[Path, bool]]:
+        """Return (local_path, is_custom_emoji) pairs for every img element."""
+        paths: list[tuple[Path, bool]] = []
         for element in elements:
             if element.type == "img":
                 src = str(element.attrs.get("src") or "").strip()
                 if src:
                     candidate = Path(src).expanduser()
                     if candidate.is_file():
-                        paths.append(candidate)
+                        sub_type = str(element.attrs.get("sub_type") or "").strip()
+                        paths.append((candidate, sub_type == "1"))
             if element.children:
                 paths.extend(self._iter_local_image_paths(element.children))
         return paths
