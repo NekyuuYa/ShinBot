@@ -96,7 +96,7 @@ class ShinBot:
         )
         register_identity_prompt_components(
             self.prompt_registry,
-            resolver=self.prompt_registry.resolve_builtin_identity_map_prompt,
+            identity_store=self.identity_store,
         )
         register_runtime_prompt_components(
             self.prompt_registry,

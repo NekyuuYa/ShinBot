@@ -19,9 +19,28 @@ if TYPE_CHECKING:
 def register_identity_prompt_components(
     registry: PromptRegistry,
     *,
-    resolver: Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], dict[str, Any]],
+    resolver: Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], dict[str, Any]]
+    | None = None,
+    identity_store: Any | None = None,
 ) -> None:
     """Register identity prompt components owned by the identity module."""
+
+    if resolver is None:
+        from shinbot.agent.identity.prompt_runtime import resolve_identity_map_prompt
+
+        store = identity_store if identity_store is not None else getattr(registry, "_identity_store", None)
+
+        def resolver(
+            request: PromptAssemblyRequest,
+            component: PromptComponent,
+            source: PromptSource,
+        ) -> dict[str, Any]:
+            return resolve_identity_map_prompt(
+                identity_store=store,
+                request=request,
+                _component=component,
+                _source=source,
+            )
 
     registry.register_component(
         PromptComponent(

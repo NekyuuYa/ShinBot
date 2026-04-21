@@ -6,9 +6,6 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.identity import (
-    resolve_identity_map_prompt,
-)
 from shinbot.agent.prompt_manager.rendering import (
     expand_component_tree,
     infer_component_source,
@@ -591,6 +588,8 @@ class PromptRegistry:
         component: PromptComponent,
         source: PromptSource,
     ) -> dict[str, Any]:
+        from shinbot.agent.identity.prompt_runtime import resolve_identity_map_prompt
+
         return resolve_identity_map_prompt(
             identity_store=self._identity_store,
             request=request,
