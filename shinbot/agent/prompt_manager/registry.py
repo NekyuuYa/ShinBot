@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -39,7 +38,6 @@ from shinbot.agent.prompt_manager.schema import (
     stable_text_hash,
 )
 from shinbot.agent.prompt_manager.snapshots import (
-    build_prompt_cache_key,
     build_prompt_log_record,
     build_prompt_signature,
     create_prompt_snapshot,
@@ -54,179 +52,8 @@ Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
 ContextStrategyResolver = Callable[[PromptAssemblyRequest, ContextStrategy], Any]
 
 
-# DashScope explicit cache matches backwards within up to 20 content blocks.
-# Keep a safety margin to avoid running exactly on the provider boundary.
-DEFAULT_CONTEXT_CACHE_BLOCK_GAP = 18
-DEFAULT_EXPLICIT_CACHE_MIN_TOKENS = 1024
 DEFAULT_CONTEXT_TRIGGER_TOKENS = 15_000
 DEFAULT_CONTEXT_TARGET_TOKENS = 6_000
-
-
-def _is_cjk_character(character: str) -> bool:
-    return (
-        "\u3400" <= character <= "\u4dbf"  # CJK Unified Ideographs Extension A
-        or "\u4e00" <= character <= "\u9fff"  # CJK Unified Ideographs
-        or "\uf900" <= character <= "\ufaff"  # CJK Compatibility Ideographs
-        or "\u3040" <= character <= "\u30ff"  # Hiragana + Katakana
-        or "\uac00" <= character <= "\ud7af"  # Hangul Syllables
-    )
-
-
-def _estimate_text_tokens(text: str) -> int:
-    """Estimate token count with conservative heuristics.
-
-    The estimate keeps the existing Latin-friendly heuristic and adds a
-    CJK-aware branch so dense CJK text is not heavily undercounted.
-    """
-
-    text = text.strip()
-    if not text:
-        return 0
-
-    word_estimate = len(text.split())
-    char_estimate = math.ceil(len(text) / 4)
-    cjk_char_count = sum(1 for character in text if _is_cjk_character(character))
-    non_cjk_char_count = len(text) - cjk_char_count
-    cjk_aware_char_estimate = cjk_char_count + math.ceil(non_cjk_char_count / 4)
-
-    return max(word_estimate, char_estimate, cjk_aware_char_estimate)
-
-
-def _estimate_content_blocks_tokens(content_blocks: list[dict[str, Any]], block_count: int) -> int:
-    if block_count <= 0:
-        return 0
-
-    text_parts: list[str] = []
-    for block in content_blocks[:block_count]:
-        if not isinstance(block, dict):
-            continue
-        text = str(block.get("text") or "").strip()
-        if text:
-            text_parts.append(text)
-    return _estimate_text_tokens("\n".join(text_parts))
-
-
-def _mark_ephemeral_cache_boundary(
-    content_blocks: list[dict[str, Any]],
-    records: list[PromptComponentRecord],
-    *,
-    min_cache_tokens: int = DEFAULT_EXPLICIT_CACHE_MIN_TOKENS,
-) -> None:
-    """Mark the end of the stable SYSTEM_BASE prefix as an ephemeral cache boundary."""
-
-    stable_prefix_len = 0
-    for record in records:
-        if not record.rendered_text:
-            continue
-        if not record.cache_stable:
-            break
-        stable_prefix_len += 1
-
-    if stable_prefix_len <= 0:
-        return
-
-    marker_index = stable_prefix_len - 1
-    if marker_index >= len(content_blocks):
-        return
-
-    stable_prefix_tokens = _estimate_content_blocks_tokens(content_blocks, stable_prefix_len)
-    if stable_prefix_tokens < min_cache_tokens:
-        return
-
-    content_blocks[marker_index]["cache_control"] = {"type": "ephemeral"}
-
-
-def _mark_ephemeral_context_cache_boundaries(
-    system_message: dict[str, Any],
-    context_messages: list[dict[str, Any]],
-    context_records: list[PromptComponentRecord],
-    *,
-    max_markers: int = 4,
-    max_content_block_gap: int = DEFAULT_CONTEXT_CACHE_BLOCK_GAP,
-) -> None:
-    """Add cache boundaries through long context without exceeding provider limits."""
-
-    if not _context_cache_stable_enough(context_records):
-        return
-
-    remaining_markers = max_markers - _count_cache_control_markers([system_message])
-    if remaining_markers <= 0:
-        return
-
-    blocks_since_marker = _blocks_after_last_cache_marker(system_message)
-    for message in context_messages:
-        if remaining_markers <= 0:
-            break
-        content = message.get("content")
-        if isinstance(content, str):
-            blocks_since_marker += 1
-            if blocks_since_marker >= max_content_block_gap:
-                message["content"] = [
-                    {
-                        "type": "text",
-                        "text": content,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
-                remaining_markers -= 1
-                blocks_since_marker = 0
-            continue
-
-        if not isinstance(content, list):
-            continue
-
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            blocks_since_marker += 1
-            if block.get("cache_control"):
-                blocks_since_marker = 0
-                continue
-            if blocks_since_marker >= max_content_block_gap:
-                block["cache_control"] = {"type": "ephemeral"}
-                remaining_markers -= 1
-                blocks_since_marker = 0
-                if remaining_markers <= 0:
-                    break
-
-
-def _blocks_after_last_cache_marker(message: dict[str, Any]) -> int:
-    blocks_since_marker = 0
-    for block in _iter_content_blocks(message):
-        blocks_since_marker += 1
-        if isinstance(block, dict) and block.get("cache_control"):
-            blocks_since_marker = 0
-    return blocks_since_marker
-
-
-def _count_cache_control_markers(messages: list[dict[str, Any]]) -> int:
-    count = 0
-    for message in messages:
-        for block in _iter_content_blocks(message):
-            if isinstance(block, dict) and block.get("cache_control"):
-                count += 1
-    return count
-
-
-def _iter_content_blocks(message: dict[str, Any]) -> list[Any]:
-    content = message.get("content")
-    if isinstance(content, list):
-        return list(content)
-    if content is None:
-        return []
-    return [content]
-
-
-def _context_cache_stable_enough(records: list[PromptComponentRecord]) -> bool:
-    """Return False when this prompt assembly just shifted the context window."""
-
-    for record in records:
-        resolver_output = record.metadata.get("resolver_output")
-        if not isinstance(resolver_output, dict):
-            continue
-        if int(resolver_output.get("dropped_turns", 0) or 0) > 0:
-            return False
-    return True
 
 
 class PromptRegistry:
@@ -377,7 +204,6 @@ class PromptRegistry:
                     "version": component.version,
                     "priority": component.priority,
                     "enabled": component.enabled,
-                    "cache_stable": component.cache_stable,
                     "resolver_ref": component.resolver_ref,
                     "template_vars": list(component.template_vars),
                     "bundle_refs": list(component.bundle_refs),
@@ -507,12 +333,6 @@ class PromptRegistry:
             for record in block.components:
                 if record.rendered_text:
                     system_content.append({"type": "text", "text": record.rendered_text})
-            if stage_key == PromptStage.SYSTEM_BASE:
-                _mark_ephemeral_cache_boundary(
-                    system_content,
-                    block.components,
-                )
-
         system_message: dict[str, Any] = {"role": "system", "content": system_content}
 
         # Tools: ABILITIES
@@ -521,11 +341,6 @@ class PromptRegistry:
         # Context messages: CONTEXT
         context_stage = stage_by_name[PromptStage.CONTEXT]
         context_messages = list(context_stage.messages)
-        _mark_ephemeral_context_cache_boundaries(
-            system_message,
-            context_messages,
-            context_stage.components,
-        )
 
         # Final user message: COMPATIBILITY → INSTRUCTIONS → CONSTRAINTS
         final_content: list[dict[str, Any]] = []
@@ -547,7 +362,6 @@ class PromptRegistry:
             messages.append({"role": "user", "content": final_content})
 
         prompt_signature = self._build_signature(stage_blocks)
-        cache_key = self._build_cache_key(prompt_signature, request)
 
         return PromptAssemblyResult(
             profile_id=request.profile_id,
@@ -557,7 +371,6 @@ class PromptRegistry:
             messages=messages,
             tools=tools,
             prompt_signature=prompt_signature,
-            cache_key=cache_key,
             compatibility_used=bool(records_by_stage[PromptStage.COMPATIBILITY]),
             has_unknown_source=has_unknown_source,
             truncation={},
@@ -651,7 +464,6 @@ class PromptRegistry:
             ),
             rendered_messages=rendered_messages,
             text_hash=stable_text_hash(hash_input),
-            cache_stable=False,
             metadata={
                 "context_strategy_id": strategy.id,
                 "budget": strategy.budget.model_dump(mode="json"),
@@ -714,7 +526,6 @@ class PromptRegistry:
                 source=source,
                 rendered_text=dynamic_text,
                 text_hash=stable_text_hash(dynamic_text),
-                cache_stable=dynamic_component.cache_stable,
                 metadata={**dict(dynamic_component.metadata), **dynamic_metadata},
             )
             records_by_stage[PromptStage.INSTRUCTIONS].append(dynamic_record)
@@ -743,7 +554,6 @@ class PromptRegistry:
             source=static_source,
             rendered_text=static_text,
             text_hash=stable_text_hash(static_text),
-            cache_stable=static_component.cache_stable,
             metadata=dict(static_component.metadata),
         )
         records_by_stage[PromptStage.CONSTRAINTS].append(static_record)
@@ -804,7 +614,6 @@ class PromptRegistry:
                 rendered_text=rendered_text,
                 rendered_content_blocks=rendered_content_blocks,
                 text_hash=stable_text_hash(rendered_text),
-                cache_stable=component.cache_stable,
                 metadata={**dict(component.metadata), **rendered_metadata},
             )
             records_by_stage[component.stage].append(record)
@@ -854,13 +663,10 @@ class PromptRegistry:
             strategy=strategy,
         )
 
-    # ── Internal: signature / cache key ─────────────────────────────────
+    # ── Internal: signature ──────────────────────────────────────────────
 
     def _build_signature(self, stages: list[PromptStageBlock]) -> str:
         return build_prompt_signature(stages)
-
-    def _build_cache_key(self, prompt_signature: str, request: PromptAssemblyRequest) -> str:
-        return build_prompt_cache_key(prompt_signature, request)
 
     def _dedupe(self, items: list[str]) -> list[str]:
         seen: set[str] = set()

@@ -69,7 +69,6 @@ class PromptComponent(BaseModel):
     version: str = "1.0.0"
     priority: int = 100
     enabled: bool = True
-    cache_stable: bool = True
     content: str = ""
     template_vars: list[str] = Field(default_factory=list)
     resolver_ref: str = ""
@@ -206,7 +205,6 @@ class PromptComponentRecord(BaseModel):
     rendered_messages: list[dict[str, Any]] | None = None
     rendered_content_blocks: list[dict[str, Any]] | None = None
     text_hash: str = ""
-    cache_stable: bool = True
     truncated: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 

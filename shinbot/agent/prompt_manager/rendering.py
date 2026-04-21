@@ -179,7 +179,6 @@ def expand_component_tree(
             source=source,
             rendered_data=tool_defs,
             text_hash=stable_text_hash(hash_input),
-            cache_stable=component.cache_stable,
             metadata=dict(component.metadata),
         )
         records_by_stage[component.stage].append(record)
@@ -223,7 +222,6 @@ def expand_component_tree(
             rendered_text=rendered_text,
             rendered_messages=rendered_messages,
             text_hash=stable_text_hash(hash_input),
-            cache_stable=component.cache_stable,
             metadata=dict(component.metadata),
         )
         records_by_stage[component.stage].append(record)
@@ -240,7 +238,6 @@ def expand_component_tree(
         rendered_text=rendered_text,
         rendered_content_blocks=rendered_content_blocks,
         text_hash=stable_text_hash(rendered_text),
-        cache_stable=component.cache_stable,
         metadata=dict(component.metadata),
     )
     records_by_stage[component.stage].append(record)

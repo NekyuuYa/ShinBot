@@ -38,7 +38,6 @@ def register_runtime_prompt_components(
             resolver_ref=registry.BUILTIN_MESSAGE_TEXT_PROMPT_RESOLVER,
             priority=8_800,
             enabled=True,
-            cache_stable=False,
             metadata={
                 "builtin": True,
                 "display_name": "Workflow Message Batch",
@@ -58,7 +57,6 @@ def register_runtime_prompt_components(
             resolver_ref=registry.BUILTIN_CURRENT_TIME_PROMPT_RESOLVER,
             priority=9050,
             enabled=True,
-            cache_stable=False,
             metadata={
                 "builtin": True,
                 "display_name": "Current Time (Dynamic)",
