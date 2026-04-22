@@ -180,6 +180,7 @@ class WorkflowRunner:
                 "workflow_run_id": run_id,
                 "batch_size": len(batch),
                 "response_profile": response_profile,
+                "explicit_prompt_cache_enabled": resolved_config.explicit_prompt_cache_enabled,
                 "now_ms": int(time.time() * 1000),
             },
         )

@@ -8,6 +8,7 @@ def test_resolve_bot_runtime_config_normalizes_defaults() -> None:
 
     assert resolved.default_agent_uuid == ""
     assert resolved.main_llm == ""
+    assert resolved.explicit_prompt_cache_enabled is False
     assert resolved.response_profile == "balanced"
     assert resolved.response_profile_private == "immediate"
     assert resolved.response_profile_priority == "immediate"
@@ -20,6 +21,7 @@ def test_resolve_bot_runtime_config_reads_canonical_profiles() -> None:
             "default_agent_uuid": "agent-1",
             "main_llm": "route-main",
             "config": {
+                "explicit_prompt_cache_enabled": "true",
                 "response_profile": "PASSIVE",
                 "response_profile_private": "IMMEDIATE",
                 "response_profile_priority": "Balanced",
@@ -31,6 +33,7 @@ def test_resolve_bot_runtime_config_reads_canonical_profiles() -> None:
 
     assert resolved.default_agent_uuid == "agent-1"
     assert resolved.main_llm == "route-main"
+    assert resolved.explicit_prompt_cache_enabled is True
     assert resolved.response_profile == "passive"
     assert resolved.response_profile_private == "immediate"
     assert resolved.response_profile_priority == "balanced"

@@ -7,7 +7,9 @@ import pytest
 from PIL import Image
 
 from shinbot.agent.context import ContextManager
+from shinbot.agent.context.alias_table import AliasEntry
 from shinbot.agent.context.manager import estimate_context_tokens
+from shinbot.agent.context.state_store import CompressedMemoryState, ContextBlockState
 from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
@@ -413,6 +415,93 @@ def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
     assert "from pool user" in contents
     assert "from pool assistant" in contents
     assert "stale" not in contents
+
+
+def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    session_id = "s-cache-marker"
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
+    state = context_manager.get_session_state(session_id)
+    state.alias_table.entries = {
+        "stable-user": AliasEntry(
+            alias="A0",
+            platform_id="stable-user",
+            display_name="Stable User",
+            message_count=4,
+            last_seen_ms=1_000,
+        ),
+        "tail-user": AliasEntry(
+            alias="A1",
+            platform_id="tail-user",
+            display_name="Tail User",
+            message_count=2,
+            last_seen_ms=1_100,
+        ),
+    }
+    state.alias_table.rebuilt_since_activity = True
+    state.alias_table.last_rebuild_ms = 1_200
+    state.compressed_memories = [
+        CompressedMemoryState(text="compressed memory", created_at_ms=900)
+    ]
+    state.blocks = [
+        ContextBlockState(
+            block_id="ctx-0",
+            sealed=True,
+            contents=[{"type": "text", "text": "stable block"}],
+        ),
+        ContextBlockState(
+            block_id="ctx-1",
+            sealed=False,
+            contents=[{"type": "text", "text": "dynamic tail"}],
+        ),
+    ]
+
+    registry = PromptRegistry(context_manager=context_manager)
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    disabled = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id=session_id,
+        )
+    )
+    disabled_context_stage = next(
+        stage for stage in disabled.stages if stage.stage == PromptStage.CONTEXT
+    )
+    assert all(
+        "cache_control" not in block
+        for message in disabled_context_stage.messages
+        for block in message.get("content", [])
+        if isinstance(block, dict)
+    )
+
+    enabled = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id=session_id,
+            metadata={"explicit_prompt_cache_enabled": True},
+        )
+    )
+    context_stage = next(stage for stage in enabled.stages if stage.stage == PromptStage.CONTEXT)
+
+    assert [message["content"][0]["text"] for message in context_stage.messages] == [
+        "### 压缩记忆\ncompressed memory",
+        "stable block",
+        "dynamic tail",
+    ]
+    assert "cache_control" not in context_stage.messages[0]["content"][0]
+    assert context_stage.messages[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in context_stage.messages[2]["content"][0]
 
 
 def test_context_manager_exports_only_read_messages(tmp_path) -> None:

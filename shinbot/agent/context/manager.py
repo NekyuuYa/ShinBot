@@ -238,6 +238,12 @@ class ContextManager:
     def get_alias_table(self, session_id: str) -> SessionAliasTable:
         return self.get_session_state(session_id).alias_table
 
+    def get_cacheable_context_message_count(self, session_id: str) -> int:
+        if not session_id:
+            return 0
+        state = self.get_session_state(session_id)
+        return len(state.compressed_memories) + _count_cacheable_prefix_blocks(state.blocks)
+
     def get_session_state(self, session_id: str) -> ContextSessionState:
         state = self._session_states.get(session_id)
         if state is not None:
@@ -709,13 +715,7 @@ def _split_context_rebuild_scope(
     if not blocks:
         return [], list(read_history)
 
-    reusable_count = 0
-    for index, block in enumerate(blocks):
-        if not block.sealed:
-            reusable_count = index
-            break
-    else:
-        reusable_count = max(0, len(blocks) - 1)
+    reusable_count = _count_cacheable_prefix_blocks(blocks)
 
     reusable_blocks = list(blocks[:reusable_count])
     reusable_latest_id = _latest_block_record_id(reusable_blocks)
@@ -732,6 +732,16 @@ def _split_context_rebuild_scope(
 
 def _blocks_to_prompt_messages(blocks: list[ContextBlockState]) -> list[dict[str, Any]]:
     return [{"role": "user", "content": list(block.contents)} for block in blocks]
+
+
+def _count_cacheable_prefix_blocks(blocks: list[ContextBlockState]) -> int:
+    if not blocks:
+        return 0
+
+    for index, block in enumerate(blocks):
+        if not block.sealed:
+            return index
+    return max(0, len(blocks) - 1)
 
 
 def _collect_current_platform_ids(
