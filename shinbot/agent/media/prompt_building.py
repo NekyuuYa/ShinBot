@@ -7,9 +7,12 @@ from typing import Any
 
 from shinbot.agent.media.config import (
     BUILTIN_MEDIA_INSPECTION_PROMPT,
+    BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
     BUILTIN_STICKER_SUMMARY_PROMPT,
+    BUILTIN_STICKER_SUMMARY_PROMPT_ID,
 )
 from shinbot.agent.prompt_manager import PromptAssemblyRequest
+from shinbot.agent.prompt_manager.runtime_sync import sync_prompt_definition_component
 
 MEDIA_REANALYSIS_SYSTEM_PROMPT = """
 You are ShinBot's media reanalysis agent.
@@ -23,9 +26,8 @@ Prefer concise Chinese answers that are useful inside a chat workflow.
 
 def build_media_inspection_messages(
     *,
-    resolved_agent_ref: str,
+    resolved_prompt_ref: str,
     resolved_llm_ref: str,
-    uses_builtin_agent: bool,
     prompt_registry: Any,
     database: Any,
     instance_id: str,
@@ -34,9 +36,6 @@ def build_media_inspection_messages(
     asset: dict[str, Any],
     occurrence: dict[str, Any] | None,
     model_context_window: int | None,
-    resolve_agent: Any,
-    resolve_model_target: Any,
-    build_component_ids: Any,
 ) -> list[dict[str, Any]]:
     """Build inspection messages, falling back to builtin prompt when needed."""
 
@@ -48,10 +47,10 @@ def build_media_inspection_messages(
     )
     return _build_media_prompt_messages(
         builtin_prompt=BUILTIN_MEDIA_INSPECTION_PROMPT,
+        builtin_prompt_id=BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
         instruction_text=instruction_text,
-        resolved_agent_ref=resolved_agent_ref,
+        resolved_prompt_ref=resolved_prompt_ref,
         resolved_llm_ref=resolved_llm_ref,
-        uses_builtin_agent=uses_builtin_agent,
         prompt_registry=prompt_registry,
         database=database,
         instance_id=instance_id,
@@ -59,17 +58,13 @@ def build_media_inspection_messages(
         raw_hash=raw_hash,
         asset=asset,
         model_context_window=model_context_window,
-        resolve_agent=resolve_agent,
-        resolve_model_target=resolve_model_target,
-        build_component_ids=build_component_ids,
     )
 
 
 def build_sticker_summary_messages(
     *,
-    resolved_agent_ref: str,
+    resolved_prompt_ref: str,
     resolved_llm_ref: str,
-    uses_builtin_agent: bool,
     prompt_registry: Any,
     database: Any,
     instance_id: str,
@@ -78,9 +73,6 @@ def build_sticker_summary_messages(
     asset: dict[str, Any],
     occurrence: dict[str, Any] | None,
     model_context_window: int | None,
-    resolve_agent: Any,
-    resolve_model_target: Any,
-    build_component_ids: Any,
 ) -> list[dict[str, Any]]:
     """Build custom-sticker summary messages with a dedicated builtin prompt fallback."""
 
@@ -92,10 +84,10 @@ def build_sticker_summary_messages(
     )
     return _build_media_prompt_messages(
         builtin_prompt=BUILTIN_STICKER_SUMMARY_PROMPT,
+        builtin_prompt_id=BUILTIN_STICKER_SUMMARY_PROMPT_ID,
         instruction_text=instruction_text,
-        resolved_agent_ref=resolved_agent_ref,
+        resolved_prompt_ref=resolved_prompt_ref,
         resolved_llm_ref=resolved_llm_ref,
-        uses_builtin_agent=uses_builtin_agent,
         prompt_registry=prompt_registry,
         database=database,
         instance_id=instance_id,
@@ -103,19 +95,16 @@ def build_sticker_summary_messages(
         raw_hash=raw_hash,
         asset=asset,
         model_context_window=model_context_window,
-        resolve_agent=resolve_agent,
-        resolve_model_target=resolve_model_target,
-        build_component_ids=build_component_ids,
     )
 
 
 def _build_media_prompt_messages(
     *,
     builtin_prompt: str,
+    builtin_prompt_id: str,
     instruction_text: str,
-    resolved_agent_ref: str,
+    resolved_prompt_ref: str,
     resolved_llm_ref: str,
-    uses_builtin_agent: bool,
     prompt_registry: Any,
     database: Any,
     instance_id: str,
@@ -123,9 +112,6 @@ def _build_media_prompt_messages(
     raw_hash: str,
     asset: dict[str, Any],
     model_context_window: int | None,
-    resolve_agent: Any,
-    resolve_model_target: Any,
-    build_component_ids: Any,
 ) -> list[dict[str, Any]]:
     multimodal_user_message = {
         "role": "user",
@@ -135,35 +121,17 @@ def _build_media_prompt_messages(
         ],
     }
 
-    if uses_builtin_agent:
-        return [
-            {
-                "role": "system",
-                "content": [{"type": "text", "text": builtin_prompt}],
-            },
-            multimodal_user_message,
-        ]
-
-    agent = resolve_agent(resolved_agent_ref)
-    if agent is None:
-        return _builtin_messages(builtin_prompt, multimodal_user_message)
-
-    persona_uuid = str(agent.get("persona_uuid") or "").strip()
-    persona = database.personas.get(persona_uuid) if persona_uuid else None
-    if persona is None:
-        return _builtin_messages(builtin_prompt, multimodal_user_message)
-
-    route_id, model_id, _, _ = resolve_model_target(
-        instance_id=instance_id,
-        llm_ref=resolved_llm_ref,
+    component_ids = _resolve_prompt_component_ids(
+        prompt_registry=prompt_registry,
+        database=database,
+        prompt_refs=[resolved_prompt_ref],
+        fallback_component_id=builtin_prompt_id,
     )
-    component_ids = build_component_ids(agent, persona)
     request = PromptAssemblyRequest(
         caller="media.inspection_runner",
-        session_id=session_id,
+        identity_enabled=False,
+        session_id="",
         instance_id=instance_id,
-        route_id=route_id,
-        model_id=model_id,
         model_context_window=model_context_window,
         component_overrides=component_ids,
         template_inputs={
@@ -175,8 +143,8 @@ def _build_media_prompt_messages(
         },
         metadata={
             "trigger": "media_inspection",
-            "agent_uuid": str(agent.get("uuid") or ""),
-            "persona_uuid": persona_uuid,
+            "inspection_prompt_ref": resolved_prompt_ref,
+            "inspection_llm_ref": resolved_llm_ref,
             "raw_hash": raw_hash,
         },
     )
@@ -189,20 +157,12 @@ def _build_media_prompt_messages(
 
 def build_media_reanalysis_messages(
     *,
-    resolved_agent_ref: str,
-    resolved_llm_ref: str,
-    uses_builtin_agent: bool,
-    prompt_registry: Any,
-    database: Any,
     instance_id: str,
     session_id: str,
     raw_hash: str,
     asset: dict[str, Any],
     question: str,
     model_context_window: int | None,
-    resolve_agent: Any,
-    resolve_model_target: Any,
-    build_component_ids: Any,
 ) -> list[dict[str, Any]]:
     """Build media reanalysis messages, falling back to builtin prompt when needed."""
 
@@ -220,50 +180,7 @@ def build_media_reanalysis_messages(
         ],
     }
 
-    if uses_builtin_agent:
-        return _builtin_messages(MEDIA_REANALYSIS_SYSTEM_PROMPT, multimodal_user_message)
-
-    agent = resolve_agent(resolved_agent_ref)
-    if agent is None:
-        return _builtin_messages(MEDIA_REANALYSIS_SYSTEM_PROMPT, multimodal_user_message)
-
-    persona_uuid = str(agent.get("persona_uuid") or "").strip()
-    persona = database.personas.get(persona_uuid) if persona_uuid else None
-    if persona is None:
-        return _builtin_messages(MEDIA_REANALYSIS_SYSTEM_PROMPT, multimodal_user_message)
-
-    route_id, model_id, _, _ = resolve_model_target(
-        instance_id=instance_id,
-        llm_ref=resolved_llm_ref,
-    )
-    component_ids = build_component_ids(agent, persona)
-    request = PromptAssemblyRequest(
-        caller="media.reanalysis_runner",
-        session_id=session_id,
-        instance_id=instance_id,
-        route_id=route_id,
-        model_id=model_id,
-        model_context_window=model_context_window,
-        component_overrides=component_ids,
-        template_inputs={
-            "session_id": session_id,
-            "instance_id": instance_id,
-            "platform": "",
-            "message_text": instruction_text,
-            "user_id": "",
-        },
-        metadata={
-            "trigger": "media_reanalysis",
-            "agent_uuid": str(agent.get("uuid") or ""),
-            "persona_uuid": persona_uuid,
-            "raw_hash": raw_hash,
-        },
-    )
-    try:
-        assembly = prompt_registry.assemble(request)
-    except Exception:
-        return _builtin_messages(MEDIA_REANALYSIS_SYSTEM_PROMPT, multimodal_user_message)
-    return [*assembly.messages, multimodal_user_message]
+    return _builtin_messages(MEDIA_REANALYSIS_SYSTEM_PROMPT, multimodal_user_message)
 
 
 def build_media_inspection_instruction_text(
@@ -363,3 +280,40 @@ def _builtin_messages(
         },
         multimodal_user_message,
     ]
+
+
+def _resolve_prompt_component_ids(
+    *,
+    prompt_registry: Any,
+    database: Any,
+    prompt_refs: list[str],
+    fallback_component_id: str,
+) -> list[str]:
+    component_ids: list[str] = []
+
+    for prompt_ref in prompt_refs:
+        normalized = str(prompt_ref or "").strip()
+        if not normalized:
+            continue
+        component = prompt_registry.get_component(normalized)
+        if component is not None:
+            component_ids.append(component.id)
+            continue
+
+        payload = database.prompt_definitions.get(normalized)
+        if payload is None:
+            payload = database.prompt_definitions.get_by_prompt_id(normalized)
+        if payload is None:
+            continue
+        component_ids.append(sync_prompt_definition_component(prompt_registry, payload))
+
+    if not component_ids:
+        return [fallback_component_id]
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for component_id in component_ids:
+        if component_id not in seen:
+            seen.add(component_id)
+            deduped.append(component_id)
+    return deduped

@@ -112,8 +112,16 @@ def extract_media_inspection_llm(config: dict[str, Any]) -> str:
     return str(config.get("media_inspection_llm") or "").strip()
 
 
+def extract_media_inspection_prompt(config: dict[str, Any]) -> str:
+    return str(config.get("media_inspection_prompt") or "").strip()
+
+
 def extract_sticker_summary_llm(config: dict[str, Any]) -> str:
     return str(config.get("sticker_summary_llm") or "").strip()
+
+
+def extract_sticker_summary_prompt(config: dict[str, Any]) -> str:
+    return str(config.get("sticker_summary_prompt") or "").strip()
 
 
 def extract_context_compression_llm(config: dict[str, Any]) -> str:
@@ -146,7 +154,9 @@ def strip_media_inspection_llm(config: dict[str, Any]) -> dict[str, Any]:
 
 def strip_explicit_context_fields(config: dict[str, Any]) -> dict[str, Any]:
     cleaned = strip_media_inspection_llm(config)
+    cleaned.pop("media_inspection_prompt", None)
     cleaned.pop("sticker_summary_llm", None)
+    cleaned.pop("sticker_summary_prompt", None)
     cleaned.pop("context_compression_llm", None)
     cleaned.pop("max_context_tokens", None)
     cleaned.pop("context_evict_ratio", None)
@@ -162,7 +172,9 @@ def serialize_bot_config(payload: dict[str, Any]) -> dict[str, Any]:
         "defaultAgentUuid": payload["default_agent_uuid"],
         "mainLlm": payload["main_llm"],
         "mediaInspectionLlm": extract_media_inspection_llm(config),
+        "mediaInspectionPrompt": extract_media_inspection_prompt(config),
         "stickerSummaryLlm": extract_sticker_summary_llm(config),
+        "stickerSummaryPrompt": extract_sticker_summary_prompt(config),
         "contextCompressionLlm": extract_context_compression_llm(config),
         "maxContextTokens": extract_max_context_tokens(config),
         "contextEvictRatio": extract_context_evict_ratio(config),
@@ -191,7 +203,9 @@ def normalize_bot_config_input(
     response_profile_priority: str | None,
     response_profile_group: str | None,
     media_inspection_llm: str | None = None,
+    media_inspection_prompt: str | None = None,
     sticker_summary_llm: str | None = None,
+    sticker_summary_prompt: str | None = None,
     context_compression_llm: str | None = None,
     max_context_tokens: Any = None,
     context_evict_ratio: Any = None,
@@ -217,7 +231,9 @@ def normalize_bot_config_input(
     normalized_config.pop("response_profile_priority", None)
     normalized_config.pop("response_profile_group", None)
     normalized_config.pop("media_inspection_llm", None)
+    normalized_config.pop("media_inspection_prompt", None)
     normalized_config.pop("sticker_summary_llm", None)
+    normalized_config.pop("sticker_summary_prompt", None)
     normalized_config.pop("context_compression_llm", None)
     normalized_config.pop("max_context_tokens", None)
     normalized_config.pop("context_evict_ratio", None)
@@ -276,7 +292,9 @@ def normalize_bot_config_input(
         response_profile_group,
     )
     assign_optional_profile(normalized_config, "media_inspection_llm", media_inspection_llm)
+    assign_optional_profile(normalized_config, "media_inspection_prompt", media_inspection_prompt)
     assign_optional_profile(normalized_config, "sticker_summary_llm", sticker_summary_llm)
+    assign_optional_profile(normalized_config, "sticker_summary_prompt", sticker_summary_prompt)
     assign_optional_profile(
         normalized_config,
         "context_compression_llm",

@@ -22,7 +22,12 @@ from shinbot.agent.identity import (
     register_identity_prompt_components,
     register_identity_tools,
 )
-from shinbot.agent.media import MediaInspectionRunner, MediaService, register_media_runtime
+from shinbot.agent.media import (
+    MediaInspectionRunner,
+    MediaService,
+    register_media_prompt_components,
+    register_media_runtime,
+)
 from shinbot.agent.model_runtime import ModelRuntime
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.runtime import register_runtime_prompt_components
@@ -103,6 +108,7 @@ class ShinBot:
             message_text_resolver=self.prompt_registry.resolve_builtin_message_text_prompt,
             current_time_resolver=self.prompt_registry.resolve_builtin_current_time_prompt,
         )
+        register_media_prompt_components(self.prompt_registry)
         self.media_inspection_runner = (
             MediaInspectionRunner(
                 self.database,

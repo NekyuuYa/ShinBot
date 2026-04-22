@@ -42,10 +42,14 @@ class ResolvedMediaInspectionConfig:
     llm_ref: str
     uses_builtin_agent: bool
     uses_builtin_llm: bool
+    prompt_ref: str
+    uses_builtin_prompt: bool
     sticker_agent_ref: str
     sticker_llm_ref: str
     uses_builtin_sticker_agent: bool
     uses_builtin_sticker_llm: bool
+    sticker_prompt_ref: str
+    uses_builtin_sticker_prompt: bool
     builtin_prompt_id: str = BUILTIN_MEDIA_INSPECTION_PROMPT_ID
     builtin_prompt: str = BUILTIN_MEDIA_INSPECTION_PROMPT
     builtin_sticker_prompt_id: str = BUILTIN_STICKER_SUMMARY_PROMPT_ID
@@ -55,28 +59,34 @@ class ResolvedMediaInspectionConfig:
 def resolve_media_inspection_config(
     bot_config: dict[str, Any] | None,
 ) -> ResolvedMediaInspectionConfig:
-    """Resolve inspection agent/llm, falling back to built-in defaults."""
+    """Resolve inspection prompt/llm, using only the built-in internal agent wrapper."""
 
     config = dict((bot_config or {}).get("config") or {})
-    agent_ref = str(
-        config.get("media_inspection_agent") or config.get("media_inspection_agent_uuid") or ""
-    ).strip()
     llm_ref = str(config.get("media_inspection_llm") or "").strip()
-    sticker_agent_ref = str(
-        config.get("sticker_summary_agent")
-        or config.get("sticker_summary_agent_uuid")
-        or agent_ref
+    prompt_ref = str(
+        config.get("media_inspection_prompt")
+        or config.get("media_inspection_prompt_id")
         or ""
     ).strip()
     sticker_llm_ref = str(config.get("sticker_summary_llm") or llm_ref or "").strip()
+    sticker_prompt_ref = str(
+        config.get("sticker_summary_prompt")
+        or config.get("sticker_summary_prompt_id")
+        or prompt_ref
+        or ""
+    ).strip()
 
     return ResolvedMediaInspectionConfig(
-        agent_ref=agent_ref or BUILTIN_MEDIA_INSPECTION_AGENT_REF,
+        agent_ref=BUILTIN_MEDIA_INSPECTION_AGENT_REF,
         llm_ref=llm_ref or BUILTIN_MEDIA_INSPECTION_LLM_REF,
-        uses_builtin_agent=not bool(agent_ref),
+        uses_builtin_agent=True,
         uses_builtin_llm=not bool(llm_ref),
-        sticker_agent_ref=sticker_agent_ref or BUILTIN_STICKER_SUMMARY_AGENT_REF,
+        prompt_ref=prompt_ref or BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
+        uses_builtin_prompt=not bool(prompt_ref),
+        sticker_agent_ref=BUILTIN_STICKER_SUMMARY_AGENT_REF,
         sticker_llm_ref=sticker_llm_ref or BUILTIN_STICKER_SUMMARY_LLM_REF,
-        uses_builtin_sticker_agent=not bool(sticker_agent_ref),
+        uses_builtin_sticker_agent=True,
         uses_builtin_sticker_llm=not bool(sticker_llm_ref),
+        sticker_prompt_ref=sticker_prompt_ref or BUILTIN_STICKER_SUMMARY_PROMPT_ID,
+        uses_builtin_sticker_prompt=not bool(sticker_prompt_ref),
     )

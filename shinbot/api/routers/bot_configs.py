@@ -31,7 +31,9 @@ class BotConfigRequest(BaseModel):
     defaultAgentUuid: str = ""
     mainLlm: str = ""
     mediaInspectionLlm: str | None = None
+    mediaInspectionPrompt: str | None = None
     stickerSummaryLlm: str | None = None
+    stickerSummaryPrompt: str | None = None
     contextCompressionLlm: str | None = None
     maxContextTokens: int | None = None
     contextEvictRatio: float | None = None
@@ -49,7 +51,9 @@ class BotConfigPatchRequest(BaseModel):
     defaultAgentUuid: str | None = None
     mainLlm: str | None = None
     mediaInspectionLlm: str | None = None
+    mediaInspectionPrompt: str | None = None
     stickerSummaryLlm: str | None = None
+    stickerSummaryPrompt: str | None = None
     contextCompressionLlm: str | None = None
     maxContextTokens: int | None = None
     contextEvictRatio: float | None = None
@@ -88,7 +92,9 @@ def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
             default_agent_uuid=body.defaultAgentUuid,
             main_llm=body.mainLlm,
             media_inspection_llm=body.mediaInspectionLlm,
+            media_inspection_prompt=body.mediaInspectionPrompt,
             sticker_summary_llm=body.stickerSummaryLlm,
+            sticker_summary_prompt=body.stickerSummaryPrompt,
             context_compression_llm=body.contextCompressionLlm,
             max_context_tokens=body.maxContextTokens,
             context_evict_ratio=body.contextEvictRatio,
@@ -146,10 +152,20 @@ def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, 
                 "mediaInspectionLlm",
                 current_config.get("media_inspection_llm"),
             ),
+            media_inspection_prompt=_patch_value(
+                body,
+                "mediaInspectionPrompt",
+                current_config.get("media_inspection_prompt"),
+            ),
             sticker_summary_llm=_patch_value(
                 body,
                 "stickerSummaryLlm",
                 current_config.get("sticker_summary_llm"),
+            ),
+            sticker_summary_prompt=_patch_value(
+                body,
+                "stickerSummaryPrompt",
+                current_config.get("sticker_summary_prompt"),
             ),
             context_compression_llm=_patch_value(
                 body,
