@@ -82,7 +82,17 @@ class SessionAliasTable:
         now_ms: int,
         active_window_ms: int = ALIAS_ACTIVE_WINDOW_MS,
         frequent_limit: int = ALIAS_FREQUENT_LIMIT,
-    ) -> dict[str, AliasEntry]:
+    ) -> bool:
+        previous_entries = {
+            platform_id: AliasEntry(
+                alias=entry.alias,
+                platform_id=entry.platform_id,
+                display_name=entry.display_name,
+                message_count=entry.message_count,
+                last_seen_ms=entry.last_seen_ms,
+            )
+            for platform_id, entry in self.entries.items()
+        }
         stats: dict[str, AliasEntry] = {}
         for message in messages:
             platform_id = str(message.get("sender_id", "") or "").strip()
@@ -98,7 +108,10 @@ class SessionAliasTable:
                 stats[platform_id] = entry
 
             entry.message_count += 1
-            entry.last_seen_ms = max(entry.last_seen_ms, _coerce_timestamp_ms(message.get("created_at")))
+            entry.last_seen_ms = max(
+                entry.last_seen_ms,
+                _coerce_timestamp_ms(message.get("created_at", message.get("_created_at"))),
+            )
             sender_name = str(message.get("sender_name", "") or "").strip()
             if sender_name:
                 entry.display_name = sender_name
@@ -108,18 +121,40 @@ class SessionAliasTable:
             key=lambda item: (-item.message_count, -item.last_seen_ms, item.platform_id),
         )
 
-        for index, entry in enumerate(ordered[:frequent_limit]):
-            entry.alias = f"A{index}"
+        frequent_ids = [entry.platform_id for entry in ordered[:frequent_limit]]
+        active_ids = [
+            entry.platform_id
+            for entry in ordered[frequent_limit:]
+            if now_ms - entry.last_seen_ms <= active_window_ms
+        ]
 
-        active_index = 0
-        for entry in ordered[frequent_limit:]:
-            if now_ms - entry.last_seen_ms <= active_window_ms:
-                entry.alias = f"P{active_index}"
-                active_index += 1
+        self._assign_group_aliases(
+            stats,
+            member_ids=frequent_ids,
+            prefix="A",
+            previous_entries=previous_entries,
+        )
+        self._assign_group_aliases(
+            stats,
+            member_ids=active_ids,
+            prefix="P",
+            previous_entries=previous_entries,
+        )
 
-        self.entries = {entry.platform_id: entry for entry in ordered}
+        next_entries = {entry.platform_id: entry for entry in ordered}
+        changed = self._semantic_signature(
+            previous_entries,
+            now_ms=now_ms,
+            active_window_ms=active_window_ms,
+        ) != self._semantic_signature(
+            next_entries,
+            now_ms=now_ms,
+            active_window_ms=active_window_ms,
+        )
+
+        self.entries = next_entries
         self.mark_rebuilt(now_ms)
-        return self.entries
+        return changed
 
     def resolve(self, platform_id: str) -> AliasEntry | None:
         return self.entries.get(platform_id)
@@ -146,6 +181,64 @@ class SessionAliasTable:
         active.sort(key=lambda item: (item.alias.startswith("P"), item.alias, item.platform_id))
         inactive.sort(key=lambda item: (item.alias.startswith("P"), item.alias, item.platform_id))
         return inactive, active
+
+    @staticmethod
+    def _assign_group_aliases(
+        entries: dict[str, AliasEntry],
+        *,
+        member_ids: list[str],
+        prefix: str,
+        previous_entries: dict[str, AliasEntry],
+    ) -> None:
+        claimed: set[int] = set()
+        remaining: list[str] = []
+
+        for platform_id in member_ids:
+            previous = previous_entries.get(platform_id)
+            alias = previous.alias if previous is not None else ""
+            if not alias.startswith(prefix):
+                remaining.append(platform_id)
+                continue
+
+            suffix = alias[len(prefix) :]
+            if not suffix.isdigit():
+                remaining.append(platform_id)
+                continue
+
+            slot = int(suffix)
+            if slot in claimed:
+                remaining.append(platform_id)
+                continue
+
+            entries[platform_id].alias = f"{prefix}{slot}"
+            claimed.add(slot)
+
+        next_slot = 0
+        for platform_id in remaining:
+            while next_slot in claimed:
+                next_slot += 1
+            entries[platform_id].alias = f"{prefix}{next_slot}"
+            claimed.add(next_slot)
+            next_slot += 1
+
+    @staticmethod
+    def _semantic_signature(
+        entries: dict[str, AliasEntry],
+        *,
+        now_ms: int,
+        active_window_ms: int,
+    ) -> tuple[tuple[str, str, str, bool], ...]:
+        return tuple(
+            sorted(
+                (
+                    platform_id,
+                    entry.alias,
+                    entry.display_name,
+                    now_ms - entry.last_seen_ms <= active_window_ms,
+                )
+                for platform_id, entry in entries.items()
+            )
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -68,6 +68,7 @@ class ContextStageBuilder:
         alias_table: SessionAliasTable,
         session_state: ContextSessionState,
         self_platform_id: str = "",
+        start_block_index: int = 0,
     ) -> list[ContextBlockState]:
         rows = [
             rendered
@@ -103,7 +104,12 @@ class ContextStageBuilder:
             would_exceed_max = pending_tokens + run.token_estimate > self._config.max_tokens
 
             if should_split_by_timeout or would_exceed_max:
-                blocks.append(self._finalize_block(pending_runs, block_index=len(blocks)))
+                blocks.append(
+                    self._finalize_block(
+                        pending_runs,
+                        block_index=start_block_index + len(blocks),
+                    )
+                )
                 pending_runs = [run]
                 pending_tokens = run.token_estimate
                 previous_end_ms = run.ended_at_ms
@@ -114,7 +120,12 @@ class ContextStageBuilder:
             previous_end_ms = run.ended_at_ms
 
         if pending_runs:
-            blocks.append(self._finalize_block(pending_runs, block_index=len(blocks)))
+            blocks.append(
+                self._finalize_block(
+                    pending_runs,
+                    block_index=start_block_index + len(blocks),
+                )
+            )
 
         for index, block in enumerate(blocks):
             block.sealed = index < len(blocks) - 1

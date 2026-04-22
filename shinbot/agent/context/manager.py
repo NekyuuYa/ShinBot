@@ -71,6 +71,15 @@ def _record_to_turn(item: dict[str, Any]) -> dict[str, Any] | None:
         turn["_created_at"] = created_at
     if "is_read" in item:
         turn["_is_read"] = bool(item.get("is_read"))
+    raw_text = item.get("raw_text")
+    if raw_text is not None:
+        turn["_raw_text"] = str(raw_text)
+    content_json = item.get("content_json")
+    if content_json is not None:
+        turn["_content_json"] = str(content_json)
+    platform_msg_id = item.get("platform_msg_id")
+    if platform_msg_id is not None:
+        turn["_platform_msg_id"] = str(platform_msg_id)
     return turn
 
 
@@ -157,6 +166,32 @@ class ActiveContextPool:
             turns.append(turn)
         return turns
 
+    def export_records(self, *, read_only: bool = True) -> list[dict[str, Any]]:
+        """Return prompt-building records with the raw fields builders depend on."""
+
+        records: list[dict[str, Any]] = []
+        for item in self.messages:
+            if read_only and not bool(item.get("_is_read", True)):
+                continue
+            record = {k: v for k, v in item.items() if not k.startswith("_")}
+            record_id = item.get("_record_id")
+            if record_id is not None:
+                record["id"] = record_id
+            created_at = item.get("_created_at")
+            if created_at is not None:
+                record["created_at"] = created_at
+            raw_text = item.get("_raw_text")
+            if raw_text is not None:
+                record["raw_text"] = raw_text
+            content_json = item.get("_content_json")
+            if content_json is not None:
+                record["content_json"] = content_json
+            platform_msg_id = item.get("_platform_msg_id")
+            if platform_msg_id is not None:
+                record["platform_msg_id"] = platform_msg_id
+            records.append(record)
+        return records
+
     def mark_read_until(self, msg_id: int) -> None:
         """Mark buffered message turns as readable up to the consumed cursor."""
         for item in self.messages:
@@ -221,15 +256,15 @@ class ContextManager:
         *,
         now_ms: int,
         force: bool = False,
-    ) -> SessionAliasTable:
+    ) -> tuple[SessionAliasTable, bool]:
         pool = self.get_pool(session_id)
         state = self.get_session_state(session_id)
         table = state.alias_table
         if not force and table.entries and not table.should_rebuild(now_ms):
-            return table
-        table.rebuild_from_messages(list(pool.messages), now_ms=now_ms)
+            return table, False
+        changed = table.rebuild_from_messages(list(pool.messages), now_ms=now_ms)
         self._save_session_state(session_id)
-        return table
+        return table, changed
 
     def build_context_stage_messages(
         self,
@@ -245,7 +280,7 @@ class ContextManager:
         alias_rebuild_due = not bool(state.alias_table.entries) or state.alias_table.should_rebuild(
             timestamp_ms
         )
-        alias_table = self.rebuild_alias_table(
+        alias_table, alias_changed = self.rebuild_alias_table(
             session_id,
             now_ms=timestamp_ms,
             force=alias_rebuild_due,
@@ -253,19 +288,29 @@ class ContextManager:
         read_history = self.get_recent_messages(session_id, read_only=True)
         latest_history_id = _latest_record_id(read_history)
         latest_block_id = _latest_block_record_id(state.blocks)
-        should_rebuild_blocks = (
-            alias_rebuild_due or not state.blocks or latest_history_id > latest_block_id
-        )
-
-        if should_rebuild_blocks:
+        if alias_changed or not state.blocks:
             messages = self._context_builder.build_prompt_messages(
                 read_history,
                 alias_table=alias_table,
                 session_state=state,
                 self_platform_id=self_platform_id,
             )
+        elif latest_history_id > latest_block_id:
+            reusable_blocks, mutable_history = _split_context_rebuild_scope(
+                state.blocks,
+                read_history,
+            )
+            rebuilt_tail = self._context_builder.build_blocks(
+                mutable_history,
+                alias_table=alias_table,
+                session_state=state,
+                self_platform_id=self_platform_id,
+                start_block_index=len(reusable_blocks),
+            )
+            state.blocks = [*reusable_blocks, *rebuilt_tail]
+            messages = _blocks_to_prompt_messages(state.blocks)
         else:
-            messages = [{"role": "user", "content": list(block.contents)} for block in state.blocks]
+            messages = _blocks_to_prompt_messages(state.blocks)
         compressed_messages = self._build_compressed_memory_messages(state)
         self._save_session_state(session_id)
         return [*compressed_messages, *messages]
@@ -283,7 +328,7 @@ class ContextManager:
             return []
         timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
         state = self.get_session_state(session_id)
-        alias_table = self.rebuild_alias_table(
+        alias_table, _alias_changed = self.rebuild_alias_table(
             session_id,
             now_ms=timestamp_ms,
             force=not bool(state.alias_table.entries),
@@ -306,7 +351,7 @@ class ContextManager:
         now_ms: int | None = None,
     ) -> dict[str, Any] | None:
         timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        table = self.rebuild_alias_table(
+        table, _alias_changed = self.rebuild_alias_table(
             session_id,
             now_ms=timestamp_ms,
             force=not bool(self.get_alias_table(session_id).entries),
@@ -328,7 +373,7 @@ class ContextManager:
         now_ms: int | None = None,
     ) -> str:
         timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        table = self.rebuild_alias_table(
+        table, _alias_changed = self.rebuild_alias_table(
             session_id,
             now_ms=timestamp_ms,
             force=not bool(self.get_alias_table(session_id).entries),
@@ -543,7 +588,7 @@ class ContextManager:
         read_only: bool = True,
     ) -> list[dict[str, Any]]:
         pool = self.get_pool(session_id)
-        items = pool.export_turns(read_only=read_only)
+        items = pool.export_records(read_only=read_only)
         if limit is not None:
             items = items[-limit:]
         return items
@@ -591,6 +636,38 @@ def _latest_block_record_id(blocks: list[ContextBlockState]) -> int:
         if numeric_ids:
             latest = max(latest, max(numeric_ids))
     return latest
+
+
+def _split_context_rebuild_scope(
+    blocks: list[ContextBlockState],
+    read_history: list[dict[str, Any]],
+) -> tuple[list[ContextBlockState], list[dict[str, Any]]]:
+    if not blocks:
+        return [], list(read_history)
+
+    reusable_count = 0
+    for index, block in enumerate(blocks):
+        if not block.sealed:
+            reusable_count = index
+            break
+    else:
+        reusable_count = max(0, len(blocks) - 1)
+
+    reusable_blocks = list(blocks[:reusable_count])
+    reusable_latest_id = _latest_block_record_id(reusable_blocks)
+    if reusable_latest_id <= 0:
+        return reusable_blocks, list(read_history)
+
+    mutable_history = [
+        record
+        for record in read_history
+        if isinstance(record.get("id"), int) and int(record["id"]) > reusable_latest_id
+    ]
+    return reusable_blocks, mutable_history
+
+
+def _blocks_to_prompt_messages(blocks: list[ContextBlockState]) -> list[dict[str, Any]]:
+    return [{"role": "user", "content": list(block.contents)} for block in blocks]
 
 
 _MESSAGE_ALIAS_PREFIX_PATTERN = re.compile(r"^(\[msgid: \d+\])(?P<alias>[AP]\d+)(?=: )")
