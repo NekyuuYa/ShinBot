@@ -440,6 +440,16 @@ class PromptRegistry:
         )
         if inactive_alias_message is not None:
             context_messages = [inactive_alias_message, *context_messages]
+        if context_messages and _is_explicit_prompt_cache_enabled(request.metadata):
+            cacheable_message_count = self._context_manager.get_cacheable_context_message_count(
+                request.session_id
+            )
+            if inactive_alias_message is not None:
+                cacheable_message_count += 1
+            context_messages = _apply_explicit_prompt_cache_marker(
+                context_messages,
+                cacheable_message_count,
+            )
         if context_messages:
             hash_input = json.dumps(context_messages, ensure_ascii=False, sort_keys=True)
             context_record = PromptComponentRecord(
@@ -644,3 +654,58 @@ def _resolve_now_ms(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return int(raw if raw > 10_000_000_000 else raw * 1000)
+
+
+def _is_explicit_prompt_cache_enabled(metadata: dict[str, Any]) -> bool:
+    value = metadata.get("explicit_prompt_cache_enabled")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return False
+
+
+def _apply_explicit_prompt_cache_marker(
+    messages: list[dict[str, Any]],
+    cacheable_message_count: int,
+) -> list[dict[str, Any]]:
+    if not messages or cacheable_message_count <= 0:
+        return messages
+
+    target_index = min(cacheable_message_count, len(messages)) - 1
+    target_message = dict(messages[target_index])
+    content = target_message.get("content")
+
+    if isinstance(content, list):
+        for block_index in range(len(content) - 1, -1, -1):
+            block = content[block_index]
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "") != "text":
+                continue
+
+            updated_block = dict(block)
+            updated_block["cache_control"] = {"type": "ephemeral"}
+            updated_content = list(content)
+            updated_content[block_index] = updated_block
+            target_message["content"] = updated_content
+            updated_messages = list(messages)
+            updated_messages[target_index] = target_message
+            return updated_messages
+        return messages
+
+    if isinstance(content, str) and content.strip():
+        target_message["cache_control"] = {"type": "ephemeral"}
+        updated_messages = list(messages)
+        updated_messages[target_index] = target_message
+        return updated_messages
+
+    return messages

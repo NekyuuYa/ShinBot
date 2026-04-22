@@ -280,6 +280,56 @@ def test_inactive_aliases_are_sourced_from_sealed_context_blocks(tmp_path) -> No
     assert second_low_activity_alias.alias not in active_text
 
 
+def test_inactive_alias_table_is_frozen_after_first_render(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:inactive-freeze"
+
+    for index in range(12):
+        db.message_logs.insert(
+            MessageLogRecord(
+                session_id=session_id,
+                role="user",
+                raw_text=f"message-{index} " + ("x" * 24),
+                sender_id=f"user-{index}",
+                sender_name=f"User {index}",
+                created_at=1_000 + index,
+                is_read=True,
+            )
+        )
+
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
+    context_manager._context_builder = ContextStageBuilder(
+        config=ContextStageBuildConfig(min_tokens=1, max_tokens=1)
+    )
+
+    context_manager.build_context_stage_messages(session_id, now_ms=2_000)
+    first_message = context_manager.build_inactive_alias_context_message(session_id, now_ms=2_000)
+    state = context_manager.get_session_state(session_id)
+
+    assert first_message is not None
+    assert state.inactive_alias_table_frozen is True
+    first_text = first_message["content"][0]["text"]
+
+    frozen_message = context_manager.build_inactive_alias_context_message(
+        session_id,
+        unread_records=[
+            {
+                "sender_id": "user-0",
+                "sender_name": "User 0",
+                "role": "user",
+                "raw_text": "I am back",
+                "created_at": 3_000,
+            }
+        ],
+        now_ms=3_000,
+    )
+
+    assert frozen_message is not None
+    assert frozen_message["content"][0]["text"] == first_text
+    assert "user-0" in first_text
+
+
 def test_context_manager_requests_alias_rebuild_after_eviction(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
@@ -309,6 +359,11 @@ def test_context_manager_requests_alias_rebuild_after_eviction(tmp_path) -> None
 
     context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
     context_manager.build_context_stage_messages(session_id, now_ms=3_000)
+    state = context_manager.get_session_state(session_id)
+    state.inactive_alias_entries = [
+        {"alias": "P0", "platform_id": "user-2", "display_name": "Beta"}
+    ]
+    state.inactive_alias_table_frozen = True
 
     alias_table = context_manager.get_alias_table(session_id)
     assert alias_table.last_rebuild_ms == 3_000
@@ -324,6 +379,8 @@ def test_context_manager_requests_alias_rebuild_after_eviction(tmp_path) -> None
 
     assert result["triggered"] is True
     assert context_manager.get_alias_table(session_id).pending_rebuild is True
+    assert state.inactive_alias_entries == []
+    assert state.inactive_alias_table_frozen is False
 
     rebuilt_text = context_manager.build_active_alias_constraint_text(session_id, now_ms=3_101)
 

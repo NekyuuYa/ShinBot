@@ -12,6 +12,7 @@ class ResolvedBotRuntimeConfig:
 
     default_agent_uuid: str = ""
     main_llm: str = ""
+    explicit_prompt_cache_enabled: bool = False
     response_profile: str = "balanced"
     response_profile_private: str = "immediate"
     response_profile_priority: str = "immediate"
@@ -25,6 +26,22 @@ def _normalize_string(value: Any, default: str = "") -> str:
     return normalized or default
 
 
+def _normalize_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
 def resolve_bot_runtime_config(payload: dict[str, Any] | None) -> ResolvedBotRuntimeConfig:
     """Normalize raw bot-config payloads into canonical runtime fields."""
 
@@ -32,6 +49,10 @@ def resolve_bot_runtime_config(payload: dict[str, Any] | None) -> ResolvedBotRun
     return ResolvedBotRuntimeConfig(
         default_agent_uuid=str((payload or {}).get("default_agent_uuid") or "").strip(),
         main_llm=str((payload or {}).get("main_llm") or "").strip(),
+        explicit_prompt_cache_enabled=_normalize_bool(
+            raw_config.get("explicit_prompt_cache_enabled"),
+            False,
+        ),
         response_profile=_normalize_string(raw_config.get("response_profile"), "balanced"),
         response_profile_private=_normalize_string(
             raw_config.get("response_profile_private"),

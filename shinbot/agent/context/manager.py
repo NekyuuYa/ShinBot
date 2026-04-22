@@ -238,6 +238,12 @@ class ContextManager:
     def get_alias_table(self, session_id: str) -> SessionAliasTable:
         return self.get_session_state(session_id).alias_table
 
+    def get_cacheable_context_message_count(self, session_id: str) -> int:
+        if not session_id:
+            return 0
+        state = self.get_session_state(session_id)
+        return len(state.compressed_memories) + _count_cacheable_prefix_blocks(state.blocks)
+
     def get_session_state(self, session_id: str) -> ContextSessionState:
         state = self._session_states.get(session_id)
         if state is not None:
@@ -327,6 +333,7 @@ class ContextManager:
         latest_history_id = _latest_record_id(read_history)
         latest_block_id = _latest_block_record_id(state.blocks)
         if alias_changed or not state.blocks:
+            _reset_inactive_alias_snapshot(state)
             messages = self._context_builder.build_prompt_messages(
                 read_history,
                 alias_table=alias_table,
@@ -398,6 +405,9 @@ class ContextManager:
             )
             state = self.get_session_state(session_id)
 
+        if state.inactive_alias_table_frozen:
+            return _build_inactive_alias_context_message(state.inactive_alias_entries)
+
         current_platform_ids = _collect_current_platform_ids(
             state.blocks,
             unread_records or [],
@@ -406,16 +416,10 @@ class ContextManager:
             state.blocks,
             current_platform_ids=current_platform_ids,
         )
-        if not inactive_entries:
-            return None
-        lines = ["### 会话历史成员映射"]
-        for entry in inactive_entries:
-            alias_id = str(entry.get("alias", "") or entry.get("platform_id", "")).strip()
-            platform_id = str(entry.get("platform_id", "") or "").strip()
-            display_name = str(entry.get("display_name", "") or platform_id).strip() or platform_id
-            if alias_id and platform_id:
-                lines.append(f"{alias_id} = {display_name} / {platform_id}")
-        return {"role": "user", "content": [{"type": "text", "text": "\n".join(lines)}]}
+        state.inactive_alias_entries = inactive_entries
+        state.inactive_alias_table_frozen = True
+        self._save_session_state(session_id)
+        return _build_inactive_alias_context_message(inactive_entries)
 
     def build_active_alias_constraint_text(
         self,
@@ -479,6 +483,7 @@ class ContextManager:
         )
         if result.get("triggered"):
             state.alias_table.request_rebuild()
+            _reset_inactive_alias_snapshot(state)
         self._save_session_state(session_id)
         return result
 
@@ -710,13 +715,7 @@ def _split_context_rebuild_scope(
     if not blocks:
         return [], list(read_history)
 
-    reusable_count = 0
-    for index, block in enumerate(blocks):
-        if not block.sealed:
-            reusable_count = index
-            break
-    else:
-        reusable_count = max(0, len(blocks) - 1)
+    reusable_count = _count_cacheable_prefix_blocks(blocks)
 
     reusable_blocks = list(blocks[:reusable_count])
     reusable_latest_id = _latest_block_record_id(reusable_blocks)
@@ -733,6 +732,16 @@ def _split_context_rebuild_scope(
 
 def _blocks_to_prompt_messages(blocks: list[ContextBlockState]) -> list[dict[str, Any]]:
     return [{"role": "user", "content": list(block.contents)} for block in blocks]
+
+
+def _count_cacheable_prefix_blocks(blocks: list[ContextBlockState]) -> int:
+    if not blocks:
+        return 0
+
+    for index, block in enumerate(blocks):
+        if not block.sealed:
+            return index
+    return max(0, len(blocks) - 1)
 
 
 def _collect_current_platform_ids(
@@ -806,6 +815,29 @@ def _select_active_alias_entries(
 
     active_entries.sort(key=lambda item: (item.alias.startswith("P"), item.alias, item.platform_id))
     return active_entries
+
+
+def _build_inactive_alias_context_message(
+    entries: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    if not entries:
+        return None
+
+    lines = ["### 会话历史成员映射"]
+    for entry in entries:
+        alias_id = str(entry.get("alias", "") or entry.get("platform_id", "")).strip()
+        platform_id = str(entry.get("platform_id", "") or "").strip()
+        display_name = str(entry.get("display_name", "") or platform_id).strip() or platform_id
+        if alias_id and platform_id:
+            lines.append(f"{alias_id} = {display_name} / {platform_id}")
+    if len(lines) == 1:
+        return None
+    return {"role": "user", "content": [{"type": "text", "text": "\n".join(lines)}]}
+
+
+def _reset_inactive_alias_snapshot(state: ContextSessionState) -> None:
+    state.inactive_alias_entries = []
+    state.inactive_alias_table_frozen = False
 
 
 def _extract_block_alias_entries(block: ContextBlockState) -> list[dict[str, Any]]:

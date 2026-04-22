@@ -9,7 +9,6 @@ export interface PromptCatalogItem {
   version: string
   priority: number
   enabled: boolean
-  cacheStable: boolean
   resolverRef: string
   templateVars: string[]
   bundleRefs: string[]
