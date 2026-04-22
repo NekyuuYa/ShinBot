@@ -7,6 +7,7 @@ import pytest
 from PIL import Image
 
 from shinbot.agent.context import ContextManager
+from shinbot.agent.context.manager import estimate_context_tokens
 from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
@@ -14,7 +15,6 @@ from shinbot.agent.media import (
     MediaService,
 )
 from shinbot.agent.prompt_manager import (
-    ContextStrategy,
     PromptAssemblyRequest,
     PromptComponent,
     PromptComponentKind,
@@ -22,7 +22,6 @@ from shinbot.agent.prompt_manager import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.prompt_manager.context_strategies import estimate_context_tokens
 from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.persistence import DatabaseManager, MediaSemanticRecord, MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
@@ -32,29 +31,6 @@ def _write_png(path: Path, color: tuple[int, int, int] = (255, 0, 0)) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (8, 8), color).save(path)
     return path
-
-
-def _cache_marker_positions(messages: list[dict]) -> list[int]:
-    positions: list[int] = []
-    block_index = 0
-    for message in messages:
-        content = message.get("content")
-        blocks = content if isinstance(content, list) else [content]
-        for block in blocks:
-            if isinstance(block, dict) and block.get("cache_control"):
-                positions.append(block_index)
-            block_index += 1
-    return positions
-
-
-def _long_cache_eligible_text() -> str:
-    # Keep this comfortably above the 1024-token minimum used by explicit cache.
-    return ("stable system block " * 320).strip()
-
-
-def _long_cache_eligible_cjk_text() -> str:
-    # CJK-heavy content can be undercounted by char/4; keep this well above 1024 chars.
-    return ("\u7f13\u5b58\u547d\u4e2d\u9a8c\u8bc1" * 360).strip()
 
 
 def test_prompt_component_rejects_invalid_external_stage() -> None:
@@ -116,209 +92,6 @@ def test_prompt_registry_assembles_in_fixed_stage_order() -> None:
     texts = [block["text"] for block in system_content]
     assert texts[0] == "system"
     assert "identity" in texts
-
-
-def test_prompt_registry_marks_stable_system_base_cache_boundary() -> None:
-    registry = PromptRegistry()
-    stable_system = _long_cache_eligible_text()
-    registry.register_component(
-        PromptComponent(
-            id="system",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content=stable_system,
-        )
-    )
-    registry.register_component(
-        PromptComponent(
-            id="identity",
-            stage=PromptStage.IDENTITY,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content="dynamic identity",
-        )
-    )
-    registry.register_profile(
-        PromptProfile(id="agent.default", base_components=["system", "identity"])
-    )
-
-    result = registry.assemble(PromptAssemblyRequest(profile_id="agent.default"))
-
-    system_content = result.messages[0]["content"]
-    assert system_content[0]["text"] == stable_system
-    assert system_content[0]["cache_control"] == {"type": "ephemeral"}
-    assert system_content[1]["text"] == "dynamic identity"
-    assert "cache_control" not in system_content[1]
-
-
-def test_prompt_registry_marks_stable_cjk_system_base_cache_boundary() -> None:
-    registry = PromptRegistry()
-    stable_system = _long_cache_eligible_cjk_text()
-    registry.register_component(
-        PromptComponent(
-            id="system",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content=stable_system,
-        )
-    )
-    registry.register_component(
-        PromptComponent(
-            id="identity",
-            stage=PromptStage.IDENTITY,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content="dynamic identity",
-        )
-    )
-    registry.register_profile(
-        PromptProfile(id="agent.default", base_components=["system", "identity"])
-    )
-
-    result = registry.assemble(PromptAssemblyRequest(profile_id="agent.default"))
-
-    system_content = result.messages[0]["content"]
-    assert system_content[0]["text"] == stable_system
-    assert system_content[0]["cache_control"] == {"type": "ephemeral"}
-    assert system_content[1]["text"] == "dynamic identity"
-    assert "cache_control" not in system_content[1]
-
-
-def test_prompt_registry_skips_system_cache_boundary_when_prefix_too_short() -> None:
-    registry = PromptRegistry()
-    registry.register_component(
-        PromptComponent(
-            id="system",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content="short system",
-        )
-    )
-    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
-
-    result = registry.assemble(PromptAssemblyRequest(profile_id="agent.default"))
-
-    system_content = result.messages[0]["content"]
-    assert system_content[0]["text"] == "short system"
-    assert "cache_control" not in system_content[0]
-
-
-def test_prompt_registry_cache_boundary_stops_before_unstable_system_block() -> None:
-    registry = PromptRegistry()
-    stable_prefix = _long_cache_eligible_text()
-    registry.register_component(
-        PromptComponent(
-            id="stable",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content=stable_prefix,
-            priority=10,
-        )
-    )
-    registry.register_component(
-        PromptComponent(
-            id="unstable",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content="dynamic block",
-            priority=20,
-            cache_stable=False,
-        )
-    )
-    registry.register_component(
-        PromptComponent(
-            id="stable_after_unstable",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content="stable but after dynamic",
-            priority=30,
-        )
-    )
-    registry.register_profile(
-        PromptProfile(
-            id="agent.default",
-            base_components=["stable_after_unstable", "unstable", "stable"],
-        )
-    )
-
-    result = registry.assemble(PromptAssemblyRequest(profile_id="agent.default"))
-
-    system_content = result.messages[0]["content"]
-    assert [block["text"] for block in system_content] == [
-        stable_prefix,
-        "dynamic block",
-        "stable but after dynamic",
-    ]
-    assert system_content[0]["cache_control"] == {"type": "ephemeral"}
-    assert "cache_control" not in system_content[1]
-    assert "cache_control" not in system_content[2]
-
-
-def test_prompt_registry_marks_long_context_with_safe_block_gap() -> None:
-    registry = PromptRegistry()
-    registry.register_component(
-        PromptComponent(
-            id="system",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content=_long_cache_eligible_text(),
-        )
-    )
-    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
-
-    result = registry.assemble(
-        PromptAssemblyRequest(
-            profile_id="agent.default",
-            context_inputs={
-                "history_turns": [{"role": "user", "content": f"turn {idx}"} for idx in range(70)],
-            },
-        )
-    )
-
-    assert _cache_marker_positions(result.messages) == [0, 18, 36, 54]
-    assert result.messages[1]["content"] == "turn 0"
-    assert result.messages[18]["content"] == [
-        {
-            "type": "text",
-            "text": "turn 17",
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
-
-
-def test_prompt_registry_skips_context_cache_when_window_shifted() -> None:
-    registry = PromptRegistry()
-    registry.register_component(
-        PromptComponent(
-            id="system",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content=_long_cache_eligible_text(),
-        )
-    )
-    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
-    registry.register_context_strategy(
-        ContextStrategy(
-            id="context.trimmed",
-            display_name="Trimmed Context",
-            resolver_ref="context.trimmed",
-        )
-    )
-    registry.register_context_strategy_resolver(
-        "context.trimmed",
-        lambda _request, _strategy: {
-            "messages": [{"role": "user", "content": f"turn {idx}"} for idx in range(70)],
-            "dropped_turns": 2,
-        },
-    )
-
-    result = registry.assemble(
-        PromptAssemblyRequest(
-            profile_id="agent.default",
-            context_strategy_id="context.trimmed",
-        )
-    )
-
-    assert _cache_marker_positions(result.messages) == [0]
-    assert result.messages[20]["content"] == "turn 19"
 
 
 def test_prompt_registry_sorts_stage_records_stably() -> None:
@@ -477,45 +250,6 @@ def test_prompt_registry_builds_snapshot_and_log_record() -> None:
     assert isinstance(snapshot.full_messages, list)
     assert len(snapshot.full_messages) >= 1
     assert record.selected_component_count == 1
-
-
-def test_prompt_registry_supports_context_strategy_registry() -> None:
-    registry = PromptRegistry()
-    registry.register_component(
-        PromptComponent(
-            id="system",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content="system",
-        )
-    )
-    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
-    registry.register_context_strategy(
-        ContextStrategy(
-            id="context.windowed",
-            display_name="Windowed Context",
-            resolver_ref="context.windowed",
-        )
-    )
-    # Custom resolver returns a plain string — should be wrapped as a user message
-    registry.register_context_strategy_resolver(
-        "context.windowed",
-        lambda request, strategy: f"history={request.context_inputs.get('summary', '')}",
-    )
-
-    result = registry.assemble(
-        PromptAssemblyRequest(
-            profile_id="agent.default",
-            context_strategy_id="context.windowed",
-            context_inputs={"summary": "recent chat"},
-        )
-    )
-
-    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
-    assert context_stage.components[0].metadata["context_strategy_id"] == "context.windowed"
-    # The resolver output is wrapped as a user message in context
-    context_content = " ".join(str(m.get("content", "")) for m in context_stage.messages)
-    assert "history=recent chat" in context_content
 
 
 def test_prompt_registry_uses_builtin_sliding_window_strategy() -> None:
