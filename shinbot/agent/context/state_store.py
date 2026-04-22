@@ -80,6 +80,8 @@ class ContextSessionState:
     )
     blocks: list[ContextBlockState] = field(default_factory=list)
     compressed_memories: list[CompressedMemoryState] = field(default_factory=list)
+    inactive_alias_entries: list[dict[str, str]] = field(default_factory=list)
+    inactive_alias_table_frozen: bool = False
     last_cache_refresh_ms: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -95,6 +97,8 @@ class ContextSessionState:
             "image_ids": self.image_ids.to_dict(),
             "blocks": [block.to_dict() for block in self.blocks],
             "compressed_memories": [item.to_dict() for item in self.compressed_memories],
+            "inactive_alias_entries": list(self.inactive_alias_entries),
+            "inactive_alias_table_frozen": self.inactive_alias_table_frozen,
             "last_cache_refresh_ms": self.last_cache_refresh_ms,
             "metadata": dict(self.metadata),
         }
@@ -118,6 +122,16 @@ class ContextSessionState:
                 for item in data.get("compressed_memories", [])
                 if isinstance(item, dict)
             ],
+            inactive_alias_entries=[
+                {
+                    "alias": str(item.get("alias", "") or ""),
+                    "platform_id": str(item.get("platform_id", "") or ""),
+                    "display_name": str(item.get("display_name", "") or ""),
+                }
+                for item in data.get("inactive_alias_entries", [])
+                if isinstance(item, dict)
+            ],
+            inactive_alias_table_frozen=bool(data.get("inactive_alias_table_frozen", False)),
             last_cache_refresh_ms=int(data.get("last_cache_refresh_ms", 0) or 0),
             metadata=dict(data.get("metadata", {})),
         )

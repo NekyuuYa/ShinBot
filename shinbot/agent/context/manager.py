@@ -327,6 +327,7 @@ class ContextManager:
         latest_history_id = _latest_record_id(read_history)
         latest_block_id = _latest_block_record_id(state.blocks)
         if alias_changed or not state.blocks:
+            _reset_inactive_alias_snapshot(state)
             messages = self._context_builder.build_prompt_messages(
                 read_history,
                 alias_table=alias_table,
@@ -398,6 +399,9 @@ class ContextManager:
             )
             state = self.get_session_state(session_id)
 
+        if state.inactive_alias_table_frozen:
+            return _build_inactive_alias_context_message(state.inactive_alias_entries)
+
         current_platform_ids = _collect_current_platform_ids(
             state.blocks,
             unread_records or [],
@@ -406,16 +410,10 @@ class ContextManager:
             state.blocks,
             current_platform_ids=current_platform_ids,
         )
-        if not inactive_entries:
-            return None
-        lines = ["### 会话历史成员映射"]
-        for entry in inactive_entries:
-            alias_id = str(entry.get("alias", "") or entry.get("platform_id", "")).strip()
-            platform_id = str(entry.get("platform_id", "") or "").strip()
-            display_name = str(entry.get("display_name", "") or platform_id).strip() or platform_id
-            if alias_id and platform_id:
-                lines.append(f"{alias_id} = {display_name} / {platform_id}")
-        return {"role": "user", "content": [{"type": "text", "text": "\n".join(lines)}]}
+        state.inactive_alias_entries = inactive_entries
+        state.inactive_alias_table_frozen = True
+        self._save_session_state(session_id)
+        return _build_inactive_alias_context_message(inactive_entries)
 
     def build_active_alias_constraint_text(
         self,
@@ -479,6 +477,7 @@ class ContextManager:
         )
         if result.get("triggered"):
             state.alias_table.request_rebuild()
+            _reset_inactive_alias_snapshot(state)
         self._save_session_state(session_id)
         return result
 
@@ -806,6 +805,29 @@ def _select_active_alias_entries(
 
     active_entries.sort(key=lambda item: (item.alias.startswith("P"), item.alias, item.platform_id))
     return active_entries
+
+
+def _build_inactive_alias_context_message(
+    entries: list[dict[str, str]],
+) -> dict[str, Any] | None:
+    if not entries:
+        return None
+
+    lines = ["### 会话历史成员映射"]
+    for entry in entries:
+        alias_id = str(entry.get("alias", "") or entry.get("platform_id", "")).strip()
+        platform_id = str(entry.get("platform_id", "") or "").strip()
+        display_name = str(entry.get("display_name", "") or platform_id).strip() or platform_id
+        if alias_id and platform_id:
+            lines.append(f"{alias_id} = {display_name} / {platform_id}")
+    if len(lines) == 1:
+        return None
+    return {"role": "user", "content": [{"type": "text", "text": "\n".join(lines)}]}
+
+
+def _reset_inactive_alias_snapshot(state: ContextSessionState) -> None:
+    state.inactive_alias_entries = []
+    state.inactive_alias_table_frozen = False
 
 
 def _extract_block_alias_entries(block: ContextBlockState) -> list[dict[str, Any]]:
