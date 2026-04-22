@@ -126,7 +126,7 @@ class ShinBot:
             permission_engine=self.permission_engine,
             audit_logger=self.audit_logger,
         )
-        register_identity_tools(self.tool_registry, self.identity_store)
+        register_identity_tools(self.tool_registry, self.identity_store, self.context_manager)
         self.adapter_manager = AdapterManager()
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,

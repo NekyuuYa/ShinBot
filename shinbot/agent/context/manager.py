@@ -18,6 +18,7 @@ from shinbot.agent.context.eviction import (
     select_blocks_for_eviction,
 )
 from shinbot.agent.context.instruction_stage_builder import InstructionStageBuilder
+from shinbot.agent.context.message_parts import parse_message_parts
 from shinbot.agent.context.state_store import (
     ContextBlockState,
     ContextSessionState,
@@ -262,9 +263,46 @@ class ContextManager:
         table = state.alias_table
         if not force and table.entries and not table.should_rebuild(now_ms):
             return table, False
-        changed = table.rebuild_from_messages(list(pool.messages), now_ms=now_ms)
+        changed = table.rebuild_from_messages(
+            list(pool.messages),
+            now_ms=now_ms,
+            identity_store=self._identity_store,
+        )
         self._save_session_state(session_id)
         return table, changed
+
+    def sync_identity_display_name(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        now_ms: int | None = None,
+    ) -> bool:
+        if not session_id or self._identity_store is None:
+            return False
+
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return False
+
+        identity = self._identity_store.get_identity(normalized_user_id)
+        if identity is None:
+            return False
+
+        display_name = str(identity.get("name", "") or "").strip()
+        if not display_name:
+            return False
+
+        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        table = self.get_alias_table(session_id)
+        changed = table.apply_identity_display_name(
+            normalized_user_id,
+            display_name,
+            now_ms=timestamp_ms,
+        )
+        if changed:
+            self._save_session_state(session_id)
+        return changed
 
     def build_context_stage_messages(
         self,
@@ -348,37 +386,62 @@ class ContextManager:
         self,
         session_id: str,
         *,
+        unread_records: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any] | None:
         timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        table, _alias_changed = self.rebuild_alias_table(
-            session_id,
-            now_ms=timestamp_ms,
-            force=not bool(self.get_alias_table(session_id).entries),
+        state = self.get_session_state(session_id)
+        if not state.blocks or not state.alias_table.entries or state.alias_table.should_rebuild(timestamp_ms):
+            self.build_context_stage_messages(
+                session_id,
+                now_ms=timestamp_ms,
+            )
+            state = self.get_session_state(session_id)
+
+        current_platform_ids = _collect_current_platform_ids(
+            state.blocks,
+            unread_records or [],
         )
-        inactive_entries, _active_entries = table.split_by_activity(now_ms=timestamp_ms)
+        inactive_entries = _select_inactive_alias_entries(
+            state.blocks,
+            current_platform_ids=current_platform_ids,
+        )
         if not inactive_entries:
             return None
         lines = ["### 会话历史成员映射"]
         for entry in inactive_entries:
-            alias_id = entry.alias or entry.platform_id
-            display_name = entry.display_name or entry.platform_id
-            lines.append(f"{alias_id} = {display_name} / {entry.platform_id}")
+            alias_id = str(entry.get("alias", "") or entry.get("platform_id", "")).strip()
+            platform_id = str(entry.get("platform_id", "") or "").strip()
+            display_name = str(entry.get("display_name", "") or platform_id).strip() or platform_id
+            if alias_id and platform_id:
+                lines.append(f"{alias_id} = {display_name} / {platform_id}")
         return {"role": "user", "content": [{"type": "text", "text": "\n".join(lines)}]}
 
     def build_active_alias_constraint_text(
         self,
         session_id: str,
         *,
+        unread_records: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
     ) -> str:
         timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        state = self.get_session_state(session_id)
+        if not state.blocks:
+            self.build_context_stage_messages(
+                session_id,
+                now_ms=timestamp_ms,
+            )
+            state = self.get_session_state(session_id)
+
         table, _alias_changed = self.rebuild_alias_table(
             session_id,
             now_ms=timestamp_ms,
-            force=not bool(self.get_alias_table(session_id).entries),
+            force=not bool(state.alias_table.entries) or state.alias_table.should_rebuild(timestamp_ms),
         )
-        _inactive_entries, active_entries = table.split_by_activity(now_ms=timestamp_ms)
+        active_entries = _select_active_alias_entries(
+            table,
+            current_platform_ids=_collect_current_platform_ids(state.blocks, unread_records or []),
+        )
         if not active_entries:
             return ""
         lines = [
@@ -414,6 +477,8 @@ class ContextManager:
             compressed_text=compressed_text,
             created_at_ms=now_ms,
         )
+        if result.get("triggered"):
+            state.alias_table.request_rebuild()
         self._save_session_state(session_id)
         return result
 
@@ -668,6 +733,86 @@ def _split_context_rebuild_scope(
 
 def _blocks_to_prompt_messages(blocks: list[ContextBlockState]) -> list[dict[str, Any]]:
     return [{"role": "user", "content": list(block.contents)} for block in blocks]
+
+
+def _collect_current_platform_ids(
+    blocks: list[ContextBlockState],
+    unread_records: list[dict[str, Any]],
+) -> set[str]:
+    current_platform_ids: set[str] = set()
+
+    for block in blocks:
+        if block.sealed:
+            continue
+        for entry in _extract_block_alias_entries(block):
+            platform_id = str(entry.get("platform_id", "") or "").strip()
+            if platform_id:
+                current_platform_ids.add(platform_id)
+
+    for record in unread_records:
+        sender_id = str(record.get("sender_id", "") or "").strip()
+        if sender_id:
+            current_platform_ids.add(sender_id)
+        for part in parse_message_parts(record):
+            platform_id = str(part.platform_id or "").strip()
+            if platform_id:
+                current_platform_ids.add(platform_id)
+
+    return current_platform_ids
+
+
+def _select_inactive_alias_entries(
+    blocks: list[ContextBlockState],
+    *,
+    current_platform_ids: set[str],
+) -> list[dict[str, str]]:
+    archived_by_platform_id: dict[str, dict[str, str]] = {}
+    for block in blocks:
+        if not block.sealed:
+            continue
+        for entry in _extract_block_alias_entries(block):
+            alias = str(entry.get("alias", "") or "").strip()
+            platform_id = str(entry.get("platform_id", "") or "").strip()
+            if not alias.startswith("P") or not platform_id or platform_id in current_platform_ids:
+                continue
+            archived_by_platform_id.setdefault(
+                platform_id,
+                {
+                    "alias": alias,
+                    "platform_id": platform_id,
+                    "display_name": str(entry.get("display_name", "") or platform_id).strip()
+                    or platform_id,
+                },
+            )
+
+    return sorted(
+        archived_by_platform_id.values(),
+        key=lambda item: (str(item.get("alias", "") or ""), str(item.get("platform_id", "") or "")),
+    )
+
+
+def _select_active_alias_entries(
+    alias_table: SessionAliasTable,
+    *,
+    current_platform_ids: set[str],
+) -> list[Any]:
+    active_entries = []
+    for entry in alias_table.entries.values():
+        alias = entry.alias.strip()
+        if not alias:
+            continue
+        if alias.startswith("A") or entry.platform_id in current_platform_ids:
+            active_entries.append(entry)
+
+    active_entries.sort(key=lambda item: (item.alias.startswith("P"), item.alias, item.platform_id))
+    return active_entries
+
+
+def _extract_block_alias_entries(block: ContextBlockState) -> list[dict[str, Any]]:
+    raw_entries = block.metadata.get("alias_entries", [])
+    if not isinstance(raw_entries, list):
+        return []
+    return [entry for entry in raw_entries if isinstance(entry, dict)]
 
 
 _MESSAGE_ALIAS_PREFIX_PATTERN = re.compile(r"^(\[msgid: \d+\])(?P<alias>[AP]\d+)(?=: )")

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from shinbot.agent.identity.store import IdentityStore
 
 ALIAS_REBUILD_IDLE_MS = 10 * 60 * 1000
 ALIAS_ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -55,6 +58,7 @@ class SessionAliasTable:
     last_activity_ms: int = 0
     last_rebuild_ms: int = 0
     rebuilt_since_activity: bool = False
+    pending_rebuild: bool = False
 
     def note_activity(self, created_at: Any) -> None:
         activity_ms = _coerce_timestamp_ms(created_at)
@@ -65,6 +69,8 @@ class SessionAliasTable:
             self.rebuilt_since_activity = False
 
     def should_rebuild(self, now_ms: int, *, idle_ms: int = ALIAS_REBUILD_IDLE_MS) -> bool:
+        if self.pending_rebuild:
+            return True
         if self.last_activity_ms <= 0:
             return not self.rebuilt_since_activity
         if self.rebuilt_since_activity:
@@ -74,12 +80,17 @@ class SessionAliasTable:
     def mark_rebuilt(self, now_ms: int) -> None:
         self.last_rebuild_ms = now_ms
         self.rebuilt_since_activity = True
+        self.pending_rebuild = False
+
+    def request_rebuild(self) -> None:
+        self.pending_rebuild = True
 
     def rebuild_from_messages(
         self,
         messages: list[dict[str, Any]],
         *,
         now_ms: int,
+        identity_store: IdentityStore | None = None,
         active_window_ms: int = ALIAS_ACTIVE_WINDOW_MS,
         frequent_limit: int = ALIAS_FREQUENT_LIMIT,
     ) -> bool:
@@ -94,6 +105,7 @@ class SessionAliasTable:
             for platform_id, entry in self.entries.items()
         }
         stats: dict[str, AliasEntry] = {}
+        sender_platforms: dict[str, str] = {}
         for message in messages:
             platform_id = str(message.get("sender_id", "") or "").strip()
             if not platform_id:
@@ -107,6 +119,10 @@ class SessionAliasTable:
                 )
                 stats[platform_id] = entry
 
+            platform = str(message.get("platform", "") or "").strip()
+            if platform and platform_id not in sender_platforms:
+                sender_platforms[platform_id] = platform
+
             entry.message_count += 1
             entry.last_seen_ms = max(
                 entry.last_seen_ms,
@@ -115,6 +131,13 @@ class SessionAliasTable:
             sender_name = str(message.get("sender_name", "") or "").strip()
             if sender_name:
                 entry.display_name = sender_name
+
+        if identity_store is not None:
+            self._overlay_identity_display_names(
+                stats,
+                identity_store=identity_store,
+                sender_platforms=sender_platforms,
+            )
 
         ordered = sorted(
             stats.values(),
@@ -155,6 +178,30 @@ class SessionAliasTable:
         self.entries = next_entries
         self.mark_rebuilt(now_ms)
         return changed
+
+    def apply_identity_display_name(
+        self,
+        platform_id: str,
+        display_name: str,
+        *,
+        now_ms: int,
+        active_window_ms: int = ALIAS_ACTIVE_WINDOW_MS,
+    ) -> bool:
+        normalized_platform_id = str(platform_id or "").strip()
+        normalized_display_name = str(display_name or "").strip()
+        if not normalized_platform_id or not normalized_display_name:
+            return False
+
+        entry = self.entries.get(normalized_platform_id)
+        if entry is None:
+            return False
+        if now_ms - entry.last_seen_ms > active_window_ms:
+            return False
+        if entry.display_name == normalized_display_name:
+            return False
+
+        entry.display_name = normalized_display_name
+        return True
 
     def resolve(self, platform_id: str) -> AliasEntry | None:
         return self.entries.get(platform_id)
@@ -240,12 +287,31 @@ class SessionAliasTable:
             )
         )
 
+    @staticmethod
+    def _overlay_identity_display_names(
+        entries: dict[str, AliasEntry],
+        *,
+        identity_store: IdentityStore,
+        sender_platforms: dict[str, str],
+    ) -> None:
+        for platform_id, entry in entries.items():
+            identity = identity_store.get_identity(
+                platform_id,
+                platform=sender_platforms.get(platform_id, ""),
+            )
+            if identity is None:
+                continue
+            identity_name = str(identity.get("name", "") or "").strip()
+            if identity_name:
+                entry.display_name = identity_name
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
             "last_activity_ms": self.last_activity_ms,
             "last_rebuild_ms": self.last_rebuild_ms,
             "rebuilt_since_activity": self.rebuilt_since_activity,
+            "pending_rebuild": self.pending_rebuild,
             "entries": [entry.to_dict() for entry in self.entries.values()],
         }
 
@@ -264,4 +330,5 @@ class SessionAliasTable:
             last_activity_ms=int(data.get("last_activity_ms", 0) or 0),
             last_rebuild_ms=int(data.get("last_rebuild_ms", 0) or 0),
             rebuilt_since_activity=bool(data.get("rebuilt_since_activity", False)),
+            pending_rebuild=bool(data.get("pending_rebuild", False)),
         )

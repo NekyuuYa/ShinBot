@@ -108,6 +108,7 @@ class ContextStageBuilder:
                     self._finalize_block(
                         pending_runs,
                         block_index=start_block_index + len(blocks),
+                        alias_table=alias_table,
                     )
                 )
                 pending_runs = [run]
@@ -124,6 +125,7 @@ class ContextStageBuilder:
                 self._finalize_block(
                     pending_runs,
                     block_index=start_block_index + len(blocks),
+                    alias_table=alias_table,
                 )
             )
 
@@ -184,6 +186,9 @@ class ContextStageBuilder:
                 message_id="",
                 record_id=record.get("id") if isinstance(record.get("id"), int) else None,
                 is_referenceable=False,
+                metadata={
+                    "referenced_platform_ids": _collect_referenced_platform_ids(sender_id, parts),
+                },
             )
 
         rendered_body = self._render_parts_inline(
@@ -203,6 +208,9 @@ class ContextStageBuilder:
             token_estimate=estimate_text_tokens(line),
             message_id=message_id,
             record_id=record.get("id") if isinstance(record.get("id"), int) else None,
+            metadata={
+                "referenced_platform_ids": _collect_referenced_platform_ids(sender_id, parts),
+            },
         )
 
     def _build_runs(self, rows: list[ContextRenderedRow]) -> list[ContextRenderedRun]:
@@ -233,6 +241,7 @@ class ContextStageBuilder:
         runs: list[ContextRenderedRun],
         *,
         block_index: int,
+        alias_table: SessionAliasTable,
     ) -> ContextBlockState:
         flattened_rows = [row for run in runs for row in run.rows]
         content_blocks: list[dict[str, Any]] = []
@@ -266,6 +275,7 @@ class ContextStageBuilder:
             metadata={
                 "message_count": len(flattened_rows),
                 "record_ids": [row.record_id for row in flattened_rows if row.record_id is not None],
+                "alias_entries": _build_block_alias_entries(flattened_rows, alias_table),
                 "started_at_ms": flattened_rows[0].created_at_ms if flattened_rows else 0,
                 "ended_at_ms": flattened_rows[-1].created_at_ms if flattened_rows else 0,
             },
@@ -381,6 +391,67 @@ def _run_from_rows(rows: list[ContextRenderedRow]) -> ContextRenderedRun:
         started_at_ms=rows[0].created_at_ms,
         ended_at_ms=rows[-1].created_at_ms,
     )
+
+
+def _collect_referenced_platform_ids(
+    sender_id: str,
+    parts: list[NormalizedMessagePart],
+) -> list[str]:
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+
+    normalized_sender_id = str(sender_id or "").strip()
+    if normalized_sender_id:
+        ordered_ids.append(normalized_sender_id)
+        seen.add(normalized_sender_id)
+
+    for part in parts:
+        target_id = str(part.platform_id or "").strip()
+        if not target_id or target_id in seen:
+            continue
+        ordered_ids.append(target_id)
+        seen.add(target_id)
+
+    return ordered_ids
+
+
+def _build_block_alias_entries(
+    rows: list[ContextRenderedRow],
+    alias_table: SessionAliasTable,
+) -> list[dict[str, str]]:
+    ordered_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for row in rows:
+        referenced_ids = row.metadata.get("referenced_platform_ids", [])
+        if not isinstance(referenced_ids, list):
+            continue
+        for raw_platform_id in referenced_ids:
+            platform_id = str(raw_platform_id or "").strip()
+            if not platform_id or platform_id in seen_ids:
+                continue
+            ordered_ids.append(platform_id)
+            seen_ids.add(platform_id)
+
+    entries: list[dict[str, str]] = []
+    for platform_id in ordered_ids:
+        entry = alias_table.resolve(platform_id)
+        if entry is None:
+            entries.append(
+                {
+                    "alias": platform_id,
+                    "platform_id": platform_id,
+                    "display_name": platform_id,
+                }
+            )
+            continue
+        entries.append(
+            {
+                "alias": entry.alias or entry.platform_id,
+                "platform_id": entry.platform_id,
+                "display_name": entry.display_name or entry.platform_id,
+            }
+        )
+    return entries
 
 
 def _coerce_timestamp_ms(value: Any) -> int:

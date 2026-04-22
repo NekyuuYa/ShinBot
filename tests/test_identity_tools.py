@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
+from shinbot.agent.context import ContextManager, ContextStageBuildConfig, ContextStageBuilder
+from shinbot.agent.context.alias_table import ALIAS_ACTIVE_WINDOW_MS, ALIAS_REBUILD_IDLE_MS
 from shinbot.agent.identity import (
     IdentityStore,
     register_identity_prompt_components,
@@ -19,6 +22,7 @@ from shinbot.agent.prompt_manager.schema import (
 )
 from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
 from shinbot.core.security.permission import PermissionEngine
+from shinbot.persistence import DatabaseManager, MessageLogRecord
 
 
 @pytest.mark.asyncio
@@ -116,3 +120,213 @@ def test_identity_set_nickname_tool_exports_with_attention_tools(tmp_path):
 
     names = {item["function"]["name"] for item in tools}
     assert "identity.set_nickname" in names
+
+
+@pytest.mark.asyncio
+async def test_identity_set_nickname_updates_hot_alias_entry_immediately(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    store = IdentityStore(tmp_path / "identities.json")
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path, identity_store=store)
+    session_id = "inst:group:g1"
+    now_ms = int(time.time() * 1000)
+
+    context_manager.track_message_record(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            created_at=now_ms,
+            sender_id="987654321",
+            sender_name="超长平台默认昵称",
+            raw_text="hello",
+            is_read=True,
+        ),
+        platform="qq",
+    )
+
+    before_text = context_manager.build_active_alias_constraint_text(session_id, now_ms=now_ms)
+    assert "超长平台默认昵称" in before_text
+
+    registry = ToolRegistry()
+    register_identity_tools(registry, store, context_manager)
+    manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    result = await manager.execute(
+        ToolCallRequest(
+            tool_name="identity.set_nickname",
+            arguments={
+                "user_id": "987654321",
+                "nickname": "咖啡",
+            },
+            caller="attention.workflow_runner",
+            instance_id="inst",
+            session_id=session_id,
+        )
+    )
+
+    assert result.success is True
+    assert result.output["cache_status"] == "immediate"
+    entry = context_manager.get_alias_table(session_id).resolve("987654321")
+    assert entry is not None
+    assert entry.display_name == "咖啡"
+
+    after_text = context_manager.build_active_alias_constraint_text(session_id, now_ms=now_ms + 1)
+    assert "咖啡" in after_text
+
+
+def test_identity_display_name_updates_cold_alias_entry_on_next_rebuild(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    store = IdentityStore(tmp_path / "identities.json")
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path, identity_store=store)
+    session_id = "inst:group:g1"
+    created_at = 1_000.0
+    created_at_ms = int(created_at * 1000)
+    rebuild_ms = created_at_ms + ALIAS_ACTIVE_WINDOW_MS + ALIAS_REBUILD_IDLE_MS + 1
+
+    context_manager.track_message_record(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            created_at=created_at,
+            sender_id="cold-user",
+            sender_name="旧昵称",
+            raw_text="hello",
+            is_read=True,
+        ),
+        platform="qq",
+    )
+
+    context_manager.rebuild_alias_table(session_id, now_ms=rebuild_ms, force=True)
+    before_entry = context_manager.get_alias_table(session_id).resolve("cold-user")
+    assert before_entry is not None
+    assert before_entry.display_name == "旧昵称"
+
+    store.set_nickname(
+        user_id="cold-user",
+        nickname="新昵称",
+        platform="qq",
+        locked=True,
+    )
+    changed = context_manager.sync_identity_display_name(
+        session_id,
+        user_id="cold-user",
+        now_ms=rebuild_ms,
+    )
+
+    assert changed is False
+    entry = context_manager.get_alias_table(session_id).resolve("cold-user")
+    assert entry is not None
+    assert entry.display_name == "旧昵称"
+
+    context_manager.rebuild_alias_table(session_id, now_ms=rebuild_ms, force=True)
+    after_entry = context_manager.get_alias_table(session_id).resolve("cold-user")
+    assert after_entry is not None
+    assert after_entry.display_name == "新昵称"
+
+
+def test_inactive_aliases_are_sourced_from_sealed_context_blocks(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:sealed-alias"
+
+    for index in range(12):
+        db.message_logs.insert(
+            MessageLogRecord(
+                session_id=session_id,
+                role="user",
+                raw_text=f"message-{index} " + ("x" * 24),
+                sender_id=f"user-{index}",
+                sender_name=f"User {index}",
+                created_at=1_000 + index,
+                is_read=True,
+            )
+        )
+
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
+    context_manager._context_builder = ContextStageBuilder(
+        config=ContextStageBuildConfig(min_tokens=1, max_tokens=1)
+    )
+
+    context_messages = context_manager.build_context_stage_messages(session_id, now_ms=2_000)
+    state = context_manager.get_session_state(session_id)
+    alias_table = context_manager.get_alias_table(session_id)
+
+    assert len(state.blocks) >= 2
+    assert any(block.sealed for block in state.blocks)
+    assert all("会话历史成员映射" not in str(message.get("content")) for message in context_messages)
+
+    first_low_activity_alias = alias_table.resolve("user-0")
+    second_low_activity_alias = alias_table.resolve("user-1")
+    assert first_low_activity_alias is not None
+    assert second_low_activity_alias is not None
+    assert first_low_activity_alias.alias.startswith("P")
+    assert second_low_activity_alias.alias.startswith("P")
+
+    sealed_alias_entries = state.blocks[0].metadata.get("alias_entries", [])
+    assert isinstance(sealed_alias_entries, list)
+    assert sealed_alias_entries
+
+    inactive_message = context_manager.build_inactive_alias_context_message(session_id, now_ms=2_000)
+    active_text = context_manager.build_active_alias_constraint_text(session_id, now_ms=2_000)
+
+    assert inactive_message is not None
+    inactive_text = inactive_message["content"][0]["text"]
+    assert first_low_activity_alias.alias in inactive_text
+    assert second_low_activity_alias.alias in inactive_text
+    assert first_low_activity_alias.platform_id in inactive_text
+    assert second_low_activity_alias.platform_id in inactive_text
+    assert first_low_activity_alias.alias not in active_text
+    assert second_low_activity_alias.alias not in active_text
+
+
+def test_context_manager_requests_alias_rebuild_after_eviction(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:evict"
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="first",
+            sender_id="user-1",
+            sender_name="Alpha",
+            created_at=1_000,
+            is_read=True,
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="second",
+            sender_id="user-2",
+            sender_name="Beta",
+            created_at=2_000,
+            is_read=True,
+        )
+    )
+
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
+    context_manager.build_context_stage_messages(session_id, now_ms=3_000)
+
+    alias_table = context_manager.get_alias_table(session_id)
+    assert alias_table.last_rebuild_ms == 3_000
+    assert alias_table.should_rebuild(3_001) is False
+
+    result = context_manager.apply_usage_eviction(
+        session_id,
+        {"input_tokens": 50_000, "output_tokens": 0},
+        max_context_tokens=1,
+        evict_ratio=1.0,
+        now_ms=3_100,
+    )
+
+    assert result["triggered"] is True
+    assert context_manager.get_alias_table(session_id).pending_rebuild is True
+
+    rebuilt_text = context_manager.build_active_alias_constraint_text(session_id, now_ms=3_101)
+
+    assert "当前活跃成员映射" in rebuilt_text
+    assert context_manager.get_alias_table(session_id).last_rebuild_ms == 3_101
+    assert context_manager.get_alias_table(session_id).pending_rebuild is False

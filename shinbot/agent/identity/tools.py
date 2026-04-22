@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.tools.schema import (
@@ -12,6 +13,7 @@ from shinbot.agent.tools.schema import (
 )
 
 if TYPE_CHECKING:
+    from shinbot.agent.context.manager import ContextManager
     from shinbot.agent.identity.store import IdentityStore
     from shinbot.agent.tools.registry import ToolRegistry
 
@@ -19,7 +21,11 @@ _OWNER_TYPE = ToolOwnerType.BUILTIN_MODULE
 _OWNER_ID = "shinbot.agent.identity"
 
 
-def register_identity_tools(registry: ToolRegistry, identity_store: IdentityStore) -> None:
+def register_identity_tools(
+    registry: ToolRegistry,
+    identity_store: IdentityStore,
+    context_manager: ContextManager | None = None,
+) -> None:
     """Register identity maintenance tools into the tool registry."""
 
     def _set_nickname(arguments: dict[str, Any], ctx: ToolExecutionContext) -> Any:
@@ -47,13 +53,27 @@ def register_identity_tools(registry: ToolRegistry, identity_store: IdentityStor
         if identity is None:
             return {"error": "nickname could not be saved"}
 
+        cache_status = "deferred"
+        if context_manager is not None and ctx.session_id:
+            synced = context_manager.sync_identity_display_name(
+                ctx.session_id,
+                user_id=identity["user_id"],
+                now_ms=int(time.time() * 1000),
+            )
+            cache_status = "immediate" if synced else "deferred"
+
         return {
             "action": "identity.set_nickname",
             "user_id": identity["user_id"],
             "nickname": identity["name"],
             "aliases": identity["aname"],
             "locked": identity["locked"],
-            "hint": "称呼已保存并锁定，后续身份参考将优先使用这个称呼。",
+            "cache_status": cache_status,
+            "hint": (
+                "称呼已保存并锁定；当前活跃别名映射已刷新。"
+                if cache_status == "immediate"
+                else "称呼已保存并锁定；较冷的别名映射会在下次重建时更新。"
+            ),
         }
 
     registry.register_tool(

@@ -427,14 +427,15 @@ class PromptRegistry:
         if not self_platform_id:
             self_platform_id = str(context_inputs.get("self_user_id", "") or "").strip()
         now_ms = _resolve_now_ms(request.metadata.get("now_ms"))
-
-        inactive_alias_message = self._context_manager.build_inactive_alias_context_message(
-            request.session_id,
-            now_ms=now_ms,
-        )
+        unread_records = context_inputs.get("unread_records")
         context_messages = self._context_manager.build_context_stage_messages(
             request.session_id,
             self_platform_id=self_platform_id,
+            now_ms=now_ms,
+        )
+        inactive_alias_message = self._context_manager.build_inactive_alias_context_message(
+            request.session_id,
+            unread_records=unread_records if isinstance(unread_records, list) else None,
             now_ms=now_ms,
         )
         if inactive_alias_message is not None:
@@ -458,8 +459,6 @@ class PromptRegistry:
             )
             records_by_stage[PromptStage.CONTEXT].append(context_record)
             ordered_records.append(context_record)
-
-        unread_records = context_inputs.get("unread_records")
         if isinstance(unread_records, list) and unread_records:
             content_blocks = self._context_manager.build_instruction_stage_content(
                 request.session_id,
@@ -494,6 +493,7 @@ class PromptRegistry:
 
         active_alias_text = self._context_manager.build_active_alias_constraint_text(
             request.session_id,
+            unread_records=unread_records if isinstance(unread_records, list) else None,
             now_ms=now_ms,
         )
         if active_alias_text:
