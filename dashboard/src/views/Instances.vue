@@ -182,11 +182,29 @@
             </v-col>
             <v-col cols="12" md="6">
               <v-text-field
+                v-model="form.botConfig.mediaInspectionPrompt"
+                :label="$t('pages.instances.form.mediaInspectionPrompt')"
+                placeholder="builtin.prompt.media_inspection"
+                append-inner-icon="mdi-text-box-search-outline"
+                @click:append-inner="showMediaInspectionPromptPicker = true"
+              />
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-text-field
                 v-model="form.botConfig.stickerSummaryLlm"
                 :label="$t('pages.instances.form.stickerSummaryLlm')"
                 placeholder="openai-main/gpt-4o-mini"
                 append-inner-icon="mdi-database-search-outline"
                 @click:append-inner="showStickerSummaryLlmPicker = true"
+              />
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-text-field
+                v-model="form.botConfig.stickerSummaryPrompt"
+                :label="$t('pages.instances.form.stickerSummaryPrompt')"
+                placeholder="builtin.prompt.sticker_summary"
+                append-inner-icon="mdi-text-box-search-outline"
+                @click:append-inner="showStickerSummaryPromptPicker = true"
               />
             </v-col>
             <v-col cols="12" md="6">
@@ -272,6 +290,15 @@
       @update:selected="(vals) => { form.botConfig.mediaInspectionLlm = vals[0] ?? '' }"
     />
     <generic-picker-dialog
+      v-model="showMediaInspectionPromptPicker"
+      :title="$t('pages.instances.form.mediaInspectionPrompt')"
+      :sections="summaryPromptPickerSections"
+      :selected="form.botConfig.mediaInspectionPrompt ? [form.botConfig.mediaInspectionPrompt] : []"
+      :empty-text="$t('pages.instances.form.summaryPromptPickerEmpty')"
+      :no-results-text="$t('pages.instances.form.summaryPromptPickerNoMatches')"
+      @update:selected="(vals) => { form.botConfig.mediaInspectionPrompt = vals[0] ?? '' }"
+    />
+    <generic-picker-dialog
       v-model="showStickerSummaryLlmPicker"
       :title="$t('pages.instances.form.stickerSummaryLlm')"
       :sections="mainLlmPickerSections"
@@ -279,6 +306,15 @@
       :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
       :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.stickerSummaryLlm = vals[0] ?? '' }"
+    />
+    <generic-picker-dialog
+      v-model="showStickerSummaryPromptPicker"
+      :title="$t('pages.instances.form.stickerSummaryPrompt')"
+      :sections="summaryPromptPickerSections"
+      :selected="form.botConfig.stickerSummaryPrompt ? [form.botConfig.stickerSummaryPrompt] : []"
+      :empty-text="$t('pages.instances.form.summaryPromptPickerEmpty')"
+      :no-results-text="$t('pages.instances.form.summaryPromptPickerNoMatches')"
+      @update:selected="(vals) => { form.botConfig.stickerSummaryPrompt = vals[0] ?? '' }"
     />
     <generic-picker-dialog
       v-model="showContextCompressionLlmPicker"
@@ -302,6 +338,7 @@ import {
   type CreateBotConfigRequest,
   type UpdateBotConfigRequest,
 } from '@/api/botConfigs'
+import { promptsApi, type PromptCatalogItem } from '@/api/prompts'
 import { useInstancesStore } from '@/stores/instances'
 import { usePluginsStore } from '@/stores/plugins'
 import { useModelRuntimeStore } from '@/stores/modelRuntime'
@@ -332,10 +369,13 @@ const dialogTitleKey = ref('pages.instances.dialog.createTitle')
 const editingId = ref('')
 const agents = ref<AgentSummary[]>([])
 const botConfigs = ref<BotConfig[]>([])
+const promptCatalog = ref<PromptCatalogItem[]>([])
 const botConfigEntries = ref<Array<{ key: string; value: string }>>([])
 const showMainLlmPicker = ref(false)
 const showMediaInspectionLlmPicker = ref(false)
+const showMediaInspectionPromptPicker = ref(false)
 const showStickerSummaryLlmPicker = ref(false)
+const showStickerSummaryPromptPicker = ref(false)
 const showContextCompressionLlmPicker = ref(false)
 
 const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
@@ -427,6 +467,56 @@ const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
   return result
 })
 
+const summaryPromptPickerSections = computed<GenericPickerSection[]>(() => {
+  const eligible = [...promptCatalog.value]
+    .filter(
+      (item) =>
+        item.enabled &&
+        (item.stage === 'system_base' || item.stage === 'identity' || item.type === 'bundle'),
+    )
+    .sort((a, b) => a.displayName.localeCompare(b.displayName))
+
+  const builtinItems = eligible
+    .filter((item) => item.sourceType === 'builtin_system')
+    .map((item) => ({
+      value: item.id,
+      title: item.displayName || item.id,
+      subtitle: item.description || item.id,
+      icon: 'mdi-shield-star-outline',
+      iconColor: 'primary',
+      tag: t('pages.instances.form.promptBuiltinTag'),
+      tagColor: 'primary',
+    }))
+  const customItems = eligible
+    .filter((item) => item.sourceType !== 'builtin_system')
+    .map((item) => ({
+      value: item.id,
+      title: item.displayName || item.id,
+      subtitle: item.description || item.id,
+      icon: 'mdi-text-box-outline',
+      iconColor: 'secondary',
+      tag: item.stage,
+      tagColor: 'info',
+    }))
+
+  const sections: GenericPickerSection[] = []
+  if (builtinItems.length > 0) {
+    sections.push({
+      id: 'builtin-prompts',
+      label: t('pages.instances.form.builtinSummaryPrompts'),
+      items: builtinItems,
+    })
+  }
+  if (customItems.length > 0) {
+    sections.push({
+      id: 'custom-prompts',
+      label: t('pages.instances.form.customSummaryPrompts'),
+      items: customItems,
+    })
+  }
+  return sections
+})
+
 const form = ref({
   name: '',
   adapterType: '',
@@ -436,7 +526,9 @@ const form = ref({
     defaultAgentUuid: '',
     mainLlm: '',
     mediaInspectionLlm: '',
+    mediaInspectionPrompt: '',
     stickerSummaryLlm: '',
+    stickerSummaryPrompt: '',
     contextCompressionLlm: '',
     maxContextTokens: '',
     contextEvictRatio: '',
@@ -507,6 +599,7 @@ onMounted(() => {
     pluginsStore.fetchPlugins(),
     fetchAgents(),
     fetchBotConfigs(),
+    fetchPrompts(),
     modelRuntimeStore.routes.length === 0 ? modelRuntimeStore.fetchAll() : Promise.resolve(),
   ])
 })
@@ -536,7 +629,7 @@ watch(
 )
 
 const handleRefresh = async () => {
-  await Promise.all([instancesStore.fetchInstances(), fetchAgents(), fetchBotConfigs()])
+  await Promise.all([instancesStore.fetchInstances(), fetchAgents(), fetchBotConfigs(), fetchPrompts()])
 }
 
 const showCreateDialog = () => {
@@ -552,7 +645,9 @@ const showCreateDialog = () => {
       defaultAgentUuid: '',
       mainLlm: '',
       mediaInspectionLlm: '',
+      mediaInspectionPrompt: '',
       stickerSummaryLlm: '',
+      stickerSummaryPrompt: '',
       contextCompressionLlm: '',
       maxContextTokens: '',
       contextEvictRatio: '',
@@ -578,7 +673,11 @@ const editInstance = (instance: Instance) => {
       defaultAgentUuid: currentBotConfig?.defaultAgentUuid ?? instance.botConfig?.defaultAgentUuid ?? '',
       mainLlm: currentBotConfig?.mainLlm ?? instance.botConfig?.mainLlm ?? '',
       mediaInspectionLlm: currentBotConfig?.mediaInspectionLlm ?? instance.botConfig?.mediaInspectionLlm ?? '',
+      mediaInspectionPrompt:
+        currentBotConfig?.mediaInspectionPrompt ?? instance.botConfig?.mediaInspectionPrompt ?? '',
       stickerSummaryLlm: currentBotConfig?.stickerSummaryLlm ?? instance.botConfig?.stickerSummaryLlm ?? '',
+      stickerSummaryPrompt:
+        currentBotConfig?.stickerSummaryPrompt ?? instance.botConfig?.stickerSummaryPrompt ?? '',
       contextCompressionLlm:
         currentBotConfig?.contextCompressionLlm ?? instance.botConfig?.contextCompressionLlm ?? '',
       maxContextTokens: formatOptionalNumber(
@@ -664,13 +763,26 @@ const fetchBotConfigs = async () => {
   }
 }
 
+const fetchPrompts = async () => {
+  try {
+    const response = await promptsApi.list()
+    if (response.data.success && response.data.data) {
+      promptCatalog.value = response.data.data
+    }
+  } catch (error) {
+    uiStore.showSnackbar(getErrorMessage(error, t('pages.instances.promptsLoadFailed')), 'error')
+  }
+}
+
 const saveBotConfig = async (instanceId: string) => {
   let payloadBase: {
     instanceId: string
     defaultAgentUuid: string
     mainLlm: string
     mediaInspectionLlm: string | null
+    mediaInspectionPrompt: string | null
     stickerSummaryLlm: string | null
+    stickerSummaryPrompt: string | null
     contextCompressionLlm: string | null
     maxContextTokens: number | null
     contextEvictRatio: number | null
@@ -684,7 +796,9 @@ const saveBotConfig = async (instanceId: string) => {
       defaultAgentUuid: form.value.botConfig.defaultAgentUuid,
       mainLlm: form.value.botConfig.mainLlm.trim(),
       mediaInspectionLlm: normalizeNullableString(form.value.botConfig.mediaInspectionLlm),
+      mediaInspectionPrompt: normalizeNullableString(form.value.botConfig.mediaInspectionPrompt),
       stickerSummaryLlm: normalizeNullableString(form.value.botConfig.stickerSummaryLlm),
+      stickerSummaryPrompt: normalizeNullableString(form.value.botConfig.stickerSummaryPrompt),
       contextCompressionLlm: normalizeNullableString(form.value.botConfig.contextCompressionLlm),
       maxContextTokens: parseOptionalInteger(
         form.value.botConfig.maxContextTokens,
@@ -709,7 +823,9 @@ const saveBotConfig = async (instanceId: string) => {
     Boolean(payloadBase.defaultAgentUuid) ||
     Boolean(payloadBase.mainLlm) ||
     Boolean(payloadBase.mediaInspectionLlm) ||
+    Boolean(payloadBase.mediaInspectionPrompt) ||
     Boolean(payloadBase.stickerSummaryLlm) ||
+    Boolean(payloadBase.stickerSummaryPrompt) ||
     Boolean(payloadBase.contextCompressionLlm) ||
     payloadBase.maxContextTokens !== null ||
     payloadBase.contextEvictRatio !== null ||

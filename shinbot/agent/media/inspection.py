@@ -95,10 +95,10 @@ class MediaInspectionRunner:
         occurrence = self._database.session_media_occurrences.get(session_id, raw_hash)
         resolved = self._media_service.resolve_inspection_config(instance_id)
         selected_agent_ref = resolved.sticker_agent_ref if prefer_sticker_model else resolved.agent_ref
-        selected_llm_ref = resolved.sticker_llm_ref if prefer_sticker_model else resolved.llm_ref
-        uses_builtin_agent = (
-            resolved.uses_builtin_sticker_agent if prefer_sticker_model else resolved.uses_builtin_agent
+        selected_prompt_ref = (
+            resolved.sticker_prompt_ref if prefer_sticker_model else resolved.prompt_ref
         )
+        selected_llm_ref = resolved.sticker_llm_ref if prefer_sticker_model else resolved.llm_ref
         route_id, model_id, model_context_window, resolved_llm_ref = self._resolve_model_target(
             instance_id=instance_id,
             llm_ref=selected_llm_ref,
@@ -114,9 +114,8 @@ class MediaInspectionRunner:
         try:
             if prefer_sticker_model:
                 messages = build_sticker_summary_messages(
-                    resolved_agent_ref=selected_agent_ref,
+                    resolved_prompt_ref=selected_prompt_ref,
                     resolved_llm_ref=resolved_llm_ref,
-                    uses_builtin_agent=uses_builtin_agent,
                     prompt_registry=self._prompt_registry,
                     database=self._database,
                     instance_id=instance_id,
@@ -125,15 +124,11 @@ class MediaInspectionRunner:
                     asset=asset,
                     occurrence=occurrence,
                     model_context_window=model_context_window,
-                    resolve_agent=self._resolve_agent,
-                    resolve_model_target=self._resolve_model_target,
-                    build_component_ids=self._build_component_ids,
                 )
             else:
                 messages = build_media_inspection_messages(
-                    resolved_agent_ref=selected_agent_ref,
+                    resolved_prompt_ref=selected_prompt_ref,
                     resolved_llm_ref=resolved_llm_ref,
-                    uses_builtin_agent=uses_builtin_agent,
                     prompt_registry=self._prompt_registry,
                     database=self._database,
                     instance_id=instance_id,
@@ -142,9 +137,6 @@ class MediaInspectionRunner:
                     asset=asset,
                     occurrence=occurrence,
                     model_context_window=model_context_window,
-                    resolve_agent=self._resolve_agent,
-                    resolve_model_target=self._resolve_model_target,
-                    build_component_ids=self._build_component_ids,
                 )
         except FileNotFoundError:
             logger.warning("Media inspection skipped: cached file missing for %s", raw_hash)
@@ -167,6 +159,7 @@ class MediaInspectionRunner:
                     metadata={
                         "raw_hash": raw_hash,
                         "inspection_agent_ref": selected_agent_ref,
+                        "inspection_prompt_ref": selected_prompt_ref,
                         "inspection_llm_ref": resolved_llm_ref,
                         "summary_mode": "sticker" if prefer_sticker_model else "image",
                     },
@@ -191,6 +184,7 @@ class MediaInspectionRunner:
             inspection_agent_ref=selected_agent_ref,
             inspection_llm_ref=resolved_llm_ref,
             metadata={
+                "inspection_prompt_ref": selected_prompt_ref,
                 "confidence_band": str(payload.get("confidence_band") or ""),
                 "reason": str(payload.get("reason") or ""),
                 "session_id": session_id,
@@ -233,20 +227,12 @@ class MediaInspectionRunner:
 
         try:
             messages = build_media_reanalysis_messages(
-                resolved_agent_ref=resolved.agent_ref,
-                resolved_llm_ref=resolved_llm_ref,
-                uses_builtin_agent=resolved.uses_builtin_agent,
-                prompt_registry=self._prompt_registry,
-                database=self._database,
                 instance_id=instance_id,
                 session_id=session_id,
                 raw_hash=raw_hash,
                 asset=asset,
                 question=question,
                 model_context_window=model_context_window,
-                resolve_agent=self._resolve_agent,
-                resolve_model_target=self._resolve_model_target,
-                build_component_ids=self._build_component_ids,
             )
         except FileNotFoundError:
             logger.warning("Media reanalysis skipped: cached file missing for %s", raw_hash)

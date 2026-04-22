@@ -6,7 +6,9 @@ export interface BotConfig {
   defaultAgentUuid: string
   mainLlm: string
   mediaInspectionLlm: string
+  mediaInspectionPrompt: string
   stickerSummaryLlm: string
+  stickerSummaryPrompt: string
   contextCompressionLlm: string
   maxContextTokens: number | null
   contextEvictRatio: number | null
@@ -22,7 +24,9 @@ export interface BotConfigSummary {
   defaultAgentUuid: string
   mainLlm: string
   mediaInspectionLlm: string
+  mediaInspectionPrompt: string
   stickerSummaryLlm: string
+  stickerSummaryPrompt: string
   contextCompressionLlm: string
   maxContextTokens: number | null
   contextEvictRatio: number | null
@@ -35,7 +39,9 @@ export interface CreateBotConfigRequest {
   defaultAgentUuid?: string
   mainLlm?: string
   mediaInspectionLlm?: string | null
+  mediaInspectionPrompt?: string | null
   stickerSummaryLlm?: string | null
+  stickerSummaryPrompt?: string | null
   contextCompressionLlm?: string | null
   maxContextTokens?: number | null
   contextEvictRatio?: number | null
@@ -49,7 +55,9 @@ export interface UpdateBotConfigRequest {
   defaultAgentUuid?: string
   mainLlm?: string
   mediaInspectionLlm?: string | null
+  mediaInspectionPrompt?: string | null
   stickerSummaryLlm?: string | null
+  stickerSummaryPrompt?: string | null
   contextCompressionLlm?: string | null
   maxContextTokens?: number | null
   contextEvictRatio?: number | null

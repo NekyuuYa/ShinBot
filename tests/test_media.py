@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
@@ -17,10 +16,13 @@ from shinbot.agent.media import (
     register_media_tools,
     resolve_media_inspection_config,
 )
+from shinbot.agent.media.config import BUILTIN_MEDIA_INSPECTION_PROMPT_ID
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
-from shinbot.agent.workflow import WorkflowRunner
-from shinbot.agent.workflow.formatting import format_batch_context, format_incremental_messages
+from shinbot.agent.workflow.formatting import (
+    format_incremental_messages,
+    format_message_line,
+)
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
@@ -28,7 +30,6 @@ from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, M
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
-    AgentRecord,
     BotConfigRecord,
     DatabaseManager,
     MediaSemanticRecord,
@@ -37,7 +38,6 @@ from shinbot.persistence import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
-    PersonaRecord,
     PromptDefinitionRecord,
 )
 from shinbot.persistence.records import utc_now_iso
@@ -95,15 +95,15 @@ def _seed_media_runtime(
     *,
     instance_id: str,
     llm_ref: str = "route.media.inspect",
-    media_agent_ref: str | None = None,
+    media_prompt_ref: str | None = None,
 ) -> None:
     now = utc_now_iso()
     provider_id = "openai-media"
     model_id = "openai-media/gpt-vision"
     route_id = "route.media.inspect"
     config: dict[str, str] = {"media_inspection_llm": llm_ref}
-    if media_agent_ref is not None:
-        config["media_inspection_agent"] = media_agent_ref
+    if media_prompt_ref is not None:
+        config["media_inspection_prompt"] = media_prompt_ref
 
     db.model_registry.upsert_provider(
         ModelProviderRecord(
@@ -147,42 +147,21 @@ def _seed_media_runtime(
     )
 
 
-def _seed_custom_media_agent(db: DatabaseManager, *, agent_ref: str) -> None:
+def _seed_custom_media_prompt(db: DatabaseManager, *, prompt_ref: str) -> None:
     now = utc_now_iso()
     prompt_uuid = "prompt-media-custom"
-    persona_uuid = "persona-media-custom"
-    agent_uuid = "agent-media-custom-uuid"
     db.prompt_definitions.upsert(
         PromptDefinitionRecord(
             uuid=prompt_uuid,
-            prompt_id="prompt.media.custom",
+            prompt_id=prompt_ref,
             name="Custom Media Inspector",
-            source_type="agent_plugin",
-            source_id=agent_uuid,
-            stage="identity",
+            source_type="user_defined",
+            source_id="tests",
+            stage="system_base",
             type="static_text",
             priority=100,
             enabled=True,
             content="You are a custom media inspector.",
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    db.personas.upsert(
-        PersonaRecord(
-            uuid=persona_uuid,
-            name="Media Persona",
-            prompt_definition_uuid=prompt_uuid,
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    db.agents.upsert(
-        AgentRecord(
-            uuid=agent_uuid,
-            agent_id=agent_ref,
-            name="Media Agent",
-            persona_uuid=persona_uuid,
             created_at=now,
             updated_at=now,
         )
@@ -254,6 +233,8 @@ def test_media_inspection_config_uses_builtin_fallback():
     assert resolved.llm_ref == BUILTIN_MEDIA_INSPECTION_LLM_REF
     assert resolved.uses_builtin_agent is True
     assert resolved.uses_builtin_llm is True
+    assert resolved.prompt_ref == BUILTIN_MEDIA_INSPECTION_PROMPT_ID
+    assert resolved.uses_builtin_prompt is True
     assert "digest no longer than 50" in resolved.builtin_prompt
 
 
@@ -261,16 +242,19 @@ def test_media_inspection_config_prefers_user_overrides():
     resolved = resolve_media_inspection_config(
         {
             "config": {
-                "media_inspection_agent": "agent.custom.media",
+                "media_inspection_prompt": "prompt.media.custom",
                 "media_inspection_llm": "route.media.fast",
             }
         }
     )
 
-    assert resolved.agent_ref == "agent.custom.media"
+    assert resolved.agent_ref == BUILTIN_MEDIA_INSPECTION_AGENT_REF
     assert resolved.llm_ref == "route.media.fast"
-    assert resolved.uses_builtin_agent is False
+    assert resolved.prompt_ref == "prompt.media.custom"
+    assert resolved.sticker_prompt_ref == "prompt.media.custom"
+    assert resolved.uses_builtin_agent is True
     assert resolved.uses_builtin_llm is False
+    assert resolved.uses_builtin_prompt is False
 
 
 def test_media_service_tracks_repeat_threshold_and_sliding_ttl(tmp_path):
@@ -432,6 +416,7 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
     assert result["verified_by_model"] is True
     assert result["inspection_agent_ref"] == BUILTIN_MEDIA_INSPECTION_AGENT_REF
     assert result["inspection_llm_ref"] == "route.media.inspect"
+    assert result["metadata"]["inspection_prompt_ref"] == BUILTIN_MEDIA_INSPECTION_PROMPT_ID
     assert result["digest"] == "熊猫头无语，像在吐槽对方"
     assert len(runtime.calls) == 1
     call = runtime.calls[0]
@@ -446,14 +431,14 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_media_inspection_runner_supports_custom_agent_id(tmp_path):
+async def test_media_inspection_runner_supports_custom_prompt_id(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
-    _seed_custom_media_agent(db, agent_ref="agent.media.custom")
+    _seed_custom_media_prompt(db, prompt_ref="prompt.media.custom")
     _seed_media_runtime(
         db,
         instance_id="inst-media-custom",
-        media_agent_ref="agent.media.custom",
+        media_prompt_ref="prompt.media.custom",
     )
     media_service = MediaService(db)
 
@@ -486,6 +471,7 @@ async def test_media_inspection_runner_supports_custom_agent_id(tmp_path):
     )
 
     assert len(runtime.calls) == 1
+    assert runtime.calls[0].metadata["inspection_prompt_ref"] == "prompt.media.custom"
     rendered_text = json.dumps(runtime.calls[0].messages, ensure_ascii=False)
     assert "You are a custom media inspector." in rendered_text
 
@@ -672,25 +658,10 @@ def test_workflow_runner_formats_media_digest_in_batch_context(tmp_path):
             ),
         }
     ]
-    runner = WorkflowRunner(
-        db,
-        PromptRegistry(),
-        FakeModelRuntime("{}"),
-        ToolManager(ToolRegistry(), permission_engine=PermissionEngine()),
-        AttentionEngine(AttentionConfig(), db.attention),
-        AdapterManager(),
-        media_service,
-    )
-
-    text = format_batch_context(
-        batch,
-        session_id="inst-workflow:group:1",
-        attention_repo=runner._engine.repo,
-        media_service=media_service,
-    )
+    text = format_message_line(batch[0], media_service, include_message_reference=True)
 
     assert "[表情: 熊猫头无语]" in text
-    assert "media.inspect_original" in text
+    assert "[媒体引用:" in text
     assert "message_log_id=1" in text
     assert "platform_msg_id=wf-msg-0" in text
 
