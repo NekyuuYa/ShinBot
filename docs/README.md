@@ -11,6 +11,7 @@
 - `internals/`
   - 关键实现机制说明。
   - 回答“当前代码是怎么做的”。
+  - `internals/parameters/` 记录当前仍然重要、但暂不直接暴露给用户修改的内部参数与阈值。
 - `plugins/`
   - 面向插件开发者的能力说明。
 - `architecture/`
