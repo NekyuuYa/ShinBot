@@ -98,7 +98,7 @@ def create_api_app(
 
     app = FastAPI(
         title="ShinBot Management API",
-        version="0.1.1",
+        version="1.0.0",
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
