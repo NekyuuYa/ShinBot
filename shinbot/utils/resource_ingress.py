@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import mimetypes
 from pathlib import Path
@@ -11,6 +10,10 @@ from typing import Any
 import httpx
 
 from shinbot.schema.elements import MessageElement
+
+DEFAULT_MAX_RESOURCE_BYTES = 15 * 1024 * 1024
+MEDIA_RESOURCE_TYPES = frozenset({"img", "video"})
+FILE_RESOURCE_TYPES = frozenset({"file"})
 
 
 def _hash_resource_url(url: str) -> str:
@@ -33,39 +36,69 @@ async def download_resource_elements(
     cache_dir: Path,
     *,
     timeout: float = 5.0,
+    download_media: bool = True,
+    download_files: bool = False,
+    max_bytes: int = DEFAULT_MAX_RESOURCE_BYTES,
 ) -> list[MessageElement]:
-    """Download remote media elements to a local cache directory.
+    """Download remote resource elements to a local cache directory.
 
-    Only img/video/file/audio elements with HTTP(S) src values are rewritten.
-    Other elements are preserved as-is.
+    Images/videos and files are controlled independently. Other elements are
+    preserved as-is.
     """
+    max_bytes = _normalize_max_bytes(max_bytes)
     cache_dir.mkdir(parents=True, exist_ok=True)
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout, pool=timeout),
         follow_redirects=True,
     ) as client:
-        return await _download_elements(elements, cache_dir, client, timeout)
+        return await _download_elements(
+            elements,
+            cache_dir,
+            client,
+            download_media=download_media,
+            download_files=download_files,
+            max_bytes=max_bytes,
+        )
 
 
 async def _download_elements(
     elements: list[MessageElement],
     cache_dir: Path,
     client: httpx.AsyncClient,
-    timeout: float,
+    download_media: bool,
+    download_files: bool,
+    max_bytes: int,
 ) -> list[MessageElement]:
     result: list[MessageElement] = []
     for element in elements:
         updated = element
-        if element.type in {"img", "video", "file", "audio"}:
+        should_download = (
+            download_media and element.type in MEDIA_RESOURCE_TYPES
+        ) or (
+            download_files and element.type in FILE_RESOURCE_TYPES
+        )
+        if should_download:
             src = str(element.attrs.get("src", ""))
             if src.startswith(("http://", "https://")):
-                local_src = await _download_single_resource(src, cache_dir, client, timeout)
+                local_src = await _download_single_resource(
+                    src,
+                    cache_dir,
+                    client,
+                    max_bytes=max_bytes,
+                )
                 if local_src:
                     attrs = dict(element.attrs)
                     attrs["src"] = local_src
                     updated = element.model_copy(update={"attrs": attrs})
         if element.children:
-            children = await _download_elements(element.children, cache_dir, client, timeout)
+            children = await _download_elements(
+                element.children,
+                cache_dir,
+                client,
+                download_media=download_media,
+                download_files=download_files,
+                max_bytes=max_bytes,
+            )
             updated = updated.model_copy(update={"children": children})
         result.append(updated)
     return result
@@ -75,18 +108,39 @@ async def _download_single_resource(
     url: str,
     cache_dir: Path,
     client: httpx.AsyncClient,
-    timeout: float,
+    max_bytes: int,
 ) -> str | None:
     resource_hash = _hash_resource_url(url)
     try:
-        response = await asyncio.wait_for(client.get(url), timeout=timeout)
-        response.raise_for_status()
-        suffix = _guess_suffix(url, response.headers.get("content-type"))
+        async with client.stream("GET", url) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if _exceeds_max_bytes(content_length, max_bytes):
+                return None
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                content.extend(chunk)
+                if max_bytes > 0 and len(content) > max_bytes:
+                    return None
+            suffix = _guess_suffix(url, response.headers.get("content-type"))
         file_path = cache_dir / f"{resource_hash}{suffix}"
-        file_path.write_bytes(response.content)
+        file_path.write_bytes(bytes(content))
         return str(file_path.resolve())
     except (httpx.TimeoutException, httpx.HTTPError, OSError):
         return None
+
+
+def _exceeds_max_bytes(content_length: str | None, max_bytes: int) -> bool:
+    if not content_length:
+        return False
+    try:
+        return int(content_length) > max_bytes
+    except ValueError:
+        return False
+
+
+def _normalize_max_bytes(max_bytes: int) -> int:
+    return max_bytes if max_bytes > 0 else DEFAULT_MAX_RESOURCE_BYTES
 
 
 def summarize_message_modalities(elements: list[MessageElement]) -> dict[str, Any]:

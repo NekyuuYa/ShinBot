@@ -32,7 +32,7 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.logger import get_logger
-from shinbot.utils.resource_ingress import download_resource_elements
+from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES, download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
 logger = get_logger(__name__)
@@ -57,7 +57,9 @@ class SatoriConfig:
     path: str = "/v1/events"  # WebSocket endpoint path
     reconnect_delay: float = 5.0  # Seconds between reconnection attempts
     max_reconnects: int = -1  # -1 = infinite retries
-    download_resources: bool = False
+    auto_download_media: bool = True
+    download_file_resources: bool = False
+    max_resource_bytes: int = DEFAULT_MAX_RESOURCE_BYTES
     resource_cache_dir: str = "data/temp/resources"
     silent_reconnect: bool = True
     reconnect_log_interval: float = 30.0
@@ -359,12 +361,18 @@ class SatoriAdapter(BaseAdapter):
             logger.warning("Satori %s: failed to parse event body: %s", self.instance_id, e)
             return
 
-        if self.config.download_resources and event.message is not None and event.message.content:
+        should_download_resources = (
+            self.config.auto_download_media or self.config.download_file_resources
+        )
+        if should_download_resources and event.message is not None and event.message.content:
             try:
                 message = Message.from_xml(event.message.content)
                 elements = await download_resource_elements(
                     message.elements,
                     self._resource_cache_dir,
+                    download_media=self.config.auto_download_media,
+                    download_files=self.config.download_file_resources,
+                    max_bytes=self.config.max_resource_bytes,
                 )
                 event.message = event.message.model_copy(
                     update={"content": elements_to_xml(elements)}

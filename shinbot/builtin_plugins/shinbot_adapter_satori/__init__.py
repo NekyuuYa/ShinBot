@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from shinbot.core.plugins.context import Plugin
+from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES
 
 
 class SatoriPluginConfig(BaseModel):
@@ -22,8 +23,16 @@ class SatoriPluginConfig(BaseModel):
     max_reconnects: int = Field(
         default=-1, description="Maximum reconnect attempts, -1 for infinite"
     )
-    download_resources: bool = Field(
-        default=False, description="Download media resources to local temp cache"
+    auto_download_media: bool = Field(
+        default=True, description="Cache image and video resources to local temp cache"
+    )
+    download_file_resources: bool = Field(
+        default=False, description="Download file attachments to local temp cache"
+    )
+    max_resource_bytes: int = Field(
+        default=DEFAULT_MAX_RESOURCE_BYTES,
+        gt=0,
+        description="Maximum bytes allowed for one cached resource",
     )
     resource_cache_dir: str = Field(
         default="data/temp/resources", description="Local cache directory for downloaded resources"
@@ -51,7 +60,10 @@ def setup(plg: Plugin) -> None:
         path: str = "/v1/events",
         reconnect_delay: float = 5.0,
         max_reconnects: int = -1,
-        download_resources: bool = False,
+        auto_download_media: bool | None = None,
+        download_file_resources: bool = False,
+        max_resource_bytes: int = DEFAULT_MAX_RESOURCE_BYTES,
+        download_resources: bool | None = None,
         resource_cache_dir: str = "data/temp/resources",
         silent_reconnect: bool = True,
         reconnect_log_interval: float = 30.0,
@@ -62,13 +74,20 @@ def setup(plg: Plugin) -> None:
         This factory is what boot.py (and the instances API) call with
         raw config dict kwargs, so neither has to import SatoriConfig.
         """
+        resolved_auto_download_media = (
+            auto_download_media
+            if auto_download_media is not None
+            else (download_resources if download_resources is not None else True)
+        )
         cfg = SatoriConfig(
             host=host,
             token=token,
             path=path,
             reconnect_delay=reconnect_delay,
             max_reconnects=max_reconnects,
-            download_resources=download_resources,
+            auto_download_media=resolved_auto_download_media,
+            download_file_resources=download_file_resources,
+            max_resource_bytes=max_resource_bytes,
             resource_cache_dir=resource_cache_dir,
             silent_reconnect=silent_reconnect,
             reconnect_log_interval=reconnect_log_interval,

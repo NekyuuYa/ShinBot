@@ -25,8 +25,12 @@
   "config.fields.request_timeout.description": "HTTP request timeout in seconds",
   "config.fields.heartbeat_jitter.label": "Heartbeat Jitter",
   "config.fields.heartbeat_jitter.description": "Randomized ratio applied before first heartbeat",
-  "config.fields.download_resources.label": "Download Resources",
-  "config.fields.download_resources.description": "Download media resources into local temp cache",
+  "config.fields.auto_download_media.label": "Cache Images/Videos",
+  "config.fields.auto_download_media.description": "Cache image and video resources before entering the pipeline",
+  "config.fields.download_file_resources.label": "Download Files",
+  "config.fields.download_file_resources.description": "Download file attachments before entering the pipeline; disabled by default",
+  "config.fields.max_resource_bytes.label": "Per-Resource Size Limit",
+  "config.fields.max_resource_bytes.description": "Maximum bytes allowed for one cached resource; defaults to 15MB",
   "config.fields.resource_cache_dir.label": "Resource Cache Directory",
   "config.fields.resource_cache_dir.description": "Local cache directory for downloaded resources"
 }

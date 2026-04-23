@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from shinbot.core.plugins.context import Plugin
+from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES
 
 
 class OneBotV11PluginConfig(BaseModel):
@@ -67,14 +68,20 @@ class OneBotV11PluginConfig(BaseModel):
         description="Maximum nested forward-message expansion depth",
         json_schema_extra={"ui_group": "advanced"},
     )
-    download_resources: bool = Field(
-        default=False,
-        description="Download media resources to local temp cache",
+    auto_download_media: bool = Field(
+        default=True,
+        description="Cache image and video resources before entering the pipeline",
         json_schema_extra={"ui_group": "advanced"},
     )
-    auto_download_media: bool = Field(
+    download_file_resources: bool = Field(
         default=False,
-        description="Cache image, video, and file resources before entering the pipeline",
+        description="Download file attachments before entering the pipeline",
+        json_schema_extra={"ui_group": "advanced"},
+    )
+    max_resource_bytes: int = Field(
+        default=DEFAULT_MAX_RESOURCE_BYTES,
+        gt=0,
+        description="Maximum bytes allowed for one cached resource",
         json_schema_extra={"ui_group": "advanced"},
     )
     resource_cache_dir: str = Field(
@@ -118,13 +125,20 @@ def setup(plg: Plugin) -> None:
         max_reconnects: int = -1,
         request_timeout: float = 20.0,
         forward_max_depth: int = 3,
-        auto_download_media: bool = False,
-        download_resources: bool = False,
+        auto_download_media: bool | None = None,
+        download_file_resources: bool = False,
+        max_resource_bytes: int = DEFAULT_MAX_RESOURCE_BYTES,
+        download_resources: bool | None = None,
         resource_cache_dir: str = "data/temp/resources",
         silent_reconnect: bool = True,
         reconnect_log_interval: float = 30.0,
         **_: object,
     ) -> OneBotV11Adapter:
+        resolved_auto_download_media = (
+            auto_download_media
+            if auto_download_media is not None
+            else (download_resources if download_resources is not None else True)
+        )
         cfg = OneBotV11Config(
             mode=mode,
             url=url,
@@ -137,8 +151,9 @@ def setup(plg: Plugin) -> None:
             max_reconnects=max_reconnects,
             request_timeout=request_timeout,
             forward_max_depth=forward_max_depth,
-            auto_download_media=auto_download_media,
-            download_resources=download_resources,
+            auto_download_media=resolved_auto_download_media,
+            download_file_resources=download_file_resources,
+            max_resource_bytes=max_resource_bytes,
             resource_cache_dir=resource_cache_dir,
             silent_reconnect=silent_reconnect,
             reconnect_log_interval=reconnect_log_interval,

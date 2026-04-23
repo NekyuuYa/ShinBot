@@ -658,7 +658,7 @@ async def test_decode_message_downloads_image_resource(tmp_path: Path):
             instance_id="ob11-download",
             platform="onebot_v11",
             config=OneBotV11Config(
-                download_resources=True,
+                auto_download_media=True,
                 resource_cache_dir=str(tmp_path / "temp" / "resources"),
             ),
         )
@@ -687,3 +687,136 @@ async def test_decode_message_downloads_image_resource(tmp_path: Path):
     image_element = next(element for element in parsed.elements if element.type == "img")
     assert image_element.attrs["src"].startswith(str(tmp_path / "temp" / "resources"))
     assert Path(image_element.attrs["src"]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_decode_message_does_not_download_file_resource_by_default(tmp_path: Path):
+    asset_dir = tmp_path / "assets"
+    asset_dir.mkdir()
+    file_path = asset_dir / "archive.zip"
+    file_path.write_bytes(b"zip-bytes")
+
+    server = _serve_directory(asset_dir)
+    try:
+        port = server.server_address[1]
+        remote_url = f"http://127.0.0.1:{port}/archive.zip"
+        adapter = OneBotV11Adapter(
+            instance_id="ob11-file-default",
+            platform="onebot_v11",
+            config=OneBotV11Config(
+                auto_download_media=True,
+                resource_cache_dir=str(tmp_path / "temp" / "resources"),
+            ),
+        )
+
+        payload = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": 10001,
+            "time": 1711111111,
+            "message_id": 889,
+            "user_id": 123456,
+            "message": [{"type": "file", "data": {"url": remote_url}}],
+        }
+
+        event = await adapter._decode_event(payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert event is not None
+    assert event.message is not None
+    parsed = Message.from_xml(event.message.content)
+    file_element = next(element for element in parsed.elements if element.type == "file")
+    assert file_element.attrs["src"] == remote_url
+
+
+@pytest.mark.asyncio
+async def test_decode_message_downloads_file_resource_when_enabled(tmp_path: Path):
+    asset_dir = tmp_path / "assets"
+    asset_dir.mkdir()
+    file_path = asset_dir / "archive.zip"
+    file_path.write_bytes(b"zip-bytes")
+
+    server = _serve_directory(asset_dir)
+    try:
+        port = server.server_address[1]
+        adapter = OneBotV11Adapter(
+            instance_id="ob11-file-enabled",
+            platform="onebot_v11",
+            config=OneBotV11Config(
+                auto_download_media=False,
+                download_file_resources=True,
+                resource_cache_dir=str(tmp_path / "temp" / "resources"),
+            ),
+        )
+
+        payload = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": 10001,
+            "time": 1711111111,
+            "message_id": 890,
+            "user_id": 123456,
+            "message": [
+                {
+                    "type": "file",
+                    "data": {"url": f"http://127.0.0.1:{port}/archive.zip"},
+                }
+            ],
+        }
+
+        event = await adapter._decode_event(payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert event is not None
+    assert event.message is not None
+    parsed = Message.from_xml(event.message.content)
+    file_element = next(element for element in parsed.elements if element.type == "file")
+    assert file_element.attrs["src"].startswith(str(tmp_path / "temp" / "resources"))
+    assert Path(file_element.attrs["src"]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_decode_message_respects_resource_size_limit(tmp_path: Path):
+    asset_dir = tmp_path / "assets"
+    asset_dir.mkdir()
+    image_path = asset_dir / "large.png"
+    image_path.write_bytes(b"x" * 32)
+
+    server = _serve_directory(asset_dir)
+    try:
+        port = server.server_address[1]
+        remote_url = f"http://127.0.0.1:{port}/large.png"
+        adapter = OneBotV11Adapter(
+            instance_id="ob11-download-limit",
+            platform="onebot_v11",
+            config=OneBotV11Config(
+                auto_download_media=True,
+                max_resource_bytes=8,
+                resource_cache_dir=str(tmp_path / "temp" / "resources"),
+            ),
+        )
+
+        payload = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": 10001,
+            "time": 1711111111,
+            "message_id": 891,
+            "user_id": 123456,
+            "message": [{"type": "image", "data": {"url": remote_url}}],
+        }
+
+        event = await adapter._decode_event(payload)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert event is not None
+    assert event.message is not None
+    parsed = Message.from_xml(event.message.content)
+    image_element = next(element for element in parsed.elements if element.type == "img")
+    assert image_element.attrs["src"] == remote_url

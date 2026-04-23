@@ -31,7 +31,7 @@ from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
 from shinbot.utils.logger import get_logger
-from shinbot.utils.resource_ingress import download_resource_elements
+from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES, download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
 logger = get_logger(__name__)
@@ -49,8 +49,9 @@ class OneBotV11Config(BaseModel):
     max_reconnects: int = Field(default=-1)
     request_timeout: float = Field(default=20.0, gt=0.0)
     forward_max_depth: int = Field(default=3, ge=0)
-    auto_download_media: bool = Field(default=False)
-    download_resources: bool = Field(default=False)
+    auto_download_media: bool = Field(default=True)
+    download_file_resources: bool = Field(default=False)
+    max_resource_bytes: int = Field(default=DEFAULT_MAX_RESOURCE_BYTES, gt=0)
     resource_cache_dir: str = Field(default="data/temp/resources")
     silent_reconnect: bool = Field(default=True)
     reconnect_log_interval: float = Field(default=30.0, ge=1.0)
@@ -737,8 +738,14 @@ class OneBotV11Adapter(BaseAdapter):
             payload.get("message", ""),
             forward_depth=self.config.forward_max_depth,
         )
-        if self.config.download_resources or self.config.auto_download_media:
-            elements = await download_resource_elements(elements, self._resource_cache_dir)
+        if self.config.auto_download_media or self.config.download_file_resources:
+            elements = await download_resource_elements(
+                elements,
+                self._resource_cache_dir,
+                download_media=self.config.auto_download_media,
+                download_files=self.config.download_file_resources,
+                max_bytes=self.config.max_resource_bytes,
+            )
         content_xml = elements_to_xml(elements)
         member_nick: str | None = None
         group_id = str(payload.get("group_id", "")) if message_type == "group" else ""

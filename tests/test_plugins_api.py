@@ -166,20 +166,27 @@ def test_builtin_adapter_plugins_expose_adapter_platform_metadata(tmp_path: Path
     assert payload["shinbot_adapter_qqofficial"]["metadata"]["adapter_platform"] == "qqofficial"
 
 
-def test_onebot_builtin_adapter_plugin_schema_matches_runtime_fields(tmp_path: Path):
+def test_builtin_adapter_plugin_schemas_expose_resource_download_fields(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
-    metadata_path = (
-        Path(__file__).resolve().parents[1]
-        / "shinbot/builtin_plugins/shinbot_adapter_onebot_v11/metadata.json"
-    )
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    asyncio.run(
-        bot.plugin_manager.load_plugin_async(
-            "shinbot_adapter_onebot_v11",
-            "shinbot.builtin_plugins.shinbot_adapter_onebot_v11",
-            declared_metadata=metadata,
+    for plugin_id, module_path in (
+        ("shinbot_adapter_satori", "shinbot.builtin_plugins.shinbot_adapter_satori"),
+        ("shinbot_adapter_onebot_v11", "shinbot.builtin_plugins.shinbot_adapter_onebot_v11"),
+        ("shinbot_adapter_qqofficial", "shinbot.builtin_plugins.shinbot_adapter_qqofficial"),
+    ):
+        metadata_path = (
+            Path(__file__).resolve().parents[1]
+            / "shinbot/builtin_plugins"
+            / plugin_id
+            / "metadata.json"
         )
-    )
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        asyncio.run(
+            bot.plugin_manager.load_plugin_async(
+                plugin_id,
+                module_path,
+                declared_metadata=metadata,
+            )
+        )
 
     boot = _BootStub(tmp_path)
     app = create_api_app(bot, boot)
@@ -190,17 +197,27 @@ def test_onebot_builtin_adapter_plugin_schema_matches_runtime_fields(tmp_path: P
         response = client.get("/api/v1/plugins", headers=headers)
 
     assert response.status_code == 200
-    plugin = next(
-        item for item in response.json()["data"] if item["id"] == "shinbot_adapter_onebot_v11"
-    )
-    properties = plugin["metadata"]["config_schema"]["properties"]
-    for field in (
-        "auto_download_media",
-        "resource_cache_dir",
-        "silent_reconnect",
-        "reconnect_log_interval",
+    payload = {item["id"]: item for item in response.json()["data"]}
+    for plugin_id in (
+        "shinbot_adapter_satori",
+        "shinbot_adapter_onebot_v11",
+        "shinbot_adapter_qqofficial",
     ):
-        assert field in properties
+        properties = payload[plugin_id]["metadata"]["config_schema"]["properties"]
+        assert "download_resources" not in properties
+        for field in (
+            "auto_download_media",
+            "download_file_resources",
+            "max_resource_bytes",
+            "resource_cache_dir",
+        ):
+            assert field in properties
+
+    onebot_properties = payload["shinbot_adapter_onebot_v11"]["metadata"]["config_schema"][
+        "properties"
+    ]
+    assert "silent_reconnect" in onebot_properties
+    assert "reconnect_log_interval" in onebot_properties
 
 
 def test_plugin_config_route_persists_config_instead_of_reloading(tmp_path: Path):

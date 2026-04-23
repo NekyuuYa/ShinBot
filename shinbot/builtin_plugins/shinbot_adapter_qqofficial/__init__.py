@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from shinbot.core.plugins.context import Plugin
+from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES
 
 DEFAULT_QQOFFICIAL_INTENTS = (1 << 9) | (1 << 12) | (1 << 25) | (1 << 30)
 
@@ -61,9 +62,20 @@ class QQOfficialPluginConfig(BaseModel):
         description="Randomized heartbeat jitter ratio",
         json_schema_extra={"ui_group": "advanced"},
     )
-    download_resources: bool = Field(
+    auto_download_media: bool = Field(
+        default=True,
+        description="Cache image and video resources to local temp cache",
+        json_schema_extra={"ui_group": "advanced"},
+    )
+    download_file_resources: bool = Field(
         default=False,
-        description="Download media resources to local temp cache",
+        description="Download file attachments to local temp cache",
+        json_schema_extra={"ui_group": "advanced"},
+    )
+    max_resource_bytes: int = Field(
+        default=DEFAULT_MAX_RESOURCE_BYTES,
+        gt=0,
+        description="Maximum bytes allowed for one cached resource",
         json_schema_extra={"ui_group": "advanced"},
     )
     resource_cache_dir: str = Field(
@@ -96,10 +108,18 @@ def setup(plg: Plugin) -> None:
         max_reconnects: int = -1,
         request_timeout: float = 20.0,
         heartbeat_jitter: float = 0.05,
-        download_resources: bool = False,
+        auto_download_media: bool | None = None,
+        download_file_resources: bool = False,
+        max_resource_bytes: int = DEFAULT_MAX_RESOURCE_BYTES,
+        download_resources: bool | None = None,
         resource_cache_dir: str = "data/temp/resources",
         **_: object,
     ) -> QQOfficialAdapter:
+        resolved_auto_download_media = (
+            auto_download_media
+            if auto_download_media is not None
+            else (download_resources if download_resources is not None else True)
+        )
         cfg = QQOfficialConfig(
             app_id=app_id,
             app_secret=app_secret,
@@ -112,7 +132,9 @@ def setup(plg: Plugin) -> None:
             max_reconnects=max_reconnects,
             request_timeout=request_timeout,
             heartbeat_jitter=heartbeat_jitter,
-            download_resources=download_resources,
+            auto_download_media=resolved_auto_download_media,
+            download_file_resources=download_file_resources,
+            max_resource_bytes=max_resource_bytes,
             resource_cache_dir=resource_cache_dir,
         )
         return QQOfficialAdapter(instance_id=instance_id, platform=platform, config=cfg)

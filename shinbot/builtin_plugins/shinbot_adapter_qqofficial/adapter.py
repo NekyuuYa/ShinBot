@@ -31,7 +31,7 @@ from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
 from shinbot.utils.logger import get_logger
-from shinbot.utils.resource_ingress import download_resource_elements
+from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES, download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
 logger = get_logger(__name__)
@@ -90,7 +90,9 @@ class QQOfficialConfig(BaseModel):
     max_reconnects: int = Field(default=-1)
     request_timeout: float = Field(default=20.0, gt=0.0)
     heartbeat_jitter: float = Field(default=0.05, ge=0.0, le=1.0)
-    download_resources: bool = Field(default=False)
+    auto_download_media: bool = Field(default=True)
+    download_file_resources: bool = Field(default=False)
+    max_resource_bytes: int = Field(default=DEFAULT_MAX_RESOURCE_BYTES, gt=0)
     resource_cache_dir: str = Field(default="data/temp/resources")
     proactive_msg_seq_min: int = Field(default=1, ge=1)
     proactive_msg_seq_max: int = Field(default=10000, ge=1)
@@ -493,11 +495,18 @@ class QQOfficialAdapter(BaseAdapter):
         if event is None:
             return
 
-        if self.config.download_resources and event.message is not None and event.message.content:
+        should_download_resources = (
+            self.config.auto_download_media or self.config.download_file_resources
+        )
+        if should_download_resources and event.message is not None and event.message.content:
             try:
                 message = Message.from_xml(event.message.content)
                 elements = await download_resource_elements(
-                    message.elements, self._resource_cache_dir
+                    message.elements,
+                    self._resource_cache_dir,
+                    download_media=self.config.auto_download_media,
+                    download_files=self.config.download_file_resources,
+                    max_bytes=self.config.max_resource_bytes,
                 )
                 event.message = event.message.model_copy(
                     update={"content": elements_to_xml(elements)}
