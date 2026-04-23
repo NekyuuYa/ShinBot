@@ -32,6 +32,10 @@ async def _runtime_control(request: Request):
     return request.app.state.runtime_control
 
 
+async def _system_update_service(request: Request):
+    return request.app.state.system_update_service
+
+
 # ── Auth dependency ──────────────────────────────────────────────────
 
 
@@ -70,3 +74,4 @@ AuthRequired = [Depends(require_auth)]
 BotDep = Depends(_bot)
 BootDep = Depends(_boot_controller)
 RuntimeControlDep = Depends(_runtime_control)
+SystemUpdateDep = Depends(_system_update_service)

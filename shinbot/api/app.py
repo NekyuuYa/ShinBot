@@ -42,6 +42,7 @@ from shinbot.api.ws_manager import (
     log_manager,
     status_manager,
 )
+from shinbot.core.application.system_update import SystemUpdateService
 from shinbot.utils.logger import register_log_handler_installer
 
 # Push the WebSocket log handler installer into utils so that
@@ -110,6 +111,10 @@ def create_api_app(
     app.state.boot_controller = boot
     app.state.runtime_control = runtime_control
     app.state.auth_config = AuthConfig(boot.config, boot.data_dir)
+    app.state.system_update_service = SystemUpdateService(
+        config=boot.config,
+        config_path=getattr(boot, "config_path", None),
+    )
 
     # ── CORS ─────────────────────────────────────────────────────────
 

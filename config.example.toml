@@ -82,6 +82,8 @@ jwt_expire_hours = 24
 
 # jwt_secret = ""                 # Leave empty to auto-generate and persist to data/admin_secret.key
 # cors_origins = ["http://localhost:5173"]  # Vite dev server; defaults to ["*"]
+# update_repo = "."               # Optional fixed repo path for safe WebUI update + restart
+# update_allowed_branches = ["main", "master"]
 
 # Bind users or sessions to permission groups.
 # Groups: "default" (basic cmds), "admin" (tools.*), "owner" (all)
