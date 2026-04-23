@@ -85,11 +85,12 @@ class TestTimeDecay:
 
     def test_no_decay_within_idle_grace(self, engine):
         now = time.time()
+        idle_dt = engine.config.decay_idle_grace_seconds - 5
         state = SessionAttentionState(
             session_id="test",
             attention_value=10.0,
             runtime_threshold_offset=3.0,
-            last_update_at=now - 40,
+            last_update_at=now - idle_dt,
         )
         result = engine.apply_time_decay(state, now)
         assert result.attention_value == 10.0

@@ -535,14 +535,10 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
     final_texts = [str(block.get("text", "")) for block in final_user_message["content"]]
 
     assert final_texts[0] == "[以下是会话中 2 条未消费消息]"
-    assert "UNOwen: 或许要攒够5条" in final_texts[1]
-    assert "message_log_id=11" in final_texts[1]
-    assert "platform_msg_id=msg-11" in final_texts[1]
-    assert "时间: " in final_texts[1]
-    assert "Ginkoro: 但是at是有特殊权重的" in final_texts[2]
-    assert "message_log_id=12" in final_texts[2]
-    assert "platform_msg_id=msg-12" in final_texts[2]
-    assert "时间: " in final_texts[2]
+    assert "[msgid:" in final_texts[1]
+    assert "602190328: 或许要攒够5条" in final_texts[1]
+    assert "[msgid:" in final_texts[2]
+    assert "1917419834: 但是at是有特殊权重的" in final_texts[2]
     assert not any(
         "UNOwen: 或许要攒够5条" in text and "Ginkoro: 但是at是有特殊权重的" in text
         for text in final_texts
@@ -551,7 +547,7 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
     assert any("ID: 602190328 -> 昵称: UNOwen" in text for text in final_texts)
     assert any("ID: 1917419834 -> 昵称: Ginkoro" in text for text in final_texts)
     assert any("### 行为约束" in text for text in final_texts)
-    assert any("### 当前时间" in text for text in final_texts)
+    assert not any("### 当前时间" in text for text in final_texts)
     assert not any("旧上下文" in text for text in final_texts)
 
 
