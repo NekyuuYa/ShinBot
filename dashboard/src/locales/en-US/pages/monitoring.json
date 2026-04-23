@@ -4,9 +4,21 @@
   "subtitle": "Inspect service health, resource metrics, and live logs from a single operational view.",
   "connectLogs": "Connect Logs",
   "logs": "Logs",
+  "terminalTitle": "Live Log Terminal",
+  "terminalSubtitle": "A time-ordered rolling stream built for watching runtime output directly.",
   "status": "System Status",
   "cpu": "CPU Usage",
   "memory": "Memory Usage",
   "memoryUsageMb": "{value} MB",
-  "uptime": "Uptime"
+  "uptime": "Uptime",
+  "streamConnected": "Stream Online",
+  "streamDisconnected": "Stream Offline",
+  "followLatest": "Follow Latest",
+  "pauseFollow": "Pause Follow",
+  "jumpLatest": "Jump to Latest",
+  "following": "Following",
+  "followPaused": "Paused",
+  "systemSource": "system",
+  "noData": "No log output yet",
+  "noDataSubtitle": "Once the stream is connected, new log lines will roll here like a terminal."
 }

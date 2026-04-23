@@ -51,6 +51,8 @@
     "stickerSummaryLlm": "Sticker Summary LLM",
     "stickerSummaryPrompt": "Sticker Summary Prompt",
     "contextCompressionLlm": "Context Compression LLM",
+    "explicitPromptCacheEnabled": "Enable Explicit Prompt Cache Marker",
+    "explicitPromptCacheEnabledHint": "Insert an explicit cache marker at the end of the stable context prefix. No marker is injected when disabled.",
     "maxContextTokens": "Context Trigger Threshold",
     "contextEvictRatio": "Context Eviction Ratio",
     "contextCompressionMaxChars": "Compression Memory Length Limit",

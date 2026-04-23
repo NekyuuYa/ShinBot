@@ -51,6 +51,8 @@
     "stickerSummaryLlm": "表情转述模型",
     "stickerSummaryPrompt": "表情转述 Prompt",
     "contextCompressionLlm": "上下文压缩模型",
+    "explicitPromptCacheEnabled": "启用显式 Prompt 缓存标记",
+    "explicitPromptCacheEnabledHint": "在稳定上下文前缀末尾插入显式缓存标记。关闭时不注入该标记。",
     "maxContextTokens": "上下文触发阈值",
     "contextEvictRatio": "上下文驱逐比例",
     "contextCompressionMaxChars": "压缩记忆长度上限",

@@ -4,9 +4,21 @@
   "subtitle": "查看服务在线状态、资源指标与实时日志流，快速定位运行中的异常。",
   "connectLogs": "连接日志",
   "logs": "日志",
+  "terminalTitle": "实时日志终端",
+  "terminalSubtitle": "按时间顺序持续滚动，适合直接盯运行态输出。",
   "status": "系统状态",
   "cpu": "CPU 占用",
   "memory": "内存占用",
   "memoryUsageMb": "{value} MB",
-  "uptime": "运行时间"
+  "uptime": "运行时间",
+  "streamConnected": "流已连接",
+  "streamDisconnected": "流未连接",
+  "followLatest": "跟随最新日志",
+  "pauseFollow": "暂停跟随",
+  "jumpLatest": "跳到最新",
+  "following": "跟随中",
+  "followPaused": "已暂停",
+  "systemSource": "system",
+  "noData": "暂无日志输出",
+  "noDataSubtitle": "连接建立后，这里会像终端一样持续滚动显示新的日志行。"
 }

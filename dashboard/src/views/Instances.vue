@@ -216,6 +216,16 @@
                 @click:append-inner="showContextCompressionLlmPicker = true"
               />
             </v-col>
+            <v-col cols="12" md="6">
+              <v-switch
+                v-model="form.botConfig.explicitPromptCacheEnabled"
+                :label="$t('pages.instances.form.explicitPromptCacheEnabled')"
+                :hint="$t('pages.instances.form.explicitPromptCacheEnabledHint')"
+                color="primary"
+                persistent-hint
+                inset
+              />
+            </v-col>
             <v-col cols="12" md="4">
               <v-text-field
                 v-model="form.botConfig.maxContextTokens"
@@ -525,6 +535,7 @@ const form = ref({
     uuid: '',
     defaultAgentUuid: '',
     mainLlm: '',
+    explicitPromptCacheEnabled: false,
     mediaInspectionLlm: '',
     mediaInspectionPrompt: '',
     stickerSummaryLlm: '',
@@ -644,6 +655,7 @@ const showCreateDialog = () => {
       uuid: '',
       defaultAgentUuid: '',
       mainLlm: '',
+      explicitPromptCacheEnabled: false,
       mediaInspectionLlm: '',
       mediaInspectionPrompt: '',
       stickerSummaryLlm: '',
@@ -672,6 +684,10 @@ const editInstance = (instance: Instance) => {
       uuid: currentBotConfig?.uuid ?? '',
       defaultAgentUuid: currentBotConfig?.defaultAgentUuid ?? instance.botConfig?.defaultAgentUuid ?? '',
       mainLlm: currentBotConfig?.mainLlm ?? instance.botConfig?.mainLlm ?? '',
+      explicitPromptCacheEnabled:
+        currentBotConfig?.explicitPromptCacheEnabled ??
+        instance.botConfig?.explicitPromptCacheEnabled ??
+        false,
       mediaInspectionLlm: currentBotConfig?.mediaInspectionLlm ?? instance.botConfig?.mediaInspectionLlm ?? '',
       mediaInspectionPrompt:
         currentBotConfig?.mediaInspectionPrompt ?? instance.botConfig?.mediaInspectionPrompt ?? '',
@@ -779,6 +795,7 @@ const saveBotConfig = async (instanceId: string) => {
     instanceId: string
     defaultAgentUuid: string
     mainLlm: string
+    explicitPromptCacheEnabled: boolean
     mediaInspectionLlm: string | null
     mediaInspectionPrompt: string | null
     stickerSummaryLlm: string | null
@@ -795,6 +812,7 @@ const saveBotConfig = async (instanceId: string) => {
       instanceId,
       defaultAgentUuid: form.value.botConfig.defaultAgentUuid,
       mainLlm: form.value.botConfig.mainLlm.trim(),
+      explicitPromptCacheEnabled: form.value.botConfig.explicitPromptCacheEnabled,
       mediaInspectionLlm: normalizeNullableString(form.value.botConfig.mediaInspectionLlm),
       mediaInspectionPrompt: normalizeNullableString(form.value.botConfig.mediaInspectionPrompt),
       stickerSummaryLlm: normalizeNullableString(form.value.botConfig.stickerSummaryLlm),
@@ -822,6 +840,7 @@ const saveBotConfig = async (instanceId: string) => {
   const hasMeaningfulBotConfig =
     Boolean(payloadBase.defaultAgentUuid) ||
     Boolean(payloadBase.mainLlm) ||
+    payloadBase.explicitPromptCacheEnabled ||
     Boolean(payloadBase.mediaInspectionLlm) ||
     Boolean(payloadBase.mediaInspectionPrompt) ||
     Boolean(payloadBase.stickerSummaryLlm) ||

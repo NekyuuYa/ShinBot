@@ -30,6 +30,7 @@ class BotConfigRequest(BaseModel):
     instanceId: str
     defaultAgentUuid: str = ""
     mainLlm: str = ""
+    explicitPromptCacheEnabled: bool | None = None
     mediaInspectionLlm: str | None = None
     mediaInspectionPrompt: str | None = None
     stickerSummaryLlm: str | None = None
@@ -50,6 +51,7 @@ class BotConfigPatchRequest(BaseModel):
     instanceId: str | None = None
     defaultAgentUuid: str | None = None
     mainLlm: str | None = None
+    explicitPromptCacheEnabled: bool | None = None
     mediaInspectionLlm: str | None = None
     mediaInspectionPrompt: str | None = None
     stickerSummaryLlm: str | None = None
@@ -91,6 +93,7 @@ def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
             instance_id=body.instanceId,
             default_agent_uuid=body.defaultAgentUuid,
             main_llm=body.mainLlm,
+            explicit_prompt_cache_enabled=body.explicitPromptCacheEnabled,
             media_inspection_llm=body.mediaInspectionLlm,
             media_inspection_prompt=body.mediaInspectionPrompt,
             sticker_summary_llm=body.stickerSummaryLlm,
@@ -147,6 +150,11 @@ def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, 
                 _patch_value(body, "defaultAgentUuid", current["default_agent_uuid"]) or ""
             ),
             main_llm=str(_patch_value(body, "mainLlm", current["main_llm"]) or ""),
+            explicit_prompt_cache_enabled=_patch_value(
+                body,
+                "explicitPromptCacheEnabled",
+                current_config.get("explicit_prompt_cache_enabled"),
+            ),
             media_inspection_llm=_patch_value(
                 body,
                 "mediaInspectionLlm",

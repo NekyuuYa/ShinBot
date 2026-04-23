@@ -75,6 +75,28 @@ def normalize_optional_float(value: Any, *, field_name: str) -> float | None:
     return parsed
 
 
+def normalize_optional_bool(value: Any, *, field_name: str) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    raise BotConfigAdminError(
+        status_code=400,
+        code="INVALID_ACTION",
+        message=f"BotConfig {field_name} must be a boolean",
+    )
+
+
 def assign_optional_profile(config: dict[str, Any], key: str, value: Any) -> None:
     normalized = normalize_optional_string(value)
     if normalized is None:
@@ -88,6 +110,15 @@ def assign_optional_numeric(config: dict[str, Any], key: str, value: int | float
     config[key] = value
 
 
+def assign_optional_bool(config: dict[str, Any], key: str, value: bool | None) -> None:
+    if value is None:
+        return
+    if value:
+        config[key] = True
+        return
+    config.pop(key, None)
+
+
 def extract_response_profiles(config: dict[str, Any]) -> dict[str, str | None]:
     return {
         "responseProfile": normalize_optional_string(config.get("response_profile")),
@@ -97,6 +128,13 @@ def extract_response_profiles(config: dict[str, Any]) -> dict[str, str | None]:
         ),
         "responseProfileGroup": normalize_optional_string(config.get("response_profile_group")),
     }
+
+
+def extract_explicit_prompt_cache_enabled(config: dict[str, Any]) -> bool:
+    return bool(normalize_optional_bool(
+        config.get("explicit_prompt_cache_enabled"),
+        field_name="explicit_prompt_cache_enabled",
+    ))
 
 
 def strip_response_profiles(config: dict[str, Any]) -> dict[str, Any]:
@@ -154,6 +192,7 @@ def strip_media_inspection_llm(config: dict[str, Any]) -> dict[str, Any]:
 
 def strip_explicit_context_fields(config: dict[str, Any]) -> dict[str, Any]:
     cleaned = strip_media_inspection_llm(config)
+    cleaned.pop("explicit_prompt_cache_enabled", None)
     cleaned.pop("media_inspection_prompt", None)
     cleaned.pop("sticker_summary_llm", None)
     cleaned.pop("sticker_summary_prompt", None)
@@ -171,6 +210,7 @@ def serialize_bot_config(payload: dict[str, Any]) -> dict[str, Any]:
         "instanceId": payload["instance_id"],
         "defaultAgentUuid": payload["default_agent_uuid"],
         "mainLlm": payload["main_llm"],
+        "explicitPromptCacheEnabled": extract_explicit_prompt_cache_enabled(config),
         "mediaInspectionLlm": extract_media_inspection_llm(config),
         "mediaInspectionPrompt": extract_media_inspection_prompt(config),
         "stickerSummaryLlm": extract_sticker_summary_llm(config),
@@ -198,6 +238,7 @@ def normalize_bot_config_input(
     instance_id: str,
     default_agent_uuid: str,
     main_llm: str,
+    explicit_prompt_cache_enabled: Any = None,
     response_profile: str | None,
     response_profile_private: str | None,
     response_profile_priority: str | None,
@@ -230,6 +271,7 @@ def normalize_bot_config_input(
     normalized_config.pop("response_profile_private", None)
     normalized_config.pop("response_profile_priority", None)
     normalized_config.pop("response_profile_group", None)
+    normalized_config.pop("explicit_prompt_cache_enabled", None)
     normalized_config.pop("media_inspection_llm", None)
     normalized_config.pop("media_inspection_prompt", None)
     normalized_config.pop("sticker_summary_llm", None)
@@ -275,6 +317,11 @@ def normalize_bot_config_input(
             message="BotConfig context_compression_max_chars must be greater than 0",
         )
 
+    normalized_explicit_prompt_cache_enabled = normalize_optional_bool(
+        explicit_prompt_cache_enabled,
+        field_name="explicit_prompt_cache_enabled",
+    )
+
     assign_optional_profile(normalized_config, "response_profile", response_profile)
     assign_optional_profile(
         normalized_config,
@@ -314,6 +361,11 @@ def normalize_bot_config_input(
         normalized_config,
         "context_compression_max_chars",
         normalized_context_compression_max_chars,
+    )
+    assign_optional_bool(
+        normalized_config,
+        "explicit_prompt_cache_enabled",
+        normalized_explicit_prompt_cache_enabled,
     )
 
     deduped_tags: list[str] = []

@@ -5,6 +5,7 @@ export interface BotConfig {
   instanceId: string
   defaultAgentUuid: string
   mainLlm: string
+  explicitPromptCacheEnabled: boolean
   mediaInspectionLlm: string
   mediaInspectionPrompt: string
   stickerSummaryLlm: string
@@ -23,6 +24,7 @@ export interface BotConfigSummary {
   uuid: string
   defaultAgentUuid: string
   mainLlm: string
+  explicitPromptCacheEnabled: boolean
   mediaInspectionLlm: string
   mediaInspectionPrompt: string
   stickerSummaryLlm: string
@@ -38,6 +40,7 @@ export interface CreateBotConfigRequest {
   instanceId: string
   defaultAgentUuid?: string
   mainLlm?: string
+  explicitPromptCacheEnabled?: boolean | null
   mediaInspectionLlm?: string | null
   mediaInspectionPrompt?: string | null
   stickerSummaryLlm?: string | null
@@ -54,6 +57,7 @@ export interface UpdateBotConfigRequest {
   instanceId?: string
   defaultAgentUuid?: string
   mainLlm?: string
+  explicitPromptCacheEnabled?: boolean | null
   mediaInspectionLlm?: string | null
   mediaInspectionPrompt?: string | null
   stickerSummaryLlm?: string | null
