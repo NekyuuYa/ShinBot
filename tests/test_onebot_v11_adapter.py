@@ -83,6 +83,32 @@ async def test_decode_message_with_rich_segments(adapter: OneBotV11Adapter):
 
 
 @pytest.mark.asyncio
+async def test_decode_image_segments_preserves_sub_type_values(adapter: OneBotV11Adapter):
+    payload = {
+        "post_type": "message",
+        "message_type": "group",
+        "self_id": 10001,
+        "time": 1711111111,
+        "message_id": 225,
+        "group_id": 778899,
+        "user_id": 123456,
+        "message": [
+            {"type": "image", "data": {"file": "/tmp/normal.jpg", "subType": 0}},
+            {"type": "image", "data": {"file": "/tmp/custom.jpg", "subType": 1}},
+            {"type": "image", "data": {"file": "/tmp/store.gif"}},
+        ],
+    }
+
+    event = await adapter._decode_event(payload)
+
+    assert event is not None
+    assert event.message is not None
+    parsed = Message.from_xml(event.message.content)
+    image_elements = [element for element in parsed.elements if element.type == "img"]
+    assert [element.attrs["sub_type"] for element in image_elements] == ["0", "1", "none"]
+
+
+@pytest.mark.asyncio
 async def test_decode_group_message_fetches_member_card_when_sender_card_missing(
     adapter: OneBotV11Adapter,
     monkeypatch: pytest.MonkeyPatch,

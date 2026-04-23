@@ -102,10 +102,14 @@ def _walk_payload(
 
 
 def _resolve_image_part(attrs: dict[str, Any]) -> NormalizedImagePart:
+    from shinbot.agent.media.classification import is_emoji_image_sub_type
     from shinbot.agent.media.fingerprint import fingerprint_image_file
 
     src = str(attrs.get("src", "") or "").strip()
-    is_custom_emoji = str(attrs.get("sub_type", "") or "").strip() == "1"
+    is_custom_emoji = is_emoji_image_sub_type(
+        attrs.get("sub_type"),
+        has_sub_type="sub_type" in attrs,
+    )
     if not src:
         return NormalizedImagePart(is_custom_emoji=is_custom_emoji)
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from shinbot.agent.context.message_parts import parse_message_parts
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
@@ -96,6 +97,8 @@ def _seed_media_runtime(
     instance_id: str,
     llm_ref: str = "route.media.inspect",
     media_prompt_ref: str | None = None,
+    sticker_llm_ref: str | None = None,
+    sticker_prompt_ref: str | None = None,
 ) -> None:
     now = utc_now_iso()
     provider_id = "openai-media"
@@ -104,6 +107,10 @@ def _seed_media_runtime(
     config: dict[str, str] = {"media_inspection_llm": llm_ref}
     if media_prompt_ref is not None:
         config["media_inspection_prompt"] = media_prompt_ref
+    if sticker_llm_ref is not None:
+        config["sticker_summary_llm"] = sticker_llm_ref
+    if sticker_prompt_ref is not None:
+        config["sticker_summary_prompt"] = sticker_prompt_ref
 
     db.model_registry.upsert_provider(
         ModelProviderRecord(
@@ -135,6 +142,18 @@ def _seed_media_runtime(
             )
         ],
     )
+    if sticker_llm_ref is not None and sticker_llm_ref != route_id:
+        db.model_registry.upsert_route(
+            ModelRouteRecord(id=sticker_llm_ref, purpose="sticker_summary", strategy="priority"),
+            members=[
+                ModelRouteMemberRecord(
+                    route_id=sticker_llm_ref,
+                    model_id=model_id,
+                    priority=10,
+                    weight=1.0,
+                )
+            ],
+        )
     db.bot_configs.upsert(
         BotConfigRecord(
             uuid="bot-config-media",
@@ -145,6 +164,63 @@ def _seed_media_runtime(
             updated_at=now,
         )
     )
+
+
+def _seed_main_runtime(
+    db: DatabaseManager,
+    *,
+    instance_id: str,
+    media_llm_ref: str = "",
+) -> str:
+    now = utc_now_iso()
+    provider_id = "openai-main"
+    model_id = "openai-main/gpt-chat"
+    route_id = "route.main.chat"
+    config: dict[str, str] = {}
+    if media_llm_ref:
+        config["media_inspection_llm"] = media_llm_ref
+
+    db.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id=provider_id,
+            type="openai",
+            display_name="OpenAI Main",
+            base_url="https://api.openai.com/v1",
+            auth={"api_key": "secret-key"},
+        )
+    )
+    db.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id=model_id,
+            provider_id=provider_id,
+            litellm_model="openai/gpt-4.1",
+            display_name="GPT Chat",
+            capabilities=["chat"],
+            context_window=128000,
+        )
+    )
+    db.model_registry.upsert_route(
+        ModelRouteRecord(id=route_id, purpose="chat", strategy="priority"),
+        members=[
+            ModelRouteMemberRecord(
+                route_id=route_id,
+                model_id=model_id,
+                priority=10,
+                weight=1.0,
+            )
+        ],
+    )
+    db.bot_configs.upsert(
+        BotConfigRecord(
+            uuid="bot-config-main",
+            instance_id=instance_id,
+            main_llm=route_id,
+            config=config,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    return route_id
 
 
 def _seed_custom_media_prompt(db: DatabaseManager, *, prompt_ref: str) -> None:
@@ -244,6 +320,8 @@ def test_media_inspection_config_prefers_user_overrides():
             "config": {
                 "media_inspection_prompt": "prompt.media.custom",
                 "media_inspection_llm": "route.media.fast",
+                "sticker_summary_prompt": "prompt.sticker.custom",
+                "sticker_summary_llm": "route.sticker.fast",
             }
         }
     )
@@ -251,10 +329,31 @@ def test_media_inspection_config_prefers_user_overrides():
     assert resolved.agent_ref == BUILTIN_MEDIA_INSPECTION_AGENT_REF
     assert resolved.llm_ref == "route.media.fast"
     assert resolved.prompt_ref == "prompt.media.custom"
-    assert resolved.sticker_prompt_ref == "prompt.media.custom"
+    assert resolved.sticker_llm_ref == "route.sticker.fast"
+    assert resolved.sticker_prompt_ref == "prompt.sticker.custom"
     assert resolved.uses_builtin_agent is True
     assert resolved.uses_builtin_llm is False
     assert resolved.uses_builtin_prompt is False
+    assert resolved.uses_builtin_sticker_llm is False
+    assert resolved.uses_builtin_sticker_prompt is False
+
+
+def test_media_inspection_config_does_not_reuse_image_overrides_for_stickers():
+    resolved = resolve_media_inspection_config(
+        {
+            "config": {
+                "media_inspection_prompt": "prompt.media.custom",
+                "media_inspection_llm": "route.media.fast",
+            }
+        }
+    )
+
+    assert resolved.llm_ref == "route.media.fast"
+    assert resolved.prompt_ref == "prompt.media.custom"
+    assert resolved.sticker_llm_ref == "builtin.media_inspection.sticker_default"
+    assert resolved.sticker_prompt_ref == "builtin.prompt.sticker_summary"
+    assert resolved.uses_builtin_sticker_llm is True
+    assert resolved.uses_builtin_sticker_prompt is True
 
 
 def test_media_service_tracks_repeat_threshold_and_sliding_ttl(tmp_path):
@@ -320,6 +419,117 @@ def test_media_service_tracks_repeat_threshold_and_sliding_ttl(tmp_path):
     assert occurrence["last_platform_msg_id"] == "msg-4"
     assert occurrence["expire_at"] == pytest.approx(late_seen_at + 60 * 24 * 60 * 60)
     assert occurrence["recent_timestamps"] == pytest.approx([late_seen_at])
+
+
+def test_media_service_custom_image_emoji_requests_sticker_summary_immediately(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "sticker.png")
+    message = Message.from_elements(MessageElement.img(str(image_path), sub_type="1"))
+
+    first = service.ingest_message_media(
+        session_id="inst:group:stickers",
+        sender_id="user-1",
+        platform_msg_id="sticker-1",
+        elements=message.elements,
+        seen_at=1_000.0,
+    )
+    second = service.ingest_message_media(
+        session_id="inst:group:stickers",
+        sender_id="user-2",
+        platform_msg_id="sticker-2",
+        elements=message.elements,
+        seen_at=1_100.0,
+    )
+    third = service.ingest_message_media(
+        session_id="inst:group:stickers",
+        sender_id="user-3",
+        platform_msg_id="sticker-3",
+        elements=message.elements,
+        seen_at=1_200.0,
+    )
+
+    assert first[0].is_custom_emoji is True
+    assert first[0].occurrence_count == 1
+    assert first[0].should_request_inspection is True
+    assert second[0].occurrence_count == 2
+    assert second[0].should_request_inspection is True
+    assert third[0].occurrence_count == 3
+    assert third[0].should_request_inspection is True
+
+
+def test_media_service_qq_image_sub_type_mapping(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    service = MediaService(db)
+
+    normal_path = _write_png(tmp_path / "assets" / "normal.png", color=(0, 0, 255))
+    custom_path = _write_png(tmp_path / "assets" / "custom.png", color=(0, 255, 0))
+    store_path = _write_png(tmp_path / "assets" / "store.png", color=(255, 0, 0))
+    message = Message.from_elements(
+        MessageElement.img(str(normal_path), sub_type="0"),
+        MessageElement.img(str(custom_path), sub_type="1"),
+        MessageElement.img(str(store_path), sub_type="None"),
+    )
+
+    items = service.ingest_message_media(
+        session_id="inst:group:image-subtypes",
+        sender_id="user-1",
+        platform_msg_id="subtype-1",
+        elements=message.elements,
+        seen_at=1_000.0,
+    )
+
+    assert len(items) == 3
+    assert [item.is_custom_emoji for item in items] == [False, True, True]
+    assert [item.should_request_inspection for item in items] == [False, True, True]
+
+
+def test_context_parts_treat_store_emoji_sub_type_as_custom_emoji(tmp_path):
+    image_path = _write_png(tmp_path / "assets" / "store-context.png")
+    record = {
+        "content_json": json.dumps(
+            [
+                {
+                    "type": "img",
+                    "attrs": {"src": str(image_path), "sub_type": "None"},
+                }
+            ],
+            ensure_ascii=False,
+        )
+    }
+
+    parts = parse_message_parts(record)
+
+    assert len(parts) == 1
+    assert parts[0].image is not None
+    assert parts[0].image.is_custom_emoji is True
+
+
+def test_media_service_ignores_native_emoji_elements(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    service = MediaService(db)
+
+    message = Message.from_elements(
+        MessageElement.emoji(id="14", name="smile"),
+        MessageElement(type="qq:mface", attrs={"emoji_id": "abc", "summary": "smile"}),
+    )
+
+    items = service.ingest_message_media(
+        session_id="inst:group:emoji",
+        sender_id="user-1",
+        platform_msg_id="emoji-1",
+        elements=message.elements,
+        seen_at=1_000.0,
+    )
+
+    assert items == []
+    with db.connect() as conn:
+        asset_count = conn.execute("SELECT COUNT(*) AS cnt FROM media_assets").fetchone()["cnt"]
+    assert asset_count == 0
 
 
 def test_media_service_persists_message_links_and_resolves_by_message_log_id(tmp_path):
@@ -428,6 +638,91 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
     assert "repeat_count_14d=3" in user_content[0]["text"]
     assert user_content[1]["type"] == "image_url"
     assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_media_inspection_runner_does_not_fallback_to_main_llm(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    main_route_id = _seed_main_runtime(
+        db,
+        instance_id="inst-no-media-route",
+        media_llm_ref="route.media.missing",
+    )
+    media_service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "no-fallback.png")
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    items = None
+    for offset in range(3):
+        items = media_service.ingest_message_media(
+            session_id="inst-no-media-route:group:1",
+            sender_id=f"user-{offset}",
+            platform_msg_id=f"msg-no-fallback-{offset}",
+            elements=message.elements,
+            seen_at=1_000.0 + offset,
+        )
+
+    runtime = FakeModelRuntime(
+        '{"kind":"meme_image","digest":"不应该调用主模型","confidence_band":"low","reason":"missing media route"}'
+    )
+    runner = MediaInspectionRunner(db, PromptRegistry(), runtime, media_service)
+
+    result = await runner.inspect_raw_hash(
+        instance_id="inst-no-media-route",
+        session_id="inst-no-media-route:group:1",
+        raw_hash=items[0].raw_hash,
+    )
+
+    assert main_route_id == "route.main.chat"
+    assert result is None
+    assert runtime.calls == []
+    assert db.media_semantics.get(items[0].raw_hash) is None
+
+
+@pytest.mark.asyncio
+async def test_sticker_summary_uses_separate_runtime_caller(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_media_runtime(
+        db,
+        instance_id="inst-sticker",
+        sticker_llm_ref="route.sticker.summary",
+    )
+    media_service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "sticker-summary.png")
+    message = Message.from_elements(MessageElement.img(str(image_path), sub_type="1"))
+    items = None
+    for offset in range(3):
+        items = media_service.ingest_message_media(
+            session_id="inst-sticker:group:1",
+            sender_id=f"user-{offset}",
+            platform_msg_id=f"msg-sticker-{offset}",
+            elements=message.elements,
+            seen_at=1_000.0 + offset,
+        )
+
+    runtime = FakeModelRuntime(
+        '{"kind":"emoji_native","digest":"微笑表情，表达开心","confidence_band":"high","reason":"custom sticker"}'
+    )
+    runner = MediaInspectionRunner(db, PromptRegistry(), runtime, media_service)
+
+    result = await runner.inspect_raw_hash(
+        instance_id="inst-sticker",
+        session_id="inst-sticker:group:1",
+        raw_hash=items[0].raw_hash,
+        prefer_sticker_model=True,
+    )
+
+    assert result is not None
+    assert len(runtime.calls) == 1
+    call = runtime.calls[0]
+    assert call.caller == "media.sticker_summary_runner"
+    assert call.purpose == "sticker_summary"
+    assert call.route_id == "route.sticker.summary"
+    assert call.metadata["inspection_llm_ref"] == "route.sticker.summary"
+    assert call.metadata["summary_mode"] == "sticker"
 
 
 @pytest.mark.asyncio
@@ -558,6 +853,40 @@ async def test_pipeline_schedules_media_inspection_on_third_repeat(tmp_path):
     assert scheduled["session_id"] == "test-bot:group:group:1"
     assert len(scheduled["items"]) == 1
     assert scheduled["items"][0].occurrence_count == 3
+    assert scheduled["items"][0].should_request_inspection is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_schedules_sticker_summary_for_custom_image_emoji(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    media_service = MediaService(db)
+    inspection_runner = FakeInspectionRunner()
+
+    adapter = MockAdapter()
+    pipeline = MessagePipeline(
+        adapter_manager=AdapterManager(),
+        session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        command_registry=CommandRegistry(),
+        event_bus=EventBus(),
+        database=db,
+        media_service=media_service,
+        media_inspection_runner=inspection_runner,
+    )
+
+    image_path = _write_png(tmp_path / "assets" / "pipeline-sticker.png", color=(255, 128, 0))
+    content = Message.from_elements(MessageElement.img(str(image_path), sub_type="1")).to_xml()
+
+    await pipeline.process_event(_make_group_event(content, message_id="msg-sticker-1"), adapter)
+
+    assert len(inspection_runner.calls) == 1
+    scheduled = inspection_runner.calls[0]
+    assert scheduled["instance_id"] == "test-bot"
+    assert scheduled["session_id"] == "test-bot:group:group:1"
+    assert len(scheduled["items"]) == 1
+    assert scheduled["items"][0].is_custom_emoji is True
+    assert scheduled["items"][0].occurrence_count == 1
     assert scheduled["items"][0].should_request_inspection is True
 
 

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.media.classification import is_emoji_image_sub_type
 from shinbot.agent.media.config import (
     ResolvedMediaInspectionConfig,
     resolve_media_inspection_config,
@@ -109,10 +110,8 @@ class MediaService:
 
             already_verified = bool(semantics and semantics.get("verified_by_model"))
             if is_custom_emoji:
-                # Custom stickers/emoji: inspect on first appearance; skip if already verified.
                 should_request_inspection = not already_verified
             else:
-                # Normal images: only inspect after repeated occurrences.
                 should_request_inspection = (
                     occurrence["occurrence_count"] >= MEME_VERIFICATION_THRESHOLD
                     and not already_verified
@@ -373,8 +372,15 @@ class MediaService:
                 if src:
                     candidate = Path(src).expanduser()
                     if candidate.is_file():
-                        sub_type = str(element.attrs.get("sub_type") or "").strip()
-                        paths.append((candidate, sub_type == "1"))
+                        paths.append(
+                            (
+                                candidate,
+                                is_emoji_image_sub_type(
+                                    element.attrs.get("sub_type"),
+                                    has_sub_type="sub_type" in element.attrs,
+                                ),
+                            )
+                        )
             if element.children:
                 paths.extend(self._iter_local_image_paths(element.children))
         return paths

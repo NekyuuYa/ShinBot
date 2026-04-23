@@ -24,7 +24,6 @@ from shinbot.agent.media.service import (
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntime, ModelRuntimeCall
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.prompt_manager.runtime_sync import build_runtime_component_ids
-from shinbot.core.bot_config import resolve_bot_runtime_config
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import MediaSemanticRecord
 from shinbot.utils.logger import get_logger
@@ -146,14 +145,20 @@ class MediaInspectionRunner:
             return None
 
         try:
+            caller = (
+                "media.sticker_summary_runner"
+                if prefer_sticker_model
+                else "media.inspection_runner"
+            )
+            purpose = "sticker_summary" if prefer_sticker_model else "media_inspection"
             result = await self._model_runtime.generate(
                 ModelRuntimeCall(
                     route_id=route_id or None,
                     model_id=model_id or None,
-                    caller="media.inspection_runner",
+                    caller=caller,
                     session_id=session_id,
                     instance_id=instance_id,
-                    purpose="media_inspection",
+                    purpose=purpose,
                     messages=messages,
                     response_format=MEDIA_INSPECTION_RESPONSE_FORMAT,
                     metadata={
@@ -315,18 +320,6 @@ class MediaInspectionRunner:
         if route_id or model_id:
             return route_id, model_id, window, llm_ref
 
-        bot_config = self._database.bot_configs.get_by_instance_id(instance_id)
-        fallback_ref = resolve_bot_runtime_config(bot_config).main_llm
-        if fallback_ref and fallback_ref != llm_ref:
-            route_id, model_id, window = self._resolve_target(fallback_ref)
-            if route_id or model_id:
-                logger.warning(
-                    "Media inspection llm %s unavailable for instance %s; falling back to %s",
-                    llm_ref,
-                    instance_id,
-                    fallback_ref,
-                )
-                return route_id, model_id, window, fallback_ref
         return "", "", None, llm_ref
 
     def _resolve_target(self, target: str) -> tuple[str, str, int | None]:

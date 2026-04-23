@@ -220,6 +220,15 @@ def _norm_path(path: str) -> str:
     return p.rstrip("/") or "/"
 
 
+def _normalize_image_sub_type(data: dict[str, Any]) -> str:
+    """Preserve OneBot's image subtype, including numeric 0."""
+    for key in ("subType", "sub_type"):
+        if key in data:
+            value = data.get(key)
+            return "none" if value is None else str(value)
+    return "none"
+
+
 def _check_token(adapter: OneBotV11Adapter, headers: Any, path: str) -> bool:
     """Validate access_token from headers or query string."""
     expected = adapter.config.access_token.strip()
@@ -947,11 +956,7 @@ class OneBotV11Adapter(BaseAdapter):
             elif seg_type == "image":
                 src = str(data.get("url") or data.get("file") or "")
                 if src:
-                    elements.append(
-                        MessageElement.img(
-                            src, sub_type=data.get("subType") or data.get("sub_type")
-                        )
-                    )
+                    elements.append(MessageElement.img(src, sub_type=_normalize_image_sub_type(data)))
             elif seg_type == "record":
                 src = str(data.get("url") or data.get("file") or "")
                 if src:

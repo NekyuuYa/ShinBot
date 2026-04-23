@@ -48,6 +48,8 @@ def build_media_inspection_messages(
     return _build_media_prompt_messages(
         builtin_prompt=BUILTIN_MEDIA_INSPECTION_PROMPT,
         builtin_prompt_id=BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
+        caller="media.inspection_runner",
+        trigger="media_inspection",
         instruction_text=instruction_text,
         resolved_prompt_ref=resolved_prompt_ref,
         resolved_llm_ref=resolved_llm_ref,
@@ -85,6 +87,8 @@ def build_sticker_summary_messages(
     return _build_media_prompt_messages(
         builtin_prompt=BUILTIN_STICKER_SUMMARY_PROMPT,
         builtin_prompt_id=BUILTIN_STICKER_SUMMARY_PROMPT_ID,
+        caller="media.sticker_summary_runner",
+        trigger="sticker_summary",
         instruction_text=instruction_text,
         resolved_prompt_ref=resolved_prompt_ref,
         resolved_llm_ref=resolved_llm_ref,
@@ -102,6 +106,8 @@ def _build_media_prompt_messages(
     *,
     builtin_prompt: str,
     builtin_prompt_id: str,
+    caller: str,
+    trigger: str,
     instruction_text: str,
     resolved_prompt_ref: str,
     resolved_llm_ref: str,
@@ -128,7 +134,7 @@ def _build_media_prompt_messages(
         fallback_component_id=builtin_prompt_id,
     )
     request = PromptAssemblyRequest(
-        caller="media.inspection_runner",
+        caller=caller,
         identity_enabled=False,
         session_id="",
         instance_id=instance_id,
@@ -142,7 +148,7 @@ def _build_media_prompt_messages(
             "user_id": "",
         },
         metadata={
-            "trigger": "media_inspection",
+            "trigger": trigger,
             "inspection_prompt_ref": resolved_prompt_ref,
             "inspection_llm_ref": resolved_llm_ref,
             "raw_hash": raw_hash,

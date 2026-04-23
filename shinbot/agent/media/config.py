@@ -68,11 +68,10 @@ def resolve_media_inspection_config(
         or config.get("media_inspection_prompt_id")
         or ""
     ).strip()
-    sticker_llm_ref = str(config.get("sticker_summary_llm") or llm_ref or "").strip()
+    sticker_llm_ref = str(config.get("sticker_summary_llm") or "").strip()
     sticker_prompt_ref = str(
         config.get("sticker_summary_prompt")
         or config.get("sticker_summary_prompt_id")
-        or prompt_ref
         or ""
     ).strip()
 
