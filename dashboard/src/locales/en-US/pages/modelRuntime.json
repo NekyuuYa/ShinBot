@@ -53,6 +53,13 @@
     "litellmModel": "LiteLLM Model ID",
     "capabilities": "Capabilities",
     "contextWindow": "Context Window",
+    "pricingSummary": "Pricing",
+    "inputPrice": "Input Price",
+    "outputPrice": "Output Price",
+    "cacheWritePrice": "Cache Write Price",
+    "cacheReadPrice": "Cache Read Price",
+    "inputPriceShort": "Input",
+    "outputPriceShort": "Output",
     "priority": "Priority",
     "weight": "Weight",
     "timeoutOverride": "Timeout Override"
@@ -88,6 +95,7 @@
     "selectProviderSourceTitle": "Select a provider source",
     "selectProviderSource": "Start from a provider source before filling the editor so you do not enter values that cannot be saved.",
     "contextWindowAuto": "Context window is detected automatically. Current value: {value}",
+    "pricePerUnit": "Unit: {currency} / {unit}. Leave empty to keep it unset.",
     "thinking": "Only shown when supported by the selected source.",
     "filters": "Only shown when supported by the selected source.",
     "noConfiguredModels": "There are no configured models for this tab yet.",
@@ -139,6 +147,7 @@
     "confirmDeleteRoute": "Delete route {id}?",
     "routeSaveFailed": "Failed to save route",
     "routeDeleteFailed": "Failed to delete route",
-    "invalidJson": "Advanced config JSON is invalid"
+    "invalidJson": "Advanced config JSON is invalid",
+    "invalidPrice": "Price must be a number greater than or equal to 0"
   }
 }

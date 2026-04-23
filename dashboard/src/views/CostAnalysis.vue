@@ -396,12 +396,14 @@ import {
   type CostAnalysisWindow,
   useCostAnalysisStore,
 } from '@/stores/costAnalysis'
+import { useSystemSettingsStore } from '@/stores/systemSettings'
 import type { CostAnalysisBucket } from '@/api/modelRuntime'
 
 type FocusGranularity = 'daily' | 'hourly'
 type FocusMetric = 'tokens' | 'cost' | 'calls' | 'cache'
 
 const costAnalysisStore = useCostAnalysisStore()
+const systemSettingsStore = useSystemSettingsStore()
 const { analysis, error, hasData, isLoading, selectedDays } = storeToRefs(costAnalysisStore)
 const { locale, t } = useI18n()
 
@@ -547,7 +549,7 @@ const formatCompactNumber = (value: number) =>
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat(locale.value, {
     style: 'currency',
-    currency: analysis.value?.currency || 'USD',
+    currency: systemSettingsStore.pricingCurrency || analysis.value?.currency || 'CNY',
     minimumFractionDigits: value >= 100 ? 0 : 2,
     maximumFractionDigits: value >= 100 ? 0 : 2,
   }).format(value)

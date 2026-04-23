@@ -53,6 +53,13 @@
     "litellmModel": "LiteLLM 模型标识",
     "capabilities": "能力",
     "contextWindow": "上下文窗口",
+    "pricingSummary": "价格",
+    "inputPrice": "输入价格",
+    "outputPrice": "输出价格",
+    "cacheWritePrice": "缓存写入价格",
+    "cacheReadPrice": "缓存读取价格",
+    "inputPriceShort": "输入",
+    "outputPriceShort": "输出",
     "priority": "优先级",
     "weight": "权重",
     "timeoutOverride": "超时覆盖"
@@ -88,6 +95,7 @@
     "selectProviderSourceTitle": "请选择一个供应商源",
     "selectProviderSource": "先从供应商来源开始，再填写右侧配置，避免在未绑定来源时填写无法保存的内容。",
     "contextWindowAuto": "上下文窗口将自动获取，当前值：{value}",
+    "pricePerUnit": "单位：{currency} / {unit}，留空表示未设置。",
     "thinking": "仅在当前来源支持时显示。",
     "filters": "仅在当前来源支持时显示。",
     "noConfiguredModels": "当前标签下还没有已配置模型。",
@@ -139,6 +147,7 @@
     "confirmDeleteRoute": "确认删除路由 {id} 吗？",
     "routeSaveFailed": "保存路由失败",
     "routeDeleteFailed": "删除路由失败",
-    "invalidJson": "高级配置 JSON 格式无效"
+    "invalidJson": "高级配置 JSON 格式无效",
+    "invalidPrice": "价格必须是大于等于 0 的数字"
   }
 }

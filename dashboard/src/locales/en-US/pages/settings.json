@@ -75,5 +75,16 @@
     "defaultNotAllowed": "Default credentials are not allowed. Please update both username and password",
     "updateSuccess": "Account credentials updated",
     "updateFailed": "Failed to update account credentials"
+  },
+  "pricing": {
+    "title": "Pricing Display",
+    "subtitle": "Control the currency and token unit used by model pricing inputs and cost displays.",
+    "currency": "Currency",
+    "unit": "Token Unit",
+    "hint": "The model editor follows this unit for display and input, while values are still stored internally per one million tokens so changing units will not damage existing data.",
+    "units": {
+      "mtokens": "Mtokens",
+      "ktokens": "Ktokens"
+    }
   }
 }

@@ -173,6 +173,54 @@
           <div class="settings-card-header">
             <div>
               <v-card-title class="px-0 pt-0">
+                {{ $t('pages.settings.pricing.title') }}
+              </v-card-title>
+              <v-card-subtitle class="px-0 pb-0">
+                {{ $t('pages.settings.pricing.subtitle') }}
+              </v-card-subtitle>
+            </div>
+
+            <v-chip color="primary" variant="flat" size="small">
+              {{ pricingPreview }}
+            </v-chip>
+          </div>
+
+          <v-row class="mt-2">
+            <v-col cols="12" md="6">
+              <v-select
+                v-model="systemSettingsStore.pricingCurrency"
+                :items="pricingCurrencyOptions"
+                item-title="label"
+                item-value="value"
+                :label="$t('pages.settings.pricing.currency')"
+                variant="outlined"
+                density="comfortable"
+              />
+            </v-col>
+            <v-col cols="12" md="6">
+              <v-select
+                v-model="systemSettingsStore.pricingTokenUnit"
+                :items="pricingTokenUnitOptions"
+                item-title="label"
+                item-value="value"
+                :label="$t('pages.settings.pricing.unit')"
+                variant="outlined"
+                density="comfortable"
+              />
+            </v-col>
+          </v-row>
+
+          <v-alert type="info" variant="tonal" density="comfortable" class="mt-2">
+            {{ $t('pages.settings.pricing.hint') }}
+          </v-alert>
+        </v-card>
+      </v-col>
+
+      <v-col cols="12">
+        <v-card class="pa-6" elevation="4">
+          <div class="settings-card-header">
+            <div>
+              <v-card-title class="px-0 pt-0">
                 {{ $t('pages.settings.dist.title') }}
               </v-card-title>
               <v-card-subtitle class="px-0 pb-0">
@@ -382,9 +430,11 @@ import {
 import { getErrorMessage } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
+import { useSystemSettingsStore } from '@/stores/systemSettings'
 
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const systemSettingsStore = useSystemSettingsStore()
 
 const confirmDialog = ref(false)
 const distConfirmDialog = ref(false)
@@ -517,6 +567,18 @@ const shortHash = (value?: string) => value ? value.slice(0, 12) : '—'
 const packageShaShort = computed(() => shortHash(distStatus.value.packageSha256))
 const expectedPackageShaShort = computed(() => shortHash(distStatus.value.expectedPackageSha256))
 const deployedPackageShaShort = computed(() => shortHash(distStatus.value.deployedPackageSha256))
+const pricingCurrencyOptions = computed(() => [
+  { label: 'CNY', value: 'CNY' },
+  { label: 'USD', value: 'USD' },
+])
+const pricingTokenUnitOptions = computed(() => [
+  { label: translate('pages.settings.pricing.units.mtokens'), value: 'mtokens' },
+  { label: translate('pages.settings.pricing.units.ktokens'), value: 'ktokens' },
+])
+const pricingPreview = computed(
+  () =>
+    `${systemSettingsStore.pricingCurrency} / ${translate(`pages.settings.pricing.units.${systemSettingsStore.pricingTokenUnit}`)}`
+)
 
 const loadUpdateStatus = async () => {
   isLoadingUpdateStatus.value = true

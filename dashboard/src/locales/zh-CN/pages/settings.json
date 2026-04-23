@@ -75,5 +75,16 @@
     "defaultNotAllowed": "默认凭据不允许继续使用，请同时修改用户名和密码",
     "updateSuccess": "账号信息已更新",
     "updateFailed": "更新账号信息失败"
+  },
+  "pricing": {
+    "title": "价格显示",
+    "subtitle": "统一控制模型价格输入与成本展示所使用的货币和 token 单位。",
+    "currency": "货币",
+    "unit": "Token 单位",
+    "hint": "模型配置页会按这里的单位显示与输入价格，但内部仍统一按每百万 tokens 存储，切换单位不会破坏已有数据。",
+    "units": {
+      "mtokens": "Mtokens",
+      "ktokens": "Ktokens"
+    }
   }
 }

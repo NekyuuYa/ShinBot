@@ -113,6 +113,41 @@ class ProviderProbeRequest(BaseModel):
     modelId: str | None = None
 
 
+def _normalize_cost_metadata(cost_metadata: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(cost_metadata)
+    price_fields = (
+        "inputPerMillionTokens",
+        "outputPerMillionTokens",
+        "cacheWritePerMillionTokens",
+        "cacheReadPerMillionTokens",
+    )
+    for field in price_fields:
+        value = normalized.get(field)
+        if value is None or value == "":
+            normalized[field] = None
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": EC.INVALID_ACTION,
+                    "message": f"Invalid cost metadata field {field!r}: expected a number",
+                },
+            ) from exc
+        if parsed < 0:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": EC.INVALID_ACTION,
+                    "message": f"Invalid cost metadata field {field!r}: must be >= 0",
+                },
+            )
+        normalized[field] = parsed
+    return normalized
+
+
 def _serialize_provider(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": payload["id"],
@@ -487,6 +522,7 @@ async def create_model(body: ModelRequest, bot=BotDep):
     context_window = body.contextWindow
     if context_window is None:
         context_window = infer_context_window(provider, body.litellmModel)
+    cost_metadata = _normalize_cost_metadata(body.costMetadata)
 
     bot.database.model_registry.upsert_model(
         ModelDefinitionRecord(
@@ -497,7 +533,7 @@ async def create_model(body: ModelRequest, bot=BotDep):
             capabilities=body.capabilities,
             context_window=context_window,
             default_params=body.defaultParams,
-            cost_metadata=body.costMetadata,
+            cost_metadata=cost_metadata,
             enabled=body.enabled,
         )
     )
@@ -525,6 +561,11 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
         inferred_context_window = infer_context_window(provider, litellm_model)
         if inferred_context_window is not None or context_window is None:
             context_window = inferred_context_window
+    cost_metadata = (
+        _normalize_cost_metadata(body.costMetadata)
+        if body.costMetadata is not None
+        else current["cost_metadata"]
+    )
 
     bot.database.model_registry.upsert_model(
         ModelDefinitionRecord(
@@ -541,9 +582,7 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
             default_params=(
                 body.defaultParams if body.defaultParams is not None else current["default_params"]
             ),
-            cost_metadata=(
-                body.costMetadata if body.costMetadata is not None else current["cost_metadata"]
-            ),
+            cost_metadata=cost_metadata,
             enabled=body.enabled if body.enabled is not None else current["enabled"],
             created_at=current["created_at"],
             updated_at=now,

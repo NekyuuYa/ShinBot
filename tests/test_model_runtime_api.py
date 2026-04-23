@@ -272,6 +272,77 @@ def test_model_and_route_crud_roundtrip(tmp_path: Path):
         assert delete_model_resp.json()["data"]["deleted"] is True
 
 
+def test_model_pricing_fields_roundtrip_and_validation(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        provider_resp = client.post(
+            "/api/v1/model-runtime/providers",
+            headers=headers,
+            json={
+                "id": "openai-main",
+                "type": "openai",
+                "displayName": "OpenAI Main",
+            },
+        )
+        assert provider_resp.status_code == 201
+
+        model_resp = client.post(
+            "/api/v1/model-runtime/models",
+            headers=headers,
+            json={
+                "id": "openai-main/gpt-priced",
+                "providerId": "openai-main",
+                "litellmModel": "openai/gpt-4.1-mini",
+                "displayName": "GPT Priced",
+                "capabilities": ["chat"],
+                "costMetadata": {
+                    "inputPerMillionTokens": 1.25,
+                    "outputPerMillionTokens": "4.5",
+                    "cacheWritePerMillionTokens": 0.8,
+                    "cacheReadPerMillionTokens": "",
+                    "vendorTier": "standard",
+                },
+                "enabled": True,
+            },
+        )
+        assert model_resp.status_code == 201
+        payload = model_resp.json()["data"]
+        assert payload["costMetadata"]["inputPerMillionTokens"] == 1.25
+        assert payload["costMetadata"]["outputPerMillionTokens"] == 4.5
+        assert payload["costMetadata"]["cacheWritePerMillionTokens"] == 0.8
+        assert payload["costMetadata"]["cacheReadPerMillionTokens"] is None
+        assert payload["costMetadata"]["vendorTier"] == "standard"
+
+        patch_resp = client.patch(
+            "/api/v1/model-runtime/models/openai-main/gpt-priced",
+            headers=headers,
+            json={
+                "costMetadata": {
+                    "inputPerMillionTokens": 2,
+                    "outputPerMillionTokens": 6,
+                    "cacheWritePerMillionTokens": 1,
+                    "cacheReadPerMillionTokens": 0.5,
+                    "vendorTier": "premium",
+                }
+            },
+        )
+        assert patch_resp.status_code == 200
+        patched = patch_resp.json()["data"]["costMetadata"]
+        assert patched["inputPerMillionTokens"] == 2.0
+        assert patched["cacheReadPerMillionTokens"] == 0.5
+        assert patched["vendorTier"] == "premium"
+
+        invalid_resp = client.patch(
+            "/api/v1/model-runtime/models/openai-main/gpt-priced",
+            headers=headers,
+            json={"costMetadata": {"inputPerMillionTokens": -1}},
+        )
+        assert invalid_resp.status_code == 422
+
+
 def test_model_execution_list_endpoint(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     bot.database.model_executions.insert(

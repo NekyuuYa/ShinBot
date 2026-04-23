@@ -521,6 +521,58 @@
                         }}
                       </v-alert>
                     </v-col>
+                    <v-col cols="12" md="6">
+                      <v-text-field
+                        v-model="modelForm.inputPrice"
+                        :label="$t('pages.modelRuntime.fields.inputPrice')"
+                        :hint="$t('pages.modelRuntime.hints.pricePerUnit', { currency: pricingCurrency, unit: $t(`pages.settings.pricing.units.${pricingTokenUnit}`) })"
+                        persistent-hint
+                        density="comfortable"
+                        variant="outlined"
+                        type="number"
+                        min="0"
+                        step="any"
+                      />
+                    </v-col>
+                    <v-col cols="12" md="6">
+                      <v-text-field
+                        v-model="modelForm.outputPrice"
+                        :label="$t('pages.modelRuntime.fields.outputPrice')"
+                        :hint="$t('pages.modelRuntime.hints.pricePerUnit', { currency: pricingCurrency, unit: $t(`pages.settings.pricing.units.${pricingTokenUnit}`) })"
+                        persistent-hint
+                        density="comfortable"
+                        variant="outlined"
+                        type="number"
+                        min="0"
+                        step="any"
+                      />
+                    </v-col>
+                    <v-col cols="12" md="6">
+                      <v-text-field
+                        v-model="modelForm.cacheWritePrice"
+                        :label="$t('pages.modelRuntime.fields.cacheWritePrice')"
+                        :hint="$t('pages.modelRuntime.hints.pricePerUnit', { currency: pricingCurrency, unit: $t(`pages.settings.pricing.units.${pricingTokenUnit}`) })"
+                        persistent-hint
+                        density="comfortable"
+                        variant="outlined"
+                        type="number"
+                        min="0"
+                        step="any"
+                      />
+                    </v-col>
+                    <v-col cols="12" md="6">
+                      <v-text-field
+                        v-model="modelForm.cacheReadPrice"
+                        :label="$t('pages.modelRuntime.fields.cacheReadPrice')"
+                        :hint="$t('pages.modelRuntime.hints.pricePerUnit', { currency: pricingCurrency, unit: $t(`pages.settings.pricing.units.${pricingTokenUnit}`) })"
+                        persistent-hint
+                        density="comfortable"
+                        variant="outlined"
+                        type="number"
+                        min="0"
+                        step="any"
+                      />
+                    </v-col>
                     <v-col cols="12">
                       <v-switch
                         v-model="modelForm.enabled"
@@ -694,6 +746,8 @@ const {
   fetchCatalogInline,
   catalogLoading,
   providerCanManageModels,
+  pricingCurrency,
+  pricingTokenUnit,
   openInlineModelEditor,
   showInlineModelEditor,
   showModelIdPicker,

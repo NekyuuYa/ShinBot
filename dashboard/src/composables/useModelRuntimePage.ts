@@ -2,6 +2,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useModelRuntimeStore } from '@/stores/modelRuntime'
+import { useSystemSettingsStore } from '@/stores/systemSettings'
 import type { ModelRuntimeModel, ModelRuntimeProvider } from '@/api/modelRuntime'
 import {
   DEFAULT_CAPABILITIES_FOR_TYPE,
@@ -19,6 +20,7 @@ export function useModelRuntimePage() {
   const route = useRoute()
   const { t } = useI18n()
   const store = useModelRuntimeStore()
+  const systemSettingsStore = useSystemSettingsStore()
 
   const activeTab = ref<ModelRuntimeTab>('routes')
   const selectedKind = ref<'provider' | 'route'>('provider')
@@ -99,6 +101,10 @@ export function useModelRuntimePage() {
     litellmModel: '',
     capabilities: [] as string[],
     contextWindow: null as number | null,
+    inputPrice: '' as string,
+    outputPrice: '' as string,
+    cacheWritePrice: '' as string,
+    cacheReadPrice: '' as string,
     enabled: true,
   })
 
@@ -442,14 +448,122 @@ export function useModelRuntimePage() {
       litellmModel: '',
       capabilities: defaultCapabilitiesForTab(),
       contextWindow: null,
+      inputPrice: '',
+      outputPrice: '',
+      cacheWritePrice: '',
+      cacheReadPrice: '',
       enabled: true,
     }
+  }
+
+  const firstNumericValue = (value: unknown, keys: string[]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null
+    }
+    const map = value as Record<string, unknown>
+    for (const key of keys) {
+      const candidate = map[key]
+      if (candidate === null || candidate === undefined || candidate === '') {
+        continue
+      }
+      const parsed = Number(candidate)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+    return null
+  }
+
+  const extractPerMillionPrice = (
+    costMetadata: Record<string, unknown>,
+    keyGroups: string[][]
+  ) => {
+    const maps = [costMetadata]
+    const nestedKeys = ['pricing', 'prices', 'costs']
+    for (const nestedKey of nestedKeys) {
+      const nested = costMetadata[nestedKey]
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        maps.push(nested as Record<string, unknown>)
+      }
+    }
+
+    for (const map of maps) {
+      for (const group of keyGroups) {
+        const value = firstNumericValue(map, group)
+        if (value === null) {
+          continue
+        }
+        if (group.some((key) => key.includes('PerToken') || key.includes('_per_token'))) {
+          return value * 1_000_000
+        }
+        if (group.some((key) => key.includes('Per1k') || key.includes('_per_1k_'))) {
+          return value * 1_000
+        }
+        return value
+      }
+    }
+    return null
+  }
+
+  const formatPriceInput = (value: number | null) =>
+    value === null ? '' : String(systemSettingsStore.convertStoredPriceToDisplay(value))
+
+  const formatPriceDisplay = (value: number | null) => {
+    if (value === null) {
+      return ''
+    }
+    const displayValue = systemSettingsStore.convertStoredPriceToDisplay(value)
+    if (displayValue === null) {
+      return ''
+    }
+    return new Intl.NumberFormat('zh-CN', {
+      style: 'currency',
+      currency: systemSettingsStore.pricingCurrency,
+      minimumFractionDigits: displayValue >= 100 ? 0 : 2,
+      maximumFractionDigits: displayValue >= 100 ? 0 : 4,
+    }).format(displayValue)
+  }
+
+  const parsePriceInput = (value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return null
+    }
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(t('pages.modelRuntime.messages.invalidPrice'))
+    }
+    return systemSettingsStore.convertDisplayPriceToStored(parsed)
   }
 
   const providerModelMeta = (model: ModelRuntimeModel) => {
     const lines = [`${t('pages.modelRuntime.fields.contextWindow')}: ${model.contextWindow || '—'}`]
     if (model.id !== model.litellmModel) {
       lines.push(`${t('pages.modelRuntime.fields.id')}: ${model.id}`)
+    }
+    const inputPrice = extractPerMillionPrice(model.costMetadata, [
+      ['inputPerMillionTokens', 'promptPerMillionTokens', 'input_per_million_tokens', 'prompt_per_million_tokens'],
+      ['inputPer1kTokens', 'promptPer1kTokens', 'input_per_1k_tokens', 'prompt_per_1k_tokens'],
+      ['inputPerToken', 'promptPerToken', 'input_per_token', 'prompt_per_token'],
+    ])
+    const outputPrice = extractPerMillionPrice(model.costMetadata, [
+      ['outputPerMillionTokens', 'completionPerMillionTokens', 'output_per_million_tokens', 'completion_per_million_tokens'],
+      ['outputPer1kTokens', 'completionPer1kTokens', 'output_per_1k_tokens', 'completion_per_1k_tokens'],
+      ['outputPerToken', 'completionPerToken', 'output_per_token', 'completion_per_token'],
+    ])
+    if (inputPrice !== null || outputPrice !== null) {
+      lines.push(
+        `${t('pages.modelRuntime.fields.pricingSummary')}: ${[
+          inputPrice !== null
+            ? `${t('pages.modelRuntime.fields.inputPriceShort')} ${formatPriceDisplay(inputPrice)}/${t(`pages.settings.pricing.units.${systemSettingsStore.pricingTokenUnit}`)}`
+            : '',
+          outputPrice !== null
+            ? `${t('pages.modelRuntime.fields.outputPriceShort')} ${formatPriceDisplay(outputPrice)}/${t(`pages.settings.pricing.units.${systemSettingsStore.pricingTokenUnit}`)}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')}`
+      )
     }
     return lines
   }
@@ -756,6 +870,34 @@ export function useModelRuntimePage() {
       litellmModel: model.litellmModel,
       capabilities: [...model.capabilities],
       contextWindow: model.contextWindow,
+      inputPrice: formatPriceInput(
+        extractPerMillionPrice(model.costMetadata, [
+          ['inputPerMillionTokens', 'promptPerMillionTokens', 'input_per_million_tokens', 'prompt_per_million_tokens'],
+          ['inputPer1kTokens', 'promptPer1kTokens', 'input_per_1k_tokens', 'prompt_per_1k_tokens'],
+          ['inputPerToken', 'promptPerToken', 'input_per_token', 'prompt_per_token'],
+        ])
+      ),
+      outputPrice: formatPriceInput(
+        extractPerMillionPrice(model.costMetadata, [
+          ['outputPerMillionTokens', 'completionPerMillionTokens', 'output_per_million_tokens', 'completion_per_million_tokens'],
+          ['outputPer1kTokens', 'completionPer1kTokens', 'output_per_1k_tokens', 'completion_per_1k_tokens'],
+          ['outputPerToken', 'completionPerToken', 'output_per_token', 'completion_per_token'],
+        ])
+      ),
+      cacheWritePrice: formatPriceInput(
+        extractPerMillionPrice(model.costMetadata, [
+          ['cacheWritePerMillionTokens', 'cache_write_per_million_tokens'],
+          ['cacheWritePer1kTokens', 'cache_write_per_1k_tokens'],
+          ['cacheWritePerToken', 'cache_write_per_token'],
+        ])
+      ),
+      cacheReadPrice: formatPriceInput(
+        extractPerMillionPrice(model.costMetadata, [
+          ['cacheReadPerMillionTokens', 'cache_read_per_million_tokens'],
+          ['cacheReadPer1kTokens', 'cache_read_per_1k_tokens'],
+          ['cacheReadPerToken', 'cache_read_per_token'],
+        ])
+      ),
       enabled: model.enabled,
     }
   }
@@ -785,6 +927,18 @@ export function useModelRuntimePage() {
       return
     }
 
+    const existingCostMetadata =
+      editingModelId.value
+        ? store.models.find((item) => item.id === editingModelId.value)?.costMetadata || {}
+        : {}
+    const costMetadata = {
+      ...existingCostMetadata,
+      inputPerMillionTokens: parsePriceInput(modelForm.value.inputPrice),
+      outputPerMillionTokens: parsePriceInput(modelForm.value.outputPrice),
+      cacheWritePerMillionTokens: parsePriceInput(modelForm.value.cacheWritePrice),
+      cacheReadPerMillionTokens: parsePriceInput(modelForm.value.cacheReadPrice),
+    }
+
     let saved = null
     if (editingModelId.value) {
       saved = await store.updateModel(editingModelId.value, {
@@ -793,7 +947,7 @@ export function useModelRuntimePage() {
         capabilities: modelForm.value.capabilities,
         enabled: modelForm.value.enabled,
         defaultParams: {},
-        costMetadata: {},
+        costMetadata,
       })
     } else {
       saved = await store.createModel({
@@ -805,7 +959,7 @@ export function useModelRuntimePage() {
         contextWindow: null,
         enabled: modelForm.value.enabled,
         defaultParams: {},
-        costMetadata: {},
+        costMetadata,
       })
     }
 
@@ -1017,6 +1171,8 @@ export function useModelRuntimePage() {
     fetchCatalogInline,
     catalogLoading,
     catalogSearch,
+    pricingCurrency: systemSettingsStore.pricingCurrency,
+    pricingTokenUnit: systemSettingsStore.pricingTokenUnit,
     providerCanManageModels,
     openInlineModelEditor,
     showInlineModelEditor,
