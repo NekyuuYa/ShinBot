@@ -123,7 +123,10 @@ def build_litellm_kwargs(
         kwargs["timeout"] = timeout_override
 
     if mode == "completion":
-        kwargs["messages"] = call.messages
+        kwargs["messages"] = _normalize_chat_messages(
+            call.messages,
+            custom_llm_provider=custom_llm_provider,
+        )
         if call.tools:
             kwargs["tools"] = call.tools
         if call.response_format is not None:
@@ -141,6 +144,45 @@ def _drop_empty_runtime_params(kwargs: dict[str, Any]) -> None:
         value = kwargs.get(key)
         if isinstance(value, dict) and not value:
             kwargs.pop(key, None)
+
+
+def _normalize_chat_messages(
+    messages: list[dict[str, Any]],
+    *,
+    custom_llm_provider: str | None,
+) -> list[dict[str, Any]]:
+    """Keep system messages at the beginning for strict OpenAI-compatible providers."""
+
+    normalized: list[dict[str, Any]] = []
+    seen_non_system = False
+    for message in messages:
+        copied = dict(message)
+        if copied.get("role") == "system" and seen_non_system:
+            copied["role"] = "user"
+        elif copied.get("role") == "system":
+            if custom_llm_provider == "dashscope":
+                copied["content"] = _normalize_dashscope_system_content(copied.get("content"))
+        else:
+            seen_non_system = True
+        normalized.append(copied)
+    return normalized
+
+
+def _normalize_dashscope_system_content(content: Any) -> Any:
+    if not isinstance(content, list):
+        return content
+    if any(isinstance(item, dict) and item.get("cache_control") for item in content):
+        return content
+
+    text_parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            text = str(item.get("text", "") or "").strip()
+            if text:
+                text_parts.append(text)
+        elif isinstance(item, str) and item.strip():
+            text_parts.append(item.strip())
+    return "\n\n".join(text_parts)
 
 
 def sanitize_litellm_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:

@@ -107,6 +107,116 @@ def test_build_litellm_kwargs_drops_empty_thinking_param():
     assert kwargs["max_tokens"] == 128
 
 
+def test_build_litellm_kwargs_normalizes_late_system_messages():
+    kwargs = build_litellm_kwargs(
+        provider={
+            "type": "dashscope",
+            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {},
+        },
+        model={
+            "litellm_model": "qwen3.5-plus",
+            "default_params": {},
+        },
+        call=ModelRuntimeCall(
+            model_id="dashscope/qwen3.5-plus",
+            caller="agent.runtime",
+            messages=[
+                {"role": "system", "content": "base rules"},
+                {"role": "user", "content": "first turn"},
+                {"role": "system", "content": "new messages arrived"},
+            ],
+        ),
+        timeout_override=None,
+    )
+
+    assert [message["role"] for message in kwargs["messages"]] == ["system", "user", "user"]
+    assert kwargs["messages"][2]["content"] == "new messages arrived"
+
+
+def test_build_litellm_kwargs_stringifies_uncached_dashscope_system_blocks():
+    kwargs = build_litellm_kwargs(
+        provider={
+            "type": "dashscope",
+            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {},
+        },
+        model={
+            "litellm_model": "qwen3.6-flash-2026-04-16",
+            "default_params": {},
+        },
+        call=ModelRuntimeCall(
+            model_id="dashscope/qwen3.6-flash",
+            caller="media.sticker_summary_runner",
+            messages=[
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": "You are ShinBot's sticker summary agent."},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "请理解这张图。"},
+                        {"type": "image_url", "image_url": {"url": "data:image/gif;base64,abc"}},
+                    ],
+                },
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "media_inspection_result",
+                    "schema": {"type": "object"},
+                },
+            },
+        ),
+        timeout_override=None,
+    )
+
+    assert kwargs["messages"][0]["content"] == "You are ShinBot's sticker summary agent."
+    assert isinstance(kwargs["messages"][1]["content"], list)
+    assert kwargs["response_format"]["type"] == "json_schema"
+
+
+def test_build_litellm_kwargs_preserves_dashscope_cached_system_blocks():
+    kwargs = build_litellm_kwargs(
+        provider={
+            "type": "dashscope",
+            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {},
+        },
+        model={
+            "litellm_model": "qwen3.5-plus",
+            "default_params": {},
+        },
+        call=ModelRuntimeCall(
+            model_id="dashscope/qwen3.5-plus",
+            caller="agent.runtime",
+            messages=[
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Long cached system prompt",
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                    ],
+                },
+                {"role": "user", "content": "Hello"},
+            ],
+        ),
+        timeout_override=None,
+    )
+
+    assert isinstance(kwargs["messages"][0]["content"], list)
+    assert kwargs["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
 @pytest.mark.asyncio
 async def test_generate_merges_provider_model_and_call_params(monkeypatch, tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
