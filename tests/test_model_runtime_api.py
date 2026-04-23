@@ -555,7 +555,7 @@ async def test_cost_analysis_endpoint_returns_timeline_and_focus_models(tmp_path
     assert payload["summary"]["totalTokens"] == 420
     assert payload["summary"]["cacheReadTokens"] == 40
     assert payload["summary"]["cacheWriteTokens"] == 32
-    assert payload["summary"]["estimatedCost"] == pytest.approx(0.512)
+    assert payload["summary"]["estimatedCost"] == pytest.approx(0.42)
 
     assert len(payload["timeline"]["daily"]) == 2
     assert payload["timeline"]["daily"][0]["totalCalls"] == 1
@@ -566,13 +566,56 @@ async def test_cost_analysis_endpoint_returns_timeline_and_focus_models(tmp_path
     assert len(payload["models"]) == 2
     assert payload["models"][0]["modelId"] == "openai-main/gpt-fast"
     assert payload["models"][0]["modelDisplayName"] == "GPT Fast"
-    assert payload["models"][0]["estimatedCost"] == pytest.approx(0.352)
+    assert payload["models"][0]["estimatedCost"] == pytest.approx(0.3)
     assert payload["models"][0]["cacheHitRate"] == pytest.approx(0.5)
 
     assert len(payload["focusModels"]) == 1
     assert payload["focusModels"][0]["modelId"] == "openai-main/gpt-fast"
     assert len(payload["focusModels"][0]["daily"]) == 2
     assert len(payload["focusModels"][0]["hourly"]) == 24
+
+
+@pytest.mark.asyncio
+async def test_cost_estimation_does_not_double_charge_cached_input(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    bot.database.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id="openai-main",
+            type="openai",
+            display_name="OpenAI Main",
+        )
+    )
+    bot.database.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id="openai-main/gpt-cached",
+            provider_id="openai-main",
+            litellm_model="openai/gpt-4.1-mini",
+            display_name="GPT Cached",
+            cost_metadata={
+                "inputPer1kTokens": 1.0,
+                "outputPer1kTokens": 2.0,
+                "cacheReadPer1kTokens": 0.1,
+                "cacheWritePer1kTokens": 0.5,
+            },
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-cached-cost",
+            started_at=datetime.now(UTC).isoformat(),
+            provider_id="openai-main",
+            model_id="openai-main/gpt-cached",
+            success=True,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=30,
+            cache_write_tokens=20,
+        )
+    )
+
+    response = await get_cost_analysis(days=7, modelLimit=1, bot=bot)
+    payload = response["data"]
+    assert payload["summary"]["estimatedCost"] == pytest.approx(0.163)
 
 
 def test_provider_catalog_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

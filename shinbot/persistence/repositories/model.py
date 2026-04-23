@@ -80,6 +80,11 @@ def _estimate_cost_from_metadata(
     if not isinstance(cost_metadata, dict) or not cost_metadata:
         return 0.0
 
+    billable_input_tokens = max(
+        int(input_tokens) - int(cache_read_tokens) - int(cache_write_tokens),
+        0,
+    )
+
     input_rate = _cost_rate_per_token(
         cost_metadata,
         [
@@ -134,7 +139,7 @@ def _estimate_cost_from_metadata(
     )
 
     total = (
-        input_tokens * input_rate
+        billable_input_tokens * input_rate
         + output_tokens * output_rate
         + cache_read_tokens * cache_read_rate
         + cache_write_tokens * cache_write_rate
