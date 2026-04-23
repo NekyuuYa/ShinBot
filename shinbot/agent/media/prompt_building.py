@@ -12,6 +12,7 @@ from shinbot.agent.media.config import (
     BUILTIN_STICKER_SUMMARY_PROMPT_ID,
 )
 from shinbot.agent.prompt_manager import PromptAssemblyRequest
+from shinbot.agent.prompt_manager.rendering import infer_component_source, render_component_text
 from shinbot.agent.prompt_manager.runtime_sync import sync_prompt_definition_component
 
 MEDIA_REANALYSIS_SYSTEM_PROMPT = """
@@ -119,14 +120,6 @@ def _build_media_prompt_messages(
     asset: dict[str, Any],
     model_context_window: int | None,
 ) -> list[dict[str, Any]]:
-    multimodal_user_message = {
-        "role": "user",
-        "content": [
-            {"type": "text", "text": instruction_text},
-            {"type": "image_url", "image_url": {"url": build_media_data_url(asset)}},
-        ],
-    }
-
     component_ids = _resolve_prompt_component_ids(
         prompt_registry=prompt_registry,
         database=database,
@@ -154,11 +147,17 @@ def _build_media_prompt_messages(
             "raw_hash": raw_hash,
         },
     )
-    try:
-        assembly = prompt_registry.assemble(request)
-    except Exception:
-        return _builtin_messages(builtin_prompt, multimodal_user_message)
-    return [*assembly.messages, multimodal_user_message]
+    prompt_text = _resolve_media_prompt_text(
+        prompt_registry=prompt_registry,
+        component_ids=component_ids,
+        request=request,
+        fallback_prompt=builtin_prompt,
+    )
+    return _build_multimodal_user_messages(
+        prompt_text=prompt_text,
+        instruction_text=instruction_text,
+        asset=asset,
+    )
 
 
 def build_media_reanalysis_messages(
@@ -178,15 +177,11 @@ def build_media_reanalysis_messages(
         asset=asset,
         question=question,
     )
-    multimodal_user_message = {
-        "role": "user",
-        "content": [
-            {"type": "text", "text": instruction_text},
-            {"type": "image_url", "image_url": {"url": build_media_data_url(asset)}},
-        ],
-    }
-
-    return _builtin_messages(MEDIA_REANALYSIS_SYSTEM_PROMPT, multimodal_user_message)
+    return _build_multimodal_user_messages(
+        prompt_text=MEDIA_REANALYSIS_SYSTEM_PROMPT,
+        instruction_text=instruction_text,
+        asset=asset,
+    )
 
 
 def build_media_inspection_instruction_text(
@@ -275,17 +270,48 @@ def build_media_data_url(asset: dict[str, Any]) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
-def _builtin_messages(
-    system_prompt: str,
-    multimodal_user_message: dict[str, Any],
+def _build_multimodal_user_messages(
+    *,
+    prompt_text: str,
+    instruction_text: str,
+    asset: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    text_parts = [part.strip() for part in (prompt_text, instruction_text) if part.strip()]
     return [
         {
-            "role": "system",
-            "content": [{"type": "text", "text": system_prompt}],
-        },
-        multimodal_user_message,
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "\n\n".join(text_parts)},
+                {"type": "image_url", "image_url": {"url": build_media_data_url(asset)}},
+            ],
+        }
     ]
+
+
+def _resolve_media_prompt_text(
+    *,
+    prompt_registry: Any,
+    component_ids: list[str],
+    request: PromptAssemblyRequest,
+    fallback_prompt: str,
+) -> str:
+    rendered_parts: list[str] = []
+    try:
+        for component_id in component_ids:
+            component = prompt_registry.get_component(component_id)
+            if component is None or not component.enabled:
+                continue
+            rendered = render_component_text(
+                component=component,
+                request=request,
+                source=infer_component_source(component),
+                resolvers=getattr(prompt_registry, "_resolvers", {}),
+            ).strip()
+            if rendered:
+                rendered_parts.append(rendered)
+    except Exception:
+        return fallback_prompt
+    return "\n\n".join(rendered_parts) or fallback_prompt
 
 
 def _resolve_prompt_component_ids(

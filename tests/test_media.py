@@ -632,9 +632,10 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
     call = runtime.calls[0]
     assert call.caller == "media.inspection_runner"
     assert call.response_format["type"] == "json_schema"
-    assert call.messages[0]["role"] == "system"
+    assert [message["role"] for message in call.messages] == ["user"]
     user_content = call.messages[-1]["content"]
     assert user_content[0]["type"] == "text"
+    assert "You are ShinBot's media inspection agent." in user_content[0]["text"]
     assert "repeat_count_14d=3" in user_content[0]["text"]
     assert user_content[1]["type"] == "image_url"
     assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
@@ -723,6 +724,8 @@ async def test_sticker_summary_uses_separate_runtime_caller(tmp_path):
     assert call.route_id == "route.sticker.summary"
     assert call.metadata["inspection_llm_ref"] == "route.sticker.summary"
     assert call.metadata["summary_mode"] == "sticker"
+    assert [message["role"] for message in call.messages] == ["user"]
+    assert "You are ShinBot's sticker summary agent." in call.messages[0]["content"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -769,6 +772,7 @@ async def test_media_inspection_runner_supports_custom_prompt_id(tmp_path):
     assert runtime.calls[0].metadata["inspection_prompt_ref"] == "prompt.media.custom"
     rendered_text = json.dumps(runtime.calls[0].messages, ensure_ascii=False)
     assert "You are a custom media inspector." in rendered_text
+    assert [message["role"] for message in runtime.calls[0].messages] == ["user"]
 
 
 @pytest.mark.asyncio
