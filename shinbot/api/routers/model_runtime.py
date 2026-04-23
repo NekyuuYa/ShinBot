@@ -233,6 +233,89 @@ def _serialize_token_summary(
     }
 
 
+def _serialize_cost_bucket(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "bucketStart": payload["bucket_start"],
+        "totalCalls": payload["total_calls"],
+        "successfulCalls": payload["successful_calls"],
+        "failedCalls": payload["failed_calls"],
+        "cacheHits": payload["cache_hits"],
+        "inputTokens": payload["input_tokens"],
+        "outputTokens": payload["output_tokens"],
+        "totalTokens": payload["total_tokens"],
+        "cacheReadTokens": payload["cache_read_tokens"],
+        "cacheWriteTokens": payload["cache_write_tokens"],
+        "estimatedCost": payload["estimated_cost"],
+    }
+
+
+def _serialize_cost_model(payload: dict[str, Any]) -> dict[str, Any]:
+    data = {
+        "providerId": payload["provider_id"],
+        "providerDisplayName": payload["provider_display_name"],
+        "modelId": payload["model_id"],
+        "modelDisplayName": payload["model_display_name"],
+        "totalCalls": payload["total_calls"],
+        "successfulCalls": payload["successful_calls"],
+        "failedCalls": payload["failed_calls"],
+        "successRate": payload["success_rate"],
+        "cacheHits": payload["cache_hits"],
+        "cacheHitRate": payload["cache_hit_rate"],
+        "inputTokens": payload["input_tokens"],
+        "outputTokens": payload["output_tokens"],
+        "totalTokens": payload["total_tokens"],
+        "cacheReadTokens": payload["cache_read_tokens"],
+        "cacheWriteTokens": payload["cache_write_tokens"],
+        "estimatedCost": payload["estimated_cost"],
+        "averageLatencyMs": payload["average_latency_ms"],
+        "averageTimeToFirstTokenMs": payload["average_time_to_first_token_ms"],
+        "lastSeenAt": payload["last_seen_at"],
+    }
+    if "daily" in payload:
+        data["daily"] = [_serialize_cost_bucket(item) for item in payload["daily"]]
+    if "hourly" in payload:
+        data["hourly"] = [_serialize_cost_bucket(item) for item in payload["hourly"]]
+    return data
+
+
+def _serialize_cost_analysis(
+    payload: dict[str, Any],
+    *,
+    days: int,
+    since: str,
+    hourly_since: str,
+) -> dict[str, Any]:
+    summary = payload["summary"]
+    return {
+        "windowDays": days,
+        "since": since,
+        "hourlySince": hourly_since,
+        "currency": payload["currency"],
+        "summary": {
+            "totalCalls": summary["total_calls"],
+            "successfulCalls": summary["successful_calls"],
+            "failedCalls": summary["failed_calls"],
+            "successRate": summary["success_rate"],
+            "cacheHits": summary["cache_hits"],
+            "cacheHitRate": summary["cache_hit_rate"],
+            "inputTokens": summary["input_tokens"],
+            "outputTokens": summary["output_tokens"],
+            "totalTokens": summary["total_tokens"],
+            "cacheReadTokens": summary["cache_read_tokens"],
+            "cacheWriteTokens": summary["cache_write_tokens"],
+            "estimatedCost": summary["estimated_cost"],
+            "averageLatencyMs": summary["average_latency_ms"],
+            "averageTimeToFirstTokenMs": summary["average_time_to_first_token_ms"],
+        },
+        "timeline": {
+            "daily": [_serialize_cost_bucket(item) for item in payload["timeline"]["daily"]],
+            "hourly": [_serialize_cost_bucket(item) for item in payload["timeline"]["hourly"]],
+        },
+        "models": [_serialize_cost_model(item) for item in payload["models"]],
+        "focusModels": [_serialize_cost_model(item) for item in payload["focus_models"]],
+    }
+
+
 def _raise_admin_http_error(exc: ModelRuntimeAdminError) -> None:
     raise HTTPException(
         status_code=exc.status_code,
@@ -607,3 +690,27 @@ async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotD
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     summary = bot.database.model_executions.summarize_tokens(since=since)
     return ok(_serialize_token_summary(summary, days=days, since=since))
+
+
+@router.get("/cost-analysis")
+async def get_cost_analysis(
+    days: int = Query(default=7, ge=1, le=90),
+    modelLimit: int = Query(default=8, ge=1, le=16),
+    bot=BotDep,
+):
+    now = datetime.now(UTC)
+    since_dt = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    hourly_since_dt = (now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=23))
+    analysis = bot.database.model_executions.analyze_costs(
+        since=since_dt.isoformat(),
+        hourly_since=hourly_since_dt.isoformat(),
+        model_limit=modelLimit,
+    )
+    return ok(
+        _serialize_cost_analysis(
+            analysis,
+            days=days,
+            since=analysis["since"],
+            hourly_since=analysis["hourly_since"],
+        )
+    )

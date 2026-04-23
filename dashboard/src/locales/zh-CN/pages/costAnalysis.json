@@ -1,0 +1,77 @@
+{
+  "title": "成本分析",
+  "subtitle": "从调用成本、分时负载、分日趋势和缓存效果四个维度观察模型消耗。",
+  "kicker": "Model Cost",
+  "actions": {
+    "refresh": "刷新",
+    "daily": "分日",
+    "hourly": "分时"
+  },
+  "windowOption": "{days} 天",
+  "summary": {
+    "totalCost": "总成本",
+    "totalTokens": "总 Tokens",
+    "successRate": "成功率",
+    "cacheHitRate": "缓存命中率",
+    "avgLatency": "平均延迟",
+    "callsSuffix": "次调用",
+    "failedCalls": "{count} 次失败",
+    "ttft": "首 token {value}"
+  },
+  "sections": {
+    "timeline": {
+      "kicker": "趋势",
+      "title": "成本与负载走势",
+      "subtitle": "上半部分看近几日成本波动，下半部分看最近 24 小时的用量密度。"
+    },
+    "focus": {
+      "kicker": "重点模型",
+      "title": "分时 / 分日矩阵",
+      "subtitle": "按成本优先展示重点模型，每个格子都能直接看到某一时段的消耗强度。"
+    },
+    "table": {
+      "kicker": "明细",
+      "title": "模型成本排行",
+      "subtitle": "对比每个模型的成本、成功率、缓存收益和响应延迟。"
+    }
+  },
+  "charts": {
+    "dailyCostTitle": "分日成本走势",
+    "dailyCostSubtitle": "当前窗口内按日聚合的成本与调用情况",
+    "hourlyLoadTitle": "最近 24 小时负载",
+    "hourlyLoadSubtitle": "按小时查看 tokens、调用次数与缓存写入"
+  },
+  "metrics": {
+    "tokens": "Tokens",
+    "cost": "成本",
+    "calls": "调用",
+    "cache": "缓存"
+  },
+  "table": {
+    "model": "模型",
+    "cost": "成本",
+    "calls": "调用次数",
+    "successRate": "成功率",
+    "cacheHitRate": "缓存命中率",
+    "inputTokens": "输入",
+    "outputTokens": "输出",
+    "totalTokens": "总 Tokens",
+    "cacheReads": "缓存读",
+    "cacheWrites": "缓存写",
+    "avgLatency": "平均延迟",
+    "lastSeen": "最后调用"
+  },
+  "labels": {
+    "dailySince": "统计起点 {value}",
+    "hourlySince": "小时窗口 {value}",
+    "focusModels": "{count} 个重点模型",
+    "modelCount": "{count} 个模型"
+  },
+  "emptyState": {
+    "title": "还没有可分析的模型调用数据",
+    "subtitle": "先产生一些模型执行记录，这里就会自动汇总成本、缓存命中和分时趋势。"
+  },
+  "messages": {
+    "loadFailed": "加载成本分析失败"
+  }
+}

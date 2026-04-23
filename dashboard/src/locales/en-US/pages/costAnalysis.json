@@ -1,0 +1,77 @@
+{
+  "title": "Cost Analysis",
+  "subtitle": "Track model spend through cost totals, hourly load, daily trends, and cache efficiency.",
+  "kicker": "Model Cost",
+  "actions": {
+    "refresh": "Refresh",
+    "daily": "Daily",
+    "hourly": "Hourly"
+  },
+  "windowOption": "{days}d",
+  "summary": {
+    "totalCost": "Total Cost",
+    "totalTokens": "Total Tokens",
+    "successRate": "Success Rate",
+    "cacheHitRate": "Cache Hit Rate",
+    "avgLatency": "Avg Latency",
+    "callsSuffix": "calls",
+    "failedCalls": "{count} failed",
+    "ttft": "TTFT {value}"
+  },
+  "sections": {
+    "timeline": {
+      "kicker": "Timeline",
+      "title": "Cost and Load",
+      "subtitle": "The daily view tracks spend over the selected window, while the hourly view shows the latest 24-hour load."
+    },
+    "focus": {
+      "kicker": "Focus Models",
+      "title": "Hourly / Daily Matrix",
+      "subtitle": "Top-cost models stay in focus so you can compare how each period consumes budget and cache."
+    },
+    "table": {
+      "kicker": "Breakdown",
+      "title": "Model Ranking",
+      "subtitle": "Compare cost, success rate, cache gains, and latency for every model in the current window."
+    }
+  },
+  "charts": {
+    "dailyCostTitle": "Daily Cost Trend",
+    "dailyCostSubtitle": "Spend and traffic aggregated by day across the selected window",
+    "hourlyLoadTitle": "Last 24 Hours",
+    "hourlyLoadSubtitle": "Hourly tokens, calls, and cache write volume"
+  },
+  "metrics": {
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "calls": "Calls",
+    "cache": "Cache"
+  },
+  "table": {
+    "model": "Model",
+    "cost": "Cost",
+    "calls": "Calls",
+    "successRate": "Success Rate",
+    "cacheHitRate": "Cache Hit Rate",
+    "inputTokens": "Input",
+    "outputTokens": "Output",
+    "totalTokens": "Total Tokens",
+    "cacheReads": "Cache Reads",
+    "cacheWrites": "Cache Writes",
+    "avgLatency": "Avg Latency",
+    "lastSeen": "Last Seen"
+  },
+  "labels": {
+    "dailySince": "Window start {value}",
+    "hourlySince": "Hourly window {value}",
+    "focusModels": "{count} focus models",
+    "modelCount": "{count} models"
+  },
+  "emptyState": {
+    "title": "No model usage data yet",
+    "subtitle": "Once execution records start landing, this page will roll up spend, cache behavior, and hourly or daily usage."
+  },
+  "messages": {
+    "loadFailed": "Failed to load cost analysis"
+  }
+}

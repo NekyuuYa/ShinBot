@@ -111,6 +111,31 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ON model_execution_records(session_id)
     """,
     """
+    CREATE TABLE IF NOT EXISTS model_usage_hourly (
+        bucket_start TEXT NOT NULL,
+        provider_id TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL DEFAULT '',
+        total_calls INTEGER NOT NULL DEFAULT 0,
+        successful_calls INTEGER NOT NULL DEFAULT 0,
+        failed_calls INTEGER NOT NULL DEFAULT 0,
+        cache_hits INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        total_latency_ms REAL NOT NULL DEFAULT 0,
+        latency_sample_count INTEGER NOT NULL DEFAULT 0,
+        total_ttft_ms REAL NOT NULL DEFAULT 0,
+        ttft_sample_count INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(bucket_start, provider_id, model_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_model_usage_hourly_bucket_start
+    ON model_usage_hourly(bucket_start)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
         instance_id TEXT NOT NULL,

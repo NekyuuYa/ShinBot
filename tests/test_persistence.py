@@ -55,6 +55,7 @@ class TestDatabaseManager:
         assert "sessions" in tables
         assert "audit_logs" in tables
         assert "model_execution_records" in tables
+        assert "model_usage_hourly" in tables
         assert "model_providers" in tables
         assert "message_logs" in tables
         assert "ai_interactions" in tables
@@ -85,6 +86,21 @@ class TestDatabaseManager:
         assert len(rows) == 1
         assert rows[0]["id"] == "exec-1"
         assert rows[0]["input_tokens"] == 10
+
+        with db.connect() as conn:
+            usage_rows = conn.execute(
+                """
+                SELECT *
+                FROM model_usage_hourly
+                WHERE provider_id = ? AND model_id = ?
+                """,
+                ("openai", "gpt-4.1-mini"),
+            ).fetchall()
+
+        assert len(usage_rows) == 1
+        assert usage_rows[0]["total_calls"] == 1
+        assert usage_rows[0]["input_tokens"] == 10
+        assert usage_rows[0]["output_tokens"] == 20
 
     def test_initialize_seeds_builtin_context_strategy(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

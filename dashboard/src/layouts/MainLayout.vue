@@ -158,6 +158,7 @@ const primaryNavItems: NavItem[] = [
   { to: '/dashboard', icon: 'mdi-view-dashboard-outline', title: 'layout.main.nav.dashboard' },
   { to: '/instances', icon: 'mdi-robot-outline', title: 'layout.main.nav.instancesManage' },
   { to: '/plugins', icon: 'mdi-puzzle-outline', title: 'layout.main.nav.pluginsManage' },
+  { to: '/cost-analysis', icon: 'mdi-chart-areaspline', title: 'layout.main.nav.costAnalysis' },
   { to: '/monitoring', icon: 'mdi-monitor-dashboard', title: 'layout.main.nav.monitoring' },
 ]
 
@@ -178,6 +179,7 @@ const routeTitleMap: Record<string, string> = {
   Prompts: 'layout.main.nav.promptsManage',
   Personas: 'layout.main.nav.personasManage',
   ModelRuntime: 'layout.main.nav.modelRuntime',
+  CostAnalysis: 'layout.main.nav.costAnalysis',
   Monitoring: 'layout.main.nav.monitoring',
   Settings: 'layout.main.nav.settings',
 }

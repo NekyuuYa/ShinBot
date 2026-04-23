@@ -105,6 +105,78 @@ export interface ModelTokenSummary {
   topModels: ModelTokenSummaryModel[]
 }
 
+export interface CostAnalysisBucket {
+  bucketStart: string
+  totalCalls: number
+  successfulCalls: number
+  failedCalls: number
+  cacheHits: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedCost: number
+}
+
+export interface CostAnalysisSummary {
+  totalCalls: number
+  successfulCalls: number
+  failedCalls: number
+  successRate: number
+  cacheHits: number
+  cacheHitRate: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedCost: number
+  averageLatencyMs: number | null
+  averageTimeToFirstTokenMs: number | null
+}
+
+export interface CostAnalysisModel {
+  providerId: string
+  providerDisplayName: string
+  modelId: string
+  modelDisplayName: string
+  totalCalls: number
+  successfulCalls: number
+  failedCalls: number
+  successRate: number
+  cacheHits: number
+  cacheHitRate: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedCost: number
+  averageLatencyMs: number | null
+  averageTimeToFirstTokenMs: number | null
+  lastSeenAt: string | null
+}
+
+export interface CostAnalysisFocusModel extends CostAnalysisModel {
+  daily: CostAnalysisBucket[]
+  hourly: CostAnalysisBucket[]
+}
+
+export interface CostAnalysisResponse {
+  windowDays: number
+  since: string
+  hourlySince: string
+  currency: string
+  summary: CostAnalysisSummary
+  timeline: {
+    daily: CostAnalysisBucket[]
+    hourly: CostAnalysisBucket[]
+  }
+  models: CostAnalysisModel[]
+  focusModels: CostAnalysisFocusModel[]
+}
+
 export interface ProviderCatalogItem {
   id: string
   displayName: string
@@ -239,6 +311,12 @@ export const modelRuntimeApi = {
   getTokenSummary(days = 7) {
     return apiClient.get<ModelTokenSummary>('/model-runtime/token-summary', {
       params: { days },
+    })
+  },
+
+  getCostAnalysis(days = 7, modelLimit = 8) {
+    return apiClient.get<CostAnalysisResponse>('/model-runtime/cost-analysis', {
+      params: { days, modelLimit },
     })
   },
 }

@@ -8,8 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shinbot.api.app import create_api_app
+from shinbot.api.routers.model_runtime import get_cost_analysis
 from shinbot.core.application.app import ShinBot
-from shinbot.persistence import ModelExecutionRecord
+from shinbot.persistence import ModelDefinitionRecord, ModelExecutionRecord, ModelProviderRecord
 
 
 class _BootStub:
@@ -364,6 +365,143 @@ def test_model_token_summary_endpoint(tmp_path: Path):
     assert payload["cacheWriteTokens"] == 2
     assert payload["topModels"][0]["modelId"] == "openai-main/gpt-fast"
     assert payload["topModels"][0]["totalTokens"] == 35
+
+
+@pytest.mark.asyncio
+async def test_cost_analysis_endpoint_returns_timeline_and_focus_models(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    bot.database.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id="openai-main",
+            type="openai",
+            display_name="OpenAI Main",
+        )
+    )
+    bot.database.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id="anthropic-main",
+            type="anthropic",
+            display_name="Anthropic Main",
+        )
+    )
+    bot.database.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id="openai-main/gpt-fast",
+            provider_id="openai-main",
+            litellm_model="openai/gpt-4.1-mini",
+            display_name="GPT Fast",
+            cost_metadata={
+                "inputPer1kTokens": 1.0,
+                "outputPer1kTokens": 2.0,
+                "cacheReadPer1kTokens": 0.5,
+                "cacheWritePer1kTokens": 1.0,
+            },
+        )
+    )
+    bot.database.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id="anthropic-main/claude",
+            provider_id="anthropic-main",
+            litellm_model="anthropic/claude-sonnet-4",
+            display_name="Claude",
+            cost_metadata={
+                "inputPer1kTokens": 2.0,
+                "outputPer1kTokens": 0.5,
+                "cacheWritePer1kTokens": 1.0,
+            },
+        )
+    )
+
+    now = datetime.now(UTC)
+    current_bucket_time = now.replace(minute=15, second=0, microsecond=0)
+    previous_day_time = current_bucket_time - timedelta(days=1)
+    old_time = current_bucket_time - timedelta(days=10)
+
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-cost-1",
+            started_at=current_bucket_time.isoformat(),
+            provider_id="openai-main",
+            model_id="openai-main/gpt-fast",
+            success=True,
+            input_tokens=120,
+            output_tokens=60,
+            cache_hit=True,
+            cache_read_tokens=40,
+            cache_write_tokens=12,
+            latency_ms=860,
+            time_to_first_token_ms=210,
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-cost-2",
+            started_at=previous_day_time.isoformat(),
+            provider_id="openai-main",
+            model_id="openai-main/gpt-fast",
+            success=False,
+            input_tokens=80,
+            output_tokens=0,
+            latency_ms=1240,
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-cost-3",
+            started_at=current_bucket_time.isoformat(),
+            provider_id="anthropic-main",
+            model_id="anthropic-main/claude",
+            success=True,
+            input_tokens=40,
+            output_tokens=120,
+            cache_write_tokens=20,
+            latency_ms=640,
+            time_to_first_token_ms=180,
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-cost-old",
+            started_at=old_time.isoformat(),
+            provider_id="openai-main",
+            model_id="openai-main/gpt-fast",
+            success=True,
+            input_tokens=999,
+            output_tokens=999,
+        )
+    )
+
+    response = await get_cost_analysis(days=2, modelLimit=1, bot=bot)
+    payload = response["data"]
+    assert payload["windowDays"] == 2
+    assert payload["summary"]["totalCalls"] == 3
+    assert payload["summary"]["successfulCalls"] == 2
+    assert payload["summary"]["failedCalls"] == 1
+    assert payload["summary"]["cacheHits"] == 1
+    assert payload["summary"]["cacheHitRate"] == pytest.approx(1 / 3)
+    assert payload["summary"]["inputTokens"] == 240
+    assert payload["summary"]["outputTokens"] == 180
+    assert payload["summary"]["totalTokens"] == 420
+    assert payload["summary"]["cacheReadTokens"] == 40
+    assert payload["summary"]["cacheWriteTokens"] == 32
+    assert payload["summary"]["estimatedCost"] == pytest.approx(0.512)
+
+    assert len(payload["timeline"]["daily"]) == 2
+    assert payload["timeline"]["daily"][0]["totalCalls"] == 1
+    assert payload["timeline"]["daily"][1]["totalCalls"] == 2
+    assert len(payload["timeline"]["hourly"]) == 24
+    assert sum(item["totalCalls"] for item in payload["timeline"]["hourly"]) == 2
+
+    assert len(payload["models"]) == 2
+    assert payload["models"][0]["modelId"] == "openai-main/gpt-fast"
+    assert payload["models"][0]["modelDisplayName"] == "GPT Fast"
+    assert payload["models"][0]["estimatedCost"] == pytest.approx(0.352)
+    assert payload["models"][0]["cacheHitRate"] == pytest.approx(0.5)
+
+    assert len(payload["focusModels"]) == 1
+    assert payload["focusModels"][0]["modelId"] == "openai-main/gpt-fast"
+    assert len(payload["focusModels"][0]["daily"]) == 2
+    assert len(payload["focusModels"][0]["hourly"]) == 24
 
 
 def test_provider_catalog_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

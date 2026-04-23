@@ -12,6 +12,7 @@
     "promptsManage": "Prompt Definitions",
     "personasManage": "Persona Management",
     "modelRuntime": "Model Runtime",
+    "costAnalysis": "Cost Analysis",
     "agentCore": "Agent core",
     "settings": "Settings",
     "logout": "Logout",
