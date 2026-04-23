@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from shinbot.agent.tools import ToolRegistry
+from shinbot.core.application.boot import BootController
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.plugins.context import Plugin
@@ -493,3 +494,70 @@ async def test_metadata_identity_overrides_module_identity_fields(tmp_path: Path
         assert reloaded_meta.role == PluginRole.ADAPTER
     finally:
         sys.modules.pop(module_name, None)
+
+
+@pytest.mark.asyncio
+async def test_boot_applies_persisted_disabled_plugin_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    builtin_root = tmp_path / "empty_builtin_plugins"
+    builtin_root.mkdir()
+    monkeypatch.setattr("shinbot.core.plugins.manager._BUILTIN_PLUGINS_DIR", builtin_root)
+
+    data_dir = tmp_path / "data"
+    plugin_id = "demo_boot_disabled"
+    plugin_dir = data_dir / "plugins" / plugin_id
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": plugin_id,
+                "name": "Boot Disabled",
+                "version": "1.0.0",
+                "author": "test",
+                "description": "",
+                "entry": "__init__.py",
+                "permissions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "def setup(plg):",
+                '    @plg.on_command("boot_disabled")',
+                "    async def boot_disabled(ctx, args):",
+                "        return None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[admin]",
+                'username = "admin"',
+                'password = "admin"',
+                "jwt_expire_hours = 24",
+                "",
+                f"[plugin_states.{plugin_id}]",
+                "enabled = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    boot = BootController(config_path=config_path, data_dir=data_dir)
+    try:
+        bot = await boot.boot()
+        meta = bot.plugin_manager.get_plugin(plugin_id)
+
+        assert meta is not None
+        assert meta.state == PluginState.DISABLED
+        assert bot.command_registry.get("boot_disabled") is None
+    finally:
+        await boot.shutdown()
+        sys.modules.pop(f"plugins.{plugin_id}", None)

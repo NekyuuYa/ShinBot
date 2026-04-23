@@ -74,6 +74,10 @@ reconnect_log_interval = 30.0
 # id     = "shinbot_debug_message"
 # module = "shinbot.builtin_plugins.shinbot_debug_message"
 
+# Runtime enable/disable state written by the management API/CLI.
+# [plugin_states.shinbot_debug_message]
+# enabled = false
+
 
 # ─── Management API ───────────────────────────────────────────────────────────
 # The management control plane is served at http://host:3945/api/v1

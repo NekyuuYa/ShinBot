@@ -125,6 +125,50 @@ def plugin_saved_config(boot: Any, plugin_id: str) -> dict[str, Any]:
     return dict(config) if isinstance(config, dict) else {}
 
 
+def plugin_state_store(boot: Any) -> dict[str, Any]:
+    store = boot.config.setdefault("plugin_states", {})
+    if not isinstance(store, dict):
+        store = {}
+        boot.config["plugin_states"] = store
+    return store
+
+
+def plugin_saved_enabled(boot: Any, plugin_id: str) -> bool | None:
+    store = boot.config.get("plugin_states", {})
+    if not isinstance(store, dict):
+        return None
+
+    state = store.get(plugin_id)
+    if isinstance(state, dict):
+        return normalize_plugin_enabled(state.get("enabled"))
+    return normalize_plugin_enabled(state)
+
+
+def set_plugin_saved_enabled(boot: Any, plugin_id: str, enabled: bool) -> None:
+    store = plugin_state_store(boot)
+    state = store.get(plugin_id)
+    if not isinstance(state, dict):
+        state = {}
+    state["enabled"] = bool(enabled)
+    store[plugin_id] = state
+
+
+def normalize_plugin_enabled(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return None
+
+
 def request_locales(header: str) -> list[str]:
     locales: list[str] = []
     for chunk in header.split(","):

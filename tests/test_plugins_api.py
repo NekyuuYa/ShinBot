@@ -85,6 +85,8 @@ def test_plugins_enable_disable_routes(tmp_path: Path):
             disable_resp = client.post("/api/v1/plugins/demo-plugin/disable", headers=headers)
             assert disable_resp.status_code == 200
             assert disable_resp.json()["data"]["status"] == "disabled"
+            assert boot.config["plugin_states"]["demo-plugin"] == {"enabled": False}
+            assert boot.save_config_calls == 1
 
             list_resp = client.get("/api/v1/plugins", headers=headers)
             assert list_resp.status_code == 200
@@ -94,6 +96,8 @@ def test_plugins_enable_disable_routes(tmp_path: Path):
             enable_resp = client.post("/api/v1/plugins/demo-plugin/enable", headers=headers)
             assert enable_resp.status_code == 200
             assert enable_resp.json()["data"]["status"] == "enabled"
+            assert boot.config["plugin_states"]["demo-plugin"] == {"enabled": True}
+            assert boot.save_config_calls == 2
     finally:
         sys.modules.pop(module_name, None)
 

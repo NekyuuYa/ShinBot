@@ -211,9 +211,9 @@ class OperatorCommandRouter:
         plugin_id = args[1]
         try:
             if action == "enable":
-                meta = await enable_plugin_or_raise(bot, plugin_id)
+                meta = await enable_plugin_or_raise(bot, plugin_id, self._boot)
             elif action == "disable":
-                meta = await disable_plugin_or_raise(bot, plugin_id)
+                meta = await disable_plugin_or_raise(bot, plugin_id, self._boot)
             else:
                 return CommandOutcome(f"Unsupported plugin action: {action}")
         except PluginAdminError as exc:

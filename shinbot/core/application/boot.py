@@ -12,6 +12,8 @@ from typing import Any
 from shinbot.agent.attention import AttentionConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.runtime_control import RuntimeControl
+from shinbot.core.plugins.config import normalize_plugin_enabled, plugin_saved_enabled
+from shinbot.core.plugins.types import PluginState
 from shinbot.utils.logger import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -250,6 +252,41 @@ class BootController:
                 await self.bot.load_plugin_async(plugin_id, module_path)
             except Exception:
                 logger.exception("Failed to load plugin %s from %s", plugin_id, module_path)
+
+        await self._apply_plugin_state_overrides()
+
+    async def _apply_plugin_state_overrides(self) -> None:
+        if self.bot is None:
+            raise RuntimeError("Bot is not initialized")
+
+        for meta in list(self.bot.plugin_manager.all_plugins):
+            enabled = self._configured_plugin_enabled(meta.id)
+            if enabled is None:
+                continue
+
+            try:
+                if enabled and meta.state == PluginState.DISABLED:
+                    await self.bot.plugin_manager.enable_plugin_async(meta.id)
+                elif not enabled and meta.state != PluginState.DISABLED:
+                    await self.bot.plugin_manager.disable_plugin_async(meta.id)
+            except Exception:
+                logger.exception("Failed to apply persisted state for plugin %s", meta.id)
+
+    def _configured_plugin_enabled(self, plugin_id: str) -> bool | None:
+        persisted = plugin_saved_enabled(self, plugin_id)
+        if persisted is not None:
+            return persisted
+
+        plugins = self.config.get("plugins", [])
+        if not isinstance(plugins, list):
+            return None
+
+        for plugin_cfg in plugins:
+            if not isinstance(plugin_cfg, dict) or plugin_cfg.get("id") != plugin_id:
+                continue
+            if "enabled" in plugin_cfg:
+                return normalize_plugin_enabled(plugin_cfg.get("enabled"))
+        return None
 
     async def _phase5_adapter_activation(self) -> None:
         logger.info("Boot Phase 5/5: adapter activation")

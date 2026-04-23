@@ -17,6 +17,7 @@ from shinbot.core.plugins.config import (
     plugin_module,
     plugin_saved_config,
     resolve_translations,
+    set_plugin_saved_enabled,
     translate_plugin_schema,
 )
 
@@ -164,9 +165,30 @@ def update_plugin_config_or_raise(
     return plugin
 
 
-async def disable_plugin_or_raise(bot: Any, plugin_id: str) -> Any:
+def _persist_plugin_enabled_state_or_raise(
+    boot: Any | None,
+    plugin_id: str,
+    enabled: bool,
+) -> None:
+    if boot is None:
+        return
+
+    set_plugin_saved_enabled(boot, plugin_id, enabled)
+    if not boot.save_config():
+        raise PluginAdminError(
+            status_code=500,
+            code="CONFIG_WRITE_FAILED",
+            message=f"Failed to persist enabled state for plugin {plugin_id!r}",
+        )
+
+
+async def disable_plugin_or_raise(
+    bot: Any,
+    plugin_id: str,
+    boot: Any | None = None,
+) -> Any:
     try:
-        return await bot.plugin_manager.disable_plugin_async(plugin_id)
+        meta = await bot.plugin_manager.disable_plugin_async(plugin_id)
     except ValueError as exc:
         raise PluginAdminError(
             status_code=404,
@@ -181,10 +203,17 @@ async def disable_plugin_or_raise(bot: Any, plugin_id: str) -> Any:
             message=str(exc),
         ) from exc
 
+    _persist_plugin_enabled_state_or_raise(boot, plugin_id, False)
+    return meta
 
-async def enable_plugin_or_raise(bot: Any, plugin_id: str) -> Any:
+
+async def enable_plugin_or_raise(
+    bot: Any,
+    plugin_id: str,
+    boot: Any | None = None,
+) -> Any:
     try:
-        return await bot.plugin_manager.enable_plugin_async(plugin_id)
+        meta = await bot.plugin_manager.enable_plugin_async(plugin_id)
     except ValueError as exc:
         raise PluginAdminError(
             status_code=404,
@@ -198,6 +227,9 @@ async def enable_plugin_or_raise(bot: Any, plugin_id: str) -> Any:
             code="PLUGIN_RELOAD_FAILED",
             message=str(exc),
         ) from exc
+
+    _persist_plugin_enabled_state_or_raise(boot, plugin_id, True)
+    return meta
 
 
 def plugin_translations(bot: Any, plugin_id: str, requested_locales: list[str]) -> dict[str, str]:

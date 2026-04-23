@@ -106,20 +106,20 @@ async def update_plugin_config(plugin_id: str, config: dict[str, Any], bot=BotDe
 
 
 @router.post("/{plugin_id}/disable")
-async def disable_plugin(plugin_id: str, bot=BotDep):
+async def disable_plugin(plugin_id: str, bot=BotDep, boot=BootDep):
     """Disable a specific plugin while keeping its metadata visible to the UI."""
     try:
-        meta = await disable_plugin_or_raise(bot, plugin_id)
+        meta = await disable_plugin_or_raise(bot, plugin_id, boot)
     except PluginAdminError as exc:
         _raise_admin_http_error(exc)
     return ok(plugin_dict(bot, meta))
 
 
 @router.post("/{plugin_id}/enable")
-async def enable_plugin(plugin_id: str, bot=BotDep):
+async def enable_plugin(plugin_id: str, bot=BotDep, boot=BootDep):
     """Enable a previously disabled plugin."""
     try:
-        meta = await enable_plugin_or_raise(bot, plugin_id)
+        meta = await enable_plugin_or_raise(bot, plugin_id, boot)
     except PluginAdminError as exc:
         _raise_admin_http_error(exc)
     return ok(plugin_dict(bot, meta))
