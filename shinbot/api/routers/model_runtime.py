@@ -694,7 +694,7 @@ async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotD
 
 @router.get("/cost-analysis")
 async def get_cost_analysis(
-    days: int = Query(default=7, ge=1, le=90),
+    days: int = Query(default=7, ge=1, le=30),
     modelLimit: int = Query(default=8, ge=1, le=16),
     bot=BotDep,
 ):

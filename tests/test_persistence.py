@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shinbot.agent.prompt_manager import PromptRegistry
@@ -101,6 +102,66 @@ class TestDatabaseManager:
         assert usage_rows[0]["total_calls"] == 1
         assert usage_rows[0]["input_tokens"] == 10
         assert usage_rows[0]["output_tokens"] == 20
+
+    def test_cost_analysis_backfills_legacy_execution_records(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        started_at = datetime.now(UTC).replace(minute=12, second=0, microsecond=0)
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO model_execution_records (
+                    id, provider_id, model_id, started_at, success,
+                    input_tokens, output_tokens, cache_hit,
+                    cache_read_tokens, cache_write_tokens, latency_ms,
+                    time_to_first_token_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-exec-1",
+                    "openai-main",
+                    "openai-main/gpt-fast",
+                    started_at.isoformat(),
+                    1,
+                    17,
+                    23,
+                    1,
+                    5,
+                    3,
+                    640,
+                    120,
+                ),
+            )
+
+        with db.connect() as conn:
+            usage_total = conn.execute(
+                "SELECT COALESCE(SUM(total_calls), 0) AS total FROM model_usage_hourly"
+            ).fetchone()
+        assert usage_total["total"] == 0
+
+        analysis = db.model_executions.analyze_costs(
+            since=(started_at - timedelta(days=1)).replace(hour=0).isoformat(),
+            hourly_since=(started_at - timedelta(hours=23)).replace(minute=0).isoformat(),
+        )
+
+        assert analysis["summary"]["total_calls"] == 1
+        assert analysis["summary"]["total_tokens"] == 40
+        assert sum(bucket["total_calls"] for bucket in analysis["timeline"]["hourly"]) == 1
+
+        with db.connect() as conn:
+            usage_row = conn.execute(
+                """
+                SELECT *
+                FROM model_usage_hourly
+                WHERE provider_id = ? AND model_id = ?
+                """,
+                ("openai-main", "openai-main/gpt-fast"),
+            ).fetchone()
+        assert usage_row is not None
+        assert usage_row["total_calls"] == 1
+        assert usage_row["input_tokens"] == 17
+        assert usage_row["output_tokens"] == 23
 
     def test_initialize_seeds_builtin_context_strategy(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

@@ -121,11 +121,12 @@ const handleStop = async () => {
 
 <style scoped>
 .instance-card {
-  transition: transform 0.24s ease, box-shadow 0.24s ease;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+  transition: border-color 0.2s ease, box-shadow 0.24s ease;
 }
 
 .instance-card:hover {
-  transform: translateY(-6px);
+  border-color: rgba(var(--v-theme-primary), 0.18);
   box-shadow: 0 16px 28px rgba(var(--v-theme-on-surface), 0.2);
 }
 

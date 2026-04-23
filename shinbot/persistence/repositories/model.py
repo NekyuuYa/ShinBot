@@ -652,8 +652,81 @@ class ModelExecutionRepository:
             ),
         )
 
+    def _ensure_usage_hourly_matches_records(self, conn: Any) -> None:
+        records_total = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM model_execution_records
+            WHERE provider_id != '' AND model_id != '' AND started_at != ''
+            """
+        ).fetchone()
+        hourly_total = conn.execute(
+            """
+            SELECT COALESCE(SUM(total_calls), 0) AS total
+            FROM model_usage_hourly
+            """
+        ).fetchone()
+
+        if int(records_total["total"] or 0) == int(hourly_total["total"] or 0):
+            return
+
+        self._rebuild_usage_hourly_from_records(conn)
+
+    def _rebuild_usage_hourly_from_records(self, conn: Any) -> None:
+        conn.execute("DELETE FROM model_usage_hourly")
+        conn.execute(
+            """
+            INSERT INTO model_usage_hourly (
+                bucket_start, provider_id, model_id,
+                total_calls, successful_calls, failed_calls, cache_hits,
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                total_latency_ms, latency_sample_count, total_ttft_ms, ttft_sample_count,
+                last_seen_at
+            )
+            SELECT
+                bucket_start,
+                provider_id,
+                model_id,
+                COUNT(*) AS total_calls,
+                COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) AS successful_calls,
+                COALESCE(SUM(CASE WHEN success = 1 THEN 0 ELSE 1 END), 0) AS failed_calls,
+                COALESCE(SUM(CASE WHEN cache_hit = 1 THEN 1 ELSE 0 END), 0) AS cache_hits,
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                COALESCE(SUM(CASE WHEN latency_ms > 0 THEN latency_ms ELSE 0 END), 0) AS total_latency_ms,
+                COALESCE(SUM(CASE WHEN latency_ms > 0 THEN 1 ELSE 0 END), 0) AS latency_sample_count,
+                COALESCE(SUM(
+                    CASE
+                        WHEN time_to_first_token_ms > 0 THEN time_to_first_token_ms
+                        ELSE 0
+                    END
+                ), 0) AS total_ttft_ms,
+                COALESCE(SUM(
+                    CASE
+                        WHEN time_to_first_token_ms > 0 THEN 1
+                        ELSE 0
+                    END
+                ), 0) AS ttft_sample_count,
+                MAX(started_at) AS last_seen_at
+            FROM (
+                SELECT
+                    COALESCE(
+                        strftime('%Y-%m-%dT%H:00:00+00:00', started_at),
+                        substr(started_at, 1, 13) || ':00:00+00:00'
+                    ) AS bucket_start,
+                    *
+                FROM model_execution_records
+                WHERE provider_id != '' AND model_id != '' AND started_at != ''
+            )
+            GROUP BY bucket_start, provider_id, model_id
+            """
+        )
+
     def _list_usage_rows_since(self, since: str) -> list[dict[str, Any]]:
         with self._db.connect() as conn:
+            self._ensure_usage_hourly_matches_records(conn)
             rows = conn.execute(
                 """
                 SELECT *

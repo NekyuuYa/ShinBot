@@ -103,7 +103,11 @@
               </div>
             </div>
 
-            <div class="timeline-chart">
+            <div
+              class="timeline-chart"
+              :class="{ 'timeline-chart--sparse': dailyBuckets.length <= 7 }"
+              :style="{ '--timeline-bucket-count': String(Math.max(dailyBuckets.length, 1)) }"
+            >
               <div
                 v-for="(bucket, index) in dailyBuckets"
                 :key="bucket.bucketStart"
@@ -113,11 +117,15 @@
                   <template #activator="{ props }">
                     <div
                       v-bind="props"
-                      class="timeline-bar timeline-bar--cost"
-                      :style="{
-                        '--timeline-height': `${bucketHeight(bucket.estimatedCost, dailyCostMax)}%`,
-                      }"
-                    />
+                      class="timeline-hit-area"
+                    >
+                      <div
+                        class="timeline-bar timeline-bar--cost"
+                        :style="{
+                          '--timeline-height': `${bucketHeight(bucket.estimatedCost, dailyCostMax)}%`,
+                        }"
+                      />
+                    </div>
                   </template>
 
                   <div class="tooltip-stack">
@@ -149,7 +157,10 @@
               </div>
             </div>
 
-            <div class="timeline-chart timeline-chart--compact">
+            <div
+              class="timeline-chart timeline-chart--compact"
+              :style="{ '--timeline-bucket-count': String(Math.max(hourlyBuckets.length, 1)) }"
+            >
               <div
                 v-for="(bucket, index) in hourlyBuckets"
                 :key="bucket.bucketStart"
@@ -159,11 +170,15 @@
                   <template #activator="{ props }">
                     <div
                       v-bind="props"
-                      class="timeline-bar timeline-bar--tokens"
-                      :style="{
-                        '--timeline-height': `${bucketHeight(bucket.totalTokens, hourlyTokenMax)}%`,
-                      }"
-                    />
+                      class="timeline-hit-area"
+                    >
+                      <div
+                        class="timeline-bar timeline-bar--tokens"
+                        :style="{
+                          '--timeline-height': `${bucketHeight(bucket.totalTokens, hourlyTokenMax)}%`,
+                        }"
+                      />
+                    </div>
                   </template>
 
                   <div class="tooltip-stack">
@@ -581,7 +596,7 @@ const bucketRate = (hits: number, total: number) => (total > 0 ? hits / total : 
 
 const bucketHeight = (value: number, max: number) => {
   if (value <= 0 || max <= 0) {
-    return 8
+    return 0
   }
   return Math.max((value / max) * 100, 12)
 }
@@ -825,36 +840,56 @@ onMounted(() => {
 
 .timeline-chart {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(18px, 1fr));
-  align-items: end;
+  grid-template-columns: repeat(var(--timeline-bucket-count, 1), minmax(14px, 1fr));
+  align-items: stretch;
   gap: 8px;
+  height: 260px;
   min-height: 260px;
 }
 
+.timeline-chart--sparse {
+  grid-template-columns: repeat(var(--timeline-bucket-count, 1), minmax(38px, 56px));
+  justify-content: start;
+}
+
 .timeline-chart--compact {
-  grid-template-columns: repeat(24, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--timeline-bucket-count, 24), minmax(0, 1fr));
+  gap: 6px;
 }
 
 .timeline-column {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 18px;
   gap: 8px;
+  height: 100%;
   min-width: 0;
 }
 
-.timeline-bar {
+.timeline-hit-area {
+  position: relative;
   width: 100%;
-  min-height: 16px;
-  height: var(--timeline-height);
+  height: 100%;
+  min-height: 0;
   border-radius: 999px;
-  align-self: stretch;
-  transition: transform 0.18s ease, opacity 0.18s ease;
+  background: rgba(var(--v-theme-on-surface), 0.045);
   cursor: default;
 }
 
-.timeline-bar:hover {
-  transform: translateY(-2px);
+.timeline-hit-area:hover .timeline-bar {
+  filter: brightness(1.08);
+}
+
+.timeline-bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  min-height: 0;
+  height: var(--timeline-height);
+  border-radius: 999px;
+  transition: height 0.2s ease, filter 0.18s ease;
+  pointer-events: none;
 }
 
 .timeline-bar--cost {
