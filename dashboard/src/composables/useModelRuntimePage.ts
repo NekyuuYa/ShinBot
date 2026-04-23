@@ -379,6 +379,11 @@ export function useModelRuntimePage() {
     throw new Error(t('pages.modelRuntime.messages.invalidJson'))
   }
 
+  const parseOptionalJsonField = (value: string) => {
+    const parsed = parseJsonField(value, {})
+    return Object.keys(parsed).length > 0 ? parsed : null
+  }
+
   const cloneRouteMembers = (members: Array<Record<string, unknown>>) =>
     members.map((member) => ({
       modelId: String(member.modelId),
@@ -584,14 +589,18 @@ export function useModelRuntimePage() {
         delete nextDefaults.apiVersion
       }
 
-      if (sourceSupportsThinking.value) {
-        nextDefaults.thinking = parseJsonField(providerForm.value.thinkingJson, {})
+      const thinking = sourceSupportsThinking.value
+        ? parseOptionalJsonField(providerForm.value.thinkingJson)
+        : null
+      if (thinking) {
+        nextDefaults.thinking = thinking
       } else {
         delete nextDefaults.thinking
       }
 
-      if (sourceSupportsFilters.value) {
-        nextDefaults.filters = parseJsonField(providerForm.value.filtersJson, {})
+      const filters = sourceSupportsFilters.value ? parseOptionalJsonField(providerForm.value.filtersJson) : null
+      if (filters) {
+        nextDefaults.filters = filters
       } else {
         delete nextDefaults.filters
       }

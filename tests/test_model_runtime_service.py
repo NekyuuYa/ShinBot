@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.model_runtime.planning import build_litellm_kwargs
 from shinbot.agent.model_runtime.service import ModelRuntime
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
@@ -79,6 +80,31 @@ def _seed_runtime(db: DatabaseManager) -> None:
             )
         ],
     )
+
+
+def test_build_litellm_kwargs_drops_empty_thinking_param():
+    kwargs = build_litellm_kwargs(
+        provider={
+            "type": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {"thinking": {}, "temperature": 0.2},
+        },
+        model={
+            "litellm_model": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+            "default_params": {"max_tokens": 128},
+        },
+        call=ModelRuntimeCall(
+            model_id="op-test/nemotron",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "Hello"}],
+        ),
+        timeout_override=None,
+    )
+
+    assert "thinking" not in kwargs
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["max_tokens"] == 128
 
 
 @pytest.mark.asyncio

@@ -334,18 +334,19 @@ class ContextManager:
         latest_block_id = _latest_block_record_id(state.blocks)
         if alias_changed or not state.blocks:
             _reset_inactive_alias_snapshot(state)
-            messages = self._context_builder.build_prompt_messages(
+            state.blocks = self._build_timeline_blocks(
                 read_history,
                 alias_table=alias_table,
                 session_state=state,
                 self_platform_id=self_platform_id,
             )
+            messages = _blocks_to_prompt_messages(state.blocks)
         elif latest_history_id > latest_block_id:
             reusable_blocks, mutable_history = _split_context_rebuild_scope(
                 state.blocks,
                 read_history,
             )
-            rebuilt_tail = self._context_builder.build_blocks(
+            rebuilt_tail = self._build_timeline_blocks(
                 mutable_history,
                 alias_table=alias_table,
                 session_state=state,
@@ -359,6 +360,45 @@ class ContextManager:
         compressed_messages = self._build_compressed_memory_messages(state)
         self._save_session_state(session_id)
         return [*compressed_messages, *messages]
+
+    def _build_timeline_blocks(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        alias_table: SessionAliasTable,
+        session_state: ContextSessionState,
+        self_platform_id: str = "",
+        start_block_index: int = 0,
+    ) -> list[ContextBlockState]:
+        if not records:
+            return []
+
+        blocks: list[ContextBlockState] = []
+        for role, role_records in _group_records_by_timeline_role(records):
+            if role == "assistant":
+                blocks.extend(
+                    self._context_builder.build_assistant_blocks(
+                        role_records,
+                        alias_table=alias_table,
+                        session_state=session_state,
+                        self_platform_id=self_platform_id,
+                        start_block_index=start_block_index + len(blocks),
+                    )
+                )
+            else:
+                blocks.extend(
+                    self._context_builder.build_blocks(
+                        role_records,
+                        alias_table=alias_table,
+                        session_state=session_state,
+                        self_platform_id=self_platform_id,
+                        start_block_index=start_block_index + len(blocks),
+                    )
+                )
+
+        for index, block in enumerate(blocks):
+            block.sealed = index < len(blocks) - 1
+        return blocks
 
     def build_instruction_stage_content(
         self,
@@ -731,7 +771,37 @@ def _split_context_rebuild_scope(
 
 
 def _blocks_to_prompt_messages(blocks: list[ContextBlockState]) -> list[dict[str, Any]]:
-    return [{"role": "user", "content": list(block.contents)} for block in blocks]
+    messages: list[dict[str, Any]] = []
+    for block in blocks:
+        role = "assistant" if block.kind == "assistant" else "user"
+        messages.append({"role": role, "content": list(block.contents)})
+    return messages
+
+
+def _group_records_by_timeline_role(
+    records: list[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    current_role = ""
+    current_records: list[dict[str, Any]] = []
+
+    for record in records:
+        role = str(record.get("role", "") or "").strip()
+        normalized_role = "assistant" if role == "assistant" else "user"
+        if not current_records:
+            current_role = normalized_role
+            current_records = [record]
+            continue
+        if normalized_role == current_role:
+            current_records.append(record)
+            continue
+        groups.append((current_role, current_records))
+        current_role = normalized_role
+        current_records = [record]
+
+    if current_records:
+        groups.append((current_role, current_records))
+    return groups
 
 
 def _count_cacheable_prefix_blocks(blocks: list[ContextBlockState]) -> int:

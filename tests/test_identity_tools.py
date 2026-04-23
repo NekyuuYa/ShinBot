@@ -475,7 +475,93 @@ def test_context_manager_does_not_allocate_aliases_to_bot_self_messages(tmp_path
     assert "onebot_v11" not in active_text
     assert "Ginkoro" in active_text
     assert "[@ 你] hello" in joined_text
-    assert "你: 普通回复" in joined_text
-    assert "你: 工具回复" in joined_text
+    assert "[msgid:" in joined_text
+    assert "普通回复" in joined_text
+    assert "工具回复" in joined_text
     assert all(entry.get("platform_id") != self_platform_id for entry in alias_entries)
     assert all(entry.get("platform_id") != "onebot_v11" for entry in alias_entries)
+
+
+def test_context_manager_mixes_assistant_segments_into_timeline(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:assistant-timeline"
+
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="用户消息一",
+            sender_id="user-1",
+            sender_name="Alpha",
+            created_at=1_000,
+            is_read=True,
+            content_json=json.dumps(
+                [MessageElement.text("用户消息一").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="assistant",
+            raw_text="回复一",
+            sender_id="bot-1",
+            created_at=1_100,
+            is_read=True,
+            content_json=json.dumps(
+                [MessageElement.text("回复一").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="assistant",
+            raw_text="回复二",
+            sender_id="bot-1",
+            created_at=1_200,
+            is_read=True,
+            content_json=json.dumps(
+                [MessageElement.text("回复二").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="用户消息二",
+            sender_id="user-2",
+            sender_name="Beta",
+            created_at=1_300,
+            is_read=True,
+            content_json=json.dumps(
+                [MessageElement.text("用户消息二").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        )
+    )
+
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
+    context_messages = context_manager.build_context_stage_messages(
+        session_id,
+        self_platform_id="bot-1",
+        now_ms=2_000,
+    )
+    state = context_manager.get_session_state(session_id)
+
+    assert [message["role"] for message in context_messages] == ["user", "assistant", "user"]
+    assert [block.kind for block in state.blocks] == ["context", "assistant", "context"]
+    assistant_blocks = context_messages[1]["content"]
+    assistant_text = "\n".join(
+        str(block.get("text", ""))
+        for block in assistant_blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    assert "回复一" in assistant_text
+    assert "回复二" in assistant_text
+    assert all(not block.metadata.get("alias_entries") for block in state.blocks if block.kind == "assistant")

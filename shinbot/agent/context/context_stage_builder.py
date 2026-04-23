@@ -150,6 +150,75 @@ class ContextStageBuilder:
         session_state.blocks = blocks
         return [{"role": "user", "content": list(block.contents)} for block in blocks]
 
+    def build_assistant_blocks(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        alias_table: SessionAliasTable,
+        session_state: ContextSessionState,
+        self_platform_id: str = "",
+        start_block_index: int = 0,
+    ) -> list[ContextBlockState]:
+        rows = [
+            rendered
+            for record in records
+            if (rendered := self.render_assistant_record(
+                record,
+                alias_table=alias_table,
+                session_state=session_state,
+                self_platform_id=self_platform_id,
+            ))
+            is not None
+        ]
+        if not rows:
+            return []
+
+        blocks: list[ContextBlockState] = []
+        pending_rows: list[ContextRenderedRow] = []
+        pending_tokens = 0
+        previous_end_ms = 0
+
+        for row in rows:
+            if not pending_rows:
+                pending_rows = [row]
+                pending_tokens = row.token_estimate
+                previous_end_ms = row.created_at_ms
+                continue
+
+            gap_ms = max(0, row.created_at_ms - previous_end_ms)
+            should_split_by_timeout = (
+                pending_tokens >= self._config.min_tokens and gap_ms > self._config.timeout_ms
+            )
+            would_exceed_max = pending_tokens + row.token_estimate > self._config.max_tokens
+
+            if should_split_by_timeout or would_exceed_max:
+                blocks.append(
+                    self._finalize_assistant_block(
+                        pending_rows,
+                        block_index=start_block_index + len(blocks),
+                    )
+                )
+                pending_rows = [row]
+                pending_tokens = row.token_estimate
+                previous_end_ms = row.created_at_ms
+                continue
+
+            pending_rows.append(row)
+            pending_tokens += row.token_estimate
+            previous_end_ms = row.created_at_ms
+
+        if pending_rows:
+            blocks.append(
+                self._finalize_assistant_block(
+                    pending_rows,
+                    block_index=start_block_index + len(blocks),
+                )
+            )
+
+        for index, block in enumerate(blocks):
+            block.sealed = index < len(blocks) - 1
+        return blocks
+
     def render_record(
         self,
         record: dict[str, Any],
@@ -222,6 +291,52 @@ class ContextStageBuilder:
             },
         )
 
+    def render_assistant_record(
+        self,
+        record: dict[str, Any],
+        *,
+        alias_table: SessionAliasTable,
+        session_state: ContextSessionState,
+        self_platform_id: str = "",
+    ) -> ContextRenderedRow | None:
+        created_at_ms = _coerce_timestamp_ms(record.get("created_at"))
+        parts = parse_message_parts(record, self_platform_id=self_platform_id)
+        if not parts:
+            raw_text = str(record.get("raw_text", "") or "").strip()
+            if not raw_text:
+                return None
+            parts = [NormalizedMessagePart(kind="text", text=raw_text)]
+
+        if self._is_poke_only(parts):
+            rendered_body = self._render_poke_only(
+                sender_id=str(record.get("sender_id", "") or "").strip(),
+                sender_label="你",
+                part=parts[0],
+                alias_table=alias_table,
+                self_platform_id=self_platform_id,
+            )
+        else:
+            rendered_body = self._render_parts_inline(
+                record,
+                parts=parts,
+                alias_table=alias_table,
+                session_state=session_state,
+                self_platform_id=self_platform_id,
+            ).strip() or "[无文本]"
+
+        message_id = f"{session_state.message_ids.assign(_record_key(record)):04d}"
+        line = f"[msgid: {message_id}] {rendered_body}"
+        return ContextRenderedRow(
+            sender_id=str(record.get("sender_id", "") or "").strip(),
+            sender_label="你",
+            text=line,
+            created_at_ms=created_at_ms,
+            token_estimate=estimate_text_tokens(line),
+            message_id=message_id,
+            record_id=record.get("id") if isinstance(record.get("id"), int) else None,
+            metadata={"referenced_platform_ids": []},
+        )
+
     def _build_runs(self, rows: list[ContextRenderedRow]) -> list[ContextRenderedRun]:
         runs: list[ContextRenderedRun] = []
         current_rows: list[ContextRenderedRow] = []
@@ -287,6 +402,49 @@ class ContextStageBuilder:
                 "alias_entries": _build_block_alias_entries(flattened_rows, alias_table),
                 "started_at_ms": flattened_rows[0].created_at_ms if flattened_rows else 0,
                 "ended_at_ms": flattened_rows[-1].created_at_ms if flattened_rows else 0,
+            },
+        )
+
+    def _finalize_assistant_block(
+        self,
+        rows: list[ContextRenderedRow],
+        *,
+        block_index: int,
+    ) -> ContextBlockState:
+        content_blocks: list[dict[str, Any]] = []
+        if rows:
+            content_blocks.append(
+                {"type": "text", "text": _format_absolute_timestamp(rows[0].created_at_ms)}
+            )
+
+        previous_created_at_ms = rows[0].created_at_ms if rows else 0
+        for row in rows:
+            if (
+                content_blocks
+                and previous_created_at_ms
+                and row.created_at_ms - previous_created_at_ms > self._config.gap_marker_ms
+            ):
+                content_blocks.append(
+                    {"type": "text", "text": _format_absolute_timestamp(row.created_at_ms)}
+                )
+            content_blocks.append({"type": "text", "text": row.text})
+            previous_created_at_ms = row.created_at_ms
+
+        token_estimate = sum(
+            estimate_text_tokens(str(block.get("text", "") or "")) for block in content_blocks
+        )
+        return ContextBlockState(
+            block_id=f"assistant-{block_index + 1:04d}",
+            kind="assistant",
+            token_estimate=token_estimate,
+            sealed=False,
+            contents=content_blocks,
+            metadata={
+                "message_count": len(rows),
+                "record_ids": [row.record_id for row in rows if row.record_id is not None],
+                "started_at_ms": rows[0].created_at_ms if rows else 0,
+                "ended_at_ms": rows[-1].created_at_ms if rows else 0,
+                "alias_entries": [],
             },
         )
 

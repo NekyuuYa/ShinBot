@@ -116,6 +116,7 @@ def build_litellm_kwargs(
     kwargs.update(provider.get("default_params") or {})
     kwargs.update(model.get("default_params") or {})
     kwargs.update(call.params)
+    _drop_empty_runtime_params(kwargs)
     kwargs["model"] = model["litellm_model"]
 
     if timeout_override is not None:
@@ -131,6 +132,15 @@ def build_litellm_kwargs(
         kwargs["input"] = call.input_data if call.input_data is not None else ""
 
     return kwargs
+
+
+def _drop_empty_runtime_params(kwargs: dict[str, Any]) -> None:
+    """Remove empty optional provider params that LiteLLM still validates."""
+
+    for key in ("thinking",):
+        value = kwargs.get(key)
+        if isinstance(value, dict) and not value:
+            kwargs.pop(key, None)
 
 
 def sanitize_litellm_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
