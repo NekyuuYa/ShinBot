@@ -82,6 +82,8 @@ def provider_request_headers(payload: dict[str, Any]) -> dict[str, str]:
 def provider_type_for_model_info(provider_type: str) -> str | None:
     if provider_type == "custom_openai":
         return "openai"
+    if provider_type == "dashscope":
+        return "dashscope"
     if provider_type == "azure_openai":
         return "azure"
     if provider_type in {"openai", "openrouter", "ollama"}:

@@ -10,6 +10,8 @@ from typing import Any
 def provider_type_for_litellm(provider_type: str) -> str | None:
     if provider_type == "custom_openai":
         return "openai"
+    if provider_type == "dashscope":
+        return "dashscope"
     if provider_type == "azure_openai":
         return "azure"
     return None
@@ -134,7 +136,8 @@ def extract_usage(response: Any) -> dict[str, Any]:
             or 0
         ),
         "cache_write_tokens": int(
-            usage.get("cache_creation_input_tokens")
+            prompt_details.get("cache_creation_input_tokens")
+            or usage.get("cache_creation_input_tokens")
             or usage.get("cache_write_input_tokens")
             or usage.get("cache_write_tokens")
             or 0

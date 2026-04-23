@@ -489,6 +489,7 @@ class TestMessagePipeline:
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
                 attention_multiplier: float = 1.0,
+                self_platform_id: str = "",
             ) -> None:
                 self.calls.append(
                     {
@@ -499,6 +500,7 @@ class TestMessagePipeline:
                         "is_mentioned": is_mentioned,
                         "is_reply_to_bot": is_reply_to_bot,
                         "attention_multiplier": attention_multiplier,
+                        "self_platform_id": self_platform_id,
                     }
                 )
 
@@ -519,6 +521,7 @@ class TestMessagePipeline:
 
         assert len(scheduler.calls) == 1
         assert scheduler.calls[0]["is_reply_to_bot"] is True
+        assert scheduler.calls[0]["self_platform_id"] == "bot-1"
 
     @pytest.mark.asyncio
     async def test_non_message_event(self):
@@ -704,6 +707,7 @@ class TestMessagePipeline:
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
                 attention_multiplier: float = 1.0,
+                self_platform_id: str = "",
             ) -> None:
                 self.calls.append(
                     {
@@ -753,6 +757,7 @@ class TestMessagePipeline:
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
                 attention_multiplier: float = 1.0,
+                self_platform_id: str = "",
             ) -> None:
                 self.calls.append(
                     {
@@ -799,6 +804,7 @@ class TestMessagePipeline:
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
                 attention_multiplier: float = 1.0,
+                self_platform_id: str = "",
             ) -> None:
                 self.calls.append(
                     {
@@ -848,6 +854,7 @@ class TestMessagePipeline:
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
                 attention_multiplier: float = 1.0,
+                self_platform_id: str = "",
             ) -> None:
                 self.calls.append(
                     {
@@ -915,6 +922,7 @@ class TestMessagePipeline:
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
                 attention_multiplier: float = 1.0,
+                self_platform_id: str = "",
             ) -> None:
                 self.calls.append({"response_profile": response_profile})
 
@@ -964,6 +972,7 @@ class TestMessagePipeline:
                 is_mentioned: bool = False,
                 is_reply_to_bot: bool = False,
                 attention_multiplier: float = 1.0,
+                self_platform_id: str = "",
             ) -> None:
                 self.calls.append(
                     {

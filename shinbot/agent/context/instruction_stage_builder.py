@@ -83,8 +83,7 @@ class InstructionStageBuilder:
         now_ms: int | None,
     ) -> list[dict[str, Any]]:
         sender_id = str(record.get("sender_id", "") or "").strip()
-        sender_name = str(record.get("sender_name", "") or "").strip()
-        sender_label = alias_table.format_sender(sender_id) if sender_id else (sender_name or "unknown")
+        sender_label = _resolve_sender_label(record, alias_table, self_platform_id)
         relative_time = _format_relative_timestamp(record.get("created_at"), now_ms=now_ms)
         parts = parse_message_parts(record, self_platform_id=self_platform_id)
         if not parts:
@@ -115,40 +114,34 @@ class InstructionStageBuilder:
         message_id = f"{session_state.message_ids.assign(_record_key(record)):04d}"
         header = f"[{relative_time}] [msgid: {message_id}]{sender_label}: "
         blocks: list[dict[str, Any]] = []
-        has_non_text_part = any(part.kind != "text" for part in parts)
-        has_multiple_parts = len(parts) > 1
-        requires_closure = has_non_text_part or has_multiple_parts
+        inline_fragments: list[str] = []
+        requires_closure = False
+
+        def append_inline(fragment: str) -> None:
+            if fragment:
+                inline_fragments.append(fragment)
+
+        def flush_inline() -> None:
+            if not inline_fragments:
+                return
+            text = "".join(inline_fragments)
+            blocks.append({"type": "text", "text": header + text if not blocks else text})
+            inline_fragments.clear()
 
         for part in parts:
             if part.kind == "text":
-                text = part.text or ""
-                if not blocks:
-                    blocks.append({"type": "text", "text": header + text})
-                else:
-                    blocks.append({"type": "text", "text": text})
+                append_inline(part.text or "")
                 continue
 
             if part.kind == "mention":
-                mention_text = _format_mention(part, alias_table, self_platform_id)
-                if not blocks:
-                    blocks.append({"type": "text", "text": header + mention_text})
-                else:
-                    blocks.append({"type": "text", "text": mention_text})
+                append_inline(_format_mention(part, alias_table, self_platform_id))
+                continue
+
+            if part.kind == "quote":
+                append_inline(_format_quote(part))
                 continue
 
             if part.kind == "poke":
-                poke_text = self._render_poke_only(
-                    relative_time=relative_time,
-                    sender_id=sender_id,
-                    sender_label=sender_label,
-                    part=part,
-                    alias_table=alias_table,
-                    self_platform_id=self_platform_id,
-                )
-                if not blocks:
-                    blocks.append({"type": "text", "text": header + poke_text})
-                else:
-                    blocks.append({"type": "text", "text": poke_text})
                 continue
 
             if part.kind == "image" and part.image is not None:
@@ -175,19 +168,11 @@ class InstructionStageBuilder:
                         reference.image_id,
                         fallback_summary=reference.summary_text,
                     )
-                    marker_text = f"$附图片[id: {reference.image_id}] {sticker_text}".strip()
-                    if not blocks:
-                        blocks.append({"type": "text", "text": header + marker_text})
-                    else:
-                        blocks.append({"type": "text", "text": marker_text})
+                    append_inline(f"$附图片[id: {reference.image_id}] {sticker_text}".strip())
                     continue
 
-                marker_text = f"$附图片[id: {reference.image_id}]"
-                if not blocks:
-                    blocks.append({"type": "text", "text": header + marker_text})
-                else:
-                    blocks.append({"type": "text", "text": marker_text})
-
+                append_inline(f"$附图片[id: {reference.image_id}]")
+                flush_inline()
                 image_block = _build_image_block(part.image.source_path)
                 if image_block is not None:
                     blocks.append(image_block)
@@ -198,7 +183,9 @@ class InstructionStageBuilder:
                             "text": f"[图片缺失 id:{reference.image_id}]",
                         }
                     )
+                requires_closure = True
 
+        flush_inline()
         if not blocks:
             blocks.append({"type": "text", "text": header + "[无文本]"})
 
@@ -229,10 +216,22 @@ class InstructionStageBuilder:
                 return resolved
         return f"[表情转述待补充 id:{image_id}]"
 
-    @staticmethod
+    @classmethod
     def _render_poke_only(
+        cls,
         *,
         relative_time: str,
+        sender_id: str,
+        sender_label: str,
+        part: NormalizedMessagePart,
+        alias_table: SessionAliasTable,
+        self_platform_id: str,
+    ) -> str:
+        return f"[{relative_time}] {cls._format_poke_fragment(sender_id=sender_id, sender_label=sender_label, part=part, alias_table=alias_table, self_platform_id=self_platform_id)}"
+
+    @staticmethod
+    def _format_poke_fragment(
+        *,
         sender_id: str,
         sender_label: str,
         part: NormalizedMessagePart,
@@ -246,7 +245,7 @@ class InstructionStageBuilder:
         else:
             target_alias = alias_table.format_sender(target_id) if target_id else ""
             target = _format_alias_with_platform(target_alias, target_id) or "某人"
-        return f"[{relative_time}] [戳一戳: {actor} 戳了 {target} 一下]"
+        return f"[戳一戳: {actor} 戳了 {target} 一下]"
 
 
 def _build_image_block(source_path: str) -> dict[str, Any] | None:
@@ -323,6 +322,28 @@ def _format_alias_with_platform(alias: str, platform_id: str) -> str:
     return left or right
 
 
+def _is_self_record(record: dict[str, Any], self_platform_id: str) -> bool:
+    role = str(record.get("role", "") or "").strip()
+    if role == "assistant":
+        return True
+    sender_id = str(record.get("sender_id", "") or "").strip()
+    return bool(sender_id and self_platform_id and sender_id == self_platform_id)
+
+
+def _resolve_sender_label(
+    record: dict[str, Any],
+    alias_table: SessionAliasTable,
+    self_platform_id: str,
+) -> str:
+    sender_id = str(record.get("sender_id", "") or "").strip()
+    sender_name = str(record.get("sender_name", "") or "").strip()
+    if _is_self_record(record, self_platform_id):
+        return "你"
+    if sender_id:
+        return alias_table.format_sender(sender_id)
+    return sender_name or "unknown"
+
+
 def _format_mention(
     part: NormalizedMessagePart,
     alias_table: SessionAliasTable,
@@ -339,3 +360,10 @@ def _format_mention(
     if part.display_name:
         return f"[@ {part.display_name}]"
     return "[@ 某人]"
+
+
+def _format_quote(part: NormalizedMessagePart) -> str:
+    quote_id = part.quote_id.strip()
+    if quote_id:
+        return f"[引用消息 id:{quote_id}]"
+    return "[引用消息]"

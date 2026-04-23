@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from PIL import Image
 
 from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
 from shinbot.agent.attention.models import SessionAttentionState
@@ -549,6 +550,139 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
     assert any("### 行为约束" in text for text in final_texts)
     assert not any("### 当前时间" in text for text in final_texts)
     assert not any("旧上下文" in text for text in final_texts)
+
+
+@pytest.mark.asyncio
+async def test_workflow_runner_keeps_quote_and_self_mention_inline_while_splitting_images(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    instance_id = "inst-workflow"
+    session_id = f"{instance_id}:group:1"
+    _seed_workflow_runtime(db, instance_id=instance_id)
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id=instance_id,
+            session_type="group",
+            platform="qq",
+            channel_id="1",
+        )
+    )
+
+    attention_engine = AttentionEngine(AttentionConfig(), db.attention)
+    attention_state = SessionAttentionState(
+        session_id=session_id,
+        attention_value=6.0,
+        last_consumed_msg_log_id=1,
+        last_trigger_msg_log_id=1,
+        metadata={"self_platform_id": "3575371140"},
+    )
+    attention_engine.repo.save_attention(attention_state)
+
+    adapter = MockAdapter(instance_id=instance_id, platform="qq")
+    adapter_manager = AdapterManager()
+    adapter_manager._instances[instance_id] = adapter
+
+    registry = ToolRegistry()
+    register_attention_tools(registry, attention_engine, adapter_manager, db)
+    tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    identity_store = IdentityStore(tmp_path / "identities.json")
+    context_manager = ContextManager(db.message_logs, identity_store=identity_store)
+    prompt_registry = PromptRegistry(
+        context_manager=context_manager,
+        identity_store=identity_store,
+    )
+    register_identity_prompt_components(
+        prompt_registry,
+        resolver=prompt_registry.resolve_builtin_identity_map_prompt,
+    )
+    register_runtime_prompt_components(
+        prompt_registry,
+        message_text_resolver=prompt_registry.resolve_builtin_message_text_prompt,
+        current_time_resolver=prompt_registry.resolve_builtin_current_time_prompt,
+    )
+
+    runtime = QueuedModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps(
+                                {"text": "收到", "terminate_round": True},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+
+    image_path = tmp_path / "prompt-inline.png"
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(image_path)
+
+    runner = WorkflowRunner(
+        db,
+        prompt_registry,
+        runtime,
+        tool_manager,
+        attention_engine,
+        adapter_manager,
+    )
+
+    batch = [
+        {
+            "id": 2,
+            "session_id": session_id,
+            "platform_msg_id": "msg-2",
+            "sender_id": "1917419834",
+            "sender_name": "Ginkoro",
+            "raw_text": "回复一下",
+            "is_mentioned": 1,
+            "created_at": 2_000.0,
+            "content_json": json.dumps(
+                [
+                    MessageElement.quote("quoted-msg").model_dump(mode="json"),
+                    MessageElement.at(id="3575371140").model_dump(mode="json"),
+                    MessageElement.text("后面的文本").model_dump(mode="json"),
+                    MessageElement.img(str(image_path)).model_dump(mode="json"),
+                ],
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    record = await runner.run(
+        session_id,
+        batch,
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    assert record is not None
+    assert record.replied is True
+    assert len(runtime.calls) == 1
+
+    call_messages = runtime.calls[0].messages
+    final_user_message = [message for message in call_messages if message["role"] == "user"][-1]
+    content_blocks = final_user_message["content"]
+
+    message_text_block = next(
+        str(block.get("text", ""))
+        for block in content_blocks
+        if "[引用消息 id:quoted-msg]" in str(block.get("text", ""))
+    )
+
+    assert "[引用消息 id:quoted-msg][@ 你]后面的文本$附图片[id:" in message_text_block
+    assert not any(str(block.get("text", "")).strip() == "[@ 你]" for block in content_blocks)
+    assert any(block.get("type") == "image_url" for block in content_blocks)
+    assert any(str(block.get("text", "")) == "$该消息结束" for block in content_blocks)
 
 
 @pytest.mark.asyncio

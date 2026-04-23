@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -83,3 +84,41 @@ def test_incremental_consumption_caps_attention_under_threshold(tmp_path):
     refreshed = db.attention.get_or_create_attention(session_id)
     assert refreshed.last_consumed_msg_log_id == msg_id
     assert refreshed.attention_value < 5.0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_self_platform_id_in_attention_metadata(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:g1"
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id="inst",
+            session_type="group",
+            channel_id="g1",
+        )
+    )
+    msg_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="@bot hello",
+            sender_id="u1",
+            created_at=time.time() * 1000,
+        )
+    )
+
+    config = AttentionConfig(base_threshold=999.0)
+    scheduler = AttentionScheduler(AttentionEngine(config, db.attention), db, config)
+
+    await scheduler.on_message(
+        session_id,
+        msg_id,
+        "u1",
+        self_platform_id="bot-42",
+    )
+    await asyncio.sleep(0)
+
+    refreshed = db.attention.get_or_create_attention(session_id)
+    assert refreshed.metadata.get("self_platform_id") == "bot-42"

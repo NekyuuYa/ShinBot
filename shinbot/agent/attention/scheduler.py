@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+SELF_PLATFORM_ID_METADATA_KEY = "self_platform_id"
+
 # Type for the workflow dispatch callback
 WorkflowDispatcher = Callable[
     [str, list[dict[str, Any]], SessionAttentionState, str],
@@ -76,6 +78,7 @@ class AttentionScheduler:
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
         attention_multiplier: float = 1.0,
+        self_platform_id: str = "",
     ) -> None:
         """Called by the pipeline for each incoming group message after persistence.
 
@@ -103,6 +106,14 @@ class AttentionScheduler:
                 recent_mention_count=recent_mention_count,
                 attention_multiplier=attention_multiplier,
             )
+
+            normalized_self_platform_id = str(self_platform_id or "").strip()
+            if normalized_self_platform_id and (
+                str(state.metadata.get(SELF_PLATFORM_ID_METADATA_KEY) or "").strip()
+                != normalized_self_platform_id
+            ):
+                state.metadata[SELF_PLATFORM_ID_METADATA_KEY] = normalized_self_platform_id
+                self._engine.repo.save_attention(state)
 
             if not triggered:
                 return

@@ -152,6 +152,8 @@ class WorkflowRunner:
 
         # ── Initial prompt assembly ────────────────────────────────
 
+        self_platform_id = str(attention_state.metadata.get("self_platform_id", "") or "").strip()
+
         request = PromptAssemblyRequest(
             caller="attention.workflow_runner",
             session_id=session_id,
@@ -172,6 +174,7 @@ class WorkflowRunner:
                 session_id,
                 batch,
                 previous_summary=str(attention_state.metadata.get("internal_summary", "") or ""),
+                self_platform_id=self_platform_id,
             ),
             metadata={
                 "trigger": "attention_workflow",
@@ -464,6 +467,7 @@ class WorkflowRunner:
         batch: list[dict[str, Any]],
         *,
         previous_summary: str = "",
+        self_platform_id: str = "",
     ) -> dict[str, Any]:
         session = self._database.sessions.get(session_id)
         platform = str((session or {}).get("platform", "") or "").strip()
@@ -483,6 +487,7 @@ class WorkflowRunner:
             "identity_turns": turns,
             "unread_records": [dict(msg) for msg in batch],
             "previous_summary": previous_summary.strip(),
+            "self_user_id": self_platform_id,
         }
 
     async def _maybe_build_context_compression(

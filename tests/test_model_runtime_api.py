@@ -824,6 +824,67 @@ def test_provider_probe_custom_openai_uses_openai_provider_hint(
     assert captured["custom_llm_provider"] == "openai"
 
 
+def test_provider_probe_dashscope_uses_dashscope_provider_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        provider_resp = client.post(
+            "/api/v1/model-runtime/providers",
+            headers=headers,
+            json={
+                "id": "dashscope-main",
+                "type": "dashscope",
+                "displayName": "DashScope Main",
+                "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "auth": {"api_key": "secret"},
+            },
+        )
+        assert provider_resp.status_code == 201
+
+        model_resp = client.post(
+            "/api/v1/model-runtime/models",
+            headers=headers,
+            json={
+                "id": "dashscope-main/qwen",
+                "providerId": "dashscope-main",
+                "litellmModel": "qwen3.5-flash",
+                "displayName": "Qwen Flash",
+                "capabilities": ["chat"],
+                "enabled": True,
+            },
+        )
+        assert model_resp.status_code == 201
+
+        captured: dict[str, Any] = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return {
+                "model": kwargs["model"],
+                "choices": [{"message": {"content": "pong"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+        monkeypatch.setattr(
+            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
+        )
+
+        response = client.post(
+            "/api/v1/model-runtime/providers/dashscope-main/probe",
+            headers=headers,
+            json={},
+        )
+
+    assert response.status_code == 200
+    assert captured["model"] == "qwen3.5-flash"
+    assert captured["api_base"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert captured["custom_llm_provider"] == "dashscope"
+
+
 def test_provider_and_route_path_ids_support_nested_segments(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     app = create_api_app(bot, _BootStub(tmp_path))

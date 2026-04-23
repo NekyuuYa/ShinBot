@@ -823,6 +823,7 @@ class MessagePipeline:
                     is_mentioned=is_mentioned,
                     is_reply_to_bot=bot.is_reply_to_bot(),
                     attention_multiplier=attention_multiplier,
+                    self_platform_id=event.self_id,
                 ),
                 name=f"attention-{session_id}",
             )

@@ -159,8 +159,7 @@ class ContextStageBuilder:
         self_platform_id: str = "",
     ) -> ContextRenderedRow | None:
         sender_id = str(record.get("sender_id", "") or "").strip()
-        sender_name = str(record.get("sender_name", "") or "").strip()
-        sender_label = alias_table.format_sender(sender_id) if sender_id else (sender_name or "unknown")
+        sender_label = _resolve_sender_label(record, alias_table, self_platform_id)
         created_at_ms = _coerce_timestamp_ms(record.get("created_at"))
         parts = parse_message_parts(record, self_platform_id=self_platform_id)
         if not parts:
@@ -187,7 +186,12 @@ class ContextStageBuilder:
                 record_id=record.get("id") if isinstance(record.get("id"), int) else None,
                 is_referenceable=False,
                 metadata={
-                    "referenced_platform_ids": _collect_referenced_platform_ids(sender_id, parts),
+                    "referenced_platform_ids": _collect_referenced_platform_ids(
+                        sender_id,
+                        parts,
+                        self_platform_id=self_platform_id,
+                        include_sender=not _is_self_record(record, self_platform_id),
+                    ),
                 },
             )
 
@@ -209,7 +213,12 @@ class ContextStageBuilder:
             message_id=message_id,
             record_id=record.get("id") if isinstance(record.get("id"), int) else None,
             metadata={
-                "referenced_platform_ids": _collect_referenced_platform_ids(sender_id, parts),
+                "referenced_platform_ids": _collect_referenced_platform_ids(
+                    sender_id,
+                    parts,
+                    self_platform_id=self_platform_id,
+                    include_sender=not _is_self_record(record, self_platform_id),
+                ),
             },
         )
 
@@ -300,6 +309,10 @@ class ContextStageBuilder:
                 fragments.append(self._format_mention(part, alias_table, self_platform_id))
                 continue
 
+            if part.kind == "quote":
+                fragments.append(self._format_quote(part))
+                continue
+
             if part.kind == "poke":
                 fragments.append(
                     self._render_poke_only(
@@ -365,6 +378,13 @@ class ContextStageBuilder:
         return "[@ 某人]"
 
     @staticmethod
+    def _format_quote(part: NormalizedMessagePart) -> str:
+        quote_id = part.quote_id.strip()
+        if quote_id:
+            return f"[引用消息 id:{quote_id}]"
+        return "[引用消息]"
+
+    @staticmethod
     def _render_poke_only(
         *,
         sender_id: str,
@@ -396,23 +416,53 @@ def _run_from_rows(rows: list[ContextRenderedRow]) -> ContextRenderedRun:
 def _collect_referenced_platform_ids(
     sender_id: str,
     parts: list[NormalizedMessagePart],
+    *,
+    self_platform_id: str = "",
+    include_sender: bool = True,
 ) -> list[str]:
     ordered_ids: list[str] = []
     seen: set[str] = set()
 
     normalized_sender_id = str(sender_id or "").strip()
-    if normalized_sender_id:
+    normalized_self_platform_id = str(self_platform_id or "").strip()
+    if (
+        include_sender
+        and normalized_sender_id
+        and normalized_sender_id != normalized_self_platform_id
+    ):
         ordered_ids.append(normalized_sender_id)
         seen.add(normalized_sender_id)
 
     for part in parts:
         target_id = str(part.platform_id or "").strip()
-        if not target_id or target_id in seen:
+        if not target_id or target_id in seen or target_id == normalized_self_platform_id:
             continue
         ordered_ids.append(target_id)
         seen.add(target_id)
 
     return ordered_ids
+
+
+def _is_self_record(record: dict[str, Any], self_platform_id: str) -> bool:
+    role = str(record.get("role", "") or "").strip()
+    if role == "assistant":
+        return True
+    sender_id = str(record.get("sender_id", "") or "").strip()
+    return bool(sender_id and self_platform_id and sender_id == self_platform_id)
+
+
+def _resolve_sender_label(
+    record: dict[str, Any],
+    alias_table: SessionAliasTable,
+    self_platform_id: str,
+) -> str:
+    sender_id = str(record.get("sender_id", "") or "").strip()
+    sender_name = str(record.get("sender_name", "") or "").strip()
+    if _is_self_record(record, self_platform_id):
+        return "你"
+    if sender_id:
+        return alias_table.format_sender(sender_id)
+    return sender_name or "unknown"
 
 
 def _build_block_alias_entries(

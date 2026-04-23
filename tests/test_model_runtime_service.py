@@ -97,8 +97,10 @@ async def test_generate_merges_provider_model_and_call_params(monkeypatch, tmp_p
             "usage": {
                 "prompt_tokens": 11,
                 "completion_tokens": 22,
-                "prompt_tokens_details": {"cached_tokens": 3},
-                "cache_creation_input_tokens": 4,
+                "prompt_tokens_details": {
+                    "cached_tokens": 3,
+                    "cache_creation_input_tokens": 4,
+                },
             },
             "_hidden_params": {"response_cost": 0.12},
         }
@@ -129,6 +131,8 @@ async def test_generate_merges_provider_model_and_call_params(monkeypatch, tmp_p
     assert records[0]["session_id"] == "inst1:group:g1"
     assert records[0]["input_tokens"] == 11
     assert records[0]["cache_hit"] is True
+    assert records[0]["cache_read_tokens"] == 3
+    assert records[0]["cache_write_tokens"] == 4
     assert records[0]["metadata"]["trace_id"] == "trace-1"
 
 

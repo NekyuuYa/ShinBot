@@ -23,6 +23,7 @@ from shinbot.agent.prompt_manager.schema import (
 from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.persistence import DatabaseManager, MessageLogRecord
+from shinbot.schema.elements import MessageElement
 
 
 @pytest.mark.asyncio
@@ -387,3 +388,94 @@ def test_context_manager_requests_alias_rebuild_after_eviction(tmp_path) -> None
     assert "当前活跃成员映射" in rebuilt_text
     assert context_manager.get_alias_table(session_id).last_rebuild_ms == 3_101
     assert context_manager.get_alias_table(session_id).pending_rebuild is False
+
+
+def test_context_manager_does_not_allocate_aliases_to_bot_self_messages(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:self-alias"
+    self_platform_id = "3575371140"
+
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="[@你] hello",
+            sender_id="1917419834",
+            sender_name="Ginkoro",
+            created_at=1_000,
+            is_read=True,
+            content_json=json.dumps(
+                [
+                    MessageElement.at(id=self_platform_id).model_dump(mode="json"),
+                    MessageElement.text(" hello").model_dump(mode="json"),
+                ],
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="assistant",
+            raw_text="普通回复",
+            sender_id=self_platform_id,
+            sender_name="",
+            created_at=1_100,
+            is_read=True,
+            content_json=json.dumps(
+                [MessageElement.text("普通回复").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="assistant",
+            raw_text="工具回复",
+            sender_id="onebot_v11",
+            sender_name="",
+            created_at=1_200,
+            is_read=True,
+            content_json=json.dumps(
+                [MessageElement.text("工具回复").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        )
+    )
+
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
+
+    context_messages = context_manager.build_context_stage_messages(
+        session_id,
+        self_platform_id=self_platform_id,
+        now_ms=2_000,
+    )
+    active_text = context_manager.build_active_alias_constraint_text(
+        session_id,
+        now_ms=2_000,
+    )
+    state = context_manager.get_session_state(session_id)
+
+    joined_text = "\n".join(
+        str(block.get("text", ""))
+        for message in context_messages
+        for block in message.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    alias_entries = [
+        entry
+        for block in state.blocks
+        for entry in block.metadata.get("alias_entries", [])
+        if isinstance(entry, dict)
+    ]
+
+    assert "3575371140" not in active_text
+    assert "onebot_v11" not in active_text
+    assert "Ginkoro" in active_text
+    assert "[@ 你] hello" in joined_text
+    assert "你: 普通回复" in joined_text
+    assert "你: 工具回复" in joined_text
+    assert all(entry.get("platform_id") != self_platform_id for entry in alias_entries)
+    assert all(entry.get("platform_id") != "onebot_v11" for entry in alias_entries)

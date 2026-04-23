@@ -107,6 +107,9 @@ class SessionAliasTable:
         stats: dict[str, AliasEntry] = {}
         sender_platforms: dict[str, str] = {}
         for message in messages:
+            role = str(message.get("role", "") or "").strip()
+            if role == "assistant":
+                continue
             platform_id = str(message.get("sender_id", "") or "").strip()
             if not platform_id:
                 continue
