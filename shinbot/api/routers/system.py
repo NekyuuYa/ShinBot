@@ -7,7 +7,13 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from shinbot.api.deps import AuthConfigDep, AuthRequired, RuntimeControlDep, SystemUpdateDep
+from shinbot.api.deps import (
+    AuthConfigDep,
+    AuthRequired,
+    DashboardDistUpdateDep,
+    RuntimeControlDep,
+    SystemUpdateDep,
+)
 from shinbot.api.models import EC, ok
 from shinbot.core.application.runtime_control import RestartReason
 from shinbot.core.application.system_update import SystemUpdateError
@@ -138,6 +144,69 @@ async def pull_update_and_restart(
             code = EC.UPDATE_FAILED
         elif code in {"UPDATE_NOT_ALLOWED", "RESTART_ALREADY_REQUESTED"}:
             code = EC.RESTART_ALREADY_REQUESTED if code == "RESTART_ALREADY_REQUESTED" else EC.UPDATE_NOT_ALLOWED
+        message = exc.message
+        if exc.output:
+            message = f"{message}: {exc.output}"
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": code,
+                "message": message,
+            },
+        ) from exc
+
+    return ok(result)
+
+
+@router.get("/dashboard-dist")
+async def get_dashboard_dist_update_state(
+    auth_config: AuthConfigDep,
+    dashboard_dist_update=DashboardDistUpdateDep,
+):
+    try:
+        status = await dashboard_dist_update.inspect()
+    except SystemUpdateError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": EC.UPDATE_FAILED,
+                "message": exc.message,
+            },
+        ) from exc
+
+    guarded = dict(status)
+    guarded["credentialsChangeRequired"] = auth_config.is_using_default_credentials()
+    if auth_config.is_using_default_credentials():
+        guarded["canUpdate"] = False
+        guarded["blockCode"] = "default_credentials"
+        guarded["blockMessage"] = "WebUI dist update is disabled while using default admin credentials"
+    return ok(guarded)
+
+
+@router.post("/dashboard-dist/update")
+async def update_dashboard_dist(
+    auth_config: AuthConfigDep,
+    dashboard_dist_update=DashboardDistUpdateDep,
+):
+    if auth_config.is_using_default_credentials():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": EC.UPDATE_NOT_ALLOWED,
+                "message": "WebUI dist update is disabled while using default admin credentials",
+            },
+        )
+
+    try:
+        result = await dashboard_dist_update.update_dist()
+    except SystemUpdateError as exc:
+        code = exc.code
+        if code == "UPDATE_ALREADY_RUNNING":
+            code = EC.UPDATE_ALREADY_RUNNING
+        elif code == "UPDATE_FAILED":
+            code = EC.UPDATE_FAILED
+        elif code == "UPDATE_NOT_ALLOWED":
+            code = EC.UPDATE_NOT_ALLOWED
         message = exc.message
         if exc.output:
             message = f"{message}: {exc.output}"

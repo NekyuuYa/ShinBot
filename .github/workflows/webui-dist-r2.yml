@@ -1,0 +1,70 @@
+name: Build WebUI Dist To Cloudflare R2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - dashboard/**
+      - .github/workflows/webui-dist-r2.yml
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.CF_R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.CF_R2_BUCKET }}
+      R2_OBJECT_KEY: ${{ vars.CF_R2_WEBUI_DIST_KEY || 'dist/webui-dist.zip' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.8.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: pnpm build
+
+      - name: Package dashboard dist
+        run: |
+          cd dashboard/dist
+          zip -r ../../webui-dist.zip .
+          cd ../..
+          sha256sum webui-dist.zip | awk '{print $1}' > webui-dist.zip.sha256
+
+      - name: Upload WebUI dist to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          aws s3 cp webui-dist.zip "s3://${R2_BUCKET}/${R2_OBJECT_KEY}" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type "application/zip" \
+            --cache-control "no-cache"
+          aws s3 cp webui-dist.zip.sha256 "s3://${R2_BUCKET}/${R2_OBJECT_KEY}.sha256" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type "text/plain; charset=utf-8" \
+            --cache-control "no-cache"

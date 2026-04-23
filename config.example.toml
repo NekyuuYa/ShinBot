@@ -84,6 +84,10 @@ jwt_expire_hours = 24
 # cors_origins = ["http://localhost:5173"]  # Vite dev server; defaults to ["*"]
 # update_repo = "."               # Optional fixed repo path for safe WebUI update + restart
 # update_allowed_branches = ["main", "master"]
+# dashboard_dist_update_zip = "https://shinbot.nekyu.top/dist/webui-dist.zip"  # Optional prebuilt WebUI dist zip
+# dashboard_dist_update_zip_sha256 = ""                       # Optional static integrity pin for the zip
+# dashboard_dist_update_zip_sha256_url = "https://shinbot.nekyu.top/dist/webui-dist.zip.sha256"
+# dashboard_dist_update_package_max_bytes = 104857600
 
 # Bind users or sessions to permission groups.
 # Groups: "default" (basic cmds), "admin" (tools.*), "owner" (all)
