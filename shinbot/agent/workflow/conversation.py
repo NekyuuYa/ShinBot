@@ -272,7 +272,6 @@ class WorkflowRunner:
                     runtime_config=runtime_config,
                     default_route_id=route_id,
                     default_model_id=model_id,
-                    default_model_context_window=model_context_window,
                     default_model_target=model_target,
                 )
                 self._context_manager.apply_usage_eviction(
@@ -500,7 +499,6 @@ class WorkflowRunner:
         runtime_config: dict[str, Any],
         default_route_id: str,
         default_model_id: str,
-        default_model_context_window: int | None,
         default_model_target: str,
     ) -> str:
         if self._context_manager is None:
@@ -521,19 +519,17 @@ class WorkflowRunner:
 
         route_id = default_route_id
         model_id = default_model_id
-        model_context_window = default_model_context_window
         resolved_target = default_model_target
 
         compression_target = str(runtime_config.get("context_compression_llm") or "").strip()
         if compression_target:
-            resolved_route_id, resolved_model_id, resolved_window = resolve_model_target(
+            resolved_route_id, resolved_model_id, _resolved_window = resolve_model_target(
                 self._database,
                 compression_target,
             )
             if resolved_route_id or resolved_model_id:
                 route_id = resolved_route_id
                 model_id = resolved_model_id
-                model_context_window = resolved_window
                 resolved_target = compression_target
             else:
                 logger.warning(
@@ -563,7 +559,6 @@ class WorkflowRunner:
                     session_id=session_id,
                     instance_id=instance_id,
                     purpose="context_compression",
-                    model_context_window=model_context_window,
                     messages=[
                         {"role": "system", "content": CONTEXT_COMPRESSION_SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt},
