@@ -6,6 +6,8 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from shinbot.agent.context.state_store import ContextBlockState
+
 
 @dataclass(slots=True)
 class PromptMemoryProjectionRequest:
@@ -42,6 +44,57 @@ class PromptBlockProjection:
 
     def to_content_blocks(self) -> list[dict[str, Any]]:
         return [{"type": "text", "text": text} for text in self.text_parts]
+
+
+@dataclass(slots=True)
+class LegacyBlockAdapter:
+    """Adapter around the legacy ContextBlockState prompt-shaped storage."""
+
+    block: Any
+
+    @classmethod
+    def from_projection(cls, projection: PromptBlockProjection) -> ContextBlockState:
+        return ContextBlockState(
+            block_id=projection.block_id,
+            kind=projection.kind,
+            token_estimate=projection.token_estimate,
+            sealed=projection.sealed,
+            contents=projection.to_content_blocks(),
+            metadata=dict(projection.metadata),
+        )
+
+    def content_blocks(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in getattr(self.block, "contents", []) if isinstance(item, dict)]
+
+    def text_parts(self) -> list[str]:
+        parts: list[str] = []
+        for content_block in self.content_blocks():
+            if str(content_block.get("type") or "") != "text":
+                continue
+            text = str(content_block.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        return parts
+
+    def to_prompt_message(self) -> dict[str, Any]:
+        role = "assistant" if getattr(self.block, "kind", "") == "assistant" else "user"
+        return {"role": role, "content": self.content_blocks()}
+
+
+def projection_to_context_block(projection: PromptBlockProjection) -> ContextBlockState:
+    return LegacyBlockAdapter.from_projection(projection)
+
+
+def block_content_blocks(block: Any) -> list[dict[str, Any]]:
+    return LegacyBlockAdapter(block).content_blocks()
+
+
+def block_text_parts(block: Any) -> list[str]:
+    return LegacyBlockAdapter(block).text_parts()
+
+
+def block_to_prompt_message(block: Any) -> dict[str, Any]:
+    return LegacyBlockAdapter(block).to_prompt_message()
 
 
 @dataclass(slots=True)

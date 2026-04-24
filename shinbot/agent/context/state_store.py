@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +70,125 @@ class CompressedMemoryState:
 
 
 @dataclass(slots=True)
+class OpenBlockState:
+    """Mutable tail block in short-term context memory."""
+
+    block: ContextBlockState | None = None
+
+    def to_legacy_block(self) -> ContextBlockState | None:
+        return self.block
+
+
+@dataclass(slots=True)
+class SealedBlockDequeState:
+    """Time-ordered sealed short-term blocks."""
+
+    blocks: list[ContextBlockState] = field(default_factory=list)
+
+    def append(self, block: ContextBlockState) -> None:
+        self.blocks.append(block)
+
+    def popleft(self) -> ContextBlockState | None:
+        if not self.blocks:
+            return None
+        return self.blocks.pop(0)
+
+    def head(self, count: int) -> list[ContextBlockState]:
+        if count <= 0:
+            return []
+        return list(self.blocks[:count])
+
+    def drop_head(self, count: int) -> list[ContextBlockState]:
+        if count <= 0:
+            return []
+        removed = self.head(count)
+        self.blocks = self.blocks[len(removed) :]
+        return removed
+
+    def to_legacy_blocks(self) -> list[ContextBlockState]:
+        return list(self.blocks)
+
+
+@dataclass(slots=True)
+class ShortTermMemoryState:
+    """Short-term memory view backed by legacy context blocks during migration."""
+
+    sealed_blocks: SealedBlockDequeState = field(default_factory=SealedBlockDequeState)
+    open_block: OpenBlockState = field(default_factory=OpenBlockState)
+
+    @classmethod
+    def from_legacy_blocks(cls, blocks: list[ContextBlockState]) -> ShortTermMemoryState:
+        if not blocks:
+            return cls()
+        if blocks[-1].sealed:
+            return cls(sealed_blocks=SealedBlockDequeState(list(blocks)))
+        sealed = list(blocks[:-1])
+        open_block = blocks[-1]
+        return cls(
+            sealed_blocks=SealedBlockDequeState(sealed),
+            open_block=OpenBlockState(open_block),
+        )
+
+    def to_legacy_blocks(self) -> list[ContextBlockState]:
+        blocks = self.sealed_blocks.to_legacy_blocks()
+        open_block = self.open_block.to_legacy_block()
+        if open_block is not None:
+            blocks.append(open_block)
+        return blocks
+
+    def has_blocks(self) -> bool:
+        return bool(self.sealed_blocks.blocks or self.open_block.block is not None)
+
+    def block_count(self) -> int:
+        return len(self.to_legacy_blocks())
+
+    def cacheable_prefix_count(self) -> int:
+        sealed_count = len(self.sealed_blocks.blocks)
+        if self.open_block.block is None:
+            return max(0, sealed_count - 1)
+        return sealed_count
+
+    def cacheable_prefix_blocks(self) -> list[ContextBlockState]:
+        return self.sealed_blocks.head(self.cacheable_prefix_count())
+
+    def select_head_for_eviction(self, evict_ratio: float) -> list[ContextBlockState]:
+        sealed_count = len(self.sealed_blocks.blocks)
+        if sealed_count:
+            evict_count = max(1, int(math.ceil(sealed_count * evict_ratio)))
+            return self.sealed_blocks.head(evict_count)
+        open_block = self.open_block.to_legacy_block()
+        return [open_block] if open_block is not None else []
+
+    def evict_head(self, evict_ratio: float) -> list[ContextBlockState]:
+        sealed_count = len(self.sealed_blocks.blocks)
+        if sealed_count:
+            evict_count = max(1, int(math.ceil(sealed_count * evict_ratio)))
+            return self.sealed_blocks.drop_head(evict_count)
+        open_block = self.open_block.to_legacy_block()
+        if open_block is None:
+            return []
+        self.open_block = OpenBlockState()
+        return [open_block]
+
+    def evict_selected_head(self, selected_blocks: list[ContextBlockState]) -> list[ContextBlockState]:
+        if not selected_blocks:
+            return []
+
+        selected_ids = [block.block_id for block in selected_blocks]
+        sealed_ids = [block.block_id for block in self.sealed_blocks.blocks[: len(selected_ids)]]
+        if sealed_ids == selected_ids:
+            return self.sealed_blocks.drop_head(len(selected_blocks))
+
+        open_block = self.open_block.to_legacy_block()
+        if len(selected_blocks) == 1 and open_block is not None:
+            if selected_blocks[0].block_id == open_block.block_id:
+                self.open_block = OpenBlockState()
+                return [open_block]
+
+        return []
+
+
+@dataclass(slots=True)
 class ContextSessionState:
     session_id: str
     alias_table: SessionAliasTable = field(default_factory=lambda: SessionAliasTable(session_id=""))
@@ -88,6 +208,23 @@ class ContextSessionState:
     def __post_init__(self) -> None:
         if not self.alias_table.session_id:
             self.alias_table.session_id = self.session_id
+
+    def legacy_blocks(self) -> list[ContextBlockState]:
+        """Return the legacy prompt-shaped block list."""
+        return self.short_term_memory().to_legacy_blocks()
+
+    def set_legacy_blocks(self, blocks: list[ContextBlockState]) -> None:
+        """Replace the legacy prompt-shaped block list."""
+        self.set_short_term_memory(ShortTermMemoryState.from_legacy_blocks(list(blocks)))
+
+    def has_legacy_blocks(self) -> bool:
+        return self.short_term_memory().has_blocks()
+
+    def short_term_memory(self) -> ShortTermMemoryState:
+        return ShortTermMemoryState.from_legacy_blocks(list(self.blocks))
+
+    def set_short_term_memory(self, memory: ShortTermMemoryState) -> None:
+        self.blocks = memory.to_legacy_blocks()
 
     def to_dict(self) -> dict[str, Any]:
         return {

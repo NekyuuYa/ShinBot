@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 from shinbot.agent.context.alias_table import SessionAliasTable
 from shinbot.agent.context.image_summary import ContextImageRegistry
 from shinbot.agent.context.message_parts import NormalizedMessagePart, parse_message_parts
-from shinbot.agent.context.projection import ContextProjectionState, PromptBlockProjection
+from shinbot.agent.context.projection import (
+    ContextProjectionState,
+    PromptBlockProjection,
+    block_to_prompt_message,
+    projection_to_context_block,
+)
 from shinbot.agent.context.state_store import ContextBlockState, ContextSessionState
 from shinbot.agent.context.token_utils import estimate_text_tokens
 
@@ -154,8 +159,8 @@ class ContextStageBuilder:
             ),
             self_platform_id=self_platform_id,
         )
-        session_state.blocks = blocks
-        return [{"role": "user", "content": list(block.contents)} for block in blocks]
+        session_state.set_legacy_blocks(blocks)
+        return [block_to_prompt_message(block) for block in blocks]
 
     def build_assistant_blocks(
         self,
@@ -379,7 +384,7 @@ class ContextStageBuilder:
             block_index=block_index,
             alias_table=alias_table,
         )
-        return _projection_to_block_state(projection)
+        return projection_to_context_block(projection)
 
     def _project_block(
         self,
@@ -427,7 +432,7 @@ class ContextStageBuilder:
         block_index: int,
     ) -> ContextBlockState:
         projection = self._project_assistant_block(rows, block_index=block_index)
-        return _projection_to_block_state(projection)
+        return projection_to_context_block(projection)
 
     def _project_assistant_block(
         self,
@@ -693,17 +698,6 @@ def _format_absolute_timestamp(timestamp_ms: int) -> str:
     if timestamp_ms <= 0:
         return "时间未知"
     return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%m-%d %H:%M")
-
-
-def _projection_to_block_state(projection: PromptBlockProjection) -> ContextBlockState:
-    return ContextBlockState(
-        block_id=projection.block_id,
-        kind=projection.kind,
-        token_estimate=projection.token_estimate,
-        sealed=projection.sealed,
-        contents=projection.to_content_blocks(),
-        metadata=dict(projection.metadata),
-    )
 
 
 def _format_alias_with_platform(alias: str, platform_id: str) -> str:
