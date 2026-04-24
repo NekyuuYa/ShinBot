@@ -30,6 +30,8 @@ from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
 # ── Mock adapter for testing ─────────────────────────────────────────
 
 

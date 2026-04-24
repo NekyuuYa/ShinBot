@@ -16,6 +16,8 @@ from shinbot.core.application.system_update import (
     SystemUpdateService,
 )
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
 
 class _FakeAuthConfig:
     def __init__(self, *, username: str = "admin", default_credentials: bool = True) -> None:

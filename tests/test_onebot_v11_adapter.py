@@ -19,6 +19,8 @@ from shinbot.builtin_plugins.shinbot_adapter_onebot_v11.adapter import (
 )
 from shinbot.schema.elements import Message
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
 
 class _QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A003

@@ -126,16 +126,16 @@ ShinBot/
 
 ```bash
 # 运行单元测试
-uv run pytest
+uv run --group dev python -m pytest
 
 # 静态代码质量检查与格式化
-uv run ruff check .
+uv run --group dev ruff check .
 
 # 一键发射！
 uv run main.py
 
 # 编译前端
-cd dashboard & pnpm build
+cd dashboard && pnpm build
 ```
 
 *(温馨提示：默认参考配置请查阅 [config.example.toml](config.example.toml) )*

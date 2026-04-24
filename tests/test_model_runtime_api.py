@@ -12,6 +12,8 @@ from shinbot.api.routers.model_runtime import get_cost_analysis
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import ModelDefinitionRecord, ModelExecutionRecord, ModelProviderRecord
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
 
 class _BootStub:
     def __init__(self, data_dir: Path) -> None:

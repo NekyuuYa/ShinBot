@@ -387,7 +387,7 @@ class SystemUpdateService:
 
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             with contextlib.suppress(Exception):
@@ -978,7 +978,7 @@ class DashboardDistUpdateService:
 
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             with contextlib.suppress(Exception):

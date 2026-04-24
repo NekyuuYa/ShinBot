@@ -29,6 +29,14 @@ include = ["shinbot*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-q --strict-markers --maxfail=1"
+asyncio_mode = "auto"
+markers = [
+    "unit: fast unit-level tests with isolated dependencies",
+    "integration: tests that cover cross-module interactions or external boundaries",
+    "slow: tests expected to have noticeably longer execution time",
+    "e2e: end-to-end scenario tests",
+]
 
 [dependency-groups]
 dev = [
