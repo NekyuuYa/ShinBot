@@ -397,6 +397,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         tool_calls_json TEXT NOT NULL DEFAULT '[]',
         replied INTEGER NOT NULL DEFAULT 0,
         response_summary TEXT NOT NULL DEFAULT '',
+        finish_reason TEXT NOT NULL DEFAULT '',
         started_at REAL NOT NULL,
         finished_at REAL,
         FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -811,6 +812,13 @@ def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
             """
             ALTER TABLE workflow_runs
             ADD COLUMN response_profile TEXT NOT NULL DEFAULT 'balanced'
+            """
+        )
+    if "finish_reason" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE workflow_runs
+            ADD COLUMN finish_reason TEXT NOT NULL DEFAULT ''
             """
         )
 

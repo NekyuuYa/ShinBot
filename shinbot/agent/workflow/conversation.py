@@ -54,9 +54,11 @@ class WorkflowRunner:
     - After each LLM call that produces tool calls, execute the tools.
     - Before the next LLM call, check for new messages that arrived during
       processing and merge them as incremental context.
-    - The loop terminates when the model produces a final text response,
-      calls no_reply, calls send_reply with ``terminate_round=true``, or max
-      iterations are reached.
+    - Normal progress is either non-terminal tool use or one explicit terminal
+      action: no_reply, send_reply, or send_poke.
+    - Tool-less assistant text is invalid in this runtime and is recorded as
+      an invalid_model_output finish reason.
+    - The max-iteration cap is a safety guard, not the primary exit path.
 
     All tool execution is routed through ToolManager for unified
     permission checking, auditing, and handler resolution.
@@ -220,7 +222,7 @@ class WorkflowRunner:
         tool_calls_log: list[dict[str, Any]] = []
         no_reply = False
         reply_sent = False
-        terminate_round = False
+        finish_reason = ""
         internal_summary = ""
         iteration = 0
 
@@ -257,6 +259,7 @@ class WorkflowRunner:
                     iteration,
                     session_id,
                 )
+                record.finish_reason = "model_error"
                 record.finished_at = time.time()
                 self._save_run(record)
                 return record
@@ -283,7 +286,7 @@ class WorkflowRunner:
                     now_ms=int(time.time() * 1000),
                 )
 
-            # ── No tool calls → terminal stop ──────────────────────
+            # ── No tool calls → invalid terminal stop ──────────────
             if not has_tool_calls:
                 # Tool-less assistant text is not a valid user-visible output in
                 # the workflow runtime. Log it for debugging and discard it.
@@ -295,6 +298,7 @@ class WorkflowRunner:
                         session_id,
                         iteration,
                     )
+                finish_reason = "invalid_model_output"
                 break
 
             # ── Process tool calls ─────────────────────────────────
@@ -316,7 +320,6 @@ class WorkflowRunner:
             tool_calls_log.extend(tool_outcome.tool_calls_log)
             no_reply = no_reply or tool_outcome.no_reply
             reply_sent = reply_sent or tool_outcome.reply_sent
-            terminate_round = terminate_round or tool_outcome.terminate_round
             if tool_outcome.internal_summary:
                 internal_summary = tool_outcome.internal_summary
             if tool_outcome.response_summary:
@@ -325,8 +328,9 @@ class WorkflowRunner:
 
             conversation_messages.extend(tool_outcome.tool_messages)
 
-            # Stop only when the tool batch explicitly ends the round.
-            if no_reply or terminate_round:
+            # Stop only when the tool batch explicitly ends or invalidates the round.
+            if tool_outcome.finish_reason:
+                finish_reason = tool_outcome.finish_reason
                 break
 
             # ── Incremental Merging: fetch new messages ────────────
@@ -375,6 +379,7 @@ class WorkflowRunner:
         # ── End of loop ────────────────────────────────────────────
 
         record.tool_calls = tool_calls_log
+        record.finish_reason = finish_reason or "max_iterations"
 
         if reply_sent:
             # Reply already sent via send_reply tool; apply fatigue
@@ -410,10 +415,11 @@ class WorkflowRunner:
         )
 
         logger.info(
-            "Workflow complete: session=%s replied=%s batch=%d tools=%d "
+            "Workflow complete: session=%s replied=%s finish_reason=%s batch=%d tools=%d "
             "iterations=%d duration=%.1fms",
             session_id,
             record.replied,
+            record.finish_reason,
             record.batch_size,
             len(tool_calls_log),
             iteration + 1,

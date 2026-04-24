@@ -368,8 +368,8 @@ class WorkflowRunRepository:
                     batch_start_msg_id, batch_end_msg_id, batch_size,
                     trigger_attention, effective_threshold,
                     tool_calls_json, replied, response_summary,
-                    started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    finish_reason, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -384,6 +384,7 @@ class WorkflowRunRepository:
                     _json_dumps(record.tool_calls),
                     1 if record.replied else 0,
                     record.response_summary,
+                    record.finish_reason,
                     record.started_at,
                     record.finished_at,
                 ),
@@ -418,6 +419,7 @@ class WorkflowRunRepository:
                 "tool_calls": json.loads(row["tool_calls_json"] or "[]"),
                 "replied": bool(row["replied"]),
                 "response_summary": row["response_summary"],
+                "finish_reason": row["finish_reason"],
                 "started_at": row["started_at"],
                 "finished_at": row["finished_at"],
             }

@@ -53,5 +53,6 @@ class WorkflowRunRecord:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     replied: bool = False
     response_summary: str = ""
+    finish_reason: str = ""
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None

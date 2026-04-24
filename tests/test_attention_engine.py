@@ -693,6 +693,7 @@ class TestRepository:
             effective_threshold=5.0,
             replied=True,
             response_summary="hello",
+            finish_reason="send_reply",
             started_at=time.time(),
             finished_at=time.time(),
         )
@@ -702,3 +703,4 @@ class TestRepository:
         assert runs[0]["batch_size"] == 5
         assert runs[0]["response_profile"] == "immediate"
         assert runs[0]["replied"] is True
+        assert runs[0]["finish_reason"] == "send_reply"
