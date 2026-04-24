@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.context.state_store import (
+from shinbot.agent.context.state.state_store import (
     CompressedMemoryState,
     ContextBlockState,
     ContextSessionState,
@@ -57,7 +57,8 @@ def evict_context_blocks(
             "triggered": False,
             "total_tokens": total_tokens,
             "evicted_count": 0,
-            "remaining_count": len(state.legacy_blocks()),
+            "remaining_count": len(state.short_term_blocks()),
+            "source_block_ids": [],
         }
 
     memory = state.short_term_memory()
@@ -68,7 +69,8 @@ def evict_context_blocks(
             "triggered": False,
             "total_tokens": total_tokens,
             "evicted_count": 0,
-            "remaining_count": len(state.legacy_blocks()),
+            "remaining_count": len(state.short_term_blocks()),
+            "source_block_ids": [],
         }
 
     compressed = compressed_text.strip()
@@ -87,6 +89,7 @@ def evict_context_blocks(
         "triggered": True,
         "total_tokens": total_tokens,
         "evicted_count": len(evicted_blocks),
-        "remaining_count": len(state.legacy_blocks()),
+        "remaining_count": len(state.short_term_blocks()),
         "compressed_added": bool(compressed),
+        "source_block_ids": [block.block_id for block in evicted_blocks],
     }

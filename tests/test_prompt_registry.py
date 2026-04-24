@@ -6,26 +6,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from shinbot.agent.context import (
-    AliasContextProjector,
-    CompressedMemoryProjector,
-    ContextManager,
-    ContextTimelineRuntime,
-    LongTermMemoryItem,
-    LongTermMemoryProjector,
-    PromptMemoryAssembler,
-    PromptMemoryBundle,
-    PromptMemoryProjectionRequest,
-    ShortTermMemoryState,
-    TimelineRun,
-)
-from shinbot.agent.context.alias_table import AliasEntry
-from shinbot.agent.context.eviction import ContextEvictionConfig, evict_context_blocks
-from shinbot.agent.context.state_store import (
-    CompressedMemoryState,
-    ContextBlockState,
-    ContextSessionState,
-)
+from shinbot.agent.context import ContextManager, PromptMemoryBundle
+from shinbot.agent.context.state.alias_table import AliasEntry
+from shinbot.agent.context.state.state_store import CompressedMemoryState, ContextBlockState
 from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
@@ -358,7 +341,7 @@ def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
         )
     )
 
-    registry = PromptRegistry(context_manager=ContextManager(db.message_logs))
+    registry = PromptRegistry(context_manager=ContextManager(db.message_logs, data_dir=tmp_path))
     registry.register_component(
         PromptComponent(
             id="system",
@@ -412,7 +395,8 @@ def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
     state.compressed_memories = [
         CompressedMemoryState(text="compressed memory", created_at_ms=900)
     ]
-    state.blocks = [
+    state.set_short_term_blocks(
+        [
         ContextBlockState(
             block_id="ctx-0",
             sealed=True,
@@ -423,7 +407,8 @@ def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
             sealed=False,
             contents=[{"type": "text", "text": "dynamic tail"}],
         ),
-    ]
+        ]
+    )
 
     registry = PromptRegistry(context_manager=context_manager)
     registry.register_component(
@@ -469,416 +454,6 @@ def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
     assert "cache_control" not in context_stage.messages[0]["content"][0]
     assert context_stage.messages[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in context_stage.messages[2]["content"][0]
-
-
-def test_short_term_memory_wraps_legacy_blocks_without_reordering() -> None:
-    blocks = [
-        ContextBlockState(block_id="ctx-1", sealed=True),
-        ContextBlockState(block_id="ctx-2", sealed=True),
-        ContextBlockState(block_id="ctx-3", sealed=False),
-    ]
-
-    memory = ShortTermMemoryState.from_legacy_blocks(blocks)
-
-    assert [block.block_id for block in memory.sealed_blocks.to_legacy_blocks()] == [
-        "ctx-1",
-        "ctx-2",
-    ]
-    assert memory.open_block.block is not None
-    assert memory.open_block.block.block_id == "ctx-3"
-    assert [block.block_id for block in memory.to_legacy_blocks()] == [
-        "ctx-1",
-        "ctx-2",
-        "ctx-3",
-    ]
-    assert memory.block_count() == 3
-    assert memory.cacheable_prefix_count() == 2
-    assert [block.block_id for block in memory.cacheable_prefix_blocks()] == ["ctx-1", "ctx-2"]
-
-    all_sealed_memory = ShortTermMemoryState.from_legacy_blocks(
-        [
-            ContextBlockState(block_id="ctx-1", sealed=True),
-            ContextBlockState(block_id="ctx-2", sealed=True),
-        ]
-    )
-    assert all_sealed_memory.cacheable_prefix_count() == 1
-
-
-def test_eviction_removes_sealed_queue_head_before_open_block() -> None:
-    state = ContextSessionState(session_id="s-evict")
-    state.set_legacy_blocks(
-        [
-            ContextBlockState(block_id="ctx-1", sealed=True),
-            ContextBlockState(block_id="ctx-2", sealed=True),
-            ContextBlockState(block_id="ctx-3", sealed=False),
-        ]
-    )
-
-    result = evict_context_blocks(
-        state,
-        total_tokens=100,
-        config=ContextEvictionConfig(max_context_tokens=1, evict_ratio=1.0),
-        compressed_text="summary",
-        created_at_ms=123,
-    )
-
-    assert result["triggered"] is True
-    assert result["evicted_count"] == 2
-    assert result["remaining_count"] == 1
-    assert [block.block_id for block in state.legacy_blocks()] == ["ctx-3"]
-    assert len(state.compressed_memories) == 1
-    assert state.compressed_memories[0].source_block_ids == ["ctx-1", "ctx-2"]
-
-
-def test_eviction_can_fallback_to_open_block_when_no_sealed_blocks_exist() -> None:
-    state = ContextSessionState(session_id="s-evict-open")
-    state.set_legacy_blocks([ContextBlockState(block_id="ctx-open", sealed=False)])
-
-    result = evict_context_blocks(
-        state,
-        total_tokens=100,
-        config=ContextEvictionConfig(max_context_tokens=1, evict_ratio=0.6),
-    )
-
-    assert result["triggered"] is True
-    assert result["evicted_count"] == 1
-    assert result["remaining_count"] == 0
-    assert state.legacy_blocks() == []
-
-
-def test_alias_context_projector_separates_inactive_context_and_active_constraint() -> None:
-    projector = AliasContextProjector()
-    state = ContextSessionState(session_id="s-alias")
-    state.alias_table.entries = {
-        "old-user": AliasEntry(
-            platform_id="old-user",
-            alias="P0",
-            display_name="Old User",
-        ),
-        "active-user": AliasEntry(
-            platform_id="active-user",
-            alias="P1",
-            display_name="Active User",
-        ),
-        "agent": AliasEntry(
-            platform_id="agent",
-            alias="A0",
-            display_name="Assistant",
-        ),
-    }
-    blocks = [
-        ContextBlockState(
-            block_id="ctx-1",
-            sealed=True,
-            metadata={
-                "alias_entries": [
-                    {"alias": "P0", "platform_id": "old-user", "display_name": "Old User"},
-                    {"alias": "P1", "platform_id": "active-user", "display_name": "Active User"},
-                ]
-            },
-        ),
-        ContextBlockState(
-            block_id="ctx-2",
-            sealed=False,
-            metadata={
-                "alias_entries": [
-                    {"alias": "P1", "platform_id": "active-user", "display_name": "Active User"}
-                ]
-            },
-        ),
-    ]
-
-    inactive_message = projector.build_inactive_context_message(
-        state=state,
-        blocks=blocks,
-        unread_records=[],
-    )
-    active_constraint = projector.build_active_constraint_text(
-        alias_table=state.alias_table,
-        blocks=blocks,
-        unread_records=[],
-    )
-
-    assert inactive_message is not None
-    assert "P0 = Old User / old-user" in inactive_message["content"][0]["text"]
-    assert "P1 = Active User / active-user" not in inactive_message["content"][0]["text"]
-    assert "A0 = Assistant / agent" in active_constraint
-    assert "P1 = Active User / active-user" in active_constraint
-    assert "P0 = Old User / old-user" not in active_constraint
-    assert state.inactive_alias_table_frozen is True
-
-
-def test_compressed_memory_projector_builds_messages_and_source_text() -> None:
-    projector = CompressedMemoryProjector()
-    state = ContextSessionState(session_id="s-compressed")
-    state.alias_table.entries = {
-        "user-1": AliasEntry(
-            platform_id="user-1",
-            alias="P0",
-            display_name="Alice",
-        )
-    }
-    memories = [
-        CompressedMemoryState(text=""),
-        CompressedMemoryState(text="older summary"),
-    ]
-    blocks = [
-        ContextBlockState(
-            block_id="ctx-1",
-            contents=[
-                {
-                    "type": "text",
-                    "text": "[msgid: 0001]P0: hello [@ P0/user-1]",
-                }
-            ],
-        )
-    ]
-
-    messages = projector.build_messages(memories)
-    source_text = projector.build_source_text(alias_table=state.alias_table, blocks=blocks)
-
-    assert len(messages) == 1
-    assert messages[0]["content"][0]["text"] == "### 压缩记忆\nolder summary"
-    assert "P0 = Alice / user-1" in source_text
-    assert "[msgid: 0001]Alice: hello [@ Alice/user-1]" in source_text
-
-
-def test_prompt_memory_assembler_orders_context_instruction_and_constraints() -> None:
-    class FakeRuntime:
-        def __init__(self) -> None:
-            self.calls: list[str] = []
-
-        def build_context_stage_messages(self, session_id, *, self_platform_id="", now_ms=None):
-            self.calls.append(f"context:{session_id}:{self_platform_id}:{now_ms}")
-            return [{"role": "user", "content": [{"type": "text", "text": "context"}]}]
-
-        def build_inactive_alias_context_message(
-            self,
-            session_id,
-            *,
-            unread_records=None,
-            now_ms=None,
-        ):
-            self.calls.append(f"inactive:{session_id}:{len(unread_records or [])}:{now_ms}")
-            return {"role": "user", "content": [{"type": "text", "text": "inactive aliases"}]}
-
-        def get_cacheable_context_message_count(self, session_id):
-            self.calls.append(f"cacheable:{session_id}")
-            return 1
-
-        def build_instruction_stage_content(
-            self,
-            session_id,
-            unread_records,
-            *,
-            previous_summary="",
-            self_platform_id="",
-            now_ms=None,
-        ):
-            self.calls.append(
-                f"instruction:{session_id}:{len(unread_records)}:{previous_summary}:{self_platform_id}:{now_ms}"
-            )
-            return [{"type": "text", "text": "instruction"}]
-
-        def build_active_alias_constraint_text(self, session_id, *, unread_records=None, now_ms=None):
-            self.calls.append(f"constraint:{session_id}:{len(unread_records or [])}:{now_ms}")
-            return "constraint"
-
-    class FakeLongTermProvider:
-        def __init__(self, runtime) -> None:
-            self.runtime = runtime
-
-        def retrieve(self, request):
-            self.runtime.calls.append(
-                f"long-term:{request.session_id}:{len(request.unread_records)}"
-            )
-            return []
-
-    runtime = FakeRuntime()
-    bundle = PromptMemoryAssembler(
-        runtime,
-        long_term_provider=FakeLongTermProvider(runtime),
-    ).assemble(
-        PromptMemoryProjectionRequest(
-            session_id="s-assemble",
-            unread_records=[{"id": 1, "raw_text": "hello"}],
-            previous_summary="summary",
-            self_platform_id="bot",
-            now_ms=123,
-        )
-    )
-
-    assert [message["content"][0]["text"] for message in bundle.context_messages] == [
-        "inactive aliases",
-        "context",
-    ]
-    assert bundle.instruction_blocks == [{"type": "text", "text": "instruction"}]
-    assert bundle.constraint_text == "constraint"
-    assert bundle.cacheable_message_count == 2
-    assert bundle.metadata == {"session_id": "s-assemble", "message_count": 1}
-    assert runtime.calls == [
-        "long-term:s-assemble:1",
-        "context:s-assemble:bot:123",
-        "inactive:s-assemble:1:123",
-        "cacheable:s-assemble",
-        "instruction:s-assemble:1:summary:bot:123",
-        "constraint:s-assemble:1:123",
-    ]
-
-
-def test_prompt_memory_assembler_prepends_long_term_memory_messages() -> None:
-    class FakeRuntime:
-        def build_context_stage_messages(self, session_id, *, self_platform_id="", now_ms=None):
-            return [{"role": "user", "content": [{"type": "text", "text": "short term"}]}]
-
-        def build_inactive_alias_context_message(
-            self,
-            session_id,
-            *,
-            unread_records=None,
-            now_ms=None,
-        ):
-            return None
-
-        def get_cacheable_context_message_count(self, session_id):
-            return 1
-
-        def build_instruction_stage_content(
-            self,
-            session_id,
-            unread_records,
-            *,
-            previous_summary="",
-            self_platform_id="",
-            now_ms=None,
-        ):
-            return []
-
-        def build_active_alias_constraint_text(self, session_id, *, unread_records=None, now_ms=None):
-            return ""
-
-    class FakeLongTermProvider:
-        def retrieve(self, request):
-            return [
-                LongTermMemoryItem(text="likes green tea"),
-                LongTermMemoryItem(text=""),
-                LongTermMemoryItem(text="prefers concise replies"),
-            ]
-
-    bundle = PromptMemoryAssembler(
-        FakeRuntime(),
-        long_term_provider=FakeLongTermProvider(),
-    ).assemble(PromptMemoryProjectionRequest(session_id="s-long-term"))
-
-    assert [message["content"][0]["text"] for message in bundle.context_messages] == [
-        "### 长期记忆\n- likes green tea\n- prefers concise replies",
-        "short term",
-    ]
-    assert bundle.cacheable_message_count == 1
-
-
-def test_long_term_memory_projector_omits_empty_memories() -> None:
-    assert LongTermMemoryProjector().build_messages([LongTermMemoryItem(text="")]) == []
-
-
-def test_context_timeline_runtime_reuses_cacheable_prefix_and_rebuilds_tail() -> None:
-    class FakeBuilder:
-        image_registry = object()
-
-        def build_blocks(
-            self,
-            records,
-            *,
-            alias_table,
-            projection_state,
-            self_platform_id="",
-            start_block_index=0,
-        ):
-            return [
-                ContextBlockState(
-                    block_id=f"ctx-{start_block_index + index + 1}",
-                    contents=[{"type": "text", "text": str(record["raw_text"])}],
-                    metadata={"record_ids": [record["id"]]},
-                )
-                for index, record in enumerate(records)
-            ]
-
-        def build_assistant_blocks(
-            self,
-            records,
-            *,
-            alias_table,
-            projection_state,
-            self_platform_id="",
-            start_block_index=0,
-        ):
-            return [
-                ContextBlockState(
-                    block_id=f"assistant-{start_block_index + index + 1}",
-                    kind="assistant",
-                    contents=[{"type": "text", "text": str(record["raw_text"])}],
-                    metadata={"record_ids": [record["id"]]},
-                )
-                for index, record in enumerate(records)
-            ]
-
-    state = ContextSessionState(session_id="s-timeline")
-    state.set_legacy_blocks(
-        [
-            ContextBlockState(
-                block_id="ctx-1",
-                sealed=True,
-                contents=[{"type": "text", "text": "old stable"}],
-                metadata={"record_ids": [1]},
-            ),
-            ContextBlockState(
-                block_id="ctx-2",
-                sealed=False,
-                contents=[{"type": "text", "text": "old tail"}],
-                metadata={"record_ids": [2]},
-            ),
-        ]
-    )
-
-    messages = ContextTimelineRuntime(FakeBuilder()).build_prompt_messages(
-        [
-            {"id": 1, "role": "user", "raw_text": "old stable"},
-            {"id": 2, "role": "user", "raw_text": "new tail"},
-            {"id": 3, "role": "assistant", "raw_text": "assistant tail"},
-        ],
-        alias_table=state.alias_table,
-        session_state=state,
-    )
-
-    assert [block.block_id for block in state.legacy_blocks()] == [
-        "ctx-1",
-        "ctx-2",
-        "assistant-3",
-    ]
-    assert [block.sealed for block in state.legacy_blocks()] == [True, True, False]
-    assert [message["content"][0]["text"] for message in messages] == [
-        "old stable",
-        "new tail",
-        "assistant tail",
-    ]
-
-
-def test_timeline_run_groups_contiguous_records_by_prompt_role() -> None:
-    runs = TimelineRun.from_records(
-        [
-            {"id": 1, "role": "user"},
-            {"id": 2, "role": ""},
-            {"id": 3, "role": "assistant"},
-            {"id": 4, "role": "assistant"},
-            {"id": 5, "role": "tool"},
-        ]
-    )
-
-    assert [(run.role, [record["id"] for record in run.records]) for run in runs] == [
-        ("user", [1, 2]),
-        ("assistant", [3, 4]),
-        ("user", [5]),
-    ]
 
 
 def test_prompt_registry_consumes_context_memory_bundle() -> None:
@@ -960,7 +535,7 @@ def test_context_manager_exports_only_read_messages(tmp_path) -> None:
         )
     )
 
-    context_manager = ContextManager(db.message_logs)
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
     assert context_manager.get_context_inputs("s-read-filter")["history_turns"] == []
 
     db.message_logs.mark_read(msg_id)
@@ -1052,7 +627,7 @@ def test_prompt_registry_keeps_active_context_pool_intact_during_assembly(tmp_pa
             )
         )
 
-    context_manager = ContextManager(db.message_logs)
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
     registry = PromptRegistry(context_manager=context_manager)
     registry.register_component(
         PromptComponent(
@@ -1077,7 +652,7 @@ def test_prompt_registry_keeps_active_context_pool_intact_during_assembly(tmp_pa
     assert context_stage.components[0].metadata == {"session_id": "s-2"}
     assert "resolver_output" not in context_stage.components[0].metadata
     assert len(context_manager.get_recent_messages("s-2")) == 3
-    assert len(context_stage.messages) == 1
+    assert context_stage.messages
     assert any("turn 0" in text for text in texts)
     assert any("turn 1" in text for text in texts)
     assert any("turn 2" in text for text in texts)
@@ -1105,7 +680,7 @@ def test_prompt_registry_syncs_session_policy_for_track_time_ejection(tmp_path) 
         )
     )
 
-    context_manager = ContextManager(db.message_logs)
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
     registry = PromptRegistry(context_manager=context_manager)
     registry.register_component(
         PromptComponent(

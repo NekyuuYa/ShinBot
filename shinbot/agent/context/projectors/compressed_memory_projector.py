@@ -6,9 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.projection import block_text_parts
-from shinbot.agent.context.state_store import CompressedMemoryState, ContextBlockState
+from shinbot.agent.context.projectors.projection import block_text_parts
+from shinbot.agent.context.state.alias_table import SessionAliasTable
+from shinbot.agent.context.state.state_store import CompressedMemoryState, ContextBlockState
 
 _MESSAGE_ALIAS_PREFIX_PATTERN = re.compile(r"^(\[msgid: \d+\])(?P<alias>[AP]\d+)(?=: )")
 

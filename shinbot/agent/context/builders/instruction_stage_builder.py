@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.image_summary import ContextImageRegistry
-from shinbot.agent.context.message_parts import NormalizedMessagePart, parse_message_parts
-from shinbot.agent.context.projection import ContextProjectionState
+from shinbot.agent.context.builders.image_summary import ContextImageRegistry
+from shinbot.agent.context.builders.message_parts import NormalizedMessagePart, parse_message_parts
+from shinbot.agent.context.projectors.projection import ContextProjectionState
+from shinbot.agent.context.state.alias_table import SessionAliasTable
 
 if TYPE_CHECKING:
     from shinbot.agent.media import MediaService

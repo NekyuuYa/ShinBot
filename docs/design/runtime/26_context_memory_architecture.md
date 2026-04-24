@@ -374,7 +374,8 @@ alias 映射不能继续作为 `PromptBlock` 的内部副产品存在。
 - identity 更新不应直接篡改历史 `MemoryBlock`
 - alias 变化可以触发相关 `PromptBlock` 重投影
 - 长期记忆中的稳定称呼属于 `SemanticStore`
-- `ContextManager / ContextRuntime` 只负责决定何时 rebuild / reset alias snapshot，不直接承载 alias prompt 规则
+- `ContextAliasRuntime` 负责 alias table rebuild、identity display name 同步、inactive/active alias 投影控制
+- `ContextManager / ContextRuntime` 只负责提供消息、state 与保存边界，不直接承载 alias prompt 规则
 
 ---
 
@@ -398,11 +399,48 @@ alias 映射不能继续作为 `PromptBlock` 的内部副产品存在。
 - 直接承担长期记忆的全部表达
 - 直接承载 active message pool 的增量 token / 去重细节
 
+alias 控制应由 `ContextAliasRuntime` 承担：
+
+- 负责判断 alias table 是否需要 rebuild。
+- 负责对 `SessionAliasTable` 执行 rebuild 与 identity display name 同步。
+- 负责 inactive alias context message 与 active alias constraint 的投影控制。
+- 不负责读取历史消息、不负责持久化、不负责决定 prompt stage 顺序。
+
+session state 控制应由 `ContextSessionRuntime` 承担：
+
+- 负责 `ContextSessionState` 的内存缓存。
+- 负责从 `ContextStateStore` 懒加载状态，并补齐 session id / alias table session id。
+- 负责保存当前 session state。
+- 不负责解释短中长期记忆语义，也不负责 prompt 投影。
+
+prompt-facing 组合应由 `ContextPromptRuntime` 承担：
+
+- 负责组合 Stage 3 context messages、inactive alias context、instruction blocks 与 active alias constraint。
+- 负责在构建 prompt 相关投影时协调 alias rebuild、读取 active pool、读写 session state。
+- 作为 `PromptMemoryAssembler` 的运行时依赖，避免 assembler 直接依赖 `ContextManager`。
+- `ContextManager` 只保留旧 API 兼容方法，并在迁移期同步可替换的 builder 实例。
+
 迁移期已将热消息池抽为 `ActiveContextPool`：
 
 - 负责 active session 的消息去重、read-only 导出、增量 token 估算。
-- `ContextManager / ContextRuntime` 只保留获取 pool、同步事件、保存状态的控制面职责。
-- 对外可暂时保留旧导入路径，等 runtime 边界稳定后再移动目录。
+- `ContextPoolRuntime` 负责持有 hot pools、从 provider preload、标准化消息 payload、合并 media notes、导出 context inputs。
+- `ContextManager / ContextRuntime` 只保留同步事件、保存状态的控制面职责。
+
+当前源码目录已按职责拆分：
+
+- `context/runtime/` 保存运行时协调器，例如 `ContextPromptRuntime`、`ContextStageRuntime`、`ContextEvictionRuntime`。
+- `context/projectors/` 保存 prompt 投影器与投影契约，例如 alias、compressed memory、long-term memory、block projection。
+- `context/builders/` 保存具体 prompt block 构建器和消息 part 解析。
+- `context/state/` 保存 session state、alias table、active pool、ring allocator 等状态模型。
+- `context/utils/` 保存 token 估算、eviction helper 等无状态工具。
+- `context/manager.py` 只保留对外兼容门面。
+
+Stage 3 记忆层构建应由 `ContextStageRuntime` 协调：
+
+- 负责拼接中期压缩记忆与短期 timeline messages。
+- 负责根据 alias 是否变化或短期块是否为空，发出 timeline force rebuild 控制信号。
+- 负责在需要重建 timeline 时 reset inactive alias snapshot。
+- 不直接渲染单条消息内容；具体格式化继续交给 timeline / projector。
 
 短期 timeline 构建应由 `ContextTimelineRuntime` 承担：
 
@@ -410,13 +448,20 @@ alias 映射不能继续作为 `PromptBlock` 的内部副产品存在。
 - 负责按 role 分段构建 timeline blocks。
 - 负责复用 `ShortTermMemoryState.cacheable_prefix_blocks()` 返回的稳定前缀。
 - 负责只重建 mutable tail，并维护最后一个 block 为 open block。
-- `ContextManager / ContextRuntime` 只负责提供 read history、alias table、session state 与是否强制重建的控制信号。
+- `ContextStageRuntime` 只负责提供 read history、alias table、session state 与是否强制重建的控制信号。
 
 `TimelineRun` 是 role 边界，不是 seal 边界：
 
 - role 变化会切出新的 run，避免 user / assistant 混入同一个构建批次。
 - run 内部仍可按 token / 时间策略切成多个 blocks。
 - seal 发生在最终 blocks 队列层，除最后一个 block 外均可 seal。
+
+上下文释放控制应由 `ContextEvictionRuntime` 承担：
+
+- `eviction.py` 保持为无业务副作用的 helper，只负责根据预算选择和删除短期块。
+- `ContextEvictionRuntime` 负责把缓存释放视为控制信号，协调压缩源文本 preview、压缩记忆写入、alias rebuild 请求与 inactive alias snapshot reset。
+- preview / apply 结果中都会携带 `CacheReleaseSignal` 的 dict 形态，旧字段如 `triggered`、`source_block_ids` 暂时保留用于兼容。
+- `ContextManager / ContextRuntime` 只负责取出 session state、调用 runtime、保存 state，不再直接拼装压缩源文本或操作 alias snapshot。
 
 ### 9.2 建议接口
 
@@ -470,9 +515,28 @@ PromptRegistry 不应直接协调：
 3. 短期已 seal 块
 4. 当前开放块的必要投影
 
-当前迁移实现中，长期记忆已通过 no-op provider 接入；中期记忆由 `CompressedMemoryProjector` 投影；短期记忆由 `ContextTimelineRuntime` 与 `ShortTermMemoryState` 投影。
+当前迁移实现中，长期记忆已通过 no-op provider 接入；中期记忆由 `CompressedMemoryProjector` 投影；短期记忆由 `ContextStageRuntime` 编排 `ContextTimelineRuntime` 与 `ShortTermMemoryState` 投影。
 
 工作层输入不属于记忆层投影的一部分，而由 workflow 作为当前轮任务包注入。
+
+迁移期当前轮输入由 `InstructionRuntime` 承担：
+
+- `InstructionStageBuilder` 保持为纯渲染器。
+- `InstructionRuntime` 负责把 unread/current-turn records 与 `ContextProjectionState` 组合起来，投影为 instruction content blocks。
+- `ContextManager / ContextRuntime` 只负责 alias rebuild、传入 session state、保存状态。
+
+迁移期缓存释放由 `ContextEvictionRuntime` 承担：
+
+- preview 阶段返回可用于压缩的 source text 与 source block ids，但不修改短期块队列。
+- apply 阶段只消费短期头部块；如压缩文本非空，则追加中期压缩记忆。
+- 释放成功后发出 alias rebuild / inactive snapshot reset 控制信号，让 alias 投影在下一次构建时自行恢复一致性。
+
+`CacheReleaseSignal` 是当前统一缓存控制信号：
+
+- `released_block_ids` 描述被预览或实际释放的短期块。
+- `compressed_memory_added` 描述是否已经写入中期压缩记忆。
+- `alias_rebuild_requested` 与 `inactive_alias_snapshot_reset` 描述释放后的下游重建请求。
+- `reason` 暂时使用 `token_budget_exceeded` / `manual` / `none`，后续可扩展为 memory promotion 或人工重建。
 
 ### 10.3 投影状态
 
@@ -507,9 +571,9 @@ PromptRegistry 不应直接协调：
 - Prompt content dict 形态
 - 持久化状态兼容层
 
-旧 `ContextBlockState.contents` 在迁移期只允许通过 adapter 读取，例如：
+`ContextBlockState.contents` 只允许通过 adapter 读取，例如：
 
-- `LegacyBlockAdapter`
+- `ContextBlockAdapter`
 - `block_text_parts`
 - `block_content_blocks`
 - `block_to_prompt_message`
@@ -517,23 +581,23 @@ PromptRegistry 不应直接协调：
 
 除状态自身序列化外，业务逻辑不应直接遍历 `block.contents`。
 
-同理，迁移期的 `ContextSessionState.blocks` 应视为 legacy 兼容字段。运行时逻辑应通过访问器读写：
+`ContextSessionState.blocks` 兼容镜像字段已移除。运行时逻辑应通过短期记忆访问器读写：
 
-- `legacy_blocks`
-- `set_legacy_blocks`
-- `has_legacy_blocks`
+- `short_term_blocks`
+- `set_short_term_blocks`
+- `has_short_term_blocks`
 
-这样后续将 `state.blocks` 替换为更中立的短期记忆队列时，可以减少调用点震荡。
+当前短期记忆事实源已经切换为 `ContextSessionState.short_term_memory_state`。
 
-迁移期可先引入 `ShortTermMemoryState` 作为旧 block 列表上方的过渡视图：
+`ShortTermMemoryState` 是短期记忆队列的持久化状态：
 
 - `SealedBlockDequeState` 保存已封口前缀。
 - `OpenBlockState` 保存最后一个未封口尾块。
-- `ShortTermMemoryState.to_legacy_blocks()` 负责回写旧 `ContextSessionState.blocks`。
+- `ShortTermMemoryState.to_short_term_blocks()` 负责生成按 prompt 顺序排列的短期块视图。
 - 可缓存/可复用前缀由 `ShortTermMemoryState.cacheable_prefix_blocks()` 判定。
-- 淘汰逻辑通过 `ShortTermMemoryState` 选择和移除队首块，而不是直接切割 `state.blocks`。
+- 淘汰逻辑通过 `ShortTermMemoryState` 选择和移除队首块，而不是直接切割裸列表。
 
-在持久化 schema 迁移完成前，`ShortTermMemoryState` 不要求独立落盘。
+新 JSON 只写入顶层 `short_term_memory`；旧 JSON 中只有顶层 `blocks` 时，不再迁移为短期事实源，可按空上下文冷启动处理。
 
 ---
 

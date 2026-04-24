@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from shinbot.agent.context.token_utils import estimate_role_content_tokens
+from shinbot.agent.context.utils.token_utils import estimate_role_content_tokens
 
 
 def record_to_turn(item: dict[str, Any]) -> dict[str, Any] | None:

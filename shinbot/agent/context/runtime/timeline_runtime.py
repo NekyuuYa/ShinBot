@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.context_stage_builder import ContextStageBuilder
-from shinbot.agent.context.projection import ContextProjectionState, block_to_prompt_message
-from shinbot.agent.context.state_store import (
+from shinbot.agent.context.builders.context_stage_builder import ContextStageBuilder
+from shinbot.agent.context.projectors.projection import (
+    ContextProjectionState,
+    block_to_prompt_message,
+)
+from shinbot.agent.context.state.alias_table import SessionAliasTable
+from shinbot.agent.context.state.state_store import (
     ContextBlockState,
     ContextSessionState,
     ShortTermMemoryState,
@@ -66,7 +69,7 @@ class ContextTimelineRuntime:
         force_rebuild: bool = False,
         self_platform_id: str = "",
     ) -> list[dict[str, Any]]:
-        existing_blocks = session_state.legacy_blocks()
+        existing_blocks = session_state.short_term_blocks()
         latest_history_id = latest_record_id(read_history)
         latest_block_id = latest_block_record_id(existing_blocks)
 
@@ -77,7 +80,7 @@ class ContextTimelineRuntime:
                 session_state=session_state,
                 self_platform_id=self_platform_id,
             )
-            session_state.set_legacy_blocks(rebuilt_blocks)
+            session_state.set_short_term_blocks(rebuilt_blocks)
             return blocks_to_prompt_messages(rebuilt_blocks)
 
         if latest_history_id > latest_block_id:
@@ -93,7 +96,7 @@ class ContextTimelineRuntime:
                 start_block_index=len(reusable_blocks),
             )
             next_blocks = [*reusable_blocks, *rebuilt_tail]
-            session_state.set_legacy_blocks(next_blocks)
+            session_state.set_short_term_blocks(next_blocks)
             return blocks_to_prompt_messages(next_blocks)
 
         return blocks_to_prompt_messages(existing_blocks)

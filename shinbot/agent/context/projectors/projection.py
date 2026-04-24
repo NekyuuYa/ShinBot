@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from shinbot.agent.context.state_store import ContextBlockState
+from shinbot.agent.context.state.state_store import ContextBlockState
 
 
 @dataclass(slots=True)
@@ -47,8 +47,8 @@ class PromptBlockProjection:
 
 
 @dataclass(slots=True)
-class LegacyBlockAdapter:
-    """Adapter around the legacy ContextBlockState prompt-shaped storage."""
+class ContextBlockAdapter:
+    """Adapter around ContextBlockState prompt-shaped storage."""
 
     block: Any
 
@@ -82,19 +82,19 @@ class LegacyBlockAdapter:
 
 
 def projection_to_context_block(projection: PromptBlockProjection) -> ContextBlockState:
-    return LegacyBlockAdapter.from_projection(projection)
+    return ContextBlockAdapter.from_projection(projection)
 
 
 def block_content_blocks(block: Any) -> list[dict[str, Any]]:
-    return LegacyBlockAdapter(block).content_blocks()
+    return ContextBlockAdapter(block).content_blocks()
 
 
 def block_text_parts(block: Any) -> list[str]:
-    return LegacyBlockAdapter(block).text_parts()
+    return ContextBlockAdapter(block).text_parts()
 
 
 def block_to_prompt_message(block: Any) -> dict[str, Any]:
-    return LegacyBlockAdapter(block).to_prompt_message()
+    return ContextBlockAdapter(block).to_prompt_message()
 
 
 @dataclass(slots=True)

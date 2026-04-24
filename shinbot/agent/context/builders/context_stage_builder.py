@@ -6,17 +6,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.image_summary import ContextImageRegistry
-from shinbot.agent.context.message_parts import NormalizedMessagePart, parse_message_parts
-from shinbot.agent.context.projection import (
+from shinbot.agent.context.builders.image_summary import ContextImageRegistry
+from shinbot.agent.context.builders.message_parts import NormalizedMessagePart, parse_message_parts
+from shinbot.agent.context.projectors.projection import (
     ContextProjectionState,
     PromptBlockProjection,
     block_to_prompt_message,
     projection_to_context_block,
 )
-from shinbot.agent.context.state_store import ContextBlockState, ContextSessionState
-from shinbot.agent.context.token_utils import estimate_text_tokens
+from shinbot.agent.context.state.alias_table import SessionAliasTable
+from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.context.utils.token_utils import estimate_text_tokens
 
 if TYPE_CHECKING:
     from shinbot.agent.media import MediaService
@@ -159,7 +159,7 @@ class ContextStageBuilder:
             ),
             self_platform_id=self_platform_id,
         )
-        session_state.set_legacy_blocks(blocks)
+        session_state.set_short_term_blocks(blocks)
         return [block_to_prompt_message(block) for block in blocks]
 
     def build_assistant_blocks(

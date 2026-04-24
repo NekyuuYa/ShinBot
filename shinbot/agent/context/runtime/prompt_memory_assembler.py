@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from shinbot.agent.context.long_term_memory import (
+from shinbot.agent.context.projectors.long_term_memory import (
     LongTermMemoryProjector,
     LongTermMemoryProvider,
     NoopLongTermMemoryProvider,
 )
-from shinbot.agent.context.projection import PromptMemoryBundle, PromptMemoryProjectionRequest
+from shinbot.agent.context.projectors.projection import (
+    PromptMemoryBundle,
+    PromptMemoryProjectionRequest,
+)
 
 
 class PromptMemoryRuntime(Protocol):

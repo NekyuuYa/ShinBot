@@ -198,8 +198,7 @@ def register_attention_tools(
                 "选择不回复当前批次消息。\n"
                 "可附带 internal_summary 记录对本次观察的摘要和不回复的原因。\n"
                 "该摘要将在下一轮 workflow 触发时作为短期记忆提供给你，"
-                "帮助你保持对话连贯性。\n"
-                "使用场景：话题与你无关、不需要插嘴、暂时观望等。"
+                "帮助你保持对话连贯性。"
             ),
             input_schema={
                 "type": "object",
@@ -302,10 +301,9 @@ def register_attention_tools(
                 "text: 要发送的回复文本内容。\n"
                 "quote_message_id: 可选，要引用回复的原平台消息 ID；"
                 "quote_message_log_id: 可选，要引用回复的 ShinBot message_logs 行 ID，"
-                "系统会自动解析为平台消息 ID。\n"
                 "terminate_round: 是否在发送后立即结束当前 workflow 轮次；"
-                "默认 true。若为 false，发送后允许模型继续后续推理或工具调用。\n"
-                "注意：每次调用都会实际发送消息，请确保内容准确后再调用。\n"
+                "若设置为 false，发送后允许模型继续后续推理或工具调用。\n"
+                "注意：每次调用都会实际发送消息，请确保内容准确。\n"
                 "如果你决定不回复，请使用 no_reply 工具代替。"
             ),
             input_schema={

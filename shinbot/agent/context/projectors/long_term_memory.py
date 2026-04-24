@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from shinbot.agent.context.projection import PromptMemoryProjectionRequest
+from shinbot.agent.context.projectors.projection import PromptMemoryProjectionRequest
 
 
 @dataclass(slots=True)

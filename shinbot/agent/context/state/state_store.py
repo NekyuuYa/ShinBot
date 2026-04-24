@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.ring_buffer import StableRingIdAllocator
+from shinbot.agent.context.state.alias_table import SessionAliasTable
+from shinbot.agent.context.state.ring_buffer import StableRingIdAllocator
 
 
 @dataclass(slots=True)
@@ -75,7 +75,17 @@ class OpenBlockState:
 
     block: ContextBlockState | None = None
 
-    def to_legacy_block(self) -> ContextBlockState | None:
+    def to_dict(self) -> dict[str, Any]:
+        return {"block": self.block.to_dict() if self.block is not None else None}
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> OpenBlockState:
+        data = payload or {}
+        block_payload = data.get("block")
+        block = ContextBlockState.from_dict(block_payload) if isinstance(block_payload, dict) else None
+        return cls(block=block)
+
+    def to_block(self) -> ContextBlockState | None:
         return self.block
 
 
@@ -105,19 +115,47 @@ class SealedBlockDequeState:
         self.blocks = self.blocks[len(removed) :]
         return removed
 
-    def to_legacy_blocks(self) -> list[ContextBlockState]:
+    def to_blocks(self) -> list[ContextBlockState]:
         return list(self.blocks)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"blocks": [block.to_dict() for block in self.blocks]}
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> SealedBlockDequeState:
+        data = payload or {}
+        return cls(
+            blocks=[
+                ContextBlockState.from_dict(item)
+                for item in data.get("blocks", [])
+                if isinstance(item, dict)
+            ]
+        )
 
 
 @dataclass(slots=True)
 class ShortTermMemoryState:
-    """Short-term memory view backed by legacy context blocks during migration."""
+    """Short-term memory state for recent context blocks."""
 
     sealed_blocks: SealedBlockDequeState = field(default_factory=SealedBlockDequeState)
     open_block: OpenBlockState = field(default_factory=OpenBlockState)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sealed_blocks": self.sealed_blocks.to_dict(),
+            "open_block": self.open_block.to_dict(),
+        }
+
     @classmethod
-    def from_legacy_blocks(cls, blocks: list[ContextBlockState]) -> ShortTermMemoryState:
+    def from_dict(cls, payload: dict[str, Any] | None) -> ShortTermMemoryState:
+        data = payload or {}
+        return cls(
+            sealed_blocks=SealedBlockDequeState.from_dict(data.get("sealed_blocks")),
+            open_block=OpenBlockState.from_dict(data.get("open_block")),
+        )
+
+    @classmethod
+    def from_short_term_blocks(cls, blocks: list[ContextBlockState]) -> ShortTermMemoryState:
         if not blocks:
             return cls()
         if blocks[-1].sealed:
@@ -129,9 +167,9 @@ class ShortTermMemoryState:
             open_block=OpenBlockState(open_block),
         )
 
-    def to_legacy_blocks(self) -> list[ContextBlockState]:
-        blocks = self.sealed_blocks.to_legacy_blocks()
-        open_block = self.open_block.to_legacy_block()
+    def to_short_term_blocks(self) -> list[ContextBlockState]:
+        blocks = self.sealed_blocks.to_blocks()
+        open_block = self.open_block.to_block()
         if open_block is not None:
             blocks.append(open_block)
         return blocks
@@ -140,7 +178,7 @@ class ShortTermMemoryState:
         return bool(self.sealed_blocks.blocks or self.open_block.block is not None)
 
     def block_count(self) -> int:
-        return len(self.to_legacy_blocks())
+        return len(self.to_short_term_blocks())
 
     def cacheable_prefix_count(self) -> int:
         sealed_count = len(self.sealed_blocks.blocks)
@@ -156,7 +194,7 @@ class ShortTermMemoryState:
         if sealed_count:
             evict_count = max(1, int(math.ceil(sealed_count * evict_ratio)))
             return self.sealed_blocks.head(evict_count)
-        open_block = self.open_block.to_legacy_block()
+        open_block = self.open_block.to_block()
         return [open_block] if open_block is not None else []
 
     def evict_head(self, evict_ratio: float) -> list[ContextBlockState]:
@@ -164,7 +202,7 @@ class ShortTermMemoryState:
         if sealed_count:
             evict_count = max(1, int(math.ceil(sealed_count * evict_ratio)))
             return self.sealed_blocks.drop_head(evict_count)
-        open_block = self.open_block.to_legacy_block()
+        open_block = self.open_block.to_block()
         if open_block is None:
             return []
         self.open_block = OpenBlockState()
@@ -179,7 +217,7 @@ class ShortTermMemoryState:
         if sealed_ids == selected_ids:
             return self.sealed_blocks.drop_head(len(selected_blocks))
 
-        open_block = self.open_block.to_legacy_block()
+        open_block = self.open_block.to_block()
         if len(selected_blocks) == 1 and open_block is not None:
             if selected_blocks[0].block_id == open_block.block_id:
                 self.open_block = OpenBlockState()
@@ -198,7 +236,7 @@ class ContextSessionState:
     image_ids: StableRingIdAllocator = field(
         default_factory=lambda: StableRingIdAllocator(capacity=9999)
     )
-    blocks: list[ContextBlockState] = field(default_factory=list)
+    short_term_memory_state: ShortTermMemoryState = field(default_factory=ShortTermMemoryState)
     compressed_memories: list[CompressedMemoryState] = field(default_factory=list)
     inactive_alias_entries: list[dict[str, str]] = field(default_factory=list)
     inactive_alias_table_frozen: bool = False
@@ -209,22 +247,22 @@ class ContextSessionState:
         if not self.alias_table.session_id:
             self.alias_table.session_id = self.session_id
 
-    def legacy_blocks(self) -> list[ContextBlockState]:
-        """Return the legacy prompt-shaped block list."""
-        return self.short_term_memory().to_legacy_blocks()
+    def short_term_blocks(self) -> list[ContextBlockState]:
+        """Return prompt-shaped blocks from short-term memory."""
+        return self.short_term_memory_state.to_short_term_blocks()
 
-    def set_legacy_blocks(self, blocks: list[ContextBlockState]) -> None:
-        """Replace the legacy prompt-shaped block list."""
-        self.set_short_term_memory(ShortTermMemoryState.from_legacy_blocks(list(blocks)))
+    def set_short_term_blocks(self, blocks: list[ContextBlockState]) -> None:
+        """Replace short-term memory from prompt-shaped blocks."""
+        self.set_short_term_memory(ShortTermMemoryState.from_short_term_blocks(list(blocks)))
 
-    def has_legacy_blocks(self) -> bool:
-        return self.short_term_memory().has_blocks()
+    def has_short_term_blocks(self) -> bool:
+        return self.short_term_memory_state.has_blocks()
 
     def short_term_memory(self) -> ShortTermMemoryState:
-        return ShortTermMemoryState.from_legacy_blocks(list(self.blocks))
+        return self.short_term_memory_state
 
     def set_short_term_memory(self, memory: ShortTermMemoryState) -> None:
-        self.blocks = memory.to_legacy_blocks()
+        self.short_term_memory_state = memory
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -232,7 +270,7 @@ class ContextSessionState:
             "alias_table": self.alias_table.to_dict(),
             "message_ids": self.message_ids.to_dict(),
             "image_ids": self.image_ids.to_dict(),
-            "blocks": [block.to_dict() for block in self.blocks],
+            "short_term_memory": self.short_term_memory_state.to_dict(),
             "compressed_memories": [item.to_dict() for item in self.compressed_memories],
             "inactive_alias_entries": list(self.inactive_alias_entries),
             "inactive_alias_table_frozen": self.inactive_alias_table_frozen,
@@ -249,11 +287,9 @@ class ContextSessionState:
             alias_table=SessionAliasTable.from_dict(data.get("alias_table", {})),
             message_ids=StableRingIdAllocator.from_dict(data.get("message_ids", {})),
             image_ids=StableRingIdAllocator.from_dict(data.get("image_ids", {})),
-            blocks=[
-                ContextBlockState.from_dict(item)
-                for item in data.get("blocks", [])
-                if isinstance(item, dict)
-            ],
+            short_term_memory_state=ShortTermMemoryState.from_dict(
+                data.get("short_term_memory")
+            ),
             compressed_memories=[
                 CompressedMemoryState.from_dict(item)
                 for item in data.get("compressed_memories", [])

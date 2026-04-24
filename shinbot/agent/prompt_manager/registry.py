@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.context.projection import PromptMemoryProjectionRequest
+from shinbot.agent.context.projectors.projection import PromptMemoryProjectionRequest
 from shinbot.agent.prompt_manager.rendering import (
     expand_component_tree,
     infer_component_source,

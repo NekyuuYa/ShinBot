@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.message_parts import parse_message_parts
-from shinbot.agent.context.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.context.builders.message_parts import parse_message_parts
+from shinbot.agent.context.state.alias_table import SessionAliasTable
+from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
 
 
 @dataclass(slots=True)

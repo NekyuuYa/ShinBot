@@ -2,31 +2,30 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.context.active_pool import ActiveContextPool
-from shinbot.agent.context.alias_projector import AliasContextProjector
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.compressed_memory_projector import CompressedMemoryProjector
-from shinbot.agent.context.context_stage_builder import ContextStageBuilder
-from shinbot.agent.context.eviction import (
-    ContextEvictionConfig,
-    evict_context_blocks,
-    extract_total_tokens,
-    select_blocks_for_eviction,
-)
-from shinbot.agent.context.instruction_stage_builder import InstructionStageBuilder
-from shinbot.agent.context.projection import (
-    ContextProjectionState,
+from shinbot.agent.context.builders.context_stage_builder import ContextStageBuilder
+from shinbot.agent.context.builders.instruction_stage_builder import InstructionStageBuilder
+from shinbot.agent.context.projectors.alias_projector import AliasContextProjector
+from shinbot.agent.context.projectors.compressed_memory_projector import CompressedMemoryProjector
+from shinbot.agent.context.projectors.projection import (
     PromptMemoryBundle,
     PromptMemoryProjectionRequest,
 )
-from shinbot.agent.context.prompt_memory_assembler import PromptMemoryAssembler
-from shinbot.agent.context.state_store import ContextSessionState, ContextStateStore
-from shinbot.agent.context.timeline_runtime import ContextTimelineRuntime
-from shinbot.agent.context.token_utils import estimate_text_tokens
+from shinbot.agent.context.runtime.alias_runtime import ContextAliasRuntime
+from shinbot.agent.context.runtime.context_stage_runtime import ContextStageRuntime
+from shinbot.agent.context.runtime.eviction_runtime import ContextEvictionRuntime
+from shinbot.agent.context.runtime.instruction_runtime import InstructionRuntime
+from shinbot.agent.context.runtime.pool_runtime import ContextPoolRuntime
+from shinbot.agent.context.runtime.prompt_memory_assembler import PromptMemoryAssembler
+from shinbot.agent.context.runtime.prompt_runtime import ContextPromptRuntime
+from shinbot.agent.context.runtime.session_runtime import ContextSessionRuntime
+from shinbot.agent.context.runtime.timeline_runtime import ContextTimelineRuntime
+from shinbot.agent.context.state.active_pool import ActiveContextPool
+from shinbot.agent.context.state.alias_table import SessionAliasTable
+from shinbot.agent.context.state.state_store import ContextSessionState
+from shinbot.agent.context.utils.token_utils import estimate_text_tokens
 
 if TYPE_CHECKING:
     from shinbot.agent.identity import IdentityStore
@@ -59,52 +58,52 @@ class ContextManager:
         identity_store: IdentityStore | None = None,
         media_service: MediaService | None = None,
     ) -> None:
-        self._provider = provider
-        self._preload_limit = preload_limit
-        self._max_pool_messages = max_pool_messages
         self._identity_store = identity_store
         self._media_service = media_service
-        self._state_store = ContextStateStore(data_dir=data_dir)
-        self._session_states: dict[str, ContextSessionState] = {}
+        self._pool_runtime = ContextPoolRuntime(
+            provider=provider,
+            preload_limit=preload_limit,
+            max_pool_messages=max_pool_messages,
+            media_service=self._media_service,
+        )
+        self._session_runtime = ContextSessionRuntime.from_data_dir(data_dir=data_dir)
         self._context_builder = ContextStageBuilder(media_service=self._media_service)
         self._timeline_runtime = ContextTimelineRuntime(self._context_builder)
         self._instruction_builder = InstructionStageBuilder(media_service=self._media_service)
+        self._instruction_runtime = InstructionRuntime(self._instruction_builder)
         self._alias_projector = AliasContextProjector()
+        self._alias_runtime = ContextAliasRuntime(self._alias_projector)
         self._compressed_memory_projector = CompressedMemoryProjector()
-        self._prompt_memory_assembler = PromptMemoryAssembler(self)
-        self._pools: dict[str, ActiveContextPool] = {}
+        self._context_stage_runtime = ContextStageRuntime(
+            timeline_runtime=self._timeline_runtime,
+            alias_projector=self._alias_projector,
+            compressed_memory_projector=self._compressed_memory_projector,
+        )
+        self._eviction_runtime = ContextEvictionRuntime(
+            alias_projector=self._alias_projector,
+            compressed_memory_projector=self._compressed_memory_projector,
+        )
+        self._prompt_runtime = ContextPromptRuntime(
+            pool_runtime=self._pool_runtime,
+            session_runtime=self._session_runtime,
+            alias_runtime=self._alias_runtime,
+            context_stage_runtime=self._context_stage_runtime,
+            instruction_runtime=self._instruction_runtime,
+            identity_store=self._identity_store,
+        )
+        self._prompt_memory_assembler = PromptMemoryAssembler(self._prompt_runtime)
 
     def get_pool(self, session_id: str) -> ActiveContextPool:
-        pool = self._pools.get(session_id)
-        if pool is not None:
-            return pool
-        items = self._provider.get_recent(session_id, limit=self._preload_limit)
-        pool = ActiveContextPool(session_id=session_id, max_messages=self._max_pool_messages)
-        pool.load([self._build_pool_payload(item) for item in items])
-        self._pools[session_id] = pool
-        return pool
+        return self._pool_runtime.get_pool(session_id)
 
     def get_alias_table(self, session_id: str) -> SessionAliasTable:
         return self.get_session_state(session_id).alias_table
 
     def get_cacheable_context_message_count(self, session_id: str) -> int:
-        if not session_id:
-            return 0
-        state = self.get_session_state(session_id)
-        return len(state.compressed_memories) + state.short_term_memory().cacheable_prefix_count()
+        return self._prompt_runtime.get_cacheable_context_message_count(session_id)
 
     def get_session_state(self, session_id: str) -> ContextSessionState:
-        state = self._session_states.get(session_id)
-        if state is not None:
-            return state
-        loaded = self._state_store.load(session_id)
-        state = loaded or ContextSessionState(session_id=session_id)
-        if not state.session_id:
-            state.session_id = session_id
-        if not state.alias_table.session_id:
-            state.alias_table.session_id = session_id
-        self._session_states[session_id] = state
-        return state
+        return self._session_runtime.get_state(session_id)
 
     def rebuild_alias_table(
         self,
@@ -113,18 +112,12 @@ class ContextManager:
         now_ms: int,
         force: bool = False,
     ) -> tuple[SessionAliasTable, bool]:
-        pool = self.get_pool(session_id)
-        state = self.get_session_state(session_id)
-        table = state.alias_table
-        if not force and table.entries and not table.should_rebuild(now_ms):
-            return table, False
-        changed = table.rebuild_from_messages(
-            list(pool.messages),
+        self._sync_prompt_runtime()
+        return self._prompt_runtime.rebuild_alias_table(
+            session_id,
             now_ms=now_ms,
-            identity_store=self._identity_store,
+            force=force,
         )
-        self._save_session_state(session_id)
-        return table, changed
 
     def sync_identity_display_name(
         self,
@@ -133,31 +126,12 @@ class ContextManager:
         user_id: str,
         now_ms: int | None = None,
     ) -> bool:
-        if not session_id or self._identity_store is None:
-            return False
-
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            return False
-
-        identity = self._identity_store.get_identity(normalized_user_id)
-        if identity is None:
-            return False
-
-        display_name = str(identity.get("name", "") or "").strip()
-        if not display_name:
-            return False
-
-        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        table = self.get_alias_table(session_id)
-        changed = table.apply_identity_display_name(
-            normalized_user_id,
-            display_name,
-            now_ms=timestamp_ms,
+        self._sync_prompt_runtime()
+        return self._prompt_runtime.sync_identity_display_name(
+            session_id,
+            user_id=user_id,
+            now_ms=now_ms,
         )
-        if changed:
-            self._save_session_state(session_id)
-        return changed
 
     def build_context_stage_messages(
         self,
@@ -166,36 +140,12 @@ class ContextManager:
         self_platform_id: str = "",
         now_ms: int | None = None,
     ) -> list[dict[str, Any]]:
-        if not session_id:
-            return []
-        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        state = self.get_session_state(session_id)
-        alias_rebuild_due = not bool(state.alias_table.entries) or state.alias_table.should_rebuild(
-            timestamp_ms
-        )
-        alias_table, alias_changed = self.rebuild_alias_table(
+        self._sync_prompt_runtime()
+        return self._prompt_runtime.build_context_stage_messages(
             session_id,
-            now_ms=timestamp_ms,
-            force=alias_rebuild_due,
-        )
-        read_history = self.get_recent_messages(session_id, read_only=True)
-        existing_blocks = state.legacy_blocks()
-        force_rebuild = alias_changed or not existing_blocks
-        if force_rebuild:
-            self._alias_projector.reset_inactive_snapshot(state)
-        self._timeline_runtime.builder = self._context_builder
-        messages = self._timeline_runtime.build_prompt_messages(
-            read_history,
-            alias_table=alias_table,
-            session_state=state,
-            force_rebuild=force_rebuild,
             self_platform_id=self_platform_id,
+            now_ms=now_ms,
         )
-        compressed_messages = self._compressed_memory_projector.build_messages(
-            state.compressed_memories
-        )
-        self._save_session_state(session_id)
-        return [*compressed_messages, *messages]
 
     def build_instruction_stage_content(
         self,
@@ -206,28 +156,14 @@ class ContextManager:
         self_platform_id: str = "",
         now_ms: int | None = None,
     ) -> list[dict[str, Any]]:
-        if not session_id:
-            return []
-        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        state = self.get_session_state(session_id)
-        alias_table, _alias_changed = self.rebuild_alias_table(
+        self._sync_prompt_runtime()
+        return self._prompt_runtime.build_instruction_stage_content(
             session_id,
-            now_ms=timestamp_ms,
-            force=not bool(state.alias_table.entries),
-        )
-        content_blocks = self._instruction_builder.build_content_blocks(
             unread_records,
-            alias_table=alias_table,
-            projection_state=ContextProjectionState.from_session_state(
-                session_state=state,
-                image_registry=self._instruction_builder.image_registry,
-            ),
             previous_summary=previous_summary,
             self_platform_id=self_platform_id,
-            now_ms=timestamp_ms,
+            now_ms=now_ms,
         )
-        self._save_session_state(session_id)
-        return content_blocks
 
     def build_inactive_alias_context_message(
         self,
@@ -236,30 +172,12 @@ class ContextManager:
         unread_records: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any] | None:
-        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        state = self.get_session_state(session_id)
-        existing_blocks = state.legacy_blocks()
-        if (
-            not existing_blocks
-            or not state.alias_table.entries
-            or state.alias_table.should_rebuild(timestamp_ms)
-        ):
-            self.build_context_stage_messages(
-                session_id,
-                now_ms=timestamp_ms,
-            )
-            state = self.get_session_state(session_id)
-            existing_blocks = state.legacy_blocks()
-
-        was_frozen = state.inactive_alias_table_frozen
-        message = self._alias_projector.build_inactive_context_message(
-            state=state,
-            blocks=existing_blocks,
+        self._sync_prompt_runtime()
+        return self._prompt_runtime.build_inactive_alias_context_message(
+            session_id,
             unread_records=unread_records,
+            now_ms=now_ms,
         )
-        if not was_frozen and state.inactive_alias_table_frozen:
-            self._save_session_state(session_id)
-        return message
 
     def build_active_alias_constraint_text(
         self,
@@ -268,26 +186,11 @@ class ContextManager:
         unread_records: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
     ) -> str:
-        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        state = self.get_session_state(session_id)
-        existing_blocks = state.legacy_blocks()
-        if not existing_blocks:
-            self.build_context_stage_messages(
-                session_id,
-                now_ms=timestamp_ms,
-            )
-            state = self.get_session_state(session_id)
-            existing_blocks = state.legacy_blocks()
-
-        table, _alias_changed = self.rebuild_alias_table(
+        self._sync_prompt_runtime()
+        return self._prompt_runtime.build_active_alias_constraint_text(
             session_id,
-            now_ms=timestamp_ms,
-            force=not bool(state.alias_table.entries) or state.alias_table.should_rebuild(timestamp_ms),
-        )
-        return self._alias_projector.build_active_constraint_text(
-            alias_table=table,
-            blocks=existing_blocks,
             unread_records=unread_records,
+            now_ms=now_ms,
         )
 
     def build_prompt_memory_bundle(
@@ -295,6 +198,7 @@ class ContextManager:
         request: PromptMemoryProjectionRequest,
     ) -> PromptMemoryBundle:
         """Project session context into the prompt-facing memory bundle."""
+        self._sync_prompt_runtime()
         return self._prompt_memory_assembler.assemble(request)
 
     def apply_usage_eviction(
@@ -310,19 +214,14 @@ class ContextManager:
         if not session_id:
             return {"triggered": False, "evicted_count": 0, "remaining_count": 0}
         state = self.get_session_state(session_id)
-        result = evict_context_blocks(
+        result = self._eviction_runtime.apply(
             state,
-            total_tokens=extract_total_tokens(usage),
-            config=ContextEvictionConfig(
-                max_context_tokens=max_context_tokens,
-                evict_ratio=evict_ratio,
-            ),
+            usage,
+            max_context_tokens=max_context_tokens,
+            evict_ratio=evict_ratio,
             compressed_text=compressed_text,
-            created_at_ms=now_ms,
+            now_ms=now_ms,
         )
-        if result.get("triggered"):
-            state.alias_table.request_rebuild()
-            self._alias_projector.reset_inactive_snapshot(state)
         self._save_session_state(session_id)
         return result
 
@@ -337,64 +236,25 @@ class ContextManager:
         if not session_id:
             return {"triggered": False, "evicted_count": 0, "remaining_count": 0}
         state = self.get_session_state(session_id)
-        total_tokens = extract_total_tokens(usage)
-        config = ContextEvictionConfig(
+        return self._eviction_runtime.preview(
+            state,
+            usage,
             max_context_tokens=max_context_tokens,
             evict_ratio=evict_ratio,
         )
-        evicted_blocks = select_blocks_for_eviction(
-            state,
-            total_tokens=total_tokens,
-            config=config,
-        )
-        if not evicted_blocks:
-            return {
-                "triggered": False,
-                "total_tokens": total_tokens,
-                "evicted_count": 0,
-                "remaining_count": state.short_term_memory().block_count(),
-                "source_text": "",
-                "source_block_ids": [],
-            }
-
-        return {
-            "triggered": True,
-            "total_tokens": total_tokens,
-            "evicted_count": len(evicted_blocks),
-            "remaining_count": max(0, state.short_term_memory().block_count() - len(evicted_blocks)),
-            "source_text": self._compressed_memory_projector.build_source_text(
-                alias_table=state.alias_table,
-                blocks=evicted_blocks,
-            ),
-            "source_block_ids": [block.block_id for block in evicted_blocks],
-        }
 
     def _save_session_state(self, session_id: str) -> None:
-        state = self._session_states.get(session_id)
-        if state is None:
-            return
-        self._state_store.save(state)
+        self._session_runtime.save(session_id)
+
+    def _sync_prompt_runtime(self) -> None:
+        self._timeline_runtime.builder = self._context_builder
+        self._instruction_runtime.builder = self._instruction_builder
+        self._prompt_runtime.identity_store = self._identity_store
 
     def track_message_record(self, record: MessageLogRecord, *, platform: str = "") -> None:
         if not record.session_id:
             return
-        pool = self.get_pool(record.session_id)
-        payload = self._build_pool_payload(
-            {
-                "id": record.id,
-                "session_id": record.session_id,
-                "role": record.role,
-                "raw_text": record.raw_text,
-                "content_json": record.content_json,
-                "created_at": record.created_at,
-                "sender_id": record.sender_id,
-                "sender_name": record.sender_name,
-                "platform_msg_id": record.platform_msg_id,
-                "platform": platform,
-                "is_read": record.is_read,
-            }
-        )
-        pool.append(payload)
+        self._pool_runtime.append_record(record, platform=platform)
         self.get_alias_table(record.session_id).note_activity(record.created_at)
         self._save_session_state(record.session_id)
 
@@ -408,37 +268,6 @@ class ContextManager:
         if record.is_read:
             return
 
-    def _build_pool_payload(self, item: dict[str, Any]) -> dict[str, Any]:
-        payload = {
-            "id": item.get("id"),
-            "session_id": item.get("session_id", ""),
-            "role": item.get("role", ""),
-            "raw_text": item.get("raw_text", ""),
-            "created_at": item.get("created_at"),
-            "sender_id": item.get("sender_id", ""),
-            "sender_name": item.get("sender_name", ""),
-            "platform_msg_id": item.get("platform_msg_id", ""),
-            "platform": item.get("platform", ""),
-            "is_read": bool(item.get("is_read", False)),
-            "content_json": item.get("content_json", "[]"),
-        }
-        merged_content = self._compose_content(payload)
-        if merged_content:
-            payload["content"] = merged_content
-        return payload
-
-    def _compose_content(self, item: dict[str, Any]) -> str:
-        text = str(item.get("raw_text") or "").strip()
-        if self._media_service is None:
-            return text
-
-        media_notes = self._media_service.summarize_message_media(item)
-        if text and media_notes:
-            return f"{text} {' '.join(media_notes)}"
-        if media_notes:
-            return " ".join(media_notes)
-        return text
-
     def get_recent_messages(
         self,
         session_id: str,
@@ -446,11 +275,11 @@ class ContextManager:
         limit: int | None = None,
         read_only: bool = True,
     ) -> list[dict[str, Any]]:
-        pool = self.get_pool(session_id)
-        items = pool.export_records(read_only=read_only)
-        if limit is not None:
-            items = items[-limit:]
-        return items
+        return self._pool_runtime.get_recent_messages(
+            session_id,
+            limit=limit,
+            read_only=read_only,
+        )
 
     def get_context_inputs(
         self,
@@ -459,22 +288,14 @@ class ContextManager:
         fallback: dict[str, Any] | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        payload = dict(fallback or {})
-        if not session_id:
-            return payload
-        pool = self.get_pool(session_id)
-        turns = pool.export_turns()
-        if limit is not None:
-            turns = turns[-limit:]
-        payload["history_turns"] = turns
-        payload["summary"] = payload.get("summary") or pool.summary
-        payload["current_tokens"] = pool.token_estimate
-        payload["context_source"] = "active_context_pool"
-        return payload
+        return self._pool_runtime.get_context_inputs(
+            session_id,
+            fallback=fallback,
+            limit=limit,
+        )
 
     def mark_read_until(self, session_id: str, msg_id: int) -> None:
         if not session_id:
             return
-        pool = self.get_pool(session_id)
-        pool.mark_read_until(msg_id)
+        self._pool_runtime.mark_read_until(session_id, msg_id)
         self._save_session_state(session_id)
