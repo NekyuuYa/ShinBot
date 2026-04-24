@@ -19,6 +19,7 @@ from shinbot.agent.context.eviction import (
 )
 from shinbot.agent.context.instruction_stage_builder import InstructionStageBuilder
 from shinbot.agent.context.message_parts import parse_message_parts
+from shinbot.agent.context.projection import PromptMemoryBundle, PromptMemoryProjectionRequest
 from shinbot.agent.context.state_store import (
     ContextBlockState,
     ContextSessionState,
@@ -497,6 +498,55 @@ class ContextManager:
             display_name = entry.display_name or entry.platform_id
             lines.append(f"{alias_id} = {display_name} / {entry.platform_id}")
         return "\n".join(lines)
+
+    def build_prompt_memory_bundle(
+        self,
+        request: PromptMemoryProjectionRequest,
+    ) -> PromptMemoryBundle:
+        """Project session context into the prompt-facing memory bundle."""
+        if not request.session_id:
+            return PromptMemoryBundle()
+
+        context_messages = self.build_context_stage_messages(
+            request.session_id,
+            self_platform_id=request.self_platform_id,
+            now_ms=request.now_ms,
+        )
+        inactive_alias_message = self.build_inactive_alias_context_message(
+            request.session_id,
+            unread_records=request.unread_records,
+            now_ms=request.now_ms,
+        )
+        cacheable_message_count = self.get_cacheable_context_message_count(request.session_id)
+        if inactive_alias_message is not None:
+            context_messages = [inactive_alias_message, *context_messages]
+            cacheable_message_count += 1
+
+        instruction_blocks: list[dict[str, Any]] = []
+        if request.unread_records:
+            instruction_blocks = self.build_instruction_stage_content(
+                request.session_id,
+                request.unread_records,
+                previous_summary=request.previous_summary,
+                self_platform_id=request.self_platform_id,
+                now_ms=request.now_ms,
+            )
+
+        constraint_text = self.build_active_alias_constraint_text(
+            request.session_id,
+            unread_records=request.unread_records,
+            now_ms=request.now_ms,
+        )
+        return PromptMemoryBundle(
+            context_messages=context_messages,
+            instruction_blocks=instruction_blocks,
+            constraint_text=constraint_text,
+            cacheable_message_count=cacheable_message_count,
+            metadata={
+                "session_id": request.session_id,
+                "message_count": len(request.unread_records),
+            },
+        )
 
     def apply_usage_eviction(
         self,

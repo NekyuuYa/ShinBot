@@ -6,9 +6,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from shinbot.agent.context import ContextManager
+from shinbot.agent.context import ContextManager, PromptMemoryBundle
 from shinbot.agent.context.alias_table import AliasEntry
-from shinbot.agent.context.manager import estimate_context_tokens
 from shinbot.agent.context.state_store import CompressedMemoryState, ContextBlockState
 from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
 from shinbot.agent.media import (
@@ -453,6 +452,71 @@ def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
     assert "cache_control" not in context_stage.messages[0]["content"][0]
     assert context_stage.messages[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in context_stage.messages[2]["content"][0]
+
+
+def test_prompt_registry_consumes_context_memory_bundle() -> None:
+    class FakeContextManager:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def build_prompt_memory_bundle(self, request):
+            self.requests.append(request)
+            return PromptMemoryBundle(
+                context_messages=[
+                    {"role": "user", "content": [{"type": "text", "text": "memory"}]}
+                ],
+                instruction_blocks=[{"type": "text", "text": "unread"}],
+                constraint_text="alias constraint",
+                cacheable_message_count=1,
+                metadata={"message_count": 1},
+            )
+
+    context_manager = FakeContextManager()
+    registry = PromptRegistry(context_manager=context_manager)
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    result = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id="s-bundle",
+            context_inputs={
+                "unread_records": [{"id": 1, "raw_text": "hello"}],
+                "previous_summary": "summary",
+                "self_user_id": "bot",
+            },
+            metadata={"now_ms": 1_234_000_000_000, "explicit_prompt_cache_enabled": True},
+        )
+    )
+
+    assert len(context_manager.requests) == 1
+    bundle_request = context_manager.requests[0]
+    assert bundle_request.session_id == "s-bundle"
+    assert bundle_request.previous_summary == "summary"
+    assert bundle_request.self_platform_id == "bot"
+    assert bundle_request.now_ms == 1_234_000_000_000
+
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    instruction_stage = next(
+        stage for stage in result.stages if stage.stage == PromptStage.INSTRUCTIONS
+    )
+    constraint_stage = next(
+        stage for stage in result.stages if stage.stage == PromptStage.CONSTRAINTS
+    )
+
+    assert context_stage.messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert instruction_stage.components[0].rendered_content_blocks == [
+        {"type": "text", "text": "unread"}
+    ]
+    assert instruction_stage.components[0].metadata["message_count"] == 1
+    assert constraint_stage.rendered_text == "alias constraint"
 
 
 def test_context_manager_exports_only_read_messages(tmp_path) -> None:

@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.context.projection import PromptMemoryProjectionRequest
 from shinbot.agent.prompt_manager.rendering import (
     expand_component_tree,
     infer_component_source,
@@ -428,27 +429,20 @@ class PromptRegistry:
             self_platform_id = str(context_inputs.get("self_user_id", "") or "").strip()
         now_ms = _resolve_now_ms(request.metadata.get("now_ms"))
         unread_records = context_inputs.get("unread_records")
-        context_messages = self._context_manager.build_context_stage_messages(
-            request.session_id,
-            self_platform_id=self_platform_id,
-            now_ms=now_ms,
-        )
-        inactive_alias_message = self._context_manager.build_inactive_alias_context_message(
-            request.session_id,
-            unread_records=unread_records if isinstance(unread_records, list) else None,
-            now_ms=now_ms,
-        )
-        if inactive_alias_message is not None:
-            context_messages = [inactive_alias_message, *context_messages]
-        if context_messages and _is_explicit_prompt_cache_enabled(request.metadata):
-            cacheable_message_count = self._context_manager.get_cacheable_context_message_count(
-                request.session_id
+        bundle = self._context_manager.build_prompt_memory_bundle(
+            PromptMemoryProjectionRequest(
+                session_id=request.session_id,
+                unread_records=unread_records if isinstance(unread_records, list) else [],
+                previous_summary=str(context_inputs.get("previous_summary", "") or ""),
+                self_platform_id=self_platform_id,
+                now_ms=now_ms,
             )
-            if inactive_alias_message is not None:
-                cacheable_message_count += 1
+        )
+        context_messages = list(bundle.context_messages)
+        if context_messages and _is_explicit_prompt_cache_enabled(request.metadata):
             context_messages = _apply_explicit_prompt_cache_marker(
                 context_messages,
-                cacheable_message_count,
+                bundle.cacheable_message_count,
             )
         if context_messages:
             hash_input = json.dumps(context_messages, ensure_ascii=False, sort_keys=True)
@@ -469,43 +463,31 @@ class PromptRegistry:
             )
             records_by_stage[PromptStage.CONTEXT].append(context_record)
             ordered_records.append(context_record)
-        if isinstance(unread_records, list) and unread_records:
-            content_blocks = self._context_manager.build_instruction_stage_content(
-                request.session_id,
-                unread_records,
-                previous_summary=str(context_inputs.get("previous_summary", "") or ""),
-                self_platform_id=self_platform_id,
-                now_ms=now_ms,
+        if bundle.instruction_blocks:
+            hash_input = json.dumps(bundle.instruction_blocks, ensure_ascii=False, sort_keys=True)
+            instruction_record = PromptComponentRecord(
+                component_id=self.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID,
+                stage=PromptStage.INSTRUCTIONS,
+                kind=PromptComponentKind.EXTERNAL_INJECTION,
+                version="1.0.0",
+                priority=10,
+                source=PromptSource(
+                    source_type=PromptSourceType.BUILTIN_SYSTEM,
+                    source_id=self.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID,
+                    is_builtin=True,
+                ),
+                rendered_text="[builtin unread messages]",
+                rendered_content_blocks=bundle.instruction_blocks,
+                text_hash=stable_text_hash(hash_input),
+                metadata={
+                    "session_id": request.session_id,
+                    "message_count": int(bundle.metadata.get("message_count", 0) or 0),
+                },
             )
-            if content_blocks:
-                hash_input = json.dumps(content_blocks, ensure_ascii=False, sort_keys=True)
-                instruction_record = PromptComponentRecord(
-                    component_id=self.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID,
-                    stage=PromptStage.INSTRUCTIONS,
-                    kind=PromptComponentKind.EXTERNAL_INJECTION,
-                    version="1.0.0",
-                    priority=10,
-                    source=PromptSource(
-                        source_type=PromptSourceType.BUILTIN_SYSTEM,
-                        source_id=self.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID,
-                        is_builtin=True,
-                    ),
-                    rendered_text="[builtin unread messages]",
-                    rendered_content_blocks=content_blocks,
-                    text_hash=stable_text_hash(hash_input),
-                    metadata={
-                        "session_id": request.session_id,
-                        "message_count": len(unread_records),
-                    },
-                )
-                records_by_stage[PromptStage.INSTRUCTIONS].append(instruction_record)
-                ordered_records.append(instruction_record)
+            records_by_stage[PromptStage.INSTRUCTIONS].append(instruction_record)
+            ordered_records.append(instruction_record)
 
-        active_alias_text = self._context_manager.build_active_alias_constraint_text(
-            request.session_id,
-            unread_records=unread_records if isinstance(unread_records, list) else None,
-            now_ms=now_ms,
-        )
+        active_alias_text = bundle.constraint_text.strip()
         if active_alias_text:
             constraint_record = PromptComponentRecord(
                 component_id=self.BUILTIN_CONSTRAINT_ACTIVE_ALIAS_COMPONENT_ID,

@@ -13,6 +13,7 @@ from shinbot.agent.context.message_parts import (
     NormalizedMessagePart,
     parse_message_parts,
 )
+from shinbot.agent.context.projection import PromptMemoryBundle, PromptMemoryProjectionRequest
 from shinbot.agent.context.ring_buffer import StableRingIdAllocator
 from shinbot.agent.context.state_store import (
     CompressedMemoryState,
@@ -37,6 +38,8 @@ __all__ = [
     "InstructionStageBuilder",
     "NormalizedImagePart",
     "NormalizedMessagePart",
+    "PromptMemoryBundle",
+    "PromptMemoryProjectionRequest",
     "SessionAliasTable",
     "StableRingIdAllocator",
     "parse_message_parts",
