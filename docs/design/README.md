@@ -39,6 +39,7 @@
 - `23_tool_registry_and_manager.md`
 - `24_attention_driven_conversation_workflow.md`
 - `25_media_semantics_and_meme_handling.md`
+- `26_context_memory_architecture.md`
 
 ### `extensibility/`
 
