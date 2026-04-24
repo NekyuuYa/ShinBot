@@ -19,7 +19,11 @@ from shinbot.agent.context.eviction import (
 )
 from shinbot.agent.context.instruction_stage_builder import InstructionStageBuilder
 from shinbot.agent.context.message_parts import parse_message_parts
-from shinbot.agent.context.projection import PromptMemoryBundle, PromptMemoryProjectionRequest
+from shinbot.agent.context.projection import (
+    ContextProjectionState,
+    PromptMemoryBundle,
+    PromptMemoryProjectionRequest,
+)
 from shinbot.agent.context.state_store import (
     ContextBlockState,
     ContextSessionState,
@@ -375,13 +379,17 @@ class ContextManager:
             return []
 
         blocks: list[ContextBlockState] = []
+        projection_state = ContextProjectionState.from_session_state(
+            session_state=session_state,
+            image_registry=self._context_builder.image_registry,
+        )
         for role, role_records in _group_records_by_timeline_role(records):
             if role == "assistant":
                 blocks.extend(
                     self._context_builder.build_assistant_blocks(
                         role_records,
                         alias_table=alias_table,
-                        session_state=session_state,
+                        projection_state=projection_state,
                         self_platform_id=self_platform_id,
                         start_block_index=start_block_index + len(blocks),
                     )
@@ -391,7 +399,7 @@ class ContextManager:
                     self._context_builder.build_blocks(
                         role_records,
                         alias_table=alias_table,
-                        session_state=session_state,
+                        projection_state=projection_state,
                         self_platform_id=self_platform_id,
                         start_block_index=start_block_index + len(blocks),
                     )
@@ -422,7 +430,10 @@ class ContextManager:
         content_blocks = self._instruction_builder.build_content_blocks(
             unread_records,
             alias_table=alias_table,
-            session_state=state,
+            projection_state=ContextProjectionState.from_session_state(
+                session_state=state,
+                image_registry=self._instruction_builder.image_registry,
+            ),
             previous_summary=previous_summary,
             self_platform_id=self_platform_id,
             now_ms=timestamp_ms,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -10,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from shinbot.agent.context.alias_table import SessionAliasTable
 from shinbot.agent.context.image_summary import ContextImageRegistry
 from shinbot.agent.context.message_parts import NormalizedMessagePart, parse_message_parts
+from shinbot.agent.context.projection import ContextProjectionState, PromptBlockProjection
 from shinbot.agent.context.state_store import ContextBlockState, ContextSessionState
 from shinbot.agent.context.token_utils import estimate_text_tokens
 
@@ -61,12 +61,16 @@ class ContextStageBuilder:
         self._image_registry = image_registry or ContextImageRegistry()
         self._config = config or ContextStageBuildConfig()
 
+    @property
+    def image_registry(self) -> ContextImageRegistry:
+        return self._image_registry
+
     def build_blocks(
         self,
         records: list[dict[str, Any]],
         *,
         alias_table: SessionAliasTable,
-        session_state: ContextSessionState,
+        projection_state: ContextProjectionState,
         self_platform_id: str = "",
         start_block_index: int = 0,
     ) -> list[ContextBlockState]:
@@ -76,7 +80,7 @@ class ContextStageBuilder:
             if (rendered := self.render_record(
                 record,
                 alias_table=alias_table,
-                session_state=session_state,
+                projection_state=projection_state,
                 self_platform_id=self_platform_id,
             ))
             is not None
@@ -144,7 +148,10 @@ class ContextStageBuilder:
         blocks = self.build_blocks(
             records,
             alias_table=alias_table,
-            session_state=session_state,
+            projection_state=ContextProjectionState.from_session_state(
+                session_state=session_state,
+                image_registry=self._image_registry,
+            ),
             self_platform_id=self_platform_id,
         )
         session_state.blocks = blocks
@@ -155,7 +162,7 @@ class ContextStageBuilder:
         records: list[dict[str, Any]],
         *,
         alias_table: SessionAliasTable,
-        session_state: ContextSessionState,
+        projection_state: ContextProjectionState,
         self_platform_id: str = "",
         start_block_index: int = 0,
     ) -> list[ContextBlockState]:
@@ -165,7 +172,7 @@ class ContextStageBuilder:
             if (rendered := self.render_assistant_record(
                 record,
                 alias_table=alias_table,
-                session_state=session_state,
+                projection_state=projection_state,
                 self_platform_id=self_platform_id,
             ))
             is not None
@@ -224,7 +231,7 @@ class ContextStageBuilder:
         record: dict[str, Any],
         *,
         alias_table: SessionAliasTable,
-        session_state: ContextSessionState,
+        projection_state: ContextProjectionState,
         self_platform_id: str = "",
     ) -> ContextRenderedRow | None:
         sender_id = str(record.get("sender_id", "") or "").strip()
@@ -268,10 +275,10 @@ class ContextStageBuilder:
             record,
             parts=parts,
             alias_table=alias_table,
-            session_state=session_state,
+            projection_state=projection_state,
             self_platform_id=self_platform_id,
         ).strip() or "[无文本]"
-        message_id = f"{session_state.message_ids.assign(_record_key(record)):04d}"
+        message_id = projection_state.assign_message_id(record)
         line = f"[msgid: {message_id}]{sender_label}: {rendered_body}"
         return ContextRenderedRow(
             sender_id=sender_id,
@@ -296,7 +303,7 @@ class ContextStageBuilder:
         record: dict[str, Any],
         *,
         alias_table: SessionAliasTable,
-        session_state: ContextSessionState,
+        projection_state: ContextProjectionState,
         self_platform_id: str = "",
     ) -> ContextRenderedRow | None:
         created_at_ms = _coerce_timestamp_ms(record.get("created_at"))
@@ -320,11 +327,11 @@ class ContextStageBuilder:
                 record,
                 parts=parts,
                 alias_table=alias_table,
-                session_state=session_state,
+                projection_state=projection_state,
                 self_platform_id=self_platform_id,
             ).strip() or "[无文本]"
 
-        message_id = f"{session_state.message_ids.assign(_record_key(record)):04d}"
+        message_id = projection_state.assign_message_id(record)
         line = f"[msgid: {message_id}] {rendered_body}"
         return ContextRenderedRow(
             sender_id=str(record.get("sender_id", "") or "").strip(),
@@ -367,35 +374,43 @@ class ContextStageBuilder:
         block_index: int,
         alias_table: SessionAliasTable,
     ) -> ContextBlockState:
+        projection = self._project_block(
+            runs,
+            block_index=block_index,
+            alias_table=alias_table,
+        )
+        return _projection_to_block_state(projection)
+
+    def _project_block(
+        self,
+        runs: list[ContextRenderedRun],
+        *,
+        block_index: int,
+        alias_table: SessionAliasTable,
+    ) -> PromptBlockProjection:
         flattened_rows = [row for run in runs for row in run.rows]
-        content_blocks: list[dict[str, Any]] = []
+        text_parts: list[str] = []
         if flattened_rows:
-            content_blocks.append(
-                {"type": "text", "text": _format_absolute_timestamp(flattened_rows[0].created_at_ms)}
-            )
+            text_parts.append(_format_absolute_timestamp(flattened_rows[0].created_at_ms))
 
         previous_created_at_ms = flattened_rows[0].created_at_ms if flattened_rows else 0
         for row in flattened_rows:
             if (
-                content_blocks
+                text_parts
                 and previous_created_at_ms
                 and row.created_at_ms - previous_created_at_ms > self._config.gap_marker_ms
             ):
-                content_blocks.append(
-                    {"type": "text", "text": _format_absolute_timestamp(row.created_at_ms)}
-                )
-            content_blocks.append({"type": "text", "text": row.text})
+                text_parts.append(_format_absolute_timestamp(row.created_at_ms))
+            text_parts.append(row.text)
             previous_created_at_ms = row.created_at_ms
 
-        token_estimate = sum(
-            estimate_text_tokens(str(block.get("text", "") or "")) for block in content_blocks
-        )
-        return ContextBlockState(
+        token_estimate = sum(estimate_text_tokens(text) for text in text_parts)
+        return PromptBlockProjection(
             block_id=f"context-{block_index + 1:04d}",
             kind="context",
             token_estimate=token_estimate,
             sealed=False,
-            contents=content_blocks,
+            text_parts=text_parts,
             metadata={
                 "message_count": len(flattened_rows),
                 "record_ids": [row.record_id for row in flattened_rows if row.record_id is not None],
@@ -411,34 +426,37 @@ class ContextStageBuilder:
         *,
         block_index: int,
     ) -> ContextBlockState:
-        content_blocks: list[dict[str, Any]] = []
+        projection = self._project_assistant_block(rows, block_index=block_index)
+        return _projection_to_block_state(projection)
+
+    def _project_assistant_block(
+        self,
+        rows: list[ContextRenderedRow],
+        *,
+        block_index: int,
+    ) -> PromptBlockProjection:
+        text_parts: list[str] = []
         if rows:
-            content_blocks.append(
-                {"type": "text", "text": _format_absolute_timestamp(rows[0].created_at_ms)}
-            )
+            text_parts.append(_format_absolute_timestamp(rows[0].created_at_ms))
 
         previous_created_at_ms = rows[0].created_at_ms if rows else 0
         for row in rows:
             if (
-                content_blocks
+                text_parts
                 and previous_created_at_ms
                 and row.created_at_ms - previous_created_at_ms > self._config.gap_marker_ms
             ):
-                content_blocks.append(
-                    {"type": "text", "text": _format_absolute_timestamp(row.created_at_ms)}
-                )
-            content_blocks.append({"type": "text", "text": row.text})
+                text_parts.append(_format_absolute_timestamp(row.created_at_ms))
+            text_parts.append(row.text)
             previous_created_at_ms = row.created_at_ms
 
-        token_estimate = sum(
-            estimate_text_tokens(str(block.get("text", "") or "")) for block in content_blocks
-        )
-        return ContextBlockState(
+        token_estimate = sum(estimate_text_tokens(text) for text in text_parts)
+        return PromptBlockProjection(
             block_id=f"assistant-{block_index + 1:04d}",
             kind="assistant",
             token_estimate=token_estimate,
             sealed=False,
-            contents=content_blocks,
+            text_parts=text_parts,
             metadata={
                 "message_count": len(rows),
                 "record_ids": [row.record_id for row in rows if row.record_id is not None],
@@ -454,7 +472,7 @@ class ContextStageBuilder:
         *,
         parts: list[NormalizedMessagePart],
         alias_table: SessionAliasTable,
-        session_state: ContextSessionState,
+        projection_state: ContextProjectionState,
         self_platform_id: str,
     ) -> str:
         fragments: list[str] = []
@@ -493,8 +511,7 @@ class ContextStageBuilder:
                     if semantics is not None:
                         image_kind = str(semantics.get("kind") or image_kind).strip() or image_kind
                         summary_text = str(semantics.get("digest") or "").strip()
-                reference = self._image_registry.get_or_create_reference(
-                    session_state=session_state,
+                reference = projection_state.resolve_image_reference(
                     raw_hash=part.image.raw_hash,
                     strict_dhash=part.image.strict_dhash,
                     summary_text=summary_text,
@@ -678,18 +695,15 @@ def _format_absolute_timestamp(timestamp_ms: int) -> str:
     return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%m-%d %H:%M")
 
 
-def _record_key(record: dict[str, Any]) -> str:
-    record_id = record.get("id")
-    if isinstance(record_id, int):
-        return f"record:{record_id}"
-    platform_msg_id = str(record.get("platform_msg_id", "") or "").strip()
-    if platform_msg_id:
-        return f"platform:{platform_msg_id}"
-    sender_id = str(record.get("sender_id", "") or "").strip()
-    created_at = str(record.get("created_at", "") or "").strip()
-    raw_text = str(record.get("raw_text", "") or "").strip()
-    digest = hashlib.sha1(f"{sender_id}|{created_at}|{raw_text}".encode()).hexdigest()
-    return f"synthetic:{digest}"
+def _projection_to_block_state(projection: PromptBlockProjection) -> ContextBlockState:
+    return ContextBlockState(
+        block_id=projection.block_id,
+        kind=projection.kind,
+        token_estimate=projection.token_estimate,
+        sealed=projection.sealed,
+        contents=projection.to_content_blocks(),
+        metadata=dict(projection.metadata),
+    )
 
 
 def _format_alias_with_platform(alias: str, platform_id: str) -> str:

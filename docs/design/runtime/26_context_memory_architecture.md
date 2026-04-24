@@ -432,6 +432,39 @@ PromptRegistry 不应直接协调：
 
 工作层输入不属于记忆层投影的一部分，而由 workflow 作为当前轮任务包注入。
 
+### 10.3 投影状态
+
+在迁移期，格式化过程仍然需要少量可变资源，例如短 `msgid` 分配、图片短 ID 分配和图片摘要引用。
+
+这些资源必须集中在显式的投影状态对象中，例如 `ContextProjectionState`，而不是散落在各个 builder 的渲染分支里。
+
+迁移目标：
+
+- builder 只负责格式化。
+- `ContextProjectionState` 暂时组合格式化所需的可变资源。
+- 短 `msgid` 分配与图片引用解析应拆为独立 projector，例如 `MessageIdProjector` 与 `ImageReferenceProjector`。
+- 后续可将 `ContextProjectionState` 替换为只读 snapshot 或独立 projection store。
+
+### 10.4 Block 投影过渡层
+
+在迁移期，短期上下文块仍需要落回旧的 `ContextBlockState`，因为现有持久化和淘汰逻辑仍依赖它。
+
+但 builder 不应直接把所有内容一次性写成 Chat Completions content dict。推荐先生成 `PromptBlockProjection`：
+
+- `text_parts`
+- `token_estimate`
+- `metadata`
+- `kind`
+- `sealed`
+
+然后再由最后一跳转换为旧的 `ContextBlockState.contents`。
+
+这一步的意义是先拆开：
+
+- 文本块规划
+- Prompt content dict 形态
+- 持久化状态兼容层
+
 ---
 
 ## 11. 持久化要求
