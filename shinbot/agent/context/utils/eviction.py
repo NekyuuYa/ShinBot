@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.context.state_store import (
+from shinbot.agent.context.state.state_store import (
     CompressedMemoryState,
     ContextBlockState,
     ContextSessionState,
@@ -34,10 +33,10 @@ def select_blocks_for_eviction(
     total_tokens: int,
     config: ContextEvictionConfig,
 ) -> list[ContextBlockState]:
-    if total_tokens < config.max_context_tokens or not state.blocks:
+    memory = state.short_term_memory()
+    if total_tokens < config.max_context_tokens or not memory.has_blocks():
         return []
-    evict_count = max(1, int(math.ceil(len(state.blocks) * config.evict_ratio)))
-    return list(state.blocks[:evict_count])
+    return memory.select_head_for_eviction(config.evict_ratio)
 
 
 def evict_context_blocks(
@@ -58,10 +57,21 @@ def evict_context_blocks(
             "triggered": False,
             "total_tokens": total_tokens,
             "evicted_count": 0,
-            "remaining_count": len(state.blocks),
+            "remaining_count": len(state.short_term_blocks()),
+            "source_block_ids": [],
         }
 
-    state.blocks = state.blocks[len(evicted_blocks) :]
+    memory = state.short_term_memory()
+    evicted_blocks = memory.evict_selected_head(evicted_blocks)
+    state.set_short_term_memory(memory)
+    if not evicted_blocks:
+        return {
+            "triggered": False,
+            "total_tokens": total_tokens,
+            "evicted_count": 0,
+            "remaining_count": len(state.short_term_blocks()),
+            "source_block_ids": [],
+        }
 
     compressed = compressed_text.strip()
     if compressed:
@@ -79,6 +89,7 @@ def evict_context_blocks(
         "triggered": True,
         "total_tokens": total_tokens,
         "evicted_count": len(evicted_blocks),
-        "remaining_count": len(state.blocks),
+        "remaining_count": len(state.short_term_blocks()),
         "compressed_added": bool(compressed),
+        "source_block_ids": [block.block_id for block in evicted_blocks],
     }

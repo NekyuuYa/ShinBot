@@ -6,7 +6,7 @@ import time
 import pytest
 
 from shinbot.agent.context import ContextManager, ContextStageBuildConfig, ContextStageBuilder
-from shinbot.agent.context.alias_table import ALIAS_ACTIVE_WINDOW_MS, ALIAS_REBUILD_IDLE_MS
+from shinbot.agent.context.state.alias_table import ALIAS_ACTIVE_WINDOW_MS, ALIAS_REBUILD_IDLE_MS
 from shinbot.agent.identity import (
     IdentityStore,
     register_identity_prompt_components,
@@ -253,8 +253,8 @@ def test_inactive_aliases_are_sourced_from_sealed_context_blocks(tmp_path) -> No
     state = context_manager.get_session_state(session_id)
     alias_table = context_manager.get_alias_table(session_id)
 
-    assert len(state.blocks) >= 2
-    assert any(block.sealed for block in state.blocks)
+    assert len(state.short_term_blocks()) >= 2
+    assert any(block.sealed for block in state.short_term_blocks())
     assert all("会话历史成员映射" not in str(message.get("content")) for message in context_messages)
 
     first_low_activity_alias = alias_table.resolve("user-0")
@@ -264,7 +264,7 @@ def test_inactive_aliases_are_sourced_from_sealed_context_blocks(tmp_path) -> No
     assert first_low_activity_alias.alias.startswith("P")
     assert second_low_activity_alias.alias.startswith("P")
 
-    sealed_alias_entries = state.blocks[0].metadata.get("alias_entries", [])
+    sealed_alias_entries = state.short_term_blocks()[0].metadata.get("alias_entries", [])
     assert isinstance(sealed_alias_entries, list)
     assert sealed_alias_entries
 
@@ -466,7 +466,7 @@ def test_context_manager_does_not_allocate_aliases_to_bot_self_messages(tmp_path
     )
     alias_entries = [
         entry
-        for block in state.blocks
+        for block in state.short_term_blocks()
         for entry in block.metadata.get("alias_entries", [])
         if isinstance(entry, dict)
     ]
@@ -555,7 +555,7 @@ def test_context_manager_mixes_assistant_segments_into_timeline(tmp_path) -> Non
     state = context_manager.get_session_state(session_id)
 
     assert [message["role"] for message in context_messages] == ["user", "assistant", "user"]
-    assert [block.kind for block in state.blocks] == ["context", "assistant", "context"]
+    assert [block.kind for block in state.short_term_blocks()] == ["context", "assistant", "context"]
     assistant_blocks = context_messages[1]["content"]
     assistant_text = "\n".join(
         str(block.get("text", ""))
@@ -564,4 +564,4 @@ def test_context_manager_mixes_assistant_segments_into_timeline(tmp_path) -> Non
     )
     assert "回复一" in assistant_text
     assert "回复二" in assistant_text
-    assert all(not block.metadata.get("alias_entries") for block in state.blocks if block.kind == "assistant")
+    assert all(not block.metadata.get("alias_entries") for block in state.short_term_blocks() if block.kind == "assistant")

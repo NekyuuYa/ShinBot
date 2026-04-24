@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from shinbot.agent.context.message_parts import parse_message_parts
+from shinbot.agent.context.builders.message_parts import parse_message_parts
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,

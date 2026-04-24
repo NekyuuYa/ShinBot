@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import mimetypes
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.context.alias_table import SessionAliasTable
-from shinbot.agent.context.image_summary import ContextImageRegistry
-from shinbot.agent.context.message_parts import NormalizedMessagePart, parse_message_parts
-from shinbot.agent.context.state_store import ContextSessionState
+from shinbot.agent.context.builders.image_summary import ContextImageRegistry
+from shinbot.agent.context.builders.message_parts import NormalizedMessagePart, parse_message_parts
+from shinbot.agent.context.projectors.projection import ContextProjectionState
+from shinbot.agent.context.state.alias_table import SessionAliasTable
 
 if TYPE_CHECKING:
     from shinbot.agent.media import MediaService
@@ -42,12 +41,16 @@ class InstructionStageBuilder:
         self._config = config or InstructionStageBuildConfig()
         self._sticker_summary_resolver = sticker_summary_resolver
 
+    @property
+    def image_registry(self) -> ContextImageRegistry:
+        return self._image_registry
+
     def build_content_blocks(
         self,
         unread_records: list[dict[str, Any]],
         *,
         alias_table: SessionAliasTable,
-        session_state: ContextSessionState,
+        projection_state: ContextProjectionState,
         previous_summary: str = "",
         self_platform_id: str = "",
         now_ms: int | None = None,
@@ -66,7 +69,7 @@ class InstructionStageBuilder:
                 self._render_record(
                     record,
                     alias_table=alias_table,
-                    session_state=session_state,
+                    projection_state=projection_state,
                     self_platform_id=self_platform_id,
                     now_ms=now_ms,
                 )
@@ -78,7 +81,7 @@ class InstructionStageBuilder:
         record: dict[str, Any],
         *,
         alias_table: SessionAliasTable,
-        session_state: ContextSessionState,
+        projection_state: ContextProjectionState,
         self_platform_id: str,
         now_ms: int | None,
     ) -> list[dict[str, Any]]:
@@ -88,7 +91,7 @@ class InstructionStageBuilder:
         parts = parse_message_parts(record, self_platform_id=self_platform_id)
         if not parts:
             text = str(record.get("raw_text", "") or "").strip() or "[无文本]"
-            message_id = f"{session_state.message_ids.assign(_record_key(record)):04d}"
+            message_id = projection_state.assign_message_id(record)
             return [
                 {
                     "type": "text",
@@ -111,7 +114,7 @@ class InstructionStageBuilder:
                 }
             ]
 
-        message_id = f"{session_state.message_ids.assign(_record_key(record)):04d}"
+        message_id = projection_state.assign_message_id(record)
         header = f"[{relative_time}] [msgid: {message_id}]{sender_label}: "
         blocks: list[dict[str, Any]] = []
         inline_fragments: list[str] = []
@@ -152,8 +155,7 @@ class InstructionStageBuilder:
                     if semantics is not None:
                         summary_text = str(semantics.get("digest") or "").strip()
                         image_kind = str(semantics.get("kind") or image_kind).strip() or image_kind
-                reference = self._image_registry.get_or_create_reference(
-                    session_state=session_state,
+                reference = projection_state.resolve_image_reference(
                     raw_hash=part.image.raw_hash,
                     strict_dhash=part.image.strict_dhash,
                     summary_text=summary_text,
@@ -298,20 +300,6 @@ def _current_time_ms() -> int:
     from time import time
 
     return int(time() * 1000)
-
-
-def _record_key(record: dict[str, Any]) -> str:
-    record_id = record.get("id")
-    if isinstance(record_id, int):
-        return f"record:{record_id}"
-    platform_msg_id = str(record.get("platform_msg_id", "") or "").strip()
-    if platform_msg_id:
-        return f"platform:{platform_msg_id}"
-    sender_id = str(record.get("sender_id", "") or "").strip()
-    created_at = str(record.get("created_at", "") or "").strip()
-    raw_text = str(record.get("raw_text", "") or "").strip()
-    digest = hashlib.sha1(f"{sender_id}|{created_at}|{raw_text}".encode()).hexdigest()
-    return f"synthetic:{digest}"
 
 
 def _format_alias_with_platform(alias: str, platform_id: str) -> str:

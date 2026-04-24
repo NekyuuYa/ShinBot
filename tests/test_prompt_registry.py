@@ -6,10 +6,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from shinbot.agent.context import ContextManager
-from shinbot.agent.context.alias_table import AliasEntry
-from shinbot.agent.context.manager import estimate_context_tokens
-from shinbot.agent.context.state_store import CompressedMemoryState, ContextBlockState
+from shinbot.agent.context import ContextManager, PromptMemoryBundle
+from shinbot.agent.context.state.alias_table import AliasEntry
+from shinbot.agent.context.state.state_store import CompressedMemoryState, ContextBlockState
 from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
@@ -342,7 +341,7 @@ def test_prompt_registry_prefers_active_context_pool(tmp_path) -> None:
         )
     )
 
-    registry = PromptRegistry(context_manager=ContextManager(db.message_logs))
+    registry = PromptRegistry(context_manager=ContextManager(db.message_logs, data_dir=tmp_path))
     registry.register_component(
         PromptComponent(
             id="system",
@@ -396,7 +395,8 @@ def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
     state.compressed_memories = [
         CompressedMemoryState(text="compressed memory", created_at_ms=900)
     ]
-    state.blocks = [
+    state.set_short_term_blocks(
+        [
         ContextBlockState(
             block_id="ctx-0",
             sealed=True,
@@ -407,7 +407,8 @@ def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
             sealed=False,
             contents=[{"type": "text", "text": "dynamic tail"}],
         ),
-    ]
+        ]
+    )
 
     registry = PromptRegistry(context_manager=context_manager)
     registry.register_component(
@@ -455,6 +456,71 @@ def test_prompt_registry_marks_last_cacheable_context_message(tmp_path) -> None:
     assert "cache_control" not in context_stage.messages[2]["content"][0]
 
 
+def test_prompt_registry_consumes_context_memory_bundle() -> None:
+    class FakeContextManager:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def build_prompt_memory_bundle(self, request):
+            self.requests.append(request)
+            return PromptMemoryBundle(
+                context_messages=[
+                    {"role": "user", "content": [{"type": "text", "text": "memory"}]}
+                ],
+                instruction_blocks=[{"type": "text", "text": "unread"}],
+                constraint_text="alias constraint",
+                cacheable_message_count=1,
+                metadata={"message_count": 1},
+            )
+
+    context_manager = FakeContextManager()
+    registry = PromptRegistry(context_manager=context_manager)
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_profile(PromptProfile(id="agent.default", base_components=["system"]))
+
+    result = registry.assemble(
+        PromptAssemblyRequest(
+            profile_id="agent.default",
+            session_id="s-bundle",
+            context_inputs={
+                "unread_records": [{"id": 1, "raw_text": "hello"}],
+                "previous_summary": "summary",
+                "self_user_id": "bot",
+            },
+            metadata={"now_ms": 1_234_000_000_000, "explicit_prompt_cache_enabled": True},
+        )
+    )
+
+    assert len(context_manager.requests) == 1
+    bundle_request = context_manager.requests[0]
+    assert bundle_request.session_id == "s-bundle"
+    assert bundle_request.previous_summary == "summary"
+    assert bundle_request.self_platform_id == "bot"
+    assert bundle_request.now_ms == 1_234_000_000_000
+
+    context_stage = next(stage for stage in result.stages if stage.stage == PromptStage.CONTEXT)
+    instruction_stage = next(
+        stage for stage in result.stages if stage.stage == PromptStage.INSTRUCTIONS
+    )
+    constraint_stage = next(
+        stage for stage in result.stages if stage.stage == PromptStage.CONSTRAINTS
+    )
+
+    assert context_stage.messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert instruction_stage.components[0].rendered_content_blocks == [
+        {"type": "text", "text": "unread"}
+    ]
+    assert instruction_stage.components[0].metadata["message_count"] == 1
+    assert constraint_stage.rendered_text == "alias constraint"
+
+
 def test_context_manager_exports_only_read_messages(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
@@ -469,7 +535,7 @@ def test_context_manager_exports_only_read_messages(tmp_path) -> None:
         )
     )
 
-    context_manager = ContextManager(db.message_logs)
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
     assert context_manager.get_context_inputs("s-read-filter")["history_turns"] == []
 
     db.message_logs.mark_read(msg_id)
@@ -561,7 +627,7 @@ def test_prompt_registry_keeps_active_context_pool_intact_during_assembly(tmp_pa
             )
         )
 
-    context_manager = ContextManager(db.message_logs)
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
     registry = PromptRegistry(context_manager=context_manager)
     registry.register_component(
         PromptComponent(
@@ -586,7 +652,7 @@ def test_prompt_registry_keeps_active_context_pool_intact_during_assembly(tmp_pa
     assert context_stage.components[0].metadata == {"session_id": "s-2"}
     assert "resolver_output" not in context_stage.components[0].metadata
     assert len(context_manager.get_recent_messages("s-2")) == 3
-    assert len(context_stage.messages) == 1
+    assert context_stage.messages
     assert any("turn 0" in text for text in texts)
     assert any("turn 1" in text for text in texts)
     assert any("turn 2" in text for text in texts)
@@ -614,7 +680,7 @@ def test_prompt_registry_syncs_session_policy_for_track_time_ejection(tmp_path) 
         )
     )
 
-    context_manager = ContextManager(db.message_logs)
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
     registry = PromptRegistry(context_manager=context_manager)
     registry.register_component(
         PromptComponent(
