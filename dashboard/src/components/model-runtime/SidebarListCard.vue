@@ -114,7 +114,9 @@ const filteredItems = computed(() => {
 })
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .sidebar-card {
   @include surface-card;
 }
@@ -124,18 +126,13 @@ const filteredItems = computed(() => {
 }
 
 .sidebar-item {
-  border: 1px solid rgba(var(--v-theme-primary), 0.08);
+  border: 1px solid $border-soft;
   background: rgba(var(--v-theme-surface), 0.66);
-  transition: border-color 0.18s ease, background-color 0.18s ease;
-}
-
-.sidebar-item:hover {
-  border-color: rgba(var(--v-theme-primary), 0.16);
-  background: rgba(var(--v-theme-surface), 0.92);
+  @include hover-border($show-shadow: false);
 }
 
 :deep(.v-list-item--active) {
   background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.3) 0%, rgba(var(--v-theme-primary), 0.16) 100%);
-  border-color: rgba(var(--v-theme-primary), 0.18);
+  border-color: rgba(var(--v-theme-primary), 0.18) !important;
 }
 </style>

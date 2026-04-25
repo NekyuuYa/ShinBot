@@ -1,0 +1,65 @@
+// ====================================
+// Data Visualization Mixins
+// ====================================
+
+@use 'variables' as *;
+
+// --- Timeline Chart Container (CSS Grid Bar Chart) ---
+@mixin timeline-chart-grid($bucket-count-var: --timeline-bucket-count) {
+  display: grid;
+  grid-template-columns: repeat(var(#{$bucket-count-var}, 1), minmax(14px, 1fr));
+  align-items: stretch;
+  gap: 8px;
+  height: 260px;
+
+  &--compact {
+    grid-template-columns: repeat(var(#{$bucket-count-var}, 24), minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  &--sparse {
+    grid-template-columns: repeat(var(#{$bucket-count-var}, 1), minmax(38px, 56px));
+    justify-content: start;
+  }
+}
+
+// --- Heatmap Grid logic ---
+@mixin heatmap-grid-layout($side-width: 260px, $col-min: 72px) {
+  display: grid;
+  grid-template-columns: $side-width repeat(var(--heatmap-columns, 1), minmax($col-min, 1fr));
+  gap: 8px;
+  min-width: fit-content;
+
+  .sticky-col {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: rgba(var(--v-theme-surface), 0.98);
+    border: 1px solid $border-soft;
+  }
+}
+
+// --- Analysis Section Panel ---
+@mixin analysis-section-panel {
+  border: 1px solid $border-soft;
+  background: $surface-gradient-soft;
+  border-radius: $card-border-radius;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.02);
+  padding: 24px;
+
+  .panel-kicker {
+    margin-bottom: 8px;
+    color: rgb(var(--v-theme-primary));
+    font-size: 0.74rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .panel-title {
+    margin: 0;
+    color: rgba(var(--v-theme-on-surface), 0.94);
+    font-size: 1.4rem;
+    font-weight: 800;
+  }
+}

@@ -83,7 +83,7 @@ const hasActions = computed(() => Boolean(slots.actions))
   flex-wrap: wrap;
 }
 
-@media (max-width: 960px) {
+@include respond-to('tablet') {
   .page-header-content {
     flex-direction: column;
     align-items: flex-start;

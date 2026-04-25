@@ -1,37 +1,40 @@
 // ====================================
-// Shared ShinBot Dashboard SCSS Variables
+// Standardized Design Tokens (ShinBot DS)
 // ====================================
 
-// --- Transitions ---
-$transition-fast: 0.18s ease;
-$transition-base: 0.24s ease;
-$transition-slow: 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+// --- 1. Typography Scale ---
+$font-size-xs: 0.75rem;    // 12px - Captions, Kickers
+$font-size-sm: 0.875rem;   // 14px - Body secondary
+$font-size-base: 1rem;     // 16px - Body main
+$font-size-md: 1.125rem;   // 18px - Subtitles
+$font-size-lg: 1.5rem;     // 24px - Section headers
+$font-size-xl: 2.25rem;    // 36px - Page titles
 
-// --- Card / Panel surface gradient ---
-$surface-gradient: linear-gradient(
+// --- 2. Radius Scale ---
+$radius-xs: 12px;
+$radius-sm: 16px;
+$radius-base: 24px;
+$radius-lg: 32px;
+
+// --- 3. Elevation & Shadows ---
+$shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.03);
+$shadow-base: 0 12px 32px rgba(var(--v-theme-primary), 0.04);
+$shadow-hover: 0 16px 48px rgba(var(--v-theme-primary), 0.1);
+
+// --- 4. Semantic Border Colors ---
+$border-color-soft: rgba(var(--v-theme-on-surface), 0.06);
+$border-color-base: rgba(var(--v-theme-on-surface), 0.12);
+$border-color-primary: rgba(var(--v-theme-primary), 0.18);
+
+// --- 5. Background Surfaces ---
+$surface-main: linear-gradient(
   180deg,
   rgba(var(--v-theme-surface), 0.98) 0%,
   rgba(var(--v-theme-background), 0.98) 100%
 );
 
-// --- Secondary surface gradient ---
-$surface-gradient-soft: linear-gradient(
-  180deg,
-  rgba(var(--v-theme-surface), 0.98) 0%,
-  rgba(var(--v-theme-background), 0.96) 100%
-);
+$surface-subtle: rgba(var(--v-theme-on-surface), 0.02);
 
-// --- Card border ---
-$card-border-color: rgba(var(--v-theme-primary), 0.12);
-$card-border-radius: 24px;
-$card-border-radius-sm: 20px;
-$card-border-radius-xs: 18px;
-
-// --- Soft border (on-surface) ---
-$border-soft: rgba(var(--v-theme-on-surface), 0.08);
-$border-light: rgba(var(--v-theme-on-surface), 0.05);
-
-// --- Box shadow for cards ---
-$card-shadow: 0 10px 28px rgba(var(--v-theme-primary), 0.06);
-$card-shadow-hover: 0 16px 36px rgba(var(--v-theme-primary), 0.12);
-$card-shadow-strong: 0 14px 34px rgba(var(--v-theme-primary), 0.08);
+// --- 6. Transitions ---
+$transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+$transition-base: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
