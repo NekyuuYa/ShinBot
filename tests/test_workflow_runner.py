@@ -82,7 +82,12 @@ class QueuedModelRuntime:
         )()
 
 
-def _seed_workflow_runtime(db: DatabaseManager, *, instance_id: str) -> None:
+def _seed_workflow_runtime(
+    db: DatabaseManager,
+    *,
+    instance_id: str,
+    config: dict[str, object] | None = None,
+) -> None:
     now = utc_now_iso()
     provider_id = "openai-workflow"
     model_id = "openai-workflow/gpt-test"
@@ -162,6 +167,7 @@ def _seed_workflow_runtime(db: DatabaseManager, *, instance_id: str) -> None:
             instance_id=instance_id,
             default_agent_uuid=agent_uuid,
             main_llm=route_id,
+            config=dict(config or {}),
             created_at=now,
             updated_at=now,
         )
@@ -529,14 +535,21 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
     assert len(runtime.calls) == 1
 
     call_messages = runtime.calls[0].messages
-    initial_messages = call_messages[:3]
-    assert [message["role"] for message in initial_messages] == ["system", "user", "user"]
-    assert "name" not in initial_messages[0]
-    assert "旧上下文，应该作为历史 context 进来" in str(initial_messages[1]["content"])
-    assert "name" not in initial_messages[2]
+    assert [message["role"] for message in call_messages[:5]] == [
+        "system",
+        "user",
+        "user",
+        "user",
+        "user",
+    ]
+    assert "name" not in call_messages[0]
+    assert "旧上下文，应该作为历史 context 进来" in str(call_messages[1]["content"])
+    assert "name" not in call_messages[2]
+    assert "Workflow 控制协议" in str(call_messages[2]["content"])
+    assert "不要输出裸文本" in str(call_messages[4]["content"])
 
-    final_user_message = initial_messages[-1]
-    final_texts = [str(block.get("text", "")) for block in final_user_message["content"]]
+    batch_user_message = call_messages[3]
+    final_texts = [str(block.get("text", "")) for block in batch_user_message["content"]]
 
     assert final_texts[0] == "[以下是会话中 2 条未消费消息]"
     assert "[msgid:" in final_texts[1]
@@ -547,12 +560,124 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
         "UNOwen: 或许要攒够5条" in text and "Ginkoro: 但是at是有特殊权重的" in text
         for text in final_texts
     )
-    assert any("### 参与者身份参考 (Identity Map)" in text for text in final_texts)
-    assert any("ID: 602190328 -> 昵称: UNOwen" in text for text in final_texts)
-    assert any("ID: 1917419834 -> 昵称: Ginkoro" in text for text in final_texts)
-    assert any("### 行为约束" in text for text in final_texts)
+    control_texts = [str(block.get("text", "")) for block in call_messages[2]["content"]]
+    assert any("### 参与者身份参考 (Identity Map)" in text for text in control_texts)
+    assert any("ID: 602190328 -> 昵称: UNOwen" in text for text in control_texts)
+    assert any("ID: 1917419834 -> 昵称: Ginkoro" in text for text in control_texts)
+    assert any("### 行为约束" in text for text in control_texts)
     assert not any("### 当前时间" in text for text in final_texts)
     assert not any("旧上下文" in text for text in final_texts)
+
+
+@pytest.mark.asyncio
+async def test_workflow_runner_marks_control_prefix_not_volatile_batch_for_cache(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    instance_id = "inst-workflow"
+    session_id = f"{instance_id}:group:1"
+    _seed_workflow_runtime(
+        db,
+        instance_id=instance_id,
+        config={"explicit_prompt_cache_enabled": True},
+    )
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id=instance_id,
+            session_type="group",
+            platform="qq",
+            channel_id="1",
+        )
+    )
+
+    attention_engine = AttentionEngine(AttentionConfig(), db.attention)
+    attention_state = SessionAttentionState(
+        session_id=session_id,
+        attention_value=6.0,
+        last_consumed_msg_log_id=1,
+        last_trigger_msg_log_id=1,
+    )
+    attention_engine.repo.save_attention(attention_state)
+
+    adapter = MockAdapter(instance_id=instance_id, platform="qq")
+    adapter_manager = AdapterManager()
+    adapter_manager._instances[instance_id] = adapter
+
+    registry = ToolRegistry()
+    register_attention_tools(registry, attention_engine, adapter_manager, db)
+    tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    context_manager = ContextManager(db.message_logs, data_dir=tmp_path)
+    prompt_registry = PromptRegistry(context_manager=context_manager)
+    register_runtime_prompt_components(
+        prompt_registry,
+        message_text_resolver=prompt_registry.resolve_builtin_message_text_prompt,
+        current_time_resolver=prompt_registry.resolve_builtin_current_time_prompt,
+    )
+
+    runtime = QueuedModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-no-reply",
+                        "type": "function",
+                        "function": {
+                            "name": "no_reply",
+                            "arguments": json.dumps(
+                                {"internal_summary": "cached prefix"},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = WorkflowRunner(
+        db,
+        prompt_registry,
+        runtime,
+        tool_manager,
+        attention_engine,
+        adapter_manager,
+    )
+
+    record = await runner.run(
+        session_id,
+        [
+            {
+                "id": 2,
+                "session_id": session_id,
+                "platform_msg_id": "msg-2",
+                "sender_id": "user-1",
+                "sender_name": "Tester",
+                "raw_text": "需要决策",
+                "is_mentioned": 0,
+                "created_at": 2_000.0,
+                "content_json": json.dumps(
+                    [MessageElement.text("需要决策").model_dump(mode="json")],
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    assert record is not None
+    assert record.finish_reason == "no_reply"
+
+    messages = runtime.calls[0].messages
+    control_message = next(
+        message for message in messages if "Workflow 控制协议" in str(message["content"])
+    )
+    batch_message = next(message for message in messages if "需要决策" in str(message["content"]))
+    assert "Workflow 控制协议" in str(control_message["content"])
+    assert control_message["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "需要决策" in str(batch_message["content"])
+    assert all("cache_control" not in block for block in batch_message["content"])
 
 
 @pytest.mark.asyncio
@@ -674,7 +799,11 @@ async def test_workflow_runner_keeps_quote_and_self_mention_inline_while_splitti
     assert len(runtime.calls) == 1
 
     call_messages = runtime.calls[0].messages
-    final_user_message = [message for message in call_messages if message["role"] == "user"][-1]
+    final_user_message = next(
+        message
+        for message in call_messages
+        if message["role"] == "user" and "[引用消息 id:quoted-msg]" in str(message["content"])
+    )
     content_blocks = final_user_message["content"]
 
     message_text_block = next(
