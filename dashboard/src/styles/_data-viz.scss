@@ -35,22 +35,22 @@
     left: 0;
     z-index: 1;
     background: rgba(var(--v-theme-surface), 0.98);
-    border: 1px solid $border-soft;
+    border: 1px solid $border-color-soft;
   }
 }
 
 // --- Analysis Section Panel ---
 @mixin analysis-section-panel {
-  border: 1px solid $border-soft;
-  background: $surface-gradient-soft;
-  border-radius: $card-border-radius;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.02);
+  border: 1px solid $border-color-soft;
+  background: $surface-main;
+  border-radius: $radius-base;
+  box-shadow: $shadow-base;
   padding: 24px;
 
   .panel-kicker {
     margin-bottom: 8px;
     color: rgb(var(--v-theme-primary));
-    font-size: 0.74rem;
+    font-size: $font-size-xs;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -59,7 +59,7 @@
   .panel-title {
     margin: 0;
     color: rgba(var(--v-theme-on-surface), 0.94);
-    font-size: 1.4rem;
+    font-size: $font-size-lg;
     font-weight: 800;
   }
 }

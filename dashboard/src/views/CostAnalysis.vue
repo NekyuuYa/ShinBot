@@ -493,7 +493,8 @@ onMounted(() => { if (!hasData.value) void costAnalysisStore.fetchAnalysis(selec
   padding: 20px;
   border-radius: 18px;
   background: rgba(var(--v-theme-on-surface), 0.02);
-  border: 1px solid $border-soft;
+  border: 1px solid $border-color-soft;
+
 
   &__head {
     display: flex;
@@ -585,7 +586,7 @@ onMounted(() => { if (!hasData.value) void costAnalysisStore.fetchAnalysis(selec
   justify-content: center;
   min-height: 64px;
   border-radius: 14px;
-  border: 1px solid $border-soft;
+  border: 1px solid $border-color-soft;
   text-align: center;
 }
 
@@ -635,7 +636,7 @@ onMounted(() => { if (!hasData.value) void costAnalysisStore.fetchAnalysis(selec
 .table-shell {
   overflow: hidden;
   border-radius: 18px;
-  border: 1px solid $border-soft;
+  border: 1px solid $border-color-soft;
 }
 
 .analysis-table {

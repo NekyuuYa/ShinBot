@@ -41,7 +41,7 @@ defineProps<Props>()
 
 .tool-row {
   @include surface-card-soft;
-  @include hover-border;
+  @include hover-lift;
 }
 
 .tool-row-grid {

@@ -3,6 +3,7 @@
 // ====================================
 
 @forward 'variables';
+@forward 'data-viz';
 @use 'variables' as *;
 
 // --- Standard Surface Card ---
@@ -13,14 +14,79 @@
   box-shadow: $shadow;
 }
 
+// --- Lighter surface card ---
+@mixin surface-card-soft($border-radius: $radius-sm) {
+  border: 1px solid $border-color-soft;
+  border-radius: $border-radius;
+  background: $surface-subtle;
+}
+
+// --- Page header shell (integrated look) ---
+@mixin page-header-shell {
+  border-radius: $radius-base;
+  background:
+    radial-gradient(circle at top right, rgba(var(--v-theme-primary), 0.12), transparent 40%),
+    $surface-subtle;
+  margin-bottom: 24px;
+}
+
 // --- Card Hover Feedback ---
-@mixin hover-lift {
+@mixin hover-lift($show-shadow: true) {
   transition: transform $transition-fast, box-shadow $transition-fast, border-color $transition-fast;
   
   &:hover {
     transform: translateY(-4px);
-    box-shadow: $shadow-hover;
     border-color: $border-color-primary;
+    @if $show-shadow {
+      box-shadow: $shadow-hover;
+    }
+  }
+}
+
+// --- Status pulse animation ---
+@mixin animate-pulse($color-name, $glow-opacity: 0.45) {
+  background: radial-gradient(circle, rgba(var(--v-theme-#{$color-name}), 0.2) 0%, rgb(var(--v-theme-#{$color-name})) 75%);
+  box-shadow: 0 0 0 0 rgba(var(--v-theme-#{$color-name}), $glow-opacity);
+  animation: pulse-#{$color-name} 2s infinite;
+
+  @keyframes pulse-#{$color-name} {
+    0% {
+      box-shadow: 0 0 0 0 rgba(var(--v-theme-#{$color-name}), $glow-opacity);
+    }
+    70% {
+      box-shadow: 0 0 0 7px rgba(var(--v-theme-#{$color-name}), 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(var(--v-theme-#{$color-name}), 0);
+    }
+  }
+}
+
+// --- Layout: Sidebar + Content ---
+@mixin dual-pane-layout($sidebar-width: 300px) {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+
+  .pane-sidebar {
+    flex: 0 0 $sidebar-width;
+    width: $sidebar-width;
+    max-width: $sidebar-width;
+  }
+
+  .pane-content {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  @media (max-width: 960px) {
+    flex-direction: column;
+
+    .pane-sidebar {
+      flex: 1 1 auto;
+      width: 100%;
+      max-width: none;
+    }
   }
 }
 

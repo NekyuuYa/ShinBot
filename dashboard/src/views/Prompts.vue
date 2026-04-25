@@ -517,6 +517,6 @@ onMounted(() => store.fetchItems())
 
 .prompt-card {
   @include surface-card;
-  @include hover-border;
+  @include hover-lift;
 }
 </style>

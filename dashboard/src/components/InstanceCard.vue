@@ -124,7 +124,7 @@ const handleStop = async () => {
 
 .instance-card {
   @include surface-card;
-  @include hover-border;
+  @include hover-lift;
 }
 
 .status-indicator {

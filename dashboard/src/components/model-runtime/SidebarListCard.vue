@@ -126,9 +126,9 @@ const filteredItems = computed(() => {
 }
 
 .sidebar-item {
-  border: 1px solid $border-soft;
+  border: 1px solid $border-color-soft;
   background: rgba(var(--v-theme-surface), 0.66);
-  @include hover-border($show-shadow: false);
+  @include hover-lift($show-shadow: false);
 }
 
 :deep(.v-list-item--active) {

@@ -200,6 +200,6 @@ const handleLayoutChange = (mode: ToolLayoutMode) => {
 .summary-card,
 .filter-card {
   @include surface-card;
-  @include hover-border;
+  @include hover-lift;
 }
 </style>

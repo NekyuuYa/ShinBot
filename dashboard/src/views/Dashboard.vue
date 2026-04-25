@@ -308,7 +308,7 @@ const navigateTo = (path: string) => {
 
 .action-card {
   @include surface-card;
-  @include hover-border;
+  @include hover-lift;
   cursor: pointer;
 }
 </style>

@@ -125,7 +125,7 @@ const handleConfigure = () => {
 
 .plugin-card {
   @include surface-card;
-  @include hover-border;
+  @include hover-lift;
 }
 
 .line-clamp-3 {

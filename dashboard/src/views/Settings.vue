@@ -732,14 +732,14 @@ onMounted(() => {
 }
 
 .settings-detail-item {
-  border: 1px solid $card-border-color;
+  border: 1px solid $border-color-base;
   border-radius: 16px;
   padding: 14px 16px;
   background: rgba(var(--v-theme-surface), 0.82);
   transition: border-color $transition-fast;
 
   &:hover {
-    border-color: rgba(var(--v-theme-primary), 0.24);
+    border-color: $border-color-primary;
   }
 }
 

@@ -1,5 +1,5 @@
 <template>
-  <section class="page-header-shell mb-8">
+  <header class="page-header-shell">
     <div class="page-header-content">
       <div class="page-header-copy">
         <div v-if="kicker" class="page-kicker">{{ kicker }}</div>
@@ -13,7 +13,7 @@
         <slot name="actions" />
       </div>
     </div>
-  </section>
+  </header>
 </template>
 
 <script setup lang="ts">
@@ -43,7 +43,7 @@ const hasActions = computed(() => Boolean(slots.actions))
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 28px 32px;
+  padding: 24px 28px;
 }
 
 .page-header-copy {
@@ -51,27 +51,27 @@ const hasActions = computed(() => Boolean(slots.actions))
 }
 
 .page-kicker {
-  margin-bottom: 10px;
-  color: rgba(var(--v-theme-primary), 0.88);
-  font-size: 0.78rem;
+  margin-bottom: 8px;
+  color: rgb(var(--v-theme-primary));
+  font-size: $font-size-xs;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
 .page-title {
   margin: 0;
-  font-size: clamp(1.8rem, 2.4vw, 2.4rem);
+  font-size: clamp(1.6rem, 2.2vw, $font-size-xl);
   font-weight: 800;
-  line-height: 1.15;
+  line-height: 1.2;
   color: rgba(var(--v-theme-on-surface), 0.94);
 }
 
 .page-subtitle {
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   max-width: 760px;
-  color: rgba(var(--v-theme-on-surface), 0.72);
-  font-size: 0.98rem;
+  color: rgba(var(--v-theme-on-surface), 0.64);
+  font-size: $font-size-sm;
   line-height: 1.6;
 }
 
@@ -84,10 +84,15 @@ const hasActions = computed(() => Boolean(slots.actions))
 }
 
 @include respond-to('tablet') {
+  .page-header-shell {
+    margin-bottom: 16px;
+  }
+  
   .page-header-content {
     flex-direction: column;
     align-items: flex-start;
-    padding: 24px;
+    padding: 20px;
+    gap: 20px;
   }
 
   .page-header-actions {

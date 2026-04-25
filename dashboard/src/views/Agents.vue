@@ -10,13 +10,13 @@
           color="secondary"
           variant="tonal"
           prepend-icon="mdi-refresh"
-          :loading="agentsStore.isLoading"
+          :loading="agentsStore.isLoading || isLoadingResources"
           class="me-2"
           @click="refreshAgents"
         >
           {{ $t('pages.agents.actions.refresh') }}
         </v-btn>
-        <v-btn color="primary" prepend-icon="mdi-account-plus" @click="openCreateAgent">
+        <v-btn color="primary" prepend-icon="mdi-account-plus" @click="openCreate">
           {{ $t('pages.agents.actions.addAgent') }}
         </v-btn>
       </template>
@@ -97,7 +97,7 @@
               </v-card-text>
 
               <v-card-actions>
-                <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEditAgent(agent)">
+                <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(agent)">
                   {{ $t('common.actions.action.edit') }}
                 </v-btn>
                 <v-spacer />
@@ -116,14 +116,14 @@
       </div>
     </div>
 
-    <v-alert v-if="agentsStore.error" type="error" class="mt-4">
-      {{ agentsStore.error }}
+    <v-alert v-if="agentsStore.error || resourceError" type="error" class="mt-4">
+      {{ agentsStore.error || resourceError }}
     </v-alert>
 
     <v-dialog v-model="dialogVisible" max-width="860">
       <v-card>
         <v-card-title>
-          {{ editingAgentUuid ? $t('pages.agents.overlay.editTitle') : $t('pages.agents.overlay.createTitle') }}
+          {{ editingId ? $t('pages.agents.overlay.editTitle') : $t('pages.agents.overlay.createTitle') }}
         </v-card-title>
         <v-card-text>
           <v-row>
@@ -177,7 +177,7 @@
                 :model-value="promptSummary"
                 :label="$t('pages.agents.fields.prompts')"
                 :placeholder="$t('pages.agents.fields.promptsEmpty')"
-                :loading="isLoadingPrompts"
+                :loading="isLoadingResources"
                 :clearable="form.prompts.length > 0"
                 readonly
                 variant="outlined"
@@ -193,7 +193,7 @@
                 :model-value="toolSummary"
                 :label="$t('pages.agents.fields.tools')"
                 :placeholder="$t('pages.agents.fields.toolsEmpty')"
-                :loading="isLoadingTools"
+                :loading="isLoadingResources"
                 :clearable="form.tools.length > 0"
                 readonly
                 variant="outlined"
@@ -209,13 +209,13 @@
               <v-select
                 :model-value="form.contextStrategyRef"
                 :label="$t('pages.agents.fields.contextStrategyRef')"
-                :items="contextStrategyOptions"
+                :items="contextStrategyOptions(form.contextStrategyRef, contextStrategyType).value"
                 item-title="title"
                 item-value="value"
                 variant="outlined"
                 density="comfortable"
                 clearable
-                :loading="isLoadingContextStrategies"
+                :loading="isLoadingResources"
                 :placeholder="$t('pages.agents.fields.contextStrategyPlaceholder')"
                 :no-data-text="$t('pages.agents.fields.contextStrategyEmpty')"
                 @update:model-value="handleContextStrategyChange"
@@ -254,8 +254,8 @@
           <v-btn variant="text" @click="dialogVisible = false">
             {{ $t('common.actions.action.cancel') }}
           </v-btn>
-          <v-btn color="primary" :loading="agentsStore.isSaving" @click="saveAgent">
-            {{ editingAgentUuid ? $t('common.actions.action.save') : $t('common.actions.action.create') }}
+          <v-btn color="primary" :loading="isSaving" @click="submit">
+            {{ editingId ? $t('common.actions.action.save') : $t('common.actions.action.create') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -290,36 +290,33 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { Agent, AgentPayload } from '@/api/agents'
-import { contextStrategiesApi, type ContextStrategy } from '@/api/contextStrategies'
-import { promptsApi, type PromptCatalogItem } from '@/api/prompts'
-import { toolsApi, type ToolDefinition } from '@/api/tools'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
 import GenericPickerDialog, {
   type GenericPickerSection,
 } from '@/components/model-runtime/GenericPickerDialog.vue'
+import { useAgentResources } from '@/composables/useAgentResources'
+import { useCrudDialog } from '@/composables/useCrudDialog'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
 import { useAgentsStore } from '@/stores/agents'
 import { usePersonasStore } from '@/stores/personas'
 import { normalizeStringList } from '@/utils/stringList'
+import { safeJsonParse, prettyJson } from '@/utils/json'
 
 const { t } = useI18n()
 const agentsStore = useAgentsStore()
 const personasStore = usePersonasStore()
 
-const dialogVisible = ref(false)
-const editingAgentUuid = ref('')
-const localError = ref('')
-const contextStrategies = ref<ContextStrategy[]>([])
-const isLoadingContextStrategies = ref(false)
-const contextStrategyType = ref('')
-const promptCatalog = ref<PromptCatalogItem[]>([])
-const isLoadingPrompts = ref(false)
-const toolCatalog = ref<ToolDefinition[]>([])
-const isLoadingTools = ref(false)
-const showPromptPicker = ref(false)
-const showToolPicker = ref(false)
+// Resources and Logic Extraction
+const {
+  isLoadingResources,
+  resourceError,
+  fetchAllResources,
+  contextStrategyOptions,
+  promptOptions,
+  toolOptions,
+} = useAgentResources()
 
 const form = reactive({
   agentId: '',
@@ -331,6 +328,72 @@ const form = reactive({
   contextStrategyRef: '',
   contextStrategyParamsJson: '',
   configJson: '',
+})
+
+const contextStrategyType = ref('')
+const showPromptPicker = ref(false)
+const showToolPicker = ref(false)
+
+const {
+  visible: dialogVisible,
+  editingId,
+  localError,
+  isSaving,
+  openCreate,
+  openEdit,
+  submit,
+} = useCrudDialog<Agent, AgentPayload>({
+  resetForm: () => {
+    Object.assign(form, {
+      agentId: '',
+      name: '',
+      personaUuid: '',
+      tags: [],
+      prompts: [],
+      tools: [],
+      contextStrategyRef: '',
+      contextStrategyParamsJson: '',
+      configJson: '',
+    })
+    contextStrategyType.value = ''
+  },
+  populateForm: (agent) => {
+    Object.assign(form, {
+      agentId: agent.agentId,
+      name: agent.name,
+      personaUuid: agent.personaUuid,
+      tags: [...agent.tags],
+      prompts: [...agent.prompts],
+      tools: [...agent.tools],
+      contextStrategyRef: agent.contextStrategy?.ref || '',
+      contextStrategyParamsJson: prettyJson(agent.contextStrategy?.params),
+      configJson: prettyJson(agent.config),
+    })
+    contextStrategyType.value = agent.contextStrategy?.type || ''
+  },
+  buildPayload: () => {
+    if (!form.agentId.trim() || !form.name.trim() || !form.personaUuid.trim()) {
+      throw new Error(translate('pages.agents.messages.requiredFields'))
+    }
+    return {
+      agentId: form.agentId.trim(),
+      name: form.name.trim(),
+      personaUuid: form.personaUuid.trim(),
+      prompts: normalizeStringList(form.prompts),
+      tools: normalizeStringList(form.tools),
+      contextStrategy: {
+        ref: form.contextStrategyRef.trim(),
+        type: contextStrategyType.value.trim(),
+        params: safeJsonParse(form.contextStrategyParamsJson),
+      },
+      config: safeJsonParse(form.configJson),
+      tags: normalizeStringList(form.tags),
+    }
+  },
+  save: async (payload, id) => {
+    const res = id ? await agentsStore.updateAgent(id, payload) : await agentsStore.createAgent(payload)
+    return Boolean(res)
+  },
 })
 
 const {
@@ -350,77 +413,15 @@ const {
 )
 
 const personaOptions = computed(() =>
-  personasStore.personas.map((persona) => ({
-    title: `${persona.name} (${persona.uuid})`,
-    value: persona.uuid,
-  }))
+  personasStore.personas.map((p) => ({ title: `${p.name} (${p.uuid})`, value: p.uuid }))
 )
-
-const contextStrategyOptions = computed(() => {
-  const options = [...contextStrategies.value]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((strategy) => ({
-      title: `${strategy.name} (${strategy.type})`,
-      value: strategy.uuid,
-      type: strategy.type,
-    }))
-
-  if (
-    form.contextStrategyRef
-    && !options.some((option) => option.value === form.contextStrategyRef)
-  ) {
-    options.push({
-      title: form.contextStrategyRef,
-      value: form.contextStrategyRef,
-      type: contextStrategyType.value,
-    })
-  }
-
-  return options
-})
-
-const promptOptions = computed(() => {
-  const options = promptCatalog.value
-    .map((item) => ({
-      title: `${item.displayName} (${item.id})`,
-      value: item.id,
-    }))
-    .sort((a, b) => a.title.localeCompare(b.title))
-
-  // Include any values already in the form that aren't in catalog
-  for (const id of form.prompts) {
-    if (!options.some((o) => o.value === id)) {
-      options.push({ title: id, value: id })
-    }
-  }
-  return options
-})
-
-const toolOptions = computed(() => {
-  const options = toolCatalog.value
-    .map((item) => ({
-      title: `${item.displayName || item.name} (${item.id})`,
-      value: item.id,
-    }))
-    .sort((a, b) => a.title.localeCompare(b.title))
-
-  for (const id of form.tools) {
-    if (!options.some((o) => o.value === id)) {
-      options.push({ title: id, value: id })
-    }
-  }
-  return options
-})
 
 const promptPickerSections = computed<GenericPickerSection[]>(() => [
   {
     id: 'prompts',
     label: t('pages.agents.fields.prompts'),
-    items: promptOptions.value.map((opt) => ({
-      value: opt.value,
-      title: opt.title,
-      icon: 'mdi-text-box-outline',
-      iconColor: 'primary',
+    items: promptOptions(form.prompts).value.map((o) => ({
+      value: o.value, title: o.title, icon: 'mdi-text-box-outline', iconColor: 'primary',
     })),
   },
 ])
@@ -429,227 +430,43 @@ const toolPickerSections = computed<GenericPickerSection[]>(() => [
   {
     id: 'tools',
     label: t('pages.agents.fields.tools'),
-    items: toolOptions.value.map((opt) => ({
-      value: opt.value,
-      title: opt.title,
-      icon: 'mdi-tools',
-      iconColor: 'secondary',
+    items: toolOptions(form.tools).value.map((o) => ({
+      value: o.value, title: o.title, icon: 'mdi-tools', iconColor: 'secondary',
     })),
   },
 ])
 
 const promptSummary = computed(() => {
   if (form.prompts.length === 0) return ''
-  const first = promptOptions.value.find((o) => o.value === form.prompts[0])?.title ?? form.prompts[0]
+  const first = promptOptions(form.prompts).value.find((o) => o.value === form.prompts[0])?.title ?? form.prompts[0]
   return form.prompts.length === 1 ? first : `${first} (+${form.prompts.length - 1})`
 })
 
 const toolSummary = computed(() => {
   if (form.tools.length === 0) return ''
-  const first = toolOptions.value.find((o) => o.value === form.tools[0])?.title ?? form.tools[0]
+  const first = toolOptions(form.tools).value.find((o) => o.value === form.tools[0])?.title ?? form.tools[0]
   return form.tools.length === 1 ? first : `${first} (+${form.tools.length - 1})`
 })
 
-const syncContextStrategyType = (strategyRef: string) => {
-  const selected = contextStrategyOptions.value.find((option) => option.value === strategyRef)
-  if (selected) {
-    contextStrategyType.value = selected.type
-    return
-  }
-  if (!strategyRef) {
-    contextStrategyType.value = ''
-  }
-}
-
 const handleContextStrategyChange = (value: string | null) => {
-  const strategyRef = (value ?? '').trim()
-  form.contextStrategyRef = strategyRef
-  syncContextStrategyType(strategyRef)
-}
-
-const fetchContextStrategies = async () => {
-  isLoadingContextStrategies.value = true
-  try {
-    const response = await contextStrategiesApi.list()
-    if (response.data.success && response.data.data) {
-      contextStrategies.value = response.data.data
-      syncContextStrategyType(form.contextStrategyRef.trim())
-      return
-    }
-    throw new Error(
-      response.data.error?.message || translate('pages.agents.messages.loadContextStrategiesFailed')
-    )
-  } catch (errorDetail: unknown) {
-    localError.value = errorDetail instanceof Error
-      ? errorDetail.message
-      : String(errorDetail)
-  } finally {
-    isLoadingContextStrategies.value = false
-  }
-}
-
-const fetchPromptCatalog = async () => {
-  isLoadingPrompts.value = true
-  try {
-    const response = await promptsApi.list()
-    if (response.data.success && response.data.data) {
-      promptCatalog.value = response.data.data
-      return
-    }
-  } catch {
-    // Non-critical: prompts field falls back to manual entry
-  } finally {
-    isLoadingPrompts.value = false
-  }
-}
-
-const fetchToolCatalog = async () => {
-  isLoadingTools.value = true
-  try {
-    const response = await toolsApi.list()
-    if (response.data.success && response.data.data) {
-      toolCatalog.value = response.data.data
-      return
-    }
-  } catch {
-    // Non-critical: tools field falls back to manual entry
-  } finally {
-    isLoadingTools.value = false
-  }
-}
-
-const parseJsonObject = (value: string, emptyFallback: Record<string, unknown>) => {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return emptyFallback
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch {
-    throw new Error(translate('pages.agents.messages.invalidJson'))
-  }
-
-  throw new Error(translate('pages.agents.messages.invalidJson'))
-}
-
-const resetForm = () => {
-  form.agentId = ''
-  form.name = ''
-  form.personaUuid = ''
-  form.tags = []
-  form.prompts = []
-  form.tools = []
-  form.contextStrategyRef = ''
-  contextStrategyType.value = ''
-  form.contextStrategyParamsJson = ''
-  form.configJson = ''
-}
-
-const openCreateAgent = () => {
-  editingAgentUuid.value = ''
-  localError.value = ''
-  resetForm()
-  dialogVisible.value = true
-}
-
-const openEditAgent = (agent: Agent) => {
-  editingAgentUuid.value = agent.uuid
-  localError.value = ''
-  form.agentId = agent.agentId
-  form.name = agent.name
-  form.personaUuid = agent.personaUuid
-  form.tags = [...agent.tags]
-  form.prompts = [...agent.prompts]
-  form.tools = [...agent.tools]
-  form.contextStrategyRef = agent.contextStrategy?.ref || ''
-  contextStrategyType.value = agent.contextStrategy?.type || ''
-  syncContextStrategyType(form.contextStrategyRef)
-  form.contextStrategyParamsJson = agent.contextStrategy?.params
-    ? JSON.stringify(agent.contextStrategy.params, null, 2)
-    : ''
-  form.configJson = agent.config ? JSON.stringify(agent.config, null, 2) : ''
-  dialogVisible.value = true
-}
-
-const buildPayload = (): AgentPayload => {
-  const agentId = form.agentId.trim()
-  const name = form.name.trim()
-  const personaUuid = form.personaUuid.trim()
-
-  if (!agentId || !name || !personaUuid) {
-    throw new Error(translate('pages.agents.messages.requiredFields'))
-  }
-
-  const strategyRef = form.contextStrategyRef.trim()
-  const strategyType = contextStrategyType.value.trim()
-  const strategyParams = parseJsonObject(form.contextStrategyParamsJson, {})
-
-  if ((strategyRef && !strategyType) || (!strategyRef && strategyType)) {
-    throw new Error(translate('pages.agents.messages.invalidContextStrategy'))
-  }
-
-  return {
-    agentId,
-    name,
-    personaUuid,
-    prompts: normalizeStringList(form.prompts),
-    tools: normalizeStringList(form.tools),
-    contextStrategy: {
-      ref: strategyRef,
-      type: strategyType,
-      params: strategyParams,
-    },
-    config: parseJsonObject(form.configJson, {}),
-    tags: normalizeStringList(form.tags),
-  }
-}
-
-const saveAgent = async () => {
-  localError.value = ''
-
-  try {
-    const payload = buildPayload()
-    const result = editingAgentUuid.value
-      ? await agentsStore.updateAgent(editingAgentUuid.value, payload)
-      : await agentsStore.createAgent(payload)
-
-    if (result) {
-      dialogVisible.value = false
-    }
-  } catch (errorDetail: unknown) {
-    localError.value = errorDetail instanceof Error
-      ? errorDetail.message
-      : String(errorDetail)
-  }
+  const refVal = (value ?? '').trim()
+  form.contextStrategyRef = refVal
+  const selected = contextStrategyOptions(refVal, contextStrategyType.value).value.find(o => o.value === refVal)
+  contextStrategyType.value = selected?.type || ''
 }
 
 const removeAgent = async (uuid: string, name: string) => {
-  if (!confirm(translate('pages.agents.messages.confirmDelete', { name }))) {
-    return
+  if (confirm(translate('pages.agents.messages.confirmDelete', { name }))) {
+    await agentsStore.deleteAgent(uuid)
   }
-
-  await agentsStore.deleteAgent(uuid)
 }
 
-const refreshAgents = async () => {
-  await Promise.all([
-    agentsStore.fetchAgents(),
-    fetchContextStrategies(),
-    fetchPromptCatalog(),
-    fetchToolCatalog(),
-  ])
-}
+const refreshAgents = () => Promise.all([agentsStore.fetchAgents(), fetchAllResources()])
 
 onMounted(() => {
   agentsStore.fetchAgents()
   personasStore.fetchPersonas()
-  fetchContextStrategies()
-  fetchPromptCatalog()
-  fetchToolCatalog()
+  fetchAllResources()
 })
 </script>
 
@@ -669,7 +486,7 @@ onMounted(() => {
 }
 
 .agent-card {
-  @include surface-card($card-border-color, $card-border-radius-sm);
-  @include hover-border;
+  @include surface-card;
+  @include hover-lift;
 }
 </style>

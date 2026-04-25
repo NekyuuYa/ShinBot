@@ -336,8 +336,8 @@ onMounted(() => {
 }
 
 .persona-card {
-  @include surface-card($card-border-color, $card-border-radius-sm);
-  @include hover-border;
+  @include surface-card;
+  @include hover-lift;
 }
 
 .persona-prompt-preview {
