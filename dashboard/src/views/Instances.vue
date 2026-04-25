@@ -163,58 +163,160 @@
               />
             </v-col>
             <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.botConfig.mainLlm"
-                :label="$t('pages.instances.form.mainLlm')"
-                placeholder="openai-main/gpt-fast"
-                append-inner-icon="mdi-database-search-outline"
-                @click:append-inner="showMainLlmPicker = true"
-              />
+              <button
+                type="button"
+                class="config-selector-tile"
+                @click="showMainLlmPicker = true"
+              >
+                <span class="selector-label">{{ $t('pages.instances.form.mainLlm') }}</span>
+                <span class="selector-body">
+                  <v-avatar size="34" :color="modelTargetSummary(form.botConfig.mainLlm).color" variant="tonal">
+                    <v-icon :icon="modelTargetSummary(form.botConfig.mainLlm).icon" size="18" />
+                  </v-avatar>
+                  <span class="selector-copy">
+                    <span class="selector-title">{{ modelTargetSummary(form.botConfig.mainLlm).title }}</span>
+                    <span class="selector-subtitle">{{ modelTargetSummary(form.botConfig.mainLlm).subtitle }}</span>
+                  </span>
+                  <span
+                    v-if="form.botConfig.mainLlm"
+                    class="selector-clear"
+                    @click.stop="form.botConfig.mainLlm = ''"
+                  >
+                    <v-icon icon="mdi-close" size="18" />
+                  </span>
+                  <v-icon v-else icon="mdi-chevron-right" size="20" class="selector-chevron" />
+                </span>
+              </button>
             </v-col>
             <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.botConfig.mediaInspectionLlm"
-                :label="$t('pages.instances.form.mediaInspectionLlm')"
-                placeholder="openai-main/gpt-4o"
-                append-inner-icon="mdi-database-search-outline"
-                @click:append-inner="showMediaInspectionLlmPicker = true"
-              />
+              <button
+                type="button"
+                class="config-selector-tile"
+                @click="showMediaInspectionLlmPicker = true"
+              >
+                <span class="selector-label">{{ $t('pages.instances.form.mediaInspectionLlm') }}</span>
+                <span class="selector-body">
+                  <v-avatar size="34" :color="modelTargetSummary(form.botConfig.mediaInspectionLlm).color" variant="tonal">
+                    <v-icon :icon="modelTargetSummary(form.botConfig.mediaInspectionLlm).icon" size="18" />
+                  </v-avatar>
+                  <span class="selector-copy">
+                    <span class="selector-title">{{ modelTargetSummary(form.botConfig.mediaInspectionLlm).title }}</span>
+                    <span class="selector-subtitle">{{ modelTargetSummary(form.botConfig.mediaInspectionLlm).subtitle }}</span>
+                  </span>
+                  <span
+                    v-if="form.botConfig.mediaInspectionLlm"
+                    class="selector-clear"
+                    @click.stop="form.botConfig.mediaInspectionLlm = ''"
+                  >
+                    <v-icon icon="mdi-close" size="18" />
+                  </span>
+                  <v-icon v-else icon="mdi-chevron-right" size="20" class="selector-chevron" />
+                </span>
+              </button>
             </v-col>
             <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.botConfig.mediaInspectionPrompt"
-                :label="$t('pages.instances.form.mediaInspectionPrompt')"
-                placeholder="builtin.prompt.media_inspection"
-                append-inner-icon="mdi-text-box-search-outline"
-                @click:append-inner="showMediaInspectionPromptPicker = true"
-              />
+              <button
+                type="button"
+                class="config-selector-tile"
+                @click="showMediaInspectionPromptPicker = true"
+              >
+                <span class="selector-label">{{ $t('pages.instances.form.mediaInspectionPrompt') }}</span>
+                <span class="selector-body">
+                  <v-avatar size="34" :color="promptTargetSummary(form.botConfig.mediaInspectionPrompt).color" variant="tonal">
+                    <v-icon :icon="promptTargetSummary(form.botConfig.mediaInspectionPrompt).icon" size="18" />
+                  </v-avatar>
+                  <span class="selector-copy">
+                    <span class="selector-title">{{ promptTargetSummary(form.botConfig.mediaInspectionPrompt).title }}</span>
+                    <span class="selector-subtitle">{{ promptTargetSummary(form.botConfig.mediaInspectionPrompt).subtitle }}</span>
+                  </span>
+                  <span
+                    v-if="form.botConfig.mediaInspectionPrompt"
+                    class="selector-clear"
+                    @click.stop="form.botConfig.mediaInspectionPrompt = ''"
+                  >
+                    <v-icon icon="mdi-close" size="18" />
+                  </span>
+                  <v-icon v-else icon="mdi-chevron-right" size="20" class="selector-chevron" />
+                </span>
+              </button>
             </v-col>
             <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.botConfig.stickerSummaryLlm"
-                :label="$t('pages.instances.form.stickerSummaryLlm')"
-                placeholder="openai-main/gpt-4o-mini"
-                append-inner-icon="mdi-database-search-outline"
-                @click:append-inner="showStickerSummaryLlmPicker = true"
-              />
+              <button
+                type="button"
+                class="config-selector-tile"
+                @click="showStickerSummaryLlmPicker = true"
+              >
+                <span class="selector-label">{{ $t('pages.instances.form.stickerSummaryLlm') }}</span>
+                <span class="selector-body">
+                  <v-avatar size="34" :color="modelTargetSummary(form.botConfig.stickerSummaryLlm).color" variant="tonal">
+                    <v-icon :icon="modelTargetSummary(form.botConfig.stickerSummaryLlm).icon" size="18" />
+                  </v-avatar>
+                  <span class="selector-copy">
+                    <span class="selector-title">{{ modelTargetSummary(form.botConfig.stickerSummaryLlm).title }}</span>
+                    <span class="selector-subtitle">{{ modelTargetSummary(form.botConfig.stickerSummaryLlm).subtitle }}</span>
+                  </span>
+                  <span
+                    v-if="form.botConfig.stickerSummaryLlm"
+                    class="selector-clear"
+                    @click.stop="form.botConfig.stickerSummaryLlm = ''"
+                  >
+                    <v-icon icon="mdi-close" size="18" />
+                  </span>
+                  <v-icon v-else icon="mdi-chevron-right" size="20" class="selector-chevron" />
+                </span>
+              </button>
             </v-col>
             <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.botConfig.stickerSummaryPrompt"
-                :label="$t('pages.instances.form.stickerSummaryPrompt')"
-                placeholder="builtin.prompt.sticker_summary"
-                append-inner-icon="mdi-text-box-search-outline"
-                @click:append-inner="showStickerSummaryPromptPicker = true"
-              />
+              <button
+                type="button"
+                class="config-selector-tile"
+                @click="showStickerSummaryPromptPicker = true"
+              >
+                <span class="selector-label">{{ $t('pages.instances.form.stickerSummaryPrompt') }}</span>
+                <span class="selector-body">
+                  <v-avatar size="34" :color="promptTargetSummary(form.botConfig.stickerSummaryPrompt).color" variant="tonal">
+                    <v-icon :icon="promptTargetSummary(form.botConfig.stickerSummaryPrompt).icon" size="18" />
+                  </v-avatar>
+                  <span class="selector-copy">
+                    <span class="selector-title">{{ promptTargetSummary(form.botConfig.stickerSummaryPrompt).title }}</span>
+                    <span class="selector-subtitle">{{ promptTargetSummary(form.botConfig.stickerSummaryPrompt).subtitle }}</span>
+                  </span>
+                  <span
+                    v-if="form.botConfig.stickerSummaryPrompt"
+                    class="selector-clear"
+                    @click.stop="form.botConfig.stickerSummaryPrompt = ''"
+                  >
+                    <v-icon icon="mdi-close" size="18" />
+                  </span>
+                  <v-icon v-else icon="mdi-chevron-right" size="20" class="selector-chevron" />
+                </span>
+              </button>
             </v-col>
             <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.botConfig.contextCompressionLlm"
-                :label="$t('pages.instances.form.contextCompressionLlm')"
-                placeholder="openai-main/gpt-4.1-mini"
-                append-inner-icon="mdi-database-search-outline"
-                @click:append-inner="showContextCompressionLlmPicker = true"
-              />
+              <button
+                type="button"
+                class="config-selector-tile"
+                @click="showContextCompressionLlmPicker = true"
+              >
+                <span class="selector-label">{{ $t('pages.instances.form.contextCompressionLlm') }}</span>
+                <span class="selector-body">
+                  <v-avatar size="34" :color="modelTargetSummary(form.botConfig.contextCompressionLlm).color" variant="tonal">
+                    <v-icon :icon="modelTargetSummary(form.botConfig.contextCompressionLlm).icon" size="18" />
+                  </v-avatar>
+                  <span class="selector-copy">
+                    <span class="selector-title">{{ modelTargetSummary(form.botConfig.contextCompressionLlm).title }}</span>
+                    <span class="selector-subtitle">{{ modelTargetSummary(form.botConfig.contextCompressionLlm).subtitle }}</span>
+                  </span>
+                  <span
+                    v-if="form.botConfig.contextCompressionLlm"
+                    class="selector-clear"
+                    @click.stop="form.botConfig.contextCompressionLlm = ''"
+                  >
+                    <v-icon icon="mdi-close" size="18" />
+                  </span>
+                  <v-icon v-else icon="mdi-chevron-right" size="20" class="selector-chevron" />
+                </span>
+              </button>
             </v-col>
             <v-col cols="12" md="6">
               <v-switch
@@ -286,6 +388,7 @@
       :title="$t('pages.instances.form.mainLlm')"
       :sections="mainLlmPickerSections"
       :selected="form.botConfig.mainLlm ? [form.botConfig.mainLlm] : []"
+      :close-on-select="false"
       :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
       :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.mainLlm = vals[0] ?? '' }"
@@ -295,6 +398,7 @@
       :title="$t('pages.instances.form.mediaInspectionLlm')"
       :sections="mainLlmPickerSections"
       :selected="form.botConfig.mediaInspectionLlm ? [form.botConfig.mediaInspectionLlm] : []"
+      :close-on-select="false"
       :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
       :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.mediaInspectionLlm = vals[0] ?? '' }"
@@ -304,6 +408,7 @@
       :title="$t('pages.instances.form.mediaInspectionPrompt')"
       :sections="summaryPromptPickerSections"
       :selected="form.botConfig.mediaInspectionPrompt ? [form.botConfig.mediaInspectionPrompt] : []"
+      :close-on-select="false"
       :empty-text="$t('pages.instances.form.summaryPromptPickerEmpty')"
       :no-results-text="$t('pages.instances.form.summaryPromptPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.mediaInspectionPrompt = vals[0] ?? '' }"
@@ -313,6 +418,7 @@
       :title="$t('pages.instances.form.stickerSummaryLlm')"
       :sections="mainLlmPickerSections"
       :selected="form.botConfig.stickerSummaryLlm ? [form.botConfig.stickerSummaryLlm] : []"
+      :close-on-select="false"
       :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
       :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.stickerSummaryLlm = vals[0] ?? '' }"
@@ -322,6 +428,7 @@
       :title="$t('pages.instances.form.stickerSummaryPrompt')"
       :sections="summaryPromptPickerSections"
       :selected="form.botConfig.stickerSummaryPrompt ? [form.botConfig.stickerSummaryPrompt] : []"
+      :close-on-select="false"
       :empty-text="$t('pages.instances.form.summaryPromptPickerEmpty')"
       :no-results-text="$t('pages.instances.form.summaryPromptPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.stickerSummaryPrompt = vals[0] ?? '' }"
@@ -331,6 +438,7 @@
       :title="$t('pages.instances.form.contextCompressionLlm')"
       :sections="mainLlmPickerSections"
       :selected="form.botConfig.contextCompressionLlm ? [form.botConfig.contextCompressionLlm] : []"
+      :close-on-select="false"
       :empty-text="$t('pages.modelRuntime.hints.modelIdPickerEmpty')"
       :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
       @update:selected="(vals) => { form.botConfig.contextCompressionLlm = vals[0] ?? '' }"
@@ -388,6 +496,28 @@ const showStickerSummaryLlmPicker = ref(false)
 const showStickerSummaryPromptPicker = ref(false)
 const showContextCompressionLlmPicker = ref(false)
 
+interface TargetSummary {
+  title: string
+  subtitle: string
+  icon: string
+  color: string
+}
+
+const routeTitle = (route: {
+  id: string
+  purpose: string
+  metadata?: Record<string, unknown>
+}) => {
+  const metadata = route.metadata || {}
+  for (const key of ['displayName', 'name', 'title']) {
+    const value = metadata[key]
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+  return route.purpose || route.id
+}
+
 const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
   const result: GenericPickerSection[] = []
 
@@ -405,8 +535,8 @@ const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
         })
         .map((route) => ({
           value: route.id,
-          title: route.id,
-          subtitle: route.purpose || route.strategy,
+          title: routeTitle(route),
+          subtitle: route.purpose ? `${route.id} · ${route.strategy}` : route.strategy,
           icon: 'mdi-transit-connection-variant',
           iconColor: route.enabled ? 'primary' : 'surface-variant',
           tag: route.enabled
@@ -463,6 +593,74 @@ const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
 
   return result
 })
+
+const modelTargetSummary = (value: string): TargetSummary => {
+  const target = value.trim()
+  if (!target) {
+    return {
+      title: t('pages.instances.form.notSelected'),
+      subtitle: t('pages.instances.form.chooseModelTarget'),
+      icon: 'mdi-database-search-outline',
+      color: 'surface-variant',
+    }
+  }
+
+  const route = modelRuntimeStore.routes.find((item) => item.id === target)
+  if (route) {
+    return {
+      title: routeTitle(route),
+      subtitle: route.purpose ? route.id : route.strategy,
+      icon: 'mdi-transit-connection-variant',
+      color: route.enabled ? 'primary' : 'surface-variant',
+    }
+  }
+
+  const model = modelRuntimeStore.models.find((item) => item.id === target)
+  if (model) {
+    return {
+      title: model.displayName || model.id,
+      subtitle: model.litellmModel && model.litellmModel !== model.id ? model.litellmModel : model.id,
+      icon: 'mdi-cube-outline',
+      color: model.enabled ? 'secondary' : 'surface-variant',
+    }
+  }
+
+  return {
+    title: target,
+    subtitle: t('pages.instances.form.missingSelection'),
+    icon: 'mdi-alert-circle-outline',
+    color: 'warning',
+  }
+}
+
+const promptTargetSummary = (value: string): TargetSummary => {
+  const target = value.trim()
+  if (!target) {
+    return {
+      title: t('pages.instances.form.notSelected'),
+      subtitle: t('pages.instances.form.choosePromptTarget'),
+      icon: 'mdi-text-box-search-outline',
+      color: 'surface-variant',
+    }
+  }
+
+  const prompt = promptCatalog.value.find((item) => item.id === target)
+  if (prompt) {
+    return {
+      title: prompt.displayName || prompt.id,
+      subtitle: prompt.description || prompt.id,
+      icon: prompt.sourceType === 'builtin_system' ? 'mdi-shield-star-outline' : 'mdi-text-box-outline',
+      color: prompt.enabled ? 'primary' : 'surface-variant',
+    }
+  }
+
+  return {
+    title: target,
+    subtitle: t('pages.instances.form.missingSelection'),
+    icon: 'mdi-alert-circle-outline',
+    color: 'warning',
+  }
+}
 
 const summaryPromptPickerSections = computed<GenericPickerSection[]>(() => {
   const eligible = [...promptCatalog.value]
@@ -917,3 +1115,88 @@ const parseOptionalFloat = (value: string, labelKey: string) => {
   return parsed
 }
 </script>
+
+<style scoped>
+.config-selector-tile {
+  width: 100%;
+  min-height: 86px;
+  padding: 10px 14px 12px;
+  border: 1px solid rgba(var(--v-theme-outline), 0.32);
+  border-radius: 8px;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-on-surface));
+  text-align: left;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.config-selector-tile:hover {
+  border-color: rgba(var(--v-theme-primary), 0.65);
+  background: rgba(var(--v-theme-primary), 0.04);
+}
+
+.config-selector-tile:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.7);
+  outline-offset: 2px;
+}
+
+.selector-label {
+  display: block;
+  margin-bottom: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.68);
+  font-size: 0.76rem;
+  line-height: 1.1;
+}
+
+.selector-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.selector-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.selector-title {
+  overflow: hidden;
+  font-size: 0.96rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selector-subtitle {
+  overflow: hidden;
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  font-size: 0.78rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selector-chevron {
+  color: rgba(var(--v-theme-on-surface), 0.48);
+}
+
+.selector-clear {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: rgba(var(--v-theme-on-surface), 0.58);
+}
+
+.selector-clear:hover {
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  color: rgb(var(--v-theme-on-surface));
+}
+</style>

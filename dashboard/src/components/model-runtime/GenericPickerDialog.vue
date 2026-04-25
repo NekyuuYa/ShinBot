@@ -3,7 +3,7 @@
     :model-value="modelValue"
     :max-width="maxWidth"
     scrollable
-    @update:model-value="$emit('update:modelValue', Boolean($event))"
+    @update:model-value="handleDialogModelUpdate"
   >
     <v-card class="picker-dialog">
       <v-card-item class="pb-2">
@@ -13,7 +13,7 @@
           <v-btn
             icon="mdi-close"
             variant="text"
-            @click="$emit('update:modelValue', false)"
+            @click="closeDialog('cancel')"
           />
         </template>
       </v-card-item>
@@ -52,10 +52,13 @@
                     <v-avatar
                       v-else
                       size="34"
-                      :color="item.iconColor ?? 'primary'"
+                      :color="isSelected(item.value) ? 'primary' : (item.iconColor ?? 'primary')"
                       variant="tonal"
                     >
-                      <v-icon :icon="item.icon ?? 'mdi-check-circle-outline'" size="18" />
+                      <v-icon
+                        :icon="isSelected(item.value) ? 'mdi-check' : (item.icon ?? 'mdi-check-circle-outline')"
+                        size="18"
+                      />
                     </v-avatar>
                   </template>
                   <v-list-item-title class="text-body-2 font-weight-medium">
@@ -109,10 +112,13 @@
                           <v-avatar
                             v-else
                             size="34"
-                            :color="item.iconColor ?? 'secondary'"
+                            :color="isSelected(item.value) ? 'primary' : (item.iconColor ?? 'secondary')"
                             variant="tonal"
                           >
-                            <v-icon :icon="item.icon ?? 'mdi-cube-outline'" size="18" />
+                            <v-icon
+                              :icon="isSelected(item.value) ? 'mdi-check' : (item.icon ?? 'mdi-cube-outline')"
+                              size="18"
+                            />
                           </v-avatar>
                         </template>
                         <v-list-item-title class="text-body-2 font-weight-medium">
@@ -153,16 +159,17 @@
 
       <v-card-actions class="px-6 pb-5 pt-0">
         <v-spacer />
-        <v-btn variant="text" @click="$emit('update:modelValue', false)">
+        <v-btn variant="text" @click="closeDialog('cancel')">
           {{ $t('common.actions.action.cancel') }}
         </v-btn>
         <v-btn
-          v-if="multiple"
+          v-if="multiple || !closeOnSelect"
           color="primary"
           variant="tonal"
-          @click="confirmMultiple"
+          @click="confirmSelection"
         >
-          {{ $t('common.actions.action.confirm') }} ({{ internalSelected.length }})
+          {{ $t('common.actions.action.confirm') }}
+          <template v-if="multiple"> ({{ internalSelected.length }})</template>
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -203,6 +210,7 @@ interface Props {
   sections: GenericPickerSection[]
   selected: string[]
   multiple?: boolean
+  closeOnSelect?: boolean
   maxWidth?: string | number
   emptyText?: string
   noResultsText?: string
@@ -210,6 +218,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   multiple: false,
+  closeOnSelect: true,
   maxWidth: 1120,
   emptyText: 'No options available.',
   noResultsText: 'No matching options found.',
@@ -236,14 +245,34 @@ const handleItemClick = (value: string) => {
       internalSelected.value = internalSelected.value.filter((v) => v !== value)
     }
   } else {
-    emit('update:selected', [value])
-    emit('update:modelValue', false)
+    internalSelected.value = [value]
+    if (props.closeOnSelect) {
+      closeDialog('apply')
+    }
   }
 }
 
-const confirmMultiple = () => {
+const confirmSelection = () => {
+  closeDialog('apply')
+}
+
+const applySelection = () => {
   emit('update:selected', [...internalSelected.value])
+}
+
+const closeDialog = (reason: 'apply' | 'cancel') => {
+  if (reason === 'apply') {
+    applySelection()
+  }
   emit('update:modelValue', false)
+}
+
+const handleDialogModelUpdate = (value: boolean) => {
+  if (value) {
+    emit('update:modelValue', true)
+    return
+  }
+  closeDialog('cancel')
 }
 
 const filterItems = (items: GenericPickerItem[]): GenericPickerItem[] => {
@@ -297,6 +326,7 @@ watch(
     }
   }
 )
+
 </script>
 
 <style scoped>
@@ -329,6 +359,11 @@ watch(
   background: rgba(var(--v-theme-surface), 0.96);
 }
 
+.picker-list-item.v-list-item--active {
+  border-color: rgba(var(--v-theme-primary), 0.42);
+  background: rgba(var(--v-theme-primary), 0.12);
+}
+
 .section-label {
   font-size: 0.86rem;
   font-weight: 700;
@@ -346,12 +381,8 @@ watch(
   );
 }
 
-:deep(.v-list-item--active) {
-  background: linear-gradient(
-    180deg,
-    rgba(var(--v-theme-primary), 0.3) 0%,
-    rgba(var(--v-theme-primary), 0.16) 100%
-  );
-  border-color: rgba(var(--v-theme-primary), 0.18);
+.picker-list-item.v-list-item--active:hover {
+  border-color: rgba(var(--v-theme-primary), 0.56);
+  background: rgba(var(--v-theme-primary), 0.16);
 }
 </style>

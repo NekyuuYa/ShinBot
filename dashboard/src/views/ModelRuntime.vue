@@ -305,16 +305,28 @@
             <v-card-text>
               <v-row>
                 <v-col cols="12" md="6">
-                  <v-select
-                    :model-value="providerForm.sourceType"
-                    :label="$t('pages.modelRuntime.fields.source')"
-                    :items="providerSourceOptions"
-                    item-title="label"
-                    item-value="type"
-                    density="comfortable"
-                    variant="outlined"
-                    @update:model-value="onProviderSourceChange"
-                  />
+                  <div class="text-caption text-medium-emphasis mb-2">
+                    {{ $t('pages.modelRuntime.fields.source') }}
+                  </div>
+                  <button
+                    type="button"
+                    class="provider-source-picker-tile"
+                    @click="showProviderSourcePicker = true"
+                  >
+                    <v-avatar
+                      size="36"
+                      color="primary"
+                      variant="tonal"
+                      class="selector-avatar"
+                    >
+                      <v-icon :icon="providerSourceIcon(providerForm.sourceType)" size="20" />
+                    </v-avatar>
+                    <span class="selector-copy">
+                      <span class="selector-title">{{ currentProviderSourceTitle }}</span>
+                      <span class="selector-subtitle">{{ currentProviderSourceSubtitle }}</span>
+                    </span>
+                    <v-icon icon="mdi-chevron-right" size="20" class="selector-arrow" />
+                  </button>
                 </v-col>
                 <v-col cols="12" md="6">
                   <v-text-field
@@ -689,16 +701,36 @@
       @update:model-value="closeModelIdPicker"
       @select="applyPickedModelId"
     />
+
+    <generic-picker-dialog
+      v-model="showProviderSourcePicker"
+      :title="$t('pages.modelRuntime.dialogs.providerSourcePicker')"
+      :subtitle="$t('pages.modelRuntime.hints.providerSourcePicker')"
+      :sections="providerSourcePickerSections"
+      :selected="providerForm.sourceType ? [providerForm.sourceType] : []"
+      :empty-text="$t('pages.modelRuntime.hints.providerSourcePickerEmpty')"
+      :no-results-text="$t('pages.modelRuntime.hints.providerSourcePickerNoMatches')"
+      @update:selected="applyProviderSourcePick"
+    />
   </v-container>
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
 import KeyValueEditor from '@/components/model-runtime/KeyValueEditor.vue'
 import ModelMemberCard from '@/components/model-runtime/ModelMemberCard.vue'
 import ModelIdPickerDialog from '@/components/model-runtime/ModelIdPickerDialog.vue'
+import GenericPickerDialog, {
+  type GenericPickerSection,
+} from '@/components/model-runtime/GenericPickerDialog.vue'
 import { useModelRuntimePage } from '@/composables/useModelRuntimePage'
+
+const { t } = useI18n()
+const showProviderSourcePicker = ref(false)
 
 const {
   store,
@@ -773,6 +805,56 @@ const {
   saveProvider,
   refreshPage,
 } = useModelRuntimePage()
+
+const providerSourceIcon = (type: string) => {
+  if (type === 'azure_openai') {
+    return 'mdi-microsoft-azure'
+  }
+  if (type === 'ollama') {
+    return 'mdi-lan'
+  }
+  if (type === 'custom_openai') {
+    return 'mdi-api'
+  }
+  if (type === 'anthropic') {
+    return 'mdi-alpha-a-circle-outline'
+  }
+  if (type === 'gemini') {
+    return 'mdi-google'
+  }
+  return 'mdi-cloud-outline'
+}
+
+const currentProviderSourceTitle = computed(
+  () => selectedProviderSource.value?.label || providerForm.value.sourceType || t('pages.modelRuntime.fields.source')
+)
+
+const currentProviderSourceSubtitle = computed(() => {
+  if (selectedProviderSource.value?.defaultBaseUrl) {
+    return selectedProviderSource.value.defaultBaseUrl
+  }
+  return providerForm.value.sourceType || t('pages.modelRuntime.hints.providerSourcePickerEmpty')
+})
+
+const providerSourcePickerSections = computed<GenericPickerSection[]>(() => [
+  {
+    id: 'provider-sources',
+    label: t('pages.modelRuntime.fields.source'),
+    items: providerSourceOptions.map((source) => ({
+      value: source.type,
+      title: source.label,
+      subtitle: source.defaultBaseUrl,
+      icon: providerSourceIcon(source.type),
+      iconColor: 'primary',
+      tag: source.type,
+      tagColor: source.supportsCatalog ? 'primary' : 'default',
+    })),
+  },
+])
+
+const applyProviderSourcePick = (values: string[]) => {
+  onProviderSourceChange(values[0] ?? null)
+}
 </script>
 
 <style scoped>
@@ -866,6 +948,68 @@ const {
 
 .runtime-main-pane :deep(.v-messages__message) {
   color: rgba(var(--v-theme-primary), 0.72);
+}
+
+.provider-source-picker-tile {
+  width: 100%;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(var(--v-theme-primary), 0.16);
+  border-radius: 18px;
+  background: rgba(var(--v-theme-surface), 0.92);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.provider-source-picker-tile:hover {
+  border-color: rgba(var(--v-theme-primary), 0.34);
+  background: rgba(var(--v-theme-surface), 0.98);
+}
+
+.provider-source-picker-tile:focus-visible {
+  outline: 2px solid rgba(var(--v-theme-primary), 0.5);
+  outline-offset: 2px;
+}
+
+.selector-avatar {
+  flex: 0 0 auto;
+}
+
+.selector-copy {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.selector-title {
+  overflow: hidden;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+  font-size: 0.96rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selector-subtitle {
+  overflow: hidden;
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  font-size: 0.78rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selector-arrow {
+  flex: 0 0 auto;
+  color: rgba(var(--v-theme-on-surface), 0.5);
 }
 
 .route-member-row,

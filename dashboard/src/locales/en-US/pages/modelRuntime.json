@@ -84,7 +84,8 @@
     "modelEditor": "Model Settings",
     "routeMemberEditor": "Route Member Settings",
     "catalog": "Provider Catalog",
-    "modelIdPicker": "Select Model ID"
+    "modelIdPicker": "Select Model ID",
+    "providerSourcePicker": "Select Provider Source"
   },
   "hints": {
     "token": "Leave empty to keep the stored credential unchanged.",
@@ -102,7 +103,10 @@
     "noRouteModels": "There are no models in this domain that can be added to the route yet.",
     "modelIdPicker": "You can still type directly, or pick a route ID / model ID from the dialog.",
     "modelIdPickerEmpty": "There are no route IDs or model IDs available yet.",
-    "modelIdPickerNoMatches": "No matching options were found."
+    "modelIdPickerNoMatches": "No matching options were found.",
+    "providerSourcePicker": "Selecting a provider source fills the matching default URL and supported options.",
+    "providerSourcePickerEmpty": "There are no provider sources available.",
+    "providerSourcePickerNoMatches": "No matching provider sources were found."
   },
   "labels": {
     "workspace": "Model Runtime",
