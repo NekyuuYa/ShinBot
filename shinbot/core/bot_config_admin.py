@@ -391,6 +391,8 @@ def validate_bot_config_references(
     boot: Any,
     instance_id: str,
     default_agent_uuid: str,
+    main_llm: str = "",
+    config: dict[str, Any] | None = None,
 ) -> None:
     if instance_id not in known_instance_ids(bot, boot):
         raise BotConfigAdminError(
@@ -404,6 +406,47 @@ def validate_bot_config_references(
             code="AGENT_NOT_FOUND",
             message=f"Agent {default_agent_uuid!r} was not found",
         )
+
+    runtime_config = config or {}
+    for field_name, target in (
+        ("mainLlm", main_llm),
+        ("mediaInspectionLlm", str(runtime_config.get("media_inspection_llm") or "")),
+        ("stickerSummaryLlm", str(runtime_config.get("sticker_summary_llm") or "")),
+        ("contextCompressionLlm", str(runtime_config.get("context_compression_llm") or "")),
+    ):
+        validate_model_runtime_target(bot.database, field_name, target)
+
+
+def validate_model_runtime_target(database: Any, field_name: str, target: str) -> None:
+    normalized = str(target or "").strip()
+    if not normalized:
+        return
+
+    registry = database.model_registry
+    if registry.get_route(normalized) is not None:
+        return
+    if registry.get_model(normalized) is not None:
+        return
+
+    matching_litellm_models = [
+        item for item in registry.list_models() if item.get("litellm_model") == normalized
+    ]
+    if matching_litellm_models:
+        model_ids = ", ".join(str(item["id"]) for item in matching_litellm_models[:3])
+        raise BotConfigAdminError(
+            status_code=400,
+            code="MODEL_TARGET_NOT_FOUND",
+            message=(
+                f"BotConfig {field_name} must reference a Route ID or configured Model ID, "
+                f"not LiteLLM model {normalized!r}. Use one of: {model_ids}"
+            ),
+        )
+
+    raise BotConfigAdminError(
+        status_code=404,
+        code="MODEL_TARGET_NOT_FOUND",
+        message=f"BotConfig {field_name} model target {normalized!r} was not found",
+    )
 
 
 def get_bot_config_or_raise(database: Any, config_uuid: str) -> dict[str, Any]:

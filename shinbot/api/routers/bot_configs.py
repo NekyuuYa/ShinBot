@@ -119,6 +119,8 @@ def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
             boot=boot,
             instance_id=normalized.instance_id,
             default_agent_uuid=normalized.default_agent_uuid,
+            main_llm=normalized.main_llm,
+            config=normalized.config,
         )
     except BotConfigAdminError as exc:
         _raise_admin_http_error(exc)
@@ -228,6 +230,8 @@ def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, 
             boot=boot,
             instance_id=normalized.instance_id,
             default_agent_uuid=normalized.default_agent_uuid,
+            main_llm=normalized.main_llm,
+            config=normalized.config,
         )
     except BotConfigAdminError as exc:
         _raise_admin_http_error(exc)

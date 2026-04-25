@@ -419,47 +419,34 @@ const mainLlmPickerSections = computed<GenericPickerSection[]>(() => {
 
   const providerGroups = modelRuntimeStore.providers
     .map((provider) => {
-      const items = new Map<string, { value: string; title: string; subtitle: string; kind: 'catalog' | 'configured' }>()
-
-      for (const item of modelRuntimeStore.catalogItems[provider.id] || []) {
-        const value = item.litellmModel.trim()
-        if (!value) continue
-        items.set(value, {
-          value,
-          title: item.displayName || item.id || value,
-          subtitle: item.id && item.id !== value ? `${item.id} · ${value}` : value,
-          kind: 'catalog',
-        })
-      }
-
-      for (const model of modelRuntimeStore.modelsByProvider[provider.id] || []) {
-        const value = model.litellmModel.trim()
-        if (!value || items.has(value)) continue
-        items.set(value, {
-          value,
+      const items = (modelRuntimeStore.modelsByProvider[provider.id] || [])
+        .filter((model) => model.id.trim())
+        .map((model) => ({
+          value: model.id,
           title: model.displayName || model.id,
-          subtitle: model.id !== value ? `${model.id} · ${value}` : value,
-          kind: 'configured',
-        })
-      }
+          subtitle:
+            model.litellmModel && model.litellmModel !== model.id
+              ? `${model.id} · ${model.litellmModel}`
+              : model.id,
+          enabled: model.enabled,
+        }))
 
       return {
         id: provider.id,
         title: provider.displayName || provider.id,
         subtitle: resolveProviderSource(provider.type)?.label || provider.type,
-        items: [...items.values()]
+        items: items
           .sort((a, b) => a.title.localeCompare(b.title))
           .map((item) => ({
             value: item.value,
             title: item.title,
             subtitle: item.subtitle,
             icon: 'mdi-cube-outline',
-            iconColor: 'secondary',
-            tag:
-              item.kind === 'catalog'
-                ? t('pages.modelRuntime.labels.catalog')
-                : t('pages.modelRuntime.labels.configured'),
-            tagColor: item.kind === 'catalog' ? 'info' : 'primary',
+            iconColor: item.enabled ? 'secondary' : 'surface-variant',
+            tag: item.enabled
+              ? t('pages.modelRuntime.labels.configured')
+              : t('pages.modelRuntime.labels.disabled'),
+            tagColor: item.enabled ? 'primary' : 'default',
           })),
       }
     })
