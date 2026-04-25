@@ -12,7 +12,7 @@ from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES
 
 class OneBotV11PluginConfig(BaseModel):
     mode: Literal["forward", "reverse"] = Field(
-        default="forward",
+        default="reverse",
         description="Connection method",
         json_schema_extra={
             "modes": ["forward", "reverse"],
@@ -114,7 +114,7 @@ def setup(plg: Plugin) -> None:
         instance_id: str,
         platform: str,
         *,
-        mode: str = "forward",
+        mode: str = "reverse",
         url: str = "ws://127.0.0.1:3001",
         reverse_host: str = "0.0.0.0",
         reverse_port: int | None = None,

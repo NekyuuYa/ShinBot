@@ -38,7 +38,7 @@ logger = get_logger(__name__)
 
 
 class OneBotV11Config(BaseModel):
-    mode: Literal["forward", "reverse"] = Field(default="forward")
+    mode: Literal["forward", "reverse"] = Field(default="reverse")
     url: str = Field(default="ws://127.0.0.1:3001")
     reverse_host: str = Field(default="0.0.0.0")
     reverse_port: int | None = Field(default=None)

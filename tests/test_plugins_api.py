@@ -220,6 +220,9 @@ def test_builtin_adapter_plugin_schemas_expose_resource_download_fields(tmp_path
     onebot_properties = payload["shinbot_adapter_onebot_v11"]["metadata"]["config_schema"][
         "properties"
     ]
+    assert onebot_properties["mode"]["default"] == "reverse"
+    assert onebot_properties["mode"]["title"] == "连接模式"
+    assert onebot_properties["mode"]["enum_titles"] == ["正向 WebSocket", "反向 WebSocket"]
     assert "silent_reconnect" in onebot_properties
     assert "reconnect_log_interval" in onebot_properties
 

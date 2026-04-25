@@ -42,7 +42,7 @@ id = "ob11-main"
 platform = "onebot_v11"
 
 [instances.config]
-mode = "forward"                    # forward | reverse
+mode = "reverse"                    # forward | reverse
 url = "ws://127.0.0.1:3001"         # forward mode only
 reverse_host = "0.0.0.0"            # reverse mode only (adapter listener bind host)
 reverse_port = 8082                  # reverse mode only (adapter standalone listener port)

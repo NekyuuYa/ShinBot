@@ -5,6 +5,8 @@
   "config.description": "配置 OneBot v11 的正向或反向 WebSocket 接入方式。",
   "config.fields.mode.label": "连接模式",
   "config.fields.mode.description": "选择正向或反向连接模式",
+  "config.fields.mode.options.forward": "正向 WebSocket",
+  "config.fields.mode.options.reverse": "反向 WebSocket",
   "config.fields.url.label": "正向连接地址",
   "config.fields.url.description": "OneBot v11 正向 WebSocket 地址",
   "config.fields.reverse_host.label": "反向监听主机",

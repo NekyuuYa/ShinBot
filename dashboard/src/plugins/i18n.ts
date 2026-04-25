@@ -66,3 +66,14 @@ export function translate(key: string, params?: Record<string, unknown>): string
   const t = i18n.global.t as unknown as (k: string, p?: Record<string, unknown>) => unknown
   return String(t(key, params))
 }
+
+export function currentLocale(): string {
+  const locale = i18n.global.locale as unknown
+  if (typeof locale === 'string') {
+    return locale
+  }
+  if (locale && typeof locale === 'object' && 'value' in locale) {
+    return String((locale as { value: unknown }).value || 'zh-CN')
+  }
+  return 'zh-CN'
+}

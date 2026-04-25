@@ -4,7 +4,7 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from 'axios'
 import type { Router } from 'vue-router'
-import { translate } from '@/plugins/i18n'
+import { currentLocale, translate } from '@/plugins/i18n'
 
 export interface ApiError {
   code: string
@@ -50,6 +50,7 @@ class ApiClient {
         if (token) {
           config.headers.Authorization = `Bearer ${token}`
         }
+        config.headers['Accept-Language'] = currentLocale()
         return config
       },
       (error) => {

@@ -5,6 +5,8 @@
   "config.description": "Configure forward or reverse WebSocket access for OneBot v11.",
   "config.fields.mode.label": "Connection Mode",
   "config.fields.mode.description": "Choose forward or reverse connection mode",
+  "config.fields.mode.options.forward": "Forward WebSocket",
+  "config.fields.mode.options.reverse": "Reverse WebSocket",
   "config.fields.url.label": "Forward URL",
   "config.fields.url.description": "OneBot v11 forward WebSocket URL",
   "config.fields.reverse_host.label": "Reverse Host",

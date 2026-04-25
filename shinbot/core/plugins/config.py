@@ -262,6 +262,19 @@ def _translate_schema_properties(
             value["title"] = translations[label_key]
         if description_key in translations:
             value["description"] = translations[description_key]
+        if isinstance(value.get("enum"), list):
+            value["enum_titles"] = [
+                translations.get(
+                    f"config.fields.{path}.options.{enum_value}",
+                    (
+                        value.get("enum_titles", [])[index]
+                        if isinstance(value.get("enum_titles"), list)
+                        and index < len(value.get("enum_titles", []))
+                        else str(enum_value)
+                    ),
+                )
+                for index, enum_value in enumerate(value["enum"])
+            ]
         if value.get("type") == "object":
             _translate_schema_properties(value.get("properties"), translations, path)
         items = value.get("items")
