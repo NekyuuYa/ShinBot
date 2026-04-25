@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 import uuid
+from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.attention.engine import AttentionEngine
@@ -36,7 +38,19 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # Maximum number of LLM round-trips per workflow run to prevent runaway loops.
-_MAX_ITERATIONS = 5
+_MAX_ITERATIONS = 30
+_CONTINUATION_TTL_SECONDS = 15.0
+_MAX_TOOLLESS_REPAIR_ATTEMPTS = 3
+
+_TOOLLESS_RESPONSE_REPAIR_PROMPT = """
+上一轮模型输出了裸文本，但 attention workflow 不会把裸文本发送给用户。
+请重新决策，并必须调用工具：
+- 要回复用户时调用 send_reply。
+- 要不回复时调用 no_reply，并可写 internal_summary。
+- 要发送轻量互动时调用 send_poke。
+- 需要更多信息时可以先调用普通工具；终局工具必须单独调用。
+不要再输出裸文本作为最终回答。
+""".strip()
 
 CONTEXT_COMPRESSION_SYSTEM_PROMPT = """
 You compress evicted ShinBot conversation context for later recall.
@@ -45,6 +59,21 @@ Keep only facts that matter for future turns: user preferences, unresolved tasks
 promises, relationship cues, notable emotions, key msgids, and media/sticker summaries.
 Do not invent details. Prefer concise Chinese output.
 """.strip()
+
+
+@dataclass(slots=True)
+class _WorkflowContinuation:
+    """Short-lived in-memory continuation for one attention session."""
+
+    session_id: str
+    instance_id: str
+    route_id: str
+    model_id: str
+    agent_uuid: str
+    persona_uuid: str
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    cursor_msg_id: int = 0
+    expires_at: float = 0.0
 
 
 class WorkflowRunner:
@@ -56,8 +85,11 @@ class WorkflowRunner:
       processing and merge them as incremental context.
     - Normal progress is either non-terminal tool use or one explicit terminal
       action: no_reply, send_reply, or send_poke.
-    - Tool-less assistant text is invalid in this runtime and is recorded as
-      an invalid_model_output finish reason.
+    - Tool-less assistant text is fed back as an error message so the model can
+      retry with no_reply, send_reply, send_poke, or another tool.
+    - Finished runs keep their model/tool call messages for a short TTL. If the
+      same session triggers again before expiry, the new batch resumes from
+      that message state instead of starting from a cold prompt.
     - The max-iteration cap is a safety guard, not the primary exit path.
 
     All tool execution is routed through ToolManager for unified
@@ -83,6 +115,7 @@ class WorkflowRunner:
         self._adapter_manager = adapter_manager
         self._media_service = media_service
         self._context_manager = context_manager
+        self._continuations: dict[str, _WorkflowContinuation] = {}
 
     async def run(
         self,
@@ -218,17 +251,47 @@ class WorkflowRunner:
         # exchange. It starts from the assembled prompt messages and grows
         # with assistant replies, tool results, and incremental user msgs.
 
-        conversation_messages: list[dict[str, Any]] = list(assembly.messages)
+        continuation = self._pop_continuation(
+            session_id,
+            instance_id=instance_id,
+            route_id=route_id,
+            model_id=model_id,
+            agent_uuid=agent_uuid,
+            persona_uuid=persona_uuid,
+            now=started_at,
+        )
+        if continuation is not None:
+            conversation_messages = continuation.messages
+            if batch:
+                conversation_messages.append(
+                    {
+                        "role": "system",
+                        "content": format_incremental_messages(
+                            batch,
+                            media_service=self._media_service,
+                        ),
+                    }
+                )
+            logger.debug(
+                "Resumed workflow continuation: session=%s batch=%d",
+                session_id,
+                len(batch),
+            )
+        else:
+            conversation_messages: list[dict[str, Any]] = list(assembly.messages)
         tool_calls_log: list[dict[str, Any]] = []
         no_reply = False
         reply_sent = False
         finish_reason = ""
         internal_summary = ""
         iteration = 0
+        toolless_repair_attempts = 0
 
         # Track the high-water mark for incremental message fetching.
         # This is the id of the last message we have fed to the model.
-        cursor_msg_id: int = batch[-1]["id"] if batch else 0
+        cursor_msg_id: int = batch[-1]["id"] if batch else (
+            continuation.cursor_msg_id if continuation is not None else 0
+        )
 
         for iteration in range(_MAX_ITERATIONS):
             # ── LLM call ───────────────────────────────────────────
@@ -286,20 +349,36 @@ class WorkflowRunner:
                     now_ms=int(time.time() * 1000),
                 )
 
-            # ── No tool calls → invalid terminal stop ──────────────
+            # ── No tool calls → repair and retry ───────────────────
             if not has_tool_calls:
+                toolless_repair_attempts += 1
                 # Tool-less assistant text is not a valid user-visible output in
-                # the workflow runtime. Log it for debugging and discard it.
+                # the workflow runtime. Feed that back to the model and let it
+                # retry with an explicit tool decision.
                 if response_text:
                     logger.warning(
                         "Model produced raw text without send_reply tool for "
-                        "session %s (iteration %d). Text will be discarded. "
+                        "session %s (iteration %d). Text will be repaired. "
                         "Model should use send_reply tool instead.",
                         session_id,
                         iteration,
                     )
-                finish_reason = "invalid_model_output"
-                break
+                    conversation_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": response_text,
+                        }
+                    )
+                if toolless_repair_attempts >= _MAX_TOOLLESS_REPAIR_ATTEMPTS:
+                    finish_reason = "invalid_model_output"
+                    break
+                conversation_messages.append(
+                    {
+                        "role": "system",
+                        "content": _TOOLLESS_RESPONSE_REPAIR_PROMPT,
+                    }
+                )
+                continue
 
             # ── Process tool calls ─────────────────────────────────
 
@@ -404,6 +483,17 @@ class WorkflowRunner:
 
         record.finished_at = time.time()
         self._save_run(record)
+        self._store_continuation(
+            session_id=session_id,
+            instance_id=instance_id,
+            route_id=route_id,
+            model_id=model_id,
+            agent_uuid=agent_uuid,
+            persona_uuid=persona_uuid,
+            messages=conversation_messages,
+            cursor_msg_id=record.batch_end_msg_id or cursor_msg_id,
+            now=record.finished_at,
+        )
 
         self._engine.tracer.trace_workflow_result(
             session_id,
@@ -426,6 +516,60 @@ class WorkflowRunner:
             (record.finished_at - record.started_at) * 1000,
         )
         return record
+
+    # ── Short-lived continuation cache ──────────────────────────────
+
+    def _pop_continuation(
+        self,
+        session_id: str,
+        *,
+        instance_id: str,
+        route_id: str,
+        model_id: str,
+        agent_uuid: str,
+        persona_uuid: str,
+        now: float,
+    ) -> _WorkflowContinuation | None:
+        continuation = self._continuations.pop(session_id, None)
+        if continuation is None:
+            return None
+        if continuation.expires_at < now:
+            return None
+        if (
+            continuation.instance_id != instance_id
+            or continuation.route_id != route_id
+            or continuation.model_id != model_id
+            or continuation.agent_uuid != agent_uuid
+            or continuation.persona_uuid != persona_uuid
+        ):
+            return None
+        continuation.messages = deepcopy(continuation.messages)
+        return continuation
+
+    def _store_continuation(
+        self,
+        *,
+        session_id: str,
+        instance_id: str,
+        route_id: str,
+        model_id: str,
+        agent_uuid: str,
+        persona_uuid: str,
+        messages: list[dict[str, Any]],
+        cursor_msg_id: int,
+        now: float,
+    ) -> None:
+        self._continuations[session_id] = _WorkflowContinuation(
+            session_id=session_id,
+            instance_id=instance_id,
+            route_id=route_id,
+            model_id=model_id,
+            agent_uuid=agent_uuid,
+            persona_uuid=persona_uuid,
+            messages=deepcopy(messages),
+            cursor_msg_id=cursor_msg_id,
+            expires_at=now + _CONTINUATION_TTL_SECONDS,
+        )
 
     # ── Incremental message fetching ────────────────────────────────
 

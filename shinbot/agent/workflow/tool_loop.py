@@ -51,6 +51,24 @@ async def execute_workflow_tool_calls(
     if terminal_candidates and len(parsed_calls) > 1:
         outcome.invalid_reason = "terminal_conflict"
         outcome.finish_reason = outcome.invalid_reason
+        error_str = json.dumps(
+            {
+                "error": (
+                    "Terminal workflow tools must be called alone. "
+                    "Call ordinary tools in one step, then call exactly one of "
+                    "no_reply, send_reply, or send_poke to finish."
+                )
+            },
+            ensure_ascii=False,
+        )
+        outcome.tool_messages.extend(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": error_str,
+            }
+            for tool_call_id, _, _ in parsed_calls
+        )
         return outcome
 
     for tool_call_id, tool_name, tool_args in parsed_calls:

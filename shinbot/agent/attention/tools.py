@@ -295,36 +295,39 @@ def register_attention_tools(
             id=f"{_OWNER_ID}.send_reply",
             name="send_reply",
             description=(
-                "向当前会话发送一条回复消息。\n"
-                "这是你在注意力工作流中回复用户的唯一方式。\n"
-                "若你不调用该工具，而是使用裸文本直接回复，用户将不会收到任何消息。\n"
-                "text: 要发送的回复文本内容。\n"
-                "quote_message_id: 可选，要引用回复的原平台消息 ID；"
-                "quote_message_log_id: 可选，要引用回复的 ShinBot message_logs 行 ID，"
-                "terminate_round: 是否在发送后立即结束当前 workflow 轮次；"
-                "若设置为 false，发送后允许模型继续后续推理或工具调用。\n"
-                "注意：每次调用都会实际发送消息，请确保内容准确。\n"
-                "如果你决定不回复，请使用 no_reply 工具代替。"
+                "向当前会话发送一条文本回复。这是 attention workflow 中让用户看见"
+                "回复的唯一方式；裸文本 assistant 输出不会发送。\n"
+                "必填 text：实际发送给用户的文本。\n"
+                "引用回复：当你是在回答某一条具体消息，尤其是纠正、逐条回应、回答"
+                "问题、接梗或避免上下文歧义时，应优先引用该消息。\n"
+                "优先使用 quote_message_log_id：填写上下文里 [msgid:123] 的数字 123，"
+                "不要带中括号、前缀、昵称或消息正文。\n"
+                "如果上下文明确给出了原平台 platform_msg_id，也可以改用 "
+                "quote_message_id；不要同时填写两个引用字段。\n"
+                "terminate_round 默认 true：发送后结束本次 workflow。只有确实需要"
+                "继续调用工具或继续多步行动时才设为 false。\n"
+                "如果决定不回复，请调用 no_reply；不要用空文本或裸文本代替。"
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "text": {
                         "type": "string",
-                        "description": "要发送的回复文本",
+                        "description": "要实际发送给用户的文本；不能为空。",
                     },
                     "quote_message_id": {
                         "type": "string",
                         "description": (
-                            "可选。要引用回复的原平台消息 ID，通常来自上下文里的 "
-                            "platform_msg_id。"
+                            "可选。要引用回复的原平台消息 ID，通常来自上下文明确提供的 "
+                            "platform_msg_id。若使用 quote_message_log_id，则不要填写此字段。"
                         ),
                     },
                     "quote_message_log_id": {
                         "type": "integer",
                         "description": (
-                            "可选。要引用回复的 ShinBot message_logs 行 ID，通常来自上下文里的 "
-                            "message_log_id；系统会自动解析对应 platform_msg_id。"
+                            "可选，推荐用于引用。填写上下文里 [msgid:123] 的数字 123；"
+                            "系统会自动解析对应 platform_msg_id。若使用 quote_message_id，"
+                            "则不要填写此字段。"
                         ),
                     },
                     "terminate_round": {
@@ -385,19 +388,20 @@ def register_attention_tools(
         }
 
     poke_description = (
-        "向当前会话中的某个用户发送一次“戳一戳”互动。\n"
-        "适合轻量调侃、回应对方戳你、或用非文本方式做简短互动。\n"
-        "user_id: 目标用户 ID，必须使用上下文中出现的原始用户 ID；"
-        "不要把昵称填到 user_id。\n"
-        "terminate_round: 是否在发送后结束当前 workflow 轮次，默认 true。\n"
-        "注意：不要连续或无理由地戳同一个人；如果需要正常表达内容，请使用 send_reply。"
+        "向当前会话中的某个用户发送一次平台“戳一戳”互动。\n"
+        "适用场景：回应对方戳你、轻量调侃、或用非文本方式做极短互动。\n"
+        "必填 user_id：目标用户的原始 sender_id/user_id，必须来自上下文，"
+        "不要填写昵称、群名、@展示名或 message id。\n"
+        "terminate_round 默认 true：发送后结束本次 workflow。只有确实需要继续"
+        "调用工具或继续多步行动时才设为 false。\n"
+        "如果需要表达具体内容、回答问题或引用某条消息，请使用 send_reply。"
     )
     poke_schema = {
         "type": "object",
         "properties": {
             "user_id": {
                 "type": "string",
-                "description": "要戳一戳的目标用户 ID",
+                "description": "要戳一戳的目标用户原始 ID，必须来自上下文的 sender_id/user_id。",
             },
             "terminate_round": {
                 "type": "boolean",

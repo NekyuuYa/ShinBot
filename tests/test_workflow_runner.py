@@ -882,7 +882,7 @@ async def test_workflow_runner_resets_mention_streak_on_no_reply(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_workflow_runner_marks_toolless_text_as_invalid_output(tmp_path):
+async def test_workflow_runner_retries_after_toolless_text(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
 
@@ -916,7 +916,128 @@ async def test_workflow_runner_marks_toolless_text_as_invalid_output(tmp_path):
     register_attention_tools(registry, attention_engine, adapter_manager, db)
     tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
 
-    runtime = QueuedModelRuntime([{"text": "这段裸文本不会发送"}])
+    runtime = QueuedModelRuntime(
+        [
+            {"text": "这段裸文本不会发送"},
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-no-reply",
+                        "type": "function",
+                        "function": {
+                            "name": "no_reply",
+                            "arguments": json.dumps(
+                                {"internal_summary": "recovered from raw text"},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            },
+        ]
+    )
+
+    runner = WorkflowRunner(
+        db,
+        PromptRegistry(),
+        runtime,
+        tool_manager,
+        attention_engine,
+        adapter_manager,
+    )
+
+    batch = [
+        {
+            "id": 1,
+            "session_id": session_id,
+            "platform_msg_id": "msg-1",
+            "sender_id": "user-1",
+            "sender_name": "Tester",
+            "raw_text": "你好",
+            "is_mentioned": 0,
+            "content_json": json.dumps(
+                [MessageElement.text("你好").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        }
+    ]
+
+    record = await runner.run(
+        session_id,
+        batch,
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    assert record is not None
+    assert record.replied is False
+    assert record.finish_reason == "no_reply"
+    assert len(runtime.calls) == 2
+    assert adapter.sent == []
+    retry_messages = runtime.calls[1].messages
+    raw_text_index = next(
+        index
+        for index, message in enumerate(retry_messages)
+        if message == {"role": "assistant", "content": "这段裸文本不会发送"}
+    )
+    assert retry_messages[raw_text_index + 1]["role"] == "system"
+    assert "必须调用工具" in retry_messages[raw_text_index + 1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_runner_stops_after_three_toolless_repair_failures(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    instance_id = "inst-workflow"
+    session_id = f"{instance_id}:group:1"
+    _seed_workflow_runtime(db, instance_id=instance_id)
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id=instance_id,
+            session_type="group",
+            platform="mock",
+            channel_id="1",
+        )
+    )
+
+    attention_engine = AttentionEngine(AttentionConfig(), db.attention)
+    attention_state = SessionAttentionState(
+        session_id=session_id,
+        attention_value=6.0,
+        last_consumed_msg_log_id=1,
+        last_trigger_msg_log_id=1,
+    )
+    attention_engine.repo.save_attention(attention_state)
+
+    adapter = MockAdapter(instance_id=instance_id)
+    adapter_manager = AdapterManager()
+    adapter_manager._instances[instance_id] = adapter
+
+    registry = ToolRegistry()
+    register_attention_tools(registry, attention_engine, adapter_manager, db)
+    tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    runtime = QueuedModelRuntime(
+        [
+            {"text": "第一次裸文本"},
+            {"text": "第二次裸文本"},
+            {"text": "第三次裸文本"},
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-too-late",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps({"text": "不应执行"}, ensure_ascii=False),
+                        },
+                    }
+                ]
+            },
+        ]
+    )
 
     runner = WorkflowRunner(
         db,
@@ -953,6 +1074,7 @@ async def test_workflow_runner_marks_toolless_text_as_invalid_output(tmp_path):
     assert record is not None
     assert record.replied is False
     assert record.finish_reason == "invalid_model_output"
+    assert len(runtime.calls) == 3
     assert adapter.sent == []
 
 
@@ -1056,3 +1178,141 @@ async def test_workflow_runner_rejects_terminal_tool_mixed_with_other_tools(tmp_
         "send_reply",
         "attention.inspect_state",
     ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_runner_resumes_recent_session_continuation(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    instance_id = "inst-workflow"
+    session_id = f"{instance_id}:group:1"
+    _seed_workflow_runtime(db, instance_id=instance_id)
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id=instance_id,
+            session_type="group",
+            platform="mock",
+            channel_id="1",
+        )
+    )
+
+    attention_engine = AttentionEngine(AttentionConfig(), db.attention)
+    attention_state = SessionAttentionState(
+        session_id=session_id,
+        attention_value=6.0,
+        last_consumed_msg_log_id=1,
+        last_trigger_msg_log_id=1,
+    )
+    attention_engine.repo.save_attention(attention_state)
+
+    adapter = MockAdapter(instance_id=instance_id)
+    adapter_manager = AdapterManager()
+    adapter_manager._instances[instance_id] = adapter
+
+    registry = ToolRegistry()
+    register_attention_tools(registry, attention_engine, adapter_manager, db)
+    tool_manager = ToolManager(registry, permission_engine=PermissionEngine())
+
+    runtime = QueuedModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-send",
+                        "type": "function",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": json.dumps({"text": "第一轮"}, ensure_ascii=False),
+                        },
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call-no-reply",
+                        "type": "function",
+                        "function": {
+                            "name": "no_reply",
+                            "arguments": json.dumps(
+                                {"internal_summary": "continued"},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ]
+            },
+        ]
+    )
+
+    runner = WorkflowRunner(
+        db,
+        PromptRegistry(),
+        runtime,
+        tool_manager,
+        attention_engine,
+        adapter_manager,
+    )
+
+    first_batch = [
+        {
+            "id": 1,
+            "session_id": session_id,
+            "platform_msg_id": "msg-1",
+            "sender_id": "user-1",
+            "sender_name": "Tester",
+            "raw_text": "第一批",
+            "is_mentioned": 0,
+            "content_json": json.dumps(
+                [MessageElement.text("第一批").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    first_record = await runner.run(
+        session_id,
+        first_batch,
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    second_batch = [
+        {
+            "id": 2,
+            "session_id": session_id,
+            "platform_msg_id": "msg-2",
+            "sender_id": "user-1",
+            "sender_name": "Tester",
+            "raw_text": "第二批",
+            "is_mentioned": 0,
+            "content_json": json.dumps(
+                [MessageElement.text("第二批").model_dump(mode="json")],
+                ensure_ascii=False,
+            ),
+        }
+    ]
+    second_record = await runner.run(
+        session_id,
+        second_batch,
+        attention_state,
+        instance_id=instance_id,
+    )
+
+    assert first_record is not None
+    assert first_record.finish_reason == "send_reply"
+    assert second_record is not None
+    assert second_record.finish_reason == "no_reply"
+    assert len(runtime.calls) == 2
+
+    resumed_messages = runtime.calls[1].messages
+    assert any(message.get("tool_calls") for message in resumed_messages)
+    assert any(
+        message.get("role") == "tool" and "send_reply" in str(message.get("content", ""))
+        for message in resumed_messages
+    )
+    assert any(
+        message.get("role") == "system" and "第二批" in str(message.get("content", ""))
+        for message in resumed_messages
+    )
