@@ -119,15 +119,12 @@ const handleStop = async () => {
 }
 </script>
 
-<style scoped>
-.instance-card {
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
-  transition: border-color 0.2s ease, box-shadow 0.24s ease;
-}
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
 
-.instance-card:hover {
-  border-color: rgba(var(--v-theme-primary), 0.18);
-  box-shadow: 0 16px 28px rgba(var(--v-theme-on-surface), 0.2);
+.instance-card {
+  @include surface-card;
+  @include hover-border;
 }
 
 .status-indicator {
@@ -139,38 +136,10 @@ const handleStop = async () => {
 }
 
 .status-running {
-  background: radial-gradient(circle, rgba(var(--v-theme-success), 0.2) 0%, rgb(var(--v-theme-success)) 75%);
-  box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.65);
-  animation: pulse-running 1.8s infinite;
+  @include animate-pulse('success', 0.6);
 }
 
 .status-stopped {
-  background: radial-gradient(circle, rgba(var(--v-theme-error), 0.2) 0%, rgb(var(--v-theme-error)) 75%);
-  box-shadow: 0 0 0 0 rgba(var(--v-theme-error), 0.45);
-  animation: pulse-stopped 2.2s infinite;
-}
-
-@keyframes pulse-running {
-  0% {
-    box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0.6);
-  }
-  70% {
-    box-shadow: 0 0 0 7px rgba(var(--v-theme-success), 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(var(--v-theme-success), 0);
-  }
-}
-
-@keyframes pulse-stopped {
-  0% {
-    box-shadow: 0 0 0 0 rgba(var(--v-theme-error), 0.5);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(var(--v-theme-error), 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(var(--v-theme-error), 0);
-  }
+  @include animate-pulse('error', 0.45);
 }
 </style>

@@ -500,39 +500,23 @@ const refreshItems = () => store.fetchItems()
 onMounted(() => store.fetchItems())
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .prompts-layout {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  @include dual-pane-layout(300px);
 }
 
 .prompts-tag-pane {
-  flex: 0 0 300px;
-  width: 300px;
-  max-width: 300px;
+  @extend .pane-sidebar;
 }
 
 .prompts-content-pane {
-  flex: 1 1 auto;
-  min-width: 0;
+  @extend .pane-content;
 }
 
 .prompt-card {
-  border: 1px solid rgba(var(--v-theme-info), 0.12);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(var(--v-theme-info), 0.08) 0%, rgba(var(--v-theme-background), 0.98) 100%);
-}
-
-@media (max-width: 960px) {
-  .prompts-layout {
-    flex-direction: column;
-  }
-
-  .prompts-tag-pane {
-    flex: 1 1 auto;
-    width: 100%;
-    max-width: none;
-  }
+  @include surface-card;
+  @include hover-border;
 }
 </style>

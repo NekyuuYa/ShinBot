@@ -36,10 +36,12 @@ interface Props {
 defineProps<Props>()
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .tool-row {
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  background: rgba(var(--v-theme-surface), 0.95);
+  @include surface-card-soft;
+  @include hover-border;
 }
 
 .tool-row-grid {

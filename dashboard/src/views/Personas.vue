@@ -320,44 +320,28 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .personas-layout {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  @include dual-pane-layout(300px);
 }
 
 .personas-tag-pane {
-  flex: 0 0 300px;
-  width: 300px;
-  max-width: 300px;
+  @extend .pane-sidebar;
 }
 
 .personas-content-pane {
-  flex: 1 1 auto;
-  min-width: 0;
+  @extend .pane-content;
 }
 
 .persona-card {
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
+  @include surface-card($card-border-color, $card-border-radius-sm);
+  @include hover-border;
 }
 
 .persona-prompt-preview {
   white-space: pre-wrap;
   line-height: 1.6;
-}
-
-@media (max-width: 960px) {
-  .personas-layout {
-    flex-direction: column;
-  }
-
-  .personas-tag-pane {
-    flex: 1 1 auto;
-    width: 100%;
-    max-width: none;
-  }
 }
 </style>

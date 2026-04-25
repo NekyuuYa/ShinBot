@@ -329,16 +329,11 @@ watch(
 
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .picker-dialog {
-  border: 1px solid rgba(var(--v-theme-primary), 0.14);
-  border-radius: 28px;
-  background: linear-gradient(
-    180deg,
-    rgba(var(--v-theme-surface), 0.98) 0%,
-    rgba(var(--v-theme-background), 0.98) 100%
-  );
-  box-shadow: 0 16px 40px rgba(var(--v-theme-primary), 0.08);
+  @include surface-card(rgba(var(--v-theme-primary), 0.14), 28px, 0 16px 40px rgba(var(--v-theme-primary), 0.08));
 }
 
 .picker-section-card {
@@ -374,11 +369,8 @@ watch(
 
 .empty-state-panel {
   border: 1px dashed rgba(var(--v-theme-primary), 0.16);
-  background: linear-gradient(
-    180deg,
-    rgba(var(--v-theme-surface), 0.95) 0%,
-    rgba(var(--v-theme-surface), 0.78) 100%
-  );
+  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.95) 0%, rgba(var(--v-theme-surface), 0.78) 100%);
+  border-radius: 20px;
 }
 
 .picker-list-item.v-list-item--active:hover {

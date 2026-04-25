@@ -857,7 +857,9 @@ const applyProviderSourcePick = (values: string[]) => {
 }
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .page-action-btn,
 .action-btn {
   box-shadow: none;
@@ -865,9 +867,7 @@ const applyProviderSourcePick = (values: string[]) => {
 
 .runtime-toolbar {
   padding: 14px 14px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  border-radius: 24px;
-  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
+  @include surface-card;
 }
 
 .runtime-tab-toggle {
@@ -914,10 +914,7 @@ const applyProviderSourcePick = (values: string[]) => {
 }
 
 .editor-card {
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  border-radius: 24px;
-  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
-  box-shadow: 0 10px 28px rgba(var(--v-theme-primary), 0.06);
+  @include surface-card;
 }
 
 .editor-card :deep(.v-card-item) {
@@ -1031,6 +1028,7 @@ const applyProviderSourcePick = (values: string[]) => {
 .empty-state-panel {
   border: 1px dashed rgba(var(--v-theme-primary), 0.16);
   background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.95) 0%, rgba(var(--v-theme-surface), 0.78) 100%);
+  border-radius: 20px;
 }
 
 .empty-provider-panel {

@@ -8,66 +8,100 @@
 
     <v-row class="mb-6">
       <v-col cols="12" sm="6" md="3">
-        <v-card class="pa-4" elevation="6">
+        <v-card class="pa-5 stat-card" elevation="0">
           <v-row no-gutters align="center">
             <v-col cols="8">
               <div>
-                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.totalInstances') }}</div>
-                <div class="text-h5">{{ instancesStore.instances.length }}</div>
-                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.statusOnline', { value: monitoringStore.isOnline ? $t('common.actions.status.online') : $t('common.actions.status.offline') }) }}</div>
-                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.memoryUsageMb', { value: monitoringStore.status.memoryUsage }) }}</div>
+                <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold">
+                  {{ $t('pages.dashboard.cards.totalInstances') }}
+                </div>
+                <div class="text-h4 font-weight-black my-1">{{ instancesStore.instances.length }}</div>
+                <div class="text-caption text-medium-emphasis d-flex align-center">
+                  <v-icon
+                    :icon="monitoringStore.isOnline ? 'mdi-circle' : 'mdi-circle-outline'"
+                    :color="monitoringStore.isOnline ? 'success' : 'error'"
+                    size="10"
+                    class="me-1"
+                  />
+                  {{ monitoringStore.isOnline ? $t('common.actions.status.online') : $t('common.actions.status.offline') }}
+                </div>
               </div>
             </v-col>
             <v-col cols="4" class="text-right">
-              <v-icon size="40" color="primary" icon="mdi-robot" />
+              <v-avatar color="primary" variant="tonal" size="48">
+                <v-icon size="28" icon="mdi-robot" />
+              </v-avatar>
             </v-col>
           </v-row>
         </v-card>
       </v-col>
 
       <v-col cols="12" sm="6" md="3">
-        <v-card class="pa-4" elevation="6">
+        <v-card class="pa-5 stat-card" elevation="0">
           <v-row no-gutters align="center">
             <v-col cols="8">
               <div>
-                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.runningInstances') }}</div>
-                <div class="text-h5">{{ runningInstances }}</div>
+                <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold">
+                  {{ $t('pages.dashboard.cards.runningInstances') }}
+                </div>
+                <div class="text-h4 font-weight-black my-1">{{ runningInstances }}</div>
+                <div class="text-caption text-medium-emphasis">
+                  {{ $t('pages.dashboard.cards.memoryUsageMb', { value: monitoringStore.status.memoryUsage }) }}
+                </div>
               </div>
             </v-col>
             <v-col cols="4" class="text-right">
-              <v-icon size="40" color="success" icon="mdi-check-circle" />
+              <v-avatar color="success" variant="tonal" size="48">
+                <v-icon size="28" icon="mdi-play-circle-outline" />
+              </v-avatar>
             </v-col>
           </v-row>
         </v-card>
       </v-col>
 
       <v-col cols="12" sm="6" md="3">
-        <v-card class="pa-4" elevation="6">
+        <v-card class="pa-5 stat-card" elevation="0">
           <v-row no-gutters align="center">
             <v-col cols="8">
               <div>
-                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.totalPlugins') }}</div>
-                <div class="text-h5">{{ pluginsStore.plugins.length }}</div>
+                <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold">
+                  {{ $t('pages.dashboard.cards.totalPlugins') }}
+                </div>
+                <div class="text-h4 font-weight-black my-1">{{ pluginsStore.plugins.length }}</div>
+                <div class="text-caption text-medium-emphasis">
+                  {{ enabledPlugins }} {{ $t('pages.dashboard.cards.enabledPlugins') }}
+                </div>
               </div>
             </v-col>
             <v-col cols="4" class="text-right">
-              <v-icon size="40" color="secondary" icon="mdi-puzzle" />
+              <v-avatar color="secondary" variant="tonal" size="48">
+                <v-icon size="28" icon="mdi-puzzle" />
+              </v-avatar>
             </v-col>
           </v-row>
         </v-card>
       </v-col>
 
       <v-col cols="12" sm="6" md="3">
-        <v-card class="pa-4" elevation="6">
+        <v-card class="pa-5 stat-card" elevation="0">
           <v-row no-gutters align="center">
             <v-col cols="8">
               <div>
-                <div class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.cards.enabledPlugins') }}</div>
-                <div class="text-h5">{{ enabledPlugins }}</div>
+                <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold">
+                  {{ $t('pages.dashboard.tokenStats.topModel') }}
+                </div>
+                <div class="text-h5 font-weight-bold my-1 text-truncate">
+                  {{ topTokenModel?.modelId || '—' }}
+                </div>
+                <div class="text-caption text-medium-emphasis">
+                  {{ formatCompactNumber(tokenTotal) }} tokens
+                </div>
               </div>
             </v-col>
             <v-col cols="4" class="text-right">
-              <v-icon size="40" color="success" icon="mdi-puzzle-check" />
+              <v-avatar color="info" variant="tonal" size="48">
+                <v-icon size="28" icon="mdi-brain" />
+              </v-avatar>
             </v-col>
           </v-row>
         </v-card>
@@ -76,8 +110,8 @@
 
     <v-row class="mb-6">
       <v-col cols="12">
-        <v-card class="pa-4" elevation="6">
-          <div class="d-flex align-center justify-space-between mb-4">
+        <v-card class="pa-6 data-card" elevation="0">
+          <div class="d-flex align-center justify-space-between mb-6">
             <div>
               <div class="text-caption text-primary font-weight-bold text-uppercase">
                 {{ $t('pages.dashboard.tokenStats.kicker', { days: tokenSummary?.windowDays ?? 7 }) }}
@@ -93,51 +127,60 @@
           </div>
 
           <v-row align="center">
-            <v-col cols="12" md="4" class="text-center text-md-left">
-              <div class="text-h3 font-weight-bold text-primary">
+            <v-col cols="12" md="4" class="text-center text-md-left border-md-e pe-md-8">
+              <div class="text-h3 font-weight-black text-primary mb-2">
                 {{ formatCompactNumber(tokenTotal) }}
               </div>
-              <div class="text-caption text-medium-emphasis mt-1">
+              <div class="text-body-2 text-medium-emphasis">
                 {{ $t('pages.dashboard.tokenStats.totalTokens') }}
+              </div>
+              <div class="mt-4 d-flex align-center justify-center justify-md-start ga-2">
+                <v-chip size="small" color="info" variant="flat">
+                  {{ tokenSummary?.successfulCalls ?? 0 }} Calls
+                </v-chip>
               </div>
             </v-col>
 
-            <v-col cols="12" md="8">
+            <v-col cols="12" md="8" class="ps-md-8">
+              <div class="d-flex justify-space-between text-caption mb-2">
+                <span class="text-info font-weight-bold">Input: {{ tokenOutputShare }}%</span>
+                <span class="text-success font-weight-bold">Output: {{ 100 - tokenOutputShare }}%</span>
+              </div>
               <v-progress-linear
-                class="mb-4"
+                class="mb-6"
                 :model-value="tokenOutputShare"
                 color="success"
                 bg-color="info"
-                height="8"
+                height="10"
                 rounded
               />
               <v-row dense>
                 <v-col cols="12" sm="4">
-                  <v-card variant="tonal" color="info" class="pa-3 text-center">
-                    <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold mb-1">
+                  <v-card variant="tonal" color="info" class="pa-3 text-center border-0">
+                    <div class="text-caption text-uppercase font-weight-bold mb-1">
                       {{ $t('pages.dashboard.tokenStats.inputTokens') }}
                     </div>
-                    <div class="text-subtitle-1 font-weight-bold">
+                    <div class="text-subtitle-1 font-weight-black">
                       {{ formatNumber(tokenSummary?.inputTokens ?? 0) }}
                     </div>
                   </v-card>
                 </v-col>
                 <v-col cols="12" sm="4">
-                  <v-card variant="tonal" color="success" class="pa-3 text-center">
-                    <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold mb-1">
+                  <v-card variant="tonal" color="success" class="pa-3 text-center border-0">
+                    <div class="text-caption text-uppercase font-weight-bold mb-1">
                       {{ $t('pages.dashboard.tokenStats.outputTokens') }}
                     </div>
-                    <div class="text-subtitle-1 font-weight-bold">
+                    <div class="text-subtitle-1 font-weight-black">
                       {{ formatNumber(tokenSummary?.outputTokens ?? 0) }}
                     </div>
                   </v-card>
                 </v-col>
                 <v-col cols="12" sm="4">
-                  <v-card variant="tonal" color="secondary" class="pa-3 text-center">
-                    <div class="text-caption text-medium-emphasis text-uppercase font-weight-bold mb-1">
+                  <v-card variant="tonal" color="secondary" class="pa-3 text-center border-0">
+                    <div class="text-caption text-uppercase font-weight-bold mb-1">
                       {{ $t('pages.dashboard.tokenStats.cacheTokens') }}
                     </div>
-                    <div class="text-subtitle-1 font-weight-bold">
+                    <div class="text-subtitle-1 font-weight-black">
                       {{ formatNumber(tokenCacheTotal) }}
                     </div>
                   </v-card>
@@ -145,27 +188,6 @@
               </v-row>
             </v-col>
           </v-row>
-
-          <v-divider class="my-4" />
-
-          <div class="d-flex align-center justify-space-between text-caption text-medium-emphasis">
-            <div>
-              <v-icon icon="mdi-api" size="small" class="mr-1" />
-              {{
-                $t('pages.dashboard.tokenStats.callCount', {
-                  success: tokenSummary?.successfulCalls ?? 0,
-                  total: tokenSummary?.totalCalls ?? 0,
-                })
-              }}
-            </div>
-            <div>
-              <v-icon icon="mdi-brain" size="small" class="mr-1" />
-              {{ $t('pages.dashboard.tokenStats.topModel') }}:
-              <span class="font-weight-medium text-high-emphasis">
-                {{ topTokenModel?.modelId || $t('pages.dashboard.tokenStats.noModel') }}
-              </span>
-            </div>
-          </div>
         </v-card>
       </v-col>
     </v-row>
@@ -175,24 +197,30 @@
         <h2 class="text-h6 mb-4">{{ $t('pages.dashboard.quickActions.title') }}</h2>
       </v-col>
       <v-col cols="12" sm="6" md="4">
-        <v-card class="pa-4" elevation="4" @click="navigateTo('/instances')" style="cursor: pointer">
-          <v-icon size="40" color="primary" icon="mdi-robot" class="mb-2" />
-          <div class="text-subtitle2">{{ $t('pages.dashboard.quickActions.instancesTitle') }}</div>
-          <p class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.quickActions.instancesDescription') }}</p>
+        <v-card class="pa-5 action-card h-100" elevation="0" @click="navigateTo('/instances')">
+          <v-avatar color="primary" variant="tonal" size="48" class="mb-4">
+            <v-icon size="28" icon="mdi-robot" />
+          </v-avatar>
+          <div class="text-subtitle-1 font-weight-bold">{{ $t('pages.dashboard.quickActions.instancesTitle') }}</div>
+          <p class="text-caption text-medium-emphasis mt-1">{{ $t('pages.dashboard.quickActions.instancesDescription') }}</p>
         </v-card>
       </v-col>
       <v-col cols="12" sm="6" md="4">
-        <v-card class="pa-4" elevation="4" @click="navigateTo('/plugins')" style="cursor: pointer">
-          <v-icon size="40" color="secondary" icon="mdi-puzzle" class="mb-2" />
-          <div class="text-subtitle2">{{ $t('pages.dashboard.quickActions.pluginsTitle') }}</div>
-          <p class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.quickActions.pluginsDescription') }}</p>
+        <v-card class="pa-5 action-card h-100" elevation="0" @click="navigateTo('/plugins')">
+          <v-avatar color="secondary" variant="tonal" size="48" class="mb-4">
+            <v-icon size="28" icon="mdi-puzzle" />
+          </v-avatar>
+          <div class="text-subtitle-1 font-weight-bold">{{ $t('pages.dashboard.quickActions.pluginsTitle') }}</div>
+          <p class="text-caption text-medium-emphasis mt-1">{{ $t('pages.dashboard.quickActions.pluginsDescription') }}</p>
         </v-card>
       </v-col>
       <v-col cols="12" sm="6" md="4">
-        <v-card class="pa-4" elevation="4" @click="navigateTo('/monitoring')" style="cursor: pointer">
-          <v-icon size="40" color="warning" icon="mdi-monitor" class="mb-2" />
-          <div class="text-subtitle2">{{ $t('pages.dashboard.quickActions.monitoringTitle') }}</div>
-          <p class="text-caption text-medium-emphasis">{{ $t('pages.dashboard.quickActions.monitoringDescription') }}</p>
+        <v-card class="pa-5 action-card h-100" elevation="0" @click="navigateTo('/monitoring')">
+          <v-avatar color="warning" variant="tonal" size="48" class="mb-4">
+            <v-icon size="28" icon="mdi-monitor" />
+          </v-avatar>
+          <div class="text-subtitle-1 font-weight-bold">{{ $t('pages.dashboard.quickActions.monitoringTitle') }}</div>
+          <p class="text-caption text-medium-emphasis mt-1">{{ $t('pages.dashboard.quickActions.monitoringDescription') }}</p>
         </v-card>
       </v-col>
     </v-row>
@@ -219,11 +247,11 @@ const { t, locale } = useI18n()
 const tokenSummary = ref<ModelTokenSummary | null>(null)
 
 const runningInstances = computed(() =>
-  instancesStore.instances.filter((instance: (typeof instancesStore.instances)[number]) => instance.status === 'running').length
+  instancesStore.instances.filter((instance) => instance.status === 'running').length
 )
 
 const enabledPlugins = computed(() =>
-  pluginsStore.plugins.filter((plugin: (typeof pluginsStore.plugins)[number]) => plugin.status === 'enabled').length
+  pluginsStore.plugins.filter((plugin) => plugin.status === 'enabled').length
 )
 
 const tokenTotal = computed(() => tokenSummary.value?.totalTokens ?? 0)
@@ -270,5 +298,17 @@ const navigateTo = (path: string) => {
 }
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
+.stat-card,
+.data-card {
+  @include surface-card;
+}
+
+.action-card {
+  @include surface-card;
+  @include hover-border;
+  cursor: pointer;
+}
 </style>

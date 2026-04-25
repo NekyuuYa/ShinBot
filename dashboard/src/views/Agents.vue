@@ -653,39 +653,23 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .agents-layout {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  @include dual-pane-layout(300px);
 }
 
 .agents-tag-pane {
-  flex: 0 0 300px;
-  width: 300px;
-  max-width: 300px;
+  @extend .pane-sidebar;
 }
 
 .agents-content-pane {
-  flex: 1 1 auto;
-  min-width: 0;
+  @extend .pane-content;
 }
 
 .agent-card {
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  border-radius: 20px;
-  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
-}
-
-@media (max-width: 960px) {
-  .agents-layout {
-    flex-direction: column;
-  }
-
-  .agents-tag-pane {
-    flex: 1 1 auto;
-    width: 100%;
-    max-width: none;
-  }
+  @include surface-card($card-border-color, $card-border-radius-sm);
+  @include hover-border;
 }
 </style>

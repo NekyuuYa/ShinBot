@@ -31,14 +31,11 @@ const slots = useSlots()
 const hasActions = computed(() => Boolean(slots.actions))
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .page-header-shell {
-  border: 1px solid rgba(var(--v-theme-primary), 0.14);
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at top right, rgba(var(--v-theme-primary), 0.16), transparent 28%),
-    linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
-  box-shadow: 0 14px 34px rgba(var(--v-theme-primary), 0.08);
+  @include page-header-shell;
 }
 
 .page-header-content {

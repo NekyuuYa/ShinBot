@@ -257,15 +257,32 @@ onMounted(async () => {
 })
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+// Terminal-specific color palette derived from dark theme colors
+$term-bg-surface: #0f1218;
+$term-bg-raised: #161a24;
+$term-bg-overlay: rgba(18, 22, 30, 0.96);
+$term-bg-toolbar: rgba(10, 13, 18, 0.92);
+$term-bg-footer: rgba(10, 13, 18, 0.94);
+
+$term-border: rgba(120, 146, 187, 0.2);
+$term-border-light: rgba(120, 146, 187, 0.12);
+$term-border-dim: rgba(120, 146, 187, 0.1);
+
+$term-text-primary: #d8e3f7;
+$term-text-secondary: rgba(177, 193, 220, 0.82);
+$term-text-muted: rgba(164, 184, 214, 0.8);
+
+$term-font: 'Roboto Mono', monospace, sans-serif;
+
 .terminal-shell {
   display: flex;
   flex-direction: column;
   min-height: 76vh;
-  border: 1px solid rgba(120, 146, 187, 0.2);
+  border: 1px solid $term-border;
   border-radius: 20px;
   background:
-    linear-gradient(180deg, rgba(15, 18, 24, 0.98) 0%, rgba(8, 11, 16, 0.98) 100%);
+    linear-gradient(180deg, rgba($term-bg-surface, 0.98) 0%, rgba(8, 11, 16, 0.98) 100%);
   box-shadow: 0 24px 40px rgba(8, 11, 16, 0.22);
   overflow: hidden;
 }
@@ -276,8 +293,8 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 20px;
   padding: 18px 20px 14px;
-  border-bottom: 1px solid rgba(120, 146, 187, 0.12);
-  background: rgba(18, 22, 30, 0.96);
+  border-bottom: 1px solid $term-border-light;
+  background: $term-bg-overlay;
 }
 
 .terminal-title-group {
@@ -311,11 +328,11 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border: 1px solid rgba(120, 146, 187, 0.12);
+  border: 1px solid $term-border-light;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.03);
   color: #d3def3;
-  font-family: 'Roboto Mono', monospace, sans-serif;
+  font-family: $term-font;
   font-size: 0.75rem;
 }
 
@@ -335,8 +352,8 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 16px;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(120, 146, 187, 0.1);
-  background: rgba(10, 13, 18, 0.92);
+  border-bottom: 1px solid $term-border-dim;
+  background: $term-bg-toolbar;
 }
 
 .terminal-level-toggle {
@@ -351,27 +368,16 @@ onMounted(async () => {
 }
 
 .terminal-level-toggle__label {
-  font-family: 'Roboto Mono', monospace, sans-serif;
+  font-family: $term-font;
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0;
 }
 
-.terminal-level-toggle__label--debug {
-  color: #8ba3c7;
-}
-
-.terminal-level-toggle__label--info {
-  color: #7de2ff;
-}
-
-.terminal-level-toggle__label--warn {
-  color: #ffca6b;
-}
-
-.terminal-level-toggle__label--error {
-  color: #ff8f90;
-}
+.terminal-level-toggle__label--debug { color: #8ba3c7; }
+.terminal-level-toggle__label--info  { color: #7de2ff; }
+.terminal-level-toggle__label--warn  { color: #ffca6b; }
+.terminal-level-toggle__label--error { color: #ff8f90; }
 
 .terminal-toolbar__actions {
   display: flex;
@@ -381,7 +387,7 @@ onMounted(async () => {
 }
 
 .terminal-stream-chip {
-  font-family: 'Roboto Mono', monospace, sans-serif;
+  font-family: $term-font;
 }
 
 .terminal-tool-btn {
@@ -400,14 +406,12 @@ onMounted(async () => {
   min-height: 520px;
   overflow-y: auto;
   padding: 12px 0;
-  font-family: 'Roboto Mono', monospace, sans-serif;
+  font-family: $term-font;
   scrollbar-width: thin;
   scrollbar-color: rgba(120, 146, 187, 0.32) transparent;
 }
 
-.terminal-scroll-area::-webkit-scrollbar {
-  width: 10px;
-}
+.terminal-scroll-area::-webkit-scrollbar { width: 10px; }
 
 .terminal-scroll-area::-webkit-scrollbar-thumb {
   border-radius: 999px;
@@ -425,7 +429,7 @@ onMounted(async () => {
   gap: 12px;
   align-items: start;
   padding: 4px 18px;
-  color: #d8e3f7;
+  color: $term-text-primary;
   font-size: 0.78rem;
   line-height: 1.45;
 }
@@ -434,22 +438,10 @@ onMounted(async () => {
   background: rgba(121, 150, 196, 0.07);
 }
 
-.terminal-line--debug {
-  color: #94a8c8;
-}
-
-.terminal-line--info {
-  color: #d8e3f7;
-}
-
-.terminal-line--warn {
-  color: #ffd28b;
-}
-
-.terminal-line--error {
-  color: #ff9f9f;
-  background: rgba(255, 128, 128, 0.05);
-}
+.terminal-line--debug { color: #94a8c8; }
+.terminal-line--info  { color: $term-text-primary; }
+.terminal-line--warn  { color: #ffd28b; }
+.terminal-line--error { color: #ff9f9f; background: rgba(255, 128, 128, 0.05); }
 
 .terminal-line__time,
 .terminal-line__level,
@@ -457,13 +449,8 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
-.terminal-line__time {
-  color: rgba(164, 184, 214, 0.8);
-}
-
-.terminal-line__level {
-  font-weight: 700;
-}
+.terminal-line__time   { color: $term-text-muted; }
+.terminal-line__level  { font-weight: 700; }
 
 .terminal-line__source {
   overflow: hidden;
@@ -481,13 +468,8 @@ onMounted(async () => {
   color: rgba(220, 229, 244, 0.74);
 }
 
-.terminal-empty-state :deep(.v-empty-state__title) {
-  color: #e2ebfb;
-}
-
-.terminal-empty-state :deep(.v-empty-state__text) {
-  color: rgba(195, 209, 233, 0.7);
-}
+.terminal-empty-state :deep(.v-empty-state__title) { color: #e2ebfb; }
+.terminal-empty-state :deep(.v-empty-state__text) { color: rgba(195, 209, 233, 0.7); }
 
 .terminal-footer {
   display: flex;
@@ -495,10 +477,10 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 16px;
   padding: 10px 18px 12px;
-  border-top: 1px solid rgba(120, 146, 187, 0.1);
-  background: rgba(10, 13, 18, 0.94);
-  color: rgba(177, 193, 220, 0.82);
-  font-family: 'Roboto Mono', monospace, sans-serif;
+  border-top: 1px solid $term-border-dim;
+  background: $term-bg-footer;
+  color: $term-text-secondary;
+  font-family: $term-font;
   font-size: 0.74rem;
 }
 

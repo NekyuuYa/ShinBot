@@ -1,0 +1,101 @@
+// ====================================
+// Shared ShinBot Dashboard SCSS Mixins
+// ====================================
+
+@forward 'variables';
+@use 'variables' as *;
+
+// --- Surface card with gradient background ---
+@mixin surface-card($border-color: $card-border-color, $border-radius: $card-border-radius, $shadow: $card-shadow) {
+  border: 1px solid $border-color;
+  border-radius: $border-radius;
+  background: $surface-gradient;
+  box-shadow: $shadow;
+}
+
+// --- Lighter surface card ---
+@mixin surface-card-soft($border-radius: $card-border-radius-sm) {
+  border: 1px solid $border-soft;
+  border-radius: $border-radius;
+  background: $surface-gradient-soft;
+}
+
+// --- Page header shell (radial + linear gradient overlay) ---
+@mixin page-header-shell {
+  border: 1px solid rgba(var(--v-theme-primary), 0.14);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top right, rgba(var(--v-theme-primary), 0.16), transparent 28%),
+    $surface-gradient;
+  box-shadow: $card-shadow-strong;
+}
+
+// --- Hover border & shadow transition ---
+@mixin hover-border($base-color: $card-border-color, $hover-opacity: 0.18, $show-shadow: true) {
+  transition: border-color $transition-fast, background-color $transition-fast, box-shadow $transition-base;
+
+  &:hover {
+    border-color: rgba(var(--v-theme-primary), $hover-opacity);
+    @if $show-shadow {
+      box-shadow: $card-shadow-hover;
+    }
+  }
+}
+
+// --- Status pulse animation ---
+@mixin animate-pulse($color-name, $glow-opacity: 0.45) {
+  background: radial-gradient(circle, rgba(var(--v-theme-#{$color-name}), 0.2) 0%, rgb(var(--v-theme-#{$color-name})) 75%);
+  box-shadow: 0 0 0 0 rgba(var(--v-theme-#{$color-name}), $glow-opacity);
+  animation: pulse-#{$color-name} 2s infinite;
+
+  @keyframes pulse-#{$color-name} {
+    0% {
+      box-shadow: 0 0 0 0 rgba(var(--v-theme-#{$color-name}), $glow-opacity);
+    }
+    70% {
+      box-shadow: 0 0 0 7px rgba(var(--v-theme-#{$color-name}), 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(var(--v-theme-#{$color-name}), 0);
+    }
+  }
+}
+
+// --- Layout: Sidebar + Content ---
+@mixin dual-pane-layout($sidebar-width: 300px) {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+
+  .pane-sidebar {
+    flex: 0 0 $sidebar-width;
+    width: $sidebar-width;
+    max-width: $sidebar-width;
+  }
+
+  .pane-content {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  @media (max-width: 960px) {
+    flex-direction: column;
+
+    .pane-sidebar {
+      flex: 1 1 auto;
+      width: 100%;
+      max-width: none;
+    }
+  }
+}
+
+// --- Responsive Breakpoints ---
+@mixin respond-to($breakpoint) {
+  @if $breakpoint == 'mobile' {
+    @media (max-width: 600px) { @content; }
+  } @else if $breakpoint == 'tablet' {
+    @media (max-width: 960px) { @content; }
+  } @else if $breakpoint == 'desktop' {
+    @media (max-width: 1280px) { @content; }
+  }
+}

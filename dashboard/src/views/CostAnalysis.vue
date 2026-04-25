@@ -668,7 +668,9 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .window-toggle,
 .focus-toggle {
   padding: 2px;
@@ -691,10 +693,7 @@ onMounted(() => {
   gap: 10px;
   min-height: 180px;
   padding: 22px;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.96) 100%);
+  @include surface-card-soft($card-border-radius-xs);
   box-shadow: 0 14px 30px rgba(var(--v-theme-on-surface), 0.04);
 }
 
@@ -753,10 +752,7 @@ onMounted(() => {
 }
 
 .analysis-panel {
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: 24px;
-  background:
-    linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.96) 100%);
+  @include surface-card-soft;
   box-shadow: 0 16px 36px rgba(var(--v-theme-on-surface), 0.04);
   padding: 24px;
 }

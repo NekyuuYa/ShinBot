@@ -232,7 +232,7 @@ const handleLogout = () => {
 }
 </script>
 
-<style scoped>
+<style scoped lang="scss">
 .toggle-box {
   width: 72px;
   display: flex;
@@ -240,7 +240,7 @@ const handleLogout = () => {
 }
 
 .bg-base {
-  background-color: rgb(var(--v-theme-surface)) !important;
+  background-color: rgb(var(--v-theme-surface));
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -256,25 +256,25 @@ const handleLogout = () => {
   box-shadow: 0 4px 16px rgba(var(--v-theme-on-surface), 0.04);
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 24px !important;
+  padding: 24px;
 }
 
 .nav-item {
-  border-radius: 12px !important;
+  border-radius: 12px;
   min-height: 44px;
 }
 
 :deep(.v-navigation-drawer--rail) .nav-item {
-  width: 48px !important;
-  height: 48px !important;
-  margin: 0 auto 8px auto !important;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 8px;
   display: flex;
   justify-content: center;
   align-items: center;
 }
 
 :deep(.v-navigation-drawer--rail) .v-list-item__prepend {
-  margin: 0 !important;
+  margin: 0;
   width: 100%;
   display: flex;
   justify-content: center;
@@ -283,14 +283,14 @@ const handleLogout = () => {
 :deep(.v-navigation-drawer--rail) .v-list-item__content,
 :deep(.v-navigation-drawer--rail) .v-list-item__spacer,
 :deep(.v-navigation-drawer--rail) .v-list-item-title {
-  display: none !important;
+  display: none;
 }
-/* 激活状态：使用更有质感的深黄色 */
+
 .nav-item-active {
-  background-color: rgba(var(--v-theme-primary), 0.2) !important;
-  color: rgba(var(--v-theme-on-surface), 0.94) !important;
+  background-color: rgba(var(--v-theme-primary), 0.2);
+  color: rgba(var(--v-theme-on-surface), 0.94);
   font-weight: 800;
-  box-shadow: 0 4px 12px rgba(var(--v-theme-primary), 0.15) !important;
+  box-shadow: 0 4px 12px rgba(var(--v-theme-primary), 0.15);
 }
 
 </style>

@@ -8,7 +8,7 @@
 
     <v-row>
       <v-col cols="12" lg="6">
-        <v-card class="pa-6" elevation="4">
+        <v-card class="pa-6 settings-card" elevation="0">
           <v-card-title class="px-0 pt-0">
             {{ $t('pages.settings.credentials.title') }}
           </v-card-title>
@@ -20,7 +20,7 @@
       </v-col>
 
       <v-col cols="12" lg="6">
-        <v-card class="pa-6 h-100" elevation="4">
+        <v-card class="pa-6 h-100 settings-card" elevation="0">
           <div class="settings-card-header">
             <div>
               <v-card-title class="px-0 pt-0">
@@ -169,7 +169,7 @@
       </v-col>
 
       <v-col cols="12">
-        <v-card class="pa-6" elevation="4">
+        <v-card class="pa-6 settings-card" elevation="0">
           <div class="settings-card-header">
             <div>
               <v-card-title class="px-0 pt-0">
@@ -217,7 +217,7 @@
       </v-col>
 
       <v-col cols="12">
-        <v-card class="pa-6" elevation="4">
+        <v-card class="pa-6 settings-card" elevation="0">
           <div class="settings-card-header">
             <div>
               <v-card-title class="px-0 pt-0">
@@ -707,7 +707,13 @@ onMounted(() => {
 })
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
+.settings-card {
+  @include surface-card;
+}
+
 .settings-card-header {
   display: flex;
   align-items: flex-start;
@@ -719,13 +725,22 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+
+  @include respond-to('tablet') {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-detail-item {
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
+  border: 1px solid $card-border-color;
   border-radius: 16px;
   padding: 14px 16px;
   background: rgba(var(--v-theme-surface), 0.82);
+  transition: border-color $transition-fast;
+
+  &:hover {
+    border-color: rgba(var(--v-theme-primary), 0.24);
+  }
 }
 
 .settings-detail-item__label {
@@ -774,11 +789,5 @@ onMounted(() => {
   margin: 0 0 16px;
   color: rgba(var(--v-theme-on-surface), 0.76);
   line-height: 1.7;
-}
-
-@media (max-width: 960px) {
-  .settings-detail-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

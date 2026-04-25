@@ -194,10 +194,12 @@ const handleLayoutChange = (mode: ToolLayoutMode) => {
 }
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use '@/styles/mixins' as *;
+
 .summary-card,
 .filter-card {
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
+  @include surface-card;
+  @include hover-border;
 }
 </style>

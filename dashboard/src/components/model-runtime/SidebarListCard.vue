@@ -116,10 +116,7 @@ const filteredItems = computed(() => {
 
 <style scoped>
 .sidebar-card {
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  border-radius: 24px;
-  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.98) 0%, rgba(var(--v-theme-background), 0.98) 100%);
-  box-shadow: 0 10px 28px rgba(var(--v-theme-primary), 0.06);
+  @include surface-card;
 }
 
 .sidebar-add-btn {
