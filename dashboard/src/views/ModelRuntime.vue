@@ -777,9 +777,10 @@ const {
   providerHeaderRows,
   fetchCatalogInline,
   catalogLoading,
-  providerCanManageModels,
+  catalogSearch,
   pricingCurrency,
   pricingTokenUnit,
+  providerCanManageModels,
   openInlineModelEditor,
   showInlineModelEditor,
   showModelIdPicker,
@@ -799,7 +800,6 @@ const {
   toggleModel,
   availableCatalogItems,
   filteredCatalogItems,
-  catalogSearch,
   importCatalogItem,
   deleteCurrentProvider,
   saveProvider,
@@ -874,43 +874,49 @@ const applyProviderSourcePick = (values: string[]) => {
   width: 100%;
   display: grid;
   grid-template-columns: repeat(var(--runtime-tab-count, 8), minmax(0, 1fr));
-  gap: 8px;
+  gap: 12px;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   overflow: visible;
+
+  @include respond-to('tablet') {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  
+  @include respond-to('mobile') {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .runtime-tab-toggle :deep(.v-btn) {
   width: 100%;
   min-width: 0;
   justify-content: center;
-  min-height: 44px;
-  padding-inline: 6px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.14);
-  border-radius: 16px;
+  min-height: 48px;
+  padding-inline: 8px;
+  border: 1px solid $border-color-soft;
+  border-radius: $radius-base;
   font-weight: 700;
-  font-size: 0.8rem;
+  font-size: $font-size-sm;
   line-height: 1.1;
   text-transform: none;
-  background: rgba(var(--v-theme-surface), 0.88);
+  background: rgba(var(--v-theme-surface), 0.82);
   white-space: nowrap;
-}
+  transition: all $transition-fast;
 
-.runtime-tab-toggle :deep(.v-btn .v-btn__content) {
-  min-width: 0;
-  flex-wrap: nowrap;
-}
-
-.runtime-tab-toggle :deep(.v-btn .v-btn__content span) {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  &:hover {
+    border-color: $border-color-primary;
+    background: rgba(var(--v-theme-primary), 0.04);
+  }
 }
 
 .runtime-tab-toggle :deep(.v-btn--active) {
-  background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.3) 0%, rgba(var(--v-theme-primary), 0.18) 100%);
-  color: rgba(var(--v-theme-on-surface), 0.95);
+  background: linear-gradient(180deg, rgba(var(--v-theme-primary), 0.16) 0%, rgba(var(--v-theme-primary), 0.08) 100%);
+  border-color: $border-color-primary;
+  color: rgb(var(--v-theme-primary));
+  box-shadow: 0 4px 12px rgba(var(--v-theme-primary), 0.08);
 }
 
 .editor-card {
@@ -918,59 +924,33 @@ const applyProviderSourcePick = (values: string[]) => {
 }
 
 .editor-card :deep(.v-card-item) {
-  padding-bottom: 12px;
-}
-
-.runtime-main-pane :deep(.v-field--variant-outlined .v-field__outline) {
-  --v-field-border-opacity: 1;
-  color: rgba(var(--v-theme-primary), 0.16);
+  padding: 24px 24px 16px;
 }
 
 .runtime-main-pane :deep(.v-field) {
-  border-radius: 18px;
-  background: rgba(var(--v-theme-surface), 0.92);
-}
-
-.runtime-main-pane :deep(.v-field__input) {
-  color: rgba(var(--v-theme-on-surface), 0.92);
-}
-
-.runtime-main-pane :deep(.v-label.v-field-label) {
-  color: rgba(var(--v-theme-on-surface), 0.74);
-}
-
-.runtime-main-pane :deep(.v-input__details) {
-  padding-inline: 6px;
-}
-
-.runtime-main-pane :deep(.v-messages__message) {
-  color: rgba(var(--v-theme-primary), 0.72);
+  border-radius: $radius-base;
 }
 
 .provider-source-picker-tile {
   width: 100%;
-  min-height: 56px;
+  min-height: 64px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.16);
-  border-radius: 18px;
-  background: rgba(var(--v-theme-surface), 0.92);
+  gap: 16px;
+  padding: 12px 16px;
+  border: 1px solid $border-color-soft;
+  border-radius: $radius-base;
+  background: rgba(var(--v-theme-surface), 0.82);
   color: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
-}
+  transition: all $transition-fast;
 
-.provider-source-picker-tile:hover {
-  border-color: rgba(var(--v-theme-primary), 0.34);
-  background: rgba(var(--v-theme-surface), 0.98);
-}
-
-.provider-source-picker-tile:focus-visible {
-  outline: 2px solid rgba(var(--v-theme-primary), 0.5);
-  outline-offset: 2px;
+  &:hover {
+    border-color: $border-color-primary;
+    background: rgba(var(--v-theme-primary), 0.04);
+    @include hover-lift($show-shadow: false);
+  }
 }
 
 .selector-avatar {
@@ -988,7 +968,7 @@ const applyProviderSourcePick = (values: string[]) => {
 .selector-title {
   overflow: hidden;
   color: rgba(var(--v-theme-on-surface), 0.92);
-  font-size: 0.96rem;
+  font-size: $font-size-base;
   font-weight: 700;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -998,7 +978,7 @@ const applyProviderSourcePick = (values: string[]) => {
 .selector-subtitle {
   overflow: hidden;
   color: rgba(var(--v-theme-on-surface), 0.58);
-  font-size: 0.78rem;
+  font-size: $font-size-xs;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1006,35 +986,38 @@ const applyProviderSourcePick = (values: string[]) => {
 
 .selector-arrow {
   flex: 0 0 auto;
-  color: rgba(var(--v-theme-on-surface), 0.5);
+  color: rgba(var(--v-theme-on-surface), 0.4);
 }
 
 .route-member-row,
 .catalog-item-card,
 .model-editor-card {
-  border-radius: 20px;
-  border-color: rgba(var(--v-theme-primary), 0.14);
-  background: rgba(var(--v-theme-surface), 0.78);
+  border-radius: $radius-lg;
+  border: 1px solid $border-color-soft;
+  background: rgba(var(--v-theme-surface), 0.66);
+  transition: all $transition-fast;
 }
 
 .section-label {
-  font-size: 0.86rem;
+  font-size: $font-size-xs;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(var(--v-theme-primary), 0.68);
+  color: rgb(var(--v-theme-primary));
+  opacity: 0.82;
 }
 
 .empty-state-panel {
-  border: 1px dashed rgba(var(--v-theme-primary), 0.16);
-  background: linear-gradient(180deg, rgba(var(--v-theme-surface), 0.95) 0%, rgba(var(--v-theme-surface), 0.78) 100%);
-  border-radius: 20px;
+  border: 2px dashed $border-color-soft;
+  background: $surface-subtle;
+  border-radius: $radius-lg;
 }
 
 .empty-provider-panel {
-  min-height: 340px;
+  min-height: 400px;
   display: flex;
   flex-direction: column;
   justify-content: center;
+  text-align: center;
 }
 </style>

@@ -136,15 +136,11 @@
       </div>
     </div>
 
-    <v-alert v-if="store.error" type="error" class="mt-4">
-      {{ store.error }}
-    </v-alert>
-
     <!-- Create / Edit dialog -->
     <v-dialog v-model="dialogVisible" max-width="960">
       <v-card>
         <v-card-title>
-          {{ editingUuid ? $t('pages.prompts.overlay.editTitle') : $t('pages.prompts.overlay.createTitle') }}
+          {{ editingId ? $t('pages.prompts.overlay.editTitle') : $t('pages.prompts.overlay.createTitle') }}
         </v-card-title>
         <v-card-text>
           <v-row>
@@ -302,8 +298,8 @@
             </v-col>
           </v-row>
 
-          <v-alert v-if="localError || store.error" type="error" class="mt-2">
-            {{ localError || store.error }}
+          <v-alert v-if="error" type="error" class="mt-2">
+            {{ error }}
           </v-alert>
         </v-card-text>
 
@@ -312,8 +308,8 @@
           <v-btn variant="text" @click="dialogVisible = false">
             {{ $t('common.actions.action.cancel') }}
           </v-btn>
-          <v-btn color="primary" :loading="store.isSaving" @click="saveItem">
-            {{ editingUuid ? $t('common.actions.action.save') : $t('common.actions.action.create') }}
+          <v-btn color="primary" :loading="store.isSaving" @click="submit">
+            {{ editingId ? $t('common.actions.action.save') : $t('common.actions.action.create') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -322,21 +318,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-
+import { computed, onMounted, reactive } from 'vue'
 import type { PromptDefinition, PromptDefinitionPayload } from '@/api/promptDefinitions'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
+import { useCrudDialog } from '@/composables/useCrudDialog'
 import { translate } from '@/plugins/i18n'
 import { usePromptDefinitionsStore } from '@/stores/promptDefinitions'
 import { normalizeStringList } from '@/utils/stringList'
+import { safeJsonParse, prettyJson } from '@/utils/json'
 
 const store = usePromptDefinitionsStore()
-
-const dialogVisible = ref(false)
-const editingUuid = ref('')
-const localError = ref('')
 
 const form = reactive({
   promptId: '',
@@ -372,6 +365,86 @@ const {
   }
 )
 
+const {
+  visible: dialogVisible,
+  editingId,
+  localError: error,
+  openCreate,
+  openEdit,
+  submit,
+} = useCrudDialog<PromptDefinition, PromptDefinitionPayload>({
+  resetForm: () => {
+    Object.assign(form, {
+      promptId: '',
+      name: '',
+      stage: 'system_base',
+      type: 'static_text',
+      priority: 100,
+      version: '1.0.0',
+      description: '',
+      enabled: true,
+      content: '',
+      templateVars: [],
+      resolverRef: '',
+      bundleRefs: [],
+      tags: [],
+      configJson: '',
+      metadataJson: '',
+    })
+  },
+  populateForm: (item) => {
+    Object.assign(form, {
+      promptId: item.promptId,
+      name: item.name,
+      stage: item.stage,
+      type: item.type,
+      priority: item.priority,
+      version: item.version,
+      description: item.description,
+      enabled: item.enabled,
+      content: item.content,
+      templateVars: [...item.templateVars],
+      resolverRef: item.resolverRef,
+      bundleRefs: [...item.bundleRefs],
+      tags: [...item.tags],
+      configJson: prettyJson(item.config),
+      metadataJson: prettyJson(item.metadata),
+    })
+  },
+  buildPayload: () => {
+    const promptId = form.promptId.trim()
+    const name = form.name.trim()
+
+    if (!promptId || !name) {
+      throw new Error(translate('pages.prompts.messages.requiredFields'))
+    }
+
+    return {
+      promptId,
+      name,
+      stage: form.stage as any,
+      type: form.type as any,
+      priority: form.priority,
+      version: form.version.trim() || '1.0.0',
+      description: form.description.trim(),
+      enabled: form.enabled,
+      content: form.content,
+      templateVars: normalizeStringList(form.templateVars),
+      resolverRef: form.resolverRef.trim(),
+      bundleRefs: normalizeStringList(form.bundleRefs),
+      tags: normalizeStringList(form.tags),
+      config: safeJsonParse(form.configJson, {}),
+      metadata: safeJsonParse(form.metadataJson, {}),
+    }
+  },
+  save: async (payload): Promise<boolean> => {
+    const res = editingId.value
+      ? await store.updateItem(editingId.value, payload)
+      : await store.createItem(payload)
+    return Boolean(res)
+  },
+})
+
 const stageOptions = computed(() => [
   { title: translate('pages.prompts.stages.system_base'), value: 'system_base' },
   { title: translate('pages.prompts.stages.identity'), value: 'identity' },
@@ -389,106 +462,6 @@ const kindOptions = computed(() => [
   { title: translate('pages.prompts.kinds.bundle'), value: 'bundle' },
   { title: translate('pages.prompts.kinds.external_injection'), value: 'external_injection' },
 ])
-
-const parseJsonObject = (value: string, emptyFallback: Record<string, unknown>) => {
-  const trimmed = value.trim()
-  if (!trimmed) return emptyFallback
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
-  } catch {
-    throw new Error(translate('pages.prompts.messages.invalidJson'))
-  }
-  throw new Error(translate('pages.prompts.messages.invalidJson'))
-}
-
-const resetForm = () => {
-  form.promptId = ''
-  form.name = ''
-  form.stage = 'system_base'
-  form.type = 'static_text'
-  form.priority = 100
-  form.version = '1.0.0'
-  form.description = ''
-  form.enabled = true
-  form.content = ''
-  form.templateVars = []
-  form.resolverRef = ''
-  form.bundleRefs = []
-  form.tags = []
-  form.configJson = ''
-  form.metadataJson = ''
-}
-
-const openCreate = () => {
-  editingUuid.value = ''
-  localError.value = ''
-  resetForm()
-  dialogVisible.value = true
-}
-
-const openEdit = (item: PromptDefinition) => {
-  editingUuid.value = item.uuid
-  localError.value = ''
-  form.promptId = item.promptId
-  form.name = item.name
-  form.stage = item.stage
-  form.type = item.type
-  form.priority = item.priority
-  form.version = item.version
-  form.description = item.description
-  form.enabled = item.enabled
-  form.content = item.content
-  form.templateVars = [...item.templateVars]
-  form.resolverRef = item.resolverRef
-  form.bundleRefs = [...item.bundleRefs]
-  form.tags = [...item.tags]
-  form.configJson = Object.keys(item.config).length ? JSON.stringify(item.config, null, 2) : ''
-  form.metadataJson = Object.keys(item.metadata).length ? JSON.stringify(item.metadata, null, 2) : ''
-  dialogVisible.value = true
-}
-
-const buildPayload = (): PromptDefinitionPayload => {
-  const promptId = form.promptId.trim()
-  const name = form.name.trim()
-  const stage = form.stage.trim()
-  const type = form.type.trim()
-
-  if (!promptId || !name || !stage || !type) {
-    throw new Error(translate('pages.prompts.messages.requiredFields'))
-  }
-
-  return {
-    promptId,
-    name,
-    stage,
-    type,
-    priority: form.priority,
-    version: form.version.trim() || '1.0.0',
-    description: form.description.trim(),
-    enabled: form.enabled,
-    content: form.content,
-    templateVars: normalizeStringList(form.templateVars),
-    resolverRef: form.resolverRef.trim(),
-    bundleRefs: normalizeStringList(form.bundleRefs),
-    tags: normalizeStringList(form.tags),
-    config: parseJsonObject(form.configJson, {}),
-    metadata: parseJsonObject(form.metadataJson, {}),
-  }
-}
-
-const saveItem = async () => {
-  localError.value = ''
-  try {
-    const payload = buildPayload()
-    const result = editingUuid.value
-      ? await store.updateItem(editingUuid.value, payload)
-      : await store.createItem(payload)
-    if (result) dialogVisible.value = false
-  } catch (e: unknown) {
-    localError.value = e instanceof Error ? e.message : String(e)
-  }
-}
 
 const removeItem = async (uuid: string, name: string) => {
   if (!confirm(translate('pages.prompts.messages.confirmDelete', { name }))) return

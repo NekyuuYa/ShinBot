@@ -14,6 +14,8 @@ import {
   type ModelRuntimeTab,
   type ProviderCapabilityType,
 } from '@/utils/modelRuntimeSources'
+import { safeJsonParse, prettyJson } from '@/utils/json'
+import { objectToEntries, entriesToObject } from '@/utils/form'
 
 export function useModelRuntimePage() {
   const router = useRouter()
@@ -349,47 +351,6 @@ export function useModelRuntimePage() {
     editingModelId.value ? t('common.actions.action.save') : t('common.actions.action.create')
   )
 
-  const rowsToObject = (rows: Array<{ key: string; value: string }>) =>
-    rows.reduce<Record<string, string>>((acc, row) => {
-      const key = row.key.trim()
-      if (!key) {
-        return acc
-      }
-      acc[key] = row.value
-      return acc
-    }, {})
-
-  const objectToRows = (value: unknown) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return []
-    }
-    return Object.entries(value as Record<string, unknown>).map(([key, item]) => ({
-      key,
-      value: String(item ?? ''),
-    }))
-  }
-
-  const parseJsonField = (value: string, fallback: Record<string, unknown>) => {
-    const trimmed = value.trim()
-    if (!trimmed) {
-      return fallback
-    }
-    try {
-      const parsed = JSON.parse(trimmed)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>
-      }
-    } catch {
-      throw new Error(t('pages.modelRuntime.messages.invalidJson'))
-    }
-    throw new Error(t('pages.modelRuntime.messages.invalidJson'))
-  }
-
-  const parseOptionalJsonField = (value: string) => {
-    const parsed = parseJsonField(value, {})
-    return Object.keys(parsed).length > 0 ? parsed : null
-  }
-
   const cloneRouteMembers = (members: Array<Record<string, unknown>>) =>
     members.map((member) => ({
       modelId: String(member.modelId),
@@ -413,7 +374,7 @@ export function useModelRuntimePage() {
 
   const resetProviderForm = (type = '') => {
     const source = type ? resolveProviderSource(type) || providerSourceTemplates[0] : null
-    providerForm.value = {
+    Object.assign(providerForm.value, {
       id: '',
       displayName: '',
       sourceType: source?.type || '',
@@ -424,25 +385,25 @@ export function useModelRuntimePage() {
       thinkingJson: '',
       filtersJson: '',
       apiVersion: '',
-    }
+    })
     providerHeaderRows.value = []
   }
 
   const resetRouteForm = () => {
-    routeForm.value = {
+    Object.assign(routeForm.value, {
       id: '',
       purpose: '',
       strategy: 'priority',
       enabled: true,
       stickySessions: false,
       domain: activeTab.value === 'routes' ? 'chat' : activeTab.value,
-    }
+    })
     routeMembersEditor.value = []
   }
 
   const resetModelForm = () => {
     const providerId = selectedProvider.value?.id || providerForm.value.id
-    modelForm.value = {
+    Object.assign(modelForm.value, {
       id: providerId ? `${providerId}/` : '',
       displayName: '',
       litellmModel: '',
@@ -453,7 +414,7 @@ export function useModelRuntimePage() {
       cacheWritePrice: '',
       cacheReadPrice: '',
       enabled: true,
-    }
+    })
   }
 
   const firstNumericValue = (value: unknown, keys: string[]) => {
@@ -693,7 +654,7 @@ export function useModelRuntimePage() {
       const existingDefaults = selectedProvider.value?.defaultParams || {}
       const nextDefaults: Record<string, unknown> = {
         ...existingDefaults,
-        requestHeaders: rowsToObject(providerHeaderRows.value),
+        requestHeaders: entriesToObject(providerHeaderRows.value as any),
         proxy: providerForm.value.proxyAddress || undefined,
       }
 
@@ -703,21 +664,13 @@ export function useModelRuntimePage() {
         delete nextDefaults.apiVersion
       }
 
-      const thinking = sourceSupportsThinking.value
-        ? parseOptionalJsonField(providerForm.value.thinkingJson)
-        : null
-      if (thinking) {
-        nextDefaults.thinking = thinking
-      } else {
-        delete nextDefaults.thinking
-      }
-
-      const filters = sourceSupportsFilters.value ? parseOptionalJsonField(providerForm.value.filtersJson) : null
-      if (filters) {
-        nextDefaults.filters = filters
-      } else {
-        delete nextDefaults.filters
-      }
+      nextDefaults.thinking = sourceSupportsThinking.value
+        ? safeJsonParse(providerForm.value.thinkingJson, null)
+        : undefined
+      
+      nextDefaults.filters = sourceSupportsFilters.value
+        ? safeJsonParse(providerForm.value.filtersJson, null)
+        : undefined
 
       const payload: Record<string, unknown> = {
         id: providerForm.value.id.trim(),
@@ -864,7 +817,7 @@ export function useModelRuntimePage() {
       resetModelForm()
       return
     }
-    modelForm.value = {
+    Object.assign(modelForm.value, {
       id: model.id,
       displayName: model.displayName,
       litellmModel: model.litellmModel,
@@ -899,7 +852,7 @@ export function useModelRuntimePage() {
         ])
       ),
       enabled: model.enabled,
-    }
+    })
   }
 
   const cancelInlineModelEditor = () => {
@@ -1030,7 +983,7 @@ export function useModelRuntimePage() {
         return
       }
       const source = resolveProviderSource(selectedProvider.value.type)
-      providerForm.value = {
+      Object.assign(providerForm.value, {
         id: selectedProvider.value.id,
         displayName: selectedProvider.value.displayName,
         sourceType: selectedProvider.value.type,
@@ -1038,15 +991,11 @@ export function useModelRuntimePage() {
         token: '',
         enabled: selectedProvider.value.enabled,
         proxyAddress: String(selectedProvider.value.defaultParams.proxy || ''),
-        thinkingJson: selectedProvider.value.defaultParams.thinking
-          ? JSON.stringify(selectedProvider.value.defaultParams.thinking, null, 2)
-          : '',
-        filtersJson: selectedProvider.value.defaultParams.filters
-          ? JSON.stringify(selectedProvider.value.defaultParams.filters, null, 2)
-          : '',
+        thinkingJson: prettyJson(selectedProvider.value.defaultParams.thinking),
+        filtersJson: prettyJson(selectedProvider.value.defaultParams.filters),
         apiVersion: String(selectedProvider.value.defaultParams.apiVersion || ''),
-      }
-      providerHeaderRows.value = objectToRows(selectedProvider.value.defaultParams.requestHeaders)
+      })
+      providerHeaderRows.value = objectToEntries(selectedProvider.value.defaultParams.requestHeaders as any)
       if (source && !providerForm.value.baseUrl) {
         providerForm.value.baseUrl = source.defaultBaseUrl
       }
@@ -1060,14 +1009,14 @@ export function useModelRuntimePage() {
       if (isCreatingRoute.value || !selectedRoute.value) {
         return
       }
-      routeForm.value = {
+      Object.assign(routeForm.value, {
         id: selectedRoute.value.id,
         purpose: selectedRoute.value.purpose,
         strategy: selectedRoute.value.strategy,
         enabled: selectedRoute.value.enabled,
         stickySessions: selectedRoute.value.stickySessions,
         domain: String(selectedRoute.value.metadata.domain || 'chat'),
-      }
+      })
       routeMembersEditor.value = cloneRouteMembers(selectedRoute.value.members as Array<Record<string, unknown>>)
     },
     { immediate: true }
