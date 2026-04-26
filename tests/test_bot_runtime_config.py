@@ -10,7 +10,7 @@ def test_resolve_bot_runtime_config_normalizes_defaults() -> None:
     assert resolved.main_llm == ""
     assert resolved.explicit_prompt_cache_enabled is False
     assert resolved.response_profile == "balanced"
-    assert resolved.response_profile_private == "immediate"
+    assert resolved.response_profile_private == "disabled"
     assert resolved.response_profile_priority == "immediate"
     assert resolved.response_profile_group == "balanced"
 
@@ -77,4 +77,16 @@ def test_select_response_profile_uses_message_priority_order() -> None:
             is_reply_to_bot=False,
         )
         == "balanced"
+    )
+
+
+def test_select_response_profile_disables_private_attention_by_default() -> None:
+    assert (
+        select_response_profile(
+            None,
+            is_private=True,
+            is_mentioned=False,
+            is_reply_to_bot=False,
+        )
+        == "disabled"
     )

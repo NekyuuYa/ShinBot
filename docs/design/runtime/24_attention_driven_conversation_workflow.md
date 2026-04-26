@@ -177,6 +177,7 @@ contribution = base_gain * sender_factor + feature_bonus
 系统必须支持通过配置表达不同的响应风格，而不是保留 legacy 聊天链路。
 
 推荐引入 `attention_profile` / `response_profile` 概念，例如：
+- `disabled`
 - `passive`
 - `balanced`
 - `immediate`
@@ -190,6 +191,7 @@ contribution = base_gain * sender_factor + feature_bonus
 - 可选的 fast-dispatch 条件
 
 目标：
+- `disabled`: 不进入注意力调度，适合默认关闭私聊注意力
 - `passive`: 倾向观望与批处理
 - `balanced`: 默认群聊风格
 - `immediate`: 接近 legacy 的即时响应体验，但仍然走 workflow

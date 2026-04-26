@@ -81,7 +81,7 @@ class TestMessagePipeline:
         self.adapter = MockAdapter()
 
     @pytest.mark.asyncio
-    async def test_pipeline_routes_private_messages_to_immediate_profile(self, tmp_path):
+    async def test_pipeline_skips_private_attention_by_default(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
@@ -127,8 +127,11 @@ class TestMessagePipeline:
         await pipeline.process_event(make_event("hello private"), self.adapter)
         await asyncio.sleep(0)
 
-        assert len(scheduler.calls) == 1
-        assert scheduler.calls[0]["response_profile"] == "immediate"
+        assert scheduler.calls == []
+
+        rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
+        assert len(rows) == 1
+        assert rows[0]["is_read"] == 1
 
     @pytest.mark.asyncio
     async def test_pipeline_routes_group_messages_to_balanced_profile_by_default(self, tmp_path):
@@ -430,4 +433,3 @@ class TestMessagePipeline:
         assert len(self.adapter.sent) == 1
         assert Message(elements=self.adapter.sent[0][1]).get_text() == "plugin reply"
         assert scheduler.calls == 0
-

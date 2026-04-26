@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from shinbot.core.bot_config import select_response_profile
+from shinbot.core.bot_config import ATTENTION_DISABLED_PROFILE, select_response_profile
 from shinbot.core.dispatch.command import CommandMatch, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
@@ -801,18 +801,19 @@ class MessagePipeline:
         # Route natural-language sessions to the attention scheduler. Different
         # immediacy requirements are expressed through response profiles on the
         # same workflow engine.
+        response_profile = self._resolve_response_profile(bot)
         should_schedule_attention = (
             self._attention_scheduler is not None
             and not bot._sent_messages
             and not bot.is_stopped
             and bot._msg_log_id is not None
+            and self._is_attention_profile_enabled(response_profile)
         )
         if should_schedule_attention:
             is_mentioned = any(
                 el.type == "at" and el.attrs.get("id") == event.self_id for el in message.elements
             )
             attention_multiplier = self._resolve_attention_multiplier(message, event.self_id)
-            response_profile = self._resolve_response_profile(bot)
             # Fire-and-forget: attention accumulation runs async
             asyncio.create_task(
                 self._attention_scheduler.on_message(
@@ -835,7 +836,7 @@ class MessagePipeline:
 
     def _resolve_response_profile(self, bot: MessageContext) -> str:
         if self._database is None:
-            return "immediate" if bot.is_private else "balanced"
+            return ATTENTION_DISABLED_PROFILE if bot.is_private else "balanced"
 
         bot_config = self._database.bot_configs.get_by_instance_id(bot.adapter.instance_id)
         return select_response_profile(
@@ -844,6 +845,16 @@ class MessagePipeline:
             is_mentioned=bot.is_mentioned,
             is_reply_to_bot=bot.is_reply_to_bot(),
         )
+
+    @staticmethod
+    def _is_attention_profile_enabled(response_profile: str) -> bool:
+        return str(response_profile or "").strip().lower() not in {
+            "",
+            ATTENTION_DISABLED_PROFILE,
+            "disable",
+            "off",
+            "none",
+        }
 
     @staticmethod
     def _resolve_attention_multiplier(message: Message, self_id: str) -> float:

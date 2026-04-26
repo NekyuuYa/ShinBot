@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+ATTENTION_DISABLED_PROFILE = "disabled"
+
 
 @dataclass(slots=True)
 class ResolvedBotRuntimeConfig:
@@ -14,7 +16,7 @@ class ResolvedBotRuntimeConfig:
     main_llm: str = ""
     explicit_prompt_cache_enabled: bool = False
     response_profile: str = "balanced"
-    response_profile_private: str = "immediate"
+    response_profile_private: str = ATTENTION_DISABLED_PROFILE
     response_profile_priority: str = "immediate"
     response_profile_group: str = "balanced"
     config: dict[str, Any] = field(default_factory=dict)
@@ -56,7 +58,7 @@ def resolve_bot_runtime_config(payload: dict[str, Any] | None) -> ResolvedBotRun
         response_profile=_normalize_string(raw_config.get("response_profile"), "balanced"),
         response_profile_private=_normalize_string(
             raw_config.get("response_profile_private"),
-            "immediate",
+            ATTENTION_DISABLED_PROFILE,
         ),
         response_profile_priority=_normalize_string(
             raw_config.get("response_profile_priority"),
