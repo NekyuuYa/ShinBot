@@ -809,6 +809,13 @@ class MessagePipeline:
             and bot._msg_log_id is not None
             and self._is_attention_profile_enabled(response_profile)
         )
+        should_dispatch_directly = (
+            self._attention_scheduler is not None
+            and not bot._sent_messages
+            and not bot.is_stopped
+            and bot._msg_log_id is not None
+            and not self._is_attention_profile_enabled(response_profile)
+        )
         if should_schedule_attention:
             is_mentioned = any(
                 el.type == "at" and el.attrs.get("id") == event.self_id for el in message.elements
@@ -827,6 +834,14 @@ class MessagePipeline:
                     self_platform_id=event.self_id,
                 ),
                 name=f"attention-{session_id}",
+            )
+        elif should_dispatch_directly:
+            asyncio.create_task(
+                self._attention_scheduler.dispatch_immediately(
+                    session_id,
+                    response_profile=response_profile,
+                ),
+                name=f"attention-direct-{session_id}",
             )
         elif self._database is not None and bot._msg_log_id is not None:
             self._database.message_logs.mark_read(bot._msg_log_id)

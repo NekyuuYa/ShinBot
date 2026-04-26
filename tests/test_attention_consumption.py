@@ -87,6 +87,54 @@ def test_incremental_consumption_caps_attention_under_threshold(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_direct_dispatch_runs_workflow_without_attention_update(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:private:u1"
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id="inst",
+            session_type="private",
+            channel_id="u1",
+        )
+    )
+    msg_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="hello direct",
+            sender_id="u1",
+            created_at=time.time() * 1000,
+        )
+    )
+
+    config = AttentionConfig()
+    engine = AttentionEngine(config, db.attention)
+    observed: dict[str, object] = {}
+    dispatched = asyncio.Event()
+
+    async def dispatcher(_session_id, batch, state, profile):
+        observed["session_id"] = _session_id
+        observed["batch"] = batch
+        observed["attention_value"] = state.attention_value
+        observed["profile"] = profile
+        dispatched.set()
+
+    scheduler = AttentionScheduler(engine, db, config, workflow_dispatcher=dispatcher)
+
+    await scheduler.dispatch_immediately(session_id, response_profile="disabled")
+    await asyncio.wait_for(dispatched.wait(), timeout=1.0)
+
+    assert observed["session_id"] == session_id
+    assert observed["profile"] == "disabled"
+    assert observed["attention_value"] == 0.0
+    assert [item["raw_text"] for item in observed["batch"]] == ["hello direct"]
+    refreshed = db.attention.get_or_create_attention(session_id)
+    assert refreshed.last_consumed_msg_log_id == msg_id
+
+
+@pytest.mark.asyncio
 async def test_scheduler_persists_self_platform_id_in_attention_metadata(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()

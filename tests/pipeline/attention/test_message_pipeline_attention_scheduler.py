@@ -81,13 +81,27 @@ class TestMessagePipeline:
         self.adapter = MockAdapter()
 
     @pytest.mark.asyncio
-    async def test_pipeline_skips_private_attention_by_default(self, tmp_path):
+    async def test_pipeline_dispatches_private_messages_directly_by_default(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
         class RecordingAttentionScheduler:
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
+                self.direct_calls: list[dict[str, object]] = []
+
+            async def dispatch_immediately(
+                self,
+                session_id: str,
+                *,
+                response_profile: str = "disabled",
+            ) -> None:
+                self.direct_calls.append(
+                    {
+                        "session_id": session_id,
+                        "response_profile": response_profile,
+                    }
+                )
 
             async def on_message(
                 self,
@@ -128,10 +142,12 @@ class TestMessagePipeline:
         await asyncio.sleep(0)
 
         assert scheduler.calls == []
-
-        rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
-        assert len(rows) == 1
-        assert rows[0]["is_read"] == 1
+        assert scheduler.direct_calls == [
+            {
+                "session_id": "test-bot:private:user-1",
+                "response_profile": "disabled",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_pipeline_routes_group_messages_to_balanced_profile_by_default(self, tmp_path):

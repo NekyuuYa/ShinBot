@@ -68,6 +68,25 @@ class AttentionScheduler:
             self._locks[session_id] = asyncio.Lock()
         return self._locks[session_id]
 
+    async def dispatch_immediately(
+        self,
+        session_id: str,
+        *,
+        response_profile: str = "disabled",
+    ) -> None:
+        """Dispatch pending messages without updating attention state."""
+        while True:
+            async with self._get_lock(session_id):
+                running = self._running_workflows.get(session_id)
+                if running is None or running.done():
+                    task = asyncio.create_task(
+                        self._do_dispatch(session_id, response_profile),
+                        name=f"attention-direct-dispatch-{session_id}",
+                    )
+                    self._running_workflows[session_id] = task
+                    return
+            await running
+
     async def on_message(
         self,
         session_id: str,
