@@ -193,7 +193,7 @@
               <v-select
                 :model-value="form.contextStrategyRef"
                 :label="$t('pages.agents.fields.contextStrategyRef')"
-                :items="contextStrategyOptions(form.contextStrategyRef, contextStrategyType).value"
+                :items="contextStrategyOptionItems"
                 item-title="title"
                 item-value="value"
                 variant="outlined"
@@ -404,11 +404,19 @@ const personaOptions = computed(() =>
 
 const getAgentKey = (agent: Agent) => agent.uuid
 
+const contextStrategyOptionItems = computed(() =>
+  contextStrategyOptions(form.contextStrategyRef, contextStrategyType.value)
+)
+
+const promptOptionItems = computed(() => promptOptions(form.prompts))
+
+const toolOptionItems = computed(() => toolOptions(form.tools))
+
 const promptPickerSections = computed<GenericPickerSection[]>(() => [
   {
     id: 'prompts',
     label: t('pages.agents.fields.prompts'),
-    items: promptOptions(form.prompts).value.map((o) => ({
+    items: promptOptionItems.value.map((o) => ({
       value: o.value, title: o.title, icon: 'mdi-text-box-outline', iconColor: 'primary',
     })),
   },
@@ -418,7 +426,7 @@ const toolPickerSections = computed<GenericPickerSection[]>(() => [
   {
     id: 'tools',
     label: t('pages.agents.fields.tools'),
-    items: toolOptions(form.tools).value.map((o) => ({
+    items: toolOptionItems.value.map((o) => ({
       value: o.value, title: o.title, icon: 'mdi-tools', iconColor: 'secondary',
     })),
   },
@@ -426,20 +434,20 @@ const toolPickerSections = computed<GenericPickerSection[]>(() => [
 
 const promptSummary = computed(() => {
   if (form.prompts.length === 0) return ''
-  const first = promptOptions(form.prompts).value.find((o) => o.value === form.prompts[0])?.title ?? form.prompts[0]
+  const first = promptOptionItems.value.find((o) => o.value === form.prompts[0])?.title ?? form.prompts[0]
   return form.prompts.length === 1 ? first : `${first} (+${form.prompts.length - 1})`
 })
 
 const toolSummary = computed(() => {
   if (form.tools.length === 0) return ''
-  const first = toolOptions(form.tools).value.find((o) => o.value === form.tools[0])?.title ?? form.tools[0]
+  const first = toolOptionItems.value.find((o) => o.value === form.tools[0])?.title ?? form.tools[0]
   return form.tools.length === 1 ? first : `${first} (+${form.tools.length - 1})`
 })
 
 const handleContextStrategyChange = (value: string | null) => {
   const refVal = (value ?? '').trim()
   form.contextStrategyRef = refVal
-  const selected = contextStrategyOptions(refVal, contextStrategyType.value).value.find(o => o.value === refVal)
+  const selected = contextStrategyOptionItems.value.find(o => o.value === refVal)
   contextStrategyType.value = selected?.type || ''
 }
 

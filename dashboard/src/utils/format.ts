@@ -49,11 +49,11 @@ export function safeJsonParse<T = Record<string, unknown>>(
 /**
  * Format an object into a pretty JSON string.
  */
-export function prettyJson(value: any): string {
+export function prettyJson(value: unknown): string {
   if (!value || (typeof value === 'object' && Object.keys(value).length === 0)) {
     return ''
   }
-  return JSON.stringify(value, null, 2)
+  return JSON.stringify(value, null, 2) ?? ''
 }
 
 // ── Form helpers ────────────────────────────────────────────────────────────

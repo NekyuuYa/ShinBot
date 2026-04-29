@@ -38,8 +38,8 @@ export function useCrudDialog<T extends { uuid?: string; id?: string }, P>(
       if (success) {
         visible.value = false
       }
-    } catch (err: any) {
-      localError.value = err.message || String(err)
+    } catch (err: unknown) {
+      localError.value = err instanceof Error ? err.message : String(err)
     } finally {
       isSaving.value = false
     }
