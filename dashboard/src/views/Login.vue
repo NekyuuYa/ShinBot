@@ -64,14 +64,6 @@
               {{ $t('pages.auth.login') }}
             </v-btn>
           </v-form>
-
-          <v-divider class="my-8" />
-
-          <div class="text-center">
-            <v-btn variant="text" size="small" color="medium-emphasis">
-              {{ $t('pages.auth.forgotPassword') }}
-            </v-btn>
-          </div>
         </v-card>
 
         <div class="text-center mt-10 text-caption text-medium-emphasis">
