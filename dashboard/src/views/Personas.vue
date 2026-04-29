@@ -200,7 +200,7 @@ import { onMounted, reactive, ref } from 'vue'
 
 import type { Persona, PersonaPayload } from '@/api/personas'
 import AppPageHeader from '@/components/AppPageHeader.vue'
-import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
+import SidebarListCard from '@/components/SidebarListCard.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
 import { usePersonasStore } from '@/stores/personas'

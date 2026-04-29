@@ -291,7 +291,7 @@ import { useI18n } from 'vue-i18n'
 
 import type { Agent, AgentPayload } from '@/api/agents'
 import AppPageHeader from '@/components/AppPageHeader.vue'
-import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
+import SidebarListCard from '@/components/SidebarListCard.vue'
 import GenericPickerDialog, {
   type GenericPickerSection,
 } from '@/components/model-runtime/GenericPickerDialog.vue'

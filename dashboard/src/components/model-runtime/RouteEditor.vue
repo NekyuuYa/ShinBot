@@ -246,7 +246,7 @@
 </template>
 
 <script setup lang="ts">
-import { useModelRuntimeContext } from "./runtimePageContext";
+import { useModelRuntimeContext } from "@/composables/useModelRuntimePage";
 
 const {
   store,

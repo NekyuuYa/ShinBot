@@ -321,7 +321,7 @@
 import { computed, onMounted, reactive } from 'vue'
 import type { PromptDefinition, PromptDefinitionPayload } from '@/api/promptDefinitions'
 import AppPageHeader from '@/components/AppPageHeader.vue'
-import SidebarListCard from '@/components/model-runtime/SidebarListCard.vue'
+import SidebarListCard from '@/components/SidebarListCard.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { useCrudDialog } from '@/composables/useCrudDialog'
 import { translate } from '@/plugins/i18n'

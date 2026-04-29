@@ -74,9 +74,11 @@ import { provide } from "vue";
 import AppPageHeader from "@/components/AppPageHeader.vue";
 import ProviderEditor from "@/components/model-runtime/ProviderEditor.vue";
 import RouteEditor from "@/components/model-runtime/RouteEditor.vue";
-import SidebarListCard from "@/components/model-runtime/SidebarListCard.vue";
-import { modelRuntimePageKey } from "@/components/model-runtime/runtimePageContext";
-import { useModelRuntimePage } from "@/composables/useModelRuntimePage";
+import SidebarListCard from "@/components/SidebarListCard.vue";
+import {
+  modelRuntimePageKey,
+  useModelRuntimePage,
+} from "@/composables/useModelRuntimePage";
 
 const runtimePage = useModelRuntimePage();
 provide(modelRuntimePageKey, runtimePage);
