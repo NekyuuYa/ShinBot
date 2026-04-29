@@ -1,8 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { modelRuntimeApi, type CostAnalysisResponse } from '@/api/modelRuntime'
-import { getErrorMessage } from '@/utils/error'
-import { translate } from '@/plugins/i18n'
+import { createRequestStore } from './crud'
 
 export const COST_ANALYSIS_WINDOWS = [1, 7, 30] as const
 export type CostAnalysisWindow = (typeof COST_ANALYSIS_WINDOWS)[number]
@@ -19,8 +18,7 @@ export const useCostAnalysisStore = defineStore(
   () => {
     const analysis = ref<CostAnalysisResponse | null>(null)
     const selectedDays = ref<CostAnalysisWindow>(DEFAULT_COST_ANALYSIS_WINDOW)
-    const isLoading = ref(false)
-    const error = ref('')
+    const requests = createRequestStore()
 
     const hasData = computed(() => (analysis.value?.models.length ?? 0) > 0)
 
@@ -30,28 +28,23 @@ export const useCostAnalysisStore = defineStore(
 
     const fetchAnalysis = async (days = selectedDays.value) => {
       const normalizedDays = normalizeCostAnalysisWindow(days)
-      isLoading.value = true
-      error.value = ''
+      const result = await requests.runRequest(() => modelRuntimeApi.getCostAnalysis(normalizedDays), {
+        mode: 'loading',
+        errorKey: 'pages.costAnalysis.messages.loadFailed',
+        onSuccess: (data) => {
+          analysis.value = data ?? null
+          selectedDays.value = normalizedDays
+        },
+      })
 
-      try {
-        const response = await modelRuntimeApi.getCostAnalysis(normalizedDays)
-        analysis.value = response.data.data ?? null
-        selectedDays.value = normalizedDays
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.costAnalysis.messages.loadFailed')
-        )
-      } finally {
-        isLoading.value = false
-      }
+      return result.ok
     }
 
     return {
       analysis,
       selectedDays,
-      isLoading,
-      error,
+      isLoading: requests.isLoading,
+      error: requests.error,
       hasData,
       setSelectedDays,
       fetchAnalysis,

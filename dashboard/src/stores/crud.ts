@@ -52,6 +52,10 @@ interface CrudStateRefs {
   error?: Ref<string>
 }
 
+interface CreateRequestStoreOptions {
+  state?: CrudStateRefs
+}
+
 interface CrudSuccessHooks<T, CreatePayload, UpdatePayload, Id extends ItemId> {
   onCreateSuccess?: (
     data: T,
@@ -73,21 +77,11 @@ interface CreateCrudStoreOptions<T, CreatePayload, UpdatePayload, Id extends Ite
   hooks?: CrudSuccessHooks<T, CreatePayload, UpdatePayload, Id>
 }
 
-export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends ItemId = string>(
-  options: CreateCrudStoreOptions<T, CreatePayload, UpdatePayload, Id>
-) => {
+export const createRequestStore = (options: CreateRequestStoreOptions = {}) => {
   const uiStore = useUiStore()
-  const items = (options.items ?? ref<T[]>([])) as Ref<T[]>
   const isLoading = (options.state?.isLoading ?? ref(false)) as Ref<boolean>
   const isSaving = (options.state?.isSaving ?? ref(false)) as Ref<boolean>
   const error = (options.state?.error ?? ref('')) as Ref<string>
-
-  const resolveCrudKey = (name: CrudMessageName) => {
-    if (typeof options.i18nKey === 'string') {
-      return `${options.i18nKey}.${name}`
-    }
-    return options.i18nKey[name] ?? null
-  }
 
   const setBusy = (mode: StoreRequestMode, value: boolean) => {
     if (mode === 'loading') {
@@ -98,25 +92,6 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
     if (mode === 'saving') {
       isSaving.value = value
     }
-  }
-
-  const appendItem = (item: T) => {
-    items.value = [...items.value, item]
-  }
-
-  const replaceItem = (item: T) => {
-    const index = items.value.findIndex((existing) => options.idOf(existing) === options.idOf(item))
-    if (index !== -1) {
-      items.value[index] = item
-    }
-  }
-
-  const removeItem = (id: Id) => {
-    items.value = items.value.filter((item) => options.idOf(item) !== id)
-  }
-
-  const setItems = (value: T[]) => {
-    items.value = value
   }
 
   const runRequest = async <ResponseData>(
@@ -163,6 +138,47 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
     } finally {
       setBusy(mode, false)
     }
+  }
+
+  return {
+    isLoading,
+    isSaving,
+    error,
+    runRequest,
+  }
+}
+
+export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends ItemId = string>(
+  options: CreateCrudStoreOptions<T, CreatePayload, UpdatePayload, Id>
+) => {
+  const items = (options.items ?? ref<T[]>([])) as Ref<T[]>
+  const requestStore = createRequestStore({ state: options.state })
+  const { isLoading, isSaving, error, runRequest } = requestStore
+
+  const resolveCrudKey = (name: CrudMessageName) => {
+    if (typeof options.i18nKey === 'string') {
+      return `${options.i18nKey}.${name}`
+    }
+    return options.i18nKey[name] ?? null
+  }
+
+  const appendItem = (item: T) => {
+    items.value = [...items.value, item]
+  }
+
+  const replaceItem = (item: T) => {
+    const index = items.value.findIndex((existing) => options.idOf(existing) === options.idOf(item))
+    if (index !== -1) {
+      items.value[index] = item
+    }
+  }
+
+  const removeItem = (id: Id) => {
+    items.value = items.value.filter((item) => options.idOf(item) !== id)
+  }
+
+  const setItems = (value: T[]) => {
+    items.value = value
   }
 
   const fetchItems = async () => {
