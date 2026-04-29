@@ -42,8 +42,12 @@
       </v-btn-toggle>
     </div>
 
-    <v-row class="ma-0" align="start">
-      <v-col cols="12" md="4" class="pa-0 pe-md-4">
+    <dual-pane-list-view
+      :items="sidebarItems"
+      :loading="store.isLoading"
+      content-class="runtime-main-pane"
+    >
+      <template #sidebar>
         <sidebar-list-card
           :title="sidebarTitle"
           :empty-text="sidebarEmptyText"
@@ -54,13 +58,13 @@
           @add="startCreateCurrent"
           @select="handleSidebarSelect"
         />
-      </v-col>
+      </template>
 
-      <v-col cols="12" md="8" class="pa-0 runtime-main-pane">
+      <template #content>
         <route-editor v-if="isRouteMode" />
         <provider-editor v-else />
-      </v-col>
-    </v-row>
+      </template>
+    </dual-pane-list-view>
 
     <v-alert v-if="store.error" type="error" class="mt-6">
       {{ store.error }}
@@ -72,6 +76,7 @@
 import { provide } from "vue";
 
 import AppPageHeader from "@/components/AppPageHeader.vue";
+import DualPaneListView from "@/components/DualPaneListView.vue";
 import ProviderEditor from "@/components/model-runtime/ProviderEditor.vue";
 import RouteEditor from "@/components/model-runtime/RouteEditor.vue";
 import SidebarListCard from "@/components/SidebarListCard.vue";

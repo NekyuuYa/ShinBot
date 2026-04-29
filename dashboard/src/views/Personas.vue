@@ -16,14 +16,24 @@
         >
           {{ $t('pages.personas.actions.refresh') }}
         </v-btn>
-        <v-btn color="primary" prepend-icon="mdi-account-plus" @click="openCreatePersona">
+        <v-btn color="primary" prepend-icon="mdi-account-plus" @click="openCreate">
           {{ $t('pages.personas.actions.addPersona') }}
         </v-btn>
       </template>
     </app-page-header>
 
-    <div class="personas-layout">
-      <div class="personas-tag-pane">
+    <dual-pane-list-view
+      :items="filteredPersonas"
+      :loading="personasStore.isLoading"
+      :show-skeleton="personasStore.isLoading && personasStore.personas.length === 0"
+      :empty-config="{
+        icon: 'mdi-account-search-outline',
+        title: $t('pages.personas.empty.title'),
+        subtitle: $t('pages.personas.empty.subtitle'),
+      }"
+      :get-item-key="getPersonaKey"
+    >
+      <template #sidebar>
         <sidebar-list-card
           :title="$t('pages.personas.tags.title')"
           :empty-text="$t('pages.personas.tags.empty')"
@@ -32,95 +42,69 @@
           :show-add-button="false"
           @select="selectTag"
         />
-      </div>
+      </template>
 
-      <div class="personas-content-pane">
-        <v-row v-if="personasStore.isLoading && personasStore.personas.length === 0" class="mx-0">
-          <v-col cols="12" class="pa-0">
-            <v-skeleton-loader type="card, card, card" />
-          </v-col>
-        </v-row>
+      <template #card="{ item: persona }">
+        <v-card class="persona-card h-100 d-flex flex-column" elevation="0">
+          <v-card-item>
+            <template #prepend>
+              <v-avatar color="primary" variant="tonal" icon="mdi-account-badge-outline" />
+            </template>
+            <v-card-title class="text-break">{{ persona.name }}</v-card-title>
+            <template #append>
+              <v-chip
+                size="small"
+                :color="persona.enabled ? 'success' : 'grey'"
+                variant="tonal"
+              >
+                {{ persona.enabled ? $t('pages.personas.state.enabled') : $t('pages.personas.state.disabled') }}
+              </v-chip>
+            </template>
+          </v-card-item>
 
-        <v-row v-else-if="filteredPersonas.length === 0" justify="center" class="mx-0 py-12">
-          <v-col cols="12" md="8" class="text-center pa-0">
-            <v-icon size="96" color="grey-lighten-1" icon="mdi-account-search-outline" />
-            <h3 class="text-h6 my-4">{{ $t('pages.personas.empty.title') }}</h3>
-            <p class="text-body-2 text-medium-emphasis">{{ $t('pages.personas.empty.subtitle') }}</p>
-          </v-col>
-        </v-row>
+          <v-card-text class="pt-1 flex-grow-1">
+            <div class="text-body-2 text-medium-emphasis persona-prompt-preview">
+              {{ previewPrompt(persona.promptText) }}
+            </div>
 
-        <v-row v-else class="mx-n4">
-          <v-col
-            v-for="persona in filteredPersonas"
-            :key="persona.uuid"
-            cols="12"
-            sm="6"
-            md="6"
-            lg="4"
-            class="pa-4"
-          >
-            <v-card class="persona-card h-100 d-flex flex-column" elevation="0">
-              <v-card-item>
-                <template #prepend>
-                  <v-avatar color="primary" variant="tonal" icon="mdi-account-badge-outline" />
-                </template>
-                <v-card-title class="text-break">{{ persona.name }}</v-card-title>
-                <template #append>
-                  <v-chip
-                    size="small"
-                    :color="persona.enabled ? 'success' : 'grey'"
-                    variant="tonal"
-                  >
-                    {{ persona.enabled ? $t('pages.personas.state.enabled') : $t('pages.personas.state.disabled') }}
-                  </v-chip>
-                </template>
-              </v-card-item>
+            <div class="d-flex flex-wrap ga-2 mt-3">
+              <v-chip
+                v-for="tag in persona.tags"
+                :key="`${persona.uuid}-${tag}`"
+                size="small"
+                color="secondary"
+                variant="tonal"
+              >
+                {{ tag }}
+              </v-chip>
+              <v-chip
+                v-if="persona.tags.length === 0"
+                size="small"
+                color="grey"
+                variant="tonal"
+              >
+                {{ $t('pages.personas.tags.untagged') }}
+              </v-chip>
+            </div>
+          </v-card-text>
 
-              <v-card-text class="pt-1 flex-grow-1">
-                <div class="text-body-2 text-medium-emphasis persona-prompt-preview">
-                  {{ previewPrompt(persona.promptText) }}
-                </div>
-
-                <div class="d-flex flex-wrap ga-2 mt-3">
-                  <v-chip
-                    v-for="tag in persona.tags"
-                    :key="`${persona.uuid}-${tag}`"
-                    size="small"
-                    color="secondary"
-                    variant="tonal"
-                  >
-                    {{ tag }}
-                  </v-chip>
-                  <v-chip
-                    v-if="persona.tags.length === 0"
-                    size="small"
-                    color="grey"
-                    variant="tonal"
-                  >
-                    {{ $t('pages.personas.tags.untagged') }}
-                  </v-chip>
-                </div>
-              </v-card-text>
-
-              <v-card-actions>
-                <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEditPersona(persona)">
-                  {{ $t('common.actions.action.edit') }}
-                </v-btn>
-                <v-spacer />
-                <v-btn
-                  color="error"
-                  variant="text"
-                  prepend-icon="mdi-delete-outline"
-                  @click="removePersona(persona.uuid, persona.name)"
-                >
-                  {{ $t('common.actions.action.delete') }}
-                </v-btn>
-              </v-card-actions>
-            </v-card>
-          </v-col>
-        </v-row>
-      </div>
-    </div>
+          <v-card-actions>
+            <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(persona)">
+              {{ $t('common.actions.action.edit') }}
+            </v-btn>
+            <v-spacer />
+            <v-btn
+              color="error"
+              variant="text"
+              prepend-icon="mdi-delete-outline"
+              @click="removePersona(persona.uuid, persona.name)"
+            >
+              {{ $t('common.actions.action.delete') }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </template>
+    </dual-pane-list-view>
 
     <v-alert v-if="personasStore.error" type="error" class="mt-4">
       {{ personasStore.error }}
@@ -129,7 +113,7 @@
     <v-dialog v-model="dialogVisible" max-width="780">
       <v-card>
         <v-card-title>
-          {{ editingPersonaUuid ? $t('pages.personas.overlay.editTitle') : $t('pages.personas.overlay.createTitle') }}
+          {{ editingId ? $t('pages.personas.overlay.editTitle') : $t('pages.personas.overlay.createTitle') }}
         </v-card-title>
         <v-card-text>
           <v-row>
@@ -186,8 +170,8 @@
           <v-btn variant="text" @click="dialogVisible = false">
             {{ $t('common.actions.action.cancel') }}
           </v-btn>
-          <v-btn color="primary" :loading="personasStore.isSaving" @click="savePersona">
-            {{ editingPersonaUuid ? $t('common.actions.action.save') : $t('common.actions.action.create') }}
+          <v-btn color="primary" :loading="isSaving" @click="submit">
+            {{ editingId ? $t('common.actions.action.save') : $t('common.actions.action.create') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -196,21 +180,19 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive } from 'vue'
 
 import type { Persona, PersonaPayload } from '@/api/personas'
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
+import { useCrudDialog } from '@/composables/useCrudDialog'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
 import { usePersonasStore } from '@/stores/personas'
-import { normalizeStringList } from '@/utils/stringList'
+import { normalizeStringList } from '@/utils/format'
 
 const personasStore = usePersonasStore()
-
-const dialogVisible = ref(false)
-const editingPersonaUuid = ref('')
-const localError = ref('')
 
 const form = reactive({
   name: '',
@@ -219,22 +201,6 @@ const form = reactive({
   enabled: true,
 })
 
-const {
-  activeTag,
-  allTags,
-  sidebarItems: tagSidebarItems,
-  filteredItems: filteredPersonas,
-  selectTag,
-} = useTagSidebar(
-  () => personasStore.personas,
-  {
-    getTags: (persona) => persona.tags,
-    allTitle: translate('pages.personas.tags.all'),
-    allSubtitle: translate('pages.personas.tags.showAll'),
-    tagSubtitle: translate('pages.personas.tags.filterByTag'),
-  }
-)
-
 const resetForm = () => {
   form.name = ''
   form.promptText = ''
@@ -242,21 +208,11 @@ const resetForm = () => {
   form.enabled = true
 }
 
-const openCreatePersona = () => {
-  editingPersonaUuid.value = ''
-  localError.value = ''
-  resetForm()
-  dialogVisible.value = true
-}
-
-const openEditPersona = (persona: Persona) => {
-  editingPersonaUuid.value = persona.uuid
-  localError.value = ''
+const populateForm = (persona: Persona) => {
   form.name = persona.name
   form.promptText = persona.promptText
   form.tags = [...persona.tags]
   form.enabled = persona.enabled
-  dialogVisible.value = true
 }
 
 const buildPayload = (): PersonaPayload => {
@@ -275,24 +231,41 @@ const buildPayload = (): PersonaPayload => {
   }
 }
 
-const savePersona = async () => {
-  localError.value = ''
-
-  try {
-    const payload = buildPayload()
-    const result = editingPersonaUuid.value
-      ? await personasStore.updatePersona(editingPersonaUuid.value, payload)
+const {
+  visible: dialogVisible,
+  editingId,
+  localError,
+  isSaving,
+  openCreate,
+  openEdit,
+  submit,
+} = useCrudDialog<Persona, PersonaPayload>({
+  resetForm,
+  populateForm,
+  buildPayload,
+  save: async (payload, id) => {
+    const result = id
+      ? await personasStore.updatePersona(id, payload)
       : await personasStore.createPersona(payload)
+    return Boolean(result)
+  },
+})
 
-    if (result) {
-      dialogVisible.value = false
-    }
-  } catch (errorDetail: unknown) {
-    localError.value = errorDetail instanceof Error
-      ? errorDetail.message
-      : String(errorDetail)
+const {
+  activeTag,
+  allTags,
+  sidebarItems: tagSidebarItems,
+  filteredItems: filteredPersonas,
+  selectTag,
+} = useTagSidebar(
+  () => personasStore.personas,
+  {
+    getTags: (persona) => persona.tags,
+    allTitle: translate('pages.personas.tags.all'),
+    allSubtitle: translate('pages.personas.tags.showAll'),
+    tagSubtitle: translate('pages.personas.tags.filterByTag'),
   }
-}
+)
 
 const removePersona = async (uuid: string, name: string) => {
   if (!confirm(translate('pages.personas.messages.confirmDelete', { name }))) {
@@ -315,6 +288,8 @@ const previewPrompt = (promptText: string) => {
   return text.length > 180 ? `${text.slice(0, 180)}...` : text
 }
 
+const getPersonaKey = (persona: Persona) => persona.uuid
+
 onMounted(() => {
   personasStore.fetchPersonas()
 })
@@ -322,18 +297,6 @@ onMounted(() => {
 
 <style scoped lang="scss">
 @use '@/styles/mixins' as *;
-
-.personas-layout {
-  @include dual-pane-layout(300px);
-}
-
-.personas-tag-pane {
-  @extend .pane-sidebar;
-}
-
-.personas-content-pane {
-  @extend .pane-content;
-}
 
 .persona-card {
   @include surface-card;

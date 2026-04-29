@@ -22,8 +22,18 @@
       </template>
     </app-page-header>
 
-    <div class="agents-layout">
-      <div class="agents-tag-pane">
+    <dual-pane-list-view
+      :items="filteredAgents"
+      :loading="agentsStore.isLoading"
+      :show-skeleton="agentsStore.isLoading && agentsStore.agents.length === 0"
+      :empty-config="{
+        icon: 'mdi-account-search-outline',
+        title: $t('pages.agents.empty.title'),
+        subtitle: $t('pages.agents.empty.subtitle'),
+      }"
+      :get-item-key="getAgentKey"
+    >
+      <template #sidebar>
         <sidebar-list-card
           :title="$t('pages.agents.tags.title')"
           :empty-text="$t('pages.agents.tags.empty')"
@@ -32,89 +42,63 @@
           :show-add-button="false"
           @select="selectTag"
         />
-      </div>
+      </template>
 
-      <div class="agents-content-pane">
-        <v-row v-if="agentsStore.isLoading && agentsStore.agents.length === 0" class="mx-0">
-          <v-col cols="12" class="pa-0">
-            <v-skeleton-loader type="card, card, card" />
-          </v-col>
-        </v-row>
+      <template #card="{ item: agent }">
+        <v-card class="agent-card h-100 d-flex flex-column" elevation="0">
+          <v-card-item>
+            <template #prepend>
+              <v-avatar color="primary" variant="tonal" icon="mdi-account-cog-outline" />
+            </template>
+            <v-card-title class="text-break">
+              {{ agent.name }}
+            </v-card-title>
+            <v-card-subtitle>{{ agent.agentId }}</v-card-subtitle>
+          </v-card-item>
 
-        <v-row v-else-if="filteredAgents.length === 0" justify="center" class="mx-0 py-12">
-          <v-col cols="12" md="8" class="text-center pa-0">
-            <v-icon size="96" color="grey-lighten-1" icon="mdi-account-search-outline" />
-            <h3 class="text-h6 my-4">{{ $t('pages.agents.empty.title') }}</h3>
-            <p class="text-body-2 text-medium-emphasis">{{ $t('pages.agents.empty.subtitle') }}</p>
-          </v-col>
-        </v-row>
+          <v-card-text class="pt-1 flex-grow-1">
+            <div class="text-caption text-medium-emphasis mb-2">
+              {{ $t('pages.agents.fields.personaUuid') }}: {{ agent.personaUuid }}
+            </div>
 
-        <v-row v-else class="mx-n4">
-          <v-col
-            v-for="agent in filteredAgents"
-            :key="agent.uuid"
-            cols="12"
-            sm="6"
-            md="6"
-            lg="4"
-            class="pa-4"
-          >
-            <v-card class="agent-card h-100 d-flex flex-column" elevation="0">
-              <v-card-item>
-                <template #prepend>
-                  <v-avatar color="primary" variant="tonal" icon="mdi-account-cog-outline" />
-                </template>
-                <v-card-title class="text-break">
-                  {{ agent.name }}
-                </v-card-title>
-                <v-card-subtitle>{{ agent.agentId }}</v-card-subtitle>
-              </v-card-item>
+            <div class="d-flex flex-wrap ga-2">
+              <v-chip
+                v-for="tag in agent.tags"
+                :key="`${agent.uuid}-${tag}`"
+                size="small"
+                color="secondary"
+                variant="tonal"
+              >
+                {{ tag }}
+              </v-chip>
+              <v-chip
+                v-if="agent.tags.length === 0"
+                size="small"
+                color="grey"
+                variant="tonal"
+              >
+                {{ $t('pages.agents.tags.untagged') }}
+              </v-chip>
+            </div>
+          </v-card-text>
 
-              <v-card-text class="pt-1 flex-grow-1">
-                <div class="text-caption text-medium-emphasis mb-2">
-                  {{ $t('pages.agents.fields.personaUuid') }}: {{ agent.personaUuid }}
-                </div>
-
-                <div class="d-flex flex-wrap ga-2">
-                  <v-chip
-                    v-for="tag in agent.tags"
-                    :key="`${agent.uuid}-${tag}`"
-                    size="small"
-                    color="secondary"
-                    variant="tonal"
-                  >
-                    {{ tag }}
-                  </v-chip>
-                  <v-chip
-                    v-if="agent.tags.length === 0"
-                    size="small"
-                    color="grey"
-                    variant="tonal"
-                  >
-                    {{ $t('pages.agents.tags.untagged') }}
-                  </v-chip>
-                </div>
-              </v-card-text>
-
-              <v-card-actions>
-                <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(agent)">
-                  {{ $t('common.actions.action.edit') }}
-                </v-btn>
-                <v-spacer />
-                <v-btn
-                  color="error"
-                  variant="text"
-                  prepend-icon="mdi-delete-outline"
-                  @click="removeAgent(agent.uuid, agent.name)"
-                >
-                  {{ $t('common.actions.action.delete') }}
-                </v-btn>
-              </v-card-actions>
-            </v-card>
-          </v-col>
-        </v-row>
-      </div>
-    </div>
+          <v-card-actions>
+            <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(agent)">
+              {{ $t('common.actions.action.edit') }}
+            </v-btn>
+            <v-spacer />
+            <v-btn
+              color="error"
+              variant="text"
+              prepend-icon="mdi-delete-outline"
+              @click="removeAgent(agent.uuid, agent.name)"
+            >
+              {{ $t('common.actions.action.delete') }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </template>
+    </dual-pane-list-view>
 
     <v-alert v-if="agentsStore.error || resourceError" type="error" class="mt-4">
       {{ agentsStore.error || resourceError }}
@@ -291,6 +275,7 @@ import { useI18n } from 'vue-i18n'
 
 import type { Agent, AgentPayload } from '@/api/agents'
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
 import GenericPickerDialog, {
   type GenericPickerSection,
@@ -301,8 +286,7 @@ import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
 import { useAgentsStore } from '@/stores/agents'
 import { usePersonasStore } from '@/stores/personas'
-import { normalizeStringList } from '@/utils/stringList'
-import { safeJsonParse, prettyJson } from '@/utils/json'
+import { normalizeStringList, safeJsonParse, prettyJson } from '@/utils/format'
 
 const { t } = useI18n()
 const agentsStore = useAgentsStore()
@@ -416,6 +400,8 @@ const personaOptions = computed(() =>
   personasStore.personas.map((p) => ({ title: `${p.name} (${p.uuid})`, value: p.uuid }))
 )
 
+const getAgentKey = (agent: Agent) => agent.uuid
+
 const promptPickerSections = computed<GenericPickerSection[]>(() => [
   {
     id: 'prompts',
@@ -472,18 +458,6 @@ onMounted(() => {
 
 <style scoped lang="scss">
 @use '@/styles/mixins' as *;
-
-.agents-layout {
-  @include dual-pane-layout(300px);
-}
-
-.agents-tag-pane {
-  @extend .pane-sidebar;
-}
-
-.agents-content-pane {
-  @extend .pane-content;
-}
 
 .agent-card {
   @include surface-card;

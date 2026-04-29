@@ -22,8 +22,18 @@
       </template>
     </app-page-header>
 
-    <div class="prompts-layout">
-      <div class="prompts-tag-pane">
+    <dual-pane-list-view
+      :items="filteredItems"
+      :loading="store.isLoading"
+      :show-skeleton="store.isLoading && store.items.length === 0"
+      :empty-config="{
+        icon: 'mdi-text-box-search-outline',
+        title: $t('pages.prompts.empty.title'),
+        subtitle: $t('pages.prompts.empty.subtitle'),
+      }"
+      :get-item-key="getPromptKey"
+    >
+      <template #sidebar>
         <sidebar-list-card
           :title="$t('pages.prompts.tags.title')"
           :empty-text="$t('pages.prompts.tags.empty')"
@@ -32,109 +42,83 @@
           :show-add-button="false"
           @select="selectTag"
         />
-      </div>
+      </template>
 
-      <div class="prompts-content-pane">
-        <v-row v-if="store.isLoading && store.items.length === 0" class="mx-0">
-          <v-col cols="12" class="pa-0">
-            <v-skeleton-loader type="card, card, card" />
-          </v-col>
-        </v-row>
+      <template #card="{ item }">
+        <v-card class="prompt-card h-100 d-flex flex-column" elevation="0">
+          <v-card-item>
+            <template #prepend>
+              <v-avatar color="primary" variant="tonal" icon="mdi-text-box-outline" />
+            </template>
+            <v-card-title class="text-break">{{ item.name }}</v-card-title>
+            <v-card-subtitle>{{ item.promptId }}</v-card-subtitle>
+            <template #append>
+              <v-switch
+                :model-value="item.enabled"
+                color="success"
+                density="compact"
+                hide-details
+                @update:model-value="(val: boolean | null) => store.toggleEnabled(item.uuid, Boolean(val))"
+              />
+            </template>
+          </v-card-item>
 
-        <v-row v-else-if="filteredItems.length === 0" justify="center" class="mx-0 py-12">
-          <v-col cols="12" md="8" class="text-center pa-0">
-            <v-icon size="96" color="grey-lighten-1" icon="mdi-text-box-search-outline" />
-            <h3 class="text-h6 my-4">{{ $t('pages.prompts.empty.title') }}</h3>
-            <p class="text-body-2 text-medium-emphasis">{{ $t('pages.prompts.empty.subtitle') }}</p>
-          </v-col>
-        </v-row>
+          <v-card-text class="pt-1 flex-grow-1">
+            <div v-if="item.description" class="text-body-2 text-medium-emphasis mb-2">
+              {{ item.description }}
+            </div>
+            <div class="d-flex flex-wrap ga-2 mb-2">
+              <v-chip size="small" color="info" variant="tonal">
+                {{ $t(`pages.prompts.stages.${item.stage}`, item.stage) }}
+              </v-chip>
+              <v-chip size="small" variant="tonal">
+                {{ $t(`pages.prompts.kinds.${item.type}`, item.type) }}
+              </v-chip>
+              <v-chip size="small" variant="outlined">
+                v{{ item.version }}
+              </v-chip>
+              <v-chip size="small" variant="outlined">
+                P{{ item.priority }}
+              </v-chip>
+            </div>
+            <div class="d-flex flex-wrap ga-2">
+              <v-chip
+                v-for="tag in item.tags"
+                :key="`${item.uuid}-${tag}`"
+                size="small"
+                color="secondary"
+                variant="tonal"
+              >
+                {{ tag }}
+              </v-chip>
+              <v-chip
+                v-if="item.tags.length === 0"
+                size="small"
+                color="grey"
+                variant="tonal"
+              >
+                {{ $t('pages.prompts.tags.untagged') }}
+              </v-chip>
+            </div>
+          </v-card-text>
 
-        <v-row v-else class="mx-n4">
-          <v-col
-            v-for="item in filteredItems"
-            :key="item.uuid"
-            cols="12"
-            sm="6"
-            md="6"
-            lg="4"
-            class="pa-4"
-          >
-            <v-card class="prompt-card h-100 d-flex flex-column" elevation="0">
-              <v-card-item>
-                <template #prepend>
-                  <v-avatar color="primary" variant="tonal" icon="mdi-text-box-outline" />
-                </template>
-                <v-card-title class="text-break">{{ item.name }}</v-card-title>
-                <v-card-subtitle>{{ item.promptId }}</v-card-subtitle>
-                <template #append>
-                  <v-switch
-                    :model-value="item.enabled"
-                    color="success"
-                    density="compact"
-                    hide-details
-                    @update:model-value="(val: boolean | null) => store.toggleEnabled(item.uuid, Boolean(val))"
-                  />
-                </template>
-              </v-card-item>
-
-              <v-card-text class="pt-1 flex-grow-1">
-                <div v-if="item.description" class="text-body-2 text-medium-emphasis mb-2">
-                  {{ item.description }}
-                </div>
-                <div class="d-flex flex-wrap ga-2 mb-2">
-                  <v-chip size="small" color="info" variant="tonal">
-                    {{ $t(`pages.prompts.stages.${item.stage}`, item.stage) }}
-                  </v-chip>
-                  <v-chip size="small" variant="tonal">
-                    {{ $t(`pages.prompts.kinds.${item.type}`, item.type) }}
-                  </v-chip>
-                  <v-chip size="small" variant="outlined">
-                    v{{ item.version }}
-                  </v-chip>
-                  <v-chip size="small" variant="outlined">
-                    P{{ item.priority }}
-                  </v-chip>
-                </div>
-                <div class="d-flex flex-wrap ga-2">
-                  <v-chip
-                    v-for="tag in item.tags"
-                    :key="`${item.uuid}-${tag}`"
-                    size="small"
-                    color="secondary"
-                    variant="tonal"
-                  >
-                    {{ tag }}
-                  </v-chip>
-                  <v-chip
-                    v-if="item.tags.length === 0"
-                    size="small"
-                    color="grey"
-                    variant="tonal"
-                  >
-                    {{ $t('pages.prompts.tags.untagged') }}
-                  </v-chip>
-                </div>
-              </v-card-text>
-
-              <v-card-actions>
-                <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(item)">
-                  {{ $t('common.actions.action.edit') }}
-                </v-btn>
-                <v-spacer />
-                <v-btn
-                  color="error"
-                  variant="text"
-                  prepend-icon="mdi-delete-outline"
-                  @click="removeItem(item.uuid, item.name)"
-                >
-                  {{ $t('common.actions.action.delete') }}
-                </v-btn>
-              </v-card-actions>
-            </v-card>
-          </v-col>
-        </v-row>
-      </div>
-    </div>
+          <v-card-actions>
+            <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(item)">
+              {{ $t('common.actions.action.edit') }}
+            </v-btn>
+            <v-spacer />
+            <v-btn
+              color="error"
+              variant="text"
+              prepend-icon="mdi-delete-outline"
+              @click="removeItem(item.uuid, item.name)"
+            >
+              {{ $t('common.actions.action.delete') }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </template>
+    </dual-pane-list-view>
 
     <!-- Create / Edit dialog -->
     <v-dialog v-model="dialogVisible" max-width="960">
@@ -321,13 +305,13 @@
 import { computed, onMounted, reactive } from 'vue'
 import type { PromptDefinition, PromptDefinitionPayload } from '@/api/promptDefinitions'
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { useCrudDialog } from '@/composables/useCrudDialog'
 import { translate } from '@/plugins/i18n'
 import { usePromptDefinitionsStore } from '@/stores/promptDefinitions'
-import { normalizeStringList } from '@/utils/stringList'
-import { safeJsonParse, prettyJson } from '@/utils/json'
+import { normalizeStringList, safeJsonParse, prettyJson } from '@/utils/format'
 
 const store = usePromptDefinitionsStore()
 
@@ -463,6 +447,8 @@ const kindOptions = computed(() => [
   { title: translate('pages.prompts.kinds.external_injection'), value: 'external_injection' },
 ])
 
+const getPromptKey = (item: PromptDefinition) => item.uuid
+
 const removeItem = async (uuid: string, name: string) => {
   if (!confirm(translate('pages.prompts.messages.confirmDelete', { name }))) return
   await store.deleteItem(uuid)
@@ -475,18 +461,6 @@ onMounted(() => store.fetchItems())
 
 <style scoped lang="scss">
 @use '@/styles/mixins' as *;
-
-.prompts-layout {
-  @include dual-pane-layout(300px);
-}
-
-.prompts-tag-pane {
-  @extend .pane-sidebar;
-}
-
-.prompts-content-pane {
-  @extend .pane-content;
-}
 
 .prompt-card {
   @include surface-card;
