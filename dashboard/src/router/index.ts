@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { hasValidJwtToken } from '@/utils/jwt'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -86,15 +87,21 @@ const router = createRouter({
 // 路由守卫：检查认证
 router.beforeEach((to, _from, next) => {
   const authStore = useAuthStore()
+  const storedToken = localStorage.getItem('auth_token') || ''
+  const hasValidToken = hasValidJwtToken(storedToken)
+
+  if ((storedToken && !hasValidToken) || (!storedToken && authStore.token)) {
+    authStore.clearAuthState()
+  }
 
   if (to.meta.requiresAuth) {
-    if (!authStore.isAuthenticated) {
+    if (!hasValidToken) {
       next('/login')
       return
     }
 
     next()
-  } else if (to.path === '/login' && authStore.isAuthenticated) {
+  } else if (to.path === '/login' && hasValidToken) {
     next('/dashboard')
   } else {
     next()

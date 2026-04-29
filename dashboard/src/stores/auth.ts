@@ -9,6 +9,7 @@ import {
 import { apiClient } from '@/api/client'
 import { useUiStore } from './ui'
 import { getErrorMessage } from '@/utils/error'
+import { hasValidJwtToken } from '@/utils/jwt'
 import { translate } from '@/plugins/i18n'
 
 export const useAuthStore = defineStore(
@@ -22,7 +23,7 @@ export const useAuthStore = defineStore(
     const isLoading = ref(false)
     const error = ref<string>('')
 
-    const isAuthenticated = computed(() => !!token.value)
+    const isAuthenticated = computed(() => hasValidJwtToken(token.value))
     const displayName = computed(() => username.value || translate('pages.auth.defaultUsername'))
 
     const persistAuthState = () => {
@@ -39,6 +40,14 @@ export const useAuthStore = defineStore(
       username.value = payload.username
       mustChangeCredentials.value = payload.must_change_credentials
       persistAuthState()
+    }
+
+    const clearAuthState = () => {
+      authApi.logout()
+      token.value = ''
+      username.value = ''
+      mustChangeCredentials.value = false
+      error.value = ''
     }
 
     const login = async (credentials: LoginRequest) => {
@@ -108,17 +117,18 @@ export const useAuthStore = defineStore(
     }
 
     const logout = () => {
-      authApi.logout()
-      token.value = ''
-      username.value = ''
-      mustChangeCredentials.value = false
-      error.value = ''
+      clearAuthState()
       useUiStore().showSnackbar(translate('pages.auth.logoutSuccess'), 'info')
     }
 
     const initFromStorage = () => {
       const storedToken = localStorage.getItem('auth_token')
       if (!storedToken) {
+        return
+      }
+
+      if (!hasValidJwtToken(storedToken)) {
+        clearAuthState()
         return
       }
 
@@ -134,6 +144,7 @@ export const useAuthStore = defineStore(
       error,
       isAuthenticated,
       displayName,
+      clearAuthState,
       login,
       refreshProfile,
       updateCredentials,
