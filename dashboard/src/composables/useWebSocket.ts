@@ -4,19 +4,6 @@ const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '::1'])
 const DEFAULT_AUTH_FAILURE_CLOSE_CODE = 1008
 const DEFAULT_RECONNECT_DELAY_MS = 5000
 
-function normalizeToken(rawToken: string): string {
-  const trimmed = (rawToken ?? '').trim()
-  if (!trimmed) {
-    return ''
-  }
-
-  if (trimmed.toLowerCase().startsWith('bearer ')) {
-    return trimmed.slice(7).trim()
-  }
-
-  return trimmed
-}
-
 function resolveWsEndpoint(configured: string | undefined, fallback: string): string {
   const raw = (configured ?? '').trim()
   if (!raw) {
@@ -46,30 +33,12 @@ function resolveWsEndpoint(configured: string | undefined, fallback: string): st
   }
 }
 
-function appendAuthToken(url: string, token: string): string {
-  const normalizedToken = normalizeToken(token)
-  if (!normalizedToken) {
-    return url
-  }
-
-  try {
-    const parsed = new URL(url)
-    parsed.searchParams.set('token', normalizedToken)
-    return parsed.toString()
-  } catch {
-    const separator = url.includes('?') ? '&' : '?'
-    return `${url}${separator}token=${encodeURIComponent(normalizedToken)}`
-  }
-}
-
 export interface UseWebSocketOptions {
   defaultPath: string
   configuredUrl?: MaybeRefOrGetter<string | undefined>
-  token: MaybeRefOrGetter<string>
   reconnectDelayMs?: number
   heartbeatIntervalMs?: number
   authFailureCloseCode?: number
-  onAuthMissing?: () => void
   onOpen?: (socket: WebSocket) => void
   onClose?: (event: CloseEvent) => void
   onError?: (event: Event) => void
@@ -146,18 +115,10 @@ export function useWebSocket(options: UseWebSocketOptions) {
     manualClose = false
     lastEndpointOverride = endpoint
 
-    const token = normalizeToken(toValue(options.token) ?? '')
-    if (!token) {
-      connected.value = false
-      clearTimers()
-      options.onAuthMissing?.()
-      return
-    }
-
     const defaultUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${options.defaultPath}`
-    const finalEndpoint = appendAuthToken(
-      resolveWsEndpoint(endpoint ?? toValue(options.configuredUrl), defaultUrl),
-      token
+    const finalEndpoint = resolveWsEndpoint(
+      endpoint ?? toValue(options.configuredUrl),
+      defaultUrl
     )
 
     clearTimers()

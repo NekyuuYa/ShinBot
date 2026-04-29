@@ -89,7 +89,11 @@ password = "admin"                # Change before deploying
 jwt_expire_hours = 24
 
 # jwt_secret = ""                 # Leave empty to auto-generate and persist to data/admin_secret.key
-# cors_origins = ["http://localhost:5173"]  # Vite dev server; defaults to ["*"]
+# cors_origins = ["http://localhost:5173"]  # Use explicit origins when the dashboard is served cross-origin
+# cors_allow_credentials = true     # Required for cross-origin cookie auth; invalid with wildcard origins
+# auth_cookie_name = "shinbot_session"
+# auth_cookie_samesite = "strict"  # CSRF mitigation for browser-based dashboard sessions
+# auth_cookie_secure = true         # Recommended behind HTTPS; defaults to auto by request scheme
 # update_repo = "."               # Optional fixed repo path for safe WebUI update + restart
 # update_allowed_branches = ["main", "master"]
 # dashboard_dist_update_zip = "https://shinbot.nekyu.top/dist/webui-dist.zip"  # Optional prebuilt WebUI dist zip

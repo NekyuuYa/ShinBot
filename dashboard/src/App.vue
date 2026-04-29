@@ -50,19 +50,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
-
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
-import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 
-const authStore = useAuthStore()
 const confirmDialog = useConfirmDialog()
 const uiStore = useUiStore()
-
-onMounted(() => {
-  authStore.initFromStorage()
-})
 </script>
 
 <style scoped lang="scss">

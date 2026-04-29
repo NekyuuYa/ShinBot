@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { apiClient, type ApiRequestConfig } from './client'
 
 export interface LoginRequest {
   username: string
@@ -6,8 +6,6 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  token: string
-  token_type: string
   expires_in_hours: number
   username: string
   must_change_credentials: boolean
@@ -25,21 +23,19 @@ export interface UpdateProfileRequest {
 }
 
 export const authApi = {
-  login(credentials: LoginRequest) {
-    return apiClient.post<LoginResponse>('/auth/login', credentials)
+  login(credentials: LoginRequest, config?: ApiRequestConfig) {
+    return apiClient.post<LoginResponse>('/auth/login', credentials, config)
   },
 
-  getProfile() {
-    return apiClient.get<AuthProfileResponse>('/auth/profile')
+  getProfile(config?: ApiRequestConfig) {
+    return apiClient.get<AuthProfileResponse>('/auth/profile', config)
   },
 
-  updateProfile(payload: UpdateProfileRequest) {
-    return apiClient.patch<LoginResponse>('/auth/profile', payload)
+  updateProfile(payload: UpdateProfileRequest, config?: ApiRequestConfig) {
+    return apiClient.patch<LoginResponse>('/auth/profile', payload, config)
   },
 
-  logout() {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('auth_username')
-    localStorage.removeItem('auth_must_change_credentials')
+  logout(config?: ApiRequestConfig) {
+    return apiClient.post('/auth/logout', undefined, config)
   },
 }

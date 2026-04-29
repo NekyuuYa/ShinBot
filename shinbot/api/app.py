@@ -2,7 +2,7 @@
 
 Implements the communication contract defined in 16_api_communication_spec.md:
   - Unified Envelope response format for all HTTP endpoints
-  - JWT-based authentication on all /api/v1/* routes (except /auth/login)
+    - HttpOnly session-cookie auth on all /api/v1/* routes (except /auth/login)
   - WebSocket streams: /ws/logs (real-time log push), /ws/status (status broadcast)
 """
 
@@ -186,19 +186,21 @@ def create_api_app(
     # to all connected clients. Each handler here just keeps the socket alive.
 
     async def _require_ws_auth(websocket: WebSocket, token: str | None) -> bool:
-        """Validate JWT token for WebSocket connections.
+        """Validate the session for WebSocket connections.
 
         Returns True if valid, False (and closes the socket) if not.
-        Token must be provided as the ``?token=<jwt>`` query parameter because
-        browsers cannot set the ``Authorization`` header on WebSocket requests.
+        Browsers automatically attach cookies during the WebSocket handshake, so
+        the dashboard authenticates with the same session cookie used for HTTP.
+        The query-token fallback is kept for non-browser clients.
         """
         auth_config = websocket.app.state.auth_config
-        if not token:
-            logger.warning("WS connection rejected: Missing token from %s", websocket.client)
+        resolved_token = websocket.cookies.get(auth_config.session_cookie_name) or token
+        if not resolved_token:
+            logger.warning("WS connection rejected: Missing session from %s", websocket.client)
             await websocket.close(code=1008, reason="Unauthorized: token required")
             return False
         try:
-            auth_config.decode_token(token)
+            auth_config.decode_token(resolved_token)
         except _jwt.InvalidTokenError as e:
             logger.warning("WS connection rejected: Invalid token from %s: %s", websocket.client, e)
             await websocket.close(code=1008, reason="Unauthorized: invalid token")

@@ -1,6 +1,5 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { hasValidJwtToken } from '@/utils/jwt'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -84,28 +83,28 @@ const router = createRouter({
   },
 })
 
-// 路由守卫：检查认证
-router.beforeEach((to, _from, next) => {
+// Route guard: resolve server-backed auth state before entering protected pages.
+router.beforeEach(async (to) => {
   const authStore = useAuthStore()
-  const storedToken = localStorage.getItem('auth_token') || ''
-  const hasValidToken = hasValidJwtToken(storedToken)
+  const requiresAuth = Boolean(to.meta.requiresAuth)
 
-  if ((storedToken && !hasValidToken) || (!storedToken && authStore.token)) {
-    authStore.clearAuthState()
-  }
-
-  if (to.meta.requiresAuth) {
-    if (!hasValidToken) {
-      next('/login')
-      return
+  if (requiresAuth) {
+    const hasSession = await authStore.ensureSession(true)
+    if (!hasSession) {
+      return '/login'
     }
 
-    next()
-  } else if (to.path === '/login' && hasValidToken) {
-    next('/dashboard')
-  } else {
-    next()
+    return true
   }
+
+  if (to.path === '/login') {
+    const hasSession = await authStore.ensureSession()
+    if (hasSession) {
+      return '/dashboard'
+    }
+  }
+
+  return true
 })
 
 export default router

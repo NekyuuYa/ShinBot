@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useWebSocket } from '@/composables/useWebSocket'
 import { useInstancesStore } from '@/stores/instances'
-import { useAuthStore } from '@/stores/auth'
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
 
@@ -176,7 +175,6 @@ function extractInstanceStatuses(
 
 export const useMonitoringStore = defineStore('monitoring', () => {
   const instancesStore = useInstancesStore()
-  const authStore = useAuthStore()
   const logs = ref<MonitoringLogEntry[]>([])
   const enabledLogLevels = ref<LogLevel[]>([...LOG_LEVEL_ORDER])
   const status = ref<SystemStatus>({
@@ -211,7 +209,6 @@ export const useMonitoringStore = defineStore('monitoring', () => {
   const logConnection = useWebSocket({
     defaultPath: '/ws/logs',
     configuredUrl: () => import.meta.env.VITE_WS_LOGS_URL,
-    token: () => authStore.token,
     reconnectDelayMs,
     heartbeatIntervalMs,
     onMessage: (event) => {
@@ -235,11 +232,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
   const statusConnection = useWebSocket({
     defaultPath: '/ws/status',
     configuredUrl: () => import.meta.env.VITE_WS_STATUS_URL,
-    token: () => authStore.token,
     reconnectDelayMs,
-    onAuthMissing: () => {
-      status.value.online = false
-    },
     onOpen: () => {
       status.value.online = true
     },

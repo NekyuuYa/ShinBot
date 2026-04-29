@@ -20,11 +20,18 @@ export interface ApiResponse<T = unknown> {
 }
 
 type ApiErrorNotifier = (message: string) => void
+type UnauthorizedHandler = () => void
 type RequestTracker = {
   start: () => void
   stop: () => void
 }
-type ApiRequestConfig = AxiosRequestConfig & {
+const SESSION_AUTH_ERROR_CODES = new Set([
+  'AUTH_TOKEN_MISSING',
+  'AUTH_TOKEN_INVALID',
+  'AUTH_TOKEN_EXPIRED',
+])
+
+export type ApiRequestConfig = AxiosRequestConfig & {
   suppressErrorNotify?: boolean
 }
 
@@ -32,25 +39,22 @@ class ApiClient {
   private instance: AxiosInstance
   private router: Router | null = null
   private errorNotifier: ApiErrorNotifier | null = null
+  private unauthorizedHandler: UnauthorizedHandler | null = null
   private requestTracker: RequestTracker | null = null
 
   constructor(baseURL: string = import.meta.env.VITE_API_BASE_URL || '/api/v1') {
     this.instance = axios.create({
       baseURL,
       timeout: 10000,
+      withCredentials: true,
       headers: {
         'Content-Type': 'application/json',
       },
     })
 
-    // 请求拦截器：添加 JWT token
     this.instance.interceptors.request.use(
       (config: InternalAxiosRequestConfig) => {
         this.requestTracker?.start()
-        const token = localStorage.getItem('auth_token')
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`
-        }
         config.headers['Accept-Language'] = currentLocale()
         return config
       },
@@ -74,22 +78,31 @@ class ApiClient {
           return Promise.reject(error)
         }
 
-        if (error.response?.status === 401) {
-          // Token 已失效，清除 Token 并跳转登录
-          localStorage.removeItem('auth_token')
-          localStorage.removeItem('auth_username')
-          localStorage.removeItem('auth_must_change_credentials')
-          if (this.router) {
-            this.router.push('/login')
+        const responseData = error.response?.data as {
+          error?: { code?: string; message?: string }
+          message?: string
+        } | undefined
+        const responseErrorCode = responseData?.error?.code ?? ''
+        const isSessionAuthError =
+          error.response?.status === 401
+          && SESSION_AUTH_ERROR_CODES.has(responseErrorCode)
+
+        if (isSessionAuthError) {
+          this.unauthorizedHandler?.()
+          if (this.router && this.router.currentRoute.value.path !== '/login') {
+            void this.router.push('/login')
           }
         }
 
-        const responseMessage =
-          (error.response?.data as { error?: { message?: string }; message?: string } | undefined)
-            ?.error?.message ??
-          (error.response?.data as { message?: string } | undefined)?.message ??
-          error.message ??
-          translate('common.actions.message.requestFailed')
+        const fallbackMessage =
+          typeof error.message === 'string' && error.message
+            ? error.message
+            : translate('common.actions.message.requestFailed')
+        const responseMessage = isSessionAuthError
+          ? translate('pages.auth.sessionExpired')
+          : responseData?.error?.message
+            ?? responseData?.message
+            ?? fallbackMessage
 
         const requestConfig = error.config as ApiRequestConfig | undefined
         if (!requestConfig?.suppressErrorNotify) {
@@ -106,6 +119,10 @@ class ApiClient {
 
   setErrorNotifier(notifier: ApiErrorNotifier) {
     this.errorNotifier = notifier
+  }
+
+  setUnauthorizedHandler(handler: UnauthorizedHandler) {
+    this.unauthorizedHandler = handler
   }
 
   setRequestTracker(tracker: RequestTracker) {

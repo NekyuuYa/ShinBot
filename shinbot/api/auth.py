@@ -32,6 +32,21 @@ class AuthConfig:
         self.username: str = admin_cfg.get("username", self.DEFAULT_USERNAME)
         self._password: str = admin_cfg.get("password", self.DEFAULT_PASSWORD)
         self.jwt_expire_hours: int = int(admin_cfg.get("jwt_expire_hours", 24))
+        self.session_cookie_name: str = (
+            str(admin_cfg.get("auth_cookie_name", "shinbot_session")).strip()
+            or "shinbot_session"
+        )
+        self.session_cookie_path: str = (
+            str(admin_cfg.get("auth_cookie_path", "/")).strip() or "/"
+        )
+        session_cookie_domain = str(admin_cfg.get("auth_cookie_domain", "")).strip()
+        self.session_cookie_domain: str | None = session_cookie_domain or None
+        self.session_cookie_samesite: str = self._normalize_samesite(
+            admin_cfg.get("auth_cookie_samesite", "strict")
+        )
+        self._session_cookie_secure = self._coerce_optional_bool(
+            admin_cfg.get("auth_cookie_secure")
+        )
 
         secret_from_cfg: str = admin_cfg.get("jwt_secret", "")
         self.jwt_secret: str = (
@@ -69,7 +84,37 @@ class AuthConfig:
         """Decode and validate a JWT.  Raises jwt.InvalidTokenError on failure."""
         return jwt.decode(token, self.jwt_secret, algorithms=[self.ALGORITHM])
 
+    @property
+    def session_cookie_max_age(self) -> int:
+        return max(self.jwt_expire_hours, 1) * 3600
+
+    def is_secure_cookie(self, scheme: str | None = None) -> bool:
+        if self._session_cookie_secure is not None:
+            return self._session_cookie_secure
+        return (scheme or "").lower() in {"https", "wss"}
+
     # ── Internal helpers ─────────────────────────────────────────────
+
+    @staticmethod
+    def _coerce_optional_bool(value: Any) -> bool | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+        return bool(value)
+
+    @staticmethod
+    def _normalize_samesite(value: Any) -> str:
+        normalized = str(value or "strict").strip().lower()
+        if normalized in {"lax", "strict", "none"}:
+            return normalized
+        return "strict"
 
     def _load_or_create_secret(self, data_dir: Path) -> str:
         secret_file = data_dir / "admin_secret.key"

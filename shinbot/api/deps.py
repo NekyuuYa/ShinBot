@@ -47,20 +47,38 @@ AuthConfigDep = Annotated[object, Depends(_auth_config)]
 CredentialsDep = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
 
 
+def _resolve_auth_token(
+    request: Request,
+    auth_config: AuthConfigDep,
+    credentials: CredentialsDep,
+) -> str | None:
+    cookie_token = request.cookies.get(auth_config.session_cookie_name)
+    if cookie_token:
+        return cookie_token
+
+    if credentials is None:
+        return None
+
+    token = credentials.credentials.strip()
+    return token or None
+
+
 def require_auth(
+    request: Request,
     auth_config: AuthConfigDep,
     credentials: CredentialsDep,
 ) -> None:
-    if credentials is None:
+    token = _resolve_auth_token(request, auth_config, credentials)
+    if token is None:
         raise HTTPException(
             status_code=401,
             detail={
                 "code": EC.AUTH_TOKEN_MISSING,
-                "message": "Authorization: Bearer <token> header required",
+                "message": "Authentication cookie or Authorization: Bearer <token> header required",
             },
         )
     try:
-        auth_config.decode_token(credentials.credentials)
+        auth_config.decode_token(token)
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=401,

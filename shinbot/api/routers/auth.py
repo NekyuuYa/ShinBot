@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from shinbot.api.auth import AuthConfig
@@ -27,14 +27,37 @@ class UpdateProfileRequest(BaseModel):
 
 
 def _login_payload(auth_config: AuthConfig, subject: str | None = None) -> dict:
-    token = auth_config.create_token(subject=subject)
     return {
-        "token": token,
-        "token_type": "Bearer",
         "expires_in_hours": auth_config.jwt_expire_hours,
-        "username": auth_config.username,
+        "username": subject or auth_config.username,
         "must_change_credentials": auth_config.is_using_default_credentials(),
     }
+
+
+def _set_session_cookie(
+    response: Response,
+    auth_config: AuthConfig,
+    token: str,
+    request: Request,
+) -> None:
+    response.set_cookie(
+        key=auth_config.session_cookie_name,
+        value=token,
+        max_age=auth_config.session_cookie_max_age,
+        httponly=True,
+        secure=auth_config.is_secure_cookie(request.url.scheme),
+        samesite=auth_config.session_cookie_samesite,
+        path=auth_config.session_cookie_path,
+        domain=auth_config.session_cookie_domain,
+    )
+
+
+def _clear_session_cookie(response: Response, auth_config: AuthConfig) -> None:
+    response.delete_cookie(
+        key=auth_config.session_cookie_name,
+        path=auth_config.session_cookie_path,
+        domain=auth_config.session_cookie_domain,
+    )
 
 
 @router.get("/login", include_in_schema=False)
@@ -50,8 +73,13 @@ async def login_method_not_allowed():
 
 
 @router.post("/login")
-async def login(body: LoginRequest, auth_config: AuthConfigDep):
-    """Exchange credentials for a JWT bearer token."""
+async def login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    auth_config: AuthConfigDep,
+):
+    """Exchange credentials for an authenticated session cookie."""
     if not auth_config.verify_password(body.username, body.password):
         raise HTTPException(
             status_code=401,
@@ -61,7 +89,15 @@ async def login(body: LoginRequest, auth_config: AuthConfigDep):
             },
         )
 
+    token = auth_config.create_token(subject=body.username)
+    _set_session_cookie(response, auth_config, token, request)
     return ok(_login_payload(auth_config, subject=body.username))
+
+
+@router.post("/logout")
+async def logout(response: Response, auth_config: AuthConfigDep):
+    _clear_session_cookie(response, auth_config)
+    return ok({"logged_out": True})
 
 
 @router.get("/profile", dependencies=AuthRequired)
@@ -77,6 +113,8 @@ async def get_profile(auth_config: AuthConfigDep):
 @router.patch("/profile", dependencies=AuthRequired)
 async def update_profile(
     body: UpdateProfileRequest,
+    request: Request,
+    response: Response,
     auth_config: AuthConfigDep,
     boot=BootDep,
 ):
@@ -153,4 +191,6 @@ async def update_profile(
         )
 
     auth_config.set_credentials(username=username, password=new_password)
+    token = auth_config.create_token(subject=username)
+    _set_session_cookie(response, auth_config, token, request)
     return ok(_login_payload(auth_config, subject=username))
