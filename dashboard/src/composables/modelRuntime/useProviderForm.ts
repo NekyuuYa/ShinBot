@@ -2,6 +2,7 @@ import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { ModelRuntimeProvider, ProviderPayload } from '@/api/modelRuntime'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import type { useModelRuntimeStore } from '@/stores/modelRuntime'
 import { entriesToObject, objectToEntries, prettyJson, safeJsonParse } from '@/utils/format'
 import {
@@ -31,6 +32,7 @@ export function useProviderForm({
   ensureSelection,
 }: ProviderFormOptions) {
   const { t } = useI18n()
+  const { confirm } = useConfirmDialog()
 
   const providerForm = ref<ProviderFormState>({
     id: '',
@@ -176,7 +178,16 @@ export function useProviderForm({
     if (!selectedProvider.value) {
       return
     }
-    if (!confirm(t('pages.modelRuntime.messages.confirmDeleteProvider', { id: selectedProvider.value.id }))) {
+    if (
+      !(await confirm({
+        title: t('common.actions.action.delete'),
+        message: t('pages.modelRuntime.messages.confirmDeleteProvider', { id: selectedProvider.value.id }),
+        confirmText: t('common.actions.action.delete'),
+        confirmColor: 'error',
+        icon: 'mdi-alert-outline',
+        iconColor: 'error',
+      }))
+    ) {
       return
     }
     const deleted = await store.deleteProvider(selectedProvider.value.id)

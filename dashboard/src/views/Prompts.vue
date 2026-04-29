@@ -307,6 +307,7 @@ import type { PromptDefinition, PromptDefinitionPayload } from '@/api/promptDefi
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { useCrudDialog } from '@/composables/useCrudDialog'
 import { translate } from '@/plugins/i18n'
@@ -314,6 +315,7 @@ import { usePromptDefinitionsStore } from '@/stores/promptDefinitions'
 import { normalizeStringList, safeJsonParse, prettyJson } from '@/utils/format'
 
 const store = usePromptDefinitionsStore()
+const { confirm } = useConfirmDialog()
 
 const form = reactive({
   promptId: '',
@@ -450,7 +452,16 @@ const kindOptions = computed(() => [
 const getPromptKey = (item: PromptDefinition) => item.uuid
 
 const removeItem = async (uuid: string, name: string) => {
-  if (!confirm(translate('pages.prompts.messages.confirmDelete', { name }))) return
+  if (
+    !(await confirm({
+      title: translate('common.actions.action.delete'),
+      message: translate('pages.prompts.messages.confirmDelete', { name }),
+      confirmText: translate('common.actions.action.delete'),
+      confirmColor: 'error',
+      icon: 'mdi-alert-outline',
+      iconColor: 'error',
+    }))
+  ) return
   await store.deleteItem(uuid)
 }
 

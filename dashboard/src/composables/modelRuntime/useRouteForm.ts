@@ -2,6 +2,7 @@ import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import type { ModelRuntimeRoute } from '@/api/modelRuntime'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import type { useModelRuntimeStore } from '@/stores/modelRuntime'
 import { tabToCapabilityType, type ModelRuntimeTab } from '@/utils/modelRuntimeSources'
 import type { RouteFormState, RouteMemberDraft, RuntimeDomainOption } from './types'
@@ -26,6 +27,7 @@ export function useRouteForm({
   ensureSelection,
 }: RouteFormOptions) {
   const { t } = useI18n()
+  const { confirm } = useConfirmDialog()
 
   const routeForm = ref<RouteFormState>({
     id: '',
@@ -144,7 +146,16 @@ export function useRouteForm({
     if (!selectedRoute.value) {
       return
     }
-    if (!confirm(t('pages.modelRuntime.messages.confirmDeleteRoute', { id: selectedRoute.value.id }))) {
+    if (
+      !(await confirm({
+        title: t('common.actions.action.delete'),
+        message: t('pages.modelRuntime.messages.confirmDeleteRoute', { id: selectedRoute.value.id }),
+        confirmText: t('common.actions.action.delete'),
+        confirmColor: 'error',
+        icon: 'mdi-alert-outline',
+        iconColor: 'error',
+      }))
+    ) {
       return
     }
     const deleted = await store.deleteRoute(selectedRoute.value.id)

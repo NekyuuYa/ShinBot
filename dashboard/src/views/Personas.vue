@@ -186,6 +186,7 @@ import type { Persona, PersonaPayload } from '@/api/personas'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useCrudDialog } from '@/composables/useCrudDialog'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
@@ -193,6 +194,7 @@ import { usePersonasStore } from '@/stores/personas'
 import { normalizeStringList } from '@/utils/format'
 
 const personasStore = usePersonasStore()
+const { confirm } = useConfirmDialog()
 
 const form = reactive({
   name: '',
@@ -268,7 +270,16 @@ const {
 )
 
 const removePersona = async (uuid: string, name: string) => {
-  if (!confirm(translate('pages.personas.messages.confirmDelete', { name }))) {
+  if (
+    !(await confirm({
+      title: translate('common.actions.action.delete'),
+      message: translate('pages.personas.messages.confirmDelete', { name }),
+      confirmText: translate('common.actions.action.delete'),
+      confirmColor: 'error',
+      icon: 'mdi-alert-outline',
+      iconColor: 'error',
+    }))
+  ) {
     return
   }
 

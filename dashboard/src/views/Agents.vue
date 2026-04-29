@@ -280,6 +280,7 @@ import SidebarListCard from '@/components/SidebarListCard.vue'
 import GenericPickerDialog, {
   type GenericPickerSection,
 } from '@/components/model-runtime/GenericPickerDialog.vue'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useAgentResources } from '@/composables/useAgentResources'
 import { useCrudDialog } from '@/composables/useCrudDialog'
 import { useTagSidebar } from '@/composables/useTagSidebar'
@@ -290,6 +291,7 @@ import { normalizeStringList, safeJsonParse, prettyJson } from '@/utils/format'
 
 const { t } = useI18n()
 const agentsStore = useAgentsStore()
+const { confirm } = useConfirmDialog()
 const personasStore = usePersonasStore()
 
 // Resources and Logic Extraction
@@ -442,7 +444,16 @@ const handleContextStrategyChange = (value: string | null) => {
 }
 
 const removeAgent = async (uuid: string, name: string) => {
-  if (confirm(translate('pages.agents.messages.confirmDelete', { name }))) {
+  if (
+    await confirm({
+      title: translate('common.actions.action.delete'),
+      message: translate('pages.agents.messages.confirmDelete', { name }),
+      confirmText: translate('common.actions.action.delete'),
+      confirmColor: 'error',
+      icon: 'mdi-alert-outline',
+      iconColor: 'error',
+    })
+  ) {
     await agentsStore.deleteAgent(uuid)
   }
 }
