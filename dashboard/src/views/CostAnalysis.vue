@@ -284,8 +284,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
+
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import MetricCard from '@/components/analysis/MetricCard.vue'
+import { useFormatters } from '@/composables/useFormatters'
 import {
   COST_ANALYSIS_WINDOWS,
   type CostAnalysisWindow,
@@ -304,6 +306,22 @@ const { locale, t } = useI18n()
 
 const focusGranularity = ref<FocusGranularity>('daily')
 const focusMetric = ref<FocusMetric>('tokens')
+const displayCurrency = computed(
+  () => systemSettingsStore.pricingCurrency || analysis.value?.currency || 'CNY'
+)
+
+const {
+  formatNumber,
+  formatCompactNumber,
+  formatCurrency,
+  formatPercent,
+  formatDate,
+  formatDateRangeStart,
+  formatDateTime,
+  formatHour,
+  formatShortDate,
+  formatDuration,
+} = useFormatters(locale, displayCurrency)
 
 const activeWindow = computed<CostAnalysisWindow>({
   get: () => selectedDays.value,
@@ -394,14 +412,6 @@ const summaryCards = computed(() => [
 ])
 
 const refreshPage = () => void costAnalysisStore.fetchAnalysis(selectedDays.value)
-const formatNumber = (v: number) => new Intl.NumberFormat(locale.value, { maximumFractionDigits: 0 }).format(v)
-const formatCompactNumber = (v: number) => new Intl.NumberFormat(locale.value, { maximumFractionDigits: v >= 1000 ? 1 : 0, notation: v >= 1000 ? 'compact' : 'standard' }).format(v)
-const formatCurrency = (v: number) => new Intl.NumberFormat(locale.value, { style: 'currency', currency: systemSettingsStore.pricingCurrency || analysis.value?.currency || 'CNY', minimumFractionDigits: v >= 100 ? 0 : 2, maximumFractionDigits: v >= 100 ? 0 : 2 }).format(v)
-const formatPercent = (v: number) => new Intl.NumberFormat(locale.value, { style: 'percent', minimumFractionDigits: 0, maximumFractionDigits: 1 }).format(v)
-const formatDate = (v: string | null) => v ? new Intl.DateTimeFormat(locale.value, { month: 'short', day: 'numeric' }).format(new Date(v)) : '—'
-const formatDateRangeStart = (v: string | null) => v ? new Intl.DateTimeFormat(locale.value, { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(v)) : '—'
-const formatDateTime = (v: string | null) => v ? new Intl.DateTimeFormat(locale.value, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(v)) : '—'
-const formatDuration = (v: number | null) => v === null || Number.isNaN(v) ? '—' : (v >= 1000 ? `${(v / 1000).toFixed(2)}s` : `${Math.round(v)}ms`)
 const bucketRate = (h: number, t: number) => (t > 0 ? h / t : 0)
 const bucketHeight = (v: number, m: number) => v <= 0 || m <= 0 ? 0 : Math.max((v / m) * 100, 12)
 const metricValue = (b: CostAnalysisBucket) => {
@@ -422,17 +432,15 @@ const formatHeatmapValue = (b: CostAnalysisBucket) => {
 }
 
 const timelineLabel = (index: number, length: number, value: string, granularity: FocusGranularity) => {
-  const date = new Date(value)
   if (granularity === 'hourly') {
-    return (index % 4 !== 0 && index !== length - 1) ? '' : new Intl.DateTimeFormat(locale.value, { hour: '2-digit' }).format(date)
+    return index % 4 !== 0 && index !== length - 1 ? '' : formatHour(value)
   }
   const divider = length > 45 ? 9 : length > 21 ? 5 : 1
-  return (index % divider !== 0 && index !== length - 1) ? '' : new Intl.DateTimeFormat(locale.value, { month: 'short', day: 'numeric' }).format(date)
+  return index % divider !== 0 && index !== length - 1 ? '' : formatShortDate(value)
 }
 
 const formatBucketHeader = (value: string, granularity: FocusGranularity) => {
-  const date = new Date(value)
-  return new Intl.DateTimeFormat(locale.value, granularity === 'hourly' ? { hour: '2-digit' } : { month: 'short', day: 'numeric' }).format(date)
+  return granularity === 'hourly' ? formatHour(value) : formatShortDate(value)
 }
 
 onMounted(() => { if (!hasData.value) void costAnalysisStore.fetchAnalysis(selectedDays.value) })
