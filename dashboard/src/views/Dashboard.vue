@@ -236,7 +236,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useInstancesStore } from '@/stores/instances'
 import { usePluginsStore } from '@/stores/plugins'
 import { useMonitoringStore } from '@/stores/monitoring'
-import { modelRuntimeApi, type ModelTokenSummary } from '@/api/modelRuntime'
+import type { ModelTokenSummary } from '@/api/modelRuntime'
+import { fetchDashboardTokenSummary } from '@/composables/useDashboardTokenSummary'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -277,8 +278,7 @@ const formatCompactNumber = (value: number) =>
   }).format(value)
 
 const fetchTokenSummary = async () => {
-  const response = await modelRuntimeApi.getTokenSummary(7)
-  tokenSummary.value = response.data.data ?? null
+  tokenSummary.value = await fetchDashboardTokenSummary()
 }
 
 onMounted(async () => {

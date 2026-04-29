@@ -15,7 +15,7 @@
           <v-card-subtitle class="px-0 pb-4">
             {{ $t('pages.settings.credentials.subtitle') }}
           </v-card-subtitle>
-          <credentials-update-form @updated="loadUpdateStatus" />
+          <credentials-update-form @updated="() => loadUpdateStatus({ force: true })" />
         </v-card>
       </v-col>
 
@@ -27,7 +27,7 @@
           :last-result="lastResult"
           :is-loading="isLoadingUpdateStatus"
           :is-submitting="isSubmittingUpdate"
-          @refresh="loadUpdateStatus"
+          @refresh="() => loadUpdateStatus({ force: true })"
           @submit="submitUpdate"
         />
       </v-col>
@@ -88,7 +88,7 @@
           :last-result="lastDistResult"
           :is-loading="isLoadingDistStatus"
           :is-submitting="isSubmittingDist"
-          @refresh="loadDistStatus"
+          @refresh="() => loadDistStatus({ force: true })"
           @submit="submitDistUpdate"
         />
       </v-col>

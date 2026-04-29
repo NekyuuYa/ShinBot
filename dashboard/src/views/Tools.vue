@@ -194,11 +194,11 @@ const filteredTools = computed(() => {
 })
 
 onMounted(() => {
-  toolsStore.fetchTools()
+  void toolsStore.fetchTools()
 })
 
 const handleRefresh = () => {
-  toolsStore.fetchTools()
+  void toolsStore.fetchTools({ force: true })
 }
 
 const handleLayoutChange = (mode: ToolLayoutMode) => {

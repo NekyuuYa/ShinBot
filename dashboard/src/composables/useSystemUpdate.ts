@@ -11,6 +11,19 @@ import {
 import { translate } from '@/plugins/i18n'
 import { useUiStore } from '@/stores/ui'
 import { getErrorMessage } from '@/utils/error'
+import { createCachedRequest, type CachedRequestOptions } from '@/utils/requestCache'
+
+const SYSTEM_UPDATE_STATUS_STALE_TIME_MS = 30_000
+
+const loadCachedUpdateStatus = createCachedRequest(
+  () => apiClient.unwrap(systemApi.getUpdateStatus()),
+  SYSTEM_UPDATE_STATUS_STALE_TIME_MS
+)
+
+const loadCachedDistStatus = createCachedRequest(
+  () => apiClient.unwrap(systemApi.getDashboardDistStatus()),
+  SYSTEM_UPDATE_STATUS_STALE_TIME_MS
+)
 
 const createDefaultUpdateStatus = (): SystemUpdateStatus => ({
   repoDetected: false,
@@ -96,12 +109,12 @@ export function useSystemUpdate() {
   const updateStatus = ref<SystemUpdateStatus>(createDefaultUpdateStatus())
   const distStatus = ref<DashboardDistUpdateStatus>(createDefaultDistStatus())
 
-  const loadUpdateStatus = async () => {
+  const loadUpdateStatus = async (options: CachedRequestOptions = {}) => {
     isLoadingUpdateStatus.value = true
     updateError.value = ''
 
     try {
-      updateStatus.value = await apiClient.unwrap(systemApi.getUpdateStatus())
+      updateStatus.value = await loadCachedUpdateStatus(options)
     } catch (errorDetail: unknown) {
       updateError.value = getErrorMessage(
         errorDetail,
@@ -133,7 +146,7 @@ export function useSystemUpdate() {
         uiStore.showSnackbar(translate('pages.settings.update.updatedToast'), 'success', 5000)
       } else {
         uiStore.showSnackbar(translate('pages.settings.update.upToDateToast'), 'info', 5000)
-        await loadUpdateStatus()
+        await loadUpdateStatus({ force: true })
       }
     } catch (errorDetail: unknown) {
       updateError.value = getErrorMessage(
@@ -146,12 +159,12 @@ export function useSystemUpdate() {
     }
   }
 
-  const loadDistStatus = async () => {
+  const loadDistStatus = async (options: CachedRequestOptions = {}) => {
     isLoadingDistStatus.value = true
     distError.value = ''
 
     try {
-      distStatus.value = await apiClient.unwrap(systemApi.getDashboardDistStatus())
+      distStatus.value = await loadCachedDistStatus(options)
     } catch (errorDetail: unknown) {
       distError.value = getErrorMessage(
         errorDetail,
@@ -177,7 +190,7 @@ export function useSystemUpdate() {
         data.copied ? 'success' : 'info',
         5000
       )
-      await loadDistStatus()
+      await loadDistStatus({ force: true })
     } catch (errorDetail: unknown) {
       distError.value = getErrorMessage(
         errorDetail,

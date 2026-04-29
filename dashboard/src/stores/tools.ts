@@ -5,6 +5,8 @@ import { createCrudStore } from './crud'
 
 export type ToolLayoutMode = 'list' | 'card'
 
+const TOOLS_LIST_STALE_TIME_MS = 30_000
+
 export const useToolsStore = defineStore(
   'tools',
   () => {
@@ -18,6 +20,7 @@ export const useToolsStore = defineStore(
       },
       idOf: (tool) => tool.id,
       items: tools,
+      listStaleTimeMs: TOOLS_LIST_STALE_TIME_MS,
     })
     const layoutMode = ref<ToolLayoutMode>('list')
 

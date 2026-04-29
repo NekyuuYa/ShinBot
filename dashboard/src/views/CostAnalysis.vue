@@ -301,7 +301,7 @@ type FocusMetric = 'tokens' | 'cost' | 'calls' | 'cache'
 
 const costAnalysisStore = useCostAnalysisStore()
 const systemSettingsStore = useSystemSettingsStore()
-const { analysis, error, hasData, isLoading, selectedDays } = storeToRefs(costAnalysisStore)
+const { analysis, error, isLoading, selectedDays } = storeToRefs(costAnalysisStore)
 const { locale, t } = useI18n()
 
 const focusGranularity = ref<FocusGranularity>('daily')
@@ -411,7 +411,7 @@ const summaryCards = computed(() => [
   },
 ])
 
-const refreshPage = () => void costAnalysisStore.fetchAnalysis(selectedDays.value)
+const refreshPage = () => void costAnalysisStore.fetchAnalysis(selectedDays.value, { force: true })
 const bucketRate = (h: number, t: number) => (t > 0 ? h / t : 0)
 const bucketHeight = (v: number, m: number) => v <= 0 || m <= 0 ? 0 : Math.max((v / m) * 100, 12)
 const metricValue = (b: CostAnalysisBucket) => {
@@ -443,7 +443,9 @@ const formatBucketHeader = (value: string, granularity: FocusGranularity) => {
   return granularity === 'hourly' ? formatHour(value) : formatShortDate(value)
 }
 
-onMounted(() => { if (!hasData.value) void costAnalysisStore.fetchAnalysis(selectedDays.value) })
+onMounted(() => {
+  void costAnalysisStore.fetchAnalysis(selectedDays.value)
+})
 </script>
 
 <style scoped lang="scss">

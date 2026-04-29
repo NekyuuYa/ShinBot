@@ -18,6 +18,7 @@ export const usePromptDefinitionsStore = defineStore('promptDefinitions', () => 
     api: promptDefinitionsApi,
     i18nKey: 'pages.prompts.messages',
     idOf: (item) => item.uuid,
+    listStaleTimeMs: 30_000,
   })
   const items = crud.items
 

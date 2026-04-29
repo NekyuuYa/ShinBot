@@ -75,6 +75,11 @@ interface CreateCrudStoreOptions<T, CreatePayload, UpdatePayload, Id extends Ite
   items?: Ref<T[]>
   state?: CrudStateRefs
   hooks?: CrudSuccessHooks<T, CreatePayload, UpdatePayload, Id>
+  listStaleTimeMs?: number
+}
+
+export interface FetchItemsOptions {
+  force?: boolean
 }
 
 export const createRequestStore = (options: CreateRequestStoreOptions = {}) => {
@@ -154,6 +159,9 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
   const items = (options.items ?? ref<T[]>([])) as Ref<T[]>
   const requestStore = createRequestStore({ state: options.state })
   const { isLoading, isSaving, error, runRequest } = requestStore
+  const listStaleTimeMs = Math.max(options.listStaleTimeMs ?? 0, 0)
+  let listRequest: Promise<boolean> | null = null
+  let lastFetchedAt = 0
 
   const resolveCrudKey = (name: CrudMessageName) => {
     if (typeof options.i18nKey === 'string') {
@@ -164,33 +172,56 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
 
   const appendItem = (item: T) => {
     items.value = [...items.value, item]
+    lastFetchedAt = Date.now()
   }
 
   const replaceItem = (item: T) => {
     const index = items.value.findIndex((existing) => options.idOf(existing) === options.idOf(item))
     if (index !== -1) {
       items.value[index] = item
+      lastFetchedAt = Date.now()
     }
   }
 
   const removeItem = (id: Id) => {
     items.value = items.value.filter((item) => options.idOf(item) !== id)
+    lastFetchedAt = Date.now()
   }
 
   const setItems = (value: T[]) => {
     items.value = value
+    lastFetchedAt = Date.now()
   }
 
-  const fetchItems = async () => {
-    const result = await runRequest(() => options.api.list(), {
+  const fetchItems = async (fetchOptions: FetchItemsOptions = {}) => {
+    if (listRequest) {
+      return listRequest
+    }
+
+    const shouldUseCachedItems =
+      !fetchOptions.force
+      && listStaleTimeMs > 0
+      && lastFetchedAt > 0
+      && Date.now() - lastFetchedAt < listStaleTimeMs
+
+    if (shouldUseCachedItems) {
+      return true
+    }
+
+    const request = runRequest(() => options.api.list(), {
       mode: 'loading',
       errorKey: resolveCrudKey('loadFailed'),
       onSuccess: (data) => {
         setItems(data ?? [])
       },
     })
+      .then((result) => result.ok)
+      .finally(() => {
+        listRequest = null
+      })
 
-    return result.ok
+    listRequest = request
+    return request
   }
 
   const createItem = async (payload: CreatePayload) => {

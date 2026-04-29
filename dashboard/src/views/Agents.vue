@@ -466,12 +466,16 @@ const removeAgent = async (uuid: string, name: string) => {
   }
 }
 
-const refreshAgents = () => Promise.all([agentsStore.fetchAgents(), fetchAllResources()])
+const refreshAgents = () => Promise.all([
+  agentsStore.fetchAgents({ force: true }),
+  personasStore.fetchPersonas({ force: true }),
+  fetchAllResources({ force: true }),
+])
 
 onMounted(() => {
-  agentsStore.fetchAgents()
-  personasStore.fetchPersonas()
-  fetchAllResources()
+  void agentsStore.fetchAgents()
+  void personasStore.fetchPersonas()
+  void fetchAllResources()
 })
 </script>
 

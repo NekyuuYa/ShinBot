@@ -10,6 +10,24 @@ import { translate } from '@/plugins/i18n'
 import { usePluginsStore } from '@/stores/plugins'
 import { useUiStore } from '@/stores/ui'
 import { getErrorMessage } from '@/utils/error'
+import { createCachedRequest, type CachedRequestOptions } from '@/utils/requestCache'
+
+const INSTANCE_RESOURCES_STALE_TIME_MS = 30_000
+
+const loadAgents = createCachedRequest(
+  () => apiClient.unwrap(agentsApi.list()),
+  INSTANCE_RESOURCES_STALE_TIME_MS
+)
+
+const loadBotConfigs = createCachedRequest(
+  () => apiClient.unwrap(botConfigsApi.list()),
+  INSTANCE_RESOURCES_STALE_TIME_MS
+)
+
+const loadPrompts = createCachedRequest(
+  () => apiClient.unwrap(promptsApi.list()),
+  INSTANCE_RESOURCES_STALE_TIME_MS
+)
 
 export function useInstanceResources(form: Ref<InstanceFormState>) {
   const pluginsStore = usePluginsStore()
@@ -23,35 +41,35 @@ export function useInstanceResources(form: Ref<InstanceFormState>) {
     uiStore.showSnackbar(getErrorMessage(errorDetail, translate(key)), 'error')
   }
 
-  const fetchAgents = async () => {
+  const fetchAgents = async (options: CachedRequestOptions = {}) => {
     try {
-      agents.value = await apiClient.unwrap(agentsApi.list())
+      agents.value = await loadAgents(options)
     } catch (errorDetail: unknown) {
       notifyLoadFailure(errorDetail, 'pages.instances.agentsLoadFailed')
     }
   }
 
-  const fetchBotConfigs = async () => {
+  const fetchBotConfigs = async (options: CachedRequestOptions = {}) => {
     try {
-      botConfigs.value = await apiClient.unwrap(botConfigsApi.list())
+      botConfigs.value = await loadBotConfigs(options)
     } catch (errorDetail: unknown) {
       notifyLoadFailure(errorDetail, 'pages.instances.botConfigLoadFailed')
     }
   }
 
-  const fetchPrompts = async () => {
+  const fetchPrompts = async (options: CachedRequestOptions = {}) => {
     try {
-      promptCatalog.value = await apiClient.unwrap(promptsApi.list())
+      promptCatalog.value = await loadPrompts(options)
     } catch (errorDetail: unknown) {
       notifyLoadFailure(errorDetail, 'pages.instances.promptsLoadFailed')
     }
   }
 
-  const fetchAllResources = () => Promise.all([
-    pluginsStore.fetchPlugins(),
-    fetchAgents(),
-    fetchBotConfigs(),
-    fetchPrompts(),
+  const fetchAllResources = (options: CachedRequestOptions = {}) => Promise.all([
+    pluginsStore.fetchPlugins(options),
+    fetchAgents(options),
+    fetchBotConfigs(options),
+    fetchPrompts(options),
   ])
 
   const botConfigByInstanceId = computed(

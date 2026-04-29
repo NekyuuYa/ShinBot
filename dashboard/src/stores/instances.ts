@@ -22,6 +22,8 @@ import {
 import { createCrudStore } from './crud'
 import { useUiStore } from './ui'
 
+const INSTANCES_LIST_STALE_TIME_MS = 30_000
+
 export const useInstancesStore = defineStore('instances', () => {
   const uiStore = useUiStore()
   const crud = createCrudStore<Instance, CreateInstanceRequest, UpdateInstanceRequest, string>({
@@ -36,6 +38,7 @@ export const useInstancesStore = defineStore('instances', () => {
       deleted: 'pages.instances.deleted',
     },
     idOf: (instance) => instance.id,
+    listStaleTimeMs: INSTANCES_LIST_STALE_TIME_MS,
   })
   const instances = crud.items
   const pendingActions = ref<Record<string, 'start' | 'stop' | null>>({})

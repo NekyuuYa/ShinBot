@@ -109,7 +109,10 @@ const {
   getBotConfigForInstance,
 } = useInstanceResources(form)
 
-const handleRefresh = () => Promise.all([instancesStore.fetchInstances(), fetchAllResources()])
+const handleRefresh = () => Promise.all([
+  instancesStore.fetchInstances({ force: true }),
+  fetchAllResources({ force: true }),
+])
 
 const {
   visible: dialogVisible,

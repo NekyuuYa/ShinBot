@@ -2,6 +2,24 @@ import { ref } from 'vue'
 import { contextStrategiesApi, type ContextStrategy } from '@/api/contextStrategies'
 import { promptsApi, type PromptCatalogItem } from '@/api/prompts'
 import { toolsApi, type ToolDefinition } from '@/api/tools'
+import { createCachedRequest, type CachedRequestOptions } from '@/utils/requestCache'
+
+const AGENT_RESOURCES_STALE_TIME_MS = 30_000
+
+const loadContextStrategies = createCachedRequest(async () => {
+  const response = await contextStrategiesApi.list()
+  return response.data.success ? response.data.data || [] : []
+}, AGENT_RESOURCES_STALE_TIME_MS)
+
+const loadPromptCatalog = createCachedRequest(async () => {
+  const response = await promptsApi.list()
+  return response.data.success ? response.data.data || [] : []
+}, AGENT_RESOURCES_STALE_TIME_MS)
+
+const loadToolCatalog = createCachedRequest(async () => {
+  const response = await toolsApi.list()
+  return response.data.success ? response.data.data || [] : []
+}, AGENT_RESOURCES_STALE_TIME_MS)
 
 export function useAgentResources() {
   const contextStrategies = ref<ContextStrategy[]>([])
@@ -11,19 +29,18 @@ export function useAgentResources() {
   const isLoadingResources = ref(false)
   const resourceError = ref('')
 
-  const fetchAllResources = async () => {
+  const fetchAllResources = async (options: CachedRequestOptions = {}) => {
     isLoadingResources.value = true
     resourceError.value = ''
     try {
-      const [strategiesRes, promptsRes, toolsRes] = await Promise.all([
-        contextStrategiesApi.list(),
-        promptsApi.list(),
-        toolsApi.list(),
+      const [strategies, prompts, tools] = await Promise.all([
+        loadContextStrategies(options),
+        loadPromptCatalog(options),
+        loadToolCatalog(options),
       ])
-
-      if (strategiesRes.data.success) contextStrategies.value = strategiesRes.data.data || []
-      if (promptsRes.data.success) promptCatalog.value = promptsRes.data.data || []
-      if (toolsRes.data.success) toolCatalog.value = toolsRes.data.data || []
+      contextStrategies.value = strategies
+      promptCatalog.value = prompts
+      toolCatalog.value = tools
     } catch (err: unknown) {
       resourceError.value = err instanceof Error ? err.message : String(err)
     } finally {

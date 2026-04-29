@@ -110,11 +110,11 @@ const filteredPlugins = computed(() =>
 )
 
 onMounted(() => {
-  pluginsStore.fetchPlugins()
+  void pluginsStore.fetchPlugins()
 })
 
 const handleRefresh = () => {
-  pluginsStore.fetchPlugins()
+  void pluginsStore.fetchPlugins({ force: true })
 }
 
 const handleReload = async () => {

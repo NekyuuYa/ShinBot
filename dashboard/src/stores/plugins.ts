@@ -9,6 +9,8 @@ import {
 } from '@/api/plugins'
 import { createCrudStore } from './crud'
 
+const PLUGINS_LIST_STALE_TIME_MS = 30_000
+
 export const usePluginsStore = defineStore('plugins', () => {
   const crud = createCrudStore<Plugin, never, Record<string, unknown>, string>({
     api: {
@@ -21,6 +23,7 @@ export const usePluginsStore = defineStore('plugins', () => {
       updated: 'pages.plugins.configSaved',
     },
     idOf: (plugin) => plugin.id,
+    listStaleTimeMs: PLUGINS_LIST_STALE_TIME_MS,
   })
   const plugins = crud.items
   const pluginSchemas = ref<Record<string, PluginConfigSchema>>({})
@@ -90,7 +93,7 @@ export const usePluginsStore = defineStore('plugins', () => {
       expectData: false,
       successKey: 'pages.plugins.reloaded',
       onSuccess: async () => {
-        await crud.fetchItems()
+        await crud.fetchItems({ force: true })
       },
     })
 
@@ -102,7 +105,7 @@ export const usePluginsStore = defineStore('plugins', () => {
       expectData: false,
       successKey: 'pages.plugins.rescanned',
       onSuccess: async () => {
-        await crud.fetchItems()
+        await crud.fetchItems({ force: true })
       },
     })
 

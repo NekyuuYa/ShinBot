@@ -465,9 +465,11 @@ const removeItem = async (uuid: string, name: string) => {
   await store.deleteItem(uuid)
 }
 
-const refreshItems = () => store.fetchItems()
+const refreshItems = () => void store.fetchItems({ force: true })
 
-onMounted(() => store.fetchItems())
+onMounted(() => {
+  void store.fetchItems()
+})
 </script>
 
 <style scoped lang="scss">

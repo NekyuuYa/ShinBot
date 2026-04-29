@@ -287,7 +287,7 @@ const removePersona = async (uuid: string, name: string) => {
 }
 
 const refreshPersonas = async () => {
-  await personasStore.fetchPersonas()
+  await personasStore.fetchPersonas({ force: true })
 }
 
 const previewPrompt = (promptText: string) => {
@@ -302,7 +302,7 @@ const previewPrompt = (promptText: string) => {
 const getPersonaKey = (persona: Persona) => persona.uuid
 
 onMounted(() => {
-  personasStore.fetchPersonas()
+  void personasStore.fetchPersonas()
 })
 </script>
 
