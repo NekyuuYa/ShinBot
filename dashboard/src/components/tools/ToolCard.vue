@@ -6,7 +6,17 @@
           <div class="text-overline text-medium-emphasis">{{ tool.name }}</div>
           <div class="text-h6 font-weight-bold">{{ tool.displayName }}</div>
         </div>
-        <tool-meta-chips :tool="tool" />
+        <div class="tool-meta-chips">
+          <v-chip size="small" :color="tool.enabled ? 'success' : 'grey'" variant="tonal">
+            {{ tool.enabled ? $t('pages.tools.status.enabled') : $t('pages.tools.status.disabled') }}
+          </v-chip>
+          <v-chip size="small" variant="outlined">
+            {{ $t(`pages.tools.visibilityOptions.${tool.visibility}`) }}
+          </v-chip>
+          <v-chip size="small" :color="riskColor" variant="outlined">
+            {{ $t(`pages.tools.riskOptions.${tool.riskLevel}`) }}
+          </v-chip>
+        </div>
       </div>
 
       <p class="text-body-2 text-medium-emphasis mb-4 tool-description">
@@ -47,14 +57,20 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { ToolDefinition } from '@/api/tools'
-import ToolMetaChips from './ToolMetaChips.vue'
 
 interface Props {
   tool: ToolDefinition
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
+
+const riskColor = computed(() => {
+  if (props.tool.riskLevel === 'high') return 'error'
+  if (props.tool.riskLevel === 'medium') return 'warning'
+  return 'success'
+})
 </script>
 
 <style scoped lang="scss">
@@ -88,5 +104,11 @@ defineProps<Props>()
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.tool-meta-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 </style>

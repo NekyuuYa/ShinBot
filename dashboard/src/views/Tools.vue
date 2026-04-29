@@ -108,11 +108,24 @@
       </v-col>
     </v-row>
 
-    <tool-collection
-      v-else
-      :tools="filteredTools"
-      :layout-mode="toolsStore.layoutMode"
-    />
+    <template v-else-if="toolsStore.layoutMode === 'card'">
+      <v-row class="mx-n3">
+        <v-col
+          v-for="tool in filteredTools"
+          :key="tool.id"
+          cols="12"
+          md="6"
+          xl="4"
+          class="pa-3"
+        >
+          <tool-card :tool="tool" />
+        </v-col>
+      </v-row>
+    </template>
+
+    <div v-else class="d-grid ga-4">
+      <tool-list-row v-for="tool in filteredTools" :key="tool.id" :tool="tool" />
+    </div>
 
     <v-alert v-if="toolsStore.error" type="error" class="mt-4">
       {{ toolsStore.error }}
@@ -124,7 +137,8 @@
 import { computed, onMounted, ref } from 'vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import LayoutModeButton from '@/components/LayoutModeButton.vue'
-import ToolCollection from '@/components/tools/ToolCollection.vue'
+import ToolCard from '@/components/tools/ToolCard.vue'
+import ToolListRow from '@/components/tools/ToolListRow.vue'
 import { useToolsStore } from '@/stores/tools'
 import { translate } from '@/plugins/i18n'
 import type { ToolLayoutMode } from '@/stores/tools'
