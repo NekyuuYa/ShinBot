@@ -3,8 +3,7 @@ import { useI18n } from 'vue-i18n'
 
 import type { ModelRuntimeProvider, ProviderPayload } from '@/api/modelRuntime'
 import type { useModelRuntimeStore } from '@/stores/modelRuntime'
-import { entriesToObject, objectToEntries } from '@/utils/form'
-import { prettyJson, safeJsonParse } from '@/utils/json'
+import { entriesToObject, objectToEntries, prettyJson, safeJsonParse } from '@/utils/format'
 import {
   providerSourceTemplates,
   resolveProviderSource,

@@ -1,5 +1,63 @@
 import { translate } from '@/plugins/i18n'
 
+// ── String helpers ──────────────────────────────────────────────────────────
+
+export const normalizeStringList = (items: string[]) => {
+  const seen = new Set<string>()
+  const list: string[] = []
+
+  for (const item of items) {
+    const value = item.trim()
+    if (!value || seen.has(value)) {
+      continue
+    }
+    seen.add(value)
+    list.push(value)
+  }
+
+  return list
+}
+
+// ── JSON helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Safely parse a JSON string into an object.
+ * Throws a localized error message if parsing fails.
+ */
+export function safeJsonParse<T = Record<string, unknown>>(
+  value: string,
+  emptyFallback: T = {} as T,
+  errorMessage: string = translate('pages.agents.messages.invalidJson')
+): T {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return emptyFallback
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as T
+    }
+  } catch (err) {
+    throw new Error(errorMessage)
+  }
+
+  throw new Error(errorMessage)
+}
+
+/**
+ * Format an object into a pretty JSON string.
+ */
+export function prettyJson(value: any): string {
+  if (!value || (typeof value === 'object' && Object.keys(value).length === 0)) {
+    return ''
+  }
+  return JSON.stringify(value, null, 2)
+}
+
+// ── Form helpers ────────────────────────────────────────────────────────────
+
 /**
  * Format a number (or null/undefined) to a string for form input.
  */
