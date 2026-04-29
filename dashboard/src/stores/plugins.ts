@@ -7,15 +7,23 @@ import {
   type ConfigSchemaField,
   type JsonSchemaProperty,
 } from '@/api/plugins'
-import { useUiStore } from './ui'
-import { getErrorMessage } from '@/utils/error'
-import { translate } from '@/plugins/i18n'
+import { createCrudStore } from './crud'
 
 export const usePluginsStore = defineStore('plugins', () => {
-  const plugins = ref<Plugin[]>([])
+  const crud = createCrudStore<Plugin, never, Record<string, unknown>, string>({
+    api: {
+      list: pluginsApi.list,
+      update: pluginsApi.updateConfig,
+    },
+    i18nKey: {
+      loadFailed: 'pages.plugins.loadFailed',
+      updateFailed: 'common.actions.message.operationFailed',
+      updated: 'pages.plugins.configSaved',
+    },
+    idOf: (plugin) => plugin.id,
+  })
+  const plugins = crud.items
   const pluginSchemas = ref<Record<string, PluginConfigSchema>>({})
-  const isLoading = ref(false)
-  const error = ref<string>('')
 
   const toSchemaFromLegacyMap = (schema: Record<string, ConfigSchemaField>): PluginConfigSchema => {
     const properties: Record<string, JsonSchemaProperty> = {}
@@ -77,135 +85,72 @@ export const usePluginsStore = defineStore('plugins', () => {
     return null
   }
 
-  const fetchPlugins = async () => {
-    isLoading.value = true
-    error.value = ''
-
-    try {
-      const response = await pluginsApi.list()
-      if (response.data.success && response.data.data) {
-        plugins.value = response.data.data
-      } else {
-        error.value = response.data.error?.message || translate('pages.plugins.loadFailed')
-      }
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-    } finally {
-      isLoading.value = false
-    }
-  }
-
   const reloadPlugins = async () => {
-    try {
-      const response = await pluginsApi.reload()
-      if (response.data.success) {
-        // Re-fetch plugins after reload
-        await fetchPlugins()
-        useUiStore().showSnackbar(translate('pages.plugins.reloaded'), 'success')
-        return true
-      }
-      return false
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return false
-    }
+    const result = await crud.runRequest(() => pluginsApi.reload(), {
+      expectData: false,
+      successKey: 'pages.plugins.reloaded',
+      onSuccess: async () => {
+        await crud.fetchItems()
+      },
+    })
+
+    return result.ok
   }
 
   const rescanPlugins = async () => {
-    try {
-      const response = await pluginsApi.rescan()
-      if (response.data.success) {
-        await fetchPlugins()
-        useUiStore().showSnackbar(translate('pages.plugins.rescanned'), 'success')
-        return true
-      }
-      return false
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return false
-    }
+    const result = await crud.runRequest(() => pluginsApi.rescan(), {
+      expectData: false,
+      successKey: 'pages.plugins.rescanned',
+      onSuccess: async () => {
+        await crud.fetchItems()
+      },
+    })
+
+    return result.ok
   }
 
   const enablePlugin = async (id: string) => {
-    try {
-      const response = await pluginsApi.enable(id)
-      if (response.data.success && response.data.data) {
-        const index = plugins.value.findIndex((p) => p.id === id)
-        if (index !== -1) {
-          plugins.value[index] = response.data.data
+    const result = await crud.runRequest(() => pluginsApi.enable(id), {
+      errorKey: 'common.actions.message.operationFailed',
+      successKey: 'pages.plugins.enabled',
+      successColor: 'success',
+      onSuccess: (plugin) => {
+        if (plugin) {
+          crud.replaceItem(plugin)
         }
-        useUiStore().showSnackbar(translate('pages.plugins.enabled'), 'success')
-        return true
-      }
-      return false
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return false
-    }
+      },
+    })
+
+    return result.ok
   }
 
   const disablePlugin = async (id: string) => {
-    try {
-      const response = await pluginsApi.disable(id)
-      if (response.data.success && response.data.data) {
-        const index = plugins.value.findIndex((p) => p.id === id)
-        if (index !== -1) {
-          plugins.value[index] = response.data.data
+    const result = await crud.runRequest(() => pluginsApi.disable(id), {
+      errorKey: 'common.actions.message.operationFailed',
+      successKey: 'pages.plugins.disabled',
+      successColor: 'info',
+      onSuccess: (plugin) => {
+        if (plugin) {
+          crud.replaceItem(plugin)
         }
-        useUiStore().showSnackbar(translate('pages.plugins.disabled'), 'info')
-        return true
-      }
-      return false
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return false
-    }
+      },
+    })
+
+    return result.ok
   }
 
   const updatePluginConfig = async (id: string, config: Record<string, unknown>) => {
-    try {
-      const response = await pluginsApi.updateConfig(id, config)
-      if (response.data.success && response.data.data) {
-        const index = plugins.value.findIndex((plugin) => plugin.id === id)
-        if (index !== -1) {
-          plugins.value[index] = response.data.data
-        }
-        useUiStore().showSnackbar(translate('pages.plugins.configSaved'), 'success')
-        return true
-      }
-
-      error.value = response.data.error?.message || translate('common.actions.message.operationFailed')
-      return false
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return false
-    }
+    const plugin = await crud.updateItem(id, config)
+    return plugin !== null
   }
 
   return {
     plugins,
     pluginSchemas,
-    isLoading,
-    error,
-    fetchPlugins,
+    isLoading: crud.isLoading,
+    isSaving: crud.isSaving,
+    error: crud.error,
+    fetchPlugins: crud.fetchItems,
     fetchPluginSchema,
     reloadPlugins,
     rescanPlugins,

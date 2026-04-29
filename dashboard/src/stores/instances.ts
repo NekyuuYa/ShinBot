@@ -6,140 +6,57 @@ import {
   type CreateInstanceRequest,
   type UpdateInstanceRequest,
 } from '@/api/instances'
-import { useUiStore } from './ui'
-import { getErrorMessage } from '@/utils/error'
-import { translate } from '@/plugins/i18n'
+import { createCrudStore } from './crud'
 
 export const useInstancesStore = defineStore('instances', () => {
-  const instances = ref<Instance[]>([])
-  const isLoading = ref(false)
-  const error = ref<string>('')
+  const crud = createCrudStore<Instance, CreateInstanceRequest, UpdateInstanceRequest, string>({
+    api: instancesApi,
+    i18nKey: {
+      loadFailed: 'pages.instances.loadFailed',
+      createFailed: 'pages.instances.createFailed',
+      updateFailed: 'pages.instances.updateFailed',
+      deleteFailed: 'pages.instances.deleteFailed',
+      created: 'pages.instances.created',
+      updated: 'pages.instances.updated',
+      deleted: 'pages.instances.deleted',
+    },
+    idOf: (instance) => instance.id,
+  })
+  const instances = crud.items
   const pendingActions = ref<Record<string, 'start' | 'stop' | null>>({})
 
-  const fetchInstances = async () => {
-    isLoading.value = true
-    error.value = ''
-
-    try {
-      const response = await instancesApi.list()
-      if (response.data.success && response.data.data) {
-        instances.value = response.data.data
-      } else {
-        error.value = response.data.error?.message || translate('pages.instances.loadFailed')
-      }
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-    } finally {
-      isLoading.value = false
-    }
-  }
-
-  const createInstance = async (data: CreateInstanceRequest) => {
-    try {
-      const response = await instancesApi.create(data)
-      if (response.data.success && response.data.data) {
-        instances.value = [...instances.value, response.data.data]
-        useUiStore().showSnackbar(translate('pages.instances.created'), 'success')
-        return response.data.data
-      } else {
-        error.value = response.data.error?.message || translate('pages.instances.createFailed')
-        return null
-      }
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return null
-    }
-  }
-
-  const updateInstance = async (id: string, data: UpdateInstanceRequest) => {
-    try {
-      const response = await instancesApi.update(id, data)
-      if (response.data.success && response.data.data) {
-        const index = instances.value.findIndex((i) => i.id === id)
-        if (index !== -1) {
-          instances.value[index] = response.data.data
-        }
-        useUiStore().showSnackbar(translate('pages.instances.updated'), 'success')
-        return response.data.data
-      } else {
-        error.value = response.data.error?.message || translate('pages.instances.updateFailed')
-        return null
-      }
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return null
-    }
-  }
-
-  const deleteInstance = async (id: string) => {
-    try {
-      const response = await instancesApi.delete(id)
-      if (response.data.success) {
-        instances.value = instances.value.filter((i) => i.id !== id)
-        useUiStore().showSnackbar(translate('pages.instances.deleted'), 'info')
-        return true
-      } else {
-        error.value = response.data.error?.message || translate('pages.instances.deleteFailed')
-        return false
-      }
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      return false
-    }
-  }
-
   const startInstance = async (id: string) => {
-    try {
-      pendingActions.value[id] = 'start'
-      const response = await instancesApi.start(id)
-      if (response.data.success) {
-        useUiStore().showSnackbar(translate('pages.instances.started'), 'success')
-        return true
-      }
-      useUiStore().showSnackbar(translate('pages.instances.startFailed'), 'error')
+    pendingActions.value[id] = 'start'
+    const result = await crud.runRequest(() => instancesApi.start(id), {
+      errorKey: 'pages.instances.startFailed',
+      failureNotifyKey: 'pages.instances.startFailed',
+      successKey: 'pages.instances.started',
+      successColor: 'success',
+      expectData: false,
+    })
+
+    if (!result.ok) {
       pendingActions.value[id] = null
-      return false
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      pendingActions.value[id] = null
-      return false
     }
+
+    return result.ok
   }
 
   const stopInstance = async (id: string) => {
-    try {
-      pendingActions.value[id] = 'stop'
-      const response = await instancesApi.stop(id)
-      if (response.data.success) {
-        useUiStore().showSnackbar(translate('pages.instances.stopRequested'), 'info')
-        return true
-      }
-      useUiStore().showSnackbar(translate('pages.instances.stopFailed'), 'error')
+    pendingActions.value[id] = 'stop'
+    const result = await crud.runRequest(() => instancesApi.stop(id), {
+      errorKey: 'pages.instances.stopFailed',
+      failureNotifyKey: 'pages.instances.stopFailed',
+      successKey: 'pages.instances.stopRequested',
+      successColor: 'info',
+      expectData: false,
+    })
+
+    if (!result.ok) {
       pendingActions.value[id] = null
-      return false
-    } catch (errorDetail: unknown) {
-      error.value = getErrorMessage(
-        errorDetail,
-        translate('common.actions.message.networkError')
-      )
-      pendingActions.value[id] = null
-      return false
     }
+
+    return result.ok
   }
 
   const clearPendingAction = (id: string) => {
@@ -173,16 +90,17 @@ export const useInstancesStore = defineStore('instances', () => {
 
   return {
     instances,
-    isLoading,
-    error,
+    isLoading: crud.isLoading,
+    isSaving: crud.isSaving,
+    error: crud.error,
     pendingActions,
     isInstancePending,
     clearPendingAction,
     syncInstanceStatuses,
-    fetchInstances,
-    createInstance,
-    updateInstance,
-    deleteInstance,
+    fetchInstances: crud.fetchItems,
+    createInstance: crud.createItem,
+    updateInstance: crud.updateItem,
+    deleteInstance: crud.deleteItem,
     startInstance,
     stopInstance,
   }

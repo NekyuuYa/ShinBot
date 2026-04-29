@@ -1,0 +1,234 @@
+import type { AxiosResponse } from 'axios'
+import { ref, type Ref } from 'vue'
+
+import type { ApiResponse } from '@/api/client'
+import { translate } from '@/plugins/i18n'
+import { getErrorMessage } from '@/utils/error'
+import { useUiStore, type SnackbarColor } from './ui'
+
+type StoreRequestMode = 'loading' | 'saving' | 'none'
+type CrudMessageName =
+  | 'loadFailed'
+  | 'createFailed'
+  | 'updateFailed'
+  | 'deleteFailed'
+  | 'created'
+  | 'updated'
+  | 'deleted'
+type ItemId = string | number
+type ApiCall<T> = Promise<AxiosResponse<ApiResponse<T>>>
+
+const NETWORK_ERROR_KEY = 'common.actions.message.networkError'
+const OPERATION_FAILED_KEY = 'common.actions.message.operationFailed'
+
+export type CrudI18nKey = string | Partial<Record<CrudMessageName, string>>
+
+export interface CrudApi<T, CreatePayload, UpdatePayload, Id extends ItemId = string> {
+  list: () => ApiCall<T[]>
+  create?: (payload: CreatePayload) => ApiCall<T>
+  update?: (id: Id, payload: UpdatePayload) => ApiCall<T>
+  delete?: (id: Id) => ApiCall<unknown>
+}
+
+export interface CrudRequestOptions<ResponseData> {
+  mode?: StoreRequestMode
+  errorKey?: string | null
+  successKey?: string | null
+  successColor?: SnackbarColor
+  failureNotifyKey?: string | null
+  failureColor?: SnackbarColor
+  expectData?: boolean
+  onSuccess?: (data: ResponseData | undefined) => void | Promise<void>
+}
+
+export interface CrudRequestResult<ResponseData> {
+  ok: boolean
+  data?: ResponseData
+}
+
+interface CreateCrudStoreOptions<T, CreatePayload, UpdatePayload, Id extends ItemId> {
+  api: CrudApi<T, CreatePayload, UpdatePayload, Id>
+  i18nKey: CrudI18nKey
+  idOf: (item: T) => Id
+  items?: Ref<T[]>
+}
+
+export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends ItemId = string>(
+  options: CreateCrudStoreOptions<T, CreatePayload, UpdatePayload, Id>
+) => {
+  const uiStore = useUiStore()
+  const items = (options.items ?? ref<T[]>([])) as Ref<T[]>
+  const isLoading = ref(false)
+  const isSaving = ref(false)
+  const error = ref('')
+
+  const resolveCrudKey = (name: CrudMessageName) => {
+    if (typeof options.i18nKey === 'string') {
+      return `${options.i18nKey}.${name}`
+    }
+    return options.i18nKey[name] ?? null
+  }
+
+  const setBusy = (mode: StoreRequestMode, value: boolean) => {
+    if (mode === 'loading') {
+      isLoading.value = value
+      return
+    }
+
+    if (mode === 'saving') {
+      isSaving.value = value
+    }
+  }
+
+  const appendItem = (item: T) => {
+    items.value = [...items.value, item]
+  }
+
+  const replaceItem = (item: T) => {
+    const index = items.value.findIndex((existing) => options.idOf(existing) === options.idOf(item))
+    if (index !== -1) {
+      items.value[index] = item
+    }
+  }
+
+  const removeItem = (id: Id) => {
+    items.value = items.value.filter((item) => options.idOf(item) !== id)
+  }
+
+  const setItems = (value: T[]) => {
+    items.value = value
+  }
+
+  const runRequest = async <ResponseData>(
+    request: () => ApiCall<ResponseData>,
+    requestOptions: CrudRequestOptions<ResponseData> = {}
+  ): Promise<CrudRequestResult<ResponseData>> => {
+    const {
+      mode = 'none',
+      errorKey = OPERATION_FAILED_KEY,
+      successKey,
+      successColor = 'success',
+      failureNotifyKey,
+      failureColor = 'error',
+      expectData = true,
+      onSuccess,
+    } = requestOptions
+
+    setBusy(mode, true)
+    error.value = ''
+
+    try {
+      const response = await request()
+      if (response.data.success && (!expectData || response.data.data !== undefined)) {
+        await onSuccess?.(response.data.data)
+
+        if (successKey) {
+          uiStore.showSnackbar(translate(successKey), successColor)
+        }
+
+        return {
+          ok: true,
+          data: response.data.data,
+        }
+      }
+
+      error.value = response.data.error?.message || translate(errorKey ?? OPERATION_FAILED_KEY)
+      if (failureNotifyKey) {
+        uiStore.showSnackbar(translate(failureNotifyKey), failureColor)
+      }
+      return { ok: false }
+    } catch (errorDetail: unknown) {
+      error.value = getErrorMessage(errorDetail, translate(NETWORK_ERROR_KEY))
+      return { ok: false }
+    } finally {
+      setBusy(mode, false)
+    }
+  }
+
+  const fetchItems = async () => {
+    const result = await runRequest(() => options.api.list(), {
+      mode: 'loading',
+      errorKey: resolveCrudKey('loadFailed'),
+      onSuccess: (data) => {
+        setItems(data ?? [])
+      },
+    })
+
+    return result.ok
+  }
+
+  const createItem = async (payload: CreatePayload) => {
+    if (!options.api.create) {
+      return null
+    }
+
+    const result = await runRequest(() => options.api.create!(payload), {
+      mode: 'saving',
+      errorKey: resolveCrudKey('createFailed'),
+      successKey: resolveCrudKey('created'),
+      successColor: 'success',
+      onSuccess: (data) => {
+        if (data) {
+          appendItem(data)
+        }
+      },
+    })
+
+    return result.ok ? (result.data ?? null) : null
+  }
+
+  const updateItem = async (id: Id, payload: UpdatePayload) => {
+    if (!options.api.update) {
+      return null
+    }
+
+    const result = await runRequest(() => options.api.update!(id, payload), {
+      mode: 'saving',
+      errorKey: resolveCrudKey('updateFailed'),
+      successKey: resolveCrudKey('updated'),
+      successColor: 'success',
+      onSuccess: (data) => {
+        if (data) {
+          replaceItem(data)
+        }
+      },
+    })
+
+    return result.ok ? (result.data ?? null) : null
+  }
+
+  const deleteItem = async (id: Id) => {
+    if (!options.api.delete) {
+      return false
+    }
+
+    const result = await runRequest(() => options.api.delete!(id), {
+      mode: 'saving',
+      errorKey: resolveCrudKey('deleteFailed'),
+      successKey: resolveCrudKey('deleted'),
+      successColor: 'info',
+      expectData: false,
+      onSuccess: () => {
+        removeItem(id)
+      },
+    })
+
+    return result.ok
+  }
+
+  return {
+    items,
+    isLoading,
+    isSaving,
+    error,
+    appendItem,
+    replaceItem,
+    removeItem,
+    setItems,
+    runRequest,
+    fetchItems,
+    createItem,
+    updateItem,
+    deleteItem,
+  }
+}
