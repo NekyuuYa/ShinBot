@@ -46,11 +46,31 @@ export interface CrudRequestResult<ResponseData> {
   data?: ResponseData
 }
 
+interface CrudStateRefs {
+  isLoading?: Ref<boolean>
+  isSaving?: Ref<boolean>
+  error?: Ref<string>
+}
+
+interface CrudSuccessHooks<T, CreatePayload, UpdatePayload, Id extends ItemId> {
+  onCreateSuccess?: (
+    data: T,
+    context: { payload: CreatePayload }
+  ) => void | Promise<void>
+  onUpdateSuccess?: (
+    data: T,
+    context: { id: Id; payload: UpdatePayload }
+  ) => void | Promise<void>
+  onDeleteSuccess?: (context: { id: Id }) => void | Promise<void>
+}
+
 interface CreateCrudStoreOptions<T, CreatePayload, UpdatePayload, Id extends ItemId> {
   api: CrudApi<T, CreatePayload, UpdatePayload, Id>
   i18nKey: CrudI18nKey
   idOf: (item: T) => Id
   items?: Ref<T[]>
+  state?: CrudStateRefs
+  hooks?: CrudSuccessHooks<T, CreatePayload, UpdatePayload, Id>
 }
 
 export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends ItemId = string>(
@@ -58,9 +78,9 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
 ) => {
   const uiStore = useUiStore()
   const items = (options.items ?? ref<T[]>([])) as Ref<T[]>
-  const isLoading = ref(false)
-  const isSaving = ref(false)
-  const error = ref('')
+  const isLoading = (options.state?.isLoading ?? ref(false)) as Ref<boolean>
+  const isSaving = (options.state?.isSaving ?? ref(false)) as Ref<boolean>
+  const error = (options.state?.error ?? ref('')) as Ref<string>
 
   const resolveCrudKey = (name: CrudMessageName) => {
     if (typeof options.i18nKey === 'string') {
@@ -167,9 +187,10 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
       errorKey: resolveCrudKey('createFailed'),
       successKey: resolveCrudKey('created'),
       successColor: 'success',
-      onSuccess: (data) => {
+      onSuccess: async (data) => {
         if (data) {
           appendItem(data)
+          await options.hooks?.onCreateSuccess?.(data, { payload })
         }
       },
     })
@@ -187,9 +208,10 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
       errorKey: resolveCrudKey('updateFailed'),
       successKey: resolveCrudKey('updated'),
       successColor: 'success',
-      onSuccess: (data) => {
+      onSuccess: async (data) => {
         if (data) {
           replaceItem(data)
+          await options.hooks?.onUpdateSuccess?.(data, { id, payload })
         }
       },
     })
@@ -208,8 +230,9 @@ export const createCrudStore = <T, CreatePayload, UpdatePayload, Id extends Item
       successKey: resolveCrudKey('deleted'),
       successColor: 'info',
       expectData: false,
-      onSuccess: () => {
+      onSuccess: async () => {
         removeItem(id)
+        await options.hooks?.onDeleteSuccess?.({ id })
       },
     })
 

@@ -11,6 +11,7 @@ import {
   type RoutePayload,
   type ModelPayload,
 } from '@/api/modelRuntime'
+import { createCrudStore } from './crud'
 import { useUiStore } from './ui'
 import { getErrorMessage } from '@/utils/error'
 import { translate } from '@/plugins/i18n'
@@ -30,6 +31,108 @@ export const useModelRuntimeStore = defineStore(
     const isLoading = ref(false)
     const isSaving = ref(false)
     const error = ref('')
+
+    const providerCrud = createCrudStore<
+      ModelRuntimeProvider,
+      ProviderPayload,
+      Partial<ProviderPayload>,
+      string
+    >({
+      api: {
+        list: modelRuntimeApi.listProviders,
+        create: modelRuntimeApi.createProvider,
+        update: modelRuntimeApi.updateProvider,
+        delete: modelRuntimeApi.deleteProvider,
+      },
+      i18nKey: {
+        createFailed: 'pages.modelRuntime.messages.providerSaveFailed',
+        updateFailed: 'pages.modelRuntime.messages.providerSaveFailed',
+        deleteFailed: 'pages.modelRuntime.messages.providerDeleteFailed',
+        created: 'pages.modelRuntime.messages.providerCreated',
+        updated: 'pages.modelRuntime.messages.providerUpdated',
+        deleted: 'pages.modelRuntime.messages.providerDeleted',
+      },
+      idOf: (provider) => provider.id,
+      items: providers,
+      state: {
+        isSaving,
+        error,
+      },
+      hooks: {
+        onUpdateSuccess: (provider, context) => {
+          if (provider.id === context.id) {
+            return
+          }
+
+          models.value = models.value.map((item) =>
+            item.providerId === context.id ? { ...item, providerId: provider.id } : item
+          )
+
+          if (catalogItems.value[context.id]) {
+            catalogItems.value[provider.id] = catalogItems.value[context.id]
+            delete catalogItems.value[context.id]
+          }
+        },
+        onDeleteSuccess: ({ id }) => {
+          models.value = models.value.filter((item) => item.providerId !== id)
+          delete catalogItems.value[id]
+        },
+      },
+    })
+
+    const modelCrud = createCrudStore<ModelRuntimeModel, ModelPayload, Partial<ModelPayload>, string>({
+      api: {
+        list: modelRuntimeApi.listModels,
+        create: modelRuntimeApi.createModel,
+        update: modelRuntimeApi.updateModel,
+        delete: modelRuntimeApi.deleteModel,
+      },
+      i18nKey: {
+        createFailed: 'pages.modelRuntime.messages.modelSaveFailed',
+        updateFailed: 'pages.modelRuntime.messages.modelSaveFailed',
+        deleteFailed: 'pages.modelRuntime.messages.modelDeleteFailed',
+        created: 'pages.modelRuntime.messages.modelCreated',
+        updated: 'pages.modelRuntime.messages.modelUpdated',
+        deleted: 'pages.modelRuntime.messages.modelDeleted',
+      },
+      idOf: (model) => model.id,
+      items: models,
+      state: {
+        isSaving,
+        error,
+      },
+      hooks: {
+        onDeleteSuccess: ({ id }) => {
+          routes.value = routes.value.map((route) => ({
+            ...route,
+            members: route.members.filter((member) => member.modelId !== id),
+          }))
+        },
+      },
+    })
+
+    const routeCrud = createCrudStore<ModelRuntimeRoute, RoutePayload, Partial<RoutePayload>, string>({
+      api: {
+        list: modelRuntimeApi.listRoutes,
+        create: modelRuntimeApi.createRoute,
+        update: modelRuntimeApi.updateRoute,
+        delete: modelRuntimeApi.deleteRoute,
+      },
+      i18nKey: {
+        createFailed: 'pages.modelRuntime.messages.routeSaveFailed',
+        updateFailed: 'pages.modelRuntime.messages.routeSaveFailed',
+        deleteFailed: 'pages.modelRuntime.messages.routeDeleteFailed',
+        created: 'pages.modelRuntime.messages.routeCreated',
+        updated: 'pages.modelRuntime.messages.routeUpdated',
+        deleted: 'pages.modelRuntime.messages.routeDeleted',
+      },
+      idOf: (route) => route.id,
+      items: routes,
+      state: {
+        isSaving,
+        error,
+      },
+    })
 
     const modelsByProvider = computed<Record<string, ModelRuntimeModel[]>>(() => {
       const grouped: Record<string, ModelRuntimeModel[]> = {}
@@ -64,85 +167,11 @@ export const useModelRuntimeStore = defineStore(
       }
     }
 
-    const createProvider = async (payload: ProviderPayload) => {
-      isSaving.value = true
-      try {
-        const response = await modelRuntimeApi.createProvider(payload)
-        if (response.data.success && response.data.data) {
-          providers.value.push(response.data.data)
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.providerCreated'),
-            'success'
-          )
-          return response.data.data
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.providerSaveFailed')
-        )
-      } finally {
-        isSaving.value = false
-      }
-      return null
-    }
+    const createProvider = providerCrud.createItem
 
-    const updateProvider = async (id: string, payload: Partial<ProviderPayload>) => {
-      isSaving.value = true
-      try {
-        const response = await modelRuntimeApi.updateProvider(id, payload)
-        if (response.data.success && response.data.data) {
-          const index = providers.value.findIndex((item) => item.id === id)
-          if (index !== -1) {
-            providers.value[index] = response.data.data
-          }
-          if (response.data.data.id !== id) {
-            models.value = models.value.map((item) =>
-              item.providerId === id ? { ...item, providerId: response.data.data!.id } : item
-            )
-            if (catalogItems.value[id]) {
-              catalogItems.value[response.data.data.id] = catalogItems.value[id]
-              delete catalogItems.value[id]
-            }
-          }
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.providerUpdated'),
-            'success'
-          )
-          return response.data.data
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.providerSaveFailed')
-        )
-      } finally {
-        isSaving.value = false
-      }
-      return null
-    }
+    const updateProvider = providerCrud.updateItem
 
-    const deleteProvider = async (id: string) => {
-      try {
-        const response = await modelRuntimeApi.deleteProvider(id)
-        if (response.data.success) {
-          providers.value = providers.value.filter((item) => item.id !== id)
-          models.value = models.value.filter((item) => item.providerId !== id)
-          delete catalogItems.value[id]
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.providerDeleted'),
-            'info'
-          )
-          return true
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.providerDeleteFailed')
-        )
-      }
-      return false
-    }
+    const deleteProvider = providerCrud.deleteItem
 
     const fetchProviderCatalog = async (id: string) => {
       try {
@@ -179,135 +208,17 @@ export const useModelRuntimeStore = defineStore(
       return null
     }
 
-    const createModel = async (payload: ModelPayload) => {
-      try {
-        const response = await modelRuntimeApi.createModel(payload)
-        if (response.data.success && response.data.data) {
-          models.value.push(response.data.data)
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.modelCreated'),
-            'success'
-          )
-          return response.data.data
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.modelSaveFailed')
-        )
-      }
-      return null
-    }
+    const createModel = modelCrud.createItem
 
-    const updateModel = async (id: string, payload: Partial<ModelPayload>) => {
-      try {
-        const response = await modelRuntimeApi.updateModel(id, payload)
-        if (response.data.success && response.data.data) {
-          const index = models.value.findIndex((item) => item.id === id)
-          if (index !== -1) {
-            models.value[index] = response.data.data
-          }
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.modelUpdated'),
-            'success'
-          )
-          return response.data.data
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.modelSaveFailed')
-        )
-      }
-      return null
-    }
+    const updateModel = modelCrud.updateItem
 
-    const deleteModel = async (id: string) => {
-      try {
-        const response = await modelRuntimeApi.deleteModel(id)
-        if (response.data.success) {
-          models.value = models.value.filter((item) => item.id !== id)
-          routes.value = routes.value.map((route) => ({
-            ...route,
-            members: route.members.filter((member) => member.modelId !== id),
-          }))
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.modelDeleted'),
-            'info'
-          )
-          return true
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.modelDeleteFailed')
-        )
-      }
-      return false
-    }
+    const deleteModel = modelCrud.deleteItem
 
-    const createRoute = async (payload: RoutePayload) => {
-      try {
-        const response = await modelRuntimeApi.createRoute(payload)
-        if (response.data.success && response.data.data) {
-          routes.value.push(response.data.data)
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.routeCreated'),
-            'success'
-          )
-          return response.data.data
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.routeSaveFailed')
-        )
-      }
-      return null
-    }
+    const createRoute = routeCrud.createItem
 
-    const updateRoute = async (id: string, payload: Partial<RoutePayload>) => {
-      try {
-        const response = await modelRuntimeApi.updateRoute(id, payload)
-        if (response.data.success && response.data.data) {
-          const index = routes.value.findIndex((item) => item.id === id)
-          if (index !== -1) {
-            routes.value[index] = response.data.data
-          }
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.routeUpdated'),
-            'success'
-          )
-          return response.data.data
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.routeSaveFailed')
-        )
-      }
-      return null
-    }
+    const updateRoute = routeCrud.updateItem
 
-    const deleteRoute = async (id: string) => {
-      try {
-        const response = await modelRuntimeApi.deleteRoute(id)
-        if (response.data.success) {
-          routes.value = routes.value.filter((item) => item.id !== id)
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.routeDeleted'),
-            'info'
-          )
-          return true
-        }
-      } catch (errorDetail: unknown) {
-        error.value = getErrorMessage(
-          errorDetail,
-          translate('pages.modelRuntime.messages.routeDeleteFailed')
-        )
-      }
-      return false
-    }
+    const deleteRoute = routeCrud.deleteItem
 
     const updateSelected = (kind: 'provider' | 'route', id: string) => {
       selectedKind.value = kind
