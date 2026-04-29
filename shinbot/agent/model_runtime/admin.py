@@ -67,6 +67,11 @@ def provider_request_headers(payload: dict[str, Any]) -> dict[str, str]:
     api_key = auth.get("api_key")
     if api_key and payload["type"] == "azure_openai":
         headers["api-key"] = str(api_key)
+    elif api_key and payload["type"] == "anthropic":
+        headers["x-api-key"] = str(api_key)
+        headers["anthropic-version"] = "2023-06-01"
+    elif api_key and payload["type"] == "gemini":
+        headers["x-goog-api-key"] = str(api_key)
     elif api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -86,7 +91,13 @@ def provider_type_for_model_info(provider_type: str) -> str | None:
         return "dashscope"
     if provider_type == "azure_openai":
         return "azure"
-    if provider_type in {"openai", "openrouter", "ollama"}:
+    if provider_type == "siliconflow":
+        return "openai"
+    # Native LiteLLM providers auto-detected from model prefix.
+    if provider_type in {
+        "openai", "openrouter", "ollama",
+        "anthropic", "gemini", "deepseek", "xiaomi_mimo",
+    }:
         return None
     return None
 
@@ -130,6 +141,24 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
             )
         return models
 
+    if provider_type == "gemini":
+        models = []
+        for item in body.get("models", []):
+            raw_name = item.get("name") or ""
+            model_id = raw_name.replace("models/", "")
+            if not model_id:
+                continue
+            litellm_model = f"gemini/{model_id}"
+            models.append(
+                {
+                    "id": str(model_id),
+                    "displayName": str(item.get("displayName") or model_id),
+                    "litellmModel": litellm_model,
+                    "contextWindow": infer_context_window(payload, litellm_model),
+                }
+            )
+        return models
+
     items = body.get("data", [])
     models: list[dict[str, Any]] = []
     for item in items:
@@ -139,6 +168,12 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
         litellm_model = str(model_id)
         if provider_type == "openrouter":
             litellm_model = f"openrouter/{model_id}"
+        elif provider_type == "deepseek":
+            litellm_model = f"deepseek/{model_id}"
+        elif provider_type == "xiaomi_mimo":
+            litellm_model = f"xiaomi_mimo/{model_id}"
+        elif provider_type == "anthropic":
+            litellm_model = f"anthropic/{model_id}"
         models.append(
             {
                 "id": str(model_id),
@@ -162,7 +197,14 @@ async def fetch_provider_catalog(payload: dict[str, Any]) -> list[dict[str, Any]
 
     if provider_type == "ollama":
         url = f"{base_url}/api/tags"
-    elif provider_type in {"openai", "openrouter", "custom_openai", "azure_openai", "dashscope"}:
+    elif provider_type == "gemini":
+        url = f"{base_url}/v1beta/models"
+    elif provider_type == "anthropic":
+        url = f"{base_url}/v1/models"
+    elif provider_type in {
+        "openai", "openrouter", "custom_openai", "azure_openai", "dashscope",
+        "deepseek", "xiaomi_mimo", "siliconflow",
+    }:
         url = f"{base_url}/models"
     else:
         raise ModelRuntimeAdminError(

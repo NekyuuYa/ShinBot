@@ -14,6 +14,10 @@ def provider_type_for_litellm(provider_type: str) -> str | None:
         return "dashscope"
     if provider_type == "azure_openai":
         return "azure"
+    if provider_type == "siliconflow":
+        return "openai"
+    # Native LiteLLM providers (anthropic, gemini, deepseek, xiaomi_mimo)
+    # are auto-detected from the litellm_model prefix; no custom_llm_provider needed.
     return None
 
 

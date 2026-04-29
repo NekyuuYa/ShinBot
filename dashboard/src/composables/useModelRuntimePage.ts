@@ -9,6 +9,7 @@ import {
   makeModelId,
   providerSourceTemplates,
   resolveProviderSource,
+  resolveProviderSourceKey,
   routeMatchesTab,
   tabToCapabilityType,
   type ModelRuntimeTab,
@@ -377,7 +378,7 @@ export function useModelRuntimePage() {
     Object.assign(providerForm.value, {
       id: '',
       displayName: '',
-      sourceType: source?.type || '',
+      sourceType: source?.key || '',
       baseUrl: source?.defaultBaseUrl || '',
       token: '',
       enabled: true,
@@ -539,7 +540,7 @@ export function useModelRuntimePage() {
     const shouldUseDefaultBaseUrl =
       !providerForm.value.baseUrl || providerForm.value.baseUrl === previousSource?.defaultBaseUrl
 
-    providerForm.value.sourceType = source.type
+    providerForm.value.sourceType = source.key
     if (shouldUseDefaultBaseUrl) {
       providerForm.value.baseUrl = source.defaultBaseUrl
     }
@@ -675,7 +676,7 @@ export function useModelRuntimePage() {
       const payload: Record<string, unknown> = {
         id: providerForm.value.id.trim(),
         displayName: providerForm.value.displayName.trim() || providerForm.value.id.trim(),
-        type: providerForm.value.sourceType,
+        type: resolveProviderSource(providerForm.value.sourceType)?.type ?? providerForm.value.sourceType,
         capabilityType: tabToCapabilityType(activeTab.value),
         baseUrl: providerForm.value.baseUrl.trim(),
         enabled: providerForm.value.enabled,
@@ -986,7 +987,7 @@ export function useModelRuntimePage() {
       Object.assign(providerForm.value, {
         id: selectedProvider.value.id,
         displayName: selectedProvider.value.displayName,
-        sourceType: selectedProvider.value.type,
+        sourceType: resolveProviderSourceKey(selectedProvider.value.type, selectedProvider.value.baseUrl),
         baseUrl: selectedProvider.value.baseUrl,
         token: '',
         enabled: selectedProvider.value.enabled,

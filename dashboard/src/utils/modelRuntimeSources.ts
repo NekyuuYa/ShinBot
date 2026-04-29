@@ -92,7 +92,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     type: 'anthropic',
     defaultBaseUrl: 'https://api.anthropic.com',
     supportsToken: true,
-    supportsCatalog: false,
+    supportsCatalog: true,
     supportsThinking: true,
     supportsFilters: false,
   },
@@ -102,7 +102,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     type: 'gemini',
     defaultBaseUrl: 'https://generativelanguage.googleapis.com',
     supportsToken: true,
-    supportsCatalog: false,
+    supportsCatalog: true,
     supportsThinking: true,
     supportsFilters: true,
   },
@@ -147,10 +147,60 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     supportsThinking: false,
     supportsFilters: false,
   },
+  {
+    key: 'deepseek',
+    label: 'DeepSeek',
+    type: 'deepseek',
+    defaultBaseUrl: 'https://api.deepseek.com',
+    supportsToken: true,
+    supportsCatalog: true,
+    supportsThinking: true,
+    supportsFilters: false,
+  },
+  {
+    key: 'xiaomi_mimo',
+    label: 'Xiaomi MiMo',
+    type: 'xiaomi_mimo',
+    defaultBaseUrl: 'https://api.xiaomimimo.com/v1',
+    supportsToken: true,
+    supportsCatalog: true,
+    supportsThinking: true,
+    supportsFilters: false,
+  },
+  {
+    key: 'xiaomi_mimo_token_plan',
+    label: 'Xiaomi MiMo Token Plan',
+    type: 'xiaomi_mimo',
+    defaultBaseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+    supportsToken: true,
+    supportsCatalog: true,
+    supportsThinking: true,
+    supportsFilters: false,
+  },
+  {
+    key: 'siliconflow',
+    label: 'SiliconFlow',
+    type: 'siliconflow',
+    defaultBaseUrl: 'https://api.siliconflow.cn/v1',
+    supportsToken: true,
+    supportsCatalog: true,
+    supportsThinking: false,
+    supportsFilters: false,
+  },
 ]
 
 export function resolveProviderSource(type: string) {
   return providerSourceTemplates.find((item) => item.type === type || item.key === type) ?? null
+}
+
+export function resolveProviderSourceKey(type: string, baseUrl?: string): string {
+  if (baseUrl) {
+    const exact = providerSourceTemplates.find(
+      (item) => item.type === type && item.defaultBaseUrl === baseUrl
+    )
+    if (exact) return exact.key
+  }
+  return providerSourceTemplates.find((item) => item.type === type)?.key ?? type
 }
 
 export function routeMatchesTab(

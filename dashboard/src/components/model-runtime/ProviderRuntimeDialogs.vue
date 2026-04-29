@@ -61,7 +61,7 @@ const providerSourcePickerSections = computed<GenericPickerSection[]>(() => [
     id: "provider-sources",
     label: t("pages.modelRuntime.fields.source"),
     items: providerSourceOptions.map((source) => ({
-      value: source.type,
+      value: source.key,
       title: source.label,
       subtitle: source.defaultBaseUrl,
       icon: providerSourceIcon(source.type),

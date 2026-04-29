@@ -14,5 +14,14 @@ export function providerSourceIcon(type: string) {
   if (type === "gemini") {
     return "mdi-google";
   }
+  if (type === "deepseek") {
+    return "mdi-fish";
+  }
+  if (type === "xiaomi_mimo" || type === "xiaomi_mimo_token_plan") {
+    return "mdi-cellphone";
+  }
+  if (type === "siliconflow") {
+    return "mdi-atom";
+  }
   return "mdi-cloud-outline";
 }
