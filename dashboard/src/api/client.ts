@@ -1,4 +1,5 @@
 import axios, {
+  type AxiosResponse,
   type AxiosInstance,
   type AxiosRequestConfig,
   type InternalAxiosRequestConfig,
@@ -125,6 +126,15 @@ class ApiClient {
 
   delete<T = unknown>(url: string, config?: ApiRequestConfig) {
     return this.instance.delete<ApiResponse<T>>(url, config)
+  }
+
+  async unwrap<T>(request: Promise<AxiosResponse<ApiResponse<T>>>): Promise<T> {
+    const response = await request
+    if (response.data.success && response.data.data !== undefined) {
+      return response.data.data
+    }
+
+    throw new Error(response.data.error?.message || translate('common.actions.message.operationFailed'))
   }
 }
 

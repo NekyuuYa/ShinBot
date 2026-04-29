@@ -6,6 +6,7 @@ import {
   type LoginResponse,
   type UpdateProfileRequest,
 } from '@/api/auth'
+import { apiClient } from '@/api/client'
 import { useUiStore } from './ui'
 import { getErrorMessage } from '@/utils/error'
 import { translate } from '@/plugins/i18n'
@@ -45,27 +46,21 @@ export const useAuthStore = defineStore(
       error.value = ''
 
       try {
-        const response = await authApi.login(credentials)
-
-        if (response.data.success && response.data.data) {
-          applyLoginPayload(response.data.data)
-          if (mustChangeCredentials.value) {
-            useUiStore().showSnackbar(
-              translate('pages.auth.credentialsChangeRequired'),
-              'warning'
-            )
-          } else {
-            useUiStore().showSnackbar(translate('pages.auth.loginSuccess'), 'success')
-          }
-          return true
+        const data = await apiClient.unwrap(authApi.login(credentials))
+        applyLoginPayload(data)
+        if (mustChangeCredentials.value) {
+          useUiStore().showSnackbar(
+            translate('pages.auth.credentialsChangeRequired'),
+            'warning'
+          )
         } else {
-          error.value = response.data.error?.message || translate('pages.auth.loginFailed')
-          return false
+          useUiStore().showSnackbar(translate('pages.auth.loginSuccess'), 'success')
         }
+        return true
       } catch (errorDetail: unknown) {
         error.value = getErrorMessage(
           errorDetail,
-          translate('common.actions.message.networkError')
+          translate('pages.auth.loginFailed')
         )
         return false
       } finally {
@@ -79,13 +74,9 @@ export const useAuthStore = defineStore(
       }
 
       try {
-        const response = await authApi.getProfile()
-        if (!response.data.success || !response.data.data) {
-          return false
-        }
-
-        username.value = response.data.data.username
-        mustChangeCredentials.value = response.data.data.must_change_credentials
+        const data = await apiClient.unwrap(authApi.getProfile())
+        username.value = data.username
+        mustChangeCredentials.value = data.must_change_credentials
         persistAuthState()
         return true
       } catch {
@@ -98,24 +89,17 @@ export const useAuthStore = defineStore(
       error.value = ''
 
       try {
-        const response = await authApi.updateProfile(payload)
-        if (response.data.success && response.data.data) {
-          applyLoginPayload(response.data.data)
-          useUiStore().showSnackbar(
-            translate('pages.settings.credentials.updateSuccess'),
-            'success'
-          )
-          return true
-        }
-
-        error.value =
-          response.data.error?.message ||
-          translate('pages.settings.credentials.updateFailed')
-        return false
+        const data = await apiClient.unwrap(authApi.updateProfile(payload))
+        applyLoginPayload(data)
+        useUiStore().showSnackbar(
+          translate('pages.settings.credentials.updateSuccess'),
+          'success'
+        )
+        return true
       } catch (errorDetail: unknown) {
         error.value = getErrorMessage(
           errorDetail,
-          translate('common.actions.message.networkError')
+          translate('pages.settings.credentials.updateFailed')
         )
         return false
       } finally {

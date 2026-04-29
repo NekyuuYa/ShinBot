@@ -11,6 +11,7 @@ import {
   type RoutePayload,
   type ModelPayload,
 } from '@/api/modelRuntime'
+import { apiClient } from '@/api/client'
 import { createCrudStore } from './crud'
 import { useUiStore } from './ui'
 import { getErrorMessage } from '@/utils/error'
@@ -175,11 +176,9 @@ export const useModelRuntimeStore = defineStore(
 
     const fetchProviderCatalog = async (id: string) => {
       try {
-        const response = await modelRuntimeApi.fetchProviderCatalog(id)
-        if (response.data.success && response.data.data) {
-          catalogItems.value[id] = response.data.data
-          return response.data.data
-        }
+        const data = await apiClient.unwrap(modelRuntimeApi.fetchProviderCatalog(id))
+        catalogItems.value[id] = data
+        return data
       } catch (errorDetail: unknown) {
         error.value = getErrorMessage(
           errorDetail,
@@ -191,14 +190,12 @@ export const useModelRuntimeStore = defineStore(
 
     const probeProvider = async (id: string, modelId?: string) => {
       try {
-        const response = await modelRuntimeApi.probeProvider(id, modelId)
-        if (response.data.success && response.data.data) {
-          useUiStore().showSnackbar(
-            translate('pages.modelRuntime.messages.providerProbeSuccess'),
-            'success'
-          )
-          return response.data.data
-        }
+        const data = await apiClient.unwrap(modelRuntimeApi.probeProvider(id, modelId))
+        useUiStore().showSnackbar(
+          translate('pages.modelRuntime.messages.providerProbeSuccess'),
+          'success'
+        )
+        return data
       } catch (errorDetail: unknown) {
         error.value = getErrorMessage(
           errorDetail,

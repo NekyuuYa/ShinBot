@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 
+import { apiClient } from '@/api/client'
 import {
   systemApi,
   type DashboardDistUpdateResult,
@@ -100,18 +101,11 @@ export function useSystemUpdate() {
     updateError.value = ''
 
     try {
-      const response = await systemApi.getUpdateStatus()
-      if (response.data.success && response.data.data) {
-        updateStatus.value = response.data.data
-        return
-      }
-
-      updateError.value =
-        response.data.error?.message || translate('pages.settings.update.loadFailed')
+      updateStatus.value = await apiClient.unwrap(systemApi.getUpdateStatus())
     } catch (errorDetail: unknown) {
       updateError.value = getErrorMessage(
         errorDetail,
-        translate('common.actions.message.networkError')
+        translate('pages.settings.update.loadFailed')
       )
     } finally {
       isLoadingUpdateStatus.value = false
@@ -123,35 +117,28 @@ export function useSystemUpdate() {
     updateError.value = ''
 
     try {
-      const response = await systemApi.pullAndRestart()
-      if (response.data.success && response.data.data) {
-        lastResult.value = response.data.data
-        updateConfirmDialog.value = false
+      const data = await apiClient.unwrap(systemApi.pullAndRestart())
+      lastResult.value = data
+      updateConfirmDialog.value = false
 
-        if (response.data.data.updated) {
-          updateStatus.value = {
-            ...updateStatus.value,
-            canUpdate: false,
-            blockCode: 'restart_pending',
-            blockMessage: translate('pages.settings.update.restartPending'),
-            restartRequested: response.data.data.restartRequested,
-            restartRequest: response.data.data.restartRequest,
-          }
-          uiStore.showSnackbar(translate('pages.settings.update.updatedToast'), 'success', 5000)
-        } else {
-          uiStore.showSnackbar(translate('pages.settings.update.upToDateToast'), 'info', 5000)
-          await loadUpdateStatus()
+      if (data.updated) {
+        updateStatus.value = {
+          ...updateStatus.value,
+          canUpdate: false,
+          blockCode: 'restart_pending',
+          blockMessage: translate('pages.settings.update.restartPending'),
+          restartRequested: data.restartRequested,
+          restartRequest: data.restartRequest,
         }
-        return
+        uiStore.showSnackbar(translate('pages.settings.update.updatedToast'), 'success', 5000)
+      } else {
+        uiStore.showSnackbar(translate('pages.settings.update.upToDateToast'), 'info', 5000)
+        await loadUpdateStatus()
       }
-
-      updateError.value =
-        response.data.error?.message || translate('pages.settings.update.runFailed')
-      uiStore.showSnackbar(updateError.value, 'error', 5000)
     } catch (errorDetail: unknown) {
       updateError.value = getErrorMessage(
         errorDetail,
-        translate('common.actions.message.networkError')
+        translate('pages.settings.update.runFailed')
       )
       uiStore.showSnackbar(updateError.value, 'error', 5000)
     } finally {
@@ -164,18 +151,11 @@ export function useSystemUpdate() {
     distError.value = ''
 
     try {
-      const response = await systemApi.getDashboardDistStatus()
-      if (response.data.success && response.data.data) {
-        distStatus.value = response.data.data
-        return
-      }
-
-      distError.value =
-        response.data.error?.message || translate('pages.settings.dist.loadFailed')
+      distStatus.value = await apiClient.unwrap(systemApi.getDashboardDistStatus())
     } catch (errorDetail: unknown) {
       distError.value = getErrorMessage(
         errorDetail,
-        translate('common.actions.message.networkError')
+        translate('pages.settings.dist.loadFailed')
       )
     } finally {
       isLoadingDistStatus.value = false
@@ -187,28 +167,21 @@ export function useSystemUpdate() {
     distError.value = ''
 
     try {
-      const response = await systemApi.updateDashboardDist()
-      if (response.data.success && response.data.data) {
-        lastDistResult.value = response.data.data
-        distConfirmDialog.value = false
-        uiStore.showSnackbar(
-          response.data.data.copied
-            ? translate('pages.settings.dist.replacedToast')
-            : translate('pages.settings.dist.upToDateToast'),
-          response.data.data.copied ? 'success' : 'info',
-          5000
-        )
-        await loadDistStatus()
-        return
-      }
-
-      distError.value =
-        response.data.error?.message || translate('pages.settings.dist.runFailed')
-      uiStore.showSnackbar(distError.value, 'error', 5000)
+      const data = await apiClient.unwrap(systemApi.updateDashboardDist())
+      lastDistResult.value = data
+      distConfirmDialog.value = false
+      uiStore.showSnackbar(
+        data.copied
+          ? translate('pages.settings.dist.replacedToast')
+          : translate('pages.settings.dist.upToDateToast'),
+        data.copied ? 'success' : 'info',
+        5000
+      )
+      await loadDistStatus()
     } catch (errorDetail: unknown) {
       distError.value = getErrorMessage(
         errorDetail,
-        translate('common.actions.message.networkError')
+        translate('pages.settings.dist.runFailed')
       )
       uiStore.showSnackbar(distError.value, 'error', 5000)
     } finally {

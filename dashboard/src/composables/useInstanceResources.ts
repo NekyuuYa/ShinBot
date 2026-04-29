@@ -2,6 +2,7 @@ import { computed, ref, watch, type Ref } from 'vue'
 
 import { agentsApi, type AgentSummary } from '@/api/agents'
 import { botConfigsApi, type BotConfig } from '@/api/botConfigs'
+import { apiClient } from '@/api/client'
 import type { JsonSchemaProperty, PluginConfigSchema } from '@/api/plugins'
 import { promptsApi, type PromptCatalogItem } from '@/api/prompts'
 import type { InstanceFormState } from '@/components/instances/types'
@@ -24,10 +25,7 @@ export function useInstanceResources(form: Ref<InstanceFormState>) {
 
   const fetchAgents = async () => {
     try {
-      const response = await agentsApi.list()
-      if (response.data.success) {
-        agents.value = response.data.data || []
-      }
+      agents.value = await apiClient.unwrap(agentsApi.list())
     } catch (errorDetail: unknown) {
       notifyLoadFailure(errorDetail, 'pages.instances.agentsLoadFailed')
     }
@@ -35,10 +33,7 @@ export function useInstanceResources(form: Ref<InstanceFormState>) {
 
   const fetchBotConfigs = async () => {
     try {
-      const response = await botConfigsApi.list()
-      if (response.data.success) {
-        botConfigs.value = response.data.data || []
-      }
+      botConfigs.value = await apiClient.unwrap(botConfigsApi.list())
     } catch (errorDetail: unknown) {
       notifyLoadFailure(errorDetail, 'pages.instances.botConfigLoadFailed')
     }
@@ -46,10 +41,7 @@ export function useInstanceResources(form: Ref<InstanceFormState>) {
 
   const fetchPrompts = async () => {
     try {
-      const response = await promptsApi.list()
-      if (response.data.success) {
-        promptCatalog.value = response.data.data || []
-      }
+      promptCatalog.value = await apiClient.unwrap(promptsApi.list())
     } catch (errorDetail: unknown) {
       notifyLoadFailure(errorDetail, 'pages.instances.promptsLoadFailed')
     }
