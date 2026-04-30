@@ -7,18 +7,15 @@ from typing import Any
 
 from shinbot.persistence.records import AIInteractionRecord, PromptSnapshotRecord
 
-from .base import _json_dumps, _json_loads
+from .base import Repository
 
 
-class AIInteractionRepository:
+class AIInteractionRepository(Repository):
     """Persistence adapter for AI decision audit records."""
-
-    def __init__(self, db: Any) -> None:
-        self._db = db
 
     def insert(self, record: AIInteractionRecord) -> int:
         """Insert an AI interaction record and return the auto-incremented id."""
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO ai_interactions (
@@ -50,14 +47,14 @@ class AIInteractionRepository:
             return cursor.lastrowid  # type: ignore[return-value]
 
     def get_by_execution(self, execution_id: str) -> dict[str, Any] | None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM ai_interactions WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
         if row is None:
             return None
-        return self._row_to_dict(row)
+        return self.row_to_dict(row)
 
     def attach_message_links(
         self,
@@ -66,7 +63,7 @@ class AIInteractionRepository:
         trigger_id: int | None = None,
         response_id: int | None = None,
     ) -> bool:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             cursor = conn.execute(
                 """
                 UPDATE ai_interactions
@@ -86,7 +83,7 @@ class AIInteractionRepository:
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Return AI interactions whose trigger message belongs to the given session."""
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT ai.*
@@ -98,44 +95,23 @@ class AIInteractionRepository:
                 """,
                 (session_id, limit),
             ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
-
-    @staticmethod
-    def _row_to_dict(row: Any) -> dict[str, Any]:
-        return {
-            "id": row["id"],
-            "execution_id": row["execution_id"],
-            "trigger_id": row["trigger_id"],
-            "response_id": row["response_id"],
-            "timestamp": row["timestamp"],
-            "latency_ms": row["latency_ms"],
-            "input_tokens": row["input_tokens"],
-            "output_tokens": row["output_tokens"],
-            "cache_read_tokens": row["cache_read_tokens"],
-            "cache_write_tokens": row["cache_write_tokens"],
-            "model_id": row["model_id"],
-            "provider_id": row["provider_id"],
-            "think_text": row["think_text"],
-            "injected_context_json": row["injected_context_json"],
-            "tool_calls_json": row["tool_calls_json"],
-            "prompt_snapshot_id": row["prompt_snapshot_id"],
-        }
+        return self.rows_to_dicts(rows)
 
 
-class PromptSnapshotRepository:
+class PromptSnapshotRepository(Repository):
     """Persistence adapter for TTL-based prompt snapshots."""
 
     SNAPSHOT_TTL_SECONDS = 10800  # 3 hours
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
-
     def insert(self, record: PromptSnapshotRecord) -> None:
         expires_at = record.expires_at
         if expires_at is None:
-            expires_at = record.created_at + self._db.config.snapshot_ttl
+            expires_at = record.created_at + self.dependency(
+                "snapshot_ttl",
+                self.SNAPSHOT_TTL_SECONDS,
+            )
 
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO prompt_snapshots (
@@ -154,8 +130,8 @@ class PromptSnapshotRepository:
                     record.model_id,
                     record.prompt_signature,
                     record.cache_key,
-                    _json_dumps(record.messages),
-                    _json_dumps(record.tools),
+                    self.json_dumps(record.messages),
+                    self.json_dumps(record.tools),
                     1 if record.compatibility_used else 0,
                     record.created_at,
                     expires_at,
@@ -169,26 +145,18 @@ class PromptSnapshotRepository:
 
     def get(self, snapshot_id: str) -> dict[str, Any] | None:
         now = time.time()
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM prompt_snapshots WHERE id = ? AND expires_at >= ?",
                 (snapshot_id, now),
             ).fetchone()
         if row is None:
             return None
-        return {
-            "id": row["id"],
-            "profile_id": row["profile_id"],
-            "caller": row["caller"],
-            "session_id": row["session_id"],
-            "instance_id": row["instance_id"],
-            "route_id": row["route_id"],
-            "model_id": row["model_id"],
-            "prompt_signature": row["prompt_signature"],
-            "cache_key": row["cache_key"],
-            "messages": _json_loads(row["messages_json"], []),
-            "tools": _json_loads(row["tools_json"], []),
-            "compatibility_used": bool(row["compatibility_used"]),
-            "created_at": row["created_at"],
-            "expires_at": row["expires_at"],
-        }
+        return self.row_to_dict(
+            row,
+            bool_fields=("compatibility_used",),
+            json_fields={
+                "messages": ("messages_json", []),
+                "tools": ("tools_json", []),
+            },
+        )

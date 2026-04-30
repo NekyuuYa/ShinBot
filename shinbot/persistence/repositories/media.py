@@ -11,17 +11,16 @@ from shinbot.persistence.records import (
     SessionMediaOccurrenceRecord,
 )
 
-from .base import _json_dumps, _json_loads
+from .base import Repository
 
 
-class MediaAssetRepository:
+class MediaAssetRepository(Repository):
     """Persistence adapter for raw media asset cache entries."""
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
+    _JSON_FIELDS = {"metadata": ("metadata_json", {})}
 
     def get(self, raw_hash: str) -> dict[str, Any] | None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM media_assets WHERE raw_hash = ?",
                 (raw_hash,),
@@ -30,7 +29,7 @@ class MediaAssetRepository:
 
     def upsert(self, record: MediaAssetRecord) -> None:
         payload = asdict(record)
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 "SELECT first_seen_at FROM media_assets WHERE raw_hash = ?",
                 (payload["raw_hash"],),
@@ -64,7 +63,7 @@ class MediaAssetRepository:
                     payload["strict_dhash"],
                     payload["width"],
                     payload["height"],
-                    _json_dumps(payload["metadata"]),
+                    self.json_dumps(payload["metadata"]),
                     first_seen_at,
                     payload["last_seen_at"],
                     payload["expire_at"],
@@ -72,7 +71,7 @@ class MediaAssetRepository:
             )
 
     def list_expired(self, now: float) -> list[dict[str, Any]]:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM media_assets
@@ -84,31 +83,15 @@ class MediaAssetRepository:
         return [self._row_to_payload(row) for row in rows]
 
     def delete(self, raw_hash: str) -> None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             conn.execute("DELETE FROM media_assets WHERE raw_hash = ?", (raw_hash,))
 
     def _row_to_payload(self, row: Any) -> dict[str, Any]:
-        return {
-            "raw_hash": row["raw_hash"],
-            "element_type": row["element_type"],
-            "storage_path": row["storage_path"],
-            "mime_type": row["mime_type"],
-            "file_size": row["file_size"],
-            "strict_dhash": row["strict_dhash"],
-            "width": row["width"],
-            "height": row["height"],
-            "metadata": _json_loads(row["metadata_json"], {}),
-            "first_seen_at": row["first_seen_at"],
-            "last_seen_at": row["last_seen_at"],
-            "expire_at": row["expire_at"],
-        }
+        return self.row_to_dict(row, json_fields=self._JSON_FIELDS)
 
 
-class MessageMediaLinkRepository:
+class MessageMediaLinkRepository(Repository):
     """Persistence adapter for message-log to media-asset relations."""
-
-    def __init__(self, db: Any) -> None:
-        self._db = db
 
     def replace_for_message(
         self,
@@ -119,7 +102,7 @@ class MessageMediaLinkRepository:
         raw_hashes: list[str],
         created_at: float,
     ) -> None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             conn.execute(
                 "DELETE FROM message_media_links WHERE message_log_id = ?",
                 (message_log_id,),
@@ -142,7 +125,7 @@ class MessageMediaLinkRepository:
                 )
 
     def list_by_message_log_id(self, message_log_id: int) -> list[dict[str, Any]]:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM message_media_links
@@ -158,7 +141,7 @@ class MessageMediaLinkRepository:
         session_id: str,
         platform_msg_id: str,
     ) -> list[dict[str, Any]]:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM message_media_links
@@ -170,7 +153,7 @@ class MessageMediaLinkRepository:
         return [self._row_to_payload(row) for row in rows]
 
     def get_latest_by_session(self, session_id: str) -> dict[str, Any] | None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM message_media_links
@@ -183,25 +166,16 @@ class MessageMediaLinkRepository:
         return self._row_to_payload(row) if row is not None else None
 
     def _row_to_payload(self, row: Any) -> dict[str, Any]:
-        return {
-            "id": row["id"],
-            "message_log_id": row["message_log_id"],
-            "session_id": row["session_id"],
-            "platform_msg_id": row["platform_msg_id"],
-            "raw_hash": row["raw_hash"],
-            "media_index": row["media_index"],
-            "created_at": row["created_at"],
-        }
+        return self.row_to_dict(row)
 
 
-class SessionMediaOccurrenceRepository:
+class SessionMediaOccurrenceRepository(Repository):
     """Persistence adapter for per-session image repeat tracking."""
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
+    _JSON_FIELDS = {"recent_timestamps": ("recent_timestamps_json", [])}
 
     def get(self, session_id: str, raw_hash: str) -> dict[str, Any] | None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM session_media_occurrences
@@ -213,7 +187,7 @@ class SessionMediaOccurrenceRepository:
 
     def upsert(self, record: SessionMediaOccurrenceRecord) -> None:
         payload = asdict(record)
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT first_seen_at FROM session_media_occurrences
@@ -244,7 +218,7 @@ class SessionMediaOccurrenceRepository:
                     payload["strict_dhash"],
                     payload["last_sender_id"],
                     payload["last_platform_msg_id"],
-                    _json_dumps(payload["recent_timestamps"]),
+                    self.json_dumps(payload["recent_timestamps"]),
                     payload["occurrence_count"],
                     first_seen_at,
                     payload["last_seen_at"],
@@ -253,7 +227,7 @@ class SessionMediaOccurrenceRepository:
             )
 
     def delete_expired(self, now: float) -> int:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM session_media_occurrences WHERE expire_at < ?",
                 (now,),
@@ -261,28 +235,16 @@ class SessionMediaOccurrenceRepository:
             return int(cursor.rowcount or 0)
 
     def _row_to_payload(self, row: Any) -> dict[str, Any]:
-        return {
-            "session_id": row["session_id"],
-            "raw_hash": row["raw_hash"],
-            "strict_dhash": row["strict_dhash"],
-            "last_sender_id": row["last_sender_id"],
-            "last_platform_msg_id": row["last_platform_msg_id"],
-            "recent_timestamps": _json_loads(row["recent_timestamps_json"], []),
-            "occurrence_count": row["occurrence_count"],
-            "first_seen_at": row["first_seen_at"],
-            "last_seen_at": row["last_seen_at"],
-            "expire_at": row["expire_at"],
-        }
+        return self.row_to_dict(row, json_fields=self._JSON_FIELDS)
 
 
-class MediaSemanticRepository:
+class MediaSemanticRepository(Repository):
     """Persistence adapter for verified media semantics cache."""
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
+    _JSON_FIELDS = {"metadata": ("metadata_json", {})}
 
     def get(self, raw_hash: str) -> dict[str, Any] | None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM media_semantics WHERE raw_hash = ?",
                 (raw_hash,),
@@ -291,7 +253,7 @@ class MediaSemanticRepository:
 
     def upsert(self, record: MediaSemanticRecord) -> None:
         payload = asdict(record)
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 "SELECT first_seen_at FROM media_semantics WHERE raw_hash = ?",
                 (payload["raw_hash"],),
@@ -321,7 +283,7 @@ class MediaSemanticRepository:
                     1 if payload["verified_by_model"] else 0,
                     payload["inspection_agent_ref"],
                     payload["inspection_llm_ref"],
-                    _json_dumps(payload["metadata"]),
+                    self.json_dumps(payload["metadata"]),
                     first_seen_at,
                     payload["last_seen_at"],
                     payload["expire_at"],
@@ -329,7 +291,7 @@ class MediaSemanticRepository:
             )
 
     def touch(self, raw_hash: str, *, last_seen_at: float, expire_at: float) -> None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE media_semantics
@@ -340,7 +302,7 @@ class MediaSemanticRepository:
             )
 
     def delete_expired(self, now: float) -> int:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM media_semantics WHERE expire_at < ?",
                 (now,),
@@ -348,15 +310,8 @@ class MediaSemanticRepository:
             return int(cursor.rowcount or 0)
 
     def _row_to_payload(self, row: Any) -> dict[str, Any]:
-        return {
-            "raw_hash": row["raw_hash"],
-            "kind": row["kind"],
-            "digest": row["digest"],
-            "verified_by_model": bool(row["verified_by_model"]),
-            "inspection_agent_ref": row["inspection_agent_ref"],
-            "inspection_llm_ref": row["inspection_llm_ref"],
-            "metadata": _json_loads(row["metadata_json"], {}),
-            "first_seen_at": row["first_seen_at"],
-            "last_seen_at": row["last_seen_at"],
-            "expire_at": row["expire_at"],
-        }
+        return self.row_to_dict(
+            row,
+            bool_fields=("verified_by_model",),
+            json_fields=self._JSON_FIELDS,
+        )

@@ -5,17 +5,14 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from .base import _json_dumps, _json_loads
+from .base import Repository
 
 
-class SessionRepository:
+class SessionRepository(Repository):
     """Persistence adapter for structured session state."""
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
-
     def get(self, session_id: str) -> dict[str, Any] | None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT
@@ -55,10 +52,10 @@ class SessionRepository:
             "permission_group": row["permission_group"],
             "created_at": row["created_at"],
             "last_active": row["last_active"],
-            "state": _json_loads(row["state_json"], {}),
-            "plugin_data": _json_loads(row["plugin_data_json"], {}),
+            "state": self.json_loads(row["state_json"], {}),
+            "plugin_data": self.json_loads(row["plugin_data_json"], {}),
             "config": {
-                "prefixes": _json_loads(row["prefixes_json"], ["/"]),
+                "prefixes": self.json_loads(row["prefixes_json"], ["/"]),
                 "llm_enabled": bool(row["llm_enabled"]) if row["llm_enabled"] is not None else True,
                 "is_muted": bool(row["is_muted"]) if row["is_muted"] is not None else False,
                 "audit_enabled": (
@@ -70,7 +67,7 @@ class SessionRepository:
     def upsert(self, payload: dict[str, Any]) -> None:
         config = dict(payload.get("config") or {})
         now = time.time()
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO sessions (
@@ -101,8 +98,8 @@ class SessionRepository:
                     payload.get("permission_group", "default"),
                     payload.get("created_at", now),
                     payload.get("last_active", now),
-                    _json_dumps(payload.get("state", {})),
-                    _json_dumps(payload.get("plugin_data", {})),
+                    self.json_dumps(payload.get("state", {})),
+                    self.json_dumps(payload.get("plugin_data", {})),
                 ),
             )
             conn.execute(
@@ -119,7 +116,7 @@ class SessionRepository:
                 """,
                 (
                     payload["id"],
-                    _json_dumps(config.get("prefixes", ["/"])),
+                    self.json_dumps(config.get("prefixes", ["/"])),
                     1 if config.get("llm_enabled", True) else 0,
                     1 if config.get("is_muted", False) else 0,
                     1 if config.get("audit_enabled", False) else 0,
@@ -128,18 +125,15 @@ class SessionRepository:
             )
 
     def delete(self, session_id: str) -> None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
 
-class AuditRepository:
+class AuditRepository(Repository):
     """Persistence adapter for structured audit logs."""
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
-
     def insert(self, payload: dict[str, Any]) -> int:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO audit_logs (
@@ -160,7 +154,7 @@ class AuditRepository:
                     payload.get("execution_time_ms", 0.0),
                     1 if payload.get("success", False) else 0,
                     payload.get("error", ""),
-                    _json_dumps(payload.get("metadata", {})),
+                    self.json_dumps(payload.get("metadata", {})),
                 ),
             )
             return int(cursor.lastrowid)

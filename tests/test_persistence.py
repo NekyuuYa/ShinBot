@@ -16,11 +16,20 @@ from shinbot.persistence import (
     ContextStrategyRecord,
     DatabaseManager,
     MessageLogRecord,
+    ModelDefinitionRecord,
     ModelExecutionRecord,
+    ModelProviderRecord,
+    ModelRouteMemberRecord,
+    ModelRouteRecord,
     PersonaRecord,
     PromptDefinitionRecord,
     PromptSnapshotRecord,
 )
+from shinbot.persistence.repositories.model_definitions import ModelDefinitionRepositoryMixin
+from shinbot.persistence.repositories.model_providers import ModelProviderRepositoryMixin
+from shinbot.persistence.repositories.model_registry import ModelRegistryRepository
+from shinbot.persistence.repositories.model_routes import ModelRouteRepositoryMixin
+from shinbot.persistence.repositories.model_usage_hourly import ModelUsageHourlyRepositoryMixin
 from shinbot.schema.events import UnifiedEvent
 from shinbot.schema.resources import Channel, User
 
@@ -162,6 +171,94 @@ class TestDatabaseManager:
         assert usage_row["total_calls"] == 1
         assert usage_row["input_tokens"] == 17
         assert usage_row["output_tokens"] == 23
+
+    def test_model_repository_mixins_can_be_instantiated_directly(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        providers = ModelProviderRepositoryMixin(db)
+        models = ModelDefinitionRepositoryMixin(db)
+        routes = ModelRouteRepositoryMixin(db)
+
+        providers.upsert_provider(
+            ModelProviderRecord(
+                id="openai-main",
+                type="openai",
+                display_name="OpenAI Main",
+            )
+        )
+        models.upsert_model(
+            ModelDefinitionRecord(
+                id="openai-main/gpt-fast",
+                provider_id="openai-main",
+                litellm_model="gpt-4.1-mini",
+                display_name="GPT Fast",
+                capabilities=["chat"],
+            )
+        )
+        routes.upsert_route(
+            ModelRouteRecord(id="agent.default_chat", purpose="chat"),
+            members=[
+                ModelRouteMemberRecord(
+                    route_id="agent.default_chat",
+                    model_id="openai-main/gpt-fast",
+                )
+            ],
+        )
+
+        assert providers.list_providers()[0]["id"] == "openai-main"
+        assert models.get_model("openai-main/gpt-fast")["capabilities"] == ["chat"]
+        assert routes.list_route_members("agent.default_chat")[0]["model_id"] == (
+            "openai-main/gpt-fast"
+        )
+
+    def test_model_usage_mixin_uses_explicit_registry_dependency(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        registry = ModelRegistryRepository(db)
+        registry.upsert_provider(
+            ModelProviderRecord(
+                id="openai-main",
+                type="openai",
+                display_name="OpenAI Main",
+            )
+        )
+        registry.upsert_model(
+            ModelDefinitionRecord(
+                id="openai-main/gpt-fast",
+                provider_id="openai-main",
+                litellm_model="gpt-4.1-mini",
+                display_name="GPT Fast",
+                cost_metadata={
+                    "input_per_million_tokens": 1.0,
+                    "output_per_million_tokens": 2.0,
+                },
+            )
+        )
+
+        started_at = datetime.now(UTC).replace(minute=12, second=0, microsecond=0)
+        db.model_executions.insert(
+            ModelExecutionRecord(
+                id="exec-usage-mixin",
+                provider_id="openai-main",
+                model_id="openai-main/gpt-fast",
+                started_at=started_at.isoformat(),
+                success=True,
+                input_tokens=1000,
+                output_tokens=2000,
+            )
+        )
+
+        usage = ModelUsageHourlyRepositoryMixin(db, model_registry=registry)
+        analysis = usage.analyze_costs(
+            since=(started_at - timedelta(days=1)).replace(hour=0).isoformat(),
+            hourly_since=(started_at - timedelta(hours=23)).replace(minute=0).isoformat(),
+        )
+
+        assert analysis["summary"]["total_calls"] == 1
+        assert analysis["models"][0]["model_display_name"] == "GPT Fast"
+        assert analysis["models"][0]["estimated_cost"] > 0
 
     def test_initialize_seeds_builtin_context_strategy(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -559,6 +656,31 @@ class TestDatabaseManager:
         )
         db.prompt_snapshots.insert(expired_record)
         assert db.prompt_snapshots.get(expired_id) is None
+
+    def test_prompt_snapshot_repository_uses_injected_ttl(self, tmp_path):
+        import time
+        import uuid
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path, snapshot_ttl=2)
+        db.initialize()
+
+        now = time.time()
+        snapshot_id = str(uuid.uuid4())
+        db.prompt_snapshots.insert(
+            PromptSnapshotRecord(
+                id=snapshot_id,
+                created_at=now,
+                expires_at=None,
+            )
+        )
+
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT expires_at FROM prompt_snapshots WHERE id = ?",
+                (snapshot_id,),
+            ).fetchone()
+
+        assert row["expires_at"] == now + 2
 
     def test_session_roundtrip_via_database(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

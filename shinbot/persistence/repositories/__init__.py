@@ -8,7 +8,7 @@ from .admin import (
     PromptDefinitionRepository,
 )
 from .ai import AIInteractionRepository, PromptSnapshotRepository
-from .base import ContextProvider
+from .base import ContextProvider, Repository
 from .media import (
     MediaAssetRepository,
     MediaSemanticRepository,
@@ -35,6 +35,7 @@ __all__ = [
     "PersonaRepository",
     "PromptDefinitionRepository",
     "PromptSnapshotRepository",
+    "Repository",
     "SessionMediaOccurrenceRepository",
     "SessionRepository",
 ]

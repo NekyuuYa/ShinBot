@@ -6,18 +6,15 @@ from typing import Any
 
 from shinbot.persistence.records import MessageLogRecord
 
-from .base import ContextProvider
+from .base import ContextProvider, Repository
 
 
-class MessageLogRepository(ContextProvider):
+class MessageLogRepository(Repository, ContextProvider):
     """Persistence adapter for the full communication log."""
-
-    def __init__(self, db: Any) -> None:
-        self._db = db
 
     def insert(self, record: MessageLogRecord) -> int:
         """Insert a message log entry and return the auto-incremented id."""
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO message_logs (
@@ -41,11 +38,11 @@ class MessageLogRepository(ContextProvider):
             return cursor.lastrowid  # type: ignore[return-value]
 
     def mark_read(self, msg_id: int) -> None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             conn.execute("UPDATE message_logs SET is_read = 1 WHERE id = ?", (msg_id,))
 
     def get(self, msg_id: int) -> dict[str, Any] | None:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute("SELECT * FROM message_logs WHERE id = ?", (msg_id,)).fetchone()
         if row is None:
             return None
@@ -58,7 +55,7 @@ class MessageLogRepository(ContextProvider):
     ) -> dict[str, Any] | None:
         if not session_id or not platform_msg_id:
             return None
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM message_logs
@@ -79,7 +76,7 @@ class MessageLogRepository(ContextProvider):
         limit: int = 50,
         before_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             if before_id is not None:
                 rows = conn.execute(
                     """
@@ -114,7 +111,7 @@ class MessageLogRepository(ContextProvider):
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Return messages within a time range in chronological order."""
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM message_logs
@@ -136,7 +133,7 @@ class MessageLogRepository(ContextProvider):
         needle = query.strip()
         if not needle:
             return []
-        with self._db.connect() as conn:
+        with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM message_logs
