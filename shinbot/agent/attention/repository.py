@@ -92,6 +92,63 @@ class AttentionRepository:
                 ),
             )
 
+    def fetch_pending_batch(
+        self,
+        session_id: str,
+        *,
+        base_threshold: float = 5.0,
+    ) -> tuple[list[dict[str, Any]], SessionAttentionState, int | None]:
+        """Fetch unconsumed user messages with the current attention state."""
+        state = self.get_or_create_attention(session_id, base_threshold=base_threshold)
+        after_id = state.last_consumed_msg_log_id
+
+        with self._db.connect() as conn:
+            if after_id is not None:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM message_logs
+                    WHERE session_id = ? AND id > ? AND role = 'user'
+                    ORDER BY id ASC
+                    """,
+                    (session_id, after_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM message_logs
+                    WHERE session_id = ? AND role = 'user'
+                    ORDER BY id ASC
+                    """,
+                    (session_id,),
+                ).fetchall()
+
+        if not rows:
+            return [], state, None
+
+        batch = [dict(row) for row in rows]
+        return batch, state, batch[-1]["id"]
+
+    def count_recent_mentions(
+        self,
+        session_id: str,
+        *,
+        window_seconds: float,
+        now: float | None = None,
+    ) -> int:
+        """Count mentioned user messages in the recent burst window."""
+        if now is None:
+            now = time.time()
+        cutoff_ms = (now - window_seconds) * 1000  # message_logs.created_at uses ms
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) as cnt FROM message_logs
+                WHERE session_id = ? AND is_mentioned = 1 AND created_at >= ?
+                """,
+                (session_id, cutoff_ms),
+            ).fetchone()
+        return int(row["cnt"]) if row else 0
+
     # ── SenderWeightState ───────────────────────────────────────────
 
     def get_sender_weight(

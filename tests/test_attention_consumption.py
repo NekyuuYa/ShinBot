@@ -26,13 +26,111 @@ def test_scheduler_uses_dedicated_config_for_response_profiles(tmp_path):
     )
     scheduler = AttentionScheduler(
         AttentionEngine(engine_config, db.attention),
-        db,
         scheduler_config,
     )
 
     assert scheduler._resolve_response_profile("balanced") == ("balanced", 7.0, 250.0)
     assert scheduler._resolve_response_profile("passive") == ("passive", 9.0, 1200.0)
     assert scheduler._resolve_response_profile("immediate") == ("immediate", 1.5, 0.0)
+
+
+def test_attention_repository_fetches_pending_batch_after_cursor(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:g1"
+    SessionManager(session_repo=db.sessions).update(
+        Session(
+            id=session_id,
+            instance_id="inst",
+            session_type="group",
+            channel_id="g1",
+        )
+    )
+
+    first_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="already consumed",
+            sender_id="u1",
+            created_at=1000.0,
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="assistant",
+            raw_text="assistant reply",
+            created_at=2000.0,
+        )
+    )
+    pending_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="pending",
+            sender_id="u2",
+            created_at=3000.0,
+        )
+    )
+
+    state = db.attention.get_or_create_attention(session_id, base_threshold=7.0)
+    state.last_consumed_msg_log_id = first_id
+    db.attention.save_attention(state)
+
+    batch, fetched_state, last_id = db.attention.fetch_pending_batch(
+        session_id,
+        base_threshold=7.0,
+    )
+
+    assert [item["raw_text"] for item in batch] == ["pending"]
+    assert fetched_state.last_consumed_msg_log_id == first_id
+    assert last_id == pending_id
+
+
+def test_attention_repository_counts_recent_mentions_by_window(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "inst:group:g1"
+
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="@bot old",
+            sender_id="u1",
+            created_at=90_000.0,
+            is_mentioned=True,
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="@bot recent",
+            sender_id="u1",
+            created_at=99_000.0,
+            is_mentioned=True,
+        )
+    )
+    db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            role="user",
+            raw_text="recent but not mention",
+            sender_id="u1",
+            created_at=99_500.0,
+            is_mentioned=False,
+        )
+    )
+
+    count = db.attention.count_recent_mentions(
+        session_id,
+        window_seconds=5.0,
+        now=100.0,
+    )
+
+    assert count == 1
 
 
 @pytest.mark.asyncio
@@ -68,7 +166,7 @@ async def test_dispatch_consumes_trigger_attention_before_workflow(tmp_path):
         refreshed = db.attention.get_or_create_attention(session_id)
         observed["attention_value"] = refreshed.attention_value
 
-    scheduler = AttentionScheduler(engine, db, config, workflow_dispatcher=dispatcher)
+    scheduler = AttentionScheduler(engine, config, workflow_dispatcher=dispatcher)
 
     await scheduler._do_dispatch(session_id, "balanced")
 
@@ -144,7 +242,7 @@ async def test_direct_dispatch_runs_workflow_without_attention_update(tmp_path):
         observed["profile"] = profile
         dispatched.set()
 
-    scheduler = AttentionScheduler(engine, db, config, workflow_dispatcher=dispatcher)
+    scheduler = AttentionScheduler(engine, config, workflow_dispatcher=dispatcher)
 
     await scheduler.dispatch_immediately(session_id, response_profile="disabled")
     await asyncio.wait_for(dispatched.wait(), timeout=1.0)
@@ -181,7 +279,7 @@ async def test_scheduler_persists_self_platform_id_in_attention_metadata(tmp_pat
     )
 
     config = AttentionConfig(base_threshold=999.0)
-    scheduler = AttentionScheduler(AttentionEngine(config, db.attention), db, config)
+    scheduler = AttentionScheduler(AttentionEngine(config, db.attention), config)
 
     await scheduler.on_message(
         session_id,

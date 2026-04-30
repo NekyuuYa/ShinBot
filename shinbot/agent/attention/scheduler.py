@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -21,7 +20,6 @@ from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from shinbot.agent.context import ContextManager
-    from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
 
@@ -90,7 +88,6 @@ class AttentionScheduler:
     def __init__(
         self,
         engine: AttentionEngine,
-        database: DatabaseManager,
         config: AttentionSchedulerConfig | AttentionConfig | None = None,
         *,
         context_manager: ContextManager | None = None,
@@ -98,7 +95,6 @@ class AttentionScheduler:
         trigger_strategies: Iterable[AttentionTriggerStrategy] | None = None,
     ) -> None:
         self._engine = engine
-        self._database = database
         self._config = self._resolve_config(config, engine.config)
         self._context_manager = context_manager
         self._workflow_dispatcher = workflow_dispatcher
@@ -455,38 +451,10 @@ class AttentionScheduler:
         session_id: str,
     ) -> tuple[list[dict[str, Any]], SessionAttentionState, int | None]:
         """Fetch unconsumed messages without modifying persistent state."""
-        state = self._engine.repo.get_or_create_attention(
+        return self._engine.repo.fetch_pending_batch(
             session_id,
             base_threshold=self._config.balanced_base_threshold,
         )
-
-        after_id = state.last_consumed_msg_log_id
-
-        with self._database.connect() as conn:
-            if after_id is not None:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM message_logs
-                    WHERE session_id = ? AND id > ? AND role = 'user'
-                    ORDER BY id ASC
-                    """,
-                    (session_id, after_id),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM message_logs
-                    WHERE session_id = ? AND role = 'user'
-                    ORDER BY id ASC
-                    """,
-                    (session_id,),
-                ).fetchall()
-
-        if not rows:
-            return [], state, None
-
-        batch = [dict(row) for row in rows]
-        return batch, state, batch[-1]["id"]
 
     def _count_recent_mentions(
         self,
@@ -494,16 +462,10 @@ class AttentionScheduler:
         window_seconds: float,
     ) -> int:
         """Count messages with is_mentioned=1 in the recent burst window."""
-        cutoff_ms = (time.time() - window_seconds) * 1000  # message_logs uses ms
-        with self._database.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT COUNT(*) as cnt FROM message_logs
-                WHERE session_id = ? AND is_mentioned = 1 AND created_at >= ?
-                """,
-                (session_id, cutoff_ms),
-            ).fetchone()
-        return int(row["cnt"]) if row else 0
+        return self._engine.repo.count_recent_mentions(
+            session_id,
+            window_seconds=window_seconds,
+        )
 
     async def shutdown(self) -> None:
         """Cancel all pending timers and running workflows."""

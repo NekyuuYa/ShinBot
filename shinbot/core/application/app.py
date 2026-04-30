@@ -159,7 +159,6 @@ class ShinBot:
             )
             self.attention_scheduler = AttentionScheduler(
                 self.attention_engine,
-                self.database,
                 self.attention_scheduler_config,
                 context_manager=self.context_manager,
             )
