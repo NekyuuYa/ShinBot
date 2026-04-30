@@ -4,6 +4,13 @@ import asyncio
 
 import pytest
 
+from shinbot.agent.attention.scheduler import AttentionScheduler
+from shinbot.agent.attention.trigger_strategy import (
+    AttentionTriggerActions,
+    AttentionTriggerContext,
+    AttentionTriggerStrategy,
+    default_attention_trigger_strategies,
+)
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
@@ -63,6 +70,71 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
     )
 
 
+class KeywordDirectDispatchStrategy:
+    def __init__(self, keyword: str) -> None:
+        self._keyword = keyword
+
+    def schedule(
+        self,
+        context: AttentionTriggerContext,
+        actions: AttentionTriggerActions,
+    ) -> bool:
+        if self._keyword not in context.message.get_text(self_id=context.self_platform_id):
+            return False
+        actions.dispatch_immediately(context)
+        return True
+
+
+class RecordingAttentionScheduler(AttentionScheduler):
+    def __init__(
+        self,
+        *,
+        trigger_strategies: tuple[AttentionTriggerStrategy, ...] | None = None,
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.direct_calls: list[dict[str, object]] = []
+        if trigger_strategies is not None:
+            self._trigger_strategies = list(trigger_strategies)
+
+    async def dispatch_immediately(
+        self,
+        session_id: str,
+        *,
+        response_profile: str = "disabled",
+    ) -> None:
+        self.direct_calls.append(
+            {
+                "session_id": session_id,
+                "response_profile": response_profile,
+            }
+        )
+
+    async def on_message(
+        self,
+        session_id: str,
+        msg_log_id: int,
+        sender_id: str,
+        *,
+        response_profile: str = "balanced",
+        is_mentioned: bool = False,
+        is_reply_to_bot: bool = False,
+        attention_multiplier: float = 1.0,
+        self_platform_id: str = "",
+    ) -> None:
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "msg_log_id": msg_log_id,
+                "sender_id": sender_id,
+                "response_profile": response_profile,
+                "is_mentioned": is_mentioned,
+                "is_reply_to_bot": is_reply_to_bot,
+                "attention_multiplier": attention_multiplier,
+                "self_platform_id": self_platform_id,
+            }
+        )
+
+
 class TestMessagePipeline:
     def setup_method(self):
         self.adapter_mgr = AdapterManager()
@@ -84,48 +156,6 @@ class TestMessagePipeline:
     async def test_pipeline_dispatches_private_messages_directly_by_default(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
-                self.direct_calls: list[dict[str, object]] = []
-
-            async def dispatch_immediately(
-                self,
-                session_id: str,
-                *,
-                response_profile: str = "disabled",
-            ) -> None:
-                self.direct_calls.append(
-                    {
-                        "session_id": session_id,
-                        "response_profile": response_profile,
-                    }
-                )
-
-            async def on_message(
-                self,
-                session_id: str,
-                msg_log_id: int,
-                sender_id: str,
-                *,
-                response_profile: str = "balanced",
-                is_mentioned: bool = False,
-                is_reply_to_bot: bool = False,
-                attention_multiplier: float = 1.0,
-                self_platform_id: str = "",
-            ) -> None:
-                self.calls.append(
-                    {
-                        "session_id": session_id,
-                        "msg_log_id": msg_log_id,
-                        "sender_id": sender_id,
-                        "response_profile": response_profile,
-                        "is_mentioned": is_mentioned,
-                        "is_reply_to_bot": is_reply_to_bot,
-                        "attention_multiplier": attention_multiplier,
-                    }
-                )
 
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
@@ -150,33 +180,41 @@ class TestMessagePipeline:
         ]
 
     @pytest.mark.asyncio
-    async def test_pipeline_routes_group_messages_to_balanced_profile_by_default(self, tmp_path):
+    async def test_pipeline_accepts_custom_attention_trigger_strategy(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
+        scheduler = RecordingAttentionScheduler(
+            trigger_strategies=(
+                KeywordDirectDispatchStrategy("!now"),
+                *default_attention_trigger_strategies(),
+            )
+        )
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            attention_scheduler=scheduler,  # type: ignore[arg-type]
+        )
 
-            async def on_message(
-                self,
-                session_id: str,
-                msg_log_id: int,
-                sender_id: str,
-                *,
-                response_profile: str = "balanced",
-                is_mentioned: bool = False,
-                is_reply_to_bot: bool = False,
-                attention_multiplier: float = 1.0,
-                self_platform_id: str = "",
-            ) -> None:
-                self.calls.append(
-                    {
-                        "response_profile": response_profile,
-                        "is_mentioned": is_mentioned,
-                        "attention_multiplier": attention_multiplier,
-                    }
-                )
+        await pipeline.process_event(make_event("please answer !now", channel_type=0), self.adapter)
+        await asyncio.sleep(0)
+
+        assert scheduler.calls == []
+        assert scheduler.direct_calls == [
+            {
+                "session_id": "test-bot:group:group:1",
+                "response_profile": "balanced",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_pipeline_routes_group_messages_to_balanced_profile_by_default(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
 
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
@@ -200,30 +238,6 @@ class TestMessagePipeline:
     async def test_pipeline_routes_priority_group_messages_to_immediate_profile(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
-
-            async def on_message(
-                self,
-                session_id: str,
-                msg_log_id: int,
-                sender_id: str,
-                *,
-                response_profile: str = "balanced",
-                is_mentioned: bool = False,
-                is_reply_to_bot: bool = False,
-                attention_multiplier: float = 1.0,
-                self_platform_id: str = "",
-            ) -> None:
-                self.calls.append(
-                    {
-                        "response_profile": response_profile,
-                        "is_mentioned": is_mentioned,
-                        "attention_multiplier": attention_multiplier,
-                    }
-                )
 
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
@@ -250,29 +264,6 @@ class TestMessagePipeline:
     async def test_pipeline_attention_multiplier_for_poke_and_at_other(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
-
-            async def on_message(
-                self,
-                session_id: str,
-                msg_log_id: int,
-                sender_id: str,
-                *,
-                response_profile: str = "balanced",
-                is_mentioned: bool = False,
-                is_reply_to_bot: bool = False,
-                attention_multiplier: float = 1.0,
-                self_platform_id: str = "",
-            ) -> None:
-                self.calls.append(
-                    {
-                        "is_mentioned": is_mentioned,
-                        "attention_multiplier": attention_multiplier,
-                    }
-                )
 
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
@@ -319,24 +310,6 @@ class TestMessagePipeline:
             )
         )
 
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
-
-            async def on_message(
-                self,
-                session_id: str,
-                msg_log_id: int,
-                sender_id: str,
-                *,
-                response_profile: str = "balanced",
-                is_mentioned: bool = False,
-                is_reply_to_bot: bool = False,
-                attention_multiplier: float = 1.0,
-                self_platform_id: str = "",
-            ) -> None:
-                self.calls.append({"response_profile": response_profile})
-
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
             adapter_manager=self.adapter_mgr,
@@ -369,30 +342,6 @@ class TestMessagePipeline:
             )
         )
 
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
-
-            async def on_message(
-                self,
-                session_id: str,
-                msg_log_id: int,
-                sender_id: str,
-                *,
-                response_profile: str = "balanced",
-                is_mentioned: bool = False,
-                is_reply_to_bot: bool = False,
-                attention_multiplier: float = 1.0,
-                self_platform_id: str = "",
-            ) -> None:
-                self.calls.append(
-                    {
-                        "response_profile": response_profile,
-                        "is_mentioned": is_mentioned,
-                        "attention_multiplier": attention_multiplier,
-                    }
-                )
-
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
             adapter_manager=self.adapter_mgr,
@@ -421,13 +370,6 @@ class TestMessagePipeline:
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls = 0
-
-            async def on_message(self, *args, **kwargs) -> None:
-                self.calls += 1
-
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
             adapter_manager=self.adapter_mgr,
@@ -448,4 +390,4 @@ class TestMessagePipeline:
 
         assert len(self.adapter.sent) == 1
         assert Message(elements=self.adapter.sent[0][1]).get_text() == "plugin reply"
-        assert scheduler.calls == 0
+        assert scheduler.calls == []

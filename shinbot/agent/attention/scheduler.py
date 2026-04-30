@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
+from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine, AttentionEngineConfig
 from shinbot.agent.attention.models import SessionAttentionState
+from shinbot.agent.attention.trigger_strategy import (
+    AttentionTriggerActions,
+    AttentionTriggerContext,
+    AttentionTriggerStrategy,
+    default_attention_trigger_strategies,
+)
+from shinbot.schema.elements import Message, MessageElement
 from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -26,6 +34,49 @@ WorkflowDispatcher = Callable[
 ]
 
 
+@dataclass(slots=True)
+class AttentionSchedulerConfig:
+    """Tunable parameters for scheduler-owned attention timing and profiles."""
+
+    # Count mentions in this lookback window before passing the count to the engine.
+    burst_window_seconds: float = 8.0
+
+    # Wait for semantic boundary before dispatching an accumulated batch.
+    semantic_wait_ms: float = 1000.0
+
+    # Response-profile dispatch policy.
+    balanced_base_threshold: float = 5.0
+    immediate_base_threshold: float = 1.0
+    passive_base_threshold: float = 8.0
+    passive_min_wait_ms: float = 1500.0
+
+    @classmethod
+    def from_engine_config(cls, config: AttentionEngineConfig) -> AttentionSchedulerConfig:
+        """Build scheduler defaults from the engine config's public threshold."""
+        return cls(balanced_base_threshold=config.base_threshold)
+
+
+class _SchedulerTriggerActions(AttentionTriggerActions):
+    def __init__(self, scheduler: AttentionScheduler) -> None:
+        self._scheduler = scheduler
+
+    def accumulate_attention(
+        self,
+        context: AttentionTriggerContext,
+        *,
+        is_mentioned: bool = False,
+        attention_multiplier: float = 1.0,
+    ) -> None:
+        self._scheduler._schedule_attention_update(
+            context,
+            is_mentioned=is_mentioned,
+            attention_multiplier=attention_multiplier,
+        )
+
+    def dispatch_immediately(self, context: AttentionTriggerContext) -> None:
+        self._scheduler._schedule_direct_dispatch(context)
+
+
 class AttentionScheduler:
     """Manages semantic boundary waiting and batch claim for attention triggers.
 
@@ -40,16 +91,22 @@ class AttentionScheduler:
         self,
         engine: AttentionEngine,
         database: DatabaseManager,
-        config: AttentionConfig,
+        config: AttentionSchedulerConfig | AttentionConfig | None = None,
         *,
         context_manager: ContextManager | None = None,
         workflow_dispatcher: WorkflowDispatcher | None = None,
+        trigger_strategies: Iterable[AttentionTriggerStrategy] | None = None,
     ) -> None:
         self._engine = engine
         self._database = database
-        self._config = config
+        self._config = self._resolve_config(config, engine.config)
         self._context_manager = context_manager
         self._workflow_dispatcher = workflow_dispatcher
+        self._trigger_strategies = list(
+            trigger_strategies
+            if trigger_strategies is not None
+            else default_attention_trigger_strategies()
+        )
 
         # Per-session pending timer tasks
         self._pending_timers: dict[str, asyncio.Task[None]] = {}
@@ -60,13 +117,113 @@ class AttentionScheduler:
         # Track running workflow tasks to prevent overlapping runs
         self._running_workflows: dict[str, asyncio.Task[None]] = {}
 
+    @staticmethod
+    def _resolve_config(
+        config: AttentionSchedulerConfig | AttentionConfig | None,
+        engine_config: AttentionEngineConfig,
+    ) -> AttentionSchedulerConfig:
+        if config is None:
+            return AttentionSchedulerConfig.from_engine_config(engine_config)
+        if isinstance(config, AttentionSchedulerConfig):
+            return config
+        return AttentionSchedulerConfig.from_engine_config(config)
+
     def set_workflow_dispatcher(self, dispatcher: WorkflowDispatcher) -> None:
         self._workflow_dispatcher = dispatcher
+
+    def add_trigger_strategy(
+        self,
+        strategy: AttentionTriggerStrategy,
+        *,
+        prepend: bool = True,
+    ) -> None:
+        """Register a trigger strategy in the scheduler's strategy chain."""
+        if prepend:
+            self._trigger_strategies.insert(0, strategy)
+        else:
+            self._trigger_strategies.append(strategy)
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
         if session_id not in self._locks:
             self._locks[session_id] = asyncio.Lock()
         return self._locks[session_id]
+
+    def _get_trigger_strategies(self) -> list[AttentionTriggerStrategy]:
+        strategies = getattr(self, "_trigger_strategies", None)
+        if strategies is None:
+            return list(default_attention_trigger_strategies())
+        return list(strategies)
+
+    def schedule_message(
+        self,
+        session_id: str,
+        msg_log_id: int | None,
+        sender_id: str,
+        *,
+        response_profile: str = "balanced",
+        message: Message | Iterable[MessageElement],
+        self_platform_id: str = "",
+        is_reply_to_bot: bool = False,
+        already_handled: bool = False,
+        is_stopped: bool = False,
+    ) -> bool:
+        """Schedule attention work for one persisted pipeline message.
+
+        Returns True when the attention system accepted ownership of the message
+        by either updating attention state or directly dispatching a pending
+        batch. Returns False when the caller should finish normal read handling.
+        """
+        if already_handled or is_stopped or msg_log_id is None:
+            return False
+
+        normalized_message = (
+            message if isinstance(message, Message) else Message(elements=list(message))
+        )
+        context = AttentionTriggerContext(
+            session_id=session_id,
+            msg_log_id=msg_log_id,
+            sender_id=sender_id,
+            response_profile=response_profile,
+            message=normalized_message,
+            self_platform_id=self_platform_id,
+            is_reply_to_bot=is_reply_to_bot,
+        )
+        actions = _SchedulerTriggerActions(self)
+
+        for strategy in self._get_trigger_strategies():
+            if strategy.schedule(context, actions):
+                return True
+        return False
+
+    def _schedule_attention_update(
+        self,
+        context: AttentionTriggerContext,
+        *,
+        is_mentioned: bool = False,
+        attention_multiplier: float = 1.0,
+    ) -> None:
+        asyncio.create_task(
+            self.on_message(
+                context.session_id,
+                context.msg_log_id,
+                context.sender_id,
+                response_profile=context.response_profile,
+                is_mentioned=is_mentioned,
+                is_reply_to_bot=context.is_reply_to_bot,
+                attention_multiplier=attention_multiplier,
+                self_platform_id=context.self_platform_id,
+            ),
+            name=f"attention-{context.session_id}",
+        )
+
+    def _schedule_direct_dispatch(self, context: AttentionTriggerContext) -> None:
+        asyncio.create_task(
+            self.dispatch_immediately(
+                context.session_id,
+                response_profile=context.response_profile,
+            ),
+            name=f"attention-direct-{context.session_id}",
+        )
 
     async def dispatch_immediately(
         self,
@@ -203,10 +360,18 @@ class AttentionScheduler:
     def _resolve_response_profile(self, response_profile: str) -> tuple[str, float, float]:
         profile = str(response_profile or "").strip().lower()
         if profile == "immediate":
-            return "immediate", 1.0, 0.0
+            return "immediate", self._config.immediate_base_threshold, 0.0
         if profile == "passive":
-            return "passive", 8.0, max(self._config.semantic_wait_ms, 1500.0)
-        return "balanced", self._config.base_threshold, self._config.semantic_wait_ms
+            return (
+                "passive",
+                self._config.passive_base_threshold,
+                max(self._config.semantic_wait_ms, self._config.passive_min_wait_ms),
+            )
+        return (
+            "balanced",
+            self._config.balanced_base_threshold,
+            self._config.semantic_wait_ms,
+        )
 
     async def _semantic_wait_then_dispatch(
         self,
@@ -292,7 +457,7 @@ class AttentionScheduler:
         """Fetch unconsumed messages without modifying persistent state."""
         state = self._engine.repo.get_or_create_attention(
             session_id,
-            base_threshold=self._config.base_threshold,
+            base_threshold=self._config.balanced_base_threshold,
         )
 
         after_id = state.last_consumed_msg_log_id

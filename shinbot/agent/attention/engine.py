@@ -16,8 +16,8 @@ logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
-class AttentionConfig:
-    """Tunable parameters for the attention system."""
+class AttentionEngineConfig:
+    """Tunable parameters for the attention engine."""
 
     # Threshold
     base_threshold: float = 5.0
@@ -38,8 +38,7 @@ class AttentionConfig:
     poke_other_multiplier: float = 0.2
     mention_other_multiplier: float = 0.6
 
-    # Burst detection (Robust Interrupt)
-    burst_window_seconds: float = 8.0
+    # Burst contribution amplification (Robust Interrupt)
     burst_exponent: float = 1.5
     # Cap on the burst amplification factor to prevent runaway contributions
     # from coordinated mention storms.  burst_factor = min(n^exp, burst_cap).
@@ -55,15 +54,15 @@ class AttentionConfig:
     fatigue_decay_k: float = 0.02
     cooldown_seconds: float = 3.0
 
-    # Semantic boundary wait
-    semantic_wait_ms: float = 1000.0
-
     # Sender weight bounds
     weight_min: float = -2.0
     weight_max: float = 2.0
 
     # Debug mode — enable structured console traces for attention values
     debug: bool = False
+
+
+AttentionConfig = AttentionEngineConfig
 
 
 def _clamp(value: float, lo: float, hi: float) -> tuple[float, str]:
@@ -90,7 +89,7 @@ class AttentionEngine:
     FIXED_BASE_THRESHOLD_METADATA_KEY = "fixed_base_threshold"
     UNANSWERED_MENTION_STREAK_METADATA_KEY = "unanswered_mention_streak"
 
-    def __init__(self, config: AttentionConfig, repository: AttentionRepository) -> None:
+    def __init__(self, config: AttentionEngineConfig, repository: AttentionRepository) -> None:
         self.config = config
         self.repo = repository
         self.tracer = AttentionDebugTracer(enabled=config.debug)

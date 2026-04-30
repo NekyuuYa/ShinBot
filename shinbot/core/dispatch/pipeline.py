@@ -802,48 +802,20 @@ class MessagePipeline:
         # immediacy requirements are expressed through response profiles on the
         # same workflow engine.
         response_profile = self._resolve_response_profile(bot)
-        should_schedule_attention = (
-            self._attention_scheduler is not None
-            and not bot._sent_messages
-            and not bot.is_stopped
-            and bot._msg_log_id is not None
-            and self._is_attention_profile_enabled(response_profile)
-        )
-        should_dispatch_directly = (
-            self._attention_scheduler is not None
-            and not bot._sent_messages
-            and not bot.is_stopped
-            and bot._msg_log_id is not None
-            and not self._is_attention_profile_enabled(response_profile)
-        )
-        if should_schedule_attention:
-            is_mentioned = any(
-                el.type == "at" and el.attrs.get("id") == event.self_id for el in message.elements
+        handled_by_attention = False
+        if self._attention_scheduler is not None:
+            handled_by_attention = self._attention_scheduler.schedule_message(
+                session_id,
+                bot._msg_log_id,
+                event.sender_id or "",
+                response_profile=response_profile,
+                message=message,
+                self_platform_id=event.self_id,
+                is_reply_to_bot=bot.is_reply_to_bot(),
+                already_handled=bool(bot._sent_messages),
+                is_stopped=bot.is_stopped,
             )
-            attention_multiplier = self._resolve_attention_multiplier(message, event.self_id)
-            # Fire-and-forget: attention accumulation runs async
-            asyncio.create_task(
-                self._attention_scheduler.on_message(
-                    session_id,
-                    bot._msg_log_id,
-                    event.sender_id or "",
-                    response_profile=response_profile,
-                    is_mentioned=is_mentioned,
-                    is_reply_to_bot=bot.is_reply_to_bot(),
-                    attention_multiplier=attention_multiplier,
-                    self_platform_id=event.self_id,
-                ),
-                name=f"attention-{session_id}",
-            )
-        elif should_dispatch_directly:
-            asyncio.create_task(
-                self._attention_scheduler.dispatch_immediately(
-                    session_id,
-                    response_profile=response_profile,
-                ),
-                name=f"attention-direct-{session_id}",
-            )
-        elif self._database is not None and bot._msg_log_id is not None:
+        if not handled_by_attention and self._database is not None and bot._msg_log_id is not None:
             self._database.message_logs.mark_read(bot._msg_log_id)
             if self._context_manager is not None:
                 self._context_manager.mark_read_until(session_id, bot._msg_log_id)
@@ -860,46 +832,3 @@ class MessagePipeline:
             is_mentioned=bot.is_mentioned,
             is_reply_to_bot=bot.is_reply_to_bot(),
         )
-
-    @staticmethod
-    def _is_attention_profile_enabled(response_profile: str) -> bool:
-        return str(response_profile or "").strip().lower() not in {
-            "",
-            ATTENTION_DISABLED_PROFILE,
-            "disable",
-            "off",
-            "none",
-        }
-
-    @staticmethod
-    def _resolve_attention_multiplier(message: Message, self_id: str) -> float:
-        self_id = str(self_id or "").strip()
-        has_poke_self = False
-        has_poke_other = False
-        has_at_self = False
-        has_at_other = False
-
-        stack = list(message.elements)
-        while stack:
-            element = stack.pop()
-            if element.type == "sb:poke":
-                target = str(element.attrs.get("target", "") or "").strip()
-                if target and self_id and target == self_id:
-                    has_poke_self = True
-                else:
-                    has_poke_other = True
-            elif element.type == "at":
-                target = str(element.attrs.get("id", "") or "").strip()
-                if target and self_id and target == self_id:
-                    has_at_self = True
-                elif target:
-                    has_at_other = True
-            stack.extend(element.children)
-
-        if has_poke_self:
-            return 2.0
-        if has_poke_other:
-            return 0.2
-        if has_at_other and not has_at_self:
-            return 0.6
-        return 1.0

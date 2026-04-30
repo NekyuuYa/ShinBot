@@ -14,6 +14,7 @@ from shinbot.agent.attention import (
     AttentionConfig,
     AttentionEngine,
     AttentionScheduler,
+    AttentionSchedulerConfig,
     register_attention_runtime,
 )
 from shinbot.agent.context import ContextManager
@@ -60,6 +61,7 @@ class ShinBot:
         database_url: str | None = None,
         database_snapshot_ttl: int | None = None,
         attention_config: AttentionConfig | None = None,
+        attention_scheduler_config: AttentionSchedulerConfig | None = None,
         attention_debug: bool = False,
     ) -> None:
         # Core subsystems
@@ -142,6 +144,10 @@ class ShinBot:
         self.attention_config = attention_config or AttentionConfig()
         if attention_debug:
             self.attention_config.debug = True
+        self.attention_scheduler_config = (
+            attention_scheduler_config
+            or AttentionSchedulerConfig.from_engine_config(self.attention_config)
+        )
         self.attention_engine: AttentionEngine | None = None
         self.attention_scheduler: AttentionScheduler | None = None
         self.workflow_runner: WorkflowRunner | None = None
@@ -154,7 +160,7 @@ class ShinBot:
             self.attention_scheduler = AttentionScheduler(
                 self.attention_engine,
                 self.database,
-                self.attention_config,
+                self.attention_scheduler_config,
                 context_manager=self.context_manager,
             )
             self.workflow_runner = WorkflowRunner(

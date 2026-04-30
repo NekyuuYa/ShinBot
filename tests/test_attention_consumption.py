@@ -6,10 +6,33 @@ import time
 import pytest
 
 from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
-from shinbot.agent.attention.scheduler import AttentionScheduler
+from shinbot.agent.attention.scheduler import AttentionScheduler, AttentionSchedulerConfig
 from shinbot.core.state.session import Session, SessionManager
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
+
+
+def test_scheduler_uses_dedicated_config_for_response_profiles(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+
+    engine_config = AttentionConfig(base_threshold=3.0)
+    scheduler_config = AttentionSchedulerConfig(
+        semantic_wait_ms=250.0,
+        balanced_base_threshold=7.0,
+        passive_base_threshold=9.0,
+        passive_min_wait_ms=1200.0,
+        immediate_base_threshold=1.5,
+    )
+    scheduler = AttentionScheduler(
+        AttentionEngine(engine_config, db.attention),
+        db,
+        scheduler_config,
+    )
+
+    assert scheduler._resolve_response_profile("balanced") == ("balanced", 7.0, 250.0)
+    assert scheduler._resolve_response_profile("passive") == ("passive", 9.0, 1200.0)
+    assert scheduler._resolve_response_profile("immediate") == ("immediate", 1.5, 0.0)
 
 
 @pytest.mark.asyncio

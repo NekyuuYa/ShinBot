@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from shinbot.agent.attention.scheduler import AttentionScheduler
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.pipeline import MessagePipeline
@@ -62,6 +63,36 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
         ),
         message=MessagePayload(id="msg-1", content=content),
     )
+
+
+class RecordingAttentionScheduler(AttentionScheduler):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def on_message(
+        self,
+        session_id: str,
+        msg_log_id: int,
+        sender_id: str,
+        *,
+        response_profile: str = "balanced",
+        is_mentioned: bool = False,
+        is_reply_to_bot: bool = False,
+        attention_multiplier: float = 1.0,
+        self_platform_id: str = "",
+    ) -> None:
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "msg_log_id": msg_log_id,
+                "sender_id": sender_id,
+                "response_profile": response_profile,
+                "is_mentioned": is_mentioned,
+                "is_reply_to_bot": is_reply_to_bot,
+                "attention_multiplier": attention_multiplier,
+                "self_platform_id": self_platform_id,
+            }
+        )
 
 
 class TestMessagePipeline:
@@ -227,35 +258,6 @@ class TestMessagePipeline:
             )
         )
 
-        class RecordingAttentionScheduler:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, object]] = []
-
-            async def on_message(
-                self,
-                session_id: str,
-                msg_log_id: int,
-                sender_id: str,
-                *,
-                response_profile: str = "balanced",
-                is_mentioned: bool = False,
-                is_reply_to_bot: bool = False,
-                attention_multiplier: float = 1.0,
-                self_platform_id: str = "",
-            ) -> None:
-                self.calls.append(
-                    {
-                        "session_id": session_id,
-                        "msg_log_id": msg_log_id,
-                        "sender_id": sender_id,
-                        "response_profile": response_profile,
-                        "is_mentioned": is_mentioned,
-                        "is_reply_to_bot": is_reply_to_bot,
-                        "attention_multiplier": attention_multiplier,
-                        "self_platform_id": self_platform_id,
-                    }
-                )
-
         scheduler = RecordingAttentionScheduler()
         pipeline = MessagePipeline(
             adapter_manager=self.adapter_mgr,
@@ -314,4 +316,3 @@ class TestMessagePipeline:
         )
         await self.pipeline.process_event(event, self.adapter)
         assert results == [0]
-
