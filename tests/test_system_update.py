@@ -259,7 +259,7 @@ async def test_system_update_service_requests_restart_when_pull_advances_head(
             ),
             ("rev-parse", "@{upstream}"): GitCommandResult(
                 returncode=0,
-                stdout="0123456789abcdef0123456789abcdef01234567\n",
+                stdout="fedcba9876543210fedcba9876543210fedcba98\n",
             ),
             ("config", "--get", "branch.master.remote"): GitCommandResult(
                 returncode=0,
@@ -273,13 +273,10 @@ async def test_system_update_service_requests_restart_when_pull_advances_head(
                 returncode=0,
                 stdout="git@example.com:shinbot.git\n",
             ),
+            ("fetch", "--prune", "origin"): GitCommandResult(returncode=0),
             ("rev-list", "--left-right", "--count", "HEAD...@{upstream}"): GitCommandResult(
                 returncode=0,
                 stdout="0\t1\n",
-            ),
-            ("ls-remote", "origin", "refs/heads/master"): GitCommandResult(
-                returncode=0,
-                stdout="fedcba9876543210fedcba9876543210fedcba98\trefs/heads/master\n",
             ),
         }
         return responses[args]
@@ -339,11 +336,7 @@ async def test_system_update_service_blocks_when_remote_upstream_cannot_be_check
                 returncode=0,
                 stdout="git@example.com:shinbot.git\n",
             ),
-            ("rev-list", "--left-right", "--count", "HEAD...@{upstream}"): GitCommandResult(
-                returncode=0,
-                stdout="0\t0\n",
-            ),
-            ("ls-remote", "origin", "refs/heads/master"): GitCommandResult(
+            ("fetch", "--prune", "origin"): GitCommandResult(
                 returncode=128,
                 stderr="Could not read from remote repository.",
             ),
@@ -403,13 +396,10 @@ async def test_system_update_service_skips_restart_when_already_up_to_date(
                 returncode=0,
                 stdout="git@example.com:shinbot.git\n",
             ),
+            ("fetch", "--prune", "origin"): GitCommandResult(returncode=0),
             ("rev-list", "--left-right", "--count", "HEAD...@{upstream}"): GitCommandResult(
                 returncode=0,
                 stdout="0\t0\n",
-            ),
-            ("ls-remote", "origin", "refs/heads/master"): GitCommandResult(
-                returncode=0,
-                stdout="0123456789abcdef0123456789abcdef01234567\trefs/heads/master\n",
             ),
         }
         return responses[args]
@@ -526,9 +516,14 @@ async def test_dashboard_dist_update_service_replaces_target_from_prebuilt_sourc
                 returncode=0,
                 stdout="git@example.com:shinbot-dashboard-dist.git\n",
             ),
-            ("ls-remote", "origin", "refs/heads/master"): GitCommandResult(
+            ("fetch", "--prune", "origin"): GitCommandResult(returncode=0),
+            ("rev-parse", "@{upstream}"): GitCommandResult(
                 returncode=0,
-                stdout="0123456789abcdef0123456789abcdef01234567\trefs/heads/master\n",
+                stdout="0123456789abcdef0123456789abcdef01234567\n",
+            ),
+            ("rev-list", "--left-right", "--count", "HEAD...@{upstream}"): GitCommandResult(
+                returncode=0,
+                stdout="0\t0\n",
             ),
         }
         return responses[args]
