@@ -7,9 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.api.deps import AuthRequired, BotDep
-from shinbot.api.models import ok
-from shinbot.core.prompt_definition_admin import (
+from shinbot.admin.prompt_definition_admin import (
     PromptDefinitionAdminError,
     assert_prompt_id_available,
     build_prompt_definition_record,
@@ -17,6 +15,8 @@ from shinbot.core.prompt_definition_admin import (
     normalize_prompt_definition_input,
     serialize_prompt_definition,
 )
+from shinbot.api.deps import AuthRequired, BotDep
+from shinbot.api.models import ok
 
 router = APIRouter(
     prefix="/prompt-definitions",

@@ -5,9 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.api.deps import AuthRequired, BotDep
-from shinbot.api.models import ok
-from shinbot.core.persona_admin import (
+from shinbot.admin.persona_admin import (
     PersonaAdminError,
     assert_persona_name_available,
     build_persona_prompt_definition,
@@ -19,6 +17,8 @@ from shinbot.core.persona_admin import (
     normalize_persona_tags,
     serialize_persona,
 )
+from shinbot.api.deps import AuthRequired, BotDep
+from shinbot.api.models import ok
 
 router = APIRouter(
     prefix="/personas",

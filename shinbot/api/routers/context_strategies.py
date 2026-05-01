@@ -7,9 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.api.deps import AuthRequired, BotDep
-from shinbot.api.models import ok
-from shinbot.core.context_strategy_admin import (
+from shinbot.admin.context_strategy_admin import (
     ContextStrategyAdminError,
     assert_context_strategy_mutable,
     assert_context_strategy_name_available,
@@ -18,6 +16,8 @@ from shinbot.core.context_strategy_admin import (
     normalize_context_strategy_input,
     serialize_context_strategy,
 )
+from shinbot.api.deps import AuthRequired, BotDep
+from shinbot.api.models import ok
 
 router = APIRouter(
     prefix="/context-strategies",

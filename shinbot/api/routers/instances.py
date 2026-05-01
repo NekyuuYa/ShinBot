@@ -8,9 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import ok
-from shinbot.core.instance_admin import (
+from shinbot.admin.instance_admin import (
     InstanceAdminError,
     bot_config_by_instance_id,
     control_instance_runtime,
@@ -20,6 +18,8 @@ from shinbot.core.instance_admin import (
     serialize_instance_record,
     update_instance_runtime,
 )
+from shinbot.api.deps import AuthRequired, BootDep, BotDep
+from shinbot.api.models import ok
 
 logger = logging.getLogger(__name__)
 

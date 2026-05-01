@@ -7,12 +7,12 @@ import shlex
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.core.instance_admin import (
+from shinbot.admin.instance_admin import (
     InstanceAdminError,
     control_instance_runtime,
     list_instance_payloads,
 )
-from shinbot.core.plugin_admin import (
+from shinbot.admin.plugin_admin import (
     PluginAdminError,
     disable_plugin_or_raise,
     enable_plugin_or_raise,

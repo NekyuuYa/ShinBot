@@ -7,9 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import ok
-from shinbot.core.plugin_admin import (
+from shinbot.admin.plugin_admin import (
     PluginAdminError,
     disable_plugin_or_raise,
     enable_plugin_or_raise,
@@ -19,6 +17,8 @@ from shinbot.core.plugin_admin import (
     rescan_plugins,
     update_plugin_config_or_raise,
 )
+from shinbot.api.deps import AuthRequired, BootDep, BotDep
+from shinbot.api.models import ok
 from shinbot.core.plugins.config import request_locales
 
 logger = logging.getLogger(__name__)

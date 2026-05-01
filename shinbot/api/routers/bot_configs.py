@@ -7,9 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import ok
-from shinbot.core.bot_config_admin import (
+from shinbot.admin.bot_config_admin import (
     BotConfigAdminError,
     assert_bot_config_instance_available,
     build_bot_config_record,
@@ -18,6 +16,8 @@ from shinbot.core.bot_config_admin import (
     serialize_bot_config,
     validate_bot_config_references,
 )
+from shinbot.api.deps import AuthRequired, BootDep, BotDep
+from shinbot.api.models import ok
 
 router = APIRouter(
     prefix="/bot-configs",

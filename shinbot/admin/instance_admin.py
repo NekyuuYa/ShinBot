@@ -6,7 +6,7 @@ import time
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
-from shinbot.core.bot_config_admin import serialize_bot_config
+from shinbot.admin.bot_config_admin import serialize_bot_config
 
 
 @dataclass(slots=True)

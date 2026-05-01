@@ -5,9 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.api.deps import AuthRequired, BotDep
-from shinbot.api.models import ok
-from shinbot.core.agent_admin import (
+from shinbot.admin.agent_admin import (
     AgentAdminError,
     assert_agent_id_available,
     build_agent_record,
@@ -16,6 +14,8 @@ from shinbot.core.agent_admin import (
     serialize_agent,
     validate_agent_references,
 )
+from shinbot.api.deps import AuthRequired, BotDep
+from shinbot.api.models import ok
 
 router = APIRouter(
     prefix="/agents",
