@@ -1,5 +1,6 @@
-"""Compatibility exports for tool schema primitives."""
+"""Tool definition and registry primitives."""
 
+from shinbot.core.tools.registry import ToolRegistry
 from shinbot.core.tools.schema import (
     ToolCallRequest,
     ToolCallResult,
@@ -16,6 +17,7 @@ __all__ = [
     "ToolDefinition",
     "ToolExecutionContext",
     "ToolOwnerType",
+    "ToolRegistry",
     "ToolRiskLevel",
     "ToolVisibility",
 ]

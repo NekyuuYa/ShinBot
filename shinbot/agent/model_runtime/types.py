@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-ModelRuntimeObserver = Callable[[dict[str, Any]], Awaitable[None] | None]
+from shinbot.core.model_runtime import ModelRuntimeObserver as ModelRuntimeObserver
 
 
 @dataclass(slots=True)

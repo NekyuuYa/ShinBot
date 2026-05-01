@@ -11,15 +11,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.tools import ToolOwnerType, ToolRegistry
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.model_runtime import ModelRuntimeObserverRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
+from shinbot.core.tools import ToolOwnerType, ToolRegistry
 from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from shinbot.agent.model_runtime import ModelRuntime
     from shinbot.core.platform.adapter_manager import AdapterManager
 
 logger = get_logger(__name__)
@@ -70,7 +70,7 @@ class PluginManager:
         *,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
-        model_runtime: ModelRuntime | None = None,
+        model_runtime: ModelRuntimeObserverRegistry | None = None,
         database: Any | None = None,
     ):
         self._command_registry = command_registry

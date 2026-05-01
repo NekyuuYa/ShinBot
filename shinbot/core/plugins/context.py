@@ -6,10 +6,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.model_runtime import ModelRuntime, ModelRuntimeObserver
-from shinbot.agent.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
 from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.model_runtime import ModelRuntimeObserver, ModelRuntimeObserverRegistry
+from shinbot.core.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
 from shinbot.schema.elements import MessageElement
 from shinbot.utils.logger import get_plugin_logger
 
@@ -30,7 +30,7 @@ class Plugin:
         *,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
-        model_runtime: ModelRuntime | None = None,
+        model_runtime: ModelRuntimeObserverRegistry | None = None,
         database: DatabaseManager | None = None,
     ):
         self.plugin_id = plugin_id
