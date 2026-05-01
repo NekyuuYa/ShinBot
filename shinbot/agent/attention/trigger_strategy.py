@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
-from shinbot.schema.elements import Message, MessageElement
+from shinbot.core.message_analysis import is_self_mentioned, iter_message_elements
+from shinbot.schema.elements import Message
 
 DISABLED_RESPONSE_PROFILES: frozenset[str] = frozenset(
     {
@@ -107,25 +107,6 @@ def default_attention_trigger_strategies() -> tuple[AttentionTriggerStrategy, ..
 
 def is_response_profile_enabled(response_profile: str) -> bool:
     return str(response_profile or "").strip().lower() not in DISABLED_RESPONSE_PROFILES
-
-
-def iter_message_elements(message: Message) -> Iterator[MessageElement]:
-    stack = list(message.elements)
-    while stack:
-        element = stack.pop()
-        yield element
-        stack.extend(element.children)
-
-
-def is_self_mentioned(message: Message, self_platform_id: str) -> bool:
-    self_platform_id = str(self_platform_id or "").strip()
-    if not self_platform_id:
-        return False
-    return any(
-        element.type == "at"
-        and str(element.attrs.get("id", "") or "").strip() == self_platform_id
-        for element in iter_message_elements(message)
-    )
 
 
 def resolve_attention_multiplier(message: Message, self_platform_id: str) -> float:
