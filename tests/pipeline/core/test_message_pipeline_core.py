@@ -16,7 +16,7 @@ from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
     MessageLogRecord,
 )
-from shinbot.schema.elements import MessageElement
+from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, User
 
@@ -93,6 +93,15 @@ class RecordingAttentionScheduler(AttentionScheduler):
                 "self_platform_id": self_platform_id,
             }
         )
+
+
+class RecordingMediaService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def ingest_message_media(self, **kwargs):
+        self.calls.append(kwargs)
+        return []
 
 
 class TestMessagePipeline:
@@ -184,6 +193,39 @@ class TestMessagePipeline:
         assert results == []
 
     @pytest.mark.asyncio
+    async def test_interceptor_block_still_persists_but_skips_media_ingest(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        media_service = RecordingMediaService()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            media_service=media_service,  # type: ignore[arg-type]
+        )
+        handled = []
+
+        async def blocker(ctx):
+            return False
+
+        async def handler(ctx):
+            handled.append(ctx.text)
+
+        pipeline.add_interceptor(blocker)
+        self.event_bus.on("message-created", handler)
+
+        await pipeline.process_event(make_event("blocked"), self.adapter)
+
+        rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
+        assert len(rows) == 1
+        assert rows[0]["raw_text"] == "blocked"
+        assert media_service.calls == []
+        assert handled == []
+
+    @pytest.mark.asyncio
     async def test_interceptor_allows(self):
         """Interceptor returning True should allow processing."""
         results = []
@@ -219,6 +261,39 @@ class TestMessagePipeline:
 
         await self.pipeline.process_event(event, self.adapter)
         assert results == []
+
+    @pytest.mark.asyncio
+    async def test_muted_session_persists_but_skips_interceptors_and_media_ingest(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        media_service = RecordingMediaService()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+            media_service=media_service,  # type: ignore[arg-type]
+        )
+        interceptor_calls = []
+
+        async def interceptor(ctx):
+            interceptor_calls.append(ctx.text)
+            return True
+
+        event = make_event("muted")
+        session = self.session_mgr.get_or_create(self.adapter.instance_id, event)
+        session.config.is_muted = True
+        pipeline.add_interceptor(interceptor)
+
+        await pipeline.process_event(event, self.adapter)
+
+        rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
+        assert len(rows) == 1
+        assert rows[0]["raw_text"] == "muted"
+        assert interceptor_calls == []
+        assert media_service.calls == []
 
     @pytest.mark.asyncio
     async def test_command_permission_denied(self):
@@ -276,6 +351,32 @@ class TestMessagePipeline:
         assert len(scheduler.calls) == 1
         assert scheduler.calls[0]["is_reply_to_bot"] is True
         assert scheduler.calls[0]["self_platform_id"] == "bot-1"
+
+    @pytest.mark.asyncio
+    async def test_message_log_is_mentioned_uses_recursive_mention_detection(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+        pipeline = MessagePipeline(
+            adapter_manager=self.adapter_mgr,
+            session_manager=self.session_mgr,
+            permission_engine=self.perm_engine,
+            command_registry=self.cmd_registry,
+            event_bus=self.event_bus,
+            database=db,
+        )
+        content = Message.from_elements(
+            MessageElement.quote(
+                "quoted-msg",
+                children=[MessageElement.at(id=" bot-1 ")],
+            ),
+            MessageElement.text(" after quote"),
+        ).to_xml()
+
+        await pipeline.process_event(make_event(content), self.adapter)
+
+        rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
+        assert len(rows) == 1
+        assert rows[0]["is_mentioned"] is True
 
     @pytest.mark.asyncio
     async def test_non_message_event(self):

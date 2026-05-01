@@ -102,7 +102,16 @@ async def guard(bot):
 
 所以你写了 `on_message()` 后，不会收到已命中的命令消息。
 
-## 8. 返回值约定
+## 8. 与 Attention 调度的关系
+
+消息事件处理器会在 attention scheduler 之前运行。处理器可以通过 `await bot.send(...)`
+主动回复，也可以用 `bot.stop()` 表示后续 attention 不应继续接管；但处理器不应假设“收到
+`message-created` 事件”就代表 Bot 一定会自动响应。
+
+自然语言响应是否触发，仍由 response profile、attention 阈值、是否已由插件回复等条件决定。
+如果某段逻辑必须等到 attention 确认接管后再执行，应接入后续专门的 post-attention 回调，而不是放在通用事件处理器里。
+
+## 9. 返回值约定
 
 事件处理器返回值不会参与后续流程；如果需要输出，请显式调用 `await bot.send(...)`。
 

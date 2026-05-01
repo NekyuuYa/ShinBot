@@ -5,8 +5,8 @@ Implements the message workflow specification (01_message_workflow.md).
 Pipeline stages:
   1. Ingress & Normalization: adapter → UnifiedEvent + MessageElement AST
   2. Context Enrichment: session resolution, permission merge, context build
-  3. Workflow Dispatching: interceptors → command resolution → agent/event bus
-  4. Post-processing: state persistence, audit logging
+  3. Workflow Dispatching: mute gate → interceptors → command/event bus
+  4. Post-processing: state sync, attention scheduling, read markers
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.attention.trigger_strategy import is_self_mentioned
 from shinbot.core.bot_config import ATTENTION_DISABLED_PROFILE, select_response_profile
 from shinbot.core.dispatch.command import CommandMatch, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
@@ -149,10 +150,7 @@ class MessageContext:
 
     @property
     def is_mentioned(self) -> bool:
-        return any(
-            el.type == "at" and el.attrs.get("id") == self.event.self_id
-            for el in self.message.elements
-        )
+        return is_self_mentioned(self.message, self.event.self_id)
 
     def _quoted_message_ids(self) -> list[str]:
         ids: list[str] = []
@@ -460,12 +458,12 @@ class MessagePipeline:
     """The main message processing pipeline.
 
     Orchestrates the full lifecycle:
-      1. Build MessageContext from event
-      2. Run interceptors (rate limit, mute check, blacklist)
-      3. Check for pending wait_for_input — resolve and return early if waiting
-      4. Resolve commands (P0/P1/P2)
+      1. Parse message content and resolve pending wait_for_input
+      2. Build MessageContext and persist the incoming message log
+      3. Apply the mute gate and interceptors
+      4. Ingest media and update context/audit observers for continuing messages
       5. Dispatch to command handler or event bus
-      6. Post-processing (state sync, audit)
+      6. Post-processing (state sync, attention scheduling, read markers)
     """
 
     def __init__(
@@ -515,10 +513,10 @@ class MessagePipeline:
 
         **Message Track** (message-created, message-updated, etc.):
           1. Parse XML content into MessageElement AST
-          2. Build MessageContext with interceptors
-          3. Check for pending wait_for_input
-          4. Resolve commands and dispatch handlers
-          5. Emit event to event bus for post-processing
+          2. Resolve pending wait_for_input before acquiring the session lock
+          3. Build MessageContext and persist the incoming message log
+          4. Apply mute/interceptor gates
+          5. Resolve commands or emit the event to the event bus
 
         **Notice Track** (guild-member-added, friend-request, etc.):
           1. Skip message parsing (no payload)
@@ -614,14 +612,12 @@ class MessagePipeline:
             context_manager=self._context_manager,
         )
 
-        # Persist incoming user message to message_logs
+        observed_at = time.time()
+        persisted_record: MessageLogRecord | None = None
+
+        # Persist incoming user message to message_logs before any early exits.
         if self._database is not None and event.is_message_event:
             try:
-                observed_at = time.time()
-                is_mentioned = any(
-                    el.type == "at" and el.attrs.get("id") == event.self_id
-                    for el in message.elements
-                )
                 content_json = json.dumps(
                     [el.model_dump(mode="json") for el in message.elements],
                     ensure_ascii=False,
@@ -636,39 +632,57 @@ class MessagePipeline:
                         raw_text=message.get_text(self_id=event.self_id),
                         role="user",
                         is_read=False,
-                        is_mentioned=is_mentioned,
+                        is_mentioned=is_self_mentioned(message, event.self_id),
                         created_at=observed_at * 1000,
                     )
                 )
                 record.id = msg_log_id
                 bot._msg_log_id = msg_log_id
-                if self._media_service is not None:
-                    try:
-                        ingested_items = self._media_service.ingest_message_media(
-                            session_id=session.id,
-                            sender_id=event.sender_id or "",
-                            platform_msg_id=event.message.id if event.message is not None else "",
-                            elements=message.elements,
-                            message_log_id=msg_log_id,
-                            seen_at=observed_at,
-                        )
-                        if self._media_inspection_runner is not None and any(
-                            item.should_request_inspection for item in ingested_items
-                        ):
-                            self._media_inspection_runner.schedule_items(
-                                instance_id=adapter.instance_id,
-                                session_id=session.id,
-                                items=ingested_items,
-                            )
-                    except Exception:
-                        logger.exception(
-                            "Failed to ingest media fingerprints for session %s",
-                            session.id,
-                        )
-                if self._context_manager is not None:
-                    self._context_manager.track_message_record(record, platform=event.platform)
+                persisted_record = record
             except Exception:
                 logger.exception("Failed to persist user message to message_logs")
+
+        # Stage 3a: Built-in mute gate
+        if session.is_muted:
+            logger.debug("Session %s is muted, skipping", session.id)
+            return None
+
+        # Stage 3b: Interceptors
+        for _priority, interceptor in self._interceptors:
+            try:
+                allow = await interceptor(bot)
+                if not allow:
+                    logger.debug("Interceptor blocked event: %s", interceptor.__name__)
+                    return None
+            except Exception:
+                logger.exception("Interceptor error: %s", interceptor.__name__)
+                return None
+
+        if self._media_service is not None and bot._msg_log_id is not None:
+            try:
+                ingested_items = self._media_service.ingest_message_media(
+                    session_id=session.id,
+                    sender_id=event.sender_id or "",
+                    platform_msg_id=event.message.id if event.message is not None else "",
+                    elements=message.elements,
+                    message_log_id=bot._msg_log_id,
+                    seen_at=observed_at,
+                )
+                if self._media_inspection_runner is not None and any(
+                    item.should_request_inspection for item in ingested_items
+                ):
+                    self._media_inspection_runner.schedule_items(
+                        instance_id=adapter.instance_id,
+                        session_id=session.id,
+                        items=ingested_items,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to ingest media fingerprints for session %s",
+                    session.id,
+                )
+        if persisted_record is not None and self._context_manager is not None:
+            self._context_manager.track_message_record(persisted_record, platform=event.platform)
 
         if self._audit_logger:
             self._audit_logger.log_message(
@@ -683,22 +697,6 @@ class MessagePipeline:
                     "message_id": event.message.id if event.message is not None else "",
                 },
             )
-
-        # Stage 3: Interceptors
-        for _priority, interceptor in self._interceptors:
-            try:
-                allow = await interceptor(bot)
-                if not allow:
-                    logger.debug("Interceptor blocked event: %s", interceptor.__name__)
-                    return None
-            except Exception:
-                logger.exception("Interceptor error: %s", interceptor.__name__)
-                return None
-
-        # Stage 3b: Check if session is muted
-        if session.is_muted:
-            logger.debug("Session %s is muted, skipping", session.id)
-            return None
 
         # Stage 3c: Command resolution
         plain_text = bot.text

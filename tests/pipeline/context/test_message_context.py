@@ -90,6 +90,21 @@ class TestMessageContext:
     def test_is_private(self):
         assert self.ctx.is_private is True
 
+    def test_is_mentioned_detects_nested_at(self):
+        ctx = MessageContext(
+            event=self.event,
+            message=Message.from_elements(
+                MessageElement.quote(
+                    "quoted-msg",
+                    children=[MessageElement.at(id=" bot-1 ")],
+                )
+            ),
+            session=self.session,
+            adapter=self.adapter,
+            permissions=set(),
+        )
+        assert ctx.is_mentioned is True
+
     def test_has_permission(self):
         assert self.ctx.has_permission("cmd.help") is True
         assert self.ctx.has_permission("sys.reboot") is False
@@ -297,5 +312,4 @@ class TestMessageContext:
             database=db,
         )
         assert ctx.is_reply_to_bot() is False
-
 
