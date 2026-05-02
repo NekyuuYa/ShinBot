@@ -152,9 +152,8 @@ class MessageIngress:
     async def process_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         """Process one normalized event.
 
-        Message events are persisted before routing. Notice events can already
-        be routed through the same route table, but notice persistence is left
-        for the dedicated notice dispatcher migration.
+        Message and notice events are persisted before routing. Real-time
+        routing is driven by the event signal, not by polling message_logs.
         """
         if event.is_notice_event:
             return self._process_notice_event(event, adapter)
@@ -318,17 +317,44 @@ class MessageIngress:
 
     def _process_notice_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         message = Message()
+        observed_at = time.time()
+        session_id = build_session_id(adapter.instance_id, event)
+        message_log_id = self._persist_notice_event(
+            event=event,
+            session_id=session_id,
+            observed_at=observed_at,
+        )
         dispatch_context = RouteDispatchContext(
             event=event,
             adapter=adapter,
             message=message,
+            message_log_id=message_log_id,
         )
+
+        if not is_event_fresh(
+            event,
+            max_age_seconds=self._max_message_age_seconds,
+        ):
+            self._mark_skipped(message_log_id, ROUTING_SKIP_EXPIRED_MESSAGE)
+            return IngressResult(
+                dispatch_context=dispatch_context,
+                matched_rules=[],
+                message_log_id=message_log_id,
+                skipped_reason=ROUTING_SKIP_EXPIRED_MESSAGE,
+            )
+
         matched_rules = self._route_table.match(event, message)
+        if matched_rules:
+            self._mark_dispatched(message_log_id)
+        else:
+            self._mark_skipped(message_log_id, ROUTING_SKIP_NO_ROUTE_MATCHED)
+
         self._schedule_targets(dispatch_context, matched_rules)
         skipped_reason = ROUTING_SKIP_NO_ROUTE_MATCHED if not matched_rules else None
         return IngressResult(
             dispatch_context=dispatch_context,
             matched_rules=matched_rules,
+            message_log_id=message_log_id,
             skipped_reason=skipped_reason,
         )
 
@@ -364,6 +390,50 @@ class MessageIngress:
             return message_log_id
         except Exception:
             logger.exception("Failed to persist incoming message to message_logs")
+            return None
+
+    def _persist_notice_event(
+        self,
+        *,
+        event: UnifiedEvent,
+        session_id: str,
+        observed_at: float,
+    ) -> int | None:
+        if self._database is None:
+            return None
+        try:
+            payload = event.model_dump(mode="json")
+            content_json = json.dumps(
+                [
+                    {
+                        "type": "sb:notice",
+                        "attrs": {
+                            "event_type": event.type,
+                            "payload": payload,
+                        },
+                        "children": [],
+                    }
+                ],
+                ensure_ascii=False,
+            )
+            platform_event_id = str(getattr(event, "event_id", "") or event.id or "")
+            record = MessageLogRecord(
+                session_id=session_id,
+                platform_msg_id=platform_event_id,
+                sender_id=event.sender_id or event.operator_id or "",
+                sender_name=event.sender_name or "",
+                content_json=content_json,
+                raw_text=f"[notice:{event.type}]",
+                role="system",
+                is_read=True,
+                is_mentioned=False,
+                created_at=observed_at * 1000,
+            )
+            message_log_id = self._database.message_logs.insert(record)
+            record.id = message_log_id
+            return message_log_id
+        except Exception:
+            logger.exception("Failed to persist notice event to message_logs")
             return None
 
     async def _run_interceptors(self, message_context: MessageContext) -> str | None:

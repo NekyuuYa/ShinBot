@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -537,10 +538,20 @@ async def test_notice_dispatcher_forwards_unified_event_to_event_bus(tmp_path) -
     await asyncio.sleep(0)
 
     assert result.matched_rules == [notice_rule]
-    assert result.message_log_id is None
+    assert result.message_log_id is not None
     assert result.skipped_reason is None
     assert notice_calls == ["guild-member-added"]
-    assert db.message_logs.get_recent("test-bot:private:user-1") == []
+
+    row = db.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["session_id"] == "test-bot:private:user-1"
+    assert row["role"] == "system"
+    assert row["raw_text"] == "[notice:guild-member-added]"
+    assert row["routing_status"] == "dispatched"
+    assert row["routing_skip_reason"] is None
+    payload = json.loads(row["content_json"])
+    assert payload[0]["type"] == "sb:notice"
+    assert payload[0]["attrs"]["event_type"] == "guild-member-added"
 
 
 @pytest.mark.asyncio
@@ -557,21 +568,58 @@ async def test_notice_dispatcher_skips_notice_without_event_bus_handler(tmp_path
     result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
 
     assert result.matched_rules == []
-    assert result.message_log_id is None
+    assert result.message_log_id is not None
     assert result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
-    assert db.message_logs.get_recent("test-bot:private:user-1") == []
+    row = db.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["routing_status"] == "skipped"
+    assert row["routing_skip_reason"] == ROUTING_SKIP_NO_ROUTE_MATCHED
 
 
 @pytest.mark.asyncio
-async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> None:
+async def test_notice_without_route_is_persisted_and_skipped(tmp_path) -> None:
     ingress, db, adapter = build_ingress(tmp_path)
 
     result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
 
     assert result.matched_rules == []
-    assert result.message_log_id is None
+    assert result.message_log_id is not None
     assert result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
-    assert db.message_logs.get_recent("test-bot:private:user-1") == []
+    row = db.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["role"] == "system"
+    assert row["routing_status"] == "skipped"
+    assert row["routing_skip_reason"] == ROUTING_SKIP_NO_ROUTE_MATCHED
+
+
+@pytest.mark.asyncio
+async def test_expired_notice_is_persisted_and_skipped_before_route_dispatch(tmp_path) -> None:
+    event_bus = EventBus()
+    notice_calls: list[str] = []
+    event_bus.on("guild-member-added", lambda event: notice_calls.append(event.type))
+    notice_dispatcher = NoticeDispatcher(event_bus)
+
+    table = RouteTable()
+    table.register(make_notice_route_rule(notice_dispatcher))
+    targets = RouteTargetRegistry()
+    targets.register(NOTICE_DISPATCHER_TARGET, notice_dispatcher)
+    ingress, db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    event = make_event(
+        event_type="guild-member-added",
+        timestamp=int((time.time() - 120) * 1000),
+    )
+    result = await ingress.process_event(event, adapter)
+
+    assert result.matched_rules == []
+    assert result.message_log_id is not None
+    assert result.skipped_reason == ROUTING_SKIP_EXPIRED_MESSAGE
+    assert notice_calls == []
+
+    row = db.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["routing_status"] == "skipped"
+    assert row["routing_skip_reason"] == ROUTING_SKIP_EXPIRED_MESSAGE
 
 
 @pytest.mark.asyncio

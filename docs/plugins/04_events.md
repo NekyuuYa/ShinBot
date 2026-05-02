@@ -3,7 +3,7 @@
 ShinBot 现在把“消息”和“非消息事件”分成两条入口：
 
 - 消息事件（`message-created` 等）进入 `MessageIngress`，再由 `RouteTable` 分发给命令、关键词、自定义 route 或 `agent_entry`。
-- 非消息 notice / lifecycle 信号进入 `EventBus`，按优先级执行 `@plg.on_event(...)` 处理器。
+- 非消息 notice 先落入 `message_logs(role="system")`，再经 `notice_dispatcher` 转发到 `EventBus`；lifecycle 信号直接进入 `EventBus`。
 
 `@plg.on_event("message-*")` 和旧的 `@plg.on_message()` 已移除；消息处理请使用 `on_command`、`on_keyword` 或 `on_route`。
 

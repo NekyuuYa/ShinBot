@@ -46,7 +46,7 @@ class UnifiedEvent(BaseModel):
     **Notice Events** (e.g., 'guild-member-added', 'friend-request'):
       - Payload: structured resources (guild, user, operator, etc.)
       - NO message parsing required
-      - Ingress: → notice dispatcher → EventBus handlers
+      - Ingress: → message_logs(role="system") → notice dispatcher → EventBus handlers
 
     Wire format fields (from Satori WebSocket):
       - op: opcode (0 = EVENT, 4 = READY)

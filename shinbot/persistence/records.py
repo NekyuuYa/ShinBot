@@ -178,7 +178,7 @@ class MessageLogRecord:
     """A single message in the full communication log."""
 
     session_id: str
-    role: str  # "user" or "assistant"
+    role: str  # "user", "assistant", or "system" for notice/system events
     created_at: float  # millisecond-precision epoch timestamp
     platform_msg_id: str = ""
     sender_id: str = ""

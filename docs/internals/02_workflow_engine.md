@@ -12,7 +12,7 @@
 
 1. **归一化与会话识别**：调用 `Message.from_xml` 将事件内容转化为 AST，并通过 `SessionManager` 建立 session。
 2. **上下文构建**：加载权限、构建 `MessageContext`，并处理 `wait_for_input` 的挂起恢复。
-3. **持久化与路由评估**：先写入 `message_logs(PENDING)`，再执行过期检查、静音、拦截器和 `RouteTable.match(...)`。
+3. **持久化与路由评估**：消息与 notice 先写入 `message_logs(PENDING)`，再执行过期检查、静音/拦截器（消息专用）和 `RouteTable.match(...)`。
 4. **目标派发**：命中 route 后标记 `DISPATCHED` 并异步调度 route target；无命中或被过滤时标记 `SKIPPED`。
 
 ### 1.2 健壮性设计
@@ -58,4 +58,4 @@
 ## 4. 双轨分发逻辑
 
 1. **消息流**：消息事件进入 `MessageIngress`，解析 AST 后交给 `RouteTable`，再派发给命令、关键词、自定义 route 或 `agent_entry`。
-2. **通知流**：notice 事件也经过 `RouteTable`，只有 `EventBus` 上存在对应处理器或 wildcard 处理器时，`notice_dispatcher` 才会命中并转发。
+2. **通知流**：notice 事件先以 `role="system"` 写入 `message_logs`，再经过 `RouteTable`；只有 `EventBus` 上存在对应处理器或 wildcard 处理器时，`notice_dispatcher` 才会命中并转发。
