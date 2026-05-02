@@ -367,10 +367,7 @@ class TestMessageIngressCore:
         )
 
         agent_handler = RecordingAgentHandler()
-        agent_entry = AgentEntryDispatcher(
-            handler=agent_handler,
-            database=db,
-        )
+        agent_entry = AgentEntryDispatcher(handler=agent_handler)
         table = RouteTable()
         fallback_rule = make_agent_entry_fallback_route_rule()
         table.register(fallback_rule)

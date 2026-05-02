@@ -628,7 +628,7 @@ async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path)
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     agent_handler = RecordingAgentHandler()
-    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
+    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler)
 
     table = RouteTable()
     fallback_rule = make_agent_entry_fallback_route_rule()
@@ -657,7 +657,6 @@ async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path)
     assert signal.sender_id == "user-1"
     assert signal.instance_id == "test-bot"
     assert signal.platform == "mock"
-    assert signal.response_profile == "balanced"
     assert signal.self_id == "bot-1"
     assert signal.is_private is False
     assert signal.is_mentioned is False
@@ -677,7 +676,7 @@ async def test_observe_route_does_not_suppress_agent_entry_fallback(tmp_path) ->
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     agent_handler = RecordingAgentHandler()
-    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
+    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler)
     calls: list[str] = []
 
     table = RouteTable()
@@ -717,7 +716,7 @@ async def test_agent_entry_fallback_notifies_agent_without_marking_read(
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     agent_handler = RecordingAgentHandler()
-    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
+    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler)
 
     table = RouteTable()
     fallback_rule = make_agent_entry_fallback_route_rule()

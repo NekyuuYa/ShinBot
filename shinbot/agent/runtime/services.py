@@ -33,6 +33,7 @@ from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
+from shinbot.core.bot_config import select_response_profile
 
 if TYPE_CHECKING:
     from shinbot.core.application.app import ShinBot
@@ -172,10 +173,22 @@ class AgentRuntime:
             signal.session_id,
             signal.message_log_id,
             signal.sender_id,
-            response_profile=signal.response_profile,
+            response_profile=self._resolve_response_profile(signal),
             is_mentioned=signal.is_mentioned,
             is_reply_to_bot=signal.is_reply_to_bot,
             self_platform_id=signal.self_id,
+        )
+
+    def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
+        bot_config = None
+        if self.database is not None:
+            bot_config = self.database.bot_configs.get_by_instance_id(signal.instance_id)
+
+        return select_response_profile(
+            bot_config,
+            is_private=signal.is_private,
+            is_mentioned=signal.is_mentioned,
+            is_reply_to_bot=signal.is_reply_to_bot,
         )
 
     async def shutdown(self) -> None:

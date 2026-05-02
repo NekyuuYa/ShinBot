@@ -18,7 +18,6 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
-from shinbot.persistence.records import BotConfigRecord
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, User
@@ -90,7 +89,7 @@ def make_agent_ingress(
 ) -> MessageIngress:
     table = route_table if route_table is not None else RouteTable()
     targets = route_targets if route_targets is not None else RouteTargetRegistry()
-    agent_entry = AgentEntryDispatcher(handler=handler, database=db)
+    agent_entry = AgentEntryDispatcher(handler=handler)
     table.register(make_agent_entry_fallback_route_rule())
     targets.register(AGENT_ENTRY_TARGET, agent_entry)
     return MessageIngress(
@@ -107,7 +106,7 @@ class TestAgentEntrySignal:
         self.adapter = MockAdapter()
 
     @pytest.mark.asyncio
-    async def test_agent_entry_emits_private_signal_with_disabled_profile_by_default(
+    async def test_agent_entry_emits_private_signal_without_agent_policy(
         self,
         tmp_path,
     ) -> None:
@@ -122,29 +121,19 @@ class TestAgentEntrySignal:
         assert len(handler.signals) == 1
         signal = handler.signals[0]
         assert signal.session_id == "test-bot:private:user-1"
-        assert signal.response_profile == "disabled"
         assert signal.is_private is True
         assert signal.is_mentioned is False
         assert signal.is_reply_to_bot is False
+        assert not hasattr(signal, "response_profile")
         assert not hasattr(signal, "message")
 
     @pytest.mark.asyncio
-    async def test_agent_entry_signal_uses_group_and_priority_profiles(
+    async def test_agent_entry_signal_keeps_priority_facts_without_policy(
         self,
         tmp_path,
     ) -> None:
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-        db.bot_configs.upsert(
-            BotConfigRecord(
-                uuid="cfg-group-profile",
-                instance_id=self.adapter.instance_id,
-                config={
-                    "response_profile_group": "passive",
-                    "response_profile_priority": "balanced",
-                },
-            )
-        )
         handler = RecordingAgentHandler()
         ingress = make_agent_ingress(db, handler)
 
@@ -155,11 +144,8 @@ class TestAgentEntrySignal:
         )
         await asyncio.sleep(0)
 
-        assert [signal.response_profile for signal in handler.signals] == [
-            "passive",
-            "balanced",
-        ]
         assert [signal.is_mentioned for signal in handler.signals] == [False, True]
+        assert all(not hasattr(signal, "response_profile") for signal in handler.signals)
 
     @pytest.mark.asyncio
     async def test_agent_entry_fallback_is_skipped_when_plugin_route_consumes_message(

@@ -6,17 +6,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from inspect import isawaitable
-from typing import TYPE_CHECKING
 
-from shinbot.core.bot_config import select_response_profile
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
 from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
-
-if TYPE_CHECKING:
-    from shinbot.persistence.engine import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +30,6 @@ class AgentEntrySignal:
     instance_id: str
     platform: str
     self_id: str
-    response_profile: str
     is_private: bool
     is_mentioned: bool
     is_reply_to_bot: bool
@@ -86,10 +80,8 @@ class AgentEntryDispatcher:
         self,
         *,
         handler: AgentEntryHandler | None = None,
-        database: DatabaseManager | None = None,
     ) -> None:
         self._handler = handler
-        self._database = database
 
     def set_handler(self, handler: AgentEntryHandler | None) -> None:
         """Set or clear the Agent-side signal handler."""
@@ -105,7 +97,6 @@ class AgentEntryDispatcher:
             instance_id=bot.adapter.instance_id,
             platform=bot.event.platform,
             self_id=bot.event.self_id,
-            response_profile=self._resolve_response_profile(bot),
             is_private=bot.is_private,
             is_mentioned=bot.is_mentioned,
             is_reply_to_bot=bot.is_reply_to_bot(),
@@ -117,23 +108,6 @@ class AgentEntryDispatcher:
             result = self._handler(signal)
             if isawaitable(result):
                 await result
-
-    def _resolve_response_profile(self, bot) -> str:
-        if self._database is None:
-            return select_response_profile(
-                None,
-                is_private=bot.is_private,
-                is_mentioned=bot.is_mentioned,
-                is_reply_to_bot=bot.is_reply_to_bot(),
-            )
-
-        bot_config = self._database.bot_configs.get_by_instance_id(bot.adapter.instance_id)
-        return select_response_profile(
-            bot_config,
-            is_private=bot.is_private,
-            is_mentioned=bot.is_mentioned,
-            is_reply_to_bot=bot.is_reply_to_bot(),
-        )
 
 def make_agent_entry_fallback_route_rule(
     *,

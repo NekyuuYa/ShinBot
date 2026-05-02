@@ -117,9 +117,7 @@ class ShinBot:
             session_manager=self.session_manager,
         )
         self.notice_dispatcher = NoticeDispatcher(self.event_bus)
-        self.agent_entry_dispatcher = AgentEntryDispatcher(
-            database=self.database,
-        )
+        self.agent_entry_dispatcher = AgentEntryDispatcher()
         self.route_targets.register(TEXT_COMMAND_DISPATCHER_TARGET, self.text_command_dispatcher)
         self.route_targets.register(KEYWORD_DISPATCHER_TARGET, self.keyword_dispatcher)
         self.route_targets.register(NOTICE_DISPATCHER_TARGET, self.notice_dispatcher)
