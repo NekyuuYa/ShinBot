@@ -192,10 +192,9 @@ class ShinBot:
             tool_registry=self.tool_registry,
             model_runtime=self.model_runtime,
         )
-        self.message_ingress.attach_media_runtime(
-            media_service=self.media_service,
-            media_inspection_runner=self.media_inspection_runner,
-        )
+        ingress_handler = getattr(runtime, "handle_ingress_message", None)
+        if ingress_handler is not None:
+            self.message_ingress.add_pre_route_hook(ingress_handler)
         handler = getattr(runtime, "handle_agent_entry", None)
         if handler is not None:
             self.set_agent_entry_handler(handler)

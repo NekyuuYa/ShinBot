@@ -79,6 +79,7 @@ RouteTargetHandler = Callable[
     [RouteDispatchContext, RouteRule],
     Awaitable[None] | None,
 ]
+PreRouteHook = Callable[[RouteDispatchContext], Awaitable[None] | None]
 
 
 class RouteTargetRegistry:
@@ -128,8 +129,6 @@ class MessageIngress:
         route_targets: RouteTargetRegistry | None = None,
         audit_logger: AuditLogger | None = None,
         database: DatabaseManager | None = None,
-        media_service: Any | None = None,
-        media_inspection_runner: Any | None = None,
         waiting_registry: WaitingInputRegistry | None = None,
         max_message_age_seconds: int = MAX_MESSAGE_AGE_SECONDS,
     ) -> None:
@@ -139,25 +138,19 @@ class MessageIngress:
         self._route_targets = route_targets or RouteTargetRegistry()
         self._audit_logger = audit_logger
         self._database = database
-        self._media_service = media_service
-        self._media_inspection_runner = media_inspection_runner
         self._waiting_registry = waiting_registry or WaitingInputRegistry()
         self._max_message_age_seconds = max_message_age_seconds
         self._interceptors: list[tuple[int, Interceptor]] = []
+        self._pre_route_hooks: list[PreRouteHook] = []
 
     def add_interceptor(self, interceptor: Interceptor, priority: int = 100) -> None:
         self._interceptors.append((priority, interceptor))
         self._interceptors.sort(key=lambda x: x[0])
 
-    def attach_media_runtime(
-        self,
-        *,
-        media_service: Any | None = None,
-        media_inspection_runner: Any | None = None,
-    ) -> None:
-        """Attach optional Agent/media services after app construction."""
-        self._media_service = media_service
-        self._media_inspection_runner = media_inspection_runner
+    def add_pre_route_hook(self, hook: PreRouteHook) -> None:
+        """Register a lightweight hook that runs after gates and before route matching."""
+        if hook not in self._pre_route_hooks:
+            self._pre_route_hooks.append(hook)
 
     async def process_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         """Process one normalized event.
@@ -286,15 +279,7 @@ class MessageIngress:
                 skipped_reason=blocked_reason,
             )
 
-        self._ingest_media(
-            adapter=adapter,
-            event=event,
-            message=message,
-            session_id=session.id,
-            sender_id=event.sender_id or "",
-            message_log_id=message_log_id,
-            observed_at=observed_at,
-        )
+        await self._run_pre_route_hooks(dispatch_context)
         self._log_audit(event, message_context)
 
         matched_rules = self._route_table.match(
@@ -458,38 +443,14 @@ class MessageIngress:
                 return ROUTING_SKIP_INTERCEPTOR_BLOCKED
         return None
 
-    def _ingest_media(
-        self,
-        *,
-        adapter: BaseAdapter,
-        event: UnifiedEvent,
-        message: Message,
-        session_id: str,
-        sender_id: str,
-        message_log_id: int | None,
-        observed_at: float,
-    ) -> None:
-        if self._media_service is None or message_log_id is None:
-            return
-        try:
-            ingested_items = self._media_service.ingest_message_media(
-                session_id=session_id,
-                sender_id=sender_id,
-                platform_msg_id=event.message.id if event.message is not None else "",
-                elements=message.elements,
-                message_log_id=message_log_id,
-                seen_at=observed_at,
-            )
-            if self._media_inspection_runner is not None and any(
-                item.should_request_inspection for item in ingested_items
-            ):
-                self._media_inspection_runner.schedule_items(
-                    instance_id=adapter.instance_id,
-                    session_id=session_id,
-                    items=ingested_items,
-                )
-        except Exception:
-            logger.exception("Failed to ingest media fingerprints for session %s", session_id)
+    async def _run_pre_route_hooks(self, dispatch_context: RouteDispatchContext) -> None:
+        for hook in list(self._pre_route_hooks):
+            try:
+                result = hook(dispatch_context)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("pre_route_hook_error: hook=%s", hook)
 
     def _log_audit(self, event: UnifiedEvent, message_context: MessageContext) -> None:
         if self._audit_logger is None:

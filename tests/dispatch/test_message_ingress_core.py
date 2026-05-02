@@ -81,13 +81,12 @@ class RecordingAgentHandler:
         self.signals.append(signal)
 
 
-class RecordingMediaService:
+class RecordingPreRouteHook:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def ingest_message_media(self, **kwargs):
-        self.calls.append(kwargs)
-        return []
+    def __call__(self, context):
+        self.calls.append({"message_log_id": context.message_log_id, "text": context.message.text})
 
 
 def add_message_route(table: RouteTable, *, target: str = "recorder") -> RouteRule:
@@ -116,16 +115,18 @@ class TestMessageIngressCore:
         route_targets: RouteTargetRegistry | None = None,
         session_manager: SessionManager | None = None,
         database: DatabaseManager | None = None,
-        media_service=None,
+        pre_route_hook=None,
     ) -> MessageIngress:
-        return MessageIngress(
+        ingress = MessageIngress(
             session_manager=session_manager if session_manager is not None else self.session_mgr,
             permission_engine=self.perm_engine,
             route_table=route_table or RouteTable(),
             route_targets=route_targets,
             database=database,
-            media_service=media_service,
         )
+        if pre_route_hook is not None:
+            ingress.add_pre_route_hook(pre_route_hook)
+        return ingress
 
     @pytest.mark.asyncio
     async def test_basic_event_processing(self):
@@ -220,7 +221,7 @@ class TestMessageIngressCore:
     async def test_interceptor_block_still_persists_but_skips_media_ingest(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-        media_service = RecordingMediaService()
+        pre_route_hook = RecordingPreRouteHook()
         table = RouteTable()
         add_message_route(table)
         targets = RouteTargetRegistry()
@@ -230,7 +231,7 @@ class TestMessageIngressCore:
             route_table=table,
             route_targets=targets,
             database=db,
-            media_service=media_service,
+            pre_route_hook=pre_route_hook,
         )
 
         async def blocker(ctx):
@@ -243,7 +244,7 @@ class TestMessageIngressCore:
         rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
         assert len(rows) == 1
         assert rows[0]["raw_text"] == "blocked"
-        assert media_service.calls == []
+        assert pre_route_hook.calls == []
         assert handled == []
 
     @pytest.mark.asyncio
@@ -290,7 +291,7 @@ class TestMessageIngressCore:
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         session_manager = SessionManager(session_repo=db.sessions)
-        media_service = RecordingMediaService()
+        pre_route_hook = RecordingPreRouteHook()
         table = RouteTable()
         add_message_route(table)
         targets = RouteTargetRegistry()
@@ -300,7 +301,7 @@ class TestMessageIngressCore:
             route_targets=targets,
             session_manager=session_manager,
             database=db,
-            media_service=media_service,
+            pre_route_hook=pre_route_hook,
         )
         interceptor_calls = []
 
@@ -320,7 +321,7 @@ class TestMessageIngressCore:
         assert len(rows) == 1
         assert rows[0]["raw_text"] == "muted"
         assert interceptor_calls == []
-        assert media_service.calls == []
+        assert pre_route_hook.calls == []
 
     @pytest.mark.asyncio
     async def test_command_permission_denied(self):

@@ -12,6 +12,7 @@ from shinbot.agent.context.builders.message_parts import parse_message_parts
 from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
+    MediaIngressHook,
     MediaInspectionRunner,
     MediaService,
     register_media_tools,
@@ -97,14 +98,14 @@ def _make_media_ingress(
     media_service: MediaService,
     media_inspection_runner=None,
 ) -> MessageIngress:
-    return MessageIngress(
+    ingress = MessageIngress(
         session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
         permission_engine=PermissionEngine(),
         route_table=RouteTable(),
         database=db,
-        media_service=media_service,
-        media_inspection_runner=media_inspection_runner,
     )
+    ingress.add_pre_route_hook(MediaIngressHook(media_service, media_inspection_runner))
+    return ingress
 
 
 def _seed_media_runtime(

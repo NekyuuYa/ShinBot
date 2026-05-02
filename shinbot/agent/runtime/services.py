@@ -24,6 +24,7 @@ from shinbot.agent.identity import (
     register_identity_tools,
 )
 from shinbot.agent.media import (
+    MediaIngressHook,
     MediaInspectionRunner,
     MediaService,
     register_media_prompt_components,
@@ -101,6 +102,10 @@ class AgentRuntime:
             )
             if database is not None and self.media_service is not None
             else None
+        )
+        self.media_ingress_hook = MediaIngressHook(
+            self.media_service,
+            self.media_inspection_runner,
         )
         self.tool_registry = ToolRegistry()
         self.tool_manager = ToolManager(
@@ -190,6 +195,10 @@ class AgentRuntime:
             is_mentioned=signal.is_mentioned,
             is_reply_to_bot=signal.is_reply_to_bot,
         )
+
+    def handle_ingress_message(self, context: Any) -> None:
+        """Let Agent-owned media services observe accepted inbound messages."""
+        self.media_ingress_hook(context)
 
     async def shutdown(self) -> None:
         """Shut down Agent-side background services."""

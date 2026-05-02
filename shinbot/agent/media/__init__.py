@@ -11,6 +11,7 @@ from shinbot.agent.media.fingerprint import (
     fingerprint_image_file,
     hamming_distance,
 )
+from shinbot.agent.media.ingress import MediaIngressHook
 from shinbot.agent.media.inspection import MediaInspectionRunner
 from shinbot.agent.media.prompt_registration import register_media_prompt_components
 from shinbot.agent.media.registration import register_media_runtime
@@ -22,6 +23,7 @@ __all__ = [
     "BUILTIN_MEDIA_INSPECTION_LLM_REF",
     "IngestedMediaItem",
     "MediaFingerprint",
+    "MediaIngressHook",
     "MediaInspectionRunner",
     "MediaService",
     "ResolvedMediaInspectionConfig",
