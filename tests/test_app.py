@@ -16,6 +16,7 @@ from shinbot.core.dispatch.routing import RouteCondition
 from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
+from shinbot.core.runtime import install_model_runtime
 from shinbot.schema.events import UnifiedEvent
 from shinbot.schema.resources import Channel, User
 from tests.conftest import MockAdapter, make_message_event
@@ -34,6 +35,13 @@ class TestShinBotInit:
         assert bot.route_table is not None
         assert bot.route_targets is not None
         assert bot.message_ingress is not None
+        assert bot.model_runtime is None
+        assert bot.agent_runtime is None
+
+    def test_model_runtime_can_be_mounted_without_agent(self):
+        bot = ShinBot()
+        install_model_runtime(bot)
+        assert bot.model_runtime is not None
         assert bot.agent_runtime is None
 
     def test_agent_runtime_can_be_mounted(self):
@@ -43,6 +51,13 @@ class TestShinBotInit:
         assert bot.tool_registry is not None
         assert bot.tool_manager is not None
         assert bot.model_runtime is not None
+
+    def test_agent_runtime_reuses_mounted_model_runtime(self):
+        bot = ShinBot()
+        model_runtime = install_model_runtime(bot)
+        install_agent_runtime(bot)
+        assert bot.model_runtime is model_runtime
+        assert bot.agent_runtime.model_runtime is model_runtime
 
     def test_database_is_initialized_when_data_dir_is_provided(self, tmp_path):
         bot = ShinBot(data_dir=tmp_path)

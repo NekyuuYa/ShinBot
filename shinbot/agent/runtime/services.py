@@ -29,7 +29,6 @@ from shinbot.agent.media import (
     register_media_prompt_components,
     register_media_runtime,
 )
-from shinbot.agent.model_runtime import ModelRuntime
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
@@ -57,13 +56,14 @@ class AgentRuntime:
         permission_engine: PermissionEngine,
         audit_logger: AuditLogger,
         adapter_manager: AdapterManager,
+        model_runtime: Any,
         attention_config: AttentionConfig | None = None,
         attention_scheduler_config: AttentionSchedulerConfig | None = None,
         attention_debug: bool = False,
     ) -> None:
         runtime_data_dir = Path(data_dir)
         self.database = database
-        self.model_runtime = ModelRuntime(database)
+        self.model_runtime = model_runtime
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
         self.context_manager = (
@@ -218,12 +218,16 @@ def install_agent_runtime(
     attention_debug: bool = False,
 ) -> AgentRuntime:
     """Create and mount the default Agent runtime system onto a ShinBot app."""
+    from shinbot.core.runtime.model import install_model_runtime
+
+    model_runtime = install_model_runtime(bot)
     runtime = AgentRuntime(
         data_dir=bot.data_dir,
         database=bot.database,
         permission_engine=bot.permission_engine,
         audit_logger=bot.audit_logger,
         adapter_manager=bot.adapter_manager,
+        model_runtime=model_runtime,
         attention_config=attention_config,
         attention_scheduler_config=attention_scheduler_config,
         attention_debug=attention_debug,

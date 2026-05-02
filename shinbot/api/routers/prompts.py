@@ -68,9 +68,15 @@ def _prompt_definition_dict(payload: dict[str, Any]) -> dict[str, Any]:
 @router.get("")
 async def list_prompts(bot=BotDep):
     """List all registered prompt components for dashboard selection."""
-    items_by_id: dict[str, dict[str, Any]] = {
-        item["id"]: _prompt_dict(item) for item in bot.prompt_registry.list_component_catalog()
-    }
+    prompt_registry = getattr(bot, "prompt_registry", None)
+    items_by_id: dict[str, dict[str, Any]] = {}
+    if prompt_registry is not None:
+        items_by_id.update(
+            {
+                item["id"]: _prompt_dict(item)
+                for item in prompt_registry.list_component_catalog()
+            }
+        )
 
     if bot.database is not None:
         for payload in bot.database.prompt_definitions.list():

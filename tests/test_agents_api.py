@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from shinbot.agent.runtime import install_agent_runtime
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import PersonaRecord, PromptDefinitionRecord
@@ -233,6 +234,7 @@ def test_agent_rejects_missing_persona_and_duplicate_agent_id(tmp_path: Path):
 
 def test_agent_accepts_builtin_prompt_component_refs(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
+    install_agent_runtime(bot)
     bot.database.prompt_definitions.upsert(
         PromptDefinitionRecord(
             uuid="prompt-persona-1",

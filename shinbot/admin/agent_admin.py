@@ -192,11 +192,15 @@ def validate_agent_references(
             message=f"Persona {persona_uuid!r} was not found",
         )
 
+    prompt_registry = getattr(bot, "prompt_registry", None)
     for prompt_uuid in prompt_uuids:
+        runtime_prompt = (
+            prompt_registry.get_component(prompt_uuid) if prompt_registry is not None else None
+        )
         if (
             bot.database.prompt_definitions.get(prompt_uuid) is None
             and bot.database.prompt_definitions.get_by_prompt_id(prompt_uuid) is None
-            and bot.prompt_registry.get_component(prompt_uuid) is None
+            and runtime_prompt is None
         ):
             raise AgentAdminError(
                 status_code=404,

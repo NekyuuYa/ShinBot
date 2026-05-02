@@ -81,8 +81,9 @@ class ShinBot:
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.permission_engine = PermissionEngine()
         self.adapter_manager = AdapterManager()
-        self.agent_runtime: Any | None = None
+        self.model_runtime_system: Any | None = None
         self.model_runtime: Any | None = None
+        self.agent_runtime: Any | None = None
         self.identity_store: Any | None = None
         self.media_service: Any | None = None
         self.context_manager: Any | None = None
@@ -153,13 +154,29 @@ class ShinBot:
         """Attach the Agent-side handler for unmatched user-message signals."""
         self.agent_entry_dispatcher.set_handler(handler)
 
+    def mount_model_runtime(self, runtime: Any) -> None:
+        """Mount the model runtime as a standalone framework capability."""
+        model_runtime = getattr(runtime, "model_runtime", runtime)
+        if self.model_runtime is not None and self.model_runtime is not model_runtime:
+            raise RuntimeError("Model runtime is already mounted")
+
+        self.model_runtime_system = runtime
+        self.model_runtime = model_runtime
+        self.plugin_manager.attach_runtime_services(model_runtime=self.model_runtime)
+
     def mount_agent_runtime(self, runtime: Any) -> None:
         """Mount an Agent-like runtime system onto the core application."""
         if self.agent_runtime is not None:
             raise RuntimeError("Agent runtime is already mounted")
 
+        runtime_model = getattr(runtime, "model_runtime", None)
+        if runtime_model is not None:
+            if self.model_runtime is None:
+                self.mount_model_runtime(runtime_model)
+            elif self.model_runtime is not runtime_model:
+                raise RuntimeError("Agent runtime uses a different model runtime")
+
         self.agent_runtime = runtime
-        self.model_runtime = getattr(runtime, "model_runtime", None)
         self.identity_store = getattr(runtime, "identity_store", None)
         self.media_service = getattr(runtime, "media_service", None)
         self.context_manager = getattr(runtime, "context_manager", None)
