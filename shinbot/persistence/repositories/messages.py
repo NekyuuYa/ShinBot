@@ -6,6 +6,12 @@ import time
 from typing import Any
 
 from shinbot.persistence.records import MessageLogRecord
+from shinbot.schema.routing import (
+    MessageRoutingSkipReason,
+    MessageRoutingStatus,
+    routing_skip_reason_value,
+    routing_status_value,
+)
 
 from .base import ContextProvider, Repository
 
@@ -35,7 +41,7 @@ class MessageLogRepository(Repository, ContextProvider):
                     1 if record.is_read else 0,
                     1 if record.is_mentioned else 0,
                     record.created_at,
-                    record.routing_status,
+                    routing_status_value(record.routing_status),
                     record.routed_at,
                     record.routing_skip_reason,
                 ),
@@ -56,18 +62,18 @@ class MessageLogRepository(Repository, ContextProvider):
             conn.execute(
                 """
                 UPDATE message_logs
-                SET routing_status = 'dispatched',
+                SET routing_status = ?,
                     routed_at = ?,
                     routing_skip_reason = NULL
                 WHERE id = ?
                 """,
-                (timestamp, msg_id),
+                (MessageRoutingStatus.DISPATCHED.value, timestamp, msg_id),
             )
 
     def mark_routing_skipped(
         self,
         msg_id: int,
-        reason: str,
+        reason: MessageRoutingSkipReason | str,
         routed_at: float | None = None,
     ) -> None:
         """Mark a message as routed but intentionally not dispatched."""
@@ -76,12 +82,17 @@ class MessageLogRepository(Repository, ContextProvider):
             conn.execute(
                 """
                 UPDATE message_logs
-                SET routing_status = 'skipped',
+                SET routing_status = ?,
                     routed_at = ?,
                     routing_skip_reason = ?
                 WHERE id = ?
                 """,
-                (timestamp, reason, msg_id),
+                (
+                    MessageRoutingStatus.SKIPPED.value,
+                    timestamp,
+                    routing_skip_reason_value(reason),
+                    msg_id,
+                ),
             )
 
     def get(self, msg_id: int) -> dict[str, Any] | None:

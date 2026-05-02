@@ -74,13 +74,11 @@ def make_event(
 
 
 class RecordingAgentHandler:
-    def __init__(self, *, handled: bool = True) -> None:
-        self.handled = handled
+    def __init__(self) -> None:
         self.signals: list[AgentEntrySignal] = []
 
-    def __call__(self, signal: AgentEntrySignal) -> bool:
+    def __call__(self, signal: AgentEntrySignal) -> None:
         self.signals.append(signal)
-        return self.handled
 
 
 def make_agent_ingress(

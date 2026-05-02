@@ -49,6 +49,7 @@ from shinbot.persistence import DatabaseManager
 from shinbot.schema.elements import MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, User
+from shinbot.schema.routing import MessageRoutingStatus
 
 
 class MockAdapter(BaseAdapter):
@@ -78,13 +79,11 @@ class MockAdapter(BaseAdapter):
 
 
 class RecordingAgentHandler:
-    def __init__(self, *, handled: bool = True) -> None:
-        self.handled = handled
+    def __init__(self) -> None:
         self.signals: list[AgentEntrySignal] = []
 
-    def __call__(self, signal: AgentEntrySignal) -> bool:
+    def __call__(self, signal: AgentEntrySignal) -> None:
         self.signals.append(signal)
-        return self.handled
 
 
 def make_event(
@@ -628,7 +627,7 @@ async def test_expired_notice_is_persisted_and_skipped_before_route_dispatch(tmp
 async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
-    agent_handler = RecordingAgentHandler(handled=True)
+    agent_handler = RecordingAgentHandler()
     agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
 
     table = RouteTable()
@@ -677,7 +676,7 @@ async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path)
 async def test_observe_route_does_not_suppress_agent_entry_fallback(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
-    agent_handler = RecordingAgentHandler(handled=True)
+    agent_handler = RecordingAgentHandler()
     agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
     calls: list[str] = []
 
@@ -712,10 +711,12 @@ async def test_observe_route_does_not_suppress_agent_entry_fallback(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_agent_entry_fallback_marks_read_when_agent_entry_does_not_handle(tmp_path) -> None:
+async def test_agent_entry_fallback_notifies_agent_without_marking_read(
+    tmp_path,
+) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
-    agent_handler = RecordingAgentHandler(handled=False)
+    agent_handler = RecordingAgentHandler()
     agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
 
     table = RouteTable()
@@ -740,5 +741,5 @@ async def test_agent_entry_fallback_marks_read_when_agent_entry_does_not_handle(
 
     row = db.message_logs.get(result.message_log_id)
     assert row is not None
-    assert row["routing_status"] == "dispatched"
-    assert row["is_read"] is True
+    assert row["routing_status"] == MessageRoutingStatus.DISPATCHED.value
+    assert row["is_read"] is False

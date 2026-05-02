@@ -32,6 +32,7 @@ from shinbot.core.state.session import SessionManager, build_session_id
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
+from shinbot.schema.routing import MessageRoutingSkipReason
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
@@ -42,11 +43,11 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_AGE_SECONDS = 60
 
-ROUTING_SKIP_EXPIRED_MESSAGE = "expired_message"
-ROUTING_SKIP_NO_ROUTE_MATCHED = "no_route_matched"
-ROUTING_SKIP_SESSION_MUTED = "session_muted"
-ROUTING_SKIP_INTERCEPTOR_BLOCKED = "interceptor_blocked"
-ROUTING_SKIP_WAIT_FOR_INPUT = "wait_for_input"
+ROUTING_SKIP_EXPIRED_MESSAGE = MessageRoutingSkipReason.EXPIRED_MESSAGE.value
+ROUTING_SKIP_NO_ROUTE_MATCHED = MessageRoutingSkipReason.NO_ROUTE_MATCHED.value
+ROUTING_SKIP_SESSION_MUTED = MessageRoutingSkipReason.SESSION_MUTED.value
+ROUTING_SKIP_INTERCEPTOR_BLOCKED = MessageRoutingSkipReason.INTERCEPTOR_BLOCKED.value
+ROUTING_SKIP_WAIT_FOR_INPUT = MessageRoutingSkipReason.WAIT_FOR_INPUT.value
 
 
 @dataclass(slots=True)

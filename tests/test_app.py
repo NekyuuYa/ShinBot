@@ -263,9 +263,8 @@ class TestOnEvent:
         adapter = bot.add_adapter("inst1", "mock")
         signals: list[AgentEntrySignal] = []
 
-        async def handler(signal: AgentEntrySignal) -> bool:
+        async def handler(signal: AgentEntrySignal) -> None:
             signals.append(signal)
-            return True
 
         bot.set_agent_entry_handler(handler)
 

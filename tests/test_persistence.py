@@ -32,6 +32,7 @@ from shinbot.persistence.repositories.model_routes import ModelRouteRepositoryMi
 from shinbot.persistence.repositories.model_usage_hourly import ModelUsageHourlyRepositoryMixin
 from shinbot.schema.events import UnifiedEvent
 from shinbot.schema.resources import Channel, User
+from shinbot.schema.routing import MessageRoutingSkipReason, MessageRoutingStatus
 
 
 def _make_event(channel_id: str = "g-1") -> UnifiedEvent:
@@ -114,7 +115,7 @@ class TestDatabaseManager:
         with db.connect() as conn:
             row = conn.execute("SELECT * FROM message_logs WHERE session_id = 's-1'").fetchone()
 
-        assert row["routing_status"] == "pending"
+        assert row["routing_status"] == MessageRoutingStatus.PENDING.value
         assert row["routed_at"] is None
         assert row["routing_skip_reason"] is None
 
@@ -810,7 +811,7 @@ class TestDatabaseBackedAuditLogger:
         assert row["raw_text"] == "hi"
         assert row["is_read"] is False
         assert row["is_mentioned"] is True
-        assert row["routing_status"] == "pending"
+        assert row["routing_status"] == MessageRoutingStatus.PENDING.value
         assert row["routed_at"] is None
         assert row["routing_skip_reason"] is None
 
@@ -840,20 +841,20 @@ class TestDatabaseBackedAuditLogger:
         db.message_logs.mark_routing_dispatched(msg_id, routed_at=12345.0)
         row = db.message_logs.get(msg_id)
         assert row is not None
-        assert row["routing_status"] == "dispatched"
+        assert row["routing_status"] == MessageRoutingStatus.DISPATCHED.value
         assert row["routed_at"] == 12345.0
         assert row["routing_skip_reason"] is None
 
         db.message_logs.mark_routing_skipped(
             msg_id,
-            reason="expired_message",
+            reason=MessageRoutingSkipReason.EXPIRED_MESSAGE,
             routed_at=23456.0,
         )
         row2 = db.message_logs.get(msg_id)
         assert row2 is not None
-        assert row2["routing_status"] == "skipped"
+        assert row2["routing_status"] == MessageRoutingStatus.SKIPPED.value
         assert row2["routed_at"] == 23456.0
-        assert row2["routing_skip_reason"] == "expired_message"
+        assert row2["routing_skip_reason"] == MessageRoutingSkipReason.EXPIRED_MESSAGE.value
 
     def test_ai_interaction_repository_roundtrip(self, tmp_path):
         import time

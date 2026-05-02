@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from shinbot.schema.routing import MessageRoutingStatus
+
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -187,7 +189,7 @@ class MessageLogRecord:
     raw_text: str = ""
     is_read: bool = False
     is_mentioned: bool = False
-    routing_status: str = "pending"
+    routing_status: str = MessageRoutingStatus.PENDING.value
     routed_at: float | None = None
     routing_skip_reason: str | None = None
     id: int | None = None  # set after INSERT

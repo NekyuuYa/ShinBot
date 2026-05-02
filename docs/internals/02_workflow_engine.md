@@ -19,7 +19,7 @@
 
 - **持久化旁路保障**：外部消息先落库，实时调度不依赖轮询数据库。
 - **异常隔离**：matcher、拦截器和 route target 的异常都会被记录，不阻断整条消息入口。
-- **状态边界清晰**：`message_logs.routing_status` 只表达路由层生命周期，下游模块自行维护处理状态。
+- **状态边界清晰**：`message_logs.routing_status` 只表达路由层生命周期，下游模块自行维护处理状态与阅读状态。状态值由 `shinbot.schema.routing.MessageRoutingStatus` / `MessageRoutingSkipReason` 固化。
 - **Agent 边界**：ingress 不主动维护 Agent 上下文；Agent 入口只接收触发信号，并可在自身模块内按需读取 `message_logs` 构建上下文。
 
 ---

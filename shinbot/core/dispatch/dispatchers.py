@@ -43,7 +43,7 @@ class AgentEntrySignal:
     is_stopped: bool = False
 
 
-AgentEntryHandler = Callable[[AgentEntrySignal], Awaitable[bool] | bool]
+AgentEntryHandler = Callable[[AgentEntrySignal], Awaitable[None] | None]
 
 
 class NoticeDispatcher:
@@ -113,15 +113,10 @@ class AgentEntryDispatcher:
             is_stopped=bot.is_stopped,
         )
 
-        handled = False
         if self._handler is not None:
             result = self._handler(signal)
             if isawaitable(result):
-                result = await result
-            handled = bool(result)
-
-        if not handled:
-            self._mark_trigger_read(signal.message_log_id)
+                await result
 
     def _resolve_response_profile(self, bot) -> str:
         if self._database is None:
@@ -139,12 +134,6 @@ class AgentEntryDispatcher:
             is_mentioned=bot.is_mentioned,
             is_reply_to_bot=bot.is_reply_to_bot(),
         )
-
-    def _mark_trigger_read(self, message_log_id: int | None) -> None:
-        if self._database is None or message_log_id is None:
-            return
-        self._database.message_logs.mark_read(message_log_id)
-
 
 def make_agent_entry_fallback_route_rule(
     *,
