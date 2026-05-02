@@ -11,12 +11,15 @@ import pytest
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
+    KEYWORD_DISPATCHER_TARGET,
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
     AgentEntryDispatcher,
+    KeywordDispatcher,
     NoticeDispatcher,
     TextCommandDispatcher,
     make_agent_entry_fallback_route_rule,
+    make_keyword_route_rule,
     make_notice_route_rule,
     make_text_command_route_rule,
 )
@@ -31,6 +34,7 @@ from shinbot.core.dispatch.ingress import (
     RouteTargetRegistry,
     is_event_fresh,
 )
+from shinbot.core.dispatch.keyword import KeywordDef, KeywordRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteRule, RouteTable
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
@@ -425,6 +429,63 @@ async def test_text_command_dispatcher_denies_missing_permission(tmp_path) -> No
     assert command_calls == []
     assert len(adapter.sent) == 1
     assert adapter.sent[0][1][0].text_content == "权限不足：需要 admin.secret"
+
+
+@pytest.mark.asyncio
+async def test_keyword_dispatcher_executes_keywords_without_fallback(tmp_path) -> None:
+    keyword_registry = KeywordRegistry()
+    keyword_calls: list[tuple[str, str]] = []
+
+    async def handler(ctx, match) -> None:
+        keyword_calls.append((ctx.text, match.matched_text))
+
+    keyword_registry.register(KeywordDef(pattern="needle", handler=handler))
+    keyword_dispatcher = KeywordDispatcher(keyword_registry)
+
+    table = RouteTable()
+    keyword_rule = make_keyword_route_rule(keyword_dispatcher)
+    fallback_rule = make_agent_entry_fallback_route_rule()
+    table.register(keyword_rule)
+    table.register(fallback_rule)
+
+    targets = RouteTargetRegistry()
+    fallback_calls: list[str] = []
+    targets.register(KEYWORD_DISPATCHER_TARGET, keyword_dispatcher)
+    targets.register(AGENT_ENTRY_TARGET, lambda _context, _rule: fallback_calls.append("fallback"))
+    ingress, db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    result = await ingress.process_event(make_event("find the needle"), adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [keyword_rule]
+    assert keyword_calls == [("find the needle", "needle")]
+    assert fallback_calls == []
+    assert result.message_log_id is not None
+    assert db.message_logs.get(result.message_log_id)["routing_status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_keyword_route_does_not_prevent_fallback_when_no_keyword_matches(tmp_path) -> None:
+    keyword_registry = KeywordRegistry()
+    keyword_registry.register(KeywordDef(pattern="needle", handler=noop_command))
+    keyword_dispatcher = KeywordDispatcher(keyword_registry)
+
+    table = RouteTable()
+    fallback_rule = make_agent_entry_fallback_route_rule()
+    table.register(make_keyword_route_rule(keyword_dispatcher))
+    table.register(fallback_rule)
+
+    targets = RouteTargetRegistry()
+    fallback_calls: list[str] = []
+    targets.register(KEYWORD_DISPATCHER_TARGET, keyword_dispatcher)
+    targets.register(AGENT_ENTRY_TARGET, lambda _context, _rule: fallback_calls.append("fallback"))
+    ingress, _db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    result = await ingress.process_event(make_event("plain text"), adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [fallback_rule]
+    assert fallback_calls == ["fallback"]
 
 
 @pytest.mark.asyncio

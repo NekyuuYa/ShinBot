@@ -12,6 +12,7 @@ from shinbot.agent.tools import ToolRegistry
 from shinbot.core.application.boot import BootController
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.keyword import KeywordRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.manager import PluginManager, _topo_sort
 from shinbot.core.plugins.types import PluginRole, PluginState
@@ -39,11 +40,13 @@ class TestPlugin:
     def setup_method(self):
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
+        self.keyword_registry = KeywordRegistry()
         self.tool_registry = ToolRegistry()
         self.plg = Plugin(
             "test-plugin",
             self.cmd_reg,
             self.event_bus,
+            keyword_registry=self.keyword_registry,
             tool_registry=self.tool_registry,
         )
 
@@ -71,6 +74,16 @@ class TestPlugin:
 
         assert self.event_bus.handler_count("message-created") == 1
 
+    def test_on_keyword_decorator(self):
+        @self.plg.on_keyword("hello")
+        async def handler(ctx, match):
+            pass
+
+        assert len(self.keyword_registry.all_keywords) == 1
+        assert self.keyword_registry.all_keywords[0].pattern == "hello"
+        assert self.keyword_registry.all_keywords[0].owner == "test-plugin"
+        assert "hello" in self.plg._registered_keywords
+
     def test_tool_decorator_registers_tool(self):
         @self.plg.tool(
             name="weather_query",
@@ -95,12 +108,14 @@ class TestPluginManager:
     def setup_method(self):
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
+        self.keyword_registry = KeywordRegistry()
         self.tool_registry = ToolRegistry()
         self._tmp_data_dir_ctx = tempfile.TemporaryDirectory()
         self._tmp_data_dir = Path(self._tmp_data_dir_ctx.name)
         self.mgr = PluginManager(
             self.cmd_reg,
             self.event_bus,
+            keyword_registry=self.keyword_registry,
             tool_registry=self.tool_registry,
             data_dir=self._tmp_data_dir,
         )
@@ -153,6 +168,10 @@ class TestPluginManager:
             async def on_test(event):
                 pass
 
+            @plg.on_keyword("hello")
+            async def on_keyword(ctx, match):
+                pass
+
             @plg.tool(
                 name="bye_tool",
                 description="tool",
@@ -166,12 +185,14 @@ class TestPluginManager:
 
         assert self.cmd_reg.get("bye") is not None
         assert self.event_bus.handler_count("test-event") == 1
+        assert len(self.keyword_registry.match("hello")) == 1
         assert self.tool_registry.get_tool_by_name("bye_tool") is not None
 
         result = self.mgr.unload_plugin("bye")
         assert result is True
         assert self.cmd_reg.get("bye") is None
         assert self.event_bus.handler_count("test-event") == 0
+        assert self.keyword_registry.match("hello") == []
         assert self.tool_registry.get_tool_by_name("bye_tool") is None
         assert self.mgr.get_plugin("bye") is None
 

@@ -227,6 +227,7 @@ class BootController:
             self.bot.route_targets,
             self.bot.pipeline,
             self.bot.command_registry,
+            self.bot.keyword_registry,
             self.bot.permission_engine,
             self.bot.session_manager,
         ]

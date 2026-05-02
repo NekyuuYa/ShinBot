@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.keyword import KeywordRegistry
 from shinbot.core.model_runtime import ModelRuntimeObserverRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
@@ -68,6 +69,7 @@ class PluginManager:
         event_bus: EventBus,
         data_dir: Path | str | None = None,
         *,
+        keyword_registry: KeywordRegistry | None = None,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
@@ -75,6 +77,7 @@ class PluginManager:
     ):
         self._command_registry = command_registry
         self._event_bus = event_bus
+        self._keyword_registry = keyword_registry or KeywordRegistry()
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
@@ -94,6 +97,7 @@ class PluginManager:
             self._command_registry,
             self._event_bus,
             data_dir=self._build_plugin_data_dir(plugin_id),
+            keyword_registry=self._keyword_registry,
             adapter_manager=self._adapter_manager,
             tool_registry=self._tool_registry,
             model_runtime=self._model_runtime,
@@ -144,6 +148,7 @@ class PluginManager:
             logger.exception("Error loading plugin %s", plugin_id)
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
+            self._keyword_registry.unregister_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -253,6 +258,7 @@ class PluginManager:
             logger.exception("Error enabling plugin %s; reverting handler registrations", plugin_id)
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
+            self._keyword_registry.unregister_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -270,6 +276,7 @@ class PluginManager:
         meta.state = PluginState.ACTIVE
         meta.commands = list(plg._registered_commands)
         meta.event_types = list(plg._registered_events)
+        meta.keywords = list(plg._registered_keywords)
         meta.data_dir = str(plg.data_dir)
         self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
@@ -487,6 +494,7 @@ class PluginManager:
             )
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
+            self._keyword_registry.unregister_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -528,6 +536,7 @@ class PluginManager:
             module_path=module_path,
             commands=list(plg._registered_commands),
             event_types=list(plg._registered_events),
+            keywords=list(plg._registered_keywords),
             data_dir=str(plg.data_dir),
         )
 
@@ -579,6 +588,7 @@ class PluginManager:
 
         cmd_count = self._command_registry.unregister_by_owner(plugin_id)
         evt_count = self._event_bus.off_all(plugin_id)
+        self._keyword_registry.unregister_by_owner(plugin_id)
         if self._tool_registry is not None:
             self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
         if plg is not None and self._model_runtime is not None:

@@ -23,6 +23,7 @@ class TestShinBotInit:
         bot = ShinBot()
         assert bot.event_bus is not None
         assert bot.command_registry is not None
+        assert bot.keyword_registry is not None
         assert bot.session_manager is not None
         assert bot.permission_engine is not None
         assert bot.tool_registry is not None
@@ -192,6 +193,32 @@ class TestOnEvent:
         await asyncio.sleep(0)
 
         assert calls == ["guild-member-added"]
+
+    @pytest.mark.asyncio
+    async def test_on_event_executes_keyword_via_message_ingress(self):
+        bot = ShinBot()
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("inst1", "mock")
+        calls = []
+
+        def setup(plg: Plugin):
+            @plg.on_keyword("needle")
+            async def keyword(ctx, match):
+                calls.append((ctx.session_id, match.matched_text))
+
+        plg = Plugin(
+            "keyword-test",
+            bot.command_registry,
+            bot.event_bus,
+            keyword_registry=bot.keyword_registry,
+        )
+        setup(plg)
+
+        event = make_message_event(content="find needle", instance_id="inst1")
+        await bot.on_event(event, adapter)
+        await asyncio.sleep(0)
+
+        assert calls == [("inst1:group:ch-1", "needle")]
 
     @pytest.mark.asyncio
     async def test_on_event_handles_exceptions_gracefully(self):

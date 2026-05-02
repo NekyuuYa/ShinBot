@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.keyword import KeywordDef, KeywordRegistry
 from shinbot.core.model_runtime import ModelRuntimeObserver, ModelRuntimeObserverRegistry
 from shinbot.core.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
 from shinbot.schema.elements import MessageElement
@@ -28,6 +29,7 @@ class Plugin:
         event_bus: EventBus,
         data_dir: Path | str | None = None,
         *,
+        keyword_registry: KeywordRegistry | None = None,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
@@ -36,6 +38,7 @@ class Plugin:
         self.plugin_id = plugin_id
         self._command_registry = command_registry
         self._event_bus = event_bus
+        self._keyword_registry = keyword_registry
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
@@ -45,6 +48,7 @@ class Plugin:
         )
         self._registered_commands: list[str] = []
         self._registered_events: list[str] = []
+        self._registered_keywords: list[str] = []
         self._registered_tools: list[str] = []
         self._registered_model_observers: list[ModelRuntimeObserver] = []
         self.logger = get_plugin_logger(plugin_id)
@@ -79,6 +83,35 @@ class Plugin:
             )
             self._command_registry.register(cmd)
             self._registered_commands.append(name)
+            return func
+
+        return decorator
+
+    def on_keyword(
+        self,
+        pattern: str,
+        *,
+        priority: int = 100,
+        ignore_case: bool = True,
+        regex: bool = False,
+    ) -> Callable:
+        if self._keyword_registry is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot register keyword handlers: "
+                "no KeywordRegistry is available in this Plugin object."
+            )
+
+        def decorator(func: Callable) -> Callable:
+            keyword = KeywordDef(
+                pattern=pattern,
+                handler=func,
+                priority=priority,
+                ignore_case=ignore_case,
+                regex=regex,
+                owner=self.plugin_id,
+            )
+            self._keyword_registry.register(keyword)
+            self._registered_keywords.append(pattern)
             return func
 
         return decorator

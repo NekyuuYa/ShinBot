@@ -10,6 +10,7 @@ from shinbot.core.bot_config import ATTENTION_DISABLED_PROFILE, select_response_
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
+from shinbot.core.dispatch.keyword import KeywordRegistry
 from shinbot.core.dispatch.routing import (
     RouteCondition,
     RouteMatchContext,
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TEXT_COMMAND_DISPATCHER_TARGET = "text_command_dispatcher"
+KEYWORD_DISPATCHER_TARGET = "keyword_dispatcher"
 NOTICE_DISPATCHER_TARGET = "notice_dispatcher"
 AGENT_ENTRY_TARGET = "agent_entry"
 
@@ -179,6 +181,61 @@ def make_text_command_route_rule(
         ),
         target=TEXT_COMMAND_DISPATCHER_TARGET,
         match_mode=RouteMatchMode.EXCLUSIVE,
+    )
+
+
+class KeywordDispatcher:
+    """Route target that executes registered keyword handlers."""
+
+    def __init__(
+        self,
+        keyword_registry: KeywordRegistry,
+        *,
+        session_manager: SessionManager | None = None,
+    ) -> None:
+        self._keyword_registry = keyword_registry
+        self._session_manager = session_manager
+
+    def matches(self, event: UnifiedEvent, message: Message) -> bool:
+        if not event.is_message_event:
+            return False
+        return bool(self._keyword_registry.match(message.get_text(self_id=event.self_id)))
+
+    async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
+        bot = context.require_message_context()
+        matches = self._keyword_registry.match(bot.text)
+        for match in matches:
+            if bot.is_stopped:
+                break
+            try:
+                handler_result = await match.keyword.handler(bot, match)
+                if handler_result is not None:
+                    logger.warning(
+                        "Keyword handler %s returned a value that was ignored; use bot.send()",
+                        match.keyword.pattern,
+                    )
+            except Exception:
+                logger.exception("Keyword handler error: %s", match.keyword.pattern)
+
+        if self._session_manager is not None:
+            self._session_manager.update(bot.session)
+
+
+def make_keyword_route_rule(
+    dispatcher: KeywordDispatcher,
+    *,
+    rule_id: str = "builtin.keyword_dispatcher",
+    priority: int = 900,
+) -> RouteRule:
+    return RouteRule(
+        id=rule_id,
+        priority=priority,
+        condition=RouteCondition(
+            event_types=frozenset({"message-created"}),
+            custom_matcher=dispatcher.matches,
+        ),
+        target=KEYWORD_DISPATCHER_TARGET,
+        match_mode=RouteMatchMode.NORMAL,
     )
 
 

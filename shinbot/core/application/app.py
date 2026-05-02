@@ -37,17 +37,21 @@ from shinbot.agent.workflow import WorkflowRunner
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
+    KEYWORD_DISPATCHER_TARGET,
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
     AgentEntryDispatcher,
+    KeywordDispatcher,
     NoticeDispatcher,
     TextCommandDispatcher,
     make_agent_entry_fallback_route_rule,
+    make_keyword_route_rule,
     make_notice_route_rule,
     make_text_command_route_rule,
 )
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
+from shinbot.core.dispatch.keyword import KeywordRegistry
 from shinbot.core.dispatch.pipeline import MessagePipeline
 from shinbot.core.dispatch.routing import RouteTable
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
@@ -95,6 +99,7 @@ class ShinBot:
 
         self.event_bus = EventBus()
         self.command_registry = CommandRegistry()
+        self.keyword_registry = KeywordRegistry()
         self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.model_runtime = ModelRuntime(self.database)
@@ -145,6 +150,7 @@ class ShinBot:
         self.adapter_manager = AdapterManager()
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,
+            keyword_registry=self.keyword_registry,
             event_bus=self.event_bus,
             adapter_manager=self.adapter_manager,
             tool_registry=self.tool_registry,
@@ -209,6 +215,10 @@ class ShinBot:
             audit_logger=self.audit_logger,
             session_manager=self.session_manager,
         )
+        self.keyword_dispatcher = KeywordDispatcher(
+            self.keyword_registry,
+            session_manager=self.session_manager,
+        )
         self.notice_dispatcher = NoticeDispatcher(self.event_bus)
         self.agent_entry_dispatcher = AgentEntryDispatcher(
             attention_scheduler=self.attention_scheduler,
@@ -216,9 +226,11 @@ class ShinBot:
             context_manager=self.context_manager,
         )
         self.route_targets.register(TEXT_COMMAND_DISPATCHER_TARGET, self.text_command_dispatcher)
+        self.route_targets.register(KEYWORD_DISPATCHER_TARGET, self.keyword_dispatcher)
         self.route_targets.register(NOTICE_DISPATCHER_TARGET, self.notice_dispatcher)
         self.route_targets.register(AGENT_ENTRY_TARGET, self.agent_entry_dispatcher)
         self.route_table.register(make_text_command_route_rule(self.text_command_dispatcher))
+        self.route_table.register(make_keyword_route_rule(self.keyword_dispatcher))
         self.route_table.register(make_notice_route_rule(self.notice_dispatcher))
         self.route_table.register(make_agent_entry_fallback_route_rule())
         self.message_ingress = MessageIngress(

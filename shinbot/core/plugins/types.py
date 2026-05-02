@@ -34,4 +34,5 @@ class PluginMeta:
     module_path: str = ""
     commands: list[str] = field(default_factory=list)
     event_types: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
     data_dir: str = ""
