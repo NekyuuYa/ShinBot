@@ -799,7 +799,7 @@ async def test_ingress_ingests_local_image_media(tmp_path):
     adapter = MockAdapter()
     ingress = _make_media_ingress(tmp_path, db, media_service=MediaService(db))
 
-    image_path = _write_png(tmp_path / "assets" / "pipeline.png", color=(0, 255, 0))
+    image_path = _write_png(tmp_path / "assets" / "ingress.png", color=(0, 255, 0))
     content = Message.from_elements(MessageElement.img(str(image_path))).to_xml()
     await ingress.process_event(_make_group_event(content), adapter)
 
@@ -879,7 +879,7 @@ async def test_ingress_schedules_sticker_summary_for_custom_image_emoji(tmp_path
         media_inspection_runner=inspection_runner,
     )
 
-    image_path = _write_png(tmp_path / "assets" / "pipeline-sticker.png", color=(255, 128, 0))
+    image_path = _write_png(tmp_path / "assets" / "ingress-sticker.png", color=(255, 128, 0))
     content = Message.from_elements(MessageElement.img(str(image_path), sub_type="1")).to_xml()
 
     await ingress.process_event(_make_group_event(content, message_id="msg-sticker-1"), adapter)

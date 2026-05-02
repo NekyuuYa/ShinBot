@@ -1,4 +1,4 @@
-"""Tests for message pipeline dispatch."""
+"""MessageContext behavior tests."""
 
 import time
 

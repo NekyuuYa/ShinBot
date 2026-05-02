@@ -163,7 +163,7 @@ class AttentionScheduler:
         already_handled: bool = False,
         is_stopped: bool = False,
     ) -> bool:
-        """Schedule attention work for one persisted pipeline message.
+        """Schedule attention work for one persisted ingress message.
 
         Returns True when the attention system accepted ownership of the message
         by either updating attention state or directly dispatching a pending
@@ -252,7 +252,7 @@ class AttentionScheduler:
         attention_multiplier: float = 1.0,
         self_platform_id: str = "",
     ) -> None:
-        """Called by the pipeline for each incoming group message after persistence.
+        """Called for each routed message after ingress persistence.
 
         Computes attention contribution and manages the semantic wait timer.
         """

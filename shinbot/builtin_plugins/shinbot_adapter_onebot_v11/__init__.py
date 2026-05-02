@@ -70,12 +70,12 @@ class OneBotV11PluginConfig(BaseModel):
     )
     auto_download_media: bool = Field(
         default=True,
-        description="Cache image and video resources before entering the pipeline",
+        description="Cache image and video resources before message ingress",
         json_schema_extra={"ui_group": "advanced"},
     )
     download_file_resources: bool = Field(
         default=False,
-        description="Download file attachments before entering the pipeline",
+        description="Download file attachments before message ingress",
         json_schema_extra={"ui_group": "advanced"},
     )
     max_resource_bytes: int = Field(

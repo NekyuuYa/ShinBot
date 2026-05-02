@@ -345,12 +345,12 @@ class SatoriAdapter(BaseAdapter):
 
         Implements dual-track design: message events (with content to parse)
         and notice events (with structured resources) are handled separately
-        by the pipeline.
+        by message ingress.
 
         The adapter's responsibility is to:
           1. Validate the Satori JSON into UnifiedEvent with proper resource models
           2. Emit the event as-is (message or notice)
-          3. Let the pipeline handle the dual-track dispatching
+          3. Let message ingress handle dual-track dispatching
         """
         if self._event_callback is None:
             return

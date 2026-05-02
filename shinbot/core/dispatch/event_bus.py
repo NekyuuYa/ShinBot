@@ -1,7 +1,7 @@
 """Async event bus for internal event dispatch.
 
 Provides a lightweight pub/sub mechanism for decoupled communication
-between the core pipeline, plugins, and adapters.
+between core services, plugins, and adapters.
 """
 
 from __future__ import annotations

@@ -22,7 +22,7 @@ class MessagePayload(BaseModel):
     """The message sub-object within a message-created event.
 
     The `content` field contains the raw Satori XML string which
-    gets parsed into MessageElement AST by the pipeline.
+    gets parsed into a MessageElement AST by message ingress.
     """
 
     id: str
@@ -33,7 +33,7 @@ class MessagePayload(BaseModel):
 
 
 class UnifiedEvent(BaseModel):
-    """Canonical event representation used throughout the ShinBot pipeline.
+    """Canonical event representation used throughout ShinBot ingress.
 
     Implements the dual-track design for separating message events from notice events:
 
@@ -41,12 +41,12 @@ class UnifiedEvent(BaseModel):
       - Payload: message content (XML string to parse)
       - User: sender identity
       - Channel/Guild: context where message was sent
-      - Pipeline: → MessageElement AST parsing → command resolution
+      - Ingress: → MessageElement AST parsing → route-table dispatch
 
     **Notice Events** (e.g., 'guild-member-added', 'friend-request'):
       - Payload: structured resources (guild, user, operator, etc.)
       - NO message parsing required
-      - Pipeline: → EventBus dispatch → notice handlers
+      - Ingress: → notice dispatcher → EventBus handlers
 
     Wire format fields (from Satori WebSocket):
       - op: opcode (0 = EVENT, 4 = READY)
