@@ -35,7 +35,8 @@ async def _tool_handler(arguments, runtime):
 def test_tools_list_route_returns_registered_tools(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     install_agent_runtime(bot)
-    bot.tool_registry.register_tool(
+    assert bot.agent_runtime is not None
+    bot.agent_runtime.tool_registry.register_tool(
         ToolDefinition(
             id="builtin.weather.query",
             name="weather_query",

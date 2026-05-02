@@ -37,6 +37,9 @@ class TestShinBotInit:
         assert bot.message_ingress is not None
         assert bot.model_runtime is None
         assert bot.agent_runtime is None
+        assert not hasattr(bot, "prompt_registry")
+        assert not hasattr(bot, "tool_registry")
+        assert not hasattr(bot, "attention_scheduler")
 
     def test_model_runtime_can_be_mounted_without_agent(self):
         bot = ShinBot()
@@ -48,8 +51,8 @@ class TestShinBotInit:
         bot = ShinBot()
         install_agent_runtime(bot)
         assert bot.agent_runtime is not None
-        assert bot.tool_registry is not None
-        assert bot.tool_manager is not None
+        assert bot.agent_runtime.tool_registry is not None
+        assert bot.agent_runtime.tool_manager is not None
         assert bot.model_runtime is not None
 
     def test_agent_runtime_reuses_mounted_model_runtime(self):
@@ -67,18 +70,18 @@ class TestShinBotInit:
     def test_attention_debug_parameter(self):
         bot_no_debug = ShinBot()
         install_agent_runtime(bot_no_debug, attention_debug=False)
-        assert bot_no_debug.attention_config.debug is False
+        assert bot_no_debug.agent_runtime.attention_config.debug is False
 
         bot_debug = ShinBot()
         install_agent_runtime(bot_debug, attention_debug=True)
-        assert bot_debug.attention_config.debug is True
+        assert bot_debug.agent_runtime.attention_config.debug is True
 
     def test_attention_config_parameter(self):
         config = AttentionConfig(decay_k=0.002, decay_idle_grace_seconds=300.0)
         bot = ShinBot()
         install_agent_runtime(bot, attention_config=config)
-        assert bot.attention_config.decay_k == 0.002
-        assert bot.attention_config.decay_idle_grace_seconds == 300.0
+        assert bot.agent_runtime.attention_config.decay_k == 0.002
+        assert bot.agent_runtime.attention_config.decay_idle_grace_seconds == 300.0
 
     def test_plugin_manager_shares_registry(self):
         """PluginManager must use the same registry as message ingress."""

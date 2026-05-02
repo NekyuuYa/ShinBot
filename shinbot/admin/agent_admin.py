@@ -192,7 +192,8 @@ def validate_agent_references(
             message=f"Persona {persona_uuid!r} was not found",
         )
 
-    prompt_registry = getattr(bot, "prompt_registry", None)
+    agent_runtime = getattr(bot, "agent_runtime", None)
+    prompt_registry = getattr(agent_runtime, "prompt_registry", None)
     for prompt_uuid in prompt_uuids:
         runtime_prompt = (
             prompt_registry.get_component(prompt_uuid) if prompt_registry is not None else None

@@ -84,18 +84,6 @@ class ShinBot:
         self.model_runtime_system: Any | None = None
         self.model_runtime: Any | None = None
         self.agent_runtime: Any | None = None
-        self.identity_store: Any | None = None
-        self.media_service: Any | None = None
-        self.context_manager: Any | None = None
-        self.prompt_registry: Any | None = None
-        self.media_inspection_runner: Any | None = None
-        self.tool_registry: Any | None = None
-        self.tool_manager: Any | None = None
-        self.attention_config: Any | None = None
-        self.attention_scheduler_config: Any | None = None
-        self.attention_engine: Any | None = None
-        self.attention_scheduler: Any | None = None
-        self.workflow_runner: Any | None = None
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,
             keyword_registry=self.keyword_registry,
@@ -175,21 +163,8 @@ class ShinBot:
                 raise RuntimeError("Agent runtime uses a different model runtime")
 
         self.agent_runtime = runtime
-        self.identity_store = getattr(runtime, "identity_store", None)
-        self.media_service = getattr(runtime, "media_service", None)
-        self.context_manager = getattr(runtime, "context_manager", None)
-        self.prompt_registry = getattr(runtime, "prompt_registry", None)
-        self.media_inspection_runner = getattr(runtime, "media_inspection_runner", None)
-        self.tool_registry = getattr(runtime, "tool_registry", None)
-        self.tool_manager = getattr(runtime, "tool_manager", None)
-        self.attention_config = getattr(runtime, "attention_config", None)
-        self.attention_scheduler_config = getattr(runtime, "attention_scheduler_config", None)
-        self.attention_engine = getattr(runtime, "attention_engine", None)
-        self.attention_scheduler = getattr(runtime, "attention_scheduler", None)
-        self.workflow_runner = getattr(runtime, "workflow_runner", None)
-
         self.plugin_manager.attach_runtime_services(
-            tool_registry=self.tool_registry,
+            tool_registry=getattr(runtime, "tool_registry", None),
             model_runtime=self.model_runtime,
         )
         ingress_handler = getattr(runtime, "handle_ingress_message", None)

@@ -34,7 +34,8 @@ def _auth_headers(app) -> dict[str, str]:
 def test_prompts_list_route_returns_registered_prompt_components(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     install_agent_runtime(bot)
-    bot.prompt_registry.register_component(
+    assert bot.agent_runtime is not None
+    bot.agent_runtime.prompt_registry.register_component(
         PromptComponent(
             id="prompt.identity.extra",
             stage=PromptStage.IDENTITY,
