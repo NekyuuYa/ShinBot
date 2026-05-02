@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from shinbot.agent.prompt_manager import PromptComponent, PromptComponentKind, PromptStage
+from shinbot.agent.runtime import install_agent_runtime
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence.records import PromptDefinitionRecord, utc_now_iso
@@ -32,6 +33,7 @@ def _auth_headers(app) -> dict[str, str]:
 
 def test_prompts_list_route_returns_registered_prompt_components(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
+    install_agent_runtime(bot)
     bot.prompt_registry.register_component(
         PromptComponent(
             id="prompt.identity.extra",

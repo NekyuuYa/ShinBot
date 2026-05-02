@@ -36,6 +36,7 @@ from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
 
 if TYPE_CHECKING:
+    from shinbot.core.application.app import ShinBot
     from shinbot.core.dispatch.dispatchers import AgentEntrySignal
     from shinbot.core.platform.adapter_manager import AdapterManager
     from shinbot.core.security.audit import AuditLogger
@@ -209,4 +210,26 @@ class AgentRuntime:
             logger.exception("Attention workflow failed for session %s", session_id)
 
 
-__all__ = ["AgentRuntime"]
+def install_agent_runtime(
+    bot: ShinBot,
+    *,
+    attention_config: AttentionConfig | None = None,
+    attention_scheduler_config: AttentionSchedulerConfig | None = None,
+    attention_debug: bool = False,
+) -> AgentRuntime:
+    """Create and mount the default Agent runtime system onto a ShinBot app."""
+    runtime = AgentRuntime(
+        data_dir=bot.data_dir,
+        database=bot.database,
+        permission_engine=bot.permission_engine,
+        audit_logger=bot.audit_logger,
+        adapter_manager=bot.adapter_manager,
+        attention_config=attention_config,
+        attention_scheduler_config=attention_scheduler_config,
+        attention_debug=attention_debug,
+    )
+    bot.mount_agent_runtime(runtime)
+    return runtime
+
+
+__all__ = ["AgentRuntime", "install_agent_runtime"]

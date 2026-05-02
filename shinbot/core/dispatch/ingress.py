@@ -36,7 +36,6 @@ from shinbot.schema.routing import MessageRoutingSkipReason
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
-    from shinbot.agent.media import MediaInspectionRunner, MediaService
     from shinbot.persistence.engine import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -129,8 +128,8 @@ class MessageIngress:
         route_targets: RouteTargetRegistry | None = None,
         audit_logger: AuditLogger | None = None,
         database: DatabaseManager | None = None,
-        media_service: MediaService | None = None,
-        media_inspection_runner: MediaInspectionRunner | None = None,
+        media_service: Any | None = None,
+        media_inspection_runner: Any | None = None,
         waiting_registry: WaitingInputRegistry | None = None,
         max_message_age_seconds: int = MAX_MESSAGE_AGE_SECONDS,
     ) -> None:
@@ -149,6 +148,16 @@ class MessageIngress:
     def add_interceptor(self, interceptor: Interceptor, priority: int = 100) -> None:
         self._interceptors.append((priority, interceptor))
         self._interceptors.sort(key=lambda x: x[0])
+
+    def attach_media_runtime(
+        self,
+        *,
+        media_service: Any | None = None,
+        media_inspection_runner: Any | None = None,
+    ) -> None:
+        """Attach optional Agent/media services after app construction."""
+        self._media_service = media_service
+        self._media_inspection_runner = media_inspection_runner
 
     async def process_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         """Process one normalized event.

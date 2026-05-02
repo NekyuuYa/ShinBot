@@ -9,6 +9,7 @@ import types
 import pytest
 
 from shinbot.agent.attention.engine import AttentionConfig
+from shinbot.agent.runtime import install_agent_runtime
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.dispatch.routing import RouteCondition
@@ -28,13 +29,19 @@ class TestShinBotInit:
         assert bot.keyword_registry is not None
         assert bot.session_manager is not None
         assert bot.permission_engine is not None
-        assert bot.tool_registry is not None
-        assert bot.tool_manager is not None
         assert bot.adapter_manager is not None
         assert bot.plugin_manager is not None
         assert bot.route_table is not None
         assert bot.route_targets is not None
         assert bot.message_ingress is not None
+        assert bot.agent_runtime is None
+
+    def test_agent_runtime_can_be_mounted(self):
+        bot = ShinBot()
+        install_agent_runtime(bot)
+        assert bot.agent_runtime is not None
+        assert bot.tool_registry is not None
+        assert bot.tool_manager is not None
         assert bot.model_runtime is not None
 
     def test_database_is_initialized_when_data_dir_is_provided(self, tmp_path):
@@ -43,15 +50,18 @@ class TestShinBotInit:
         assert (tmp_path / "db" / "shinbot.sqlite3").exists()
 
     def test_attention_debug_parameter(self):
-        bot_no_debug = ShinBot(attention_debug=False)
+        bot_no_debug = ShinBot()
+        install_agent_runtime(bot_no_debug, attention_debug=False)
         assert bot_no_debug.attention_config.debug is False
 
-        bot_debug = ShinBot(attention_debug=True)
+        bot_debug = ShinBot()
+        install_agent_runtime(bot_debug, attention_debug=True)
         assert bot_debug.attention_config.debug is True
 
     def test_attention_config_parameter(self):
         config = AttentionConfig(decay_k=0.002, decay_idle_grace_seconds=300.0)
-        bot = ShinBot(attention_config=config)
+        bot = ShinBot()
+        install_agent_runtime(bot, attention_config=config)
         assert bot.attention_config.decay_k == 0.002
         assert bot.attention_config.decay_idle_grace_seconds == 300.0
 

@@ -96,6 +96,16 @@ class PluginManager:
         self._plugin_data_root = self._root_data_dir / "plugin_data"
         self._plugin_data_root.mkdir(parents=True, exist_ok=True)
 
+    def attach_runtime_services(
+        self,
+        *,
+        tool_registry: ToolRegistry | None = None,
+        model_runtime: ModelRuntimeObserverRegistry | None = None,
+    ) -> None:
+        """Attach optional runtime capabilities for subsequently built Plugin objects."""
+        self._tool_registry = tool_registry
+        self._model_runtime = model_runtime
+
     def _build_plg(self, plugin_id: str) -> Plugin:
         return Plugin(
             plugin_id,

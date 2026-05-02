@@ -431,7 +431,7 @@ ToolManager 在执行前必须：
 
 应用装配建议：
 
-- 在 `ShinBot` 顶层实例中持有 `tool_registry` 与 `tool_manager`
+- `ToolRegistry` 与 `ToolManager` 由 `shinbot.agent.runtime.AgentRuntime` 持有；宿主通过 `install_agent_runtime(...)` 挂载后，可在 `ShinBot` 上以运行时能力访问它们
 - `Plugin` 注入 tool 注册接口
 - `PromptRegistry` 后续从 `ToolManager.export_model_tools()` 获取 `Abilities`
 - `Model Runtime` 在调用时接收筛选后的 `tools`

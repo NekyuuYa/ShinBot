@@ -79,6 +79,10 @@ def create_api_app(
 
         runtime_control = RuntimeControl()
     bot.runtime_control = runtime_control
+    if getattr(bot, "agent_runtime", None) is None:
+        from shinbot.agent.runtime import install_agent_runtime
+
+        install_agent_runtime(bot)
 
     # ── Lifespan (startup / shutdown hooks) ──────────────────────────
 

@@ -11,6 +11,7 @@ from shinbot.agent.runtime.prompt_runtime import (
 
 __all__ = [
     "AgentRuntime",
+    "install_agent_runtime",
     "register_runtime_prompt_components",
     "resolve_current_time_prompt",
     "resolve_message_text_prompt",
@@ -18,6 +19,7 @@ __all__ = [
 
 _EXPORT_MODULES = {
     "AgentRuntime": "shinbot.agent.runtime.services",
+    "install_agent_runtime": "shinbot.agent.runtime.services",
 }
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from shinbot.agent.model_runtime import ModelRuntimeCall
+from shinbot.agent.runtime import install_agent_runtime
 from shinbot.builtin_plugins.shinbot_debug_model import _build_model_record
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import ModelDefinitionRecord, ModelProviderRecord
@@ -90,6 +91,7 @@ async def test_debug_model_plugin_persists_runtime_requests(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ):
     bot = ShinBot(data_dir=tmp_path)
+    install_agent_runtime(bot)
     metadata_path = (
         Path(__file__).resolve().parents[1]
         / "shinbot/builtin_plugins/shinbot_debug_model/metadata.json"

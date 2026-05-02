@@ -9,7 +9,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from shinbot.agent.attention import AttentionConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import normalize_plugin_enabled, plugin_saved_enabled
@@ -114,6 +113,11 @@ class BootController:
                 data_dir=self.data_dir,
                 database_url=database_url,
                 database_snapshot_ttl=snapshot_ttl,
+            )
+            from shinbot.agent.runtime import install_agent_runtime
+
+            install_agent_runtime(
+                self.bot,
                 attention_config=attention_config,
                 attention_debug=self.attention_debug,
             )
@@ -121,8 +125,10 @@ class BootController:
             self.state = BootState.DEGRADED
             raise
 
-    def _resolve_attention_config(self) -> AttentionConfig:
+    def _resolve_attention_config(self) -> Any:
         """Build AttentionConfig from defaults and optional [attention] overrides."""
+        from shinbot.agent.attention import AttentionConfig
+
         config = AttentionConfig(debug=self.attention_debug)
         section = self.config.get("attention", {})
 

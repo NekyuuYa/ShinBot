@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from shinbot.agent.runtime.services import AgentRuntime
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
@@ -41,9 +40,6 @@ from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
 from shinbot.schema.events import UnifiedEvent
 
-if TYPE_CHECKING:
-    from shinbot.agent.attention import AttentionConfig, AttentionSchedulerConfig
-
 logger = logging.getLogger(__name__)
 
 
@@ -59,19 +55,16 @@ class ShinBot:
         *,
         database_url: str | None = None,
         database_snapshot_ttl: int | None = None,
-        attention_config: AttentionConfig | None = None,
-        attention_scheduler_config: AttentionSchedulerConfig | None = None,
-        attention_debug: bool = False,
     ) -> None:
         # Core subsystems
         self.database: DatabaseManager | None = None
         self.runtime_control: Any | None = None
-        runtime_data_dir = Path(data_dir) if data_dir is not None else Path("data")
+        self.data_dir = Path(data_dir) if data_dir is not None else Path("data")
         session_repo = None
         audit_repo = None
         if data_dir is not None or database_url is not None:
             self.database = DatabaseManager.from_bootstrap(
-                data_dir=runtime_data_dir,
+                data_dir=self.data_dir,
                 url=database_url,
                 snapshot_ttl=database_snapshot_ttl,
             )
@@ -88,29 +81,20 @@ class ShinBot:
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.permission_engine = PermissionEngine()
         self.adapter_manager = AdapterManager()
-        self.agent_runtime = AgentRuntime(
-            data_dir=runtime_data_dir,
-            database=self.database,
-            permission_engine=self.permission_engine,
-            audit_logger=self.audit_logger,
-            adapter_manager=self.adapter_manager,
-            attention_config=attention_config,
-            attention_scheduler_config=attention_scheduler_config,
-            attention_debug=attention_debug,
-        )
-        self.model_runtime = self.agent_runtime.model_runtime
-        self.identity_store = self.agent_runtime.identity_store
-        self.media_service = self.agent_runtime.media_service
-        self.context_manager = self.agent_runtime.context_manager
-        self.prompt_registry = self.agent_runtime.prompt_registry
-        self.media_inspection_runner = self.agent_runtime.media_inspection_runner
-        self.tool_registry = self.agent_runtime.tool_registry
-        self.tool_manager = self.agent_runtime.tool_manager
-        self.attention_config = self.agent_runtime.attention_config
-        self.attention_scheduler_config = self.agent_runtime.attention_scheduler_config
-        self.attention_engine = self.agent_runtime.attention_engine
-        self.attention_scheduler = self.agent_runtime.attention_scheduler
-        self.workflow_runner = self.agent_runtime.workflow_runner
+        self.agent_runtime: Any | None = None
+        self.model_runtime: Any | None = None
+        self.identity_store: Any | None = None
+        self.media_service: Any | None = None
+        self.context_manager: Any | None = None
+        self.prompt_registry: Any | None = None
+        self.media_inspection_runner: Any | None = None
+        self.tool_registry: Any | None = None
+        self.tool_manager: Any | None = None
+        self.attention_config: Any | None = None
+        self.attention_scheduler_config: Any | None = None
+        self.attention_engine: Any | None = None
+        self.attention_scheduler: Any | None = None
+        self.workflow_runner: Any | None = None
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,
             keyword_registry=self.keyword_registry,
@@ -118,8 +102,6 @@ class ShinBot:
             route_targets=self.route_targets,
             event_bus=self.event_bus,
             adapter_manager=self.adapter_manager,
-            tool_registry=self.tool_registry,
-            model_runtime=self.model_runtime,
             data_dir=data_dir,
             database=self.database,
         )
@@ -135,7 +117,6 @@ class ShinBot:
         )
         self.notice_dispatcher = NoticeDispatcher(self.event_bus)
         self.agent_entry_dispatcher = AgentEntryDispatcher(
-            handler=self.agent_runtime.handle_agent_entry,
             database=self.database,
         )
         self.route_targets.register(TEXT_COMMAND_DISPATCHER_TARGET, self.text_command_dispatcher)
@@ -153,8 +134,6 @@ class ShinBot:
             route_targets=self.route_targets,
             audit_logger=self.audit_logger,
             database=self.database,
-            media_service=self.media_service,
-            media_inspection_runner=self.media_inspection_runner,
         )
 
     # ── Event ingress callback ───────────────────────────────────────
@@ -173,6 +152,38 @@ class ShinBot:
     def set_agent_entry_handler(self, handler: AgentEntryHandler | None) -> None:
         """Attach the Agent-side handler for unmatched user-message signals."""
         self.agent_entry_dispatcher.set_handler(handler)
+
+    def mount_agent_runtime(self, runtime: Any) -> None:
+        """Mount an Agent-like runtime system onto the core application."""
+        if self.agent_runtime is not None:
+            raise RuntimeError("Agent runtime is already mounted")
+
+        self.agent_runtime = runtime
+        self.model_runtime = getattr(runtime, "model_runtime", None)
+        self.identity_store = getattr(runtime, "identity_store", None)
+        self.media_service = getattr(runtime, "media_service", None)
+        self.context_manager = getattr(runtime, "context_manager", None)
+        self.prompt_registry = getattr(runtime, "prompt_registry", None)
+        self.media_inspection_runner = getattr(runtime, "media_inspection_runner", None)
+        self.tool_registry = getattr(runtime, "tool_registry", None)
+        self.tool_manager = getattr(runtime, "tool_manager", None)
+        self.attention_config = getattr(runtime, "attention_config", None)
+        self.attention_scheduler_config = getattr(runtime, "attention_scheduler_config", None)
+        self.attention_engine = getattr(runtime, "attention_engine", None)
+        self.attention_scheduler = getattr(runtime, "attention_scheduler", None)
+        self.workflow_runner = getattr(runtime, "workflow_runner", None)
+
+        self.plugin_manager.attach_runtime_services(
+            tool_registry=self.tool_registry,
+            model_runtime=self.model_runtime,
+        )
+        self.message_ingress.attach_media_runtime(
+            media_service=self.media_service,
+            media_inspection_runner=self.media_inspection_runner,
+        )
+        handler = getattr(runtime, "handle_agent_entry", None)
+        if handler is not None:
+            self.set_agent_entry_handler(handler)
 
     # ── Adapter management shortcuts ─────────────────────────────────
 
@@ -211,6 +222,9 @@ class ShinBot:
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems."""
         logger.info("ShinBot shutting down...")
-        await self.agent_runtime.shutdown()
+        if self.agent_runtime is not None:
+            shutdown = getattr(self.agent_runtime, "shutdown", None)
+            if shutdown is not None:
+                await shutdown()
         await self.adapter_manager.shutdown_all()
         logger.info("ShinBot shut down complete")
