@@ -8,7 +8,7 @@
 - 注意力达到阈值后，才将一批消息打包送入 workflow
 - sender 的差异通过“对全局注意力的增量权重”体现，而不是把注意力绑定到某个人
 - workflow 允许通过 Tool 有边界地调节 sender 权重和会话兴趣阈值
-- 命令、等待输入、事件总线等现有基础设施继续保留，不引入双聊天引擎
+- 命令、等待输入、消息路由和非消息事件总线等现有基础设施继续保留，不引入双聊天引擎
 
 本文档是后续实现“群聊 attention workflow”与替换逐消息 fallback responder 的主要设计依据。
 
@@ -32,7 +32,7 @@
 - 所有修改都必须受边界限制、审计记录与回显提示约束。
 
 ### 1.4 与现有系统共存但不双轨聊天
-- 现有 `MessagePipeline` 继续承担 ingress、命令、权限、`wait_for_input`、事件分发与消息持久化。
+- 现有 `MessageIngress` + `RouteTable` 继续承担 ingress、命令、权限、`wait_for_input`、消息路由与消息持久化。
 - 群聊自然语言的“聊天引擎”只保留一套，即本 attention-driven workflow。
 - 不再保留旧的逐消息 fallback responder 聊天链路。
 - 所有“即时响应”需求也必须通过 workflow 配置表达，而不是回退到另一套 legacy responder。
@@ -49,7 +49,7 @@
 
 ## 3. 定位与边界
 
-新工作流应被视为 `MessagePipeline` 上方的“群聊自然语言调度层”，而不是独立替换整个消息基础设施。
+新工作流应被视为 `agent_entry` 之后的“群聊自然语言调度层”，而不是独立替换整个消息基础设施。
 
 ### 3.1 保留的现有职责
 以下职责继续由现有基础设施负责：
@@ -57,7 +57,7 @@
 - `Session` 识别与上下文装载
 - `CommandRegistry` 的命令解析
 - `wait_for_input` 的挂起与恢复
-- `EventBus` 的 notice / lifecycle 事件分发
+- `RouteTable` 的消息分发和 `EventBus` 的 notice / lifecycle 事件分发
 - `message_logs`、审计日志、Prompt Snapshot 等持久化
 
 ### 3.2 被替换的职责
@@ -197,7 +197,7 @@ contribution = base_gain * sender_factor + feature_bonus
 - `immediate`: 接近 legacy 的即时响应体验，但仍然走 workflow
 
 关键约束：
-- `immediate` 不等于恢复“每条消息都直接调用 LLM”的旧 pipeline
+- `immediate` 不等于恢复“每条消息都直接调用 LLM”的旧链路
 - 它只表示注意力更容易越过阈值、沉淀窗口更短、对高优先级信号更敏感
 - 即使在 `immediate` 模式下，输出仍必须通过 Tool 执行
 
@@ -302,10 +302,11 @@ contribution = base_gain * sender_factor + feature_bonus
 
 ---
 
-## 10. 与现有 MessagePipeline 的集成
+## 10. 与现有消息路由的集成
 
 ### 10.1 替换逻辑
-- `MessagePipeline` 的最终 Fallback 环节由“逐消息回复”改为“更新注意力”。
+- 用户消息路由的 `agent_entry` fallback 负责把未被消费型 route 命中的消息交给 Agent 入口。
+- 当前 `agent_entry` 内部委托给 attention scheduler，由它负责更新注意力和决定是否触发 workflow。
 - 只有触发逻辑判定为 `True` 时，才拉起 Workflow 调度器。
 - 命令与 `wait_for_input` 继续保留各自的原有控制流。
 - 私聊、`@bot`、回复 Bot 等“高即时性”需求，应通过更激进的 workflow profile 实现，而不是保留第二套聊天 responder。
@@ -325,7 +326,7 @@ contribution = base_gain * sender_factor + feature_bonus
 
 ## 12. 最小可行落地顺序
 1. 定义数据表 Schema 并实现基础的衰减/回归逻辑。
-2. 实现 `MessagePipeline` 中的注意力累积环节。
+2. 在 `agent_entry` / attention scheduler 中实现注意力累积环节。
 3. 实现基于沉淀窗口的消息 Claim 逻辑。
 4. 接入首版 `attention.*` Tool 集并实现显式的 Clamp 反馈。
 5. 引入回复疲劳机制和 Cross-talk 标注。

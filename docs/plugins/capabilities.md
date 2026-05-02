@@ -10,14 +10,15 @@
 - `plg.data_dir`
 - `plg.logger`
 - `plg.on_command(...)`
+- `plg.on_keyword(...)`
+- `plg.on_route(...)`
 - `plg.on_event(...)`
-- `plg.on_message(...)`
 - `plg.tool(...)`
 - `plg.register_adapter_factory(...)`（仅适配器插件场景）
 
 ## 2. 处理器运行态能力（MessageContext）
 
-在命令/消息处理器中常用：
+在命令、关键词和自定义消息路由处理器中常用：
 
 - `bot.event`
 - `bot.message`

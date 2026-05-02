@@ -34,10 +34,49 @@ plg.on_command(
 
 ```python
 plg.on_event(event_type: str, *, priority: int = 100) -> Callable
-plg.on_message(*, priority: int = 100) -> Callable
 ```
 
-`on_message` 等价于监听 `message-created`。
+`on_event` 只用于非消息事件。`message-*` 事件由 `RouteTable` 分发，不能注册到 EventBus。
+
+### 关键词注册
+
+```python
+plg.on_keyword(
+    pattern: str,
+    *,
+    priority: int = 100,
+    ignore_case: bool = True,
+    regex: bool = False,
+) -> Callable
+```
+
+处理器签名：
+
+```python
+async def handler(bot, match) -> None:
+    ...
+```
+
+### 自定义消息路由注册
+
+```python
+plg.on_route(
+    condition: RouteCondition,
+    *,
+    target: str | None = None,
+    rule_id: str | None = None,
+    priority: int = 100,
+    match_mode: RouteMatchMode = RouteMatchMode.NORMAL,
+    enabled: bool = True,
+) -> Callable
+```
+
+处理器签名：
+
+```python
+async def handler(context, rule) -> None:
+    bot = context.require_message_context()
+```
 
 ### 工具注册
 

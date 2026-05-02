@@ -28,7 +28,7 @@
 - **失败影响**: 若 `dist` 不存在，仅提供 API 服务，并在日志中警告。
 
 ### Phase 3: 核心引擎实例化 (Kernel Load)
-- **动作**: 实例化 `MessagePipeline`、`CommandRegistry`、`PermissionEngine` 和 `SessionManager`。
+- **动作**: 实例化 `MessageIngress`、`RouteTable`、内置 route dispatchers、`CommandRegistry`、`PermissionEngine` 和 `SessionManager`。
 - **失败影响**: 系统无法处理逻辑，Dashboard 展示核心崩溃详情。
 
 ### Phase 4: 插件注入 (Plugin Loading)
@@ -36,7 +36,7 @@
 - **子任务**:
     1. 解析 `metadata.json`。
     2. 导入 Python 模块并调用其 `setup(plg)`。
-    3. 此时所有指令和事件监听器已注册进核心引擎。
+    3. 此时所有指令、关键词、route 和非消息事件监听器已注册进核心引擎。
 - **失败影响**: 对应插件标记为 `LOAD_FAILED`，系统继续引导。
 
 ### Phase 5: 适配器激活 (Adapter Activation)

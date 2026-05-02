@@ -30,7 +30,8 @@
 - `shinbot/core/plugins/manager.py`
 - `shinbot/core/dispatch/command.py`
 - `shinbot/core/dispatch/event_bus.py`
-- `shinbot/core/dispatch/pipeline.py`
+- `shinbot/core/dispatch/ingress.py`
+- `shinbot/core/dispatch/routing.py`
 - `shinbot/core/plugins/config.py`
 
 如果文档与源码不一致，以源码为准。
@@ -39,7 +40,8 @@
 
 - 插件入口必须提供 `setup(plg)`。
 - 命令处理器当前签名是 `async def handler(bot, args: str)`。
-- `@plg.on_message()` 等价于监听 `message-created`。
+- 消息类插件入口使用 `@plg.on_command(...)`、`@plg.on_keyword(...)` 或 `@plg.on_route(...)`。
+- `@plg.on_event(...)` 只用于非消息 notice / lifecycle 信号；`message-*` 事件不会走 EventBus。
 - 插件数据目录是 `data/plugin_data/<plugin_id>/`。
 - `on_disable` 支持 0 或 1 个参数；`teardown` 当前按无参数调用。
 - 通过 `metadata.json` 扫描加载时，运行态插件名/版本/作者/描述/角色来自 `metadata.json`。

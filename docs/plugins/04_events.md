@@ -1,118 +1,122 @@
 # 事件系统
 
-ShinBot 的事件分发由两部分组成：
+ShinBot 现在把“消息”和“非消息事件”分成两条入口：
 
-- `MessagePipeline`：决定消息是否走命令还是走事件
-- `EventBus`：按优先级执行已注册处理器
+- 消息事件（`message-created` 等）进入 `MessageIngress`，再由 `RouteTable` 分发给命令、关键词、自定义 route 或 `agent_entry`。
+- 非消息 notice / lifecycle 信号进入 `EventBus`，按优先级执行 `@plg.on_event(...)` 处理器。
 
-## 1. 注册方式
+`@plg.on_event("message-*")` 和旧的 `@plg.on_message()` 已移除；消息处理请使用 `on_command`、`on_keyword` 或 `on_route`。
+
+## 1. Notice 事件
 
 ```python
 from shinbot.core.plugins.context import Plugin
 
 
 def setup(plg: Plugin) -> None:
-    @plg.on_event("message-created")
-    async def on_message(bot) -> None:
-        await bot.send(f"收到: {bot.text}")
-
-    @plg.on_message()
-    async def on_message_alias(bot) -> None:
-        plg.logger.info("message-created alias")
+    @plg.on_event("guild-member-added")
+    async def on_member_added(event) -> None:
+        plg.logger.info("member added: %s", event.sender_id)
 ```
 
-`@plg.on_message()` 是 `@plg.on_event("message-created")` 的别名。
+notice 处理器收到的是 `UnifiedEvent`。
 
-## 2. 处理器参数类型
+## 2. 消息入口
 
-这个点必须分清：
-
-- 消息事件（`message-created` 等）收到的是 `MessageContext`
-- 通知事件（非消息事件）收到的是 `UnifiedEvent`
-
-示例（通知事件）：
+常见文本触发优先用专用 registry：
 
 ```python
-@plg.on_event("guild-member-added")
-async def on_member_added(event) -> None:
-    plg.logger.info("member added: %s", event.sender_id)
+@plg.on_command("ping")
+async def ping(bot, args: str) -> None:
+    await bot.send("pong")
+
+
+@plg.on_keyword("help")
+async def help_keyword(bot, match) -> None:
+    await bot.send("需要帮助的话可以输入 /help")
 ```
+
+复杂条件才直接注册 route：
+
+```python
+from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode
+
+
+@plg.on_route(
+    RouteCondition(
+        event_types=frozenset({"message-created"}),
+        platforms=frozenset({"qq"}),
+    ),
+    match_mode=RouteMatchMode.OBSERVE,
+)
+async def qq_message_route(context, rule) -> None:
+    bot = context.require_message_context()
+    plg.logger.info("qq message: %s", bot.text)
+```
+
+route 处理器收到 `(RouteDispatchContext, RouteRule)`。需要消息上下文时调用 `context.require_message_context()`。
+只做记录、审计或指标时使用 `OBSERVE`；如果这个 route 要真正消费消息并阻止 `agent_entry` fallback，再使用 `NORMAL` 或 `EXCLUSIVE`。
 
 ## 3. 优先级
 
-`EventBus` 规则是“数字越小越先执行”，默认 `priority=100`。
+`EventBus` 的优先级是“数字越小越先执行”，默认 `priority=100`。
 
 ```python
-@plg.on_event("message-created", priority=10)
-async def first(bot):
+@plg.on_event("guild-member-added", priority=10)
+async def first(event):
     ...
 
 
-@plg.on_event("message-created", priority=200)
-async def later(bot):
+@plg.on_event("guild-member-added", priority=200)
+async def later(event):
     ...
 ```
+
+消息 route 的优先级由 `RouteTable` 决定，规则是“数字越大越先评估”，并通过注册顺序保持稳定。
 
 ## 4. 通配监听
 
-`"*"` 可以监听所有事件：
+`"*"` 可以监听所有进入 EventBus 的非消息事件：
 
 ```python
 @plg.on_event("*")
-async def on_any(event_obj) -> None:
-    if hasattr(event_obj, "event"):
-        event_type = event_obj.event.type
-    else:
-        event_type = event_obj.type
-    plg.logger.info("event=%s", event_type)
+async def on_any_notice(event) -> None:
+    plg.logger.info("notice=%s", event.type)
 ```
 
-消息轨道与通知轨道都会进这里，因此参数类型可能不同。
+消息事件不会进入这个通配监听。
 
 ## 5. 中断传播
 
-抛出 `StopPropagation` 可以阻断后续低优先级处理器：
+EventBus 处理器可以抛出 `StopPropagation` 阻断后续低优先级处理器：
 
 ```python
 from shinbot.core.dispatch.event_bus import StopPropagation
 
 
-@plg.on_event("message-created", priority=10)
-async def guard(bot):
-    if bot.text.startswith("/internal"):
+@plg.on_event("guild-member-added", priority=10)
+async def guard(event):
+    if event.sender_id == "blocked-user":
         raise StopPropagation()
 ```
 
 ## 6. 断路器机制
 
-`EventBus` 内置了失败保护：
+`EventBus` 内置失败保护：
 
 - 同一处理器连续失败 5 次后短暂熔断
 - 熔断约 60 秒后会尝试半开恢复
 
 这能防止异常处理器持续刷日志。
 
-## 7. 与命令系统的关系
+## 7. 与 Agent 调度的关系
 
-对 `message-created` 而言：
+未被命令、关键词或自定义消费型 route 命中的用户消息，会进入 `agent_entry` fallback。当前 `agent_entry` 内部委托给 attention scheduler，但消息路由层不直接依赖 attention。
 
-- 先做命令解析
-- 命中命令就执行命令处理器，并 `return`
-- 未命中命令才进入 `EventBus.emit(event.type, bot)`
+如果消息处理器需要阻止后续 Agent 接管，应使用消费型 route 设计，而不是把消息挂到 EventBus。
 
-所以你写了 `on_message()` 后，不会收到已命中的命令消息。
+## 8. 返回值约定
 
-## 8. 与 Attention 调度的关系
-
-消息事件处理器会在 attention scheduler 之前运行。处理器可以通过 `await bot.send(...)`
-主动回复，也可以用 `bot.stop()` 表示后续 attention 不应继续接管；但处理器不应假设“收到
-`message-created` 事件”就代表 Bot 一定会自动响应。
-
-自然语言响应是否触发，仍由 response profile、attention 阈值、是否已由插件回复等条件决定。
-如果某段逻辑必须等到 attention 确认接管后再执行，应接入后续专门的 post-attention 回调，而不是放在通用事件处理器里。
-
-## 9. 返回值约定
-
-事件处理器返回值不会参与后续流程；如果需要输出，请显式调用 `await bot.send(...)`。
+事件和 route 处理器返回值不会参与后续流程；如果需要输出，请显式调用 `await bot.send(...)`。
 
 下一步：阅读 [数据存储](./05_storage.md)。

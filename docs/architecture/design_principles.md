@@ -10,7 +10,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 **Rule**: `shinbot/core/` is split by responsibility:
 - `application/` for app assembly and boot lifecycle
-- `dispatch/` for command, event bus, and pipeline
+- `dispatch/` for message ingress, route-table dispatch, commands, keywords, and EventBus
 - `platform/` for adapter abstractions and instance management
 - `plugins/` for plugin lifecycle and registration
 - `security/` for permission and audit
@@ -60,7 +60,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 > "听 (Listen), 说 (Speak), 管 (Action)" — 00_core_philosophy.md
 
-1. **Listen**: Adapter → `UnifiedEvent` → pipeline (ingress)
+1. **Listen**: Adapter → `UnifiedEvent` → `MessageIngress` → `RouteTable`
 2. **Speak**: Plugin → `MessageElement[]` → `bot.send()` → adapter (egress)
 3. **Action**: Plugin → `bot.call_api(method, params)` → adapter (control)
 
@@ -72,7 +72,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 > "Plugin entry point is setup(plg: Plugin) — declarative, not global code execution." — internals/04_plugin_lifecycle.md
 
-**Rule**: Plugins register capabilities (commands, event listeners, adapter factories) through `Plugin` methods, not by mutating global state.
+**Rule**: Plugins register capabilities (commands, keywords, custom routes, event listeners, adapter factories) through `Plugin` methods, not by mutating global state.
 
 **Rule**: On unload, the framework deregisters all stubs owned by the plugin. This prevents "duplicate commands after reload".
 

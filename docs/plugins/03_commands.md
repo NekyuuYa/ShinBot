@@ -1,6 +1,6 @@
 # 命令系统
 
-ShinBot 的命令注册入口在 `Plugin.on_command()`，运行时解析由 `CommandRegistry` + `MessagePipeline` 完成。
+ShinBot 的命令注册入口在 `Plugin.on_command()`，运行时解析由 `CommandRegistry` + `text_command_dispatcher` 完成。该 dispatcher 由 `MessageIngress` 通过 `RouteTable` 触发。
 
 ## 1. 基础注册
 
@@ -98,7 +98,7 @@ async def admin_only(bot, args: str) -> None:
     await bot.send("ok")
 ```
 
-权限不足时，管线会直接回复：`权限不足：需要 <permission>`，并且不会进入处理器。
+权限不足时，命令 dispatcher 会直接回复：`权限不足：需要 <permission>`，并且不会进入处理器。
 
 ## 7. 其他参数
 
@@ -109,19 +109,19 @@ async def admin_only(bot, args: str) -> None:
 - `aliases`
 - `mode`
 
-其中 `CommandMode` 目前有 `DELEGATED` 和 `MANAGED` 两个枚举值，但当前管线执行路径尚未按两种模式分流，通常按普通命令理解即可。
+其中 `CommandMode` 目前有 `DELEGATED` 和 `MANAGED` 两个枚举值，但当前命令执行路径尚未按两种模式分流，通常按普通命令理解即可。
 
 ## 8. 常见误区
 
 - 误区：处理器写成 `async def handler(bot)`。
-  - 现状：管线会传两个参数，少一个会报错。
+  - 现状：命令 dispatcher 会传两个参数，少一个会报错。
 - 误区：`pattern` 会自动提取参数到函数签名。
   - 现状：不会自动注入；需要手动读 `regex_match`。
-- 误区：命令命中后事件处理器仍会收到 `message-created`。
-  - 现状：命中命令后不会再走事件总线。
+- 误区：命令命中后 `@plg.on_event("message-created")` 仍会收到消息。
+  - 现状：消息事件不再走 EventBus；命令是 `EXCLUSIVE` route，命中后也不会进入 Agent fallback。
 
 ## 9. 未命中时的行为
 
-当前实现没有内置“未知命令”回复。命令未命中时会继续走事件分发路径（`EventBus.emit(...)`）。
+当前实现没有内置“未知命令”回复。命令未命中时会继续走后续消息路由，例如关键词、自定义 route 或 `agent_entry` fallback。
 
 下一步：阅读 [事件系统](./04_events.md)。

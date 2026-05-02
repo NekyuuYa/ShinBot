@@ -2,7 +2,7 @@
 
 ## Q1: 命令处理器到底该怎么写参数？
 
-当前管线调用方式是：
+当前命令 dispatcher 调用方式是：
 
 ```python
 await handler(bot, raw_args)
@@ -15,12 +15,15 @@ async def handler(bot, args: str):
     ...
 ```
 
-## Q2: 我写了 `on_message`，为什么收不到 `/cmd` 消息？
+## Q2: 我还能用 `on_message` 或 `on_event("message-created")` 吗？
 
-命中命令后，消息不会再发到事件总线。若你需要观察所有消息，请考虑：
+不能。消息事件已经从 EventBus 迁移到 RouteTable，`on_message` 已移除，`on_event("message-*")` 会报错。
 
-- 使用不与命令冲突的输入前缀
-- 或在命令处理器里自行记录
+按场景选择：
+
+- 命令：`@plg.on_command(...)`
+- 简单文本触发：`@plg.on_keyword(...)`
+- 复杂结构化条件：`@plg.on_route(...)`
 
 ## Q3: `pattern` 会把正则分组自动注入函数参数吗？
 
@@ -71,5 +74,6 @@ async def handler(bot, args: str):
 
 - `shinbot/core/plugins/context.py`
 - `shinbot/core/plugins/manager.py`
-- `shinbot/core/dispatch/pipeline.py`
+- `shinbot/core/dispatch/ingress.py`
+- `shinbot/core/dispatch/routing.py`
 - `shinbot/builtin_plugins/`

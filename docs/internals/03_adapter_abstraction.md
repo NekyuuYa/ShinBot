@@ -29,4 +29,4 @@
 - **语义转换**: 实现了 `_decode_session_id` 辅助方法，将复杂的 URN 格式 SessionID 还原为平台所需的 `channel_id`。
 
 ### 3.2 解耦性评估
-- 该类封装了所有 `httpx` 和 `websockets` 的细节。如果未来要从 `websockets` 库切换到 `aiohttp`，只需修改此文件，核心 `pipeline` 无需任何变动。
+- 该类封装了所有 `httpx` 和 `websockets` 的细节。如果未来要从 `websockets` 库切换到 `aiohttp`，只需修改此文件，核心 ingress / route-table 分发无需任何变动。

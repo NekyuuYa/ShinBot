@@ -36,14 +36,13 @@ def setup(plg):
         await bot.send(f"rolled {n}d{sides}")
 ```
 
-## 示例 3：消息事件与通知事件
+## 示例 3：关键词消息与通知事件
 
 ```python
 def setup(plg):
-    @plg.on_message()
-    async def on_message(bot) -> None:
-        if "ping" in bot.text:
-            await bot.reply("pong")
+    @plg.on_keyword("ping")
+    async def ping_keyword(bot, match) -> None:
+        await bot.reply("pong")
 
     @plg.on_event("guild-member-added")
     async def on_member_added(event) -> None:
