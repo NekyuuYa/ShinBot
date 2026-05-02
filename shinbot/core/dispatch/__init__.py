@@ -9,6 +9,7 @@ from shinbot.core.dispatch.command import (
 )
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
 from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
+from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule, RouteTable
 
 __all__ = [
     "CommandDef",
@@ -20,4 +21,8 @@ __all__ = [
     "StopPropagation",
     "MessageContext",
     "MessagePipeline",
+    "RouteCondition",
+    "RouteMatchMode",
+    "RouteRule",
+    "RouteTable",
 ]
