@@ -10,10 +10,14 @@ import pytest
 
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.dispatchers import (
+    NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
+    NoticeDispatcher,
     TextCommandDispatcher,
+    make_notice_route_rule,
     make_text_command_route_rule,
 )
+from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import (
     ROUTING_SKIP_EXPIRED_MESSAGE,
     ROUTING_SKIP_INTERCEPTOR_BLOCKED,
@@ -408,3 +412,44 @@ async def test_text_command_dispatcher_denies_missing_permission(tmp_path) -> No
     assert command_calls == []
     assert len(adapter.sent) == 1
     assert adapter.sent[0][1][0].text_content == "权限不足：需要 admin.secret"
+
+
+@pytest.mark.asyncio
+async def test_notice_dispatcher_forwards_unified_event_to_event_bus(tmp_path) -> None:
+    event_bus = EventBus()
+    notice_calls: list[str] = []
+
+    async def handler(event: UnifiedEvent) -> None:
+        notice_calls.append(event.type)
+
+    event_bus.on("guild-member-added", handler)
+    notice_dispatcher = NoticeDispatcher(event_bus)
+
+    table = RouteTable()
+    notice_rule = make_notice_route_rule(notice_dispatcher)
+    table.register(notice_rule)
+
+    targets = RouteTargetRegistry()
+    targets.register(NOTICE_DISPATCHER_TARGET, notice_dispatcher)
+    ingress, db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [notice_rule]
+    assert result.message_log_id is None
+    assert result.skipped_reason is None
+    assert notice_calls == ["guild-member-added"]
+    assert db.message_logs.get_recent("test-bot:private:user-1") == []
+
+
+@pytest.mark.asyncio
+async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> None:
+    ingress, db, adapter = build_ingress(tmp_path)
+
+    result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
+
+    assert result.matched_rules == []
+    assert result.message_log_id is None
+    assert result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
+    assert db.message_logs.get_recent("test-bot:private:user-1") == []

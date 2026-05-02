@@ -8,8 +8,11 @@ from shinbot.core.dispatch.command import (
     CommandRegistry,
 )
 from shinbot.core.dispatch.dispatchers import (
+    NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
+    NoticeDispatcher,
     TextCommandDispatcher,
+    make_notice_route_rule,
     make_text_command_route_rule,
 )
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
@@ -34,7 +37,9 @@ __all__ = [
     "StopPropagation",
     "MessageContext",
     "MessagePipeline",
+    "NOTICE_DISPATCHER_TARGET",
     "TEXT_COMMAND_DISPATCHER_TARGET",
+    "NoticeDispatcher",
     "RouteDispatchContext",
     "RouteCondition",
     "RouteMatchContext",
@@ -43,5 +48,6 @@ __all__ = [
     "RouteTable",
     "RouteTargetRegistry",
     "TextCommandDispatcher",
+    "make_notice_route_rule",
     "make_text_command_route_rule",
 ]

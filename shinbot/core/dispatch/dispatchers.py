@@ -6,6 +6,7 @@ import logging
 import time
 
 from shinbot.core.dispatch.command import CommandRegistry
+from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
 from shinbot.core.dispatch.routing import (
     RouteCondition,
@@ -21,6 +22,7 @@ from shinbot.schema.events import UnifiedEvent
 logger = logging.getLogger(__name__)
 
 TEXT_COMMAND_DISPATCHER_TARGET = "text_command_dispatcher"
+NOTICE_DISPATCHER_TARGET = "notice_dispatcher"
 
 
 class TextCommandDispatcher:
@@ -169,4 +171,32 @@ def make_text_command_route_rule(
         ),
         target=TEXT_COMMAND_DISPATCHER_TARGET,
         match_mode=RouteMatchMode.EXCLUSIVE,
+    )
+
+
+class NoticeDispatcher:
+    """Route target that forwards notice events to the internal EventBus."""
+
+    def __init__(self, event_bus: EventBus) -> None:
+        self._event_bus = event_bus
+
+    def matches(self, event: UnifiedEvent, _message: Message) -> bool:
+        return event.is_notice_event
+
+    async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
+        await self._event_bus.emit(context.event.type, context.event)
+
+
+def make_notice_route_rule(
+    dispatcher: NoticeDispatcher,
+    *,
+    rule_id: str = "builtin.notice_dispatcher",
+    priority: int = 1000,
+) -> RouteRule:
+    return RouteRule(
+        id=rule_id,
+        priority=priority,
+        condition=RouteCondition(custom_matcher=dispatcher.matches),
+        target=NOTICE_DISPATCHER_TARGET,
+        match_mode=RouteMatchMode.NORMAL,
     )
