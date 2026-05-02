@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 
@@ -9,8 +10,11 @@ import pytest
 
 from shinbot.agent.attention.engine import AttentionConfig
 from shinbot.core.application.app import ShinBot
+from shinbot.core.dispatch.command import CommandDef
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
+from shinbot.schema.events import UnifiedEvent
+from shinbot.schema.resources import Channel, User
 from tests.conftest import MockAdapter, make_message_event
 
 
@@ -25,6 +29,9 @@ class TestShinBotInit:
         assert bot.tool_manager is not None
         assert bot.adapter_manager is not None
         assert bot.plugin_manager is not None
+        assert bot.route_table is not None
+        assert bot.route_targets is not None
+        assert bot.message_ingress is not None
         assert bot.pipeline is not None
         assert bot.model_runtime is not None
 
@@ -47,9 +54,9 @@ class TestShinBotInit:
         assert bot.attention_config.decay_idle_grace_seconds == 300.0
 
     def test_plugin_manager_shares_registry(self):
-        """PluginManager must use the same registry as the pipeline."""
+        """PluginManager must use the same registry as message ingress."""
         bot = ShinBot()
-        # Register a command via plugin and verify pipeline can resolve it
+        # Register a command via plugin and verify ingress can resolve it.
         plg = Plugin("test", bot.command_registry, bot.event_bus)
 
         @plg.on_command("ping")
@@ -127,7 +134,7 @@ class TestLoadPlugin:
 
 class TestOnEvent:
     @pytest.mark.asyncio
-    async def test_on_event_routes_to_pipeline(self):
+    async def test_on_event_routes_to_message_ingress(self):
         bot = ShinBot()
         bot.adapter_manager.register_adapter("mock", MockAdapter)
         adapter = bot.add_adapter("inst1", "mock")
@@ -138,11 +145,53 @@ class TestOnEvent:
             events_processed.append(ctx.event.type)
             return True
 
-        bot.pipeline.add_interceptor(interceptor)
+        bot.message_ingress.add_interceptor(interceptor)
 
         event = make_message_event(content="hello", instance_id="inst1")
         await bot.on_event(event, adapter)
         assert "message-created" in events_processed
+
+    @pytest.mark.asyncio
+    async def test_on_event_executes_command_via_message_ingress(self):
+        bot = ShinBot()
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("inst1", "mock")
+        calls = []
+
+        async def ping(ctx, args):
+            calls.append((ctx.session_id, args))
+
+        bot.command_registry.register(CommandDef(name="ping", handler=ping))
+
+        event = make_message_event(content="/ping ok", instance_id="inst1")
+        await bot.on_event(event, adapter)
+        await asyncio.sleep(0)
+
+        assert calls == [("inst1:group:ch-1", "ok")]
+
+    @pytest.mark.asyncio
+    async def test_on_event_routes_notice_to_event_bus(self):
+        bot = ShinBot()
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("inst1", "mock")
+        calls = []
+
+        async def handler(event):
+            calls.append(event.type)
+
+        bot.event_bus.on("guild-member-added", handler)
+
+        event = UnifiedEvent(
+            type="guild-member-added",
+            platform="mock",
+            self_id="inst1",
+            user=User(id="user-1"),
+            channel=Channel(id="ch-1", type=0),
+        )
+        await bot.on_event(event, adapter)
+        await asyncio.sleep(0)
+
+        assert calls == ["guild-member-added"]
 
     @pytest.mark.asyncio
     async def test_on_event_handles_exceptions_gracefully(self):
@@ -154,7 +203,7 @@ class TestOnEvent:
         async def exploding_interceptor(ctx):
             raise RuntimeError("boom")
 
-        bot.pipeline.add_interceptor(exploding_interceptor)
+        bot.message_ingress.add_interceptor(exploding_interceptor)
 
         event = make_message_event(content="hello", instance_id="inst1")
         # Should not raise
@@ -185,7 +234,7 @@ class TestLifecycle:
 
 class TestEventCallback:
     @pytest.mark.asyncio
-    async def test_adapter_callback_fires_pipeline(self):
+    async def test_adapter_callback_fires_message_ingress(self):
         """Verify the event callback wired by add_adapter works end-to-end."""
         bot = ShinBot()
         bot.adapter_manager.register_adapter("mock", MockAdapter)
@@ -197,7 +246,7 @@ class TestEventCallback:
             received.append(ctx.event)
             return False  # block to avoid further processing
 
-        bot.pipeline.add_interceptor(interceptor, priority=0)
+        bot.message_ingress.add_interceptor(interceptor, priority=0)
 
         event = make_message_event(content="/ping", instance_id="inst1")
 

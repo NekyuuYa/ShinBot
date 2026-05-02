@@ -35,8 +35,21 @@ from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
 from shinbot.core.dispatch.command import CommandRegistry
+from shinbot.core.dispatch.dispatchers import (
+    AGENT_ENTRY_TARGET,
+    NOTICE_DISPATCHER_TARGET,
+    TEXT_COMMAND_DISPATCHER_TARGET,
+    AgentEntryDispatcher,
+    NoticeDispatcher,
+    TextCommandDispatcher,
+    make_agent_entry_fallback_route_rule,
+    make_notice_route_rule,
+    make_text_command_route_rule,
+)
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
 from shinbot.core.dispatch.pipeline import MessagePipeline
+from shinbot.core.dispatch.routing import RouteTable
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
 from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.audit import AuditLogger
@@ -189,6 +202,37 @@ class ShinBot:
                 inspection_runner=self.media_inspection_runner,
             )
 
+        self.route_table = RouteTable()
+        self.route_targets = RouteTargetRegistry()
+        self.text_command_dispatcher = TextCommandDispatcher(
+            self.command_registry,
+            audit_logger=self.audit_logger,
+            session_manager=self.session_manager,
+        )
+        self.notice_dispatcher = NoticeDispatcher(self.event_bus)
+        self.agent_entry_dispatcher = AgentEntryDispatcher(
+            attention_scheduler=self.attention_scheduler,
+            database=self.database,
+            context_manager=self.context_manager,
+        )
+        self.route_targets.register(TEXT_COMMAND_DISPATCHER_TARGET, self.text_command_dispatcher)
+        self.route_targets.register(NOTICE_DISPATCHER_TARGET, self.notice_dispatcher)
+        self.route_targets.register(AGENT_ENTRY_TARGET, self.agent_entry_dispatcher)
+        self.route_table.register(make_text_command_route_rule(self.text_command_dispatcher))
+        self.route_table.register(make_notice_route_rule(self.notice_dispatcher))
+        self.route_table.register(make_agent_entry_fallback_route_rule())
+        self.message_ingress = MessageIngress(
+            session_manager=self.session_manager,
+            permission_engine=self.permission_engine,
+            route_table=self.route_table,
+            route_targets=self.route_targets,
+            audit_logger=self.audit_logger,
+            database=self.database,
+            context_manager=self.context_manager,
+            media_service=self.media_service,
+            media_inspection_runner=self.media_inspection_runner,
+        )
+
         self.pipeline = MessagePipeline(
             adapter_manager=self.adapter_manager,
             session_manager=self.session_manager,
@@ -212,7 +256,7 @@ class ShinBot:
         via adapter.set_event_callback().
         """
         try:
-            await self.pipeline.process_event(event, adapter)
+            await self.message_ingress.process_event(event, adapter)
         except Exception:
             logger.exception("Unhandled error processing event: %s", event.type)
 
@@ -258,7 +302,7 @@ class ShinBot:
             platform=platform,
             **kwargs,
         )
-        # Wire up the event callback so the adapter feeds events into the pipeline
+        # Wire up the event callback so the adapter feeds events into ingress.
         adapter.set_event_callback(lambda event: self.on_event(event, adapter))
         return adapter
 

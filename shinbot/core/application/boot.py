@@ -222,6 +222,9 @@ class BootController:
             raise RuntimeError("Bot is not initialized")
 
         required = [
+            self.bot.message_ingress,
+            self.bot.route_table,
+            self.bot.route_targets,
             self.bot.pipeline,
             self.bot.command_registry,
             self.bot.permission_engine,
