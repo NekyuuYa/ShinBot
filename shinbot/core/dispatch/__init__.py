@@ -8,6 +8,7 @@ from shinbot.core.dispatch.command import (
     CommandRegistry,
 )
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
+from shinbot.core.dispatch.ingress import MessageIngress, RouteDispatchContext, RouteTargetRegistry
 from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
 from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule, RouteTable
 
@@ -18,11 +19,14 @@ __all__ = [
     "CommandPriority",
     "CommandRegistry",
     "EventBus",
+    "MessageIngress",
     "StopPropagation",
     "MessageContext",
     "MessagePipeline",
+    "RouteDispatchContext",
     "RouteCondition",
     "RouteMatchMode",
     "RouteRule",
     "RouteTable",
+    "RouteTargetRegistry",
 ]
