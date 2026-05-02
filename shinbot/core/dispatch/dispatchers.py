@@ -246,7 +246,7 @@ class NoticeDispatcher:
         self._event_bus = event_bus
 
     def matches(self, event: UnifiedEvent, _message: Message) -> bool:
-        return event.is_notice_event
+        return event.is_notice_event and self._event_bus.has_handlers(event.type)
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         await self._event_bus.emit(context.event.type, context.event)

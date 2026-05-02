@@ -179,6 +179,12 @@ class EventBus:
             return len(self._handlers.get(event_type, []))
         return sum(len(h) for h in self._handlers.values())
 
+    def has_handlers(self, event_type: str, *, include_wildcard: bool = True) -> bool:
+        """Return whether emitting event_type would call at least one handler."""
+        if self._handlers.get(event_type):
+            return True
+        return include_wildcard and event_type != "*" and bool(self._handlers.get("*"))
+
 
 class StopPropagation(Exception):
     """Raise in a handler to stop event propagation to lower-priority handlers."""

@@ -518,6 +518,25 @@ async def test_notice_dispatcher_forwards_unified_event_to_event_bus(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_notice_dispatcher_skips_notice_without_event_bus_handler(tmp_path) -> None:
+    notice_dispatcher = NoticeDispatcher(EventBus())
+
+    table = RouteTable()
+    table.register(make_notice_route_rule(notice_dispatcher))
+
+    targets = RouteTargetRegistry()
+    targets.register(NOTICE_DISPATCHER_TARGET, notice_dispatcher)
+    ingress, db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
+
+    assert result.matched_rules == []
+    assert result.message_log_id is None
+    assert result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
+    assert db.message_logs.get_recent("test-bot:private:user-1") == []
+
+
+@pytest.mark.asyncio
 async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> None:
     ingress, db, adapter = build_ingress(tmp_path)
 

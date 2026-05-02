@@ -130,3 +130,14 @@ class TestEventBus:
         self.bus.on("b", h)
         assert self.bus.handler_count() == 2
         assert self.bus.handler_count("a") == 1
+
+    def test_has_handlers_includes_wildcard(self):
+        async def h(d):
+            pass
+
+        assert self.bus.has_handlers("a") is False
+
+        self.bus.on("*", h)
+
+        assert self.bus.has_handlers("a") is True
+        assert self.bus.has_handlers("a", include_wildcard=False) is False
