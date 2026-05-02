@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import TYPE_CHECKING
 
+from shinbot.core.bot_config import ATTENTION_DISABLED_PROFILE, select_response_profile
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
@@ -19,10 +21,16 @@ from shinbot.core.state.session import SessionManager
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 
+if TYPE_CHECKING:
+    from shinbot.agent.attention.scheduler import AttentionScheduler
+    from shinbot.agent.context import ContextManager
+    from shinbot.persistence.engine import DatabaseManager
+
 logger = logging.getLogger(__name__)
 
 TEXT_COMMAND_DISPATCHER_TARGET = "text_command_dispatcher"
 NOTICE_DISPATCHER_TARGET = "notice_dispatcher"
+ATTENTION_FALLBACK_TARGET = "attention_scheduler"
 
 
 class TextCommandDispatcher:
@@ -199,4 +207,74 @@ def make_notice_route_rule(
         condition=RouteCondition(custom_matcher=dispatcher.matches),
         target=NOTICE_DISPATCHER_TARGET,
         match_mode=RouteMatchMode.NORMAL,
+    )
+
+
+class AttentionFallbackDispatcher:
+    """Route target that hands unmatched user messages to attention scheduling."""
+
+    def __init__(
+        self,
+        *,
+        attention_scheduler: AttentionScheduler | None = None,
+        database: DatabaseManager | None = None,
+        context_manager: ContextManager | None = None,
+    ) -> None:
+        self._attention_scheduler = attention_scheduler
+        self._database = database
+        self._context_manager = context_manager
+
+    async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
+        bot = context.require_message_context()
+        response_profile = self._resolve_response_profile(bot)
+        is_reply_to_bot = bot.is_reply_to_bot()
+
+        handled_by_attention = False
+        if self._attention_scheduler is not None:
+            handled_by_attention = self._attention_scheduler.schedule_message(
+                bot.session_id,
+                context.message_log_id,
+                bot.event.sender_id or "",
+                response_profile=response_profile,
+                message=context.message,
+                self_platform_id=bot.event.self_id,
+                is_reply_to_bot=is_reply_to_bot,
+                already_handled=bool(bot._sent_messages),
+                is_stopped=bot.is_stopped,
+            )
+
+        if not handled_by_attention:
+            self._mark_trigger_read(bot.session_id, context.message_log_id)
+
+    def _resolve_response_profile(self, bot) -> str:
+        if self._database is None:
+            return ATTENTION_DISABLED_PROFILE if bot.is_private else "balanced"
+
+        bot_config = self._database.bot_configs.get_by_instance_id(bot.adapter.instance_id)
+        return select_response_profile(
+            bot_config,
+            is_private=bot.is_private,
+            is_mentioned=bot.is_mentioned,
+            is_reply_to_bot=bot.is_reply_to_bot(),
+        )
+
+    def _mark_trigger_read(self, session_id: str, message_log_id: int | None) -> None:
+        if self._database is None or message_log_id is None:
+            return
+        self._database.message_logs.mark_read(message_log_id)
+        if self._context_manager is not None:
+            self._context_manager.mark_read_until(session_id, message_log_id)
+
+
+def make_attention_fallback_route_rule(
+    *,
+    rule_id: str = "builtin.attention_fallback",
+    priority: int = -1000,
+) -> RouteRule:
+    return RouteRule(
+        id=rule_id,
+        priority=priority,
+        condition=RouteCondition(event_types=frozenset({"message-created"})),
+        target=ATTENTION_FALLBACK_TARGET,
+        match_mode=RouteMatchMode.FALLBACK,
     )

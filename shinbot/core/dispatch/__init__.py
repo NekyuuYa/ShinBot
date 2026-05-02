@@ -8,10 +8,13 @@ from shinbot.core.dispatch.command import (
     CommandRegistry,
 )
 from shinbot.core.dispatch.dispatchers import (
+    ATTENTION_FALLBACK_TARGET,
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
+    AttentionFallbackDispatcher,
     NoticeDispatcher,
     TextCommandDispatcher,
+    make_attention_fallback_route_rule,
     make_notice_route_rule,
     make_text_command_route_rule,
 )
@@ -37,8 +40,10 @@ __all__ = [
     "StopPropagation",
     "MessageContext",
     "MessagePipeline",
+    "ATTENTION_FALLBACK_TARGET",
     "NOTICE_DISPATCHER_TARGET",
     "TEXT_COMMAND_DISPATCHER_TARGET",
+    "AttentionFallbackDispatcher",
     "NoticeDispatcher",
     "RouteDispatchContext",
     "RouteCondition",
@@ -48,6 +53,7 @@ __all__ = [
     "RouteTable",
     "RouteTargetRegistry",
     "TextCommandDispatcher",
+    "make_attention_fallback_route_rule",
     "make_notice_route_rule",
     "make_text_command_route_rule",
 ]

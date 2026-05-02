@@ -10,10 +10,13 @@ import pytest
 
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.dispatchers import (
+    ATTENTION_FALLBACK_TARGET,
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
+    AttentionFallbackDispatcher,
     NoticeDispatcher,
     TextCommandDispatcher,
+    make_attention_fallback_route_rule,
     make_notice_route_rule,
     make_text_command_route_rule,
 )
@@ -62,6 +65,16 @@ class MockAdapter(BaseAdapter):
 
     async def get_capabilities(self) -> dict:
         return {"elements": ["text"], "actions": [], "limits": {}}
+
+
+class RecordingAttentionScheduler:
+    def __init__(self, *, handled: bool = True) -> None:
+        self.handled = handled
+        self.calls: list[dict] = []
+
+    def schedule_message(self, *args, **kwargs) -> bool:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return self.handled
 
 
 def make_event(
@@ -453,3 +466,88 @@ async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> 
     assert result.message_log_id is None
     assert result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
     assert db.message_logs.get_recent("test-bot:private:user-1") == []
+
+
+@pytest.mark.asyncio
+async def test_attention_fallback_schedules_unmatched_group_message(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    scheduler = RecordingAttentionScheduler(handled=True)
+    attention_dispatcher = AttentionFallbackDispatcher(
+        attention_scheduler=scheduler,  # type: ignore[arg-type]
+        database=db,
+    )
+
+    table = RouteTable()
+    fallback_rule = make_attention_fallback_route_rule()
+    table.register(fallback_rule)
+    targets = RouteTargetRegistry()
+    targets.register(ATTENTION_FALLBACK_TARGET, attention_dispatcher)
+    ingress = MessageIngress(
+        session_manager=SessionManager(session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        route_table=table,
+        route_targets=targets,
+        database=db,
+    )
+
+    result = await ingress.process_event(make_event("hello group", private=False), MockAdapter())
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [fallback_rule]
+    assert result.message_log_id is not None
+    assert len(scheduler.calls) == 1
+
+    call = scheduler.calls[0]
+    assert call["args"] == (
+        "test-bot:group:group:1",
+        result.message_log_id,
+        "user-1",
+    )
+    assert call["kwargs"]["response_profile"] == "balanced"
+    assert call["kwargs"]["message"].text == "hello group"
+    assert call["kwargs"]["self_platform_id"] == "bot-1"
+    assert call["kwargs"]["is_reply_to_bot"] is False
+    assert call["kwargs"]["already_handled"] is False
+    assert call["kwargs"]["is_stopped"] is False
+
+    row = db.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["routing_status"] == "dispatched"
+    assert row["is_read"] is False
+
+
+@pytest.mark.asyncio
+async def test_attention_fallback_marks_read_when_attention_does_not_handle(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    scheduler = RecordingAttentionScheduler(handled=False)
+    attention_dispatcher = AttentionFallbackDispatcher(
+        attention_scheduler=scheduler,  # type: ignore[arg-type]
+        database=db,
+    )
+
+    table = RouteTable()
+    fallback_rule = make_attention_fallback_route_rule()
+    table.register(fallback_rule)
+    targets = RouteTargetRegistry()
+    targets.register(ATTENTION_FALLBACK_TARGET, attention_dispatcher)
+    ingress = MessageIngress(
+        session_manager=SessionManager(session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        route_table=table,
+        route_targets=targets,
+        database=db,
+    )
+
+    result = await ingress.process_event(make_event("unhandled group", private=False), MockAdapter())
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [fallback_rule]
+    assert result.message_log_id is not None
+    assert len(scheduler.calls) == 1
+
+    row = db.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["routing_status"] == "dispatched"
+    assert row["is_read"] is True
