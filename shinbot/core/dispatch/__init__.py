@@ -24,7 +24,8 @@ from shinbot.core.dispatch.dispatchers import (
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
 from shinbot.core.dispatch.ingress import MessageIngress, RouteDispatchContext, RouteTargetRegistry
 from shinbot.core.dispatch.keyword import KeywordDef, KeywordMatch, KeywordRegistry
-from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
+from shinbot.core.dispatch.message_context import MessageContext
+from shinbot.core.dispatch.pipeline import MessagePipeline
 from shinbot.core.dispatch.routing import (
     RouteCondition,
     RouteMatchContext,

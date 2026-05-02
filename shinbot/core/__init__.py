@@ -64,7 +64,7 @@ _EXPORT_MODULES = {
     "PermissionGroup": "shinbot.core.security.permission",
     "check_permission": "shinbot.core.security.permission",
     "merge_permissions": "shinbot.core.security.permission",
-    "MessageContext": "shinbot.core.dispatch.pipeline",
+    "MessageContext": "shinbot.core.dispatch.message_context",
     "MessagePipeline": "shinbot.core.dispatch.pipeline",
     "Plugin": "shinbot.core.plugins.context",
     "PluginManager": "shinbot.core.plugins.manager",

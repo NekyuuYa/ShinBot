@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from shinbot.core.dispatch.pipeline import MessageContext
+from shinbot.core.dispatch.message_context import MessageContext
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.state.session import Session
 from shinbot.persistence import DatabaseManager
@@ -312,4 +312,3 @@ class TestMessageContext:
             database=db,
         )
         assert ctx.is_reply_to_bot() is False
-

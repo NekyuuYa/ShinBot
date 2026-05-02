@@ -34,7 +34,6 @@ class TestShinBotInit:
         assert bot.route_table is not None
         assert bot.route_targets is not None
         assert bot.message_ingress is not None
-        assert bot.pipeline is not None
         assert bot.model_runtime is not None
 
     def test_database_is_initialized_when_data_dir_is_provided(self, tmp_path):

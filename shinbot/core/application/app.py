@@ -52,7 +52,6 @@ from shinbot.core.dispatch.dispatchers import (
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
 from shinbot.core.dispatch.keyword import KeywordRegistry
-from shinbot.core.dispatch.pipeline import MessagePipeline
 from shinbot.core.dispatch.routing import RouteTable
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
 from shinbot.core.plugins.manager import PluginManager
@@ -243,20 +242,6 @@ class ShinBot:
             audit_logger=self.audit_logger,
             database=self.database,
             context_manager=self.context_manager,
-            media_service=self.media_service,
-            media_inspection_runner=self.media_inspection_runner,
-        )
-
-        self.pipeline = MessagePipeline(
-            adapter_manager=self.adapter_manager,
-            session_manager=self.session_manager,
-            permission_engine=self.permission_engine,
-            command_registry=self.command_registry,
-            event_bus=self.event_bus,
-            audit_logger=self.audit_logger,
-            database=self.database,
-            context_manager=self.context_manager,
-            attention_scheduler=self.attention_scheduler,
             media_service=self.media_service,
             media_inspection_runner=self.media_inspection_runner,
         )

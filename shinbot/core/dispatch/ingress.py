@@ -18,7 +18,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from shinbot.core.dispatch.pipeline import Interceptor, MessageContext, WaitingInputRegistry
+from shinbot.core.dispatch.message_context import (
+    Interceptor,
+    MessageContext,
+    WaitingInputRegistry,
+)
 from shinbot.core.dispatch.routing import RouteMatchContext, RouteRule, RouteTable
 from shinbot.core.message_analysis import is_self_mentioned
 from shinbot.core.platform.adapter_manager import BaseAdapter
