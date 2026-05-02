@@ -105,25 +105,74 @@ class BootController:
         logger.info("Boot Phase 2/5: infrastructure")
         self._init_dashboard_static_config()
         try:
-            db_cfg = self.config.get("database", {})
-            database_url = db_cfg.get("url")
-            snapshot_ttl = db_cfg.get("snapshot_ttl")
-            attention_config = self._resolve_attention_config()
-            self.bot = ShinBot(
-                data_dir=self.data_dir,
-                database_url=database_url,
-                database_snapshot_ttl=snapshot_ttl,
-            )
-            from shinbot.agent.runtime import install_agent_runtime
-
-            install_agent_runtime(
-                self.bot,
-                attention_config=attention_config,
-                attention_debug=self.attention_debug,
-            )
+            self.bot = self._create_core_application()
+            self._mount_model_runtime()
+            self._mount_agent_runtime()
         except Exception:
             self.state = BootState.DEGRADED
             raise
+
+    def _create_core_application(self) -> ShinBot:
+        db_cfg = self.config.get("database", {})
+        database_url = db_cfg.get("url")
+        snapshot_ttl = db_cfg.get("snapshot_ttl")
+        return ShinBot(
+            data_dir=self.data_dir,
+            database_url=database_url,
+            database_snapshot_ttl=snapshot_ttl,
+        )
+
+    def _mount_model_runtime(self) -> None:
+        if self.bot is None:
+            raise RuntimeError("Bot is not initialized")
+        if not self._runtime_feature_enabled("model", default=True):
+            logger.info("Model runtime disabled by [runtime].model=false")
+            return
+
+        from shinbot.core.runtime import install_model_runtime
+
+        install_model_runtime(self.bot)
+
+    def _mount_agent_runtime(self) -> None:
+        if self.bot is None:
+            raise RuntimeError("Bot is not initialized")
+        if not self._runtime_feature_enabled("agent", default=True):
+            logger.info("Agent runtime disabled by [runtime].agent=false")
+            return
+
+        if self.bot.model_runtime is None:
+            logger.info("Mounting model runtime because Agent runtime depends on it")
+            from shinbot.core.runtime import install_model_runtime
+
+            install_model_runtime(self.bot)
+
+        attention_config = self._resolve_attention_config()
+        from shinbot.agent.runtime import install_agent_runtime
+
+        install_agent_runtime(
+            self.bot,
+            attention_config=attention_config,
+            attention_debug=self.attention_debug,
+        )
+
+    def _runtime_feature_enabled(self, name: str, *, default: bool) -> bool:
+        section = self.config.get("runtime", {})
+        if section is None:
+            return default
+        if not isinstance(section, dict):
+            logger.warning("[runtime] must be a table; got %s", type(section).__name__)
+            return default
+
+        value = section.get(name, default)
+        if isinstance(value, bool):
+            return value
+        logger.warning(
+            "runtime.%s must be a boolean; got %r (using default %s)",
+            name,
+            value,
+            default,
+        )
+        return default
 
     def _resolve_attention_config(self) -> Any:
         """Build AttentionConfig from defaults and optional [attention] overrides."""
