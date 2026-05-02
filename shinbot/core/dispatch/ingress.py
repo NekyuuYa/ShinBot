@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from shinbot.core.dispatch.pipeline import Interceptor, MessageContext, WaitingInputRegistry
-from shinbot.core.dispatch.routing import RouteRule, RouteTable
+from shinbot.core.dispatch.routing import RouteMatchContext, RouteRule, RouteTable
 from shinbot.core.message_analysis import is_self_mentioned
 from shinbot.core.platform.adapter_manager import BaseAdapter
 from shinbot.core.security.audit import AuditLogger
@@ -258,7 +258,15 @@ class MessageIngress:
         )
         self._log_audit(event, message_context)
 
-        matched_rules = self._route_table.match(event, message)
+        matched_rules = self._route_table.match(
+            event,
+            message,
+            RouteMatchContext(
+                adapter=adapter,
+                session=session,
+                message_context=message_context,
+            ),
+        )
         if not matched_rules:
             self._mark_skipped(message_log_id, ROUTING_SKIP_NO_ROUTE_MATCHED)
             self._session_manager.update(session)

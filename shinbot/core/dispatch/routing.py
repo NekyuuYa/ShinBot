@@ -11,19 +11,30 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from inspect import Parameter, signature
+from typing import Any
 
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import UnifiedEvent
 
 logger = logging.getLogger(__name__)
 
-RouteMatcher = Callable[[UnifiedEvent, Message], bool]
+RouteMatcher = Callable[..., bool]
 
 
 class RouteMatchMode(Enum):
     NORMAL = "normal"
     EXCLUSIVE = "exclusive"
     FALLBACK = "fallback"
+
+
+@dataclass(slots=True, frozen=True)
+class RouteMatchContext:
+    """Optional runtime context for framework-owned route matchers."""
+
+    adapter: Any | None = None
+    session: Any | None = None
+    message_context: Any | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -116,7 +127,12 @@ class RouteTable:
         """Registered rules in deterministic evaluation order."""
         return [entry.rule for entry in sorted(self._entries_by_id.values(), key=lambda e: e.sort_key)]
 
-    def match(self, event: UnifiedEvent, message: Message) -> list[RouteRule]:
+    def match(
+        self,
+        event: UnifiedEvent,
+        message: Message,
+        match_context: RouteMatchContext | None = None,
+    ) -> list[RouteRule]:
         """Return the route rules selected for an event/message pair."""
         element_types = collect_element_types(message)
         candidate_ids = self._candidate_ids(event, element_types)
@@ -129,7 +145,7 @@ class RouteTable:
             rule = entry.rule
             if not rule.enabled:
                 continue
-            if self._matches_condition(rule, event, message, element_types):
+            if self._matches_condition(rule, event, message, element_types, match_context):
                 matched_entries.append(entry)
 
         exclusive = [
@@ -182,6 +198,7 @@ class RouteTable:
         event: UnifiedEvent,
         message: Message,
         element_types: frozenset[str],
+        match_context: RouteMatchContext | None,
     ) -> bool:
         condition = rule.condition
         if condition.event_types is not None and event.type not in condition.event_types:
@@ -197,7 +214,7 @@ class RouteTable:
             return False
         if condition.custom_matcher is not None:
             try:
-                return bool(condition.custom_matcher(event, message))
+                return bool(_call_route_matcher(condition.custom_matcher, event, message, match_context))
             except Exception:
                 logger.exception(
                     "route_matcher_error: rule_id=%s target=%s",
@@ -284,3 +301,31 @@ def _collect_element_type(element: MessageElement, types: set[str]) -> None:
     types.add(element.type)
     for child in element.children:
         _collect_element_type(child, types)
+
+
+def _call_route_matcher(
+    matcher: RouteMatcher,
+    event: UnifiedEvent,
+    message: Message,
+    match_context: RouteMatchContext | None,
+) -> bool:
+    if _accepts_match_context(matcher):
+        return matcher(event, message, match_context)
+    return matcher(event, message)
+
+
+def _accepts_match_context(matcher: RouteMatcher) -> bool:
+    try:
+        params = signature(matcher).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional_count = 0
+    for param in params:
+        if param.kind == Parameter.VAR_POSITIONAL:
+            return True
+        if param.kind in {
+            Parameter.POSITIONAL_ONLY,
+            Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            positional_count += 1
+    return positional_count >= 3

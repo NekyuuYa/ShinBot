@@ -8,6 +8,12 @@ import time
 
 import pytest
 
+from shinbot.core.dispatch.command import CommandDef, CommandRegistry
+from shinbot.core.dispatch.dispatchers import (
+    TEXT_COMMAND_DISPATCHER_TARGET,
+    TextCommandDispatcher,
+    make_text_command_route_rule,
+)
 from shinbot.core.dispatch.ingress import (
     ROUTING_SKIP_EXPIRED_MESSAGE,
     ROUTING_SKIP_INTERCEPTOR_BLOCKED,
@@ -104,6 +110,10 @@ def add_message_route(table: RouteTable, *, target: str = "recorder") -> RouteRu
     )
     table.register(rule)
     return rule
+
+
+async def noop_command(_ctx, _args) -> None:
+    pass
 
 
 @pytest.mark.asyncio
@@ -264,3 +274,137 @@ def test_is_event_fresh_uses_platform_timestamp_milliseconds() -> None:
     assert is_event_fresh(fresh, now=now, max_age_seconds=60)
     assert not is_event_fresh(stale, now=now, max_age_seconds=60)
     assert is_event_fresh(make_event(timestamp=None), now=now, max_age_seconds=60)
+
+
+@pytest.mark.asyncio
+async def test_text_command_dispatcher_executes_command_without_fallback(tmp_path) -> None:
+    command_registry = CommandRegistry()
+    command_calls: list[str] = []
+
+    async def ping(ctx, args) -> None:
+        command_calls.append(f"{ctx.text}|{args}")
+
+    command_registry.register(CommandDef(name="ping", handler=ping))
+    command_dispatcher = TextCommandDispatcher(command_registry)
+
+    table = RouteTable()
+    command_rule = make_text_command_route_rule(command_dispatcher)
+    fallback_rule = RouteRule(
+        id="fallback",
+        priority=-1000,
+        condition=RouteCondition(event_types=frozenset({"message-created"})),
+        target="fallback",
+    )
+    table.register(command_rule)
+    table.register(fallback_rule)
+
+    targets = RouteTargetRegistry()
+    fallback_calls: list[str] = []
+    targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+    targets.register("fallback", lambda _context, _rule: fallback_calls.append("fallback"))
+    ingress, db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    result = await ingress.process_event(make_event("/ping hello"), adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [command_rule]
+    assert command_calls == ["/ping hello|hello"]
+    assert fallback_calls == []
+    assert result.message_log_id is not None
+    assert db.message_logs.get(result.message_log_id)["routing_status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_text_command_route_does_not_prevent_fallback_for_plain_text(tmp_path) -> None:
+    command_registry = CommandRegistry()
+    command_registry.register(CommandDef(name="ping", handler=noop_command))
+    command_dispatcher = TextCommandDispatcher(command_registry)
+
+    table = RouteTable()
+    fallback_rule = RouteRule(
+        id="fallback",
+        priority=-1000,
+        condition=RouteCondition(event_types=frozenset({"message-created"})),
+        target="fallback",
+    )
+    table.register(make_text_command_route_rule(command_dispatcher))
+    table.register(fallback_rule)
+
+    targets = RouteTargetRegistry()
+    fallback_calls: list[str] = []
+    targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+    targets.register("fallback", lambda _context, _rule: fallback_calls.append("fallback"))
+    ingress, _db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    result = await ingress.process_event(make_event("plain text"), adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [fallback_rule]
+    assert fallback_calls == ["fallback"]
+
+
+@pytest.mark.asyncio
+async def test_text_command_dispatcher_uses_session_prefixes_for_route_matching(tmp_path) -> None:
+    command_registry = CommandRegistry()
+    command_calls: list[str] = []
+
+    async def ping(_ctx, args) -> None:
+        command_calls.append(args)
+
+    command_registry.register(CommandDef(name="ping", handler=ping))
+    command_dispatcher = TextCommandDispatcher(command_registry)
+
+    table = RouteTable()
+    command_rule = make_text_command_route_rule(command_dispatcher)
+    table.register(command_rule)
+    targets = RouteTargetRegistry()
+    targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+
+    adapter = MockAdapter()
+    event = make_event("#ping custom")
+    session_manager = SessionManager()
+    session = session_manager.get_or_create(adapter.instance_id, event)
+    session.config.prefixes = ["#"]
+    session_manager.update(session)
+
+    ingress, _db, _adapter = build_ingress(
+        tmp_path,
+        route_table=table,
+        route_targets=targets,
+        session_manager=session_manager,
+    )
+
+    result = await ingress.process_event(event, adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [command_rule]
+    assert command_calls == ["custom"]
+
+
+@pytest.mark.asyncio
+async def test_text_command_dispatcher_denies_missing_permission(tmp_path) -> None:
+    command_registry = CommandRegistry()
+    command_calls: list[str] = []
+
+    async def secret(_ctx, _args) -> None:
+        command_calls.append("secret")
+
+    command_registry.register(
+        CommandDef(name="secret", handler=secret, permission="admin.secret")
+    )
+    command_dispatcher = TextCommandDispatcher(command_registry)
+
+    table = RouteTable()
+    command_rule = make_text_command_route_rule(command_dispatcher)
+    table.register(command_rule)
+    targets = RouteTargetRegistry()
+    targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+    ingress, _db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    result = await ingress.process_event(make_event("/secret"), adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [command_rule]
+    assert command_calls == []
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0][1][0].text_content == "权限不足：需要 admin.secret"

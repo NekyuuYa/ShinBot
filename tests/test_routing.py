@@ -6,6 +6,7 @@ import pytest
 
 from shinbot.core.dispatch.routing import (
     RouteCondition,
+    RouteMatchContext,
     RouteMatchMode,
     RouteRule,
     RouteTable,
@@ -217,6 +218,28 @@ def test_custom_matcher_exception_skips_only_that_rule(caplog: pytest.LogCapture
         assert table.match(make_event(), Message.from_text("hello")) == [healthy]
 
     assert "route_matcher_error: rule_id=broken target=broken" in caplog.text
+
+
+def test_custom_matcher_can_receive_optional_match_context() -> None:
+    table = RouteTable()
+    contextual = make_rule(
+        "contextual",
+        condition=RouteCondition(
+            custom_matcher=lambda _event, _message, context: context.session == "session-1"
+        ),
+    )
+    table.register(contextual)
+
+    assert table.match(
+        make_event(),
+        Message.from_text("hello"),
+        RouteMatchContext(session="session-1"),
+    ) == [contextual]
+    assert table.match(
+        make_event(),
+        Message.from_text("hello"),
+        RouteMatchContext(session="other-session"),
+    ) == []
 
 
 def test_disabled_rules_are_ignored() -> None:
