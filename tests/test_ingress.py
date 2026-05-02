@@ -15,6 +15,7 @@ from shinbot.core.dispatch.dispatchers import (
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
     AgentEntryDispatcher,
+    AgentEntrySignal,
     KeywordDispatcher,
     NoticeDispatcher,
     TextCommandDispatcher,
@@ -73,13 +74,13 @@ class MockAdapter(BaseAdapter):
         return {"elements": ["text"], "actions": [], "limits": {}}
 
 
-class RecordingAttentionScheduler:
+class RecordingAgentHandler:
     def __init__(self, *, handled: bool = True) -> None:
         self.handled = handled
-        self.calls: list[dict] = []
+        self.signals: list[AgentEntrySignal] = []
 
-    def schedule_message(self, *args, **kwargs) -> bool:
-        self.calls.append({"args": args, "kwargs": kwargs})
+    def __call__(self, signal: AgentEntrySignal) -> bool:
+        self.signals.append(signal)
         return self.handled
 
 
@@ -574,14 +575,11 @@ async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_agent_entry_fallback_schedules_unmatched_group_message(tmp_path) -> None:
+async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
-    scheduler = RecordingAttentionScheduler(handled=True)
-    agent_entry_dispatcher = AgentEntryDispatcher(
-        attention_scheduler=scheduler,  # type: ignore[arg-type]
-        database=db,
-    )
+    agent_handler = RecordingAgentHandler(handled=True)
+    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
 
     table = RouteTable()
     fallback_rule = make_agent_entry_fallback_route_rule()
@@ -601,20 +599,23 @@ async def test_agent_entry_fallback_schedules_unmatched_group_message(tmp_path) 
 
     assert result.matched_rules == [fallback_rule]
     assert result.message_log_id is not None
-    assert len(scheduler.calls) == 1
+    assert len(agent_handler.signals) == 1
 
-    call = scheduler.calls[0]
-    assert call["args"] == (
-        "test-bot:group:group:1",
-        result.message_log_id,
-        "user-1",
-    )
-    assert call["kwargs"]["response_profile"] == "balanced"
-    assert call["kwargs"]["message"].text == "hello group"
-    assert call["kwargs"]["self_platform_id"] == "bot-1"
-    assert call["kwargs"]["is_reply_to_bot"] is False
-    assert call["kwargs"]["already_handled"] is False
-    assert call["kwargs"]["is_stopped"] is False
+    signal = agent_handler.signals[0]
+    assert signal.session_id == "test-bot:group:group:1"
+    assert signal.message_log_id == result.message_log_id
+    assert signal.event_type == "message-created"
+    assert signal.sender_id == "user-1"
+    assert signal.instance_id == "test-bot"
+    assert signal.platform == "mock"
+    assert signal.response_profile == "balanced"
+    assert signal.self_id == "bot-1"
+    assert signal.is_private is False
+    assert signal.is_mentioned is False
+    assert signal.is_reply_to_bot is False
+    assert signal.already_handled is False
+    assert signal.is_stopped is False
+    assert not hasattr(signal, "message")
 
     row = db.message_logs.get(result.message_log_id)
     assert row is not None
@@ -626,11 +627,8 @@ async def test_agent_entry_fallback_schedules_unmatched_group_message(tmp_path) 
 async def test_observe_route_does_not_suppress_agent_entry_fallback(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
-    scheduler = RecordingAttentionScheduler(handled=True)
-    agent_entry_dispatcher = AgentEntryDispatcher(
-        attention_scheduler=scheduler,  # type: ignore[arg-type]
-        database=db,
-    )
+    agent_handler = RecordingAgentHandler(handled=True)
+    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
     calls: list[str] = []
 
     table = RouteTable()
@@ -660,18 +658,15 @@ async def test_observe_route_does_not_suppress_agent_entry_fallback(tmp_path) ->
 
     assert result.matched_rules == [observe_rule, fallback_rule]
     assert calls == ["debug-observer"]
-    assert len(scheduler.calls) == 1
+    assert len(agent_handler.signals) == 1
 
 
 @pytest.mark.asyncio
 async def test_agent_entry_fallback_marks_read_when_agent_entry_does_not_handle(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
-    scheduler = RecordingAttentionScheduler(handled=False)
-    agent_entry_dispatcher = AgentEntryDispatcher(
-        attention_scheduler=scheduler,  # type: ignore[arg-type]
-        database=db,
-    )
+    agent_handler = RecordingAgentHandler(handled=False)
+    agent_entry_dispatcher = AgentEntryDispatcher(handler=agent_handler, database=db)
 
     table = RouteTable()
     fallback_rule = make_agent_entry_fallback_route_rule()
@@ -691,7 +686,7 @@ async def test_agent_entry_fallback_marks_read_when_agent_entry_does_not_handle(
 
     assert result.matched_rules == [fallback_rule]
     assert result.message_log_id is not None
-    assert len(scheduler.calls) == 1
+    assert len(agent_handler.signals) == 1
 
     row = db.message_logs.get(result.message_log_id)
     assert row is not None

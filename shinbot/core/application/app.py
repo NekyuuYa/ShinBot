@@ -222,7 +222,6 @@ class ShinBot:
         )
         self.notice_dispatcher = NoticeDispatcher(self.event_bus)
         self.agent_entry_dispatcher = AgentEntryDispatcher(
-            attention_scheduler=self.attention_scheduler,
             database=self.database,
         )
         self.route_targets.register(TEXT_COMMAND_DISPATCHER_TARGET, self.text_command_dispatcher)

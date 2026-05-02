@@ -11,6 +11,7 @@ from shinbot.core.dispatch.dispatchers import (
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
     AgentEntryDispatcher,
+    AgentEntrySignal,
     NoticeDispatcher,
     TextCommandDispatcher,
     make_agent_entry_fallback_route_rule,
@@ -70,13 +71,13 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
     )
 
 
-class RecordingAttentionScheduler:
+class RecordingAgentHandler:
     def __init__(self, *, handled: bool = True) -> None:
         self.handled = handled
-        self.calls: list[dict[str, object]] = []
+        self.signals: list[AgentEntrySignal] = []
 
-    def schedule_message(self, *args, **kwargs) -> bool:
-        self.calls.append({"args": args, "kwargs": kwargs})
+    def __call__(self, signal: AgentEntrySignal) -> bool:
+        self.signals.append(signal)
         return self.handled
 
 
@@ -346,7 +347,7 @@ class TestMessageIngressCore:
         assert len(self.adapter.sent) == 1
 
     @pytest.mark.asyncio
-    async def test_attention_scheduler_receives_reply_to_bot_flag(self, tmp_path):
+    async def test_agent_entry_signal_includes_reply_to_bot_flag(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         session_id = "test-bot:group:group:1"
@@ -365,9 +366,9 @@ class TestMessageIngressCore:
             )
         )
 
-        scheduler = RecordingAttentionScheduler()
+        agent_handler = RecordingAgentHandler()
         agent_entry = AgentEntryDispatcher(
-            attention_scheduler=scheduler,  # type: ignore[arg-type]
+            handler=agent_handler,
             database=db,
         )
         table = RouteTable()
@@ -386,9 +387,10 @@ class TestMessageIngressCore:
         await ingress.process_event(event, self.adapter)
         await asyncio.sleep(0)
 
-        assert len(scheduler.calls) == 1
-        assert scheduler.calls[0]["kwargs"]["is_reply_to_bot"] is True
-        assert scheduler.calls[0]["kwargs"]["self_platform_id"] == "bot-1"
+        assert len(agent_handler.signals) == 1
+        assert agent_handler.signals[0].is_reply_to_bot is True
+        assert agent_handler.signals[0].self_id == "bot-1"
+        assert not hasattr(agent_handler.signals[0], "message")
 
     @pytest.mark.asyncio
     async def test_message_log_is_mentioned_uses_recursive_mention_detection(self, tmp_path):

@@ -111,7 +111,7 @@ async def guard(event):
 
 ## 7. 与 Agent 调度的关系
 
-未被命令、关键词或自定义消费型 route 命中的用户消息，会进入 `agent_entry` fallback。当前 `agent_entry` 内部委托给 attention scheduler，但消息路由层不直接依赖 attention。
+未被命令、关键词或自定义消费型 route 命中的用户消息，会进入 `agent_entry` fallback。`agent_entry` 只发出最小 Agent 入口信号；Agent 模块自行读取消息库并维护内部上下文和调度状态。
 
 如果消息处理器需要阻止后续 Agent 接管，应使用消费型 route 设计，而不是把消息挂到 EventBus。
 

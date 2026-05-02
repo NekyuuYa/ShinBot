@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from inspect import isawaitable
 from typing import TYPE_CHECKING
 
 from shinbot.core.bot_config import ATTENTION_DISABLED_PROFILE, select_response_profile
@@ -23,7 +26,6 @@ from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 
 if TYPE_CHECKING:
-    from shinbot.agent.attention.scheduler import AttentionScheduler
     from shinbot.persistence.engine import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,28 @@ TEXT_COMMAND_DISPATCHER_TARGET = "text_command_dispatcher"
 KEYWORD_DISPATCHER_TARGET = "keyword_dispatcher"
 NOTICE_DISPATCHER_TARGET = "notice_dispatcher"
 AGENT_ENTRY_TARGET = "agent_entry"
+
+
+@dataclass(slots=True, frozen=True)
+class AgentEntrySignal:
+    """Minimal signal emitted when an unmatched user message reaches Agent entry."""
+
+    session_id: str
+    message_log_id: int | None
+    event_type: str
+    sender_id: str
+    instance_id: str
+    platform: str
+    self_id: str
+    response_profile: str
+    is_private: bool
+    is_mentioned: bool
+    is_reply_to_bot: bool
+    already_handled: bool = False
+    is_stopped: bool = False
+
+
+AgentEntryHandler = Callable[[AgentEntrySignal], Awaitable[bool] | bool]
 
 
 class TextCommandDispatcher:
@@ -269,41 +293,47 @@ def make_notice_route_rule(
 class AgentEntryDispatcher:
     """Route target that hands unmatched user messages to the Agent entry layer.
 
-    The current Agent entry implementation delegates to the attention scheduler,
-    but that is intentionally hidden behind this dispatcher so message routing
-    remains stable if Agent-side triggering changes later.
+    The dispatcher emits a minimal signal describing why Agent was notified.
+    Agent modules are responsible for reading message_logs and constructing
+    their own internal context.
     """
 
     def __init__(
         self,
         *,
-        attention_scheduler: AttentionScheduler | None = None,
+        handler: AgentEntryHandler | None = None,
         database: DatabaseManager | None = None,
     ) -> None:
-        self._attention_scheduler = attention_scheduler
+        self._handler = handler
         self._database = database
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         bot = context.require_message_context()
-        response_profile = self._resolve_response_profile(bot)
-        is_reply_to_bot = bot.is_reply_to_bot()
+        signal = AgentEntrySignal(
+            session_id=bot.session_id,
+            message_log_id=context.message_log_id,
+            event_type=bot.event.type,
+            sender_id=bot.event.sender_id or "",
+            instance_id=bot.adapter.instance_id,
+            platform=bot.event.platform,
+            self_id=bot.event.self_id,
+            response_profile=self._resolve_response_profile(bot),
+            is_private=bot.is_private,
+            is_mentioned=bot.is_mentioned,
+            is_reply_to_bot=bot.is_reply_to_bot(),
+            already_handled=bool(bot._sent_messages),
+            is_stopped=bot.is_stopped,
+        )
 
-        handled_by_attention = False
-        if self._attention_scheduler is not None:
-            handled_by_attention = self._attention_scheduler.schedule_message(
-                bot.session_id,
-                context.message_log_id,
-                bot.event.sender_id or "",
-                response_profile=response_profile,
-                message=context.message,
-                self_platform_id=bot.event.self_id,
-                is_reply_to_bot=is_reply_to_bot,
-                already_handled=bool(bot._sent_messages),
-                is_stopped=bot.is_stopped,
-            )
+        handled = False
+        if self._handler is not None:
+            result = self._handler(signal)
+            if isawaitable(result):
+                result = await result
+            handled = bool(result)
 
-        if not handled_by_attention:
-            self._mark_trigger_read(bot.session_id, context.message_log_id)
+        if not handled:
+            self._mark_trigger_read(signal.message_log_id)
 
     def _resolve_response_profile(self, bot) -> str:
         if self._database is None:
@@ -317,7 +347,7 @@ class AgentEntryDispatcher:
             is_reply_to_bot=bot.is_reply_to_bot(),
         )
 
-    def _mark_trigger_read(self, session_id: str, message_log_id: int | None) -> None:
+    def _mark_trigger_read(self, message_log_id: int | None) -> None:
         if self._database is None or message_log_id is None:
             return
         self._database.message_logs.mark_read(message_log_id)
