@@ -12,14 +12,14 @@
 
 1. **归一化与会话识别**：调用 `Message.from_xml` 将事件内容转化为 AST，并通过 `SessionManager` 建立 session。
 2. **上下文构建**：加载权限、构建 `MessageContext`，并处理 `wait_for_input` 的挂起恢复。
-3. **持久化与路由评估**：先写入 `message_logs(PENDING)`，再执行过期检查、静音、拦截器和 `RouteTable.match(...)`。
-4. **目标派发**：命中 route 后标记 `DISPATCHED` 并异步调度 route target；无命中或被过滤时标记 `SKIPPED`。
+3. **持久化与路由评估**：消息事件先写入 `message_logs(PENDING)`，再执行过期检查、静音、拦截器和 `RouteTable.match(...)`。
+4. **目标派发**：命中 route 后标记 `DISPATCHED` 并异步调度 route target；无命中或被过滤时标记 `SKIPPED`。notice 事件不进入消息时间线，但会把路由结果写入 `audit_logs`。
 
 ### 1.2 健壮性设计
 
 - **持久化旁路保障**：外部消息先落库，实时调度不依赖轮询数据库。
 - **异常隔离**：matcher、拦截器和 route target 的异常都会被记录，不阻断整条消息入口。
-- **状态边界清晰**：`message_logs.routing_status` 只表达路由层生命周期，下游模块自行维护处理状态。
+- **状态边界清晰**：`message_logs.routing_status` 只表达消息路由层生命周期；notice 路由结果写入 audit metadata；下游模块自行维护处理状态。
 
 ---
 
@@ -57,4 +57,4 @@
 ## 4. 双轨分发逻辑
 
 1. **消息流**：消息事件进入 `MessageIngress`，解析 AST 后交给 `RouteTable`，再派发给命令、关键词、自定义 route 或 `agent_entry`。
-2. **通知流**：notice 事件也经过 `RouteTable`，只有 `EventBus` 上存在对应处理器或 wildcard 处理器时，`notice_dispatcher` 才会命中并转发。
+2. **通知流**：notice 事件也经过 `RouteTable`，只有 `EventBus` 上存在对应处理器或 wildcard 处理器时，`notice_dispatcher` 才会命中并转发。无论是否命中，路由状态都会进入审计日志，便于追溯而不污染 Agent 对话上下文。

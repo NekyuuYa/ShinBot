@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -39,6 +40,7 @@ from shinbot.core.dispatch.keyword import KeywordDef, KeywordRegistry
 from shinbot.core.dispatch.message_context import WaitingInputRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule, RouteTable
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
+from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
@@ -110,6 +112,7 @@ def build_ingress(
     route_targets: RouteTargetRegistry | None = None,
     session_manager: SessionManager | None = None,
     waiting_registry: WaitingInputRegistry | None = None,
+    with_audit_logger: bool = False,
     max_message_age_seconds: int = 60,
 ) -> tuple[MessageIngress, DatabaseManager, MockAdapter]:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -119,6 +122,7 @@ def build_ingress(
         permission_engine=PermissionEngine(),
         route_table=route_table or RouteTable(),
         route_targets=route_targets,
+        audit_logger=AuditLogger(audit_repo=db.audit) if with_audit_logger else None,
         database=db,
         waiting_registry=waiting_registry,
         max_message_age_seconds=max_message_age_seconds,
@@ -135,6 +139,18 @@ def add_message_route(table: RouteTable, *, target: str = "recorder") -> RouteRu
     )
     table.register(rule)
     return rule
+
+
+def _latest_audit_row(db: DatabaseManager):
+    with db.connect() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM audit_logs
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
 
 
 async def noop_command(_ctx, _args) -> None:
@@ -530,7 +546,12 @@ async def test_notice_dispatcher_forwards_unified_event_to_event_bus(tmp_path) -
 
     targets = RouteTargetRegistry()
     targets.register(NOTICE_DISPATCHER_TARGET, notice_dispatcher)
-    ingress, db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+    ingress, db, adapter = build_ingress(
+        tmp_path,
+        route_table=table,
+        route_targets=targets,
+        with_audit_logger=True,
+    )
 
     result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
     await asyncio.sleep(0)
@@ -540,6 +561,15 @@ async def test_notice_dispatcher_forwards_unified_event_to_event_bus(tmp_path) -
     assert result.skipped_reason is None
     assert notice_calls == ["guild-member-added"]
     assert db.message_logs.get_recent("test-bot:private:user-1") == []
+
+    audit_row = _latest_audit_row(db)
+    metadata = json.loads(audit_row["metadata_json"])
+    assert audit_row["entry_type"] == "message"
+    assert audit_row["command_name"] == "guild-member-added"
+    assert metadata["routing_status"] == "dispatched"
+    assert metadata["routing_skip_reason"] == ""
+    assert metadata["matched_rules"] == [notice_rule.id]
+    assert metadata["matched_targets"] == [NOTICE_DISPATCHER_TARGET]
 
 
 @pytest.mark.asyncio
@@ -551,7 +581,12 @@ async def test_notice_dispatcher_skips_notice_without_event_bus_handler(tmp_path
 
     targets = RouteTargetRegistry()
     targets.register(NOTICE_DISPATCHER_TARGET, notice_dispatcher)
-    ingress, db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+    ingress, db, adapter = build_ingress(
+        tmp_path,
+        route_table=table,
+        route_targets=targets,
+        with_audit_logger=True,
+    )
 
     result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
 
@@ -560,10 +595,16 @@ async def test_notice_dispatcher_skips_notice_without_event_bus_handler(tmp_path
     assert result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
     assert db.message_logs.get_recent("test-bot:private:user-1") == []
 
+    audit_row = _latest_audit_row(db)
+    metadata = json.loads(audit_row["metadata_json"])
+    assert audit_row["command_name"] == "guild-member-added"
+    assert metadata["routing_status"] == "skipped"
+    assert metadata["routing_skip_reason"] == ROUTING_SKIP_NO_ROUTE_MATCHED
+    assert metadata["matched_rules"] == []
 
 @pytest.mark.asyncio
-async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> None:
-    ingress, db, adapter = build_ingress(tmp_path)
+async def test_notice_without_route_is_skipped_without_message_log(tmp_path) -> None:
+    ingress, db, adapter = build_ingress(tmp_path, with_audit_logger=True)
 
     result = await ingress.process_event(make_event(event_type="guild-member-added"), adapter)
 
@@ -571,6 +612,11 @@ async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> 
     assert result.message_log_id is None
     assert result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
     assert db.message_logs.get_recent("test-bot:private:user-1") == []
+
+    audit_row = _latest_audit_row(db)
+    metadata = json.loads(audit_row["metadata_json"])
+    assert metadata["routing_status"] == "skipped"
+    assert metadata["routing_skip_reason"] == ROUTING_SKIP_NO_ROUTE_MATCHED
 
 
 @pytest.mark.asyncio

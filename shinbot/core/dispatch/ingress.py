@@ -155,9 +155,8 @@ class MessageIngress:
     async def process_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         """Process one normalized event.
 
-        Message events are persisted before routing. Notice events can already
-        be routed through the same route table, but notice persistence is left
-        for the dedicated notice dispatcher migration.
+        Message events are persisted before routing. Notice events are audited
+        with their routing outcome without entering the message timeline.
         """
         if event.is_notice_event:
             return self._process_notice_event(event, adapter)
@@ -343,10 +342,17 @@ class MessageIngress:
         )
         matched_rules = self._route_table.match(event, message)
         self._schedule_targets(dispatch_context, matched_rules)
+        skipped_reason = ROUTING_SKIP_NO_ROUTE_MATCHED if not matched_rules else None
+        self._log_notice_audit(
+            event=event,
+            adapter=adapter,
+            matched_rules=matched_rules,
+            skipped_reason=skipped_reason,
+        )
         return IngressResult(
             dispatch_context=dispatch_context,
             matched_rules=matched_rules,
-            skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED if not matched_rules else None,
+            skipped_reason=skipped_reason,
         )
 
     def _persist_incoming_message(
@@ -473,6 +479,31 @@ class MessageIngress:
             },
         )
 
+    def _log_notice_audit(
+        self,
+        *,
+        event: UnifiedEvent,
+        adapter: BaseAdapter,
+        matched_rules: list[RouteRule],
+        skipped_reason: str | None,
+    ) -> None:
+        if self._audit_logger is None:
+            return
+        self._audit_logger.log_message(
+            event_type=event.type,
+            plugin_id="",
+            user_id=event.sender_id or event.operator_id or "",
+            session_id=_notice_session_id(adapter.instance_id, event),
+            instance_id=adapter.instance_id,
+            metadata={
+                "platform": event.platform,
+                "routing_status": "dispatched" if matched_rules else "skipped",
+                "routing_skip_reason": skipped_reason or "",
+                "matched_rules": [rule.id for rule in matched_rules],
+                "matched_targets": [rule.target for rule in matched_rules],
+            },
+        )
+
     def _mark_dispatched(self, message_log_id: int | None) -> None:
         if self._database is not None and message_log_id is not None:
             self._database.message_logs.mark_routing_dispatched(message_log_id)
@@ -520,6 +551,12 @@ def is_event_fresh(
     current_time = time.time() if now is None else now
     age = current_time - event.timestamp / 1000
     return age < max_age_seconds
+
+
+def _notice_session_id(instance_id: str, event: UnifiedEvent) -> str:
+    if event.channel_id or event.guild_id or event.sender_id:
+        return build_session_id(instance_id, event)
+    return ""
 
 
 def _log_route_target_task_result(done: asyncio.Task[Any], rule: RouteRule) -> None:
