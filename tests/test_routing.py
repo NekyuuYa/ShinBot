@@ -43,6 +43,7 @@ def make_rule(
     target: str | None = None,
     match_mode: RouteMatchMode = RouteMatchMode.NORMAL,
     enabled: bool = True,
+    owner: str | None = None,
 ) -> RouteRule:
     return RouteRule(
         id=rule_id,
@@ -51,6 +52,7 @@ def make_rule(
         target=target or rule_id,
         match_mode=match_mode,
         enabled=enabled,
+        owner=owner,
     )
 
 
@@ -270,3 +272,16 @@ def test_unregister_removes_rule_from_indexes() -> None:
 
     assert table.unregister("mock-only") is rule
     assert table.match(make_event(platform="mock"), Message.from_text("hello")) == []
+
+
+def test_unregister_by_owner_removes_only_owned_rules() -> None:
+    table = RouteTable()
+    owned_a = make_rule("owned-a", owner="plugin-a")
+    owned_b = make_rule("owned-b", owner="plugin-a")
+    other = make_rule("other", owner="plugin-b")
+    table.register(owned_a)
+    table.register(owned_b)
+    table.register(other)
+
+    assert table.unregister_by_owner("plugin-a") == 2
+    assert table.match(make_event(), Message.from_text("hello")) == [other]

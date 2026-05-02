@@ -12,7 +12,9 @@ from shinbot.agent.tools import ToolRegistry
 from shinbot.core.application.boot import BootController
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.keyword import KeywordRegistry
+from shinbot.core.dispatch.routing import RouteCondition, RouteTable
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.manager import PluginManager, _topo_sort
 from shinbot.core.plugins.types import PluginRole, PluginState
@@ -41,12 +43,16 @@ class TestPlugin:
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
         self.keyword_registry = KeywordRegistry()
+        self.route_table = RouteTable()
+        self.route_targets = RouteTargetRegistry()
         self.tool_registry = ToolRegistry()
         self.plg = Plugin(
             "test-plugin",
             self.cmd_reg,
             self.event_bus,
             keyword_registry=self.keyword_registry,
+            route_table=self.route_table,
+            route_targets=self.route_targets,
             tool_registry=self.tool_registry,
         )
 
@@ -84,6 +90,38 @@ class TestPlugin:
         assert self.keyword_registry.all_keywords[0].owner == "test-plugin"
         assert "hello" in self.plg._registered_keywords
 
+    def test_on_route_decorator(self):
+        @self.plg.on_route(
+            RouteCondition(event_types=frozenset({"message-created"})),
+            rule_id="custom-route",
+            target="custom-target",
+        )
+        async def handler(ctx, rule):
+            pass
+
+        rules = self.route_table.rules
+        assert len(rules) == 1
+        assert rules[0].id == "custom-route"
+        assert rules[0].target == "custom-target"
+        assert rules[0].owner == "test-plugin"
+        assert self.route_targets.get("custom-target") is not None
+        assert self.plg._registered_routes == ["custom-route"]
+
+    def test_on_route_rolls_back_target_when_rule_registration_fails(self):
+        @self.plg.on_route(RouteCondition(), rule_id="duplicate-route", target="first-target")
+        async def first(ctx, rule):
+            pass
+
+        with pytest.raises(ValueError, match="already registered"):
+            self.plg.on_route(
+                RouteCondition(),
+                rule_id="duplicate-route",
+                target="second-target",
+            )(lambda ctx, rule: None)
+
+        assert self.route_targets.get("first-target") is not None
+        assert self.route_targets.get("second-target") is None
+
     def test_tool_decorator_registers_tool(self):
         @self.plg.tool(
             name="weather_query",
@@ -109,6 +147,8 @@ class TestPluginManager:
         self.cmd_reg = CommandRegistry()
         self.event_bus = EventBus()
         self.keyword_registry = KeywordRegistry()
+        self.route_table = RouteTable()
+        self.route_targets = RouteTargetRegistry()
         self.tool_registry = ToolRegistry()
         self._tmp_data_dir_ctx = tempfile.TemporaryDirectory()
         self._tmp_data_dir = Path(self._tmp_data_dir_ctx.name)
@@ -116,6 +156,8 @@ class TestPluginManager:
             self.cmd_reg,
             self.event_bus,
             keyword_registry=self.keyword_registry,
+            route_table=self.route_table,
+            route_targets=self.route_targets,
             tool_registry=self.tool_registry,
             data_dir=self._tmp_data_dir,
         )
@@ -172,6 +214,10 @@ class TestPluginManager:
             async def on_keyword(ctx, match):
                 pass
 
+            @plg.on_route(RouteCondition(), rule_id="bye-route", target="bye-target")
+            async def on_route(ctx, rule):
+                pass
+
             @plg.tool(
                 name="bye_tool",
                 description="tool",
@@ -186,6 +232,8 @@ class TestPluginManager:
         assert self.cmd_reg.get("bye") is not None
         assert self.event_bus.handler_count("test-event") == 1
         assert len(self.keyword_registry.match("hello")) == 1
+        assert any(rule.id == "bye-route" for rule in self.route_table.rules)
+        assert self.route_targets.get("bye-target") is not None
         assert self.tool_registry.get_tool_by_name("bye_tool") is not None
 
         result = self.mgr.unload_plugin("bye")
@@ -193,6 +241,8 @@ class TestPluginManager:
         assert self.cmd_reg.get("bye") is None
         assert self.event_bus.handler_count("test-event") == 0
         assert self.keyword_registry.match("hello") == []
+        assert all(rule.id != "bye-route" for rule in self.route_table.rules)
+        assert self.route_targets.get("bye-target") is None
         assert self.tool_registry.get_tool_by_name("bye_tool") is None
         assert self.mgr.get_plugin("bye") is None
 

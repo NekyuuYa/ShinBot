@@ -11,6 +11,7 @@ import pytest
 from shinbot.agent.attention.engine import AttentionConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.command import CommandDef
+from shinbot.core.dispatch.routing import RouteCondition
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
 from shinbot.schema.events import UnifiedEvent
@@ -219,6 +220,41 @@ class TestOnEvent:
         await asyncio.sleep(0)
 
         assert calls == [("inst1:group:ch-1", "needle")]
+
+    @pytest.mark.asyncio
+    async def test_on_event_executes_plugin_route_via_message_ingress(self):
+        bot = ShinBot()
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("inst1", "mock")
+        calls = []
+
+        def setup(plg: Plugin):
+            @plg.on_route(
+                RouteCondition(
+                    event_types=frozenset({"message-created"}),
+                    custom_matcher=lambda _event, message: message.text == "route me",
+                ),
+                rule_id="app-route",
+                target="app-route-target",
+            )
+            async def app_route(ctx, rule):
+                calls.append((ctx.require_message_context().session_id, rule.id))
+
+        module_name = "test_app_plugin_route"
+        mod = types.ModuleType(module_name)
+        mod.setup = setup
+        sys.modules[module_name] = mod
+        try:
+            meta = await bot.load_plugin_async("route-plugin", module_name)
+            assert meta.routes == ["app-route"]
+
+            event = make_message_event(content="route me", instance_id="inst1")
+            await bot.on_event(event, adapter)
+            await asyncio.sleep(0)
+
+            assert calls == [("inst1:group:ch-1", "app-route")]
+        finally:
+            sys.modules.pop(module_name, None)
 
     @pytest.mark.asyncio
     async def test_on_event_handles_exceptions_gracefully(self):

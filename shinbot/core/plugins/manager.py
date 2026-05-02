@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Any
 
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.keyword import KeywordRegistry
+from shinbot.core.dispatch.routing import RouteTable
 from shinbot.core.model_runtime import ModelRuntimeObserverRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
@@ -70,6 +72,8 @@ class PluginManager:
         data_dir: Path | str | None = None,
         *,
         keyword_registry: KeywordRegistry | None = None,
+        route_table: RouteTable | None = None,
+        route_targets: RouteTargetRegistry | None = None,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
@@ -78,6 +82,8 @@ class PluginManager:
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._keyword_registry = keyword_registry or KeywordRegistry()
+        self._route_table = route_table
+        self._route_targets = route_targets
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
@@ -98,6 +104,8 @@ class PluginManager:
             self._event_bus,
             data_dir=self._build_plugin_data_dir(plugin_id),
             keyword_registry=self._keyword_registry,
+            route_table=self._route_table,
+            route_targets=self._route_targets,
             adapter_manager=self._adapter_manager,
             tool_registry=self._tool_registry,
             model_runtime=self._model_runtime,
@@ -149,6 +157,7 @@ class PluginManager:
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
             self._keyword_registry.unregister_by_owner(plugin_id)
+            self._unregister_routes_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -259,6 +268,7 @@ class PluginManager:
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
             self._keyword_registry.unregister_by_owner(plugin_id)
+            self._unregister_routes_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -277,6 +287,7 @@ class PluginManager:
         meta.commands = list(plg._registered_commands)
         meta.event_types = list(plg._registered_events)
         meta.keywords = list(plg._registered_keywords)
+        meta.routes = list(plg._registered_routes)
         meta.data_dir = str(plg.data_dir)
         self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
@@ -495,6 +506,7 @@ class PluginManager:
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
             self._keyword_registry.unregister_by_owner(plugin_id)
+            self._unregister_routes_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -537,6 +549,7 @@ class PluginManager:
             commands=list(plg._registered_commands),
             event_types=list(plg._registered_events),
             keywords=list(plg._registered_keywords),
+            routes=list(plg._registered_routes),
             data_dir=str(plg.data_dir),
         )
 
@@ -589,6 +602,7 @@ class PluginManager:
         cmd_count = self._command_registry.unregister_by_owner(plugin_id)
         evt_count = self._event_bus.off_all(plugin_id)
         self._keyword_registry.unregister_by_owner(plugin_id)
+        self._unregister_routes_by_owner(plugin_id)
         if self._tool_registry is not None:
             self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
         if plg is not None and self._model_runtime is not None:
@@ -608,6 +622,12 @@ class PluginManager:
             del sys.modules[meta.module_path]
 
         return cmd_count, evt_count
+
+    def _unregister_routes_by_owner(self, plugin_id: str) -> None:
+        if self._route_table is not None:
+            self._route_table.unregister_by_owner(plugin_id)
+        if self._route_targets is not None:
+            self._route_targets.unregister_by_owner(plugin_id)
 
     def _build_plugin_data_dir(self, plugin_id: str) -> Path:
         candidate = (self._plugin_data_root / plugin_id).resolve()

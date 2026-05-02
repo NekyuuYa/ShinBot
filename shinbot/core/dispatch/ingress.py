@@ -83,14 +83,31 @@ class RouteTargetRegistry:
 
     def __init__(self) -> None:
         self._handlers: dict[str, RouteTargetHandler] = {}
+        self._owners: dict[str, str | None] = {}
 
-    def register(self, target: str, handler: RouteTargetHandler) -> None:
+    def register(
+        self,
+        target: str,
+        handler: RouteTargetHandler,
+        *,
+        owner: str | None = None,
+    ) -> None:
         if not target:
             raise ValueError("route target must not be empty")
+        if target in self._handlers:
+            raise ValueError(f"route target already registered: {target}")
         self._handlers[target] = handler
+        self._owners[target] = owner
 
     def unregister(self, target: str) -> RouteTargetHandler | None:
+        self._owners.pop(target, None)
         return self._handlers.pop(target, None)
+
+    def unregister_by_owner(self, owner: str) -> int:
+        targets = [target for target, target_owner in self._owners.items() if target_owner == owner]
+        for target in targets:
+            self.unregister(target)
+        return len(targets)
 
     def get(self, target: str) -> RouteTargetHandler | None:
         return self._handlers.get(target)

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shinbot.core.dispatch.command import CommandDef, CommandMode, CommandPriority, CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.ingress import RouteDispatchContext, RouteTargetRegistry
 from shinbot.core.dispatch.keyword import KeywordDef, KeywordRegistry
+from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule, RouteTable
 from shinbot.core.model_runtime import ModelRuntimeObserver, ModelRuntimeObserverRegistry
 from shinbot.core.tools import ToolDefinition, ToolOwnerType, ToolRegistry, ToolVisibility
 from shinbot.schema.elements import MessageElement
@@ -30,6 +33,8 @@ class Plugin:
         data_dir: Path | str | None = None,
         *,
         keyword_registry: KeywordRegistry | None = None,
+        route_table: RouteTable | None = None,
+        route_targets: RouteTargetRegistry | None = None,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
@@ -39,6 +44,8 @@ class Plugin:
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._keyword_registry = keyword_registry
+        self._route_table = route_table
+        self._route_targets = route_targets
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
@@ -49,6 +56,7 @@ class Plugin:
         self._registered_commands: list[str] = []
         self._registered_events: list[str] = []
         self._registered_keywords: list[str] = []
+        self._registered_routes: list[str] = []
         self._registered_tools: list[str] = []
         self._registered_model_observers: list[ModelRuntimeObserver] = []
         self.logger = get_plugin_logger(plugin_id)
@@ -112,6 +120,54 @@ class Plugin:
             )
             self._keyword_registry.register(keyword)
             self._registered_keywords.append(pattern)
+            return func
+
+        return decorator
+
+    def on_route(
+        self,
+        condition: RouteCondition,
+        *,
+        target: str | None = None,
+        rule_id: str | None = None,
+        priority: int = 100,
+        match_mode: RouteMatchMode = RouteMatchMode.NORMAL,
+        enabled: bool = True,
+    ) -> Callable:
+        if self._route_table is None or self._route_targets is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot register route handlers: "
+                "no RouteTable/RouteTargetRegistry is available in this Plugin object."
+            )
+
+        def decorator(func: Callable) -> Callable:
+            seq = len(self._registered_routes) + 1
+            resolved_target = target or f"plugin.{self.plugin_id}.{func.__name__}.{seq}"
+            resolved_rule_id = rule_id or f"plugin.{self.plugin_id}.{func.__name__}.{seq}"
+
+            async def handler(context: RouteDispatchContext, rule: RouteRule) -> None:
+                result = func(context, rule)
+                if inspect.isawaitable(result):
+                    await result
+
+            self._route_targets.register(resolved_target, handler, owner=self.plugin_id)
+            try:
+                self._route_table.register(
+                    RouteRule(
+                        id=resolved_rule_id,
+                        priority=priority,
+                        condition=condition,
+                        target=resolved_target,
+                        match_mode=match_mode,
+                        enabled=enabled,
+                        owner=self.plugin_id,
+                    )
+                )
+            except Exception:
+                self._route_targets.unregister(resolved_target)
+                raise
+
+            self._registered_routes.append(resolved_rule_id)
             return func
 
         return decorator

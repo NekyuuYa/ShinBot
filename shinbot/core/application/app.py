@@ -100,6 +100,8 @@ class ShinBot:
         self.event_bus = EventBus()
         self.command_registry = CommandRegistry()
         self.keyword_registry = KeywordRegistry()
+        self.route_table = RouteTable()
+        self.route_targets = RouteTargetRegistry()
         self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.model_runtime = ModelRuntime(self.database)
@@ -151,6 +153,8 @@ class ShinBot:
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,
             keyword_registry=self.keyword_registry,
+            route_table=self.route_table,
+            route_targets=self.route_targets,
             event_bus=self.event_bus,
             adapter_manager=self.adapter_manager,
             tool_registry=self.tool_registry,
@@ -208,8 +212,6 @@ class ShinBot:
                 inspection_runner=self.media_inspection_runner,
             )
 
-        self.route_table = RouteTable()
-        self.route_targets = RouteTargetRegistry()
         self.text_command_dispatcher = TextCommandDispatcher(
             self.command_registry,
             audit_logger=self.audit_logger,

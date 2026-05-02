@@ -58,6 +58,7 @@ class RouteRule:
     target: str
     match_mode: RouteMatchMode = RouteMatchMode.NORMAL
     enabled: bool = True
+    owner: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -108,6 +109,17 @@ class RouteTable:
             return None
         self._unindex_rule(entry.rule)
         return entry.rule
+
+    def unregister_by_owner(self, owner: str) -> int:
+        """Remove all rules owned by one plugin/framework component."""
+        to_remove = [
+            rule_id
+            for rule_id, entry in self._entries_by_id.items()
+            if entry.rule.owner == owner
+        ]
+        for rule_id in to_remove:
+            self.unregister(rule_id)
+        return len(to_remove)
 
     def clear(self) -> None:
         """Remove all rules from the table."""
