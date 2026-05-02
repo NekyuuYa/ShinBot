@@ -26,6 +26,7 @@ class RouteMatchMode(Enum):
     NORMAL = "normal"
     EXCLUSIVE = "exclusive"
     FALLBACK = "fallback"
+    OBSERVE = "observe"
 
 
 @dataclass(slots=True, frozen=True)
@@ -160,28 +161,36 @@ class RouteTable:
             if self._matches_condition(rule, event, message, element_types, match_context):
                 matched_entries.append(entry)
 
+        observers = [
+            entry
+            for entry in matched_entries
+            if entry.rule.match_mode == RouteMatchMode.OBSERVE
+        ]
+
         exclusive = [
-            entry.rule
+            entry
             for entry in matched_entries
             if entry.rule.match_mode == RouteMatchMode.EXCLUSIVE
         ]
         if exclusive:
-            return exclusive[:1]
+            return _rules_in_order([*observers, exclusive[0]])
 
         normal = [
-            entry.rule
+            entry
             for entry in matched_entries
             if entry.rule.match_mode == RouteMatchMode.NORMAL
         ]
         if normal:
-            return normal
+            return _rules_in_order([*observers, *normal])
 
         fallback = [
-            entry.rule
+            entry
             for entry in matched_entries
             if entry.rule.match_mode == RouteMatchMode.FALLBACK
         ]
-        return fallback[:1]
+        if fallback:
+            return _rules_in_order([*observers, fallback[0]])
+        return _rules_in_order(observers)
 
     def _candidate_ids(self, event: UnifiedEvent, element_types: frozenset[str]) -> set[str]:
         event_type_candidates = set(self._event_type_wildcards)
@@ -341,3 +350,7 @@ def _accepts_match_context(matcher: RouteMatcher) -> bool:
         }:
             positional_count += 1
     return positional_count >= 3
+
+
+def _rules_in_order(entries: list[_RouteEntry]) -> list[RouteRule]:
+    return [entry.rule for entry in sorted(entries, key=lambda e: e.sort_key)]

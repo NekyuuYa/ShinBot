@@ -35,7 +35,7 @@ from shinbot.core.dispatch.ingress import (
     is_event_fresh,
 )
 from shinbot.core.dispatch.keyword import KeywordDef, KeywordRegistry
-from shinbot.core.dispatch.routing import RouteCondition, RouteRule, RouteTable
+from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule, RouteTable
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
@@ -576,6 +576,47 @@ async def test_agent_entry_fallback_schedules_unmatched_group_message(tmp_path) 
     assert row is not None
     assert row["routing_status"] == "dispatched"
     assert row["is_read"] is False
+
+
+@pytest.mark.asyncio
+async def test_observe_route_does_not_suppress_agent_entry_fallback(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    scheduler = RecordingAttentionScheduler(handled=True)
+    agent_entry_dispatcher = AgentEntryDispatcher(
+        attention_scheduler=scheduler,  # type: ignore[arg-type]
+        database=db,
+    )
+    calls: list[str] = []
+
+    table = RouteTable()
+    observe_rule = RouteRule(
+        id="debug-observer",
+        priority=10_000,
+        condition=RouteCondition(event_types=frozenset({"message-created"})),
+        target="debug-observer",
+        match_mode=RouteMatchMode.OBSERVE,
+    )
+    fallback_rule = make_agent_entry_fallback_route_rule()
+    table.register(observe_rule)
+    table.register(fallback_rule)
+    targets = RouteTargetRegistry()
+    targets.register("debug-observer", lambda _context, rule: calls.append(rule.id))
+    targets.register(AGENT_ENTRY_TARGET, agent_entry_dispatcher)
+    ingress = MessageIngress(
+        session_manager=SessionManager(session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        route_table=table,
+        route_targets=targets,
+        database=db,
+    )
+
+    result = await ingress.process_event(make_event("observe me", private=False), MockAdapter())
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [observe_rule, fallback_rule]
+    assert calls == ["debug-observer"]
+    assert len(scheduler.calls) == 1
 
 
 @pytest.mark.asyncio

@@ -120,6 +120,44 @@ def test_fallback_is_ignored_when_normal_route_matches() -> None:
     assert table.match(make_event(), Message.from_text("hello")) == [normal]
 
 
+def test_observe_route_does_not_suppress_fallback() -> None:
+    table = RouteTable()
+    observer = make_rule(
+        "observer",
+        priority=1000,
+        match_mode=RouteMatchMode.OBSERVE,
+    )
+    fallback = make_rule(
+        "fallback",
+        priority=-1000,
+        match_mode=RouteMatchMode.FALLBACK,
+    )
+    table.register(observer)
+    table.register(fallback)
+
+    assert table.match(make_event(), Message.from_text("hello")) == [observer, fallback]
+
+
+def test_observe_route_fans_out_with_normal_routes() -> None:
+    table = RouteTable()
+    observer = make_rule(
+        "observer",
+        priority=1000,
+        match_mode=RouteMatchMode.OBSERVE,
+    )
+    normal = make_rule("normal")
+    fallback = make_rule(
+        "fallback",
+        priority=-1000,
+        match_mode=RouteMatchMode.FALLBACK,
+    )
+    table.register(observer)
+    table.register(normal)
+    table.register(fallback)
+
+    assert table.match(make_event(), Message.from_text("hello")) == [observer, normal]
+
+
 def test_structured_conditions_and_wildcards_filter_candidates() -> None:
     table = RouteTable()
     platform_wildcard = make_rule(

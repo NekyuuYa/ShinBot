@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode
 from shinbot.core.plugins.context import Plugin
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
@@ -112,6 +113,27 @@ def _enqueue_record(target_file: Path, payload: dict[str, Any]) -> None:
     _WRITE_QUEUE.put_nowait((target_file, payload))
 
 
+def _capture_event(
+    plg: Plugin,
+    *,
+    raw_target_file: Path,
+    ast_target_file: Path,
+    event_obj: Any,
+) -> None:
+    event_type, platform, self_id, _ = _extract_event_payload(event_obj)
+    plg.logger.info(
+        "[debug_message] type=%s platform=%s self_id=%s",
+        event_type,
+        platform,
+        self_id,
+    )
+    try:
+        _enqueue_record(raw_target_file, _build_raw_record(event_obj))
+        _enqueue_record(ast_target_file, _build_ast_record(event_obj))
+    except asyncio.QueueFull:
+        plg.logger.warning("[debug_message] queue full, dropping event %s", event_type)
+
+
 def setup(plg: Plugin) -> None:
     global _WRITE_QUEUE, _WRITER_TASK
 
@@ -120,20 +142,29 @@ def setup(plg: Plugin) -> None:
     _WRITE_QUEUE = asyncio.Queue(maxsize=2000)
     _WRITER_TASK = asyncio.create_task(_writer_loop())
 
+    @plg.on_route(
+        RouteCondition(event_types=frozenset({"message-created"})),
+        rule_id="shinbot_debug_message.message_observer",
+        target="shinbot_debug_message.message_observer",
+        priority=10_000,
+        match_mode=RouteMatchMode.OBSERVE,
+    )
+    async def _on_message_event(context: Any, _rule: Any) -> None:
+        _capture_event(
+            plg,
+            raw_target_file=raw_target_file,
+            ast_target_file=ast_target_file,
+            event_obj=context,
+        )
+
     @plg.on_event("*")
     async def _on_any_event(event_obj: Any) -> None:
-        event_type, platform, self_id, _ = _extract_event_payload(event_obj)
-        plg.logger.info(
-            "[debug_message] type=%s platform=%s self_id=%s",
-            event_type,
-            platform,
-            self_id,
+        _capture_event(
+            plg,
+            raw_target_file=raw_target_file,
+            ast_target_file=ast_target_file,
+            event_obj=event_obj,
         )
-        try:
-            _enqueue_record(raw_target_file, _build_raw_record(event_obj))
-            _enqueue_record(ast_target_file, _build_ast_record(event_obj))
-        except asyncio.QueueFull:
-            plg.logger.warning("[debug_message] queue full, dropping event %s", event_type)
 
 
 async def on_disable(plg: Plugin) -> None:
