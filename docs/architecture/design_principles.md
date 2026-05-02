@@ -10,7 +10,8 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 **Rule**: `shinbot/core/` is split by responsibility:
 - `application/` for app assembly and boot lifecycle
-- `dispatch/` for message ingress, route-table dispatch, commands, keywords, and EventBus
+- `dispatch/` for message ingress, route-table dispatch, route targets, and EventBus
+- `message_routes/` for built-in message route subsystems such as commands and keywords
 - `platform/` for adapter abstractions and instance management
 - `plugins/` for plugin lifecycle and registration
 - `security/` for permission and audit
