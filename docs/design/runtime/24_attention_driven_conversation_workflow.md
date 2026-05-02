@@ -305,9 +305,10 @@ contribution = base_gain * sender_factor + feature_bonus
 ## 10. 与现有消息路由的集成
 
 ### 10.1 替换逻辑
-- 用户消息路由的 `agent_entry` fallback 负责把未被消费型 route 命中的消息交给 Agent 入口。
-- 当前 `agent_entry` 内部委托给 attention scheduler，由它负责更新注意力和决定是否触发 workflow。
-- 只有触发逻辑判定为 `True` 时，才拉起 Workflow 调度器。
+- 用户消息路由的 `agent_entry` fallback 负责把未被消费型 route 命中的消息通知给 Agent 入口。
+- 消息路由层只发出最小 `AgentEntrySignal`，包含触发消息的 `message_log_id`、session、sender、平台和 profile 等事由信息；它不预先构造 Agent 上下文，也不直接依赖 attention scheduler。
+- attention scheduler 应作为 Agent 入口之后的内部实现接收该信号，自行读取 `message_logs`、更新注意力并决定是否触发 workflow。
+- 只有 Agent 侧触发逻辑判定为需要响应时，才拉起 Workflow 调度器。
 - 命令与 `wait_for_input` 继续保留各自的原有控制流。
 - 私聊、`@bot`、回复 Bot 等“高即时性”需求，应通过更激进的 workflow profile 实现，而不是保留第二套聊天 responder。
 
@@ -326,7 +327,7 @@ contribution = base_gain * sender_factor + feature_bonus
 
 ## 12. 最小可行落地顺序
 1. 定义数据表 Schema 并实现基础的衰减/回归逻辑。
-2. 在 `agent_entry` / attention scheduler 中实现注意力累积环节。
+2. 实现 Agent 入口 handler，接收 `AgentEntrySignal` 后委托 attention scheduler 完成注意力累积。
 3. 实现基于沉淀窗口的消息 Claim 逻辑。
 4. 接入首版 `attention.*` Tool 集并实现显式的 Clamp 反馈。
 5. 引入回复疲劳机制和 Cross-talk 标注。
