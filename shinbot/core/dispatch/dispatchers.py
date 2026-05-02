@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from inspect import isawaitable
 from typing import TYPE_CHECKING
 
-from shinbot.core.bot_config import ATTENTION_DISABLED_PROFILE, select_response_profile
+from shinbot.core.bot_config import select_response_profile
 from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
@@ -307,6 +307,10 @@ class AgentEntryDispatcher:
         self._handler = handler
         self._database = database
 
+    def set_handler(self, handler: AgentEntryHandler | None) -> None:
+        """Set or clear the Agent-side signal handler."""
+        self._handler = handler
+
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         bot = context.require_message_context()
         signal = AgentEntrySignal(
@@ -337,7 +341,12 @@ class AgentEntryDispatcher:
 
     def _resolve_response_profile(self, bot) -> str:
         if self._database is None:
-            return ATTENTION_DISABLED_PROFILE if bot.is_private else "balanced"
+            return select_response_profile(
+                None,
+                is_private=bot.is_private,
+                is_mentioned=bot.is_mentioned,
+                is_reply_to_bot=bot.is_reply_to_bot(),
+            )
 
         bot_config = self._database.bot_configs.get_by_instance_id(bot.adapter.instance_id)
         return select_response_profile(

@@ -11,6 +11,7 @@ import pytest
 from shinbot.agent.attention.engine import AttentionConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.command import CommandDef
+from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.dispatch.routing import RouteCondition
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
@@ -254,6 +255,30 @@ class TestOnEvent:
             assert calls == [("inst1:group:ch-1", "app-route")]
         finally:
             sys.modules.pop(module_name, None)
+
+    @pytest.mark.asyncio
+    async def test_on_event_emits_agent_entry_signal_via_registered_handler(self):
+        bot = ShinBot()
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("inst1", "mock")
+        signals: list[AgentEntrySignal] = []
+
+        async def handler(signal: AgentEntrySignal) -> bool:
+            signals.append(signal)
+            return True
+
+        bot.set_agent_entry_handler(handler)
+
+        event = make_message_event(content="hello agent", instance_id="inst1")
+        await bot.on_event(event, adapter)
+        await asyncio.sleep(0)
+
+        assert len(signals) == 1
+        assert signals[0].session_id == "inst1:group:ch-1"
+        assert signals[0].event_type == "message-created"
+        assert signals[0].instance_id == "inst1"
+        assert signals[0].platform == "mock"
+        assert not hasattr(signals[0], "message")
 
     @pytest.mark.asyncio
     async def test_on_event_handles_exceptions_gracefully(self):

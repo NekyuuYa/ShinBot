@@ -41,6 +41,7 @@ from shinbot.core.dispatch.dispatchers import (
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
     AgentEntryDispatcher,
+    AgentEntryHandler,
     KeywordDispatcher,
     NoticeDispatcher,
     TextCommandDispatcher,
@@ -255,6 +256,10 @@ class ShinBot:
             await self.message_ingress.process_event(event, adapter)
         except Exception:
             logger.exception("Unhandled error processing event: %s", event.type)
+
+    def set_agent_entry_handler(self, handler: AgentEntryHandler | None) -> None:
+        """Attach the Agent-side handler for unmatched user-message signals."""
+        self.agent_entry_dispatcher.set_handler(handler)
 
     # ── Attention workflow dispatcher ────────────────────────────────
 
