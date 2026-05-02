@@ -6,8 +6,8 @@ import pytest
 
 import shinbot.builtin_plugins.shinbot_plugin_search as search_plugin
 from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.message_routes.command import CommandRegistry
 from shinbot.core.plugins.context import Plugin
 
 

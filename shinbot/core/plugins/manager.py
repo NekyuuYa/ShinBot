@@ -11,11 +11,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
-from shinbot.core.dispatch.keyword import KeywordRegistry
 from shinbot.core.dispatch.routing import RouteTable
+from shinbot.core.message_routes import CommandRegistry, KeywordRegistry
 from shinbot.core.model_runtime import ModelRuntimeObserverRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState

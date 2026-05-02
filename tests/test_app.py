@@ -10,9 +10,9 @@ import pytest
 
 from shinbot.agent.attention.engine import AttentionConfig
 from shinbot.core.application.app import ShinBot
-from shinbot.core.dispatch.command import CommandDef
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.dispatch.routing import RouteCondition
+from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginState
 from shinbot.schema.events import UnifiedEvent

@@ -18,7 +18,7 @@ def setup(plg: Plugin) -> None:
 ## 示例 2：正则命令
 
 ```python
-from shinbot.core.dispatch.command import CommandPriority
+from shinbot.core.message_routes.command import CommandPriority
 
 
 def setup(plg):

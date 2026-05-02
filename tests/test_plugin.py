@@ -10,11 +10,11 @@ import pytest
 
 from shinbot.agent.tools import ToolRegistry
 from shinbot.core.application.boot import BootController
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
-from shinbot.core.dispatch.keyword import KeywordRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteTable
+from shinbot.core.message_routes.command import CommandRegistry
+from shinbot.core.message_routes.keyword import KeywordRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.manager import PluginManager, _topo_sort
 from shinbot.core.plugins.types import PluginRole, PluginState

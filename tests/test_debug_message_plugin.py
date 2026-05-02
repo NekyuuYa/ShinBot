@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 import shinbot.builtin_plugins.shinbot_debug_message as debug_message
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteMatchMode, RouteTable
+from shinbot.core.message_routes.command import CommandRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, User

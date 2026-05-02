@@ -34,26 +34,28 @@ from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
-    KEYWORD_DISPATCHER_TARGET,
     NOTICE_DISPATCHER_TARGET,
-    TEXT_COMMAND_DISPATCHER_TARGET,
     AgentEntryDispatcher,
     AgentEntryHandler,
-    KeywordDispatcher,
     NoticeDispatcher,
-    TextCommandDispatcher,
     make_agent_entry_fallback_route_rule,
-    make_keyword_route_rule,
     make_notice_route_rule,
-    make_text_command_route_rule,
 )
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
-from shinbot.core.dispatch.keyword import KeywordRegistry
 from shinbot.core.dispatch.routing import RouteTable
+from shinbot.core.message_routes import (
+    KEYWORD_DISPATCHER_TARGET,
+    TEXT_COMMAND_DISPATCHER_TARGET,
+    CommandRegistry,
+    KeywordDispatcher,
+    KeywordRegistry,
+    TextCommandDispatcher,
+    make_keyword_route_rule,
+    make_text_command_route_rule,
+)
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
 from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.audit import AuditLogger

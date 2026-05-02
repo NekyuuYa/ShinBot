@@ -1,4 +1,4 @@
-"""Compatibility re-export for command message routes."""
+"""Built-in message route registries and dispatch targets."""
 
 from shinbot.core.message_routes.command import (
     TEXT_COMMAND_DISPATCHER_TARGET,
@@ -11,6 +11,15 @@ from shinbot.core.message_routes.command import (
     TextCommandDispatcher,
     make_text_command_route_rule,
 )
+from shinbot.core.message_routes.keyword import (
+    KEYWORD_DISPATCHER_TARGET,
+    KeywordDef,
+    KeywordDispatcher,
+    KeywordHandler,
+    KeywordMatch,
+    KeywordRegistry,
+    make_keyword_route_rule,
+)
 
 __all__ = [
     "CommandDef",
@@ -19,7 +28,14 @@ __all__ = [
     "CommandMode",
     "CommandPriority",
     "CommandRegistry",
+    "KEYWORD_DISPATCHER_TARGET",
+    "KeywordDef",
+    "KeywordDispatcher",
+    "KeywordHandler",
+    "KeywordMatch",
+    "KeywordRegistry",
     "TEXT_COMMAND_DISPATCHER_TARGET",
     "TextCommandDispatcher",
+    "make_keyword_route_rule",
     "make_text_command_route_rule",
 ]

@@ -28,7 +28,8 @@
 
 - `shinbot/core/plugins/context.py`
 - `shinbot/core/plugins/manager.py`
-- `shinbot/core/dispatch/command.py`
+- `shinbot/core/message_routes/command.py`
+- `shinbot/core/message_routes/keyword.py`
 - `shinbot/core/dispatch/event_bus.py`
 - `shinbot/core/dispatch/ingress.py`
 - `shinbot/core/dispatch/routing.py`

@@ -5,22 +5,24 @@ import time
 
 import pytest
 
-from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
-    TEXT_COMMAND_DISPATCHER_TARGET,
     AgentEntryDispatcher,
     AgentEntrySignal,
     NoticeDispatcher,
-    TextCommandDispatcher,
     make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
-    make_text_command_route_rule,
 )
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteRule, RouteTable
+from shinbot.core.message_routes import (
+    TEXT_COMMAND_DISPATCHER_TARGET,
+    TextCommandDispatcher,
+    make_text_command_route_rule,
+)
+from shinbot.core.message_routes.command import CommandDef, CommandRegistry
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager

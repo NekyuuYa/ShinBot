@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from shinbot.core.dispatch.command import (
+from shinbot.core.message_routes.command import (
     CommandDef,
     CommandPriority,
     CommandRegistry,

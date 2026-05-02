@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.message_routes.command import CommandRegistry
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.permission import PermissionEngine

@@ -3,7 +3,7 @@
 本文档分析了指令、权限和会话这三大核心模块的代码实现细节。
 
 ## 1. 指令解析：CommandRegistry
-位于 `shinbot/core/dispatch/command.py`。
+位于 `shinbot/core/message_routes/command.py`。
 
 ### 1.1 实现方法
 - **三层匹配算法**: 严格实现了 `03_command_system.md` 规定的优先级：

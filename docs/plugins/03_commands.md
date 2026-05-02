@@ -44,7 +44,7 @@ async def handler(bot, args: str) -> None:
 ## 3. 前缀命令（默认）
 
 ```python
-from shinbot.core.dispatch.command import CommandPriority
+from shinbot.core.message_routes.command import CommandPriority
 
 
 @plg.on_command("echo", aliases=["say"], priority=CommandPriority.P0_PREFIX)
@@ -58,7 +58,7 @@ async def echo(bot, args: str) -> None:
 ## 4. 精确匹配命令
 
 ```python
-from shinbot.core.dispatch.command import CommandPriority
+from shinbot.core.message_routes.command import CommandPriority
 
 
 @plg.on_command("菜单", priority=CommandPriority.P1_EXACT)
@@ -71,7 +71,7 @@ async def menu(bot, args: str) -> None:
 ## 5. 正则命令
 
 ```python
-from shinbot.core.dispatch.command import CommandPriority
+from shinbot.core.message_routes.command import CommandPriority
 
 
 @plg.on_command(

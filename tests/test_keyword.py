@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from shinbot.core.dispatch.keyword import KeywordDef, KeywordRegistry
+from shinbot.core.message_routes.keyword import KeywordDef, KeywordRegistry
 
 
 async def noop_handler(_ctx, _match) -> None:

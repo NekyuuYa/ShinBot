@@ -8,8 +8,8 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from shinbot.core.dispatch.command import CommandMatch
 from shinbot.core.message_analysis import is_self_mentioned
+from shinbot.core.message_routes import CommandMatch
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import check_permission
 from shinbot.core.state.session import Session
