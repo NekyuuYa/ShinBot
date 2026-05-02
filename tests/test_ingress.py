@@ -29,12 +29,14 @@ from shinbot.core.dispatch.ingress import (
     ROUTING_SKIP_INTERCEPTOR_BLOCKED,
     ROUTING_SKIP_NO_ROUTE_MATCHED,
     ROUTING_SKIP_SESSION_MUTED,
+    ROUTING_SKIP_WAIT_FOR_INPUT,
     MessageIngress,
     RouteDispatchContext,
     RouteTargetRegistry,
     is_event_fresh,
 )
 from shinbot.core.dispatch.keyword import KeywordDef, KeywordRegistry
+from shinbot.core.dispatch.message_context import WaitingInputRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule, RouteTable
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
@@ -107,6 +109,7 @@ def build_ingress(
     route_table: RouteTable | None = None,
     route_targets: RouteTargetRegistry | None = None,
     session_manager: SessionManager | None = None,
+    waiting_registry: WaitingInputRegistry | None = None,
     max_message_age_seconds: int = 60,
 ) -> tuple[MessageIngress, DatabaseManager, MockAdapter]:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -117,6 +120,7 @@ def build_ingress(
         route_table=route_table or RouteTable(),
         route_targets=route_targets,
         database=db,
+        waiting_registry=waiting_registry,
         max_message_age_seconds=max_message_age_seconds,
     )
     return ingress, db, MockAdapter()
@@ -204,6 +208,27 @@ async def test_ingress_marks_no_route_match_skipped(tmp_path) -> None:
     assert row is not None
     assert row["routing_status"] == "skipped"
     assert row["routing_skip_reason"] == ROUTING_SKIP_NO_ROUTE_MATCHED
+
+
+@pytest.mark.asyncio
+async def test_wait_for_input_reply_is_persisted_and_skipped(tmp_path) -> None:
+    waiting_registry = WaitingInputRegistry()
+    future = waiting_registry.register("test-bot:private:user-1")
+    ingress, db, adapter = build_ingress(tmp_path, waiting_registry=waiting_registry)
+
+    result = await ingress.process_event(make_event("Nekyuu"), adapter)
+
+    assert future.done()
+    assert future.result() == "Nekyuu"
+    assert result.matched_rules == []
+    assert result.skipped_reason == ROUTING_SKIP_WAIT_FOR_INPUT
+    assert result.message_log_id is not None
+
+    row = db.message_logs.get(result.message_log_id)
+    assert row is not None
+    assert row["raw_text"] == "Nekyuu"
+    assert row["routing_status"] == "skipped"
+    assert row["routing_skip_reason"] == ROUTING_SKIP_WAIT_FOR_INPUT
 
 
 @pytest.mark.asyncio

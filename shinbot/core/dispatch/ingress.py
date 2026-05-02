@@ -174,10 +174,37 @@ class MessageIngress:
         # Preserve the current deadlock-avoidance behavior: a suspended handler
         # may already hold the session lock while waiting for this reply.
         if self._waiting_registry.is_waiting(session_id):
-            if self._waiting_registry.resolve(session_id, message.get_text(self_id=event.self_id)):
+            observed_at = time.time()
+            message_log_id = self._persist_incoming_message(
+                event=event,
+                message=message,
+                session_id=session_id,
+                observed_at=observed_at,
+            )
+            self._track_message_record(
+                event=event,
+                message=message,
+                session_id=session_id,
+                observed_at=observed_at,
+                message_log_id=message_log_id,
+            )
+            if not is_event_fresh(
+                event,
+                max_age_seconds=self._max_message_age_seconds,
+            ):
+                self._mark_skipped(message_log_id, ROUTING_SKIP_EXPIRED_MESSAGE)
                 return IngressResult(
                     dispatch_context=None,
                     matched_rules=[],
+                    message_log_id=message_log_id,
+                    skipped_reason=ROUTING_SKIP_EXPIRED_MESSAGE,
+                )
+            if self._waiting_registry.resolve(session_id, message.get_text(self_id=event.self_id)):
+                self._mark_skipped(message_log_id, ROUTING_SKIP_WAIT_FOR_INPUT)
+                return IngressResult(
+                    dispatch_context=None,
+                    matched_rules=[],
+                    message_log_id=message_log_id,
                     skipped_reason=ROUTING_SKIP_WAIT_FOR_INPUT,
                 )
 
