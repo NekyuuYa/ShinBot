@@ -10,13 +10,13 @@ import pytest
 
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
 from shinbot.core.dispatch.dispatchers import (
-    ATTENTION_FALLBACK_TARGET,
+    AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
     TEXT_COMMAND_DISPATCHER_TARGET,
-    AttentionFallbackDispatcher,
+    AgentEntryDispatcher,
     NoticeDispatcher,
     TextCommandDispatcher,
-    make_attention_fallback_route_rule,
+    make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
     make_text_command_route_rule,
 )
@@ -469,20 +469,20 @@ async def test_notice_without_route_is_skipped_without_persistence(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_attention_fallback_schedules_unmatched_group_message(tmp_path) -> None:
+async def test_agent_entry_fallback_schedules_unmatched_group_message(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     scheduler = RecordingAttentionScheduler(handled=True)
-    attention_dispatcher = AttentionFallbackDispatcher(
+    agent_entry_dispatcher = AgentEntryDispatcher(
         attention_scheduler=scheduler,  # type: ignore[arg-type]
         database=db,
     )
 
     table = RouteTable()
-    fallback_rule = make_attention_fallback_route_rule()
+    fallback_rule = make_agent_entry_fallback_route_rule()
     table.register(fallback_rule)
     targets = RouteTargetRegistry()
-    targets.register(ATTENTION_FALLBACK_TARGET, attention_dispatcher)
+    targets.register(AGENT_ENTRY_TARGET, agent_entry_dispatcher)
     ingress = MessageIngress(
         session_manager=SessionManager(session_repo=db.sessions),
         permission_engine=PermissionEngine(),
@@ -518,20 +518,20 @@ async def test_attention_fallback_schedules_unmatched_group_message(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_attention_fallback_marks_read_when_attention_does_not_handle(tmp_path) -> None:
+async def test_agent_entry_fallback_marks_read_when_agent_entry_does_not_handle(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     scheduler = RecordingAttentionScheduler(handled=False)
-    attention_dispatcher = AttentionFallbackDispatcher(
+    agent_entry_dispatcher = AgentEntryDispatcher(
         attention_scheduler=scheduler,  # type: ignore[arg-type]
         database=db,
     )
 
     table = RouteTable()
-    fallback_rule = make_attention_fallback_route_rule()
+    fallback_rule = make_agent_entry_fallback_route_rule()
     table.register(fallback_rule)
     targets = RouteTargetRegistry()
-    targets.register(ATTENTION_FALLBACK_TARGET, attention_dispatcher)
+    targets.register(AGENT_ENTRY_TARGET, agent_entry_dispatcher)
     ingress = MessageIngress(
         session_manager=SessionManager(session_repo=db.sessions),
         permission_engine=PermissionEngine(),

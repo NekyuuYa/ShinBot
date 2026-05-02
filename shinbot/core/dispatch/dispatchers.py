@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 TEXT_COMMAND_DISPATCHER_TARGET = "text_command_dispatcher"
 NOTICE_DISPATCHER_TARGET = "notice_dispatcher"
-ATTENTION_FALLBACK_TARGET = "attention_scheduler"
+AGENT_ENTRY_TARGET = "agent_entry"
 
 
 class TextCommandDispatcher:
@@ -210,8 +210,13 @@ def make_notice_route_rule(
     )
 
 
-class AttentionFallbackDispatcher:
-    """Route target that hands unmatched user messages to attention scheduling."""
+class AgentEntryDispatcher:
+    """Route target that hands unmatched user messages to the Agent entry layer.
+
+    The current Agent entry implementation delegates to the attention scheduler,
+    but that is intentionally hidden behind this dispatcher so message routing
+    remains stable if Agent-side triggering changes later.
+    """
 
     def __init__(
         self,
@@ -266,15 +271,15 @@ class AttentionFallbackDispatcher:
             self._context_manager.mark_read_until(session_id, message_log_id)
 
 
-def make_attention_fallback_route_rule(
+def make_agent_entry_fallback_route_rule(
     *,
-    rule_id: str = "builtin.attention_fallback",
+    rule_id: str = "builtin.agent_entry_fallback",
     priority: int = -1000,
 ) -> RouteRule:
     return RouteRule(
         id=rule_id,
         priority=priority,
         condition=RouteCondition(event_types=frozenset({"message-created"})),
-        target=ATTENTION_FALLBACK_TARGET,
+        target=AGENT_ENTRY_TARGET,
         match_mode=RouteMatchMode.FALLBACK,
     )
