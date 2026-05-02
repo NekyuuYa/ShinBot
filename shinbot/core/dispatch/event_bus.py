@@ -1,7 +1,7 @@
 """Async event bus for internal event dispatch.
 
-Provides a lightweight pub/sub mechanism for decoupled communication
-between core services, plugins, and adapters.
+Provides a lightweight pub/sub mechanism for decoupled non-message signals.
+External message events are routed by RouteTable instead.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class _CircuitState:
 class EventBus:
     """Async event bus with priority-ordered handlers.
 
-    Handlers are registered for event types (strings like "message-created").
+    Handlers are registered for event types (strings like "guild-member-added").
     When an event is emitted, all matching handlers are called in priority
     order (lower number = higher priority).
     """
@@ -89,7 +89,7 @@ class EventBus:
         """Register a handler for an event type.
 
         Args:
-            event_type: Event type string (e.g. "message-created", "*" for all).
+            event_type: Event type string (e.g. "guild-member-added", "*" for all).
             handler: Async callable to invoke.
             priority: Lower = earlier execution. Default 100.
             owner: Optional owner ID (plugin ID) for cleanup on unload.

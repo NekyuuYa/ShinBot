@@ -66,19 +66,22 @@ class TestPlugin:
         assert "hello" in self.plg._registered_commands
 
     def test_on_event_decorator(self):
-        @self.plg.on_event("message-created")
+        @self.plg.on_event("guild-member-added")
         async def handler(event):
             pass
 
-        assert self.event_bus.handler_count("message-created") == 1
-        assert "message-created" in self.plg._registered_events
+        assert self.event_bus.handler_count("guild-member-added") == 1
+        assert "guild-member-added" in self.plg._registered_events
 
-    def test_on_message_shorthand(self):
-        @self.plg.on_message()
-        async def handler(event):
-            pass
+    def test_on_event_rejects_message_events(self):
+        with pytest.raises(ValueError, match="RouteTable"):
+            self.plg.on_event("message-created")
 
-        assert self.event_bus.handler_count("message-created") == 1
+        assert self.event_bus.handler_count("message-created") == 0
+
+    def test_on_message_shorthand_is_removed(self):
+        with pytest.raises(ValueError, match="on_message"):
+            self.plg.on_message()
 
     def test_on_keyword_decorator(self):
         @self.plg.on_keyword("hello")

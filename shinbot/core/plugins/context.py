@@ -22,6 +22,17 @@ if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
 
 
+_MESSAGE_EVENT_PREFIX = "message-"
+
+
+def _ensure_non_message_event(event_type: str) -> None:
+    if event_type.startswith(_MESSAGE_EVENT_PREFIX):
+        raise ValueError(
+            "Message events are routed by RouteTable, not EventBus. "
+            "Use plg.on_command(), plg.on_keyword(), or plg.on_route() instead."
+        )
+
+
 class Plugin:
     """Capability object passed to plugins during initialization."""
 
@@ -178,6 +189,8 @@ class Plugin:
         *,
         priority: int = 100,
     ) -> Callable:
+        _ensure_non_message_event(event_type)
+
         def decorator(func: Callable) -> Callable:
             self._event_bus.on(event_type, func, priority=priority, owner=self.plugin_id)
             self._registered_events.append(event_type)
@@ -186,7 +199,10 @@ class Plugin:
         return decorator
 
     def on_message(self, *, priority: int = 100) -> Callable:
-        return self.on_event("message-created", priority=priority)
+        raise ValueError(
+            "plg.on_message() has been removed from the EventBus path. "
+            "Use plg.on_command(), plg.on_keyword(), or plg.on_route() instead."
+        )
 
     async def send_to(self, session_id: str, elements: list[MessageElement]) -> MessageHandle:
         """Send a message to an arbitrary session by its URN.
