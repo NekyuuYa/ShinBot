@@ -35,7 +35,6 @@ from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
-    from shinbot.agent.context import ContextManager
     from shinbot.agent.media import MediaInspectionRunner, MediaService
     from shinbot.persistence.engine import DatabaseManager
 
@@ -129,7 +128,6 @@ class MessageIngress:
         route_targets: RouteTargetRegistry | None = None,
         audit_logger: AuditLogger | None = None,
         database: DatabaseManager | None = None,
-        context_manager: ContextManager | None = None,
         media_service: MediaService | None = None,
         media_inspection_runner: MediaInspectionRunner | None = None,
         waiting_registry: WaitingInputRegistry | None = None,
@@ -141,7 +139,6 @@ class MessageIngress:
         self._route_targets = route_targets or RouteTargetRegistry()
         self._audit_logger = audit_logger
         self._database = database
-        self._context_manager = context_manager
         self._media_service = media_service
         self._media_inspection_runner = media_inspection_runner
         self._waiting_registry = waiting_registry or WaitingInputRegistry()
@@ -155,8 +152,9 @@ class MessageIngress:
     async def process_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         """Process one normalized event.
 
-        Message events are persisted before routing. Notice events are audited
-        with their routing outcome without entering the message timeline.
+        Message events are persisted before routing. Notice events can already
+        be routed through the same route table, but notice persistence is left
+        for the dedicated notice dispatcher migration.
         """
         if event.is_notice_event:
             return self._process_notice_event(event, adapter)
@@ -179,13 +177,6 @@ class MessageIngress:
                 message=message,
                 session_id=session_id,
                 observed_at=observed_at,
-            )
-            self._track_message_record(
-                event=event,
-                message=message,
-                session_id=session_id,
-                observed_at=observed_at,
-                message_log_id=message_log_id,
             )
             if not is_event_fresh(
                 event,
@@ -233,7 +224,6 @@ class MessageIngress:
             permissions=permissions,
             waiting_registry=self._waiting_registry,
             database=self._database,
-            context_manager=self._context_manager,
         )
 
         observed_at = time.time()
@@ -296,13 +286,6 @@ class MessageIngress:
             message_log_id=message_log_id,
             observed_at=observed_at,
         )
-        self._track_message_record(
-            event=event,
-            message=message,
-            session_id=session.id,
-            observed_at=observed_at,
-            message_log_id=message_log_id,
-        )
         self._log_audit(event, message_context)
 
         matched_rules = self._route_table.match(
@@ -343,12 +326,6 @@ class MessageIngress:
         matched_rules = self._route_table.match(event, message)
         self._schedule_targets(dispatch_context, matched_rules)
         skipped_reason = ROUTING_SKIP_NO_ROUTE_MATCHED if not matched_rules else None
-        self._log_notice_audit(
-            event=event,
-            adapter=adapter,
-            matched_rules=matched_rules,
-            skipped_reason=skipped_reason,
-        )
         return IngressResult(
             dispatch_context=dispatch_context,
             matched_rules=matched_rules,
@@ -434,35 +411,6 @@ class MessageIngress:
         except Exception:
             logger.exception("Failed to ingest media fingerprints for session %s", session_id)
 
-    def _track_message_record(
-        self,
-        *,
-        event: UnifiedEvent,
-        message: Message,
-        session_id: str,
-        observed_at: float,
-        message_log_id: int | None,
-    ) -> None:
-        if self._context_manager is None or message_log_id is None:
-            return
-        record = MessageLogRecord(
-            id=message_log_id,
-            session_id=session_id,
-            platform_msg_id=event.message.id if event.message is not None else "",
-            sender_id=event.sender_id or "",
-            sender_name=event.sender_name or "",
-            content_json=json.dumps(
-                [el.model_dump(mode="json") for el in message.elements],
-                ensure_ascii=False,
-            ),
-            raw_text=message.get_text(self_id=event.self_id),
-            role="user",
-            is_read=False,
-            is_mentioned=is_self_mentioned(message, event.self_id),
-            created_at=observed_at * 1000,
-        )
-        self._context_manager.track_message_record(record, platform=event.platform)
-
     def _log_audit(self, event: UnifiedEvent, message_context: MessageContext) -> None:
         if self._audit_logger is None:
             return
@@ -476,31 +424,6 @@ class MessageIngress:
                 "platform": event.platform,
                 "modality": summarize_message_modalities(message_context.elements),
                 "message_id": event.message.id if event.message is not None else "",
-            },
-        )
-
-    def _log_notice_audit(
-        self,
-        *,
-        event: UnifiedEvent,
-        adapter: BaseAdapter,
-        matched_rules: list[RouteRule],
-        skipped_reason: str | None,
-    ) -> None:
-        if self._audit_logger is None:
-            return
-        self._audit_logger.log_message(
-            event_type=event.type,
-            plugin_id="",
-            user_id=event.sender_id or event.operator_id or "",
-            session_id=_notice_session_id(adapter.instance_id, event),
-            instance_id=adapter.instance_id,
-            metadata={
-                "platform": event.platform,
-                "routing_status": "dispatched" if matched_rules else "skipped",
-                "routing_skip_reason": skipped_reason or "",
-                "matched_rules": [rule.id for rule in matched_rules],
-                "matched_targets": [rule.target for rule in matched_rules],
             },
         )
 
@@ -551,12 +474,6 @@ def is_event_fresh(
     current_time = time.time() if now is None else now
     age = current_time - event.timestamp / 1000
     return age < max_age_seconds
-
-
-def _notice_session_id(instance_id: str, event: UnifiedEvent) -> str:
-    if event.channel_id or event.guild_id or event.sender_id:
-        return build_session_id(instance_id, event)
-    return ""
 
 
 def _log_route_target_task_result(done: asyncio.Task[Any], rule: RouteRule) -> None:

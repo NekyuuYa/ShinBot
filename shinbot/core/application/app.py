@@ -224,7 +224,6 @@ class ShinBot:
         self.agent_entry_dispatcher = AgentEntryDispatcher(
             attention_scheduler=self.attention_scheduler,
             database=self.database,
-            context_manager=self.context_manager,
         )
         self.route_targets.register(TEXT_COMMAND_DISPATCHER_TARGET, self.text_command_dispatcher)
         self.route_targets.register(KEYWORD_DISPATCHER_TARGET, self.keyword_dispatcher)
@@ -241,7 +240,6 @@ class ShinBot:
             route_targets=self.route_targets,
             audit_logger=self.audit_logger,
             database=self.database,
-            context_manager=self.context_manager,
             media_service=self.media_service,
             media_inspection_runner=self.media_inspection_runner,
         )

@@ -82,7 +82,7 @@ async def save(bot, args: str) -> None:
 
 - 会话对象（`SessionManager`）
 - 消息日志（`message_logs`，用户消息和助手消息）
-- 审计日志（若启用；notice 路由结果也记录在这里）
+- 审计日志（若启用）
 
 ## 5. 实践建议
 

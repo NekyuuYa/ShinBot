@@ -19,7 +19,6 @@ from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from shinbot.agent.context import ContextManager
     from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
@@ -68,7 +67,6 @@ class MessageContext:
         permissions: set[str],
         waiting_registry: WaitingInputRegistry | None = None,
         database: DatabaseManager | None = None,
-        context_manager: ContextManager | None = None,
     ):
         self.event = event
         self.message = message
@@ -77,7 +75,6 @@ class MessageContext:
         self.permissions = permissions
         self._waiting_registry = waiting_registry
         self._database = database
-        self._context_manager = context_manager
 
         self.command_match: CommandMatch | None = None
 
@@ -322,8 +319,6 @@ class MessageContext:
         )
         record.id = self._database.message_logs.insert(record)
         self._assistant_log_ids.append(record.id)
-        if self._context_manager is not None:
-            self._context_manager.track_message_record(record, platform=self.event.platform)
         return record.id
 
     def stop(self) -> None:
@@ -351,8 +346,6 @@ class MessageContext:
         try:
             if self._database is not None:
                 self._database.message_logs.mark_read(self._msg_log_id)
-            if self._context_manager is not None:
-                self._context_manager.mark_read_until(self.session_id, self._msg_log_id)
         except Exception:
             logger.exception("Failed to mark message %d as read", self._msg_log_id)
 

@@ -24,7 +24,6 @@ from shinbot.schema.events import UnifiedEvent
 
 if TYPE_CHECKING:
     from shinbot.agent.attention.scheduler import AttentionScheduler
-    from shinbot.agent.context import ContextManager
     from shinbot.persistence.engine import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -280,11 +279,9 @@ class AgentEntryDispatcher:
         *,
         attention_scheduler: AttentionScheduler | None = None,
         database: DatabaseManager | None = None,
-        context_manager: ContextManager | None = None,
     ) -> None:
         self._attention_scheduler = attention_scheduler
         self._database = database
-        self._context_manager = context_manager
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         bot = context.require_message_context()
@@ -324,8 +321,6 @@ class AgentEntryDispatcher:
         if self._database is None or message_log_id is None:
             return
         self._database.message_logs.mark_read(message_log_id)
-        if self._context_manager is not None:
-            self._context_manager.mark_read_until(session_id, message_log_id)
 
 
 def make_agent_entry_fallback_route_rule(
