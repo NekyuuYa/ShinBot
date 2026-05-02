@@ -187,6 +187,9 @@ class MessageLogRecord:
     raw_text: str = ""
     is_read: bool = False
     is_mentioned: bool = False
+    routing_status: str = "pending"
+    routed_at: float | None = None
+    routing_skip_reason: str | None = None
     id: int | None = None  # set after INSERT
 
 

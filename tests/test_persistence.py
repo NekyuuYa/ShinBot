@@ -71,6 +71,53 @@ class TestDatabaseManager:
         assert "ai_interactions" in tables
         assert "prompt_snapshots" in tables
 
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(message_logs)").fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert {"routing_status", "routed_at", "routing_skip_reason"} <= columns
+
+    def test_initialize_migrates_message_log_routing_columns(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        with db.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE message_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    platform_msg_id TEXT NOT NULL DEFAULT '',
+                    sender_id TEXT NOT NULL DEFAULT '',
+                    sender_name TEXT NOT NULL DEFAULT '',
+                    content_json TEXT NOT NULL DEFAULT '[]',
+                    raw_text TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL,
+                    is_read INTEGER NOT NULL DEFAULT 0,
+                    is_mentioned INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO message_logs (session_id, role, created_at)
+                VALUES ('s-1', 'user', 1234)
+                """
+            )
+
+        db.initialize()
+
+        with db.connect() as conn:
+            row = conn.execute("SELECT * FROM message_logs WHERE session_id = 's-1'").fetchone()
+
+        assert row["routing_status"] == "pending"
+        assert row["routed_at"] is None
+        assert row["routing_skip_reason"] is None
+
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
@@ -763,6 +810,9 @@ class TestDatabaseBackedAuditLogger:
         assert row["raw_text"] == "hi"
         assert row["is_read"] is False
         assert row["is_mentioned"] is True
+        assert row["routing_status"] == "pending"
+        assert row["routed_at"] is None
+        assert row["routing_skip_reason"] is None
 
         db.message_logs.mark_read(msg_id)
         row2 = db.message_logs.get(msg_id)
@@ -772,6 +822,38 @@ class TestDatabaseBackedAuditLogger:
         listing = db.message_logs.list_by_session("inst1:group:g1")
         assert len(listing) == 1
         assert listing[0]["id"] == msg_id
+
+    def test_message_log_repository_updates_routing_status(self, tmp_path):
+        import time
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        msg_id = db.message_logs.insert(
+            MessageLogRecord(
+                session_id="inst1:group:g1",
+                role="user",
+                created_at=time.time() * 1000,
+            )
+        )
+
+        db.message_logs.mark_routing_dispatched(msg_id, routed_at=12345.0)
+        row = db.message_logs.get(msg_id)
+        assert row is not None
+        assert row["routing_status"] == "dispatched"
+        assert row["routed_at"] == 12345.0
+        assert row["routing_skip_reason"] is None
+
+        db.message_logs.mark_routing_skipped(
+            msg_id,
+            reason="expired_message",
+            routed_at=23456.0,
+        )
+        row2 = db.message_logs.get(msg_id)
+        assert row2 is not None
+        assert row2["routing_status"] == "skipped"
+        assert row2["routed_at"] == 23456.0
+        assert row2["routing_skip_reason"] == "expired_message"
 
     def test_ai_interaction_repository_roundtrip(self, tmp_path):
         import time

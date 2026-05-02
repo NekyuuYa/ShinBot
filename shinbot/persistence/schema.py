@@ -285,7 +285,10 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         role TEXT NOT NULL,
         is_read INTEGER NOT NULL DEFAULT 0,
         is_mentioned INTEGER NOT NULL DEFAULT 0,
-        created_at REAL NOT NULL
+        created_at REAL NOT NULL,
+        routing_status TEXT NOT NULL DEFAULT 'pending',
+        routed_at REAL,
+        routing_skip_reason TEXT
     )
     """,
     """
@@ -803,6 +806,20 @@ def _migrate_ai_interactions_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE ai_interactions ADD COLUMN {col} {spec}")
 
 
+def _migrate_message_logs_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "message_logs")
+    if not columns:
+        return
+    new_columns = {
+        "routing_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "routed_at": "REAL",
+        "routing_skip_reason": "TEXT",
+    }
+    for col, spec in new_columns.items():
+        if col not in columns:
+            conn.execute(f"ALTER TABLE message_logs ADD COLUMN {col} {spec}")
+
+
 def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "workflow_runs")
     if not columns:
@@ -873,4 +890,5 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_bot_configs_schema(conn)
     _migrate_model_execution_records_schema(conn)
     _migrate_ai_interactions_schema(conn)
+    _migrate_message_logs_schema(conn)
     _migrate_workflow_runs_schema(conn)
