@@ -1,28 +1,35 @@
-"""Tests for message pipeline dispatch."""
+"""Core message ingress behavior tests."""
 
 import asyncio
 import time
 
 import pytest
 
-from shinbot.agent.attention.scheduler import AttentionScheduler
 from shinbot.core.dispatch.command import CommandDef, CommandRegistry
+from shinbot.core.dispatch.dispatchers import (
+    AGENT_ENTRY_TARGET,
+    NOTICE_DISPATCHER_TARGET,
+    TEXT_COMMAND_DISPATCHER_TARGET,
+    AgentEntryDispatcher,
+    NoticeDispatcher,
+    TextCommandDispatcher,
+    make_agent_entry_fallback_route_rule,
+    make_notice_route_rule,
+    make_text_command_route_rule,
+)
 from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.dispatch.pipeline import MessagePipeline
-from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
+from shinbot.core.dispatch.routing import RouteCondition, RouteRule, RouteTable
+from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
-from shinbot.persistence.records import (
-    MessageLogRecord,
-)
+from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, User
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
-
-# ── Mock adapter for testing ─────────────────────────────────────────
 
 
 class MockAdapter(BaseAdapter):
@@ -49,9 +56,6 @@ class MockAdapter(BaseAdapter):
         return {"elements": ["text"], "actions": [], "limits": {}}
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────
-
-
 def make_event(content="hello", user_id="user-1", channel_type=1):
     return UnifiedEvent(
         type="message-created",
@@ -59,40 +63,21 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
         platform="mock",
         user=User(id=user_id),
         channel=Channel(
-            id=f"private:{user_id}" if channel_type == 1 else "group:1", type=channel_type
+            id=f"private:{user_id}" if channel_type == 1 else "group:1",
+            type=channel_type,
         ),
         message=MessagePayload(id="msg-1", content=content),
     )
 
 
-class RecordingAttentionScheduler(AttentionScheduler):
-    def __init__(self) -> None:
+class RecordingAttentionScheduler:
+    def __init__(self, *, handled: bool = True) -> None:
+        self.handled = handled
         self.calls: list[dict[str, object]] = []
 
-    async def on_message(
-        self,
-        session_id: str,
-        msg_log_id: int,
-        sender_id: str,
-        *,
-        response_profile: str = "balanced",
-        is_mentioned: bool = False,
-        is_reply_to_bot: bool = False,
-        attention_multiplier: float = 1.0,
-        self_platform_id: str = "",
-    ) -> None:
-        self.calls.append(
-            {
-                "session_id": session_id,
-                "msg_log_id": msg_log_id,
-                "sender_id": sender_id,
-                "response_profile": response_profile,
-                "is_mentioned": is_mentioned,
-                "is_reply_to_bot": is_reply_to_bot,
-                "attention_multiplier": attention_multiplier,
-                "self_platform_id": self_platform_id,
-            }
-        )
+    def schedule_message(self, *args, **kwargs) -> bool:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return self.handled
 
 
 class RecordingMediaService:
@@ -104,35 +89,59 @@ class RecordingMediaService:
         return []
 
 
-class TestMessagePipeline:
+def add_message_route(table: RouteTable, *, target: str = "recorder") -> RouteRule:
+    rule = RouteRule(
+        id=f"route.{target}",
+        priority=10,
+        condition=RouteCondition(event_types=frozenset({"message-created"})),
+        target=target,
+    )
+    table.register(rule)
+    return rule
+
+
+class TestMessageIngressCore:
     def setup_method(self):
-        self.adapter_mgr = AdapterManager()
-        self.adapter_mgr.register_adapter("mock", MockAdapter)
         self.session_mgr = SessionManager()
         self.perm_engine = PermissionEngine()
         self.cmd_registry = CommandRegistry()
         self.event_bus = EventBus()
-        self.pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-        )
         self.adapter = MockAdapter()
+
+    def make_ingress(
+        self,
+        *,
+        route_table: RouteTable | None = None,
+        route_targets: RouteTargetRegistry | None = None,
+        session_manager: SessionManager | None = None,
+        database: DatabaseManager | None = None,
+        media_service=None,
+    ) -> MessageIngress:
+        return MessageIngress(
+            session_manager=session_manager if session_manager is not None else self.session_mgr,
+            permission_engine=self.perm_engine,
+            route_table=route_table or RouteTable(),
+            route_targets=route_targets,
+            database=database,
+            media_service=media_service,
+        )
 
     @pytest.mark.asyncio
     async def test_basic_event_processing(self):
-        """Event should create a session and emit to event bus."""
+        """A message route should create a session and dispatch a route target."""
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
         results = []
 
-        async def handler(ctx):
-            results.append(ctx.text)
+        async def handler(context, _rule):
+            results.append(context.require_message_context().text)
 
-        self.event_bus.on("message-created", handler)
+        targets.register("recorder", handler)
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
-        event = make_event("hello")
-        await self.pipeline.process_event(event, self.adapter)
+        await ingress.process_event(make_event("hello"), self.adapter)
+        await asyncio.sleep(0)
 
         assert results == ["hello"]
         assert len(self.session_mgr) == 1
@@ -145,50 +154,64 @@ class TestMessagePipeline:
         async def ping_handler(ctx, args):
             results.append(f"pong {args}")
 
-        cmd = CommandDef(name="ping", handler=ping_handler)
-        self.cmd_registry.register(cmd)
+        self.cmd_registry.register(CommandDef(name="ping", handler=ping_handler))
+        command_dispatcher = TextCommandDispatcher(self.cmd_registry)
+        table = RouteTable()
+        command_rule = make_text_command_route_rule(command_dispatcher)
+        table.register(command_rule)
+        targets = RouteTargetRegistry()
+        targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
-        event = make_event("/ping 123")
-        await self.pipeline.process_event(event, self.adapter)
+        result = await ingress.process_event(make_event("/ping 123"), self.adapter)
+        await asyncio.sleep(0)
 
+        assert result.matched_rules == [command_rule]
         assert results == ["pong 123"]
 
     @pytest.mark.asyncio
-    async def test_command_not_in_event_bus(self):
-        """When a command matches, event bus should NOT be triggered."""
-        bus_results = []
-
-        async def bus_handler(ctx):
-            bus_results.append(True)
-
-        self.event_bus.on("message-created", bus_handler)
+    async def test_command_not_in_fallback(self):
+        """When a command matches, fallback should not be triggered."""
+        fallback_calls = []
 
         async def cmd_handler(ctx, args):
             pass
 
         self.cmd_registry.register(CommandDef(name="ping", handler=cmd_handler))
+        command_dispatcher = TextCommandDispatcher(self.cmd_registry)
+        table = RouteTable()
+        command_rule = make_text_command_route_rule(command_dispatcher)
+        fallback_rule = make_agent_entry_fallback_route_rule()
+        table.register(command_rule)
+        table.register(fallback_rule)
+        targets = RouteTargetRegistry()
+        targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+        targets.register(AGENT_ENTRY_TARGET, lambda _context, _rule: fallback_calls.append(True))
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
-        event = make_event("/ping")
-        await self.pipeline.process_event(event, self.adapter)
+        result = await ingress.process_event(make_event("/ping"), self.adapter)
+        await asyncio.sleep(0)
 
-        assert bus_results == []
+        assert result.matched_rules == [command_rule]
+        assert fallback_calls == []
 
     @pytest.mark.asyncio
     async def test_interceptor_blocks(self):
         """Interceptor returning False should block processing."""
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
         results = []
+        targets.register("recorder", lambda _context, _rule: results.append(True))
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
         async def blocker(ctx):
             return False
 
-        async def handler(ctx):
-            results.append(True)
+        ingress.add_interceptor(blocker)
 
-        self.pipeline.add_interceptor(blocker)
-        self.event_bus.on("message-created", handler)
-
-        event = make_event("hello")
-        await self.pipeline.process_event(event, self.adapter)
+        await ingress.process_event(make_event("hello"), self.adapter)
+        await asyncio.sleep(0)
 
         assert results == []
 
@@ -197,27 +220,24 @@ class TestMessagePipeline:
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         media_service = RecordingMediaService()
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
-            media_service=media_service,  # type: ignore[arg-type]
-        )
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
         handled = []
+        targets.register("recorder", lambda context, _rule: handled.append(context.message.text))
+        ingress = self.make_ingress(
+            route_table=table,
+            route_targets=targets,
+            database=db,
+            media_service=media_service,
+        )
 
         async def blocker(ctx):
             return False
 
-        async def handler(ctx):
-            handled.append(ctx.text)
+        ingress.add_interceptor(blocker)
 
-        pipeline.add_interceptor(blocker)
-        self.event_bus.on("message-created", handler)
-
-        await pipeline.process_event(make_event("blocked"), self.adapter)
+        await ingress.process_event(make_event("blocked"), self.adapter)
 
         rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
         assert len(rows) == 1
@@ -228,53 +248,58 @@ class TestMessagePipeline:
     @pytest.mark.asyncio
     async def test_interceptor_allows(self):
         """Interceptor returning True should allow processing."""
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
         results = []
+        targets.register("recorder", lambda _context, _rule: results.append(True))
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
         async def allower(ctx):
             return True
 
-        async def handler(ctx):
-            results.append(True)
+        ingress.add_interceptor(allower)
 
-        self.pipeline.add_interceptor(allower)
-        self.event_bus.on("message-created", handler)
-
-        event = make_event("hello")
-        await self.pipeline.process_event(event, self.adapter)
+        await ingress.process_event(make_event("hello"), self.adapter)
+        await asyncio.sleep(0)
 
         assert results == [True]
 
     @pytest.mark.asyncio
     async def test_muted_session_skips(self):
-        """Muted sessions should not process messages."""
+        """Muted sessions should not dispatch matched routes."""
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
         results = []
-
-        async def handler(ctx):
-            results.append(True)
-
-        self.event_bus.on("message-created", handler)
+        targets.register("recorder", lambda _context, _rule: results.append(True))
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
         event = make_event("hello")
-        # Pre-create a muted session
         session = self.session_mgr.get_or_create(self.adapter.instance_id, event)
         session.config.is_muted = True
 
-        await self.pipeline.process_event(event, self.adapter)
+        await ingress.process_event(event, self.adapter)
+        await asyncio.sleep(0)
+
         assert results == []
 
     @pytest.mark.asyncio
     async def test_muted_session_persists_but_skips_interceptors_and_media_ingest(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
+        session_manager = SessionManager(session_repo=db.sessions)
         media_service = RecordingMediaService()
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
+        targets.register("recorder", lambda _context, _rule: None)
+        ingress = self.make_ingress(
+            route_table=table,
+            route_targets=targets,
+            session_manager=session_manager,
             database=db,
-            media_service=media_service,  # type: ignore[arg-type]
+            media_service=media_service,
         )
         interceptor_calls = []
 
@@ -283,11 +308,12 @@ class TestMessagePipeline:
             return True
 
         event = make_event("muted")
-        session = self.session_mgr.get_or_create(self.adapter.instance_id, event)
+        session = session_manager.get_or_create(self.adapter.instance_id, event)
         session.config.is_muted = True
-        pipeline.add_interceptor(interceptor)
+        session_manager.update(session)
+        ingress.add_interceptor(interceptor)
 
-        await pipeline.process_event(event, self.adapter)
+        await ingress.process_event(event, self.adapter)
 
         rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
         assert len(rows) == 1
@@ -303,14 +329,20 @@ class TestMessagePipeline:
         async def secret_handler(ctx, args):
             results.append(True)
 
-        cmd = CommandDef(name="secret", handler=secret_handler, permission="admin.secret")
-        self.cmd_registry.register(cmd)
+        self.cmd_registry.register(
+            CommandDef(name="secret", handler=secret_handler, permission="admin.secret")
+        )
+        command_dispatcher = TextCommandDispatcher(self.cmd_registry)
+        table = RouteTable()
+        table.register(make_text_command_route_rule(command_dispatcher))
+        targets = RouteTargetRegistry()
+        targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
-        event = make_event("/secret")
-        await self.pipeline.process_event(event, self.adapter)
+        await ingress.process_event(make_event("/secret"), self.adapter)
+        await asyncio.sleep(0)
 
         assert results == []
-        # Should have sent a permission denied message
         assert len(self.adapter.sent) == 1
 
     @pytest.mark.asyncio
@@ -334,35 +366,38 @@ class TestMessagePipeline:
         )
 
         scheduler = RecordingAttentionScheduler()
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
+        agent_entry = AgentEntryDispatcher(
             attention_scheduler=scheduler,  # type: ignore[arg-type]
+            database=db,
+        )
+        table = RouteTable()
+        fallback_rule = make_agent_entry_fallback_route_rule()
+        table.register(fallback_rule)
+        targets = RouteTargetRegistry()
+        targets.register(AGENT_ENTRY_TARGET, agent_entry)
+        ingress = self.make_ingress(
+            route_table=table,
+            route_targets=targets,
+            session_manager=SessionManager(session_repo=db.sessions),
+            database=db,
         )
 
         event = make_event('<quote id="bot-msg-1"/>follow-up', channel_type=0)
-        await pipeline.process_event(event, self.adapter)
+        await ingress.process_event(event, self.adapter)
         await asyncio.sleep(0)
 
         assert len(scheduler.calls) == 1
-        assert scheduler.calls[0]["is_reply_to_bot"] is True
-        assert scheduler.calls[0]["self_platform_id"] == "bot-1"
+        assert scheduler.calls[0]["kwargs"]["is_reply_to_bot"] is True
+        assert scheduler.calls[0]["kwargs"]["self_platform_id"] == "bot-1"
 
     @pytest.mark.asyncio
     async def test_message_log_is_mentioned_uses_recursive_mention_detection(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
+        ingress = self.make_ingress(
+            route_table=RouteTable(),
             database=db,
+            session_manager=SessionManager(session_repo=db.sessions),
         )
         content = Message.from_elements(
             MessageElement.quote(
@@ -372,7 +407,7 @@ class TestMessagePipeline:
             MessageElement.text(" after quote"),
         ).to_xml()
 
-        await pipeline.process_event(make_event(content), self.adapter)
+        await ingress.process_event(make_event(content), self.adapter)
 
         rows = db.message_logs.get_recent("test-bot:private:user-1", limit=1)
         assert len(rows) == 1
@@ -380,14 +415,20 @@ class TestMessagePipeline:
 
     @pytest.mark.asyncio
     async def test_non_message_event(self):
-        """Non-message events should go to event bus directly with UnifiedEvent."""
+        """Non-message events should go through the notice dispatcher as UnifiedEvent."""
         results = []
 
         async def handler(event):
-            # Notice event handlers receive UnifiedEvent directly, not MessageContext
             results.append(event.type)
 
         self.event_bus.on("member-joined", handler)
+        notice_dispatcher = NoticeDispatcher(self.event_bus)
+        table = RouteTable()
+        notice_rule = make_notice_route_rule(notice_dispatcher)
+        table.register(notice_rule)
+        targets = RouteTargetRegistry()
+        targets.register(NOTICE_DISPATCHER_TARGET, notice_dispatcher)
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
         event = UnifiedEvent(
             type="member-joined",
@@ -395,18 +436,25 @@ class TestMessagePipeline:
             user=User(id="user-1"),
             channel=Channel(id="group:1", type=0),
         )
-        await self.pipeline.process_event(event, self.adapter)
+        result = await ingress.process_event(event, self.adapter)
+        await asyncio.sleep(0)
+
+        assert result.matched_rules == [notice_rule]
         assert results == ["member-joined"]
 
     @pytest.mark.asyncio
     async def test_empty_message_content(self):
-        """Events with empty message content should still process."""
+        """Events with empty message content should still dispatch with an empty AST."""
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
         results = []
 
-        async def handler(ctx):
-            results.append(len(ctx.elements))
+        async def handler(context, _rule):
+            results.append(len(context.message.elements))
 
-        self.event_bus.on("message-created", handler)
+        targets.register("recorder", handler)
+        ingress = self.make_ingress(route_table=table, route_targets=targets)
 
         event = UnifiedEvent(
             type="message-created",
@@ -415,5 +463,7 @@ class TestMessagePipeline:
             channel=Channel(id="private:user-1", type=1),
             message=MessagePayload(id="msg-1", content=""),
         )
-        await self.pipeline.process_event(event, self.adapter)
+        await ingress.process_event(event, self.adapter)
+        await asyncio.sleep(0)
+
         assert results == [0]

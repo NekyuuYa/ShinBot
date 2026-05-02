@@ -346,11 +346,15 @@ class MessageContext:
 
     def mark_trigger_read(self) -> None:
         """Mark the triggering user message as read in message_logs."""
-        if self._database is not None and self._msg_log_id is not None:
-            try:
+        if self._msg_log_id is None:
+            return
+        try:
+            if self._database is not None:
                 self._database.message_logs.mark_read(self._msg_log_id)
-            except Exception:
-                logger.exception("Failed to mark message %d as read", self._msg_log_id)
+            if self._context_manager is not None:
+                self._context_manager.mark_read_until(self.session_id, self._msg_log_id)
+        except Exception:
+            logger.exception("Failed to mark message %d as read", self._msg_log_id)
 
     async def wait_for_input(
         self,

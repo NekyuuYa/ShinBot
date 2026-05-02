@@ -1,5 +1,6 @@
-"""Tests for message pipeline dispatch."""
+"""Message ingress context-manager integration tests."""
 
+import asyncio
 import json
 
 import pytest
@@ -8,10 +9,9 @@ from PIL import Image
 from shinbot.agent.context import ContextManager
 from shinbot.agent.identity import IdentityStore
 from shinbot.agent.media import MediaService
-from shinbot.core.dispatch.command import CommandRegistry
-from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.dispatch.pipeline import MessagePipeline
-from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
+from shinbot.core.dispatch.routing import RouteCondition, RouteRule, RouteTable
+from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
@@ -20,8 +20,6 @@ from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
-
-# ── Mock adapter for testing ─────────────────────────────────────────
 
 
 class MockAdapter(BaseAdapter):
@@ -48,9 +46,6 @@ class MockAdapter(BaseAdapter):
         return {"elements": ["text"], "actions": [], "limits": {}}
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────
-
-
 def make_event(content="hello", user_id="user-1", channel_type=1):
     return UnifiedEvent(
         type="message-created",
@@ -58,50 +53,71 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
         platform="mock",
         user=User(id=user_id),
         channel=Channel(
-            id=f"private:{user_id}" if channel_type == 1 else "group:1", type=channel_type
+            id=f"private:{user_id}" if channel_type == 1 else "group:1",
+            type=channel_type,
         ),
         message=MessagePayload(id="msg-1", content=content),
     )
 
 
-class TestMessagePipeline:
+def add_message_route(table: RouteTable, *, target: str = "recorder") -> RouteRule:
+    rule = RouteRule(
+        id=f"route.{target}",
+        priority=10,
+        condition=RouteCondition(event_types=frozenset({"message-created"})),
+        target=target,
+    )
+    table.register(rule)
+    return rule
+
+
+def make_ingress(
+    db: DatabaseManager,
+    *,
+    context_manager: ContextManager,
+    route_table: RouteTable | None = None,
+    route_targets: RouteTargetRegistry | None = None,
+    media_service: MediaService | None = None,
+) -> MessageIngress:
+    return MessageIngress(
+        session_manager=SessionManager(session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        route_table=route_table if route_table is not None else RouteTable(),
+        route_targets=route_targets,
+        database=db,
+        context_manager=context_manager,
+        media_service=media_service,
+    )
+
+
+class TestMessageIngressContext:
     def setup_method(self):
-        self.adapter_mgr = AdapterManager()
-        self.adapter_mgr.register_adapter("mock", MockAdapter)
-        self.session_mgr = SessionManager()
-        self.perm_engine = PermissionEngine()
-        self.cmd_registry = CommandRegistry()
-        self.event_bus = EventBus()
-        self.pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-        )
         self.adapter = MockAdapter()
 
     @pytest.mark.asyncio
-    async def test_pipeline_tracks_messages_in_context_manager(self, tmp_path):
+    async def test_ingress_tracks_messages_in_context_manager(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         context_manager = ContextManager(db.message_logs)
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
+
+        async def handler(context, _rule):
+            message_context = context.require_message_context()
+            await message_context.send("reply from bot")
+            message_context.mark_trigger_read()
+
+        targets.register("recorder", handler)
+        ingress = make_ingress(
+            db,
             context_manager=context_manager,
+            route_table=table,
+            route_targets=targets,
         )
 
-        async def handler(ctx):
-            await ctx.send("reply from bot")
-
-        self.event_bus.on("message-created", handler)
-        event = make_event("hello tracked")
-        await pipeline.process_event(event, self.adapter)
+        await ingress.process_event(make_event("hello tracked"), self.adapter)
+        await asyncio.sleep(0)
 
         turns = context_manager.get_context_inputs("test-bot:private:user-1")["history_turns"]
         assert [turn["role"] for turn in turns] == ["user", "assistant"]
@@ -109,19 +125,23 @@ class TestMessagePipeline:
         assert turns[1]["content"] == "reply from bot"
 
     @pytest.mark.asyncio
-    async def test_pipeline_tracks_image_messages_in_context_manager(self, tmp_path):
+    async def test_ingress_tracks_image_messages_in_context_manager(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         media_service = MediaService(db)
         context_manager = ContextManager(db.message_logs, media_service=media_service)
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
+        targets.register(
+            "recorder",
+            lambda context, _rule: context.require_message_context().mark_trigger_read(),
+        )
+        ingress = make_ingress(
+            db,
             context_manager=context_manager,
+            route_table=table,
+            route_targets=targets,
             media_service=media_service,
         )
 
@@ -130,38 +150,37 @@ class TestMessagePipeline:
         Image.new("RGB", (8, 8), (0, 255, 0)).save(image_path)
         event = make_event(Message.from_elements(MessageElement.img(str(image_path))).to_xml())
 
-        await pipeline.process_event(event, self.adapter)
+        await ingress.process_event(event, self.adapter)
 
         turns = context_manager.get_context_inputs("test-bot:private:user-1")["history_turns"]
         assert [turn["role"] for turn in turns] == ["user"]
         assert turns[0]["content"] == "[图片]"
 
     @pytest.mark.asyncio
-    async def test_pipeline_updates_identity_store_from_user_messages(self, tmp_path):
+    async def test_ingress_updates_identity_store_from_user_messages(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         identity_store = IdentityStore(tmp_path / "identities.json")
         context_manager = ContextManager(db.message_logs, identity_store=identity_store)
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
-            context_manager=context_manager,
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
+        targets.register(
+            "recorder",
+            lambda context, _rule: context.require_message_context().mark_trigger_read(),
         )
-
-        async def handler(_ctx):
-            return None
-
-        self.event_bus.on("message-created", handler)
+        ingress = make_ingress(
+            db,
+            context_manager=context_manager,
+            route_table=table,
+            route_targets=targets,
+        )
 
         event = make_event("hello identity")
         event = event.model_copy(
             update={"platform": "qq", "user": User(id="user-1", name="咖啡猫😺")}
         )
-        await pipeline.process_event(event, self.adapter)
+        await ingress.process_event(event, self.adapter)
 
         payload = json.loads(identity_store.file_path.read_text(encoding="utf-8"))
         assert payload["platform"] == "qq"
@@ -169,19 +188,23 @@ class TestMessagePipeline:
         assert entry["name"] == "咖啡猫"
 
     @pytest.mark.asyncio
-    async def test_pipeline_uses_group_member_nick_for_sender_name(self, tmp_path):
+    async def test_ingress_uses_group_member_nick_for_sender_name(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
         identity_store = IdentityStore(tmp_path / "identities.json")
         context_manager = ContextManager(db.message_logs, identity_store=identity_store)
-        pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-            database=db,
+        table = RouteTable()
+        add_message_route(table)
+        targets = RouteTargetRegistry()
+        targets.register(
+            "recorder",
+            lambda context, _rule: context.require_message_context().mark_trigger_read(),
+        )
+        ingress = make_ingress(
+            db,
             context_manager=context_manager,
+            route_table=table,
+            route_targets=targets,
         )
 
         event = make_event("hello group", channel_type=0)
@@ -194,7 +217,7 @@ class TestMessagePipeline:
             }
         )
 
-        await pipeline.process_event(event, self.adapter)
+        await ingress.process_event(event, self.adapter)
 
         rows = db.message_logs.get_recent("test-bot:group:group-1:group:1", limit=1)
         assert rows[0]["sender_name"] == "群内昵称"
@@ -205,4 +228,3 @@ class TestMessagePipeline:
         payload = json.loads(identity_store.file_path.read_text(encoding="utf-8"))
         entry = next(item for item in payload["users"] if item["user_id"] == "user-1")
         assert entry["name"] == "群内昵称"
-

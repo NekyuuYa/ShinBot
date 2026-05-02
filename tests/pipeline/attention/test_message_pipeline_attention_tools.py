@@ -1,4 +1,4 @@
-"""Tests for message pipeline dispatch."""
+"""Attention tool integration tests."""
 
 import json
 import time
@@ -9,13 +9,9 @@ from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
 from shinbot.agent.attention.tools import register_attention_tools
 from shinbot.agent.context import ContextManager
 from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
-from shinbot.core.dispatch.command import CommandRegistry
-from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.dispatch.pipeline import MessagePipeline
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
-from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
     MessageLogRecord,
@@ -70,21 +66,11 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
     )
 
 
-class TestMessagePipeline:
+class TestAttentionTools:
     def setup_method(self):
         self.adapter_mgr = AdapterManager()
         self.adapter_mgr.register_adapter("mock", MockAdapter)
-        self.session_mgr = SessionManager()
         self.perm_engine = PermissionEngine()
-        self.cmd_registry = CommandRegistry()
-        self.event_bus = EventBus()
-        self.pipeline = MessagePipeline(
-            adapter_manager=self.adapter_mgr,
-            session_manager=self.session_mgr,
-            permission_engine=self.perm_engine,
-            command_registry=self.cmd_registry,
-            event_bus=self.event_bus,
-        )
         self.adapter = MockAdapter()
 
     @pytest.mark.asyncio

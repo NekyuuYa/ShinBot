@@ -24,10 +24,9 @@ from shinbot.agent.workflow.formatting import (
     format_incremental_messages,
     format_message_line,
 )
-from shinbot.core.dispatch.command import CommandRegistry
-from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.dispatch.pipeline import MessagePipeline
-from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
+from shinbot.core.dispatch.ingress import MessageIngress
+from shinbot.core.dispatch.routing import RouteTable
+from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
@@ -89,6 +88,23 @@ def _write_png(path: Path, color: tuple[int, int, int] = (255, 0, 0)) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (8, 8), color).save(path)
     return path
+
+
+def _make_media_ingress(
+    tmp_path: Path,
+    db: DatabaseManager,
+    *,
+    media_service: MediaService,
+    media_inspection_runner=None,
+) -> MessageIngress:
+    return MessageIngress(
+        session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
+        permission_engine=PermissionEngine(),
+        route_table=RouteTable(),
+        database=db,
+        media_service=media_service,
+        media_inspection_runner=media_inspection_runner,
+    )
 
 
 def _seed_media_runtime(
@@ -776,24 +792,16 @@ async def test_media_inspection_runner_supports_custom_prompt_id(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_ingests_local_image_media(tmp_path):
+async def test_ingress_ingests_local_image_media(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
 
     adapter = MockAdapter()
-    pipeline = MessagePipeline(
-        adapter_manager=AdapterManager(),
-        session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
-        permission_engine=PermissionEngine(),
-        command_registry=CommandRegistry(),
-        event_bus=EventBus(),
-        database=db,
-        media_service=MediaService(db),
-    )
+    ingress = _make_media_ingress(tmp_path, db, media_service=MediaService(db))
 
     image_path = _write_png(tmp_path / "assets" / "pipeline.png", color=(0, 255, 0))
     content = Message.from_elements(MessageElement.img(str(image_path))).to_xml()
-    await pipeline.process_event(_make_group_event(content), adapter)
+    await ingress.process_event(_make_group_event(content), adapter)
 
     session_id = "test-bot:group:group:1"
     rows = db.message_logs.get_recent(session_id, limit=5)
@@ -821,20 +829,16 @@ async def test_pipeline_ingests_local_image_media(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_schedules_media_inspection_on_third_repeat(tmp_path):
+async def test_ingress_schedules_media_inspection_on_third_repeat(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     media_service = MediaService(db)
     inspection_runner = FakeInspectionRunner()
 
     adapter = MockAdapter()
-    pipeline = MessagePipeline(
-        adapter_manager=AdapterManager(),
-        session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
-        permission_engine=PermissionEngine(),
-        command_registry=CommandRegistry(),
-        event_bus=EventBus(),
-        database=db,
+    ingress = _make_media_ingress(
+        tmp_path,
+        db,
         media_service=media_service,
         media_inspection_runner=inspection_runner,
     )
@@ -842,7 +846,7 @@ async def test_pipeline_schedules_media_inspection_on_third_repeat(tmp_path):
     image_path = _write_png(tmp_path / "assets" / "repeat.png", color=(64, 64, 64))
     content = Message.from_elements(MessageElement.img(str(image_path))).to_xml()
     for index in range(3):
-        await pipeline.process_event(
+        await ingress.process_event(
             _make_group_event(
                 content,
                 user_id=f"user-{index}",
@@ -861,20 +865,16 @@ async def test_pipeline_schedules_media_inspection_on_third_repeat(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_schedules_sticker_summary_for_custom_image_emoji(tmp_path):
+async def test_ingress_schedules_sticker_summary_for_custom_image_emoji(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     media_service = MediaService(db)
     inspection_runner = FakeInspectionRunner()
 
     adapter = MockAdapter()
-    pipeline = MessagePipeline(
-        adapter_manager=AdapterManager(),
-        session_manager=SessionManager(data_dir=tmp_path, session_repo=db.sessions),
-        permission_engine=PermissionEngine(),
-        command_registry=CommandRegistry(),
-        event_bus=EventBus(),
-        database=db,
+    ingress = _make_media_ingress(
+        tmp_path,
+        db,
         media_service=media_service,
         media_inspection_runner=inspection_runner,
     )
@@ -882,7 +882,7 @@ async def test_pipeline_schedules_sticker_summary_for_custom_image_emoji(tmp_pat
     image_path = _write_png(tmp_path / "assets" / "pipeline-sticker.png", color=(255, 128, 0))
     content = Message.from_elements(MessageElement.img(str(image_path), sub_type="1")).to_xml()
 
-    await pipeline.process_event(_make_group_event(content, message_id="msg-sticker-1"), adapter)
+    await ingress.process_event(_make_group_event(content, message_id="msg-sticker-1"), adapter)
 
     assert len(inspection_runner.calls) == 1
     scheduled = inspection_runner.calls[0]

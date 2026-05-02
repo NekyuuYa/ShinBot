@@ -3,8 +3,8 @@
 This module is the new entry point shape for message routing. It parses
 message payloads, persists inbound messages, evaluates the route table, and
 schedules matched route targets. It intentionally does not replace
-MessagePipeline yet; the application wiring moves over after the dispatchers
-are migrated.
+the target modules' own processing state; each route target owns its
+post-dispatch lifecycle.
 """
 
 from __future__ import annotations
