@@ -339,16 +339,6 @@ class MessageContext:
             return None
         return self._assistant_log_ids[-1]
 
-    def mark_trigger_read(self) -> None:
-        """Mark the triggering user message as read in message_logs."""
-        if self._msg_log_id is None:
-            return
-        try:
-            if self._database is not None:
-                self._database.message_logs.mark_read(self._msg_log_id)
-        except Exception:
-            logger.exception("Failed to mark message %d as read", self._msg_log_id)
-
     async def wait_for_input(
         self,
         prompt: str = "",

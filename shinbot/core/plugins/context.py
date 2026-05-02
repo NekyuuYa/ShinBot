@@ -204,12 +204,6 @@ class Plugin:
 
         return decorator
 
-    def on_message(self, *, priority: int = 100) -> Callable:
-        raise ValueError(
-            "plg.on_message() has been removed from the EventBus path. "
-            "Use plg.on_command(), plg.on_keyword(), or plg.on_route() instead."
-        )
-
     async def send_to(self, session_id: str, elements: list[MessageElement]) -> MessageHandle:
         """Send a message to an arbitrary session by its URN.
 

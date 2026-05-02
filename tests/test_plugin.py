@@ -79,10 +79,6 @@ class TestPlugin:
 
         assert self.event_bus.handler_count("message-created") == 0
 
-    def test_on_message_shorthand_is_removed(self):
-        with pytest.raises(ValueError, match="on_message"):
-            self.plg.on_message()
-
     def test_on_keyword_decorator(self):
         @self.plg.on_keyword("hello")
         async def handler(ctx, match):

@@ -156,7 +156,6 @@ await bot.delete_msg(message_id)
 
 bot.has_permission(permission) -> bool
 bot.stop() -> None
-bot.mark_trigger_read() -> None
 await bot.wait_for_input(prompt="", timeout=60.0) -> str
 ```
 
