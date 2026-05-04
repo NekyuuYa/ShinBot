@@ -15,6 +15,10 @@ class ActiveChatPolicyConfig:
     initial_interest_value: float = 1.0
     decay_half_life_seconds: float = 300.0
     idle_interest_threshold: float = 0.05
+    message_interest_delta: float = 0.1
+    mention_interest_delta: float = 0.4
+    reply_interest_delta: float = 0.3
+    max_interest_value: float = 3.0
 
 
 class ActiveChatPolicy(Protocol):
@@ -31,6 +35,16 @@ class ActiveChatPolicy(Protocol):
 
     def decay(self, state: ActiveChatState, *, now: float) -> ActiveChatState:
         """Apply natural interest decay."""
+
+    def observe_message(
+        self,
+        state: ActiveChatState,
+        *,
+        now: float,
+        is_mentioned: bool = False,
+        is_reply_to_bot: bool = False,
+    ) -> ActiveChatState:
+        """Apply message-driven interest changes."""
 
     def should_return_idle(self, state: ActiveChatState) -> bool:
         """Return whether decayed interest is low enough to leave active chat."""
@@ -76,6 +90,31 @@ class DefaultActiveChatPolicy:
             interest_value=interest_value,
             decay_half_life_seconds=state.decay_half_life_seconds,
             entered_at=state.entered_at,
+            updated_at=now,
+        )
+
+    def observe_message(
+        self,
+        state: ActiveChatState,
+        *,
+        now: float,
+        is_mentioned: bool = False,
+        is_reply_to_bot: bool = False,
+    ) -> ActiveChatState:
+        decayed = self.decay(state, now=now)
+        delta = self._config.message_interest_delta
+        if is_mentioned:
+            delta += self._config.mention_interest_delta
+        if is_reply_to_bot:
+            delta += self._config.reply_interest_delta
+        return ActiveChatState(
+            session_id=decayed.session_id,
+            interest_value=min(
+                self._config.max_interest_value,
+                decayed.interest_value + delta,
+            ),
+            decay_half_life_seconds=decayed.decay_half_life_seconds,
+            entered_at=decayed.entered_at,
             updated_at=now,
         )
 

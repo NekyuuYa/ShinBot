@@ -104,6 +104,7 @@ class AgentScheduler:
             )
 
         now = self._now()
+        initial_state = self._state_store.get_state(signal.session_id)
         self._ensure_review_plan(signal.session_id, now)
         unread = UnreadMessage(
             session_id=signal.session_id,
@@ -142,11 +143,24 @@ class AgentScheduler:
                 active_reply_started=True,
             )
 
+        active_chat_state = None
+        active_chat_observed = False
+        if initial_state == AgentState.ACTIVE_CHAT:
+            active_chat_state = self._observe_active_chat_message(
+                session_id=signal.session_id,
+                now=now,
+                is_mentioned=signal.is_mentioned,
+                is_reply_to_bot=signal.is_reply_to_bot,
+            )
+            active_chat_observed = True
+
         return AgentScheduleDecision(
             accepted=True,
             state=self._state_store.get_state(signal.session_id),
             unread_message=unread,
+            active_chat_state=active_chat_state,
             high_priority_events=high_priority_events,
+            active_chat_observed=active_chat_observed,
             active_reply_started=False,
         )
 
@@ -395,6 +409,29 @@ class AgentScheduler:
             next_review_plan=plan,
             returned_to_idle=True,
         )
+
+    def _observe_active_chat_message(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        is_mentioned: bool,
+        is_reply_to_bot: bool,
+    ) -> ActiveChatState:
+        active_chat_state = self._state_store.get_active_chat_state(session_id)
+        if active_chat_state is None:
+            active_chat_state = self._active_chat_policy.initial_state(
+                session_id=session_id,
+                now=now,
+            )
+        observed_state = self._active_chat_policy.observe_message(
+            active_chat_state,
+            now=now,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+        )
+        self._state_store.set_active_chat_state(observed_state)
+        return observed_state
 
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:

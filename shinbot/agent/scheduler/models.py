@@ -92,8 +92,10 @@ class AgentScheduleDecision:
     accepted: bool
     state: AgentState
     unread_message: UnreadMessage | None = None
+    active_chat_state: ActiveChatState | None = None
     high_priority_events: list[HighPriorityEvent] = field(default_factory=list)
     active_reply_started: bool = False
+    active_chat_observed: bool = False
     skipped_reason: str | None = None
 
 
