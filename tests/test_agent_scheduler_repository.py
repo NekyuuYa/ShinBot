@@ -64,6 +64,11 @@ def test_agent_scheduler_repository_persists_state_and_inbox(tmp_path) -> None:
     assert [
         event.kind for event in db.agent_scheduler.list_high_priority_events("bot:group:room")
     ] == [HighPriorityEventKind.MENTION]
+    assert [
+        event.kind
+        for event in db.agent_scheduler.mark_high_priority_events_handled("bot:group:room")
+    ] == [HighPriorityEventKind.MENTION]
+    assert db.agent_scheduler.list_high_priority_events("bot:group:room") == []
 
 
 def test_agent_scheduler_repository_counts_recent_mentions(tmp_path) -> None:

@@ -2,6 +2,7 @@
 
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveReplyCompletionDecision,
     ActiveReplyThreshold,
     AgentScheduleDecision,
     AgentState,
@@ -31,6 +32,7 @@ from shinbot.agent.scheduler.workflow_dispatcher import (
 )
 
 __all__ = [
+    "ActiveReplyCompletionDecision",
     "ActiveReplyThreshold",
     "AgentScheduleDecision",
     "AgentScheduler",

@@ -193,6 +193,20 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             ).fetchall()
         return [self._high_priority_from_row(row) for row in rows]
 
+    def mark_high_priority_events_handled(self, session_id: str) -> list[HighPriorityEvent]:
+        events = self.list_high_priority_events(session_id)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_high_priority_events
+                SET handled = 1
+                WHERE session_id = ?
+                  AND handled = 0
+                """,
+                (session_id,),
+            )
+        return events
+
     def record_mention(self, session_id: str, timestamp: float) -> None:
         with self.connect() as conn:
             conn.execute(

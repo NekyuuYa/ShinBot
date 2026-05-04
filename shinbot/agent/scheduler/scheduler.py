@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveReplyCompletionDecision,
     AgentScheduleDecision,
     AgentState,
     HighPriorityEvent,
@@ -230,9 +231,76 @@ class AgentScheduler:
         decision.review_workflow_started = True
         return decision
 
+    async def complete_active_reply(
+        self,
+        session_id: str,
+        *,
+        review_after: bool | None = None,
+        now: float | None = None,
+    ) -> ActiveReplyCompletionDecision:
+        """Complete active reply and decide whether to resume review or return idle."""
+        current_state = self._state_store.get_state(session_id)
+        if current_state != AgentState.ACTIVE_REPLY:
+            return ActiveReplyCompletionDecision(
+                session_id=session_id,
+                state=current_state,
+                skipped_reason="not_active_reply",
+            )
+
+        handled_events = self._inbox.mark_high_priority_events_handled(session_id)
+        plan = self._state_store.get_review_plan(session_id)
+        checked_at = self._now() if now is None else now
+        should_review = self._should_review_after_active_reply(
+            plan=plan,
+            review_after=review_after,
+            now=checked_at,
+        )
+        if not should_review or plan is None:
+            self._state_store.set_state(session_id, AgentState.IDLE)
+            return ActiveReplyCompletionDecision(
+                session_id=session_id,
+                state=AgentState.IDLE,
+                review_plan=plan,
+                handled_high_priority_events=handled_events,
+                returned_to_idle=True,
+                skipped_reason="missing_review_plan" if plan is None else "review_not_requested",
+            )
+
+        self._state_store.set_state(session_id, AgentState.REVIEW)
+        decision = ActiveReplyCompletionDecision(
+            session_id=session_id,
+            state=AgentState.REVIEW,
+            review_plan=plan,
+            handled_high_priority_events=handled_events,
+            review_started=True,
+        )
+        if self._workflow_dispatcher is None:
+            return decision
+
+        await self._workflow_dispatcher.run_review(
+            session_id=session_id,
+            review_plan=plan,
+            unread_messages=self._inbox.list_unread(session_id),
+        )
+        decision.review_workflow_started = True
+        return decision
+
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:
             return
         self._state_store.set_review_plan(
             self._review_policy.initial_plan(session_id=session_id, now=now)
         )
+
+    @staticmethod
+    def _should_review_after_active_reply(
+        *,
+        plan: ReviewPlan | None,
+        review_after: bool | None,
+        now: float,
+    ) -> bool:
+        if plan is None:
+            return False
+        if review_after is not None:
+            return review_after
+        return plan.next_review_at <= now

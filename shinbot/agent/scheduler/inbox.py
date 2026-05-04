@@ -23,6 +23,9 @@ class AgentInbox(Protocol):
     def list_high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
         """List high-priority events for one session."""
 
+    def mark_high_priority_events_handled(self, session_id: str) -> list[HighPriorityEvent]:
+        """Mark pending high-priority events for one session handled."""
+
     def record_mention(self, session_id: str, timestamp: float) -> None:
         """Record a mention timestamp for wake-threshold checks."""
 
@@ -50,6 +53,11 @@ class InMemoryAgentInbox:
 
     def list_high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
         return list(self._high_priority.get(session_id, []))
+
+    def mark_high_priority_events_handled(self, session_id: str) -> list[HighPriorityEvent]:
+        events = self.list_high_priority_events(session_id)
+        self._high_priority[session_id].clear()
+        return events
 
     def record_mention(self, session_id: str, timestamp: float) -> None:
         self._recent_mentions[session_id].append(timestamp)

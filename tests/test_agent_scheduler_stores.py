@@ -35,6 +35,8 @@ def test_in_memory_agent_inbox_records_unread_and_high_priority_events() -> None
 
     assert inbox.list_unread("bot:group:room") == [unread]
     assert inbox.list_high_priority_events("bot:group:room") == [event]
+    assert inbox.mark_high_priority_events_handled("bot:group:room") == [event]
+    assert inbox.list_high_priority_events("bot:group:room") == []
 
 
 def test_in_memory_agent_inbox_counts_mentions_in_window() -> None:

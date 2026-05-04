@@ -98,3 +98,17 @@ class ReviewDueDecision:
     review_workflow_started: bool = False
     active_reply_pending: bool = False
     skipped_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ActiveReplyCompletionDecision:
+    """Result of completing active reply and deciding the next scheduler state."""
+
+    session_id: str
+    state: AgentState
+    review_plan: ReviewPlan | None = None
+    handled_high_priority_events: list[HighPriorityEvent] = field(default_factory=list)
+    review_started: bool = False
+    review_workflow_started: bool = False
+    returned_to_idle: bool = False
+    skipped_reason: str | None = None
