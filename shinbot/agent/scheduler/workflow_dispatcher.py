@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan, UnreadMessage
+from shinbot.agent.scheduler.models import (
+    ActiveChatState,
+    HighPriorityEvent,
+    ReviewPlan,
+    UnreadMessage,
+)
 
 
 class AgentWorkflowDispatcher(Protocol):
@@ -32,6 +37,20 @@ class AgentWorkflowDispatcher(Protocol):
         unread_messages: list[UnreadMessage],
     ) -> None:
         """Run the review workflow for unread messages selected by Agent internals."""
+
+    async def notify_active_chat_message(
+        self,
+        *,
+        session_id: str,
+        message_log_id: int,
+        sender_id: str,
+        response_profile: str,
+        is_mentioned: bool,
+        is_reply_to_bot: bool,
+        self_platform_id: str,
+        active_chat_state: ActiveChatState,
+    ) -> None:
+        """Notify active chat workflow about one observed message signal."""
 
 
 class AttentionActiveReplyDispatcher:
@@ -73,4 +92,19 @@ class AttentionActiveReplyDispatcher:
         unread_messages: list[UnreadMessage],
     ) -> None:
         """Compatibility placeholder until the dedicated review workflow exists."""
+        return
+
+    async def notify_active_chat_message(
+        self,
+        *,
+        session_id: str,
+        message_log_id: int,
+        sender_id: str,
+        response_profile: str,
+        is_mentioned: bool,
+        is_reply_to_bot: bool,
+        self_platform_id: str,
+        active_chat_state: ActiveChatState,
+    ) -> None:
+        """Compatibility placeholder until the dedicated active chat workflow exists."""
         return

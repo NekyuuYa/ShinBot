@@ -145,6 +145,7 @@ class AgentScheduler:
 
         active_chat_state = None
         active_chat_observed = False
+        active_chat_workflow_notified = False
         if initial_state == AgentState.ACTIVE_CHAT:
             active_chat_state = self._observe_active_chat_message(
                 session_id=signal.session_id,
@@ -153,6 +154,18 @@ class AgentScheduler:
                 is_reply_to_bot=signal.is_reply_to_bot,
             )
             active_chat_observed = True
+            if self._workflow_dispatcher is not None:
+                await self._workflow_dispatcher.notify_active_chat_message(
+                    session_id=signal.session_id,
+                    message_log_id=signal.message_log_id,
+                    sender_id=signal.sender_id,
+                    response_profile=self._response_profile_resolver(signal),
+                    is_mentioned=signal.is_mentioned,
+                    is_reply_to_bot=signal.is_reply_to_bot,
+                    self_platform_id=signal.self_id,
+                    active_chat_state=active_chat_state,
+                )
+                active_chat_workflow_notified = True
 
         return AgentScheduleDecision(
             accepted=True,
@@ -161,6 +174,7 @@ class AgentScheduler:
             active_chat_state=active_chat_state,
             high_priority_events=high_priority_events,
             active_chat_observed=active_chat_observed,
+            active_chat_workflow_notified=active_chat_workflow_notified,
             active_reply_started=False,
         )
 

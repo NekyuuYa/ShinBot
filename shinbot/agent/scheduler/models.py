@@ -96,6 +96,7 @@ class AgentScheduleDecision:
     high_priority_events: list[HighPriorityEvent] = field(default_factory=list)
     active_reply_started: bool = False
     active_chat_observed: bool = False
+    active_chat_workflow_notified: bool = False
     skipped_reason: str | None = None
 
 

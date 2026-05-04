@@ -23,6 +23,7 @@ class RecordingWorkflowDispatcher:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.review_calls: list[dict[str, Any]] = []
+        self.active_chat_calls: list[dict[str, Any]] = []
 
     async def run_active_reply(
         self,
@@ -53,6 +54,23 @@ class RecordingWorkflowDispatcher:
                 "session_id": session_id,
                 "review_plan": review_plan,
                 "unread_messages": unread_messages,
+            }
+        )
+
+    async def notify_active_chat_message(
+        self,
+        *,
+        session_id: str,
+        message_log_id: int,
+        sender_id: str,
+        **kwargs: Any,
+    ) -> None:
+        self.active_chat_calls.append(
+            {
+                "session_id": session_id,
+                "message_log_id": message_log_id,
+                "sender_id": sender_id,
+                **kwargs,
             }
         )
 
@@ -518,6 +536,38 @@ async def test_scheduler_observes_message_during_active_chat() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scheduler_notifies_active_chat_workflow_for_observed_message() -> None:
+    now = 10.0
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "active_chat",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=1.0,
+                decay_half_life_seconds=10.0,
+                message_interest_delta=0.2,
+            )
+        ),
+        now=lambda: now,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+
+    now = 70.0
+    decision = await scheduler.accept_signal(make_signal(message_log_id=2))
+
+    assert decision.active_chat_observed is True
+    assert decision.active_chat_workflow_notified is True
+    assert dispatcher.active_chat_calls[0]["session_id"] == "bot:group:room"
+    assert dispatcher.active_chat_calls[0]["message_log_id"] == 2
+    assert dispatcher.active_chat_calls[0]["response_profile"] == "active_chat"
+    assert dispatcher.active_chat_calls[0]["active_chat_state"] == decision.active_chat_state
+
+
+@pytest.mark.asyncio
 async def test_scheduler_active_reply_interrupt_skips_active_chat_observation() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(
@@ -545,8 +595,10 @@ async def test_scheduler_active_reply_interrupt_skips_active_chat_observation() 
 
     assert decision.active_reply_started is True
     assert decision.active_chat_observed is False
+    assert decision.active_chat_workflow_notified is False
     assert decision.active_chat_state is None
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_REPLY
+    assert dispatcher.active_chat_calls == []
     assert scheduler.active_chat_state_for("bot:group:room") == (
         active_chat_decision.active_chat_state
     )
