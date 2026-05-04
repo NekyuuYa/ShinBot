@@ -125,10 +125,7 @@ class AgentRuntime:
         )
         self.attention_engine: AttentionEngine | None = None
         self.attention_scheduler: AttentionScheduler | None = None
-        self.agent_scheduler = AgentScheduler(
-            workflow_dispatcher=None,
-            response_profile_resolver=self._resolve_response_profile,
-        )
+        self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
         self.workflow_runner: WorkflowRunner | None = None
 
         if database is None:
@@ -156,9 +153,8 @@ class AgentRuntime:
         self.attention_scheduler.set_workflow_dispatcher(
             self._dispatch_attention_workflow,
         )
-        self.agent_scheduler = AgentScheduler(
+        self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=AttentionActiveReplyDispatcher(self.attention_scheduler),
-            response_profile_resolver=self._resolve_response_profile,
         )
         register_attention_runtime(
             self.tool_registry,
@@ -176,6 +172,15 @@ class AgentRuntime:
     async def handle_agent_entry(self, signal: AgentEntrySignal) -> None:
         """Receive the minimal routing signal and let Agent internals process it."""
         await self.agent_scheduler.accept_signal(signal)
+
+    def _create_agent_scheduler(self, workflow_dispatcher) -> AgentScheduler:
+        store = getattr(self.database, "agent_scheduler", None)
+        return AgentScheduler(
+            workflow_dispatcher=workflow_dispatcher,
+            response_profile_resolver=self._resolve_response_profile,
+            inbox=store,
+            state_store=store,
+        )
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
         bot_config = None

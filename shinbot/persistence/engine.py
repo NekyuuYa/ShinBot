@@ -56,9 +56,11 @@ class DatabaseManager:
 
         # Lazy-imported to avoid circular dependency (attention -> model_runtime -> persistence)
         from shinbot.agent.attention.repository import AttentionRepository, WorkflowRunRepository
+        from shinbot.agent.scheduler.repository import AgentSchedulerRepository
 
         self.attention = AttentionRepository(self)
         self.workflow_runs = WorkflowRunRepository(self)
+        self.agent_scheduler = AgentSchedulerRepository(self)
 
     @classmethod
     def from_bootstrap(

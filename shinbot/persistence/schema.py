@@ -303,6 +303,59 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_message_logs_sender_id
     ON message_logs(sender_id)
     """,
+    # ── Agent scheduler state ───────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS agent_scheduler_states (
+        session_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL DEFAULT 'idle',
+        updated_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_unread_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        message_log_id INTEGER NOT NULL,
+        sender_id TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        review_consumed INTEGER NOT NULL DEFAULT 0,
+        chat_consumed INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(session_id, message_log_id),
+        FOREIGN KEY(message_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_unread_messages_session
+    ON agent_unread_messages(session_id, review_consumed, created_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_high_priority_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        message_log_id INTEGER NOT NULL,
+        sender_id TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        handled INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(message_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_high_priority_events_session
+    ON agent_high_priority_events(session_id, handled, created_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_recent_mentions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        timestamp REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_recent_mentions_session
+    ON agent_recent_mentions(session_id, timestamp)
+    """,
     """
     CREATE TABLE IF NOT EXISTS ai_interactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
