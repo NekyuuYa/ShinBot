@@ -6,17 +6,19 @@ from typing import Any
 import pytest
 
 from shinbot.agent.runtime import install_agent_runtime
+from shinbot.agent.scheduler import AgentScheduler
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence.records import BotConfigRecord
 
 
-class RecordingScheduler:
+class RecordingWorkflowDispatcher:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def on_message(
+    async def run_active_reply(
         self,
+        *,
         session_id: str,
         message_log_id: int,
         sender_id: str,
@@ -59,8 +61,11 @@ async def test_agent_runtime_resolves_response_profile_from_agent_boundary(
 ) -> None:
     bot = ShinBot(data_dir=tmp_path)
     runtime = install_agent_runtime(bot)
-    scheduler = RecordingScheduler()
-    runtime.attention_scheduler = scheduler
+    dispatcher = RecordingWorkflowDispatcher()
+    runtime.agent_scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=runtime._resolve_response_profile,
+    )
     bot.database.bot_configs.upsert(
         BotConfigRecord(
             uuid="cfg-group-profile",
@@ -77,10 +82,8 @@ async def test_agent_runtime_resolves_response_profile_from_agent_boundary(
     await runtime.handle_agent_entry(make_signal(is_mentioned=True))
     await runtime.handle_agent_entry(make_signal(is_private=True))
 
-    assert [call["response_profile"] for call in scheduler.calls] == [
-        "passive",
+    assert [call["response_profile"] for call in dispatcher.calls] == [
         "balanced",
-        "disabled",
     ]
 
 
@@ -88,8 +91,11 @@ async def test_agent_runtime_resolves_response_profile_from_agent_boundary(
 async def test_agent_runtime_skips_unusable_agent_entry_signals(tmp_path: Path) -> None:
     bot = ShinBot(data_dir=tmp_path)
     runtime = install_agent_runtime(bot)
-    scheduler = RecordingScheduler()
-    runtime.attention_scheduler = scheduler
+    dispatcher = RecordingWorkflowDispatcher()
+    runtime.agent_scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=runtime._resolve_response_profile,
+    )
 
     await runtime.handle_agent_entry(make_signal(is_reply_to_bot=True))
     await runtime.handle_agent_entry(make_signal(is_mentioned=True, is_private=False))
@@ -108,7 +114,28 @@ async def test_agent_runtime_skips_unusable_agent_entry_signals(tmp_path: Path) 
         )
     )
 
-    assert [call["response_profile"] for call in scheduler.calls] == [
+    assert [call["response_profile"] for call in dispatcher.calls] == [
         "immediate",
         "immediate",
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_records_ordinary_messages_without_active_reply(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    dispatcher = RecordingWorkflowDispatcher()
+    runtime.agent_scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=runtime._resolve_response_profile,
+    )
+
+    await runtime.handle_agent_entry(make_signal())
+
+    assert dispatcher.calls == []
+    assert [
+        item.message_log_id
+        for item in runtime.agent_scheduler.unread_messages("test-bot:group:group:1")
+    ] == [123]

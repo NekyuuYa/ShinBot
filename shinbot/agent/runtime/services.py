@@ -32,6 +32,7 @@ from shinbot.agent.media import (
 )
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
+from shinbot.agent.scheduler import AgentScheduler, AttentionActiveReplyDispatcher
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
 from shinbot.core.bot_config import select_response_profile
@@ -124,6 +125,10 @@ class AgentRuntime:
         )
         self.attention_engine: AttentionEngine | None = None
         self.attention_scheduler: AttentionScheduler | None = None
+        self.agent_scheduler = AgentScheduler(
+            workflow_dispatcher=None,
+            response_profile_resolver=self._resolve_response_profile,
+        )
         self.workflow_runner: WorkflowRunner | None = None
 
         if database is None:
@@ -151,6 +156,10 @@ class AgentRuntime:
         self.attention_scheduler.set_workflow_dispatcher(
             self._dispatch_attention_workflow,
         )
+        self.agent_scheduler = AgentScheduler(
+            workflow_dispatcher=AttentionActiveReplyDispatcher(self.attention_scheduler),
+            response_profile_resolver=self._resolve_response_profile,
+        )
         register_attention_runtime(
             self.tool_registry,
             engine=self.attention_engine,
@@ -166,23 +175,7 @@ class AgentRuntime:
 
     async def handle_agent_entry(self, signal: AgentEntrySignal) -> None:
         """Receive the minimal routing signal and let Agent internals process it."""
-        if (
-            self.attention_scheduler is None
-            or signal.message_log_id is None
-            or signal.already_handled
-            or signal.is_stopped
-        ):
-            return
-
-        await self.attention_scheduler.on_message(
-            signal.session_id,
-            signal.message_log_id,
-            signal.sender_id,
-            response_profile=self._resolve_response_profile(signal),
-            is_mentioned=signal.is_mentioned,
-            is_reply_to_bot=signal.is_reply_to_bot,
-            self_platform_id=signal.self_id,
-        )
+        await self.agent_scheduler.accept_signal(signal)
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
         bot_config = None
