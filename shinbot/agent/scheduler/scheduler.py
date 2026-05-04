@@ -207,6 +207,29 @@ class AgentScheduler:
             review_started=True,
         )
 
+    async def run_due_review(
+        self,
+        session_id: str,
+        *,
+        now: float | None = None,
+    ) -> ReviewDueDecision:
+        """Prepare and dispatch a due review workflow when no interrupt is pending."""
+        decision = self.prepare_due_review(session_id, now=now)
+        if (
+            not decision.review_started
+            or decision.review_plan is None
+            or self._workflow_dispatcher is None
+        ):
+            return decision
+
+        await self._workflow_dispatcher.run_review(
+            session_id=session_id,
+            review_plan=decision.review_plan,
+            unread_messages=self._inbox.list_unread(session_id),
+        )
+        decision.review_workflow_started = True
+        return decision
+
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:
             return

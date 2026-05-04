@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from shinbot.agent.scheduler.models import HighPriorityEvent
+from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan, UnreadMessage
 
 
 class AgentWorkflowDispatcher(Protocol):
@@ -23,6 +23,15 @@ class AgentWorkflowDispatcher(Protocol):
         events: list[HighPriorityEvent],
     ) -> None:
         """Handle high-priority events before review or active chat workflows."""
+
+    async def run_review(
+        self,
+        *,
+        session_id: str,
+        review_plan: ReviewPlan,
+        unread_messages: list[UnreadMessage],
+    ) -> None:
+        """Run the review workflow for unread messages selected by Agent internals."""
 
 
 class AttentionActiveReplyDispatcher:
@@ -55,3 +64,13 @@ class AttentionActiveReplyDispatcher:
             is_reply_to_bot=is_reply_to_bot,
             self_platform_id=self_platform_id,
         )
+
+    async def run_review(
+        self,
+        *,
+        session_id: str,
+        review_plan: ReviewPlan,
+        unread_messages: list[UnreadMessage],
+    ) -> None:
+        """Compatibility placeholder until the dedicated review workflow exists."""
+        return

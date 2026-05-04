@@ -95,5 +95,6 @@ class ReviewDueDecision:
     review_plan: ReviewPlan | None = None
     high_priority_events: list[HighPriorityEvent] = field(default_factory=list)
     review_started: bool = False
+    review_workflow_started: bool = False
     active_reply_pending: bool = False
     skipped_reason: str | None = None

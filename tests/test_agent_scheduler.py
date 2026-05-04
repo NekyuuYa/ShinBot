@@ -20,6 +20,7 @@ from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 class RecordingWorkflowDispatcher:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.review_calls: list[dict[str, Any]] = []
 
     async def run_active_reply(
         self,
@@ -35,6 +36,21 @@ class RecordingWorkflowDispatcher:
                 "message_log_id": message_log_id,
                 "sender_id": sender_id,
                 **kwargs,
+            }
+        )
+
+    async def run_review(
+        self,
+        *,
+        session_id: str,
+        review_plan: ReviewPlan,
+        unread_messages: list[Any],
+    ) -> None:
+        self.review_calls.append(
+            {
+                "session_id": session_id,
+                "review_plan": review_plan,
+                "unread_messages": unread_messages,
             }
         )
 
@@ -225,6 +241,30 @@ async def test_scheduler_lists_and_starts_due_review_without_high_priority() -> 
 
 
 @pytest.mark.asyncio
+async def test_scheduler_dispatches_due_review_workflow() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+
+    decision = await scheduler.run_due_review("bot:group:room", now=52.0)
+
+    assert decision.review_started is True
+    assert decision.review_workflow_started is True
+    assert decision.state == AgentState.REVIEW
+    assert dispatcher.review_calls[0]["session_id"] == "bot:group:room"
+    assert dispatcher.review_calls[0]["review_plan"].reason == "fixed_test_review"
+    assert [
+        message.message_log_id
+        for message in dispatcher.review_calls[0]["unread_messages"]
+    ] == [1]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_due_review_is_interrupted_by_high_priority_queue() -> None:
     scheduler = AgentScheduler(
         response_profile_resolver=lambda _signal: "balanced",
@@ -242,6 +282,25 @@ async def test_scheduler_due_review_is_interrupted_by_high_priority_queue() -> N
         HighPriorityEventKind.MENTION
     ]
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_REPLY
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_dispatch_review_when_high_priority_is_pending() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal(is_mentioned=True))
+
+    decision = await scheduler.run_due_review("bot:group:room", now=52.0)
+
+    assert decision.review_started is False
+    assert decision.review_workflow_started is False
+    assert decision.active_reply_pending is True
+    assert dispatcher.review_calls == []
 
 
 def test_scheduler_prepare_due_review_skips_when_not_due() -> None:
