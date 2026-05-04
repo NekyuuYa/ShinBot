@@ -84,3 +84,16 @@ class AgentScheduleDecision:
     high_priority_events: list[HighPriorityEvent] = field(default_factory=list)
     active_reply_started: bool = False
     skipped_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ReviewDueDecision:
+    """Result of preparing a due review transition."""
+
+    session_id: str
+    state: AgentState
+    review_plan: ReviewPlan | None = None
+    high_priority_events: list[HighPriorityEvent] = field(default_factory=list)
+    review_started: bool = False
+    active_reply_pending: bool = False
+    skipped_reason: str | None = None

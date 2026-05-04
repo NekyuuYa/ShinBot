@@ -8,6 +8,7 @@ from shinbot.agent.scheduler.models import (
     HighPriorityEvent,
     HighPriorityEventKind,
     MentionSensitivity,
+    ReviewDueDecision,
     ReviewPlan,
     UnreadMessage,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "PriorityPolicy",
     "PriorityPolicyConfig",
     "PriorityPolicyDecision",
+    "ReviewDueDecision",
     "ReviewPlan",
     "ReviewPolicy",
     "ReviewPolicyConfig",

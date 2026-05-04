@@ -23,6 +23,9 @@ class AgentStateStore(Protocol):
     def set_review_plan(self, plan: ReviewPlan) -> None:
         """Persist the current review plan for one session."""
 
+    def list_due_review_plans(self, *, now: float, limit: int = 50) -> list[ReviewPlan]:
+        """Return review plans whose scheduled review time has arrived."""
+
 
 class InMemoryAgentStateStore:
     """In-memory state store used before Agent scheduler persistence exists."""
@@ -42,6 +45,15 @@ class InMemoryAgentStateStore:
 
     def set_review_plan(self, plan: ReviewPlan) -> None:
         self._review_plans[plan.session_id] = plan
+
+    def list_due_review_plans(self, *, now: float, limit: int = 50) -> list[ReviewPlan]:
+        plans = [
+            plan
+            for plan in self._review_plans.values()
+            if plan.next_review_at <= now
+        ]
+        plans.sort(key=lambda item: (item.next_review_at, item.session_id))
+        return plans[:limit]
 
 
 __all__ = ["AgentStateStore", "InMemoryAgentStateStore"]

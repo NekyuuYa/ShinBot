@@ -88,6 +88,22 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 ),
             )
 
+    def list_due_review_plans(self, *, now: float, limit: int = 50) -> list[ReviewPlan]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, next_review_at, review_reason,
+                       mention_sensitivity, active_reply_threshold_json, updated_at
+                FROM agent_scheduler_states
+                WHERE next_review_at IS NOT NULL
+                  AND next_review_at <= ?
+                ORDER BY next_review_at ASC, session_id ASC
+                LIMIT ?
+                """,
+                (now, limit),
+            ).fetchall()
+        return [self._review_plan_from_row(row) for row in rows]
+
     def set_state(self, session_id: str, state: AgentState) -> None:
         with self.connect() as conn:
             conn.execute(

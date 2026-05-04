@@ -80,3 +80,17 @@ def test_in_memory_agent_state_store_records_review_plan() -> None:
     store.set_review_plan(plan)
 
     assert store.get_review_plan("bot:group:room") == plan
+
+
+def test_in_memory_agent_state_store_lists_due_review_plans() -> None:
+    store = InMemoryAgentStateStore()
+    store.set_review_plan(
+        ReviewPlan(session_id="bot:group:due", next_review_at=10.0, reason="due")
+    )
+    store.set_review_plan(
+        ReviewPlan(session_id="bot:group:future", next_review_at=30.0, reason="future")
+    )
+
+    due = store.list_due_review_plans(now=20.0)
+
+    assert [plan.session_id for plan in due] == ["bot:group:due"]

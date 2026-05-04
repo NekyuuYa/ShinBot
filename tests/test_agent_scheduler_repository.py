@@ -104,6 +104,21 @@ def test_agent_scheduler_repository_persists_review_plan(tmp_path) -> None:
     assert restored == plan
 
 
+def test_agent_scheduler_repository_lists_due_review_plans(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    db.agent_scheduler.set_review_plan(
+        ReviewPlan(session_id="bot:group:due", next_review_at=10.0, reason="due")
+    )
+    db.agent_scheduler.set_review_plan(
+        ReviewPlan(session_id="bot:group:future", next_review_at=30.0, reason="future")
+    )
+
+    due = db.agent_scheduler.list_due_review_plans(now=20.0)
+
+    assert [plan.session_id for plan in due] == ["bot:group:due"]
+
+
 @pytest.mark.asyncio
 async def test_agent_runtime_uses_persistent_scheduler_store(tmp_path) -> None:
     from shinbot.agent.runtime import install_agent_runtime

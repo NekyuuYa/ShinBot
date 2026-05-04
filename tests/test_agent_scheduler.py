@@ -206,6 +206,63 @@ async def test_scheduler_uses_injected_review_policy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scheduler_lists_and_starts_due_review_without_high_priority() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+
+    due = scheduler.due_review_plans(now=52.0)
+    decision = scheduler.prepare_due_review("bot:group:room", now=52.0)
+
+    assert [plan.session_id for plan in due] == ["bot:group:room"]
+    assert decision.review_started is True
+    assert decision.active_reply_pending is False
+    assert decision.state == AgentState.REVIEW
+    assert scheduler.state_for("bot:group:room") == AgentState.REVIEW
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_review_is_interrupted_by_high_priority_queue() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal(is_mentioned=True))
+
+    decision = scheduler.prepare_due_review("bot:group:room", now=52.0)
+
+    assert decision.review_started is False
+    assert decision.active_reply_pending is True
+    assert decision.state == AgentState.ACTIVE_REPLY
+    assert [event.kind for event in decision.high_priority_events] == [
+        HighPriorityEventKind.MENTION
+    ]
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_REPLY
+
+
+def test_scheduler_prepare_due_review_skips_when_not_due() -> None:
+    state_store = InMemoryAgentStateStore()
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        state_store=state_store,
+        now=lambda: 10.0,
+    )
+    state_store.set_review_plan(
+        ReviewPlan(session_id="bot:group:room", next_review_at=52.0, reason="future")
+    )
+
+    decision = scheduler.prepare_due_review("bot:group:room", now=20.0)
+
+    assert decision.skipped_reason == "review_not_due"
+    assert decision.state == AgentState.IDLE
+
+
+@pytest.mark.asyncio
 async def test_scheduler_skips_unusable_signals() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(

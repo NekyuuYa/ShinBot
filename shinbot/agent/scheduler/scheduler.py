@@ -12,6 +12,7 @@ from shinbot.agent.scheduler.models import (
     AgentScheduleDecision,
     AgentState,
     HighPriorityEvent,
+    ReviewDueDecision,
     ReviewPlan,
     UnreadMessage,
 )
@@ -154,6 +155,57 @@ class AgentScheduler:
     def review_plan_for(self, session_id: str) -> ReviewPlan | None:
         """Return the current review plan for one session, if any."""
         return self._state_store.get_review_plan(session_id)
+
+    def due_review_plans(self, *, now: float | None = None, limit: int = 50) -> list[ReviewPlan]:
+        """Return review plans whose scheduled review time has arrived."""
+        return self._state_store.list_due_review_plans(
+            now=self._now() if now is None else now,
+            limit=limit,
+        )
+
+    def prepare_due_review(
+        self,
+        session_id: str,
+        *,
+        now: float | None = None,
+    ) -> ReviewDueDecision:
+        """Prepare a due review, giving high-priority events a chance to interrupt."""
+        current_state = self._state_store.get_state(session_id)
+        plan = self._state_store.get_review_plan(session_id)
+        if plan is None:
+            return ReviewDueDecision(
+                session_id=session_id,
+                state=current_state,
+                skipped_reason="missing_review_plan",
+            )
+
+        checked_at = self._now() if now is None else now
+        if plan.next_review_at > checked_at:
+            return ReviewDueDecision(
+                session_id=session_id,
+                state=current_state,
+                review_plan=plan,
+                skipped_reason="review_not_due",
+            )
+
+        high_priority_events = self._inbox.list_high_priority_events(session_id)
+        if high_priority_events:
+            self._state_store.set_state(session_id, AgentState.ACTIVE_REPLY)
+            return ReviewDueDecision(
+                session_id=session_id,
+                state=AgentState.ACTIVE_REPLY,
+                review_plan=plan,
+                high_priority_events=high_priority_events,
+                active_reply_pending=True,
+            )
+
+        self._state_store.set_state(session_id, AgentState.REVIEW)
+        return ReviewDueDecision(
+            session_id=session_id,
+            state=AgentState.REVIEW,
+            review_plan=plan,
+            review_started=True,
+        )
 
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:
