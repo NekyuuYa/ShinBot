@@ -29,6 +29,15 @@ class ReviewPolicy(Protocol):
     def initial_plan(self, *, session_id: str, now: float) -> ReviewPlan:
         """Return the initial review plan for one session."""
 
+    def plan_after_review(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        previous_plan: ReviewPlan | None = None,
+    ) -> ReviewPlan:
+        """Return the next review plan after a review completes without active chat."""
+
 
 class DefaultReviewPolicy:
     """Static review policy used until LLM/dynamic review planning is introduced."""
@@ -37,6 +46,18 @@ class DefaultReviewPolicy:
         self._config = config or ReviewPolicyConfig()
 
     def initial_plan(self, *, session_id: str, now: float) -> ReviewPlan:
+        return self._build_plan(session_id=session_id, now=now)
+
+    def plan_after_review(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        previous_plan: ReviewPlan | None = None,
+    ) -> ReviewPlan:
+        return self._build_plan(session_id=session_id, now=now)
+
+    def _build_plan(self, *, session_id: str, now: float) -> ReviewPlan:
         return ReviewPlan(
             session_id=session_id,
             next_review_at=now + self._config.default_review_after_seconds,

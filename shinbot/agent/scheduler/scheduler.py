@@ -13,6 +13,7 @@ from shinbot.agent.scheduler.models import (
     AgentScheduleDecision,
     AgentState,
     HighPriorityEvent,
+    ReviewCompletionDecision,
     ReviewDueDecision,
     ReviewPlan,
     UnreadMessage,
@@ -284,6 +285,46 @@ class AgentScheduler:
         )
         decision.review_workflow_started = True
         return decision
+
+    def complete_review(
+        self,
+        session_id: str,
+        *,
+        enter_active_chat: bool = False,
+        next_review_plan: ReviewPlan | None = None,
+        now: float | None = None,
+    ) -> ReviewCompletionDecision:
+        """Complete review and transition into active chat or idle."""
+        current_state = self._state_store.get_state(session_id)
+        if current_state != AgentState.REVIEW:
+            return ReviewCompletionDecision(
+                session_id=session_id,
+                state=current_state,
+                skipped_reason="not_review",
+            )
+
+        if enter_active_chat:
+            self._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+            return ReviewCompletionDecision(
+                session_id=session_id,
+                state=AgentState.ACTIVE_CHAT,
+                active_chat_started=True,
+            )
+
+        checked_at = self._now() if now is None else now
+        plan = next_review_plan or self._review_policy.plan_after_review(
+            session_id=session_id,
+            now=checked_at,
+            previous_plan=self._state_store.get_review_plan(session_id),
+        )
+        self._state_store.set_state(session_id, AgentState.IDLE)
+        self._state_store.set_review_plan(plan)
+        return ReviewCompletionDecision(
+            session_id=session_id,
+            state=AgentState.IDLE,
+            next_review_plan=plan,
+            returned_to_idle=True,
+        )
 
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:

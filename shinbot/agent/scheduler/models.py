@@ -112,3 +112,15 @@ class ActiveReplyCompletionDecision:
     review_workflow_started: bool = False
     returned_to_idle: bool = False
     skipped_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ReviewCompletionDecision:
+    """Result of completing review and deciding whether to enter active chat."""
+
+    session_id: str
+    state: AgentState
+    next_review_plan: ReviewPlan | None = None
+    active_chat_started: bool = False
+    returned_to_idle: bool = False
+    skipped_reason: str | None = None

@@ -81,6 +81,20 @@ class FixedReviewPolicy:
             updated_at=now,
         )
 
+    def plan_after_review(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        previous_plan: ReviewPlan | None = None,
+    ) -> ReviewPlan:
+        return ReviewPlan(
+            session_id=session_id,
+            next_review_at=now + 100.0,
+            reason="fixed_after_review",
+            updated_at=now,
+        )
+
 
 def make_signal(
     *,
@@ -367,6 +381,83 @@ async def test_scheduler_complete_active_reply_skips_when_state_is_not_active_re
     decision = await scheduler.complete_active_reply("bot:group:room")
 
     assert decision.skipped_reason == "not_active_reply"
+    assert decision.state == AgentState.IDLE
+
+
+@pytest.mark.asyncio
+async def test_scheduler_completes_review_to_idle_with_next_review_plan() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+
+    decision = scheduler.complete_review("bot:group:room", now=60.0)
+
+    assert decision.returned_to_idle is True
+    assert decision.active_chat_started is False
+    assert decision.state == AgentState.IDLE
+    assert decision.next_review_plan is not None
+    assert decision.next_review_plan.next_review_at == 160.0
+    assert decision.next_review_plan.reason == "fixed_after_review"
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert scheduler.review_plan_for("bot:group:room") == decision.next_review_plan
+
+
+@pytest.mark.asyncio
+async def test_scheduler_completes_review_to_idle_with_explicit_next_plan() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    next_plan = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=300.0,
+        reason="workflow_requested_later_review",
+        updated_at=60.0,
+    )
+
+    decision = scheduler.complete_review("bot:group:room", next_review_plan=next_plan)
+
+    assert decision.returned_to_idle is True
+    assert decision.next_review_plan == next_plan
+    assert scheduler.review_plan_for("bot:group:room") == next_plan
+
+
+@pytest.mark.asyncio
+async def test_scheduler_completes_review_to_active_chat() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+
+    decision = scheduler.complete_review("bot:group:room", enter_active_chat=True)
+
+    assert decision.active_chat_started is True
+    assert decision.returned_to_idle is False
+    assert decision.state == AgentState.ACTIVE_CHAT
+    assert decision.next_review_plan is None
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+
+
+def test_scheduler_complete_review_skips_when_state_is_not_review() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+
+    decision = scheduler.complete_review("bot:group:room")
+
+    assert decision.skipped_reason == "not_review"
     assert decision.state == AgentState.IDLE
 
 
