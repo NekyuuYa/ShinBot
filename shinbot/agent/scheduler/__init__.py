@@ -1,7 +1,14 @@
 """Agent-internal scheduling primitives."""
 
+from shinbot.agent.scheduler.active_chat_policy import (
+    ActiveChatPolicy,
+    ActiveChatPolicyConfig,
+    DefaultActiveChatPolicy,
+)
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveChatState,
+    ActiveChatTickDecision,
     ActiveReplyCompletionDecision,
     ActiveReplyThreshold,
     AgentScheduleDecision,
@@ -35,6 +42,10 @@ from shinbot.agent.scheduler.workflow_dispatcher import (
 __all__ = [
     "ActiveReplyCompletionDecision",
     "ActiveReplyThreshold",
+    "ActiveChatPolicy",
+    "ActiveChatPolicyConfig",
+    "ActiveChatState",
+    "ActiveChatTickDecision",
     "AgentScheduleDecision",
     "AgentScheduler",
     "AgentSchedulerConfig",
@@ -44,6 +55,7 @@ __all__ = [
     "AgentWorkflowDispatcher",
     "AttentionActiveReplyDispatcher",
     "DefaultPriorityPolicy",
+    "DefaultActiveChatPolicy",
     "DefaultReviewPolicy",
     "HighPriorityEvent",
     "HighPriorityEventKind",

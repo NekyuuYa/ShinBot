@@ -7,6 +7,7 @@ import time
 
 from shinbot.agent.scheduler.inbox import AgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveChatState,
     ActiveReplyThreshold,
     AgentState,
     HighPriorityEvent,
@@ -115,6 +116,68 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                     updated_at = excluded.updated_at
                 """,
                 (session_id, state.value, time.time()),
+            )
+
+    def get_active_chat_state(self, session_id: str) -> ActiveChatState | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT active_chat_state_json
+                FROM agent_scheduler_states
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["active_chat_state_json"] or "{}")
+        except Exception:
+            return None
+        if not payload:
+            return None
+        return ActiveChatState(
+            session_id=session_id,
+            interest_value=float(payload.get("interest_value") or 0.0),
+            decay_half_life_seconds=float(payload.get("decay_half_life_seconds") or 0.0),
+            entered_at=float(payload.get("entered_at") or 0.0),
+            updated_at=float(payload.get("updated_at") or 0.0),
+        )
+
+    def set_active_chat_state(self, state: ActiveChatState) -> None:
+        payload = json.dumps(
+            {
+                "interest_value": state.interest_value,
+                "decay_half_life_seconds": state.decay_half_life_seconds,
+                "entered_at": state.entered_at,
+                "updated_at": state.updated_at,
+            },
+            ensure_ascii=False,
+        )
+        current_state = self.get_state(state.session_id)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_scheduler_states (
+                    session_id, state, active_chat_state_json, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    active_chat_state_json = excluded.active_chat_state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (state.session_id, current_state.value, payload, state.updated_at),
+            )
+
+    def clear_active_chat_state(self, session_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_scheduler_states
+                SET active_chat_state_json = '{}',
+                    updated_at = ?
+                WHERE session_id = ?
+                """,
+                (time.time(), session_id),
             )
 
     def add_unread(self, message: UnreadMessage) -> None:

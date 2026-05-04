@@ -5,9 +5,11 @@ from typing import Any
 import pytest
 
 from shinbot.agent.scheduler import (
+    ActiveChatPolicyConfig,
     AgentScheduler,
     AgentSchedulerConfig,
     AgentState,
+    DefaultActiveChatPolicy,
     HighPriorityEventKind,
     InMemoryAgentInbox,
     InMemoryAgentStateStore,
@@ -439,13 +441,93 @@ async def test_scheduler_completes_review_to_active_chat() -> None:
     await scheduler.accept_signal(make_signal())
     scheduler.prepare_due_review("bot:group:room", now=52.0)
 
-    decision = scheduler.complete_review("bot:group:room", enter_active_chat=True)
+    decision = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=2.0,
+        now=60.0,
+    )
 
     assert decision.active_chat_started is True
     assert decision.returned_to_idle is False
     assert decision.state == AgentState.ACTIVE_CHAT
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.interest_value == 2.0
+    assert decision.active_chat_state.entered_at == 60.0
     assert decision.next_review_plan is None
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert scheduler.active_chat_state_for("bot:group:room") == decision.active_chat_state
+
+
+@pytest.mark.asyncio
+async def test_scheduler_ticks_active_chat_without_returning_idle() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=1.0,
+                decay_half_life_seconds=10.0,
+                idle_interest_threshold=0.1,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+
+    decision = scheduler.tick_active_chat("bot:group:room", now=70.0)
+
+    assert decision.returned_to_idle is False
+    assert decision.state == AgentState.ACTIVE_CHAT
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.interest_value == 0.5
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+
+
+@pytest.mark.asyncio
+async def test_scheduler_ticks_active_chat_to_idle_with_next_review_plan() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=1.0,
+                decay_half_life_seconds=10.0,
+                idle_interest_threshold=0.5,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+
+    decision = scheduler.tick_active_chat("bot:group:room", now=70.0)
+
+    assert decision.returned_to_idle is True
+    assert decision.state == AgentState.IDLE
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.interest_value == 0.5
+    assert decision.next_review_plan is not None
+    assert decision.next_review_plan.next_review_at == 170.0
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert scheduler.active_chat_state_for("bot:group:room") is None
+    assert scheduler.review_plan_for("bot:group:room") == decision.next_review_plan
+
+
+def test_scheduler_tick_active_chat_skips_when_state_is_not_active_chat() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+
+    decision = scheduler.tick_active_chat("bot:group:room")
+
+    assert decision.skipped_reason == "not_active_chat"
+    assert decision.state == AgentState.IDLE
 
 
 def test_scheduler_complete_review_skips_when_state_is_not_review() -> None:

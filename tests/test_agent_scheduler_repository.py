@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.agent.scheduler import AgentState, HighPriorityEvent, HighPriorityEventKind
+from shinbot.agent.scheduler import (
+    ActiveChatState,
+    AgentState,
+    HighPriorityEvent,
+    HighPriorityEventKind,
+)
 from shinbot.agent.scheduler.models import (
     ActiveReplyThreshold,
     MentionSensitivity,
@@ -107,6 +112,26 @@ def test_agent_scheduler_repository_persists_review_plan(tmp_path) -> None:
 
     restored = db.agent_scheduler.get_review_plan("bot:group:room")
     assert restored == plan
+
+
+def test_agent_scheduler_repository_persists_active_chat_state(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    state = ActiveChatState(
+        session_id="bot:group:room",
+        interest_value=1.0,
+        decay_half_life_seconds=30.0,
+        entered_at=10.0,
+        updated_at=10.0,
+    )
+
+    db.agent_scheduler.set_active_chat_state(state)
+
+    assert db.agent_scheduler.get_active_chat_state("bot:group:room") == state
+
+    db.agent_scheduler.clear_active_chat_state("bot:group:room")
+
+    assert db.agent_scheduler.get_active_chat_state("bot:group:room") is None
 
 
 def test_agent_scheduler_repository_lists_due_review_plans(tmp_path) -> None:

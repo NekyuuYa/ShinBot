@@ -7,8 +7,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from shinbot.agent.scheduler.active_chat_policy import (
+    ActiveChatPolicy,
+    DefaultActiveChatPolicy,
+)
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveChatState,
+    ActiveChatTickDecision,
     ActiveReplyCompletionDecision,
     AgentScheduleDecision,
     AgentState,
@@ -61,6 +67,7 @@ class AgentScheduler:
         state_store: AgentStateStore | None = None,
         priority_policy: PriorityPolicy | None = None,
         review_policy: ReviewPolicy | None = None,
+        active_chat_policy: ActiveChatPolicy | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._workflow_dispatcher = workflow_dispatcher
@@ -72,6 +79,7 @@ class AgentScheduler:
             self._config.to_priority_policy_config()
         )
         self._review_policy = review_policy or DefaultReviewPolicy()
+        self._active_chat_policy = active_chat_policy or DefaultActiveChatPolicy()
         self._now = now or time.time
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
@@ -157,6 +165,10 @@ class AgentScheduler:
     def review_plan_for(self, session_id: str) -> ReviewPlan | None:
         """Return the current review plan for one session, if any."""
         return self._state_store.get_review_plan(session_id)
+
+    def active_chat_state_for(self, session_id: str) -> ActiveChatState | None:
+        """Return current active chat interest state for one session, if any."""
+        return self._state_store.get_active_chat_state(session_id)
 
     def due_review_plans(self, *, now: float | None = None, limit: int = 50) -> list[ReviewPlan]:
         """Return review plans whose scheduled review time has arrived."""
@@ -291,6 +303,7 @@ class AgentScheduler:
         session_id: str,
         *,
         enter_active_chat: bool = False,
+        active_chat_initial_interest: float | None = None,
         next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
     ) -> ReviewCompletionDecision:
@@ -303,25 +316,82 @@ class AgentScheduler:
                 skipped_reason="not_review",
             )
 
+        checked_at = self._now() if now is None else now
         if enter_active_chat:
+            active_chat_state = self._active_chat_policy.initial_state(
+                session_id=session_id,
+                now=checked_at,
+                initial_interest_value=active_chat_initial_interest,
+            )
             self._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+            self._state_store.set_active_chat_state(active_chat_state)
             return ReviewCompletionDecision(
                 session_id=session_id,
                 state=AgentState.ACTIVE_CHAT,
+                active_chat_state=active_chat_state,
                 active_chat_started=True,
             )
 
-        checked_at = self._now() if now is None else now
         plan = next_review_plan or self._review_policy.plan_after_review(
             session_id=session_id,
             now=checked_at,
             previous_plan=self._state_store.get_review_plan(session_id),
         )
         self._state_store.set_state(session_id, AgentState.IDLE)
+        self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
         return ReviewCompletionDecision(
             session_id=session_id,
             state=AgentState.IDLE,
+            next_review_plan=plan,
+            returned_to_idle=True,
+        )
+
+    def tick_active_chat(
+        self,
+        session_id: str,
+        *,
+        next_review_plan: ReviewPlan | None = None,
+        now: float | None = None,
+    ) -> ActiveChatTickDecision:
+        """Apply active chat interest decay and return idle if interest is exhausted."""
+        current_state = self._state_store.get_state(session_id)
+        if current_state != AgentState.ACTIVE_CHAT:
+            return ActiveChatTickDecision(
+                session_id=session_id,
+                state=current_state,
+                skipped_reason="not_active_chat",
+            )
+
+        checked_at = self._now() if now is None else now
+        active_chat_state = self._state_store.get_active_chat_state(session_id)
+        if active_chat_state is None:
+            active_chat_state = self._active_chat_policy.initial_state(
+                session_id=session_id,
+                now=checked_at,
+            )
+
+        decayed_state = self._active_chat_policy.decay(active_chat_state, now=checked_at)
+        self._state_store.set_active_chat_state(decayed_state)
+        if not self._active_chat_policy.should_return_idle(decayed_state):
+            return ActiveChatTickDecision(
+                session_id=session_id,
+                state=AgentState.ACTIVE_CHAT,
+                active_chat_state=decayed_state,
+            )
+
+        plan = next_review_plan or self._review_policy.plan_after_review(
+            session_id=session_id,
+            now=checked_at,
+            previous_plan=self._state_store.get_review_plan(session_id),
+        )
+        self._state_store.set_state(session_id, AgentState.IDLE)
+        self._state_store.clear_active_chat_state(session_id)
+        self._state_store.set_review_plan(plan)
+        return ActiveChatTickDecision(
+            session_id=session_id,
+            state=AgentState.IDLE,
+            active_chat_state=decayed_state,
             next_review_plan=plan,
             returned_to_idle=True,
         )

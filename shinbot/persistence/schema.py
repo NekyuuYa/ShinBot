@@ -312,6 +312,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         review_reason TEXT NOT NULL DEFAULT '',
         mention_sensitivity TEXT NOT NULL DEFAULT 'normal',
         active_reply_threshold_json TEXT NOT NULL DEFAULT '{}',
+        active_chat_state_json TEXT NOT NULL DEFAULT '{}',
         updated_at REAL NOT NULL
     )
     """,
@@ -886,6 +887,7 @@ def _migrate_agent_scheduler_schema(conn: sqlite3.Connection) -> None:
         "review_reason": "TEXT NOT NULL DEFAULT ''",
         "mention_sensitivity": "TEXT NOT NULL DEFAULT 'normal'",
         "active_reply_threshold_json": "TEXT NOT NULL DEFAULT '{}'",
+        "active_chat_state_json": "TEXT NOT NULL DEFAULT '{}'",
     }
     for col, spec in new_columns.items():
         if col not in columns:

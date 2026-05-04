@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from shinbot.agent.scheduler import (
+    ActiveChatState,
     ActiveReplyThreshold,
     AgentState,
     HighPriorityEvent,
@@ -82,6 +83,25 @@ def test_in_memory_agent_state_store_records_review_plan() -> None:
     store.set_review_plan(plan)
 
     assert store.get_review_plan("bot:group:room") == plan
+
+
+def test_in_memory_agent_state_store_records_active_chat_state() -> None:
+    store = InMemoryAgentStateStore()
+    state = ActiveChatState(
+        session_id="bot:group:room",
+        interest_value=1.0,
+        decay_half_life_seconds=30.0,
+        entered_at=10.0,
+        updated_at=10.0,
+    )
+
+    store.set_active_chat_state(state)
+
+    assert store.get_active_chat_state("bot:group:room") == state
+
+    store.clear_active_chat_state("bot:group:room")
+
+    assert store.get_active_chat_state("bot:group:room") is None
 
 
 def test_in_memory_agent_state_store_lists_due_review_plans() -> None:

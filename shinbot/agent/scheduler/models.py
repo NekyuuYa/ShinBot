@@ -53,6 +53,17 @@ class ReviewPlan:
 
 
 @dataclass(slots=True, frozen=True)
+class ActiveChatState:
+    """Scheduler-owned interest state for one active chat session."""
+
+    session_id: str
+    interest_value: float
+    decay_half_life_seconds: float
+    entered_at: float
+    updated_at: float
+
+
+@dataclass(slots=True, frozen=True)
 class UnreadMessage:
     """A message known to Agent but not yet consumed by review/chat logic."""
 
@@ -120,7 +131,20 @@ class ReviewCompletionDecision:
 
     session_id: str
     state: AgentState
+    active_chat_state: ActiveChatState | None = None
     next_review_plan: ReviewPlan | None = None
     active_chat_started: bool = False
+    returned_to_idle: bool = False
+    skipped_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ActiveChatTickDecision:
+    """Result of updating active chat interest and deciding whether to return idle."""
+
+    session_id: str
+    state: AgentState
+    active_chat_state: ActiveChatState | None = None
+    next_review_plan: ReviewPlan | None = None
     returned_to_idle: bool = False
     skipped_reason: str | None = None
