@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from shinbot.agent.scheduler import (
+    ActiveReplyThreshold,
     AgentState,
     HighPriorityEvent,
     HighPriorityEventKind,
     InMemoryAgentInbox,
     InMemoryAgentStateStore,
+    MentionSensitivity,
+    ReviewPlan,
     UnreadMessage,
 )
 
@@ -61,3 +64,19 @@ def test_in_memory_agent_state_store_defaults_to_idle_and_updates() -> None:
     store.set_state("bot:group:room", AgentState.ACTIVE_REPLY)
 
     assert store.get_state("bot:group:room") == AgentState.ACTIVE_REPLY
+
+
+def test_in_memory_agent_state_store_records_review_plan() -> None:
+    store = InMemoryAgentStateStore()
+    plan = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=130.0,
+        reason="busy_until_next_check",
+        mention_sensitivity=MentionSensitivity.HIGH,
+        active_reply_threshold=ActiveReplyThreshold(at_count=1, window_seconds=30.0),
+        updated_at=10.0,
+    )
+
+    store.set_review_plan(plan)
+
+    assert store.get_review_plan("bot:group:room") == plan

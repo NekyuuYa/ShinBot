@@ -12,6 +12,7 @@ from shinbot.agent.scheduler.models import (
     AgentScheduleDecision,
     AgentState,
     HighPriorityEvent,
+    ReviewPlan,
     UnreadMessage,
 )
 from shinbot.agent.scheduler.priority_policy import (
@@ -19,6 +20,7 @@ from shinbot.agent.scheduler.priority_policy import (
     PriorityPolicy,
     PriorityPolicyConfig,
 )
+from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy, ReviewPolicy
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
 
@@ -55,6 +57,7 @@ class AgentScheduler:
         inbox: AgentInbox | None = None,
         state_store: AgentStateStore | None = None,
         priority_policy: PriorityPolicy | None = None,
+        review_policy: ReviewPolicy | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._workflow_dispatcher = workflow_dispatcher
@@ -65,6 +68,7 @@ class AgentScheduler:
         self._priority_policy = priority_policy or DefaultPriorityPolicy(
             self._config.to_priority_policy_config()
         )
+        self._review_policy = review_policy or DefaultReviewPolicy()
         self._now = now or time.time
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
@@ -89,6 +93,7 @@ class AgentScheduler:
             )
 
         now = self._now()
+        self._ensure_review_plan(signal.session_id, now)
         unread = UnreadMessage(
             session_id=signal.session_id,
             message_log_id=signal.message_log_id,
@@ -145,3 +150,14 @@ class AgentScheduler:
     def state_for(self, session_id: str) -> AgentState:
         """Return current scheduler state for one session."""
         return self._state_store.get_state(session_id)
+
+    def review_plan_for(self, session_id: str) -> ReviewPlan | None:
+        """Return the current review plan for one session, if any."""
+        return self._state_store.get_review_plan(session_id)
+
+    def _ensure_review_plan(self, session_id: str, now: float) -> None:
+        if self._state_store.get_review_plan(session_id) is not None:
+            return
+        self._state_store.set_review_plan(
+            self._review_policy.initial_plan(session_id=session_id, now=now)
+        )

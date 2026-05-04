@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.scheduler import AgentState, HighPriorityEvent, HighPriorityEventKind
-from shinbot.agent.scheduler.models import UnreadMessage
+from shinbot.agent.scheduler.models import (
+    ActiveReplyThreshold,
+    MentionSensitivity,
+    ReviewPlan,
+    UnreadMessage,
+)
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
@@ -79,6 +84,24 @@ def test_agent_scheduler_repository_counts_recent_mentions(tmp_path) -> None:
         now=200.0,
         window_seconds=60.0,
     ) == 0
+
+
+def test_agent_scheduler_repository_persists_review_plan(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    plan = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=130.0,
+        reason="busy_until_next_check",
+        mention_sensitivity=MentionSensitivity.LOW,
+        active_reply_threshold=ActiveReplyThreshold(at_count=2, window_seconds=90.0),
+        updated_at=10.0,
+    )
+
+    db.agent_scheduler.set_review_plan(plan)
+
+    restored = db.agent_scheduler.get_review_plan("bot:group:room")
+    assert restored == plan
 
 
 @pytest.mark.asyncio

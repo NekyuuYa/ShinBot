@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from shinbot.agent.scheduler.inbox import AgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveReplyThreshold,
     AgentState,
     HighPriorityEvent,
     HighPriorityEventKind,
+    MentionSensitivity,
+    ReviewPlan,
     UnreadMessage,
 )
 from shinbot.agent.scheduler.state_store import AgentStateStore
@@ -34,6 +38,55 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             return AgentState(str(row["state"]))
         except ValueError:
             return AgentState.IDLE
+
+    def get_review_plan(self, session_id: str) -> ReviewPlan | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT session_id, next_review_at, review_reason,
+                       mention_sensitivity, active_reply_threshold_json, updated_at
+                FROM agent_scheduler_states
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None or row["next_review_at"] is None:
+            return None
+        return self._review_plan_from_row(row)
+
+    def set_review_plan(self, plan: ReviewPlan) -> None:
+        current_state = self.get_state(plan.session_id)
+        threshold_json = json.dumps(
+            {
+                "at_count": plan.active_reply_threshold.at_count,
+                "window_seconds": plan.active_reply_threshold.window_seconds,
+            },
+            ensure_ascii=False,
+        )
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_scheduler_states (
+                    session_id, state, next_review_at, review_reason,
+                    mention_sensitivity, active_reply_threshold_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    next_review_at = excluded.next_review_at,
+                    review_reason = excluded.review_reason,
+                    mention_sensitivity = excluded.mention_sensitivity,
+                    active_reply_threshold_json = excluded.active_reply_threshold_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    plan.session_id,
+                    current_state.value,
+                    plan.next_review_at,
+                    plan.reason,
+                    plan.mention_sensitivity.value,
+                    threshold_json,
+                    plan.updated_at,
+                ),
+            )
 
     def set_state(self, session_id: str, state: AgentState) -> None:
         with self.connect() as conn:
@@ -169,6 +222,28 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             kind=kind,
             created_at=float(row["created_at"]),
             reason=str(row["reason"]),
+        )
+
+    @staticmethod
+    def _review_plan_from_row(row) -> ReviewPlan:
+        try:
+            sensitivity = MentionSensitivity(str(row["mention_sensitivity"]))
+        except ValueError:
+            sensitivity = MentionSensitivity.NORMAL
+        try:
+            threshold_payload = json.loads(row["active_reply_threshold_json"] or "{}")
+        except Exception:
+            threshold_payload = {}
+        return ReviewPlan(
+            session_id=str(row["session_id"]),
+            next_review_at=float(row["next_review_at"]),
+            reason=str(row["review_reason"] or ""),
+            mention_sensitivity=sensitivity,
+            active_reply_threshold=ActiveReplyThreshold(
+                at_count=int(threshold_payload.get("at_count") or 1),
+                window_seconds=float(threshold_payload.get("window_seconds") or 60.0),
+            ),
+            updated_at=float(row["updated_at"] or 0.0),
         )
 
 

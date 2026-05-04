@@ -13,7 +13,7 @@ from shinbot.agent.scheduler import (
     InMemoryAgentStateStore,
     PriorityPolicyDecision,
 )
-from shinbot.agent.scheduler.models import HighPriorityEvent
+from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 
 
@@ -53,6 +53,16 @@ class AlwaysWakePriorityPolicy:
                 )
             ],
             should_start_active_reply=True,
+        )
+
+
+class FixedReviewPolicy:
+    def initial_plan(self, *, session_id: str, now: float) -> ReviewPlan:
+        return ReviewPlan(
+            session_id=session_id,
+            next_review_at=now + 42.0,
+            reason="fixed_test_review",
+            updated_at=now,
         )
 
 
@@ -96,6 +106,7 @@ async def test_scheduler_records_ordinary_message_without_workflow() -> None:
     assert dispatcher.calls == []
     assert [item.message_log_id for item in scheduler.unread_messages("bot:group:room")] == [1]
     assert scheduler.high_priority_events("bot:group:room") == []
+    assert scheduler.review_plan_for("bot:group:room").reason == "default_idle_review_interval"
 
 
 @pytest.mark.asyncio
@@ -176,6 +187,22 @@ async def test_scheduler_uses_injected_priority_policy() -> None:
     assert decision.active_reply_started is True
     assert [event.kind for event in decision.high_priority_events] == [HighPriorityEventKind.POKE]
     assert dispatcher.calls[0]["events"][0].reason == "test_policy"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_injected_review_policy() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+
+    await scheduler.accept_signal(make_signal())
+
+    plan = scheduler.review_plan_for("bot:group:room")
+    assert plan is not None
+    assert plan.next_review_at == 52.0
+    assert plan.reason == "fixed_test_review"
 
 
 @pytest.mark.asyncio

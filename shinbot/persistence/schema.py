@@ -308,6 +308,10 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS agent_scheduler_states (
         session_id TEXT PRIMARY KEY,
         state TEXT NOT NULL DEFAULT 'idle',
+        next_review_at REAL,
+        review_reason TEXT NOT NULL DEFAULT '',
+        mention_sensitivity TEXT NOT NULL DEFAULT 'normal',
+        active_reply_threshold_json TEXT NOT NULL DEFAULT '{}',
         updated_at REAL NOT NULL
     )
     """,
@@ -873,6 +877,21 @@ def _migrate_message_logs_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE message_logs ADD COLUMN {col} {spec}")
 
 
+def _migrate_agent_scheduler_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "agent_scheduler_states")
+    if not columns:
+        return
+    new_columns = {
+        "next_review_at": "REAL",
+        "review_reason": "TEXT NOT NULL DEFAULT ''",
+        "mention_sensitivity": "TEXT NOT NULL DEFAULT 'normal'",
+        "active_reply_threshold_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for col, spec in new_columns.items():
+        if col not in columns:
+            conn.execute(f"ALTER TABLE agent_scheduler_states ADD COLUMN {col} {spec}")
+
+
 def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "workflow_runs")
     if not columns:
@@ -944,4 +963,5 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_model_execution_records_schema(conn)
     _migrate_ai_interactions_schema(conn)
     _migrate_message_logs_schema(conn)
+    _migrate_agent_scheduler_schema(conn)
     _migrate_workflow_runs_schema(conn)

@@ -24,6 +24,34 @@ class HighPriorityEventKind(StrEnum):
     POKE = "poke"
 
 
+class MentionSensitivity(StrEnum):
+    """How sensitive Agent should be to mentions during the current review interval."""
+
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveReplyThreshold:
+    """Wake threshold for mention bursts during one review interval."""
+
+    at_count: int = 1
+    window_seconds: float = 60.0
+
+
+@dataclass(slots=True, frozen=True)
+class ReviewPlan:
+    """Scheduler-owned plan for the next review opportunity."""
+
+    session_id: str
+    next_review_at: float
+    reason: str
+    mention_sensitivity: MentionSensitivity = MentionSensitivity.NORMAL
+    active_reply_threshold: ActiveReplyThreshold = field(default_factory=ActiveReplyThreshold)
+    updated_at: float = 0.0
+
+
 @dataclass(slots=True, frozen=True)
 class UnreadMessage:
     """A message known to Agent but not yet consumed by review/chat logic."""
