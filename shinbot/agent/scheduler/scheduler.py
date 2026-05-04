@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import time
-from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     AgentScheduleDecision,
     AgentState,
@@ -15,6 +15,7 @@ from shinbot.agent.scheduler.models import (
     HighPriorityEventKind,
     UnreadMessage,
 )
+from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
 
 if TYPE_CHECKING:
@@ -40,35 +41,35 @@ class AgentScheduler:
         workflow_dispatcher: AgentWorkflowDispatcher | None = None,
         response_profile_resolver: ResponseProfileResolver,
         config: AgentSchedulerConfig | None = None,
+        inbox: AgentInbox | None = None,
+        state_store: AgentStateStore | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._workflow_dispatcher = workflow_dispatcher
         self._response_profile_resolver = response_profile_resolver
         self._config = config or AgentSchedulerConfig()
+        self._inbox = inbox or InMemoryAgentInbox()
+        self._state_store = state_store or InMemoryAgentStateStore()
         self._now = now or time.time
-        self._states: dict[str, AgentState] = defaultdict(lambda: AgentState.IDLE)
-        self._unread: dict[str, list[UnreadMessage]] = defaultdict(list)
-        self._high_priority: dict[str, list[HighPriorityEvent]] = defaultdict(list)
-        self._recent_mentions: dict[str, deque[float]] = defaultdict(deque)
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
         """Accept one message signal from core and decide scheduler-side action."""
         if signal.message_log_id is None:
             return AgentScheduleDecision(
                 accepted=False,
-                state=self._states[signal.session_id],
+                state=self._state_store.get_state(signal.session_id),
                 skipped_reason="missing_message_log_id",
             )
         if signal.already_handled:
             return AgentScheduleDecision(
                 accepted=False,
-                state=self._states[signal.session_id],
+                state=self._state_store.get_state(signal.session_id),
                 skipped_reason="already_handled",
             )
         if signal.is_stopped:
             return AgentScheduleDecision(
                 accepted=False,
-                state=self._states[signal.session_id],
+                state=self._state_store.get_state(signal.session_id),
                 skipped_reason="stopped",
             )
 
@@ -79,15 +80,15 @@ class AgentScheduler:
             sender_id=signal.sender_id,
             created_at=now,
         )
-        self._unread[signal.session_id].append(unread)
+        self._inbox.add_unread(unread)
 
         high_priority_events = self._detect_high_priority_events(signal, now)
         if high_priority_events:
-            self._high_priority[signal.session_id].extend(high_priority_events)
+            self._inbox.add_high_priority_events(high_priority_events)
 
         should_active_reply = self._should_wake_for_active_reply(signal, high_priority_events, now)
         if should_active_reply and self._workflow_dispatcher is not None:
-            self._states[signal.session_id] = AgentState.ACTIVE_REPLY
+            self._state_store.set_state(signal.session_id, AgentState.ACTIVE_REPLY)
             await self._workflow_dispatcher.run_active_reply(
                 session_id=signal.session_id,
                 message_log_id=signal.message_log_id,
@@ -100,7 +101,7 @@ class AgentScheduler:
             )
             return AgentScheduleDecision(
                 accepted=True,
-                state=self._states[signal.session_id],
+                state=self._state_store.get_state(signal.session_id),
                 unread_message=unread,
                 high_priority_events=high_priority_events,
                 active_reply_started=True,
@@ -108,7 +109,7 @@ class AgentScheduler:
 
         return AgentScheduleDecision(
             accepted=True,
-            state=self._states[signal.session_id],
+            state=self._state_store.get_state(signal.session_id),
             unread_message=unread,
             high_priority_events=high_priority_events,
             active_reply_started=False,
@@ -116,15 +117,15 @@ class AgentScheduler:
 
     def unread_messages(self, session_id: str) -> list[UnreadMessage]:
         """Return unread messages known to AgentScheduler for one session."""
-        return list(self._unread.get(session_id, []))
+        return self._inbox.list_unread(session_id)
 
     def high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
         """Return high-priority events known to AgentScheduler for one session."""
-        return list(self._high_priority.get(session_id, []))
+        return self._inbox.list_high_priority_events(session_id)
 
     def state_for(self, session_id: str) -> AgentState:
         """Return current scheduler state for one session."""
-        return self._states[session_id]
+        return self._state_store.get_state(session_id)
 
     def _detect_high_priority_events(
         self,
@@ -167,10 +168,11 @@ class AgentScheduler:
         if signal.is_reply_to_bot:
             return True
         if signal.is_mentioned:
-            recent_mentions = self._recent_mentions[signal.session_id]
-            window = self._config.mention_wake_window_seconds
-            while recent_mentions and now - recent_mentions[0] > window:
-                recent_mentions.popleft()
-            recent_mentions.append(now)
-            return len(recent_mentions) >= self._config.mention_wake_count
+            self._inbox.record_mention(signal.session_id, now)
+            recent_count = self._inbox.count_recent_mentions(
+                signal.session_id,
+                now=now,
+                window_seconds=self._config.mention_wake_window_seconds,
+            )
+            return recent_count >= self._config.mention_wake_count
         return False

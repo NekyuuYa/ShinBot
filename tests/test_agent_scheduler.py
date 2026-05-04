@@ -9,6 +9,8 @@ from shinbot.agent.scheduler import (
     AgentSchedulerConfig,
     AgentState,
     HighPriorityEventKind,
+    InMemoryAgentInbox,
+    InMemoryAgentStateStore,
 )
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 
@@ -117,6 +119,27 @@ async def test_scheduler_can_require_repeated_mentions_before_wake() -> None:
     assert [event.kind for event in scheduler.high_priority_events("bot:group:room")] == [
         HighPriorityEventKind.MENTION,
         HighPriorityEventKind.MENTION,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_injected_inbox_and_state_store() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    inbox = InMemoryAgentInbox()
+    state_store = InMemoryAgentStateStore()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "immediate",
+        inbox=inbox,
+        state_store=state_store,
+    )
+
+    await scheduler.accept_signal(make_signal(is_reply_to_bot=True))
+
+    assert state_store.get_state("bot:group:room") == AgentState.ACTIVE_REPLY
+    assert [item.message_log_id for item in inbox.list_unread("bot:group:room")] == [1]
+    assert [event.kind for event in inbox.list_high_priority_events("bot:group:room")] == [
+        HighPriorityEventKind.REPLY_TO_BOT
     ]
 
 
