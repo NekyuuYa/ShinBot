@@ -11,7 +11,9 @@ from shinbot.agent.scheduler import (
     HighPriorityEventKind,
     InMemoryAgentInbox,
     InMemoryAgentStateStore,
+    PriorityPolicyDecision,
 )
+from shinbot.agent.scheduler.models import HighPriorityEvent
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 
 
@@ -34,6 +36,23 @@ class RecordingWorkflowDispatcher:
                 "sender_id": sender_id,
                 **kwargs,
             }
+        )
+
+
+class AlwaysWakePriorityPolicy:
+    def evaluate(self, signal, *, now, inbox):
+        return PriorityPolicyDecision(
+            events=[
+                HighPriorityEvent(
+                    session_id=signal.session_id,
+                    message_log_id=signal.message_log_id or 0,
+                    sender_id=signal.sender_id,
+                    kind=HighPriorityEventKind.POKE,
+                    created_at=now,
+                    reason="test_policy",
+                )
+            ],
+            should_start_active_reply=True,
         )
 
 
@@ -141,6 +160,22 @@ async def test_scheduler_uses_injected_inbox_and_state_store() -> None:
     assert [event.kind for event in inbox.list_high_priority_events("bot:group:room")] == [
         HighPriorityEventKind.REPLY_TO_BOT
     ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_injected_priority_policy() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "immediate",
+        priority_policy=AlwaysWakePriorityPolicy(),
+    )
+
+    decision = await scheduler.accept_signal(make_signal())
+
+    assert decision.active_reply_started is True
+    assert [event.kind for event in decision.high_priority_events] == [HighPriorityEventKind.POKE]
+    assert dispatcher.calls[0]["events"][0].reason == "test_policy"
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,12 @@ from shinbot.agent.scheduler.models import (
     HighPriorityEventKind,
     UnreadMessage,
 )
+from shinbot.agent.scheduler.priority_policy import (
+    DefaultPriorityPolicy,
+    PriorityPolicy,
+    PriorityPolicyConfig,
+    PriorityPolicyDecision,
+)
 from shinbot.agent.scheduler.scheduler import AgentScheduler, AgentSchedulerConfig
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import (
@@ -24,9 +30,13 @@ __all__ = [
     "AgentStateStore",
     "AgentWorkflowDispatcher",
     "AttentionActiveReplyDispatcher",
+    "DefaultPriorityPolicy",
     "HighPriorityEvent",
     "HighPriorityEventKind",
     "InMemoryAgentInbox",
     "InMemoryAgentStateStore",
+    "PriorityPolicy",
+    "PriorityPolicyConfig",
+    "PriorityPolicyDecision",
     "UnreadMessage",
 ]

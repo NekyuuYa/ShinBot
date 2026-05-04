@@ -12,8 +12,12 @@ from shinbot.agent.scheduler.models import (
     AgentScheduleDecision,
     AgentState,
     HighPriorityEvent,
-    HighPriorityEventKind,
     UnreadMessage,
+)
+from shinbot.agent.scheduler.priority_policy import (
+    DefaultPriorityPolicy,
+    PriorityPolicy,
+    PriorityPolicyConfig,
 )
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
@@ -31,6 +35,13 @@ class AgentSchedulerConfig:
     mention_wake_count: int = 1
     mention_wake_window_seconds: float = 60.0
 
+    def to_priority_policy_config(self) -> PriorityPolicyConfig:
+        """Build the default priority policy config from scheduler config."""
+        return PriorityPolicyConfig(
+            mention_wake_count=self.mention_wake_count,
+            mention_wake_window_seconds=self.mention_wake_window_seconds,
+        )
+
 
 class AgentScheduler:
     """Accepts Agent entry signals and decides which Agent workflow should run."""
@@ -43,6 +54,7 @@ class AgentScheduler:
         config: AgentSchedulerConfig | None = None,
         inbox: AgentInbox | None = None,
         state_store: AgentStateStore | None = None,
+        priority_policy: PriorityPolicy | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._workflow_dispatcher = workflow_dispatcher
@@ -50,6 +62,9 @@ class AgentScheduler:
         self._config = config or AgentSchedulerConfig()
         self._inbox = inbox or InMemoryAgentInbox()
         self._state_store = state_store or InMemoryAgentStateStore()
+        self._priority_policy = priority_policy or DefaultPriorityPolicy(
+            self._config.to_priority_policy_config()
+        )
         self._now = now or time.time
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
@@ -82,12 +97,16 @@ class AgentScheduler:
         )
         self._inbox.add_unread(unread)
 
-        high_priority_events = self._detect_high_priority_events(signal, now)
+        priority_decision = self._priority_policy.evaluate(
+            signal,
+            now=now,
+            inbox=self._inbox,
+        )
+        high_priority_events = priority_decision.events
         if high_priority_events:
             self._inbox.add_high_priority_events(high_priority_events)
 
-        should_active_reply = self._should_wake_for_active_reply(signal, high_priority_events, now)
-        if should_active_reply and self._workflow_dispatcher is not None:
+        if priority_decision.should_start_active_reply and self._workflow_dispatcher is not None:
             self._state_store.set_state(signal.session_id, AgentState.ACTIVE_REPLY)
             await self._workflow_dispatcher.run_active_reply(
                 session_id=signal.session_id,
@@ -126,53 +145,3 @@ class AgentScheduler:
     def state_for(self, session_id: str) -> AgentState:
         """Return current scheduler state for one session."""
         return self._state_store.get_state(session_id)
-
-    def _detect_high_priority_events(
-        self,
-        signal: AgentEntrySignal,
-        now: float,
-    ) -> list[HighPriorityEvent]:
-        events: list[HighPriorityEvent] = []
-        if signal.is_mentioned:
-            events.append(
-                HighPriorityEvent(
-                    session_id=signal.session_id,
-                    message_log_id=signal.message_log_id or 0,
-                    sender_id=signal.sender_id,
-                    kind=HighPriorityEventKind.MENTION,
-                    created_at=now,
-                    reason="message_mentions_self",
-                )
-            )
-        if signal.is_reply_to_bot:
-            events.append(
-                HighPriorityEvent(
-                    session_id=signal.session_id,
-                    message_log_id=signal.message_log_id or 0,
-                    sender_id=signal.sender_id,
-                    kind=HighPriorityEventKind.REPLY_TO_BOT,
-                    created_at=now,
-                    reason="message_replies_to_self",
-                )
-            )
-        return events
-
-    def _should_wake_for_active_reply(
-        self,
-        signal: AgentEntrySignal,
-        events: list[HighPriorityEvent],
-        now: float,
-    ) -> bool:
-        if not events:
-            return False
-        if signal.is_reply_to_bot:
-            return True
-        if signal.is_mentioned:
-            self._inbox.record_mention(signal.session_id, now)
-            recent_count = self._inbox.count_recent_mentions(
-                signal.session_id,
-                now=now,
-                window_seconds=self._config.mention_wake_window_seconds,
-            )
-            return recent_count >= self._config.mention_wake_count
-        return False
