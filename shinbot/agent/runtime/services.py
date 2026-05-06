@@ -39,6 +39,7 @@ from shinbot.agent.review import (
     ReviewRuntimeConfig,
     ReviewWorkflow,
     ReviewWorkflowConfig,
+    register_review_prompt_components,
 )
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.scheduler import AgentScheduler, AttentionActiveReplyDispatcher
@@ -104,6 +105,7 @@ class AgentRuntime:
             current_time_resolver=self.prompt_registry.resolve_builtin_current_time_prompt,
         )
         register_media_prompt_components(self.prompt_registry)
+        register_review_prompt_components(self.prompt_registry)
 
         self.media_inspection_runner = (
             MediaInspectionRunner(

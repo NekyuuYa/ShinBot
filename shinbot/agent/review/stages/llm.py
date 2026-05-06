@@ -22,6 +22,7 @@ from shinbot.agent.review.models import (
     ReplyDecisionStageOutput,
     ReviewScanStageOutput,
 )
+from shinbot.agent.review.prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
 from shinbot.agent.tools.schema import ToolCallRequest
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ class ReviewLLMStageRunnerBase:
                 session_id=stage_input.session_id,
                 instance_id=_instance_id_from_session(stage_input.session_id),
                 profile_id=self._config.profile_id,
-                component_ids_by_stage=self._config.component_ids_by_stage,
+                component_ids_by_stage=self._component_ids_by_stage(stage_input),
                 injections=self._build_prompt_injections(stage_input),
                 context_policy=PromptContextPolicy.DISABLED,
                 metadata=fallback_metadata,
@@ -128,21 +129,26 @@ class ReviewLLMStageRunnerBase:
         return result.messages, result.tools, dict(result.metadata)
 
     def _build_prompt_injections(self, stage_input: ReviewStageInput) -> list[PromptInjection]:
-        return [
-            PromptInjection(
-                stage=PromptStage.SYSTEM_BASE,
-                component_id=f"review.{stage_input.purpose}.system",
-                text=self._config.system_prompt,
-                priority=10,
-            ),
+        injections: list[PromptInjection] = []
+        if self._config.system_prompt:
+            injections.append(
+                PromptInjection(
+                    stage=PromptStage.SYSTEM_BASE,
+                    component_id=f"review.{stage_input.purpose}.system",
+                    text=self._config.system_prompt,
+                    priority=10,
+                )
+            )
+        injections.append(
             PromptInjection(
                 stage=PromptStage.INSTRUCTIONS,
                 component_id=f"review.{stage_input.purpose}.instruction",
                 content_blocks=self._build_instruction_content(stage_input),
                 priority=10,
                 metadata={"review_stage": stage_input.purpose},
-            ),
-        ]
+            )
+        )
+        return injections
 
     def _build_instruction_content(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
         metadata_json = json.dumps(stage_input.metadata, ensure_ascii=False, sort_keys=True)
@@ -170,6 +176,33 @@ class ReviewLLMStageRunnerBase:
         tools: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
         return self.response_format
+
+    def _component_ids_by_stage(
+        self,
+        stage_input: ReviewStageInput,
+    ) -> dict[PromptStage, list[str]]:
+        result: dict[PromptStage, list[str]] = {
+            stage: list(component_ids)
+            for stage, component_ids in self._config.component_ids_by_stage.items()
+        }
+        for stage, component_ids in REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE.get(
+            stage_input.purpose,
+            {},
+        ).items():
+            registered_ids = [
+                component_id
+                for component_id in component_ids
+                if self._prompt_registry.get_component(component_id) is not None
+            ]
+            if not registered_ids:
+                continue
+            result.setdefault(stage, [])
+            result[stage].extend(
+                component_id
+                for component_id in registered_ids
+                if component_id not in result[stage]
+            )
+        return result
 
 
 def _json_schema_response_format(
@@ -348,20 +381,12 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         if self._tool_manager is None:
             return ReplyDecisionStageOutput(reason="llm_reply_tool_call_skipped_no_tool_manager")
         target_message_ids = _candidate_message_ids_from_stage(stage_input)
-        replied = False
-        reply_message_id: int | None = None
-        reply_count = 0
-        poke_count = 0
-        saw_no_reply = False
-        for tool_call in result.tool_calls:
-            tool_name, arguments = _tool_call_function(tool_call)
-            if tool_name not in {"send_reply", "no_reply", "send_poke"}:
-                continue
-            if tool_name == "no_reply":
-                saw_no_reply = True
-                continue
-            if tool_name == "send_poke" and not replied:
-                continue
+        parsed_calls = [
+            _tool_call_function(tool_call)
+            for tool_call in result.tool_calls
+        ]
+        has_reply_call = any(tool_name == "send_reply" for tool_name, _ in parsed_calls)
+        for tool_name, arguments in parsed_calls:
             if tool_name == "send_reply" and _optional_int(
                 arguments.get("quote_message_log_id")
             ) is None:
@@ -369,6 +394,20 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
                     target_message_ids=target_message_ids,
                     reason="reply_tool_missing_quote_message_log_id",
                 )
+
+        replied = False
+        reply_message_id: int | None = None
+        reply_count = 0
+        poke_count = 0
+        saw_no_reply = False
+        for tool_name, arguments in parsed_calls:
+            if tool_name not in {"send_reply", "no_reply", "send_poke"}:
+                continue
+            if tool_name == "no_reply":
+                saw_no_reply = True
+                continue
+            if tool_name == "send_poke" and not has_reply_call:
+                continue
             tool_result = await self._tool_manager.execute(
                 ToolCallRequest(
                     tool_name=tool_name,

@@ -24,6 +24,10 @@ from shinbot.agent.review.models import (
     UnreadRangeSummaryRecord,
     build_review_workflow_explanation,
 )
+from shinbot.agent.review.prompt_registration import (
+    REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE,
+    register_review_prompt_components,
+)
 from shinbot.agent.review.stages.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
@@ -103,8 +107,10 @@ __all__ = [
     "ReviewWorkflow",
     "ReviewWorkflowConfig",
     "ReviewWorkflowResult",
+    "REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE",
     "UnreadRangeIgnoreRecord",
     "UnreadRangeSummaryRecord",
     "build_review_workflow_explanation",
     "parse_json_object",
+    "register_review_prompt_components",
 ]

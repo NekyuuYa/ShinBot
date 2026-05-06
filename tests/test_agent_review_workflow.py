@@ -29,6 +29,7 @@ from shinbot.agent.review import (
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
     parse_json_object,
+    register_review_prompt_components,
 )
 from shinbot.agent.scheduler import AgentScheduler, AgentState, AttentionActiveReplyDispatcher
 from shinbot.agent.scheduler.models import (
@@ -711,8 +712,9 @@ async def test_reply_decision_runner_allows_poke_after_reply_only() -> None:
     )
 
     assert result.replied is True
-    assert result.reason == "send_reply_tool:1;send_poke_tool:1"
+    assert result.reason == "send_reply_tool:1;send_poke_tool:2"
     assert [call.tool_name for call in tool_manager.execute_calls] == [
+        "send_poke",
         "send_reply",
         "send_poke",
     ]
@@ -846,6 +848,51 @@ async def test_review_llm_runner_uses_configured_prompt_components() -> None:
     )
     assert "registered review system" in message_text
     assert "registered output contract" in message_text
+
+
+@pytest.mark.asyncio
+async def test_review_llm_runner_uses_registered_builtin_review_prompts() -> None:
+    prompt_registry = PromptRegistry()
+    register_review_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "no_reply",
+                            "arguments": "{}",
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(system_prompt=""),
+        prompt_registry=prompt_registry,
+        tool_manager=FakeReviewToolManager(),
+    )
+
+    await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    message_text = "\n".join(
+        block["text"]
+        for message in model_runtime.calls[0].messages
+        for block in message["content"]
+        if isinstance(block, dict) and "text" in block
+    )
+    assert "Every send_reply MUST include quote_message_log_id" in message_text
+    assert "send_poke is optional" in message_text
 
 
 @pytest.mark.asyncio
