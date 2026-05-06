@@ -304,6 +304,7 @@ class FakeModelRuntime:
 class FakeReviewToolManager:
     def __init__(self) -> None:
         self.execute_calls: list[object] = []
+        self._next_message_log_id = 42
 
     def export_model_tools(self, **kwargs):
         return [
@@ -338,16 +339,32 @@ class FakeReviewToolManager:
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_poke",
+                    "description": "send poke",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"user_id": {"type": "string"}},
+                        "required": ["user_id"],
+                    },
+                },
+            },
         ]
 
     async def execute(self, call):
         self.execute_calls.append(call)
+        output = {"sent": True}
+        if call.tool_name == "send_reply":
+            output["message_log_id"] = self._next_message_log_id
+            self._next_message_log_id += 1
         return type(
             "FakeToolCallResult",
             (),
             {
                 "success": True,
-                "output": {"message_log_id": 42},
+                "output": output,
                 "error_code": "",
                 "error_message": "",
             },
@@ -567,9 +584,13 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
 
     call = model_runtime.calls[0]
     tool_names = [tool["function"]["name"] for tool in call.tools]
-    assert tool_names == ["no_reply", "send_reply"]
+    assert tool_names == ["no_reply", "send_reply", "send_poke"]
     send_reply_tool = call.tools[1]
+    send_poke_tool = call.tools[2]
     assert "quote_message_log_id" in send_reply_tool["function"]["parameters"]["required"]
+    assert "only takes effect after at least one send_reply" in send_poke_tool["function"][
+        "description"
+    ]
     assert call.response_format is None
     assert result.replied is True
     assert result.reply_message_id == 42
@@ -580,6 +601,160 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     assert tool_manager.execute_calls[0].session_id == "bot:group:room"
     assert tool_manager.execute_calls[0].instance_id == "bot"
     assert tool_manager.execute_calls[0].arguments["quote_message_log_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_executes_multiple_replies_in_order() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "first", "quote_message_log_id": 7}',
+                        },
+                    },
+                    {
+                        "id": "tool-2",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "second", "quote_message_log_id": 8}',
+                        },
+                    },
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}, {"id": 8, "raw_text": "world"}],
+            metadata={"candidate_message_ids": [7, 8]},
+        )
+    )
+
+    assert result.replied is True
+    assert result.reply_message_id == 42
+    assert result.target_message_ids == [7, 8]
+    assert result.reason == "send_reply_tool:2"
+    assert [call.tool_name for call in tool_manager.execute_calls] == [
+        "send_reply",
+        "send_reply",
+    ]
+    assert [call.arguments["text"] for call in tool_manager.execute_calls] == [
+        "first",
+        "second",
+    ]
+    assert [call.arguments["quote_message_log_id"] for call in tool_manager.execute_calls] == [
+        7,
+        8,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_allows_poke_after_reply_only() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_poke",
+                            "arguments": '{"user_id": "user-1"}',
+                        },
+                    },
+                    {
+                        "id": "tool-2",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "hello", "quote_message_log_id": 7}',
+                        },
+                    },
+                    {
+                        "id": "tool-3",
+                        "function": {
+                            "name": "send_poke",
+                            "arguments": '{"user_id": "user-1"}',
+                        },
+                    },
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is True
+    assert result.reason == "send_reply_tool:1;send_poke_tool:1"
+    assert [call.tool_name for call in tool_manager.execute_calls] == [
+        "send_reply",
+        "send_poke",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_ignores_standalone_poke() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_poke",
+                            "arguments": '{"user_id": "user-1"}',
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.reason == "llm_reply_decision_no_terminal_tool"
+    assert tool_manager.execute_calls == []
 
 
 @pytest.mark.asyncio

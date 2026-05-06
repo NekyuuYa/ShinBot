@@ -265,10 +265,13 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
 
     task_prompt = (
         "Decide whether the candidate message should be replied to based on the "
-        "local context. If reply tools are available, finish by calling exactly one of "
-        "send_reply or no_reply. When calling send_reply, quote the specific message "
-        "being answered by passing quote_message_log_id, because review replies may "
-        "refer to older timeline points. This stage must not decide active chat parameters."
+        "local context. If reply tools are available, call no_reply when no response "
+        "is needed, or call one or more send_reply tools in the order they should be "
+        "sent. When calling send_reply, quote the specific message being answered by "
+        "passing quote_message_log_id, because review replies may refer to older "
+        "timeline points. send_poke is optional and only valid together with a "
+        "send_reply; do not use it as a standalone response. This stage must not "
+        "decide active chat parameters."
     )
     response_format = _json_schema_response_format(
         "agent_review_reply_decision",
@@ -333,7 +336,8 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         return [
             _review_reply_tool_schema(tool)
             for tool in tools
-            if tool.get("function", {}).get("name") in {"send_reply", "no_reply"}
+            if tool.get("function", {}).get("name")
+            in {"send_reply", "no_reply", "send_poke"}
         ]
 
     async def _run_tool_decision(
@@ -344,9 +348,19 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         if self._tool_manager is None:
             return ReplyDecisionStageOutput(reason="llm_reply_tool_call_skipped_no_tool_manager")
         target_message_ids = _candidate_message_ids_from_stage(stage_input)
+        replied = False
+        reply_message_id: int | None = None
+        reply_count = 0
+        poke_count = 0
+        saw_no_reply = False
         for tool_call in result.tool_calls:
             tool_name, arguments = _tool_call_function(tool_call)
-            if tool_name not in {"send_reply", "no_reply"}:
+            if tool_name not in {"send_reply", "no_reply", "send_poke"}:
+                continue
+            if tool_name == "no_reply":
+                saw_no_reply = True
+                continue
+            if tool_name == "send_poke" and not replied:
                 continue
             if tool_name == "send_reply" and _optional_int(
                 arguments.get("quote_message_log_id")
@@ -376,14 +390,22 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
                     reason=f"reply_tool_failed:{tool_result.error_code}",
                 )
             if tool_name == "send_reply":
-                return ReplyDecisionStageOutput(
-                    replied=True,
-                    reply_message_id=_optional_int(
+                replied = True
+                reply_count += 1
+                if reply_message_id is None:
+                    reply_message_id = _optional_int(
                         _tool_output_value(tool_result.output, "message_log_id")
-                    ),
-                    target_message_ids=target_message_ids,
-                    reason="send_reply_tool",
-                )
+                    )
+                continue
+            poke_count += 1
+        if replied:
+            return ReplyDecisionStageOutput(
+                replied=True,
+                reply_message_id=reply_message_id,
+                target_message_ids=target_message_ids,
+                reason=_reply_tool_reason(reply_count=reply_count, poke_count=poke_count),
+            )
+        if saw_no_reply:
             return ReplyDecisionStageOutput(
                 replied=False,
                 target_message_ids=target_message_ids,
@@ -482,7 +504,22 @@ def _tool_output_value(output: Any, key: str) -> Any:
 
 def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
     function = tool.get("function")
-    if not isinstance(function, dict) or function.get("name") != "send_reply":
+    if not isinstance(function, dict):
+        return tool
+    if function.get("name") == "send_poke":
+        return {
+            **tool,
+            "function": {
+                **function,
+                "description": (
+                    str(function.get("description") or "")
+                    + "\nReview reply requirement: send_poke is optional and only "
+                    "takes effect after at least one send_reply in the same reply "
+                    "decision output. Never use it as the only response."
+                ),
+            },
+        }
+    if function.get("name") != "send_reply":
         return tool
     reviewed = {
         **tool,
@@ -513,6 +550,12 @@ def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
     reviewed_parameters["required"] = required
     reviewed["function"]["parameters"] = reviewed_parameters
     return reviewed
+
+
+def _reply_tool_reason(*, reply_count: int, poke_count: int) -> str:
+    if poke_count:
+        return f"send_reply_tool:{reply_count};send_poke_tool:{poke_count}"
+    return f"send_reply_tool:{reply_count}" if reply_count != 1 else "send_reply_tool"
 
 
 def _int_list(value: Any) -> list[int]:
