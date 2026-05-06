@@ -12,9 +12,8 @@ from shinbot.agent.attention.engine import AttentionEngine
 from shinbot.agent.attention.models import SessionAttentionState, WorkflowRunRecord
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_manager import (
-    PromptAssemblyRequest,
-    PromptAssemblyResult,
     PromptBuildRequest,
+    PromptBuildResult,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
@@ -212,14 +211,16 @@ class WorkflowRunner:
 
         self_platform_id = str(attention_state.metadata.get("self_platform_id", "") or "").strip()
 
-        request = PromptAssemblyRequest(
+        request = PromptBuildRequest(
             caller="attention.workflow_runner",
+            workflow_id="attention",
+            stage_id="attention_workflow",
             session_id=session_id,
             instance_id=instance_id,
             route_id=route_id,
             model_id=model_id,
             model_context_window=model_context_window,
-            component_overrides=component_ids,
+            component_ids=component_ids,
             template_inputs={
                 "session_id": session_id,
                 "instance_id": instance_id,
@@ -228,6 +229,7 @@ class WorkflowRunner:
                 "message_blocks": [],
                 "user_id": "",
             },
+            context_policy=PromptContextPolicy.MEMORY,
             context_inputs=self._build_identity_context_inputs(
                 session_id,
                 batch,
@@ -247,7 +249,7 @@ class WorkflowRunner:
         )
 
         try:
-            assembly = self._prompt_registry.assemble(request)
+            prompt_result = self._prompt_registry.build_messages(request)
         except Exception:
             logger.exception("Workflow prompt assembly failed for session %s", session_id)
             return None
@@ -259,7 +261,7 @@ class WorkflowRunner:
             session_id=session_id,
             tags={"attention"},
         )
-        all_tools = (assembly.tools or []) + attention_tools
+        all_tools = (prompt_result.tools or []) + attention_tools
 
         # ── Multi-step loop (Incremental Merging) ──────────────────
         #
@@ -268,13 +270,13 @@ class WorkflowRunner:
         # with assistant replies, tool results, and incremental user msgs.
 
         initial_messages = self._build_initial_workflow_messages(
-            assembly,
+            prompt_result,
             explicit_prompt_cache_enabled=resolved_config.explicit_prompt_cache_enabled,
         )
 
         # Save prompt snapshot after workflow-specific message rearrangement so
         # audits match the actual first model-facing prompt.
-        snapshot = self._prompt_registry.create_snapshot(assembly, request)
+        snapshot = self._prompt_registry.create_build_snapshot(prompt_result, request)
         snapshot.full_messages = self._build_model_call_messages(initial_messages)
         snapshot.full_tools = all_tools
         try:
@@ -555,7 +557,7 @@ class WorkflowRunner:
 
     def _build_initial_workflow_messages(
         self,
-        assembly: PromptAssemblyResult,
+        assembly: PromptBuildResult,
         *,
         explicit_prompt_cache_enabled: bool,
     ) -> list[dict[str, Any]]:

@@ -8,6 +8,8 @@ import json
 from shinbot.agent.prompt_manager.schema import (
     PromptAssemblyRequest,
     PromptAssemblyResult,
+    PromptBuildRequest,
+    PromptBuildResult,
     PromptLoggerRecord,
     PromptSnapshot,
     PromptSourceType,
@@ -23,6 +25,31 @@ def create_prompt_snapshot(
 
     return PromptSnapshot(
         profile_id=result.profile_id,
+        caller=result.caller,
+        session_id=request.session_id,
+        instance_id=request.instance_id,
+        route_id=request.route_id,
+        model_id=request.model_id,
+        prompt_signature=result.prompt_signature,
+        cache_key=result.cache_key,
+        components=result.ordered_components,
+        stages=result.stages,
+        full_messages=result.messages,
+        full_tools=result.tools,
+        compatibility_used=result.compatibility_used,
+        truncation=result.truncation,
+        metadata=dict(result.metadata),
+    )
+
+
+def create_prompt_build_snapshot(
+    result: PromptBuildResult,
+    request: PromptBuildRequest,
+) -> PromptSnapshot:
+    """Create a serializable snapshot from one workflow prompt build result."""
+
+    return PromptSnapshot(
+        profile_id=request.profile_id,
         caller=result.caller,
         session_id=request.session_id,
         instance_id=request.instance_id,

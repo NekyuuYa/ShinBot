@@ -262,8 +262,10 @@ class PromptBuildResult(BaseModel):
     messages: list[dict[str, Any]] = Field(default_factory=list)
     tools: list[dict[str, Any]] = Field(default_factory=list)
     prompt_signature: str = ""
+    cache_key: str = ""
     compatibility_used: bool = False
     has_unknown_source: bool = False
+    truncation: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

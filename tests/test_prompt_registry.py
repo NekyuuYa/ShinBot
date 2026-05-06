@@ -377,6 +377,40 @@ def test_prompt_registry_build_messages_accepts_flat_component_ids() -> None:
     assert "do work" in result.messages[-1]["content"][0]["text"]
 
 
+def test_prompt_registry_build_messages_creates_snapshot() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    request = PromptBuildRequest(
+        caller="attention.workflow_runner",
+        workflow_id="attention",
+        stage_id="attention_workflow",
+        session_id="s1",
+        instance_id="inst-1",
+        route_id="route-a",
+        component_ids=["system"],
+        context_policy=PromptContextPolicy.DISABLED,
+    )
+    result = registry.build_messages(request)
+
+    snapshot = registry.create_build_snapshot(result, request)
+
+    assert snapshot.caller == "attention.workflow_runner"
+    assert snapshot.session_id == "s1"
+    assert snapshot.instance_id == "inst-1"
+    assert snapshot.route_id == "route-a"
+    assert snapshot.prompt_signature == result.prompt_signature
+    assert snapshot.full_messages == result.messages
+    assert snapshot.metadata["workflow_id"] == "attention"
+    assert snapshot.metadata["stage_id"] == "attention_workflow"
+
+
 def test_prompt_registry_build_messages_keeps_tools_out_of_messages() -> None:
     registry = PromptRegistry()
     registry.register_component(

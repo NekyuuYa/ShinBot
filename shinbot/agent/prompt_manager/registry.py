@@ -37,6 +37,7 @@ from shinbot.agent.prompt_manager.schema import (
 from shinbot.agent.prompt_manager.snapshots import (
     build_prompt_log_record,
     build_prompt_signature,
+    create_prompt_build_snapshot,
     create_prompt_snapshot,
 )
 from shinbot.agent.runtime import resolve_current_time_prompt, resolve_message_text_prompt
@@ -215,8 +216,10 @@ class PromptRegistry:
             messages=assembly.messages,
             tools=assembly.tools,
             prompt_signature=assembly.prompt_signature,
+            cache_key=assembly.cache_key,
             compatibility_used=assembly.compatibility_used,
             has_unknown_source=assembly.has_unknown_source,
+            truncation=assembly.truncation,
             metadata=assembly.metadata,
         )
 
@@ -423,6 +426,11 @@ class PromptRegistry:
         self, result: PromptAssemblyResult, request: PromptAssemblyRequest
     ) -> PromptSnapshot:
         return create_prompt_snapshot(result, request)
+
+    def create_build_snapshot(
+        self, result: PromptBuildResult, request: PromptBuildRequest
+    ) -> PromptSnapshot:
+        return create_prompt_build_snapshot(result, request)
 
     def build_log_record(
         self, result: PromptAssemblyResult, request: PromptAssemblyRequest
