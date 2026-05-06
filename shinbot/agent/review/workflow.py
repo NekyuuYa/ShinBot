@@ -18,12 +18,14 @@ from shinbot.agent.review.message_store import ReviewMessageStore
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ReplyDecisionResult,
+    ReplyDecisionStageOutput,
     ReviewScanResult,
     ReviewScanStageOutput,
     ReviewWorkflowConfig,
     ReviewWorkflowResult,
     UnreadRangeSummaryRecord,
 )
+from shinbot.agent.review.reply import NoopReplyDecisionStageRunner, ReplyDecisionStageRunner
 from shinbot.agent.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 from shinbot.agent.scheduler.models import (
     ReviewCompletionDecision,
@@ -71,12 +73,14 @@ class ReviewWorkflow:
         message_store: ReviewMessageStore | None = None,
         context_builder: ReviewContextBuilder | None = None,
         scan_runner: ReviewScanStageRunner | None = None,
+        reply_runner: ReplyDecisionStageRunner | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
         self._message_store = message_store
         self._context_builder = context_builder or ReviewContextBuilderAdapter()
         self._scan_runner = scan_runner or NoopReviewScanStageRunner()
+        self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
         self._now = now or time.time
 
     async def run(
@@ -97,7 +101,7 @@ class ReviewWorkflow:
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
             )
-            reply = self._run_reply_decision(scan)
+            reply = await self._run_reply_decision(session_id=session_id, scan=scan)
             bootstrap = self._run_active_chat_bootstrap(
                 session_id=session_id,
                 started_at=started_at,
@@ -179,8 +183,65 @@ class ReviewWorkflow:
             compressed_ranges=compressed_ranges,
         )
 
-    def _run_reply_decision(self, scan: ReviewScanResult) -> ReplyDecisionResult:
-        return ReplyDecisionResult(target_message_ids=scan.candidate_message_ids)
+    async def _run_reply_decision(
+        self,
+        *,
+        session_id: str,
+        scan: ReviewScanResult,
+    ) -> ReplyDecisionResult:
+        if not scan.candidate_message_ids:
+            return ReplyDecisionResult()
+        if self._message_store is None:
+            return ReplyDecisionResult(
+                target_message_ids=scan.candidate_message_ids,
+                reply_reason="reply_decision_skipped_no_message_store",
+            )
+
+        loaded_message_count = 0
+        stage_input_count = 0
+        replied = False
+        reply_message_id = None
+        target_message_ids: list[int] = []
+        reply_reasons: list[str] = []
+
+        for candidate_message_id in scan.candidate_message_ids:
+            local_context = self._message_store.list_around_message(
+                session_id=session_id,
+                message_log_id=candidate_message_id,
+                before=self._config.reply_context_before_messages,
+                after=self._config.reply_context_after_messages,
+            )
+            loaded_message_count += len(local_context)
+            stage_input = self._build_stage_input(
+                session_id=session_id,
+                messages=local_context,
+                purpose="reply_decision",
+                metadata={
+                    "candidate_message_id": candidate_message_id,
+                    "before_messages": self._config.reply_context_before_messages,
+                    "after_messages": self._config.reply_context_after_messages,
+                },
+            )
+            if stage_input is None:
+                continue
+            stage_input_count += 1
+            stage_output = await self._run_reply_stage(stage_input)
+            replied = replied or stage_output.replied
+            if reply_message_id is None:
+                reply_message_id = stage_output.reply_message_id
+            target_message_ids.extend(stage_output.target_message_ids)
+            if stage_output.reason.strip():
+                reply_reasons.append(stage_output.reason.strip())
+
+        return ReplyDecisionResult(
+            replied=replied,
+            reply_message_id=reply_message_id,
+            target_message_ids=_dedupe_preserve_order(target_message_ids),
+            reply_reason="; ".join(_dedupe_preserve_order(reply_reasons))
+            or "noop_reply_decision",
+            loaded_message_count=loaded_message_count,
+            stage_input_count=stage_input_count,
+        )
 
     def _run_active_chat_bootstrap(
         self,
@@ -308,6 +369,9 @@ class ReviewWorkflow:
 
     async def _run_scan_stage(self, stage_input: ReviewStageInput) -> ReviewScanStageOutput:
         return await self._scan_runner.run(stage_input)
+
+    async def _run_reply_stage(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
+        return await self._reply_runner.run(stage_input)
 
     def _planned_overflow_compression(
         self,

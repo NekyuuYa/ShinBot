@@ -14,6 +14,7 @@ from shinbot.agent.review.message_store import (
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ReplyDecisionResult,
+    ReplyDecisionStageOutput,
     ReviewScanResult,
     ReviewScanStageOutput,
     ReviewWorkflowConfig,
@@ -21,6 +22,7 @@ from shinbot.agent.review.models import (
     UnreadRangeIgnoreRecord,
     UnreadRangeSummaryRecord,
 )
+from shinbot.agent.review.reply import NoopReplyDecisionStageRunner, ReplyDecisionStageRunner
 from shinbot.agent.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 from shinbot.agent.review.workflow import ReviewWorkflow
 
@@ -28,8 +30,11 @@ __all__ = [
     "ActiveChatBootstrapResult",
     "DatabaseReviewMessageStore",
     "MessageLogPayload",
+    "NoopReplyDecisionStageRunner",
     "NoopReviewScanStageRunner",
     "ReplyDecisionResult",
+    "ReplyDecisionStageOutput",
+    "ReplyDecisionStageRunner",
     "ReviewContextBuilder",
     "ReviewContextBuilderAdapter",
     "ReviewContextBuildOptions",

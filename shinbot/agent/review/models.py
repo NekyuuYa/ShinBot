@@ -13,6 +13,8 @@ class ReviewWorkflowConfig:
 
     review_scan_batch_size: int = 500
     overflow_threshold_messages: int = 3000
+    reply_context_before_messages: int = 20
+    reply_context_after_messages: int = 20
     tail_history_before_seconds: float = 180.0
     tail_history_limit: int = 500
     fallback_active_chat_interest: float = 0.05
@@ -76,6 +78,18 @@ class ReplyDecisionResult:
     reply_message_id: int | None = None
     target_message_ids: list[int] = field(default_factory=list)
     reply_reason: str = "review_reply_skeleton_no_llm"
+    loaded_message_count: int = 0
+    stage_input_count: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class ReplyDecisionStageOutput:
+    """Output from one reply_decision stage runner invocation."""
+
+    replied: bool = False
+    reply_message_id: int | None = None
+    target_message_ids: list[int] = field(default_factory=list)
+    reason: str = "noop_reply_decision"
 
 
 @dataclass(slots=True, frozen=True)

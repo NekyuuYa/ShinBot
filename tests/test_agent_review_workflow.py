@@ -4,6 +4,7 @@ import pytest
 
 from shinbot.agent.review import (
     DatabaseReviewMessageStore,
+    ReplyDecisionStageOutput,
     ReviewContextBuilderAdapter,
     ReviewScanStageOutput,
     ReviewWorkflow,
@@ -138,6 +139,28 @@ class SelectingReviewScanRunner:
         return ReviewScanStageOutput(
             candidate_message_ids=[message_ids[-1], message_ids[-1]] if message_ids else [],
             reason=f"selected_from_{len(message_ids)}",
+        )
+
+
+class RecordingReplyDecisionRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def run(self, stage_input) -> ReplyDecisionStageOutput:
+        message_ids = [message["id"] for message in stage_input.source_messages]
+        candidate_id = stage_input.metadata["candidate_message_id"]
+        self.calls.append(
+            {
+                "purpose": stage_input.purpose,
+                "candidate_id": candidate_id,
+                "message_ids": message_ids,
+                "metadata": dict(stage_input.metadata),
+            }
+        )
+        return ReplyDecisionStageOutput(
+            replied=False,
+            target_message_ids=[candidate_id],
+            reason=f"checked_{candidate_id}",
         )
 
 
@@ -397,6 +420,81 @@ async def test_review_scan_runner_selects_candidate_message_ids(tmp_path) -> Non
     assert [call["message_ids"] for call in scan_runner.calls] == [
         message_ids[:2],
         message_ids[2:],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 6)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    scan_runner = SelectingReviewScanRunner()
+    reply_runner = RecordingReplyDecisionRunner()
+    context_builder = RecordingReviewContextBuilder()
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=5,
+            reply_context_before_messages=1,
+            reply_context_after_messages=1,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=context_builder,
+        scan_runner=scan_runner,
+        reply_runner=reply_runner,
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.scan.candidate_message_ids == [message_ids[-1]]
+    assert result.reply.target_message_ids == [message_ids[-1]]
+    assert result.reply.loaded_message_count == 2
+    assert result.reply.stage_input_count == 1
+    assert result.reply.reply_reason == f"checked_{message_ids[-1]}"
+    assert reply_runner.calls == [
+        {
+            "purpose": "reply_decision",
+            "candidate_id": message_ids[-1],
+            "message_ids": message_ids[-2:],
+            "metadata": {
+                "purpose": "reply_decision",
+                "candidate_message_id": message_ids[-1],
+                "before_messages": 1,
+                "after_messages": 1,
+            },
+        }
+    ]
+    assert [call["purpose"] for call in context_builder.calls] == [
+        "review_scan",
+        "reply_decision",
+        "active_chat_bootstrap",
     ]
 
 
