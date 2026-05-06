@@ -54,6 +54,7 @@ class ReviewScanResult:
     scan_reason: str = "review_workflow_skeleton_no_llm"
     scanned_message_count: int = 0
     loaded_message_count: int = 0
+    stage_input_count: int = 0
     batch_count: int = 0
     compressed_ranges: list[UnreadRangeSummaryRecord] = field(default_factory=list)
     ignored_ranges: list[UnreadRangeIgnoreRecord] = field(default_factory=list)
@@ -79,6 +80,7 @@ class ActiveChatBootstrapResult:
     tail_history_start_at: float | None = None
     tail_history_end_at: float | None = None
     tail_history_message_count: int = 0
+    stage_input_built: bool = False
 
 
 @dataclass(slots=True, frozen=True)

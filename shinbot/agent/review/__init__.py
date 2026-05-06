@@ -1,5 +1,11 @@
 """Review workflow primitives for Agent internals."""
 
+from shinbot.agent.review.context_builder import (
+    ReviewContextBuilder,
+    ReviewContextBuilderAdapter,
+    ReviewContextBuildOptions,
+    ReviewStageInput,
+)
 from shinbot.agent.review.message_store import (
     DatabaseReviewMessageStore,
     MessageLogPayload,
@@ -21,8 +27,12 @@ __all__ = [
     "DatabaseReviewMessageStore",
     "MessageLogPayload",
     "ReplyDecisionResult",
+    "ReviewContextBuilder",
+    "ReviewContextBuilderAdapter",
+    "ReviewContextBuildOptions",
     "ReviewMessageStore",
     "ReviewScanResult",
+    "ReviewStageInput",
     "ReviewWorkflow",
     "ReviewWorkflowConfig",
     "ReviewWorkflowResult",

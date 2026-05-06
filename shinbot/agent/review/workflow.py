@@ -8,6 +8,10 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
+from shinbot.agent.review.context_builder import (
+    ReviewContextBuilder,
+    ReviewContextBuildOptions,
+)
 from shinbot.agent.review.message_store import ReviewMessageStore
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
@@ -61,10 +65,12 @@ class ReviewWorkflow:
         config: ReviewWorkflowConfig | None = None,
         *,
         message_store: ReviewMessageStore | None = None,
+        context_builder: ReviewContextBuilder | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
         self._message_store = message_store
+        self._context_builder = context_builder
         self._now = now or time.time
 
     async def run(
@@ -145,14 +151,16 @@ class ReviewWorkflow:
             unread_count=unread_count,
             unread_ranges=unread_ranges,
         )
-        loaded_message_count = self._load_scan_batches(
-            unread_ranges,
+        loaded_message_count, stage_input_count = self._load_scan_batches(
+            session_id=session_id,
+            unread_ranges=unread_ranges,
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
         )
         return ReviewScanResult(
             scanned_message_count=scanned_count,
             loaded_message_count=loaded_message_count,
+            stage_input_count=stage_input_count,
             batch_count=batch_count,
             compressed_ranges=compressed_ranges,
         )
@@ -167,7 +175,7 @@ class ReviewWorkflow:
         started_at: float,
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
-        tail_history_message_count = self._load_tail_history(
+        tail_history_message_count, stage_input_built = self._load_tail_history(
             session_id=session_id,
             started_at=started_at,
             ended_at=ended_at,
@@ -177,20 +185,23 @@ class ReviewWorkflow:
             tail_history_start_at=(started_at - self._config.tail_history_before_seconds) * 1000,
             tail_history_end_at=ended_at * 1000,
             tail_history_message_count=tail_history_message_count,
+            stage_input_built=stage_input_built,
         )
 
     def _load_scan_batches(
         self,
+        session_id: str,
         unread_ranges: list[UnreadRange],
         *,
         max_messages: int,
         prefer_tail: bool,
-    ) -> int:
+    ) -> tuple[int, int]:
         if self._message_store is None or max_messages <= 0:
-            return 0
+            return 0, 0
 
         remaining = max_messages
         loaded_count = 0
+        stage_input_count = 0
         scan_ranges = (
             self._tail_scan_ranges(unread_ranges, max_messages=max_messages)
             if prefer_tail
@@ -207,9 +218,21 @@ class ReviewWorkflow:
                 if not batch:
                     break
                 loaded_count += len(batch)
+                if self._build_stage_input(
+                    session_id=session_id,
+                    messages=batch,
+                    purpose="review_scan",
+                    metadata={
+                        "range_id": unread_range.id,
+                        "range_start_msg_log_id": unread_range.start_msg_log_id,
+                        "range_end_msg_log_id": unread_range.end_msg_log_id,
+                        "offset": offset,
+                    },
+                ):
+                    stage_input_count += 1
                 remaining -= len(batch)
                 offset += len(batch)
-        return loaded_count
+        return loaded_count, stage_input_count
 
     def _load_tail_history(
         self,
@@ -217,9 +240,9 @@ class ReviewWorkflow:
         session_id: str,
         started_at: float,
         ended_at: float,
-    ) -> int:
+    ) -> tuple[int, bool]:
         if self._message_store is None:
-            return 0
+            return 0, False
 
         tail_history = self._message_store.list_by_time(
             session_id=session_id,
@@ -227,7 +250,35 @@ class ReviewWorkflow:
             end_at=ended_at * 1000,
             limit=self._config.tail_history_limit,
         )
-        return len(tail_history)
+        stage_input_built = self._build_stage_input(
+            session_id=session_id,
+            messages=tail_history,
+            purpose="active_chat_bootstrap",
+            metadata={
+                "tail_history_start_at": (started_at - self._config.tail_history_before_seconds)
+                * 1000,
+                "tail_history_end_at": ended_at * 1000,
+            },
+        )
+        return len(tail_history), stage_input_built
+
+    def _build_stage_input(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict],
+        purpose: str,
+        metadata: dict,
+    ) -> bool:
+        if self._context_builder is None:
+            return False
+        self._context_builder.build_for_messages(
+            session_id=session_id,
+            messages=messages,
+            purpose=purpose,
+            options=ReviewContextBuildOptions(metadata=metadata),
+        )
+        return True
 
     def _planned_overflow_compression(
         self,

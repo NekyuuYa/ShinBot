@@ -4,6 +4,7 @@ import pytest
 
 from shinbot.agent.review import (
     DatabaseReviewMessageStore,
+    ReviewContextBuilderAdapter,
     ReviewWorkflow,
     ReviewWorkflowConfig,
 )
@@ -97,6 +98,54 @@ class FakeReviewScheduler:
         )
 
 
+class RecordingReviewContextBuilder:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def build_for_messages(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict],
+        purpose: str,
+        options=None,
+    ):
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "message_ids": [message["id"] for message in messages],
+                "purpose": purpose,
+                "metadata": dict(options.metadata) if options is not None else {},
+            }
+        )
+        return None
+
+
+class FakeContextManager:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def build_instruction_stage_content(
+        self,
+        session_id: str,
+        unread_records: list[dict],
+        *,
+        previous_summary: str = "",
+        self_platform_id: str = "",
+        now_ms: int | None = None,
+    ) -> list[dict]:
+        self.calls.append(
+            {
+                "session_id": session_id,
+                "message_ids": [record["id"] for record in unread_records],
+                "previous_summary": previous_summary,
+                "self_platform_id": self_platform_id,
+                "now_ms": now_ms,
+            }
+        )
+        return [{"type": "text", "text": f"{len(unread_records)} messages"}]
+
+
 def _insert_message(
     db: DatabaseManager,
     *,
@@ -153,6 +202,25 @@ def test_database_review_message_store_reads_review_windows(tmp_path) -> None:
     assert [row["raw_text"] for row in range_rows] == ["m3", "m4"]
     assert [row["raw_text"] for row in around_rows] == ["m2", "m3", "m4", "m5"]
     assert [row["raw_text"] for row in time_rows] == ["m2", "m3", "m4", "m5"]
+
+
+def test_review_context_builder_adapter_uses_context_manager() -> None:
+    context_manager = FakeContextManager()
+    adapter = ReviewContextBuilderAdapter(context_manager)
+
+    stage_input = adapter.build_for_messages(
+        session_id="bot:group:room",
+        messages=[{"id": 1, "raw_text": "hello"}],
+        purpose="review_scan",
+        options=None,
+    )
+
+    assert stage_input.session_id == "bot:group:room"
+    assert stage_input.purpose == "review_scan"
+    assert stage_input.source_messages == [{"id": 1, "raw_text": "hello"}]
+    assert stage_input.instruction_content == [{"type": "text", "text": "1 messages"}]
+    assert stage_input.metadata == {"purpose": "review_scan"}
+    assert context_manager.calls[0]["message_ids"] == [1]
 
 
 @pytest.mark.asyncio
@@ -229,9 +297,11 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         now=lambda: 10.0,
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
+    context_builder = RecordingReviewContextBuilder()
     workflow = ReviewWorkflow(
         ReviewWorkflowConfig(review_scan_batch_size=2),
         message_store=DatabaseReviewMessageStore(db),
+        context_builder=context_builder,
         now=lambda: 5.0,
     )
 
@@ -244,9 +314,17 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
 
     assert result.scan.scanned_message_count == 5
     assert result.scan.loaded_message_count == 5
+    assert result.scan.stage_input_count == 3
     assert result.scan.batch_count == 3
     assert result.bootstrap.tail_history_message_count == 5
+    assert result.bootstrap.stage_input_built is True
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert [call["purpose"] for call in context_builder.calls] == [
+        "review_scan",
+        "review_scan",
+        "review_scan",
+        "active_chat_bootstrap",
+    ]
 
 
 @pytest.mark.asyncio
