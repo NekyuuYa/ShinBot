@@ -971,6 +971,10 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
     active_chat_state = scheduler.active_chat_state_for("bot:group:room")
     assert active_chat_state is not None
     assert active_chat_state.interest_value == 0.05
+    assert dispatcher.last_review_result is not None
+    assert dispatcher.last_review_explanation is not None
+    assert dispatcher.last_review_explanation.active_chat_initial_interest == 0.05
+    assert dispatcher.last_review_explanation.replied is False
 
 
 @pytest.mark.asyncio
