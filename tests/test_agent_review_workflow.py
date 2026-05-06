@@ -588,7 +588,8 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     assert tool_names == ["no_reply", "send_reply", "send_poke"]
     send_reply_tool = call.tools[1]
     send_poke_tool = call.tools[2]
-    assert "quote_message_log_id" in send_reply_tool["function"]["parameters"]["required"]
+    assert "quote_message_log_id" not in send_reply_tool["function"]["parameters"]["required"]
+    assert "first send_reply" in send_reply_tool["function"]["description"]
     assert "only takes effect after at least one send_reply" in send_poke_tool["function"][
         "description"
     ]
@@ -622,7 +623,7 @@ async def test_reply_decision_runner_executes_multiple_replies_in_order() -> Non
                         "id": "tool-2",
                         "function": {
                             "name": "send_reply",
-                            "arguments": '{"text": "second", "quote_message_log_id": 8}',
+                            "arguments": '{"text": "second"}',
                         },
                     },
                 ]
@@ -657,10 +658,8 @@ async def test_reply_decision_runner_executes_multiple_replies_in_order() -> Non
         "first",
         "second",
     ]
-    assert [call.arguments["quote_message_log_id"] for call in tool_manager.execute_calls] == [
-        7,
-        8,
-    ]
+    assert tool_manager.execute_calls[0].arguments["quote_message_log_id"] == 7
+    assert "quote_message_log_id" not in tool_manager.execute_calls[1].arguments
 
 
 @pytest.mark.asyncio
@@ -891,8 +890,41 @@ async def test_review_llm_runner_uses_registered_builtin_review_prompts() -> Non
         for block in message["content"]
         if isinstance(block, dict) and "text" in block
     )
-    assert "Every send_reply MUST include quote_message_log_id" in message_text
+    assert "The first send_reply MUST include quote_message_log_id" in message_text
+    assert "candidate_message_ids are the core messages under reply consideration" in message_text
     assert "send_poke is optional" in message_text
+
+
+@pytest.mark.asyncio
+async def test_review_llm_runner_avoids_duplicate_inline_system_prompt() -> None:
+    prompt_registry = PromptRegistry()
+    register_review_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        ['{"candidate_message_ids": [7], "reason": "selected"}']
+    )
+    runner = LLMReviewScanStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(system_prompt="inline fallback system"),
+        prompt_registry=prompt_registry,
+    )
+
+    await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="review_scan",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+        )
+    )
+
+    message_text = "\n".join(
+        block["text"]
+        for message in model_runtime.calls[0].messages
+        for block in message["content"]
+        if isinstance(block, dict) and "text" in block
+    )
+    assert "inline fallback system" not in message_text
+    assert "internal ShinBot Agent review workflow stage" in message_text
+    assert "Select message_log ids" in message_text
 
 
 @pytest.mark.asyncio

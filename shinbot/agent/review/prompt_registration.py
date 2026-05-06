@@ -83,12 +83,16 @@ def _review_prompt_components() -> list[PromptComponent]:
             PromptStage.CONSTRAINTS,
             "Reply decision tool rules: call no_reply when no response is needed. "
             "When response is needed, call one or more send_reply tools in the "
-            "exact order messages should be sent. Every send_reply MUST include "
-            "quote_message_log_id pointing to the specific message being answered, "
-            "because review replies may refer to older timeline points. send_poke "
-            "is optional and may appear anywhere in the same tool-call batch, but "
-            "it only makes sense when accompanied by at least one send_reply. Do "
-            "not decide or emit active chat parameters in this stage.",
+            "exact order messages should be sent. The candidate_message_ids are "
+            "the core messages under reply consideration; surrounding messages "
+            "are only context. The first send_reply MUST include "
+            "quote_message_log_id pointing to the specific core message being "
+            "answered, because review replies may refer to older timeline points. "
+            "Later send_reply calls may omit quote_message_log_id when they "
+            "continue the same reply sequence. send_poke is optional and may "
+            "appear anywhere in the same tool-call batch, but it only makes sense "
+            "when accompanied by at least one send_reply. Do not decide or emit "
+            "active chat parameters in this stage.",
             "Review Reply Decision Constraints",
         ),
         _component(

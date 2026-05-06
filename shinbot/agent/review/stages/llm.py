@@ -112,6 +112,7 @@ class ReviewLLMStageRunnerBase:
             "review_stage": stage_input.purpose,
             **dict(stage_input.metadata),
         }
+        component_ids_by_stage = self._component_ids_by_stage(stage_input)
         result = self._prompt_registry.build_messages(
             PromptBuildRequest(
                 caller=self._config.caller,
@@ -120,17 +121,27 @@ class ReviewLLMStageRunnerBase:
                 session_id=stage_input.session_id,
                 instance_id=_instance_id_from_session(stage_input.session_id),
                 profile_id=self._config.profile_id,
-                component_ids_by_stage=self._component_ids_by_stage(stage_input),
-                injections=self._build_prompt_injections(stage_input),
+                component_ids_by_stage=component_ids_by_stage,
+                injections=self._build_prompt_injections(
+                    stage_input,
+                    component_ids_by_stage=component_ids_by_stage,
+                ),
                 context_policy=PromptContextPolicy.DISABLED,
                 metadata=fallback_metadata,
             )
         )
         return result.messages, result.tools, dict(result.metadata)
 
-    def _build_prompt_injections(self, stage_input: ReviewStageInput) -> list[PromptInjection]:
+    def _build_prompt_injections(
+        self,
+        stage_input: ReviewStageInput,
+        *,
+        component_ids_by_stage: dict[PromptStage, list[str]],
+    ) -> list[PromptInjection]:
         injections: list[PromptInjection] = []
-        if self._config.system_prompt:
+        if self._config.system_prompt and not component_ids_by_stage.get(
+            PromptStage.SYSTEM_BASE
+        ):
             injections.append(
                 PromptInjection(
                     stage=PromptStage.SYSTEM_BASE,
@@ -300,11 +311,15 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         "Decide whether the candidate message should be replied to based on the "
         "local context. If reply tools are available, call no_reply when no response "
         "is needed, or call one or more send_reply tools in the order they should be "
-        "sent. When calling send_reply, quote the specific message being answered by "
-        "passing quote_message_log_id, because review replies may refer to older "
-        "timeline points. send_poke is optional and only valid together with a "
-        "send_reply; do not use it as a standalone response. This stage must not "
-        "decide active chat parameters."
+        "sent. The candidate_message_ids in metadata are the core messages under "
+        "reply consideration; use the surrounding source messages only as context, "
+        "not as an instruction to rediscover which messages are high-attention. "
+        "The first send_reply must quote the specific core message being answered "
+        "by passing quote_message_log_id, because review replies may refer to older "
+        "timeline points; later send_reply calls may omit it when they naturally "
+        "continue the first reply. send_poke is optional and only valid together "
+        "with a send_reply; do not use it as a standalone response. This stage "
+        "must not decide active chat parameters."
     )
     response_format = _json_schema_response_format(
         "agent_review_reply_decision",
@@ -333,8 +348,16 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             reason=str(payload.get("reason") or "llm_reply_decision"),
         )
 
-    def _build_prompt_injections(self, stage_input: ReviewStageInput) -> list[PromptInjection]:
-        injections = super()._build_prompt_injections(stage_input)
+    def _build_prompt_injections(
+        self,
+        stage_input: ReviewStageInput,
+        *,
+        component_ids_by_stage: dict[PromptStage, list[str]],
+    ) -> list[PromptInjection]:
+        injections = super()._build_prompt_injections(
+            stage_input,
+            component_ids_by_stage=component_ids_by_stage,
+        )
         tools = self._reply_decision_tools(stage_input)
         if tools:
             injections.append(
@@ -386,10 +409,16 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             for tool_call in result.tool_calls
         ]
         has_reply_call = any(tool_name == "send_reply" for tool_name, _ in parsed_calls)
-        for tool_name, arguments in parsed_calls:
-            if tool_name == "send_reply" and _optional_int(
-                arguments.get("quote_message_log_id")
-            ) is None:
+        first_reply_arguments = next(
+            (
+                arguments
+                for tool_name, arguments in parsed_calls
+                if tool_name == "send_reply"
+            ),
+            None,
+        )
+        if first_reply_arguments is not None:
+            if _optional_int(first_reply_arguments.get("quote_message_log_id")) is None:
                 return ReplyDecisionStageOutput(
                     target_message_ids=target_message_ids,
                     reason="reply_tool_missing_quote_message_log_id",
@@ -566,8 +595,10 @@ def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
             **function,
             "description": (
                 str(function.get("description") or "")
-                + "\nReview reply requirement: quote_message_log_id is required. "
-                "Use one of the candidate message ids from the review context."
+                + "\nReview reply requirement: the first send_reply in one reply "
+                "decision output must include quote_message_log_id. Later "
+                "send_reply calls may omit it when they continue the same reply "
+                "sequence."
             ),
         },
     }
@@ -578,15 +609,12 @@ def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
     properties = dict(reviewed_parameters.get("properties") or {})
     quote_schema = dict(properties.get("quote_message_log_id") or {})
     quote_schema["description"] = (
-        "Required for review replies. Message log id being answered; choose one "
-        "of the candidate message ids supplied in metadata/context."
+        "Required on the first send_reply in one review reply-decision output. "
+        "Message log id being answered; choose one of the candidate message ids "
+        "supplied in metadata/context."
     )
     properties["quote_message_log_id"] = quote_schema
-    required = list(reviewed_parameters.get("required") or [])
-    if "quote_message_log_id" not in required:
-        required.append("quote_message_log_id")
     reviewed_parameters["properties"] = properties
-    reviewed_parameters["required"] = required
     reviewed["function"]["parameters"] = reviewed_parameters
     return reviewed
 
