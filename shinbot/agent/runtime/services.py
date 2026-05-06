@@ -201,6 +201,7 @@ class AgentRuntime:
         runner_factory = ReviewRunnerFactory(
             self.model_runtime,
             config=self.review_runtime_config,
+            prompt_registry=self.prompt_registry,
         )
         return ReviewWorkflow(
             config,

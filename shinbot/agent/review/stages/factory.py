@@ -107,9 +107,11 @@ class ReviewRunnerFactory:
         model_runtime: Any | None,
         *,
         config: ReviewRuntimeConfig | None = None,
+        prompt_registry: Any | None = None,
     ) -> None:
         self._model_runtime = model_runtime
         self._config = config or ReviewRuntimeConfig()
+        self._prompt_registry = prompt_registry
 
     def create_overflow_compression_runner(self) -> OverflowCompressionStageRunner:
         stage_config = self._config.overflow_compression
@@ -117,6 +119,7 @@ class ReviewRunnerFactory:
             return LLMOverflowCompressionStageRunner(
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
+                prompt_registry=self._prompt_registry,
             )
         return NoopOverflowCompressionStageRunner()
 
@@ -126,6 +129,7 @@ class ReviewRunnerFactory:
             return LLMReviewScanStageRunner(
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
+                prompt_registry=self._prompt_registry,
             )
         return NoopReviewScanStageRunner()
 
@@ -135,6 +139,7 @@ class ReviewRunnerFactory:
             return LLMReplyDecisionStageRunner(
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
+                prompt_registry=self._prompt_registry,
             )
         return NoopReplyDecisionStageRunner()
 
@@ -148,6 +153,7 @@ class ReviewRunnerFactory:
             return LLMActiveChatBootstrapStageRunner(
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
+                prompt_registry=self._prompt_registry,
             )
         return NoopActiveChatBootstrapStageRunner(
             initial_interest=fallback_initial_interest,

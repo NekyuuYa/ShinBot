@@ -8,6 +8,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.prompt_manager import (
+    PromptBuildRequest,
+    PromptContextPolicy,
+    PromptInjection,
+    PromptRegistry,
+    PromptStage,
+)
 from shinbot.agent.review.context.builder import ReviewStageInput
 from shinbot.agent.review.models import (
     ActiveChatBootstrapStageOutput,
@@ -44,11 +51,14 @@ class ReviewLLMStageRunnerBase:
         model_runtime: Any,
         *,
         config: ReviewLLMRunnerConfig | None = None,
+        prompt_registry: PromptRegistry | None = None,
     ) -> None:
         self._model_runtime = model_runtime
         self._config = config or ReviewLLMRunnerConfig()
+        self._prompt_registry = prompt_registry
 
     async def _generate_payload(self, stage_input: ReviewStageInput) -> dict[str, Any] | None:
+        messages, tools, metadata = self._build_model_call_parts(stage_input)
         try:
             result = await self._model_runtime.generate(
                 ModelRuntimeCall(
@@ -58,12 +68,10 @@ class ReviewLLMStageRunnerBase:
                     session_id=stage_input.session_id,
                     instance_id=_instance_id_from_session(stage_input.session_id),
                     purpose=stage_input.purpose,
-                    messages=self._build_messages(stage_input),
+                    messages=messages,
+                    tools=tools,
                     response_format=self.response_format,
-                    metadata={
-                        "review_stage": stage_input.purpose,
-                        **dict(stage_input.metadata),
-                    },
+                    metadata=metadata,
                     params=dict(self._config.params),
                 )
             )
@@ -76,7 +84,63 @@ class ReviewLLMStageRunnerBase:
             return None
         return parse_json_object(result.text or "")
 
+    def _build_model_call_parts(
+        self,
+        stage_input: ReviewStageInput,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        fallback_metadata = {
+            "review_stage": stage_input.purpose,
+            **dict(stage_input.metadata),
+        }
+        if self._prompt_registry is None:
+            return self._build_messages(stage_input), [], fallback_metadata
+        try:
+            result = self._prompt_registry.build_messages(
+                PromptBuildRequest(
+                    caller=self._config.caller,
+                    workflow_id="review",
+                    stage_id=stage_input.purpose,
+                    session_id=stage_input.session_id,
+                    instance_id=_instance_id_from_session(stage_input.session_id),
+                    injections=self._build_prompt_injections(stage_input),
+                    context_policy=PromptContextPolicy.DISABLED,
+                    metadata=fallback_metadata,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Review prompt build failed for stage %s session %s; using fallback messages",
+                stage_input.purpose,
+                stage_input.session_id,
+            )
+            return self._build_messages(stage_input), [], fallback_metadata
+        return result.messages, result.tools, dict(result.metadata)
+
     def _build_messages(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
+        instruction_content = self._build_instruction_content(stage_input)
+        return [
+            {"role": "system", "content": self._config.system_prompt},
+            {"role": "user", "content": instruction_content},
+        ]
+
+    def _build_prompt_injections(self, stage_input: ReviewStageInput) -> list[PromptInjection]:
+        return [
+            PromptInjection(
+                stage=PromptStage.SYSTEM_BASE,
+                component_id=f"review.{stage_input.purpose}.system",
+                text=self._config.system_prompt,
+                priority=10,
+            ),
+            PromptInjection(
+                stage=PromptStage.INSTRUCTIONS,
+                component_id=f"review.{stage_input.purpose}.instruction",
+                content_blocks=self._build_instruction_content(stage_input),
+                priority=10,
+                metadata={"review_stage": stage_input.purpose},
+            ),
+        ]
+
+    def _build_instruction_content(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
         metadata_json = json.dumps(stage_input.metadata, ensure_ascii=False, sort_keys=True)
         instruction = (
             f"{self.task_prompt}\n\n"
@@ -94,10 +158,7 @@ class ReviewLLMStageRunnerBase:
                     + json.dumps(stage_input.source_messages, ensure_ascii=False),
                 }
             )
-        return [
-            {"role": "system", "content": self._config.system_prompt},
-            {"role": "user", "content": content},
-        ]
+        return content
 
 
 def _json_schema_response_format(

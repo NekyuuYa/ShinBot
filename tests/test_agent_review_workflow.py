@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.review import (
     ActiveChatBootstrapStageOutput,
     DatabaseReviewMessageStore,
@@ -400,6 +401,38 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
     assert model_runtime.calls[0].instance_id == "bot"
     assert model_runtime.calls[0].response_format["type"] == "json_schema"
     assert model_runtime.calls[0].metadata["candidate_message_id"] == 3
+
+
+@pytest.mark.asyncio
+async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
+    model_runtime = FakeModelRuntime(['{"candidate_message_ids": [7], "reason": "selected"}'])
+    runner = LLMReviewScanStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(system_prompt="review system"),
+        prompt_registry=PromptRegistry(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[{"id": 7, "raw_text": "hello"}],
+        instruction_content=[{"type": "text", "text": "rendered context"}],
+        metadata={"batch": 1},
+    )
+
+    result = await runner.run(stage_input)
+
+    assert result.candidate_message_ids == [7]
+    call = model_runtime.calls[0]
+    system_text = " ".join(block["text"] for block in call.messages[0]["content"])
+    user_text = " ".join(block["text"] for block in call.messages[-1]["content"])
+    assert "review system" in system_text
+    assert "Review the supplied unread messages" in user_text
+    assert "rendered context" in user_text
+    assert call.tools == []
+    assert call.metadata["workflow_id"] == "review"
+    assert call.metadata["stage_id"] == "review_scan"
+    assert call.metadata["review_stage"] == "review_scan"
+    assert call.metadata["batch"] == 1
 
 
 @pytest.mark.asyncio
