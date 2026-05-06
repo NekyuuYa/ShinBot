@@ -14,6 +14,11 @@ from shinbot.agent.review.context_builder import (
     ReviewContextBuildOptions,
     ReviewStageInput,
 )
+from shinbot.agent.review.factory import (
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
+    ReviewStageRuntimeConfig,
+)
 from shinbot.agent.review.llm import (
     LLMActiveChatBootstrapStageRunner,
     LLMOverflowCompressionStageRunner,
@@ -77,10 +82,13 @@ __all__ = [
     "ReviewMessageStore",
     "ReviewLLMRunnerConfig",
     "ReviewLLMStageRunnerBase",
+    "ReviewRunnerFactory",
+    "ReviewRuntimeConfig",
     "ReviewScanResult",
     "ReviewScanStageOutput",
     "ReviewScanStageRunner",
     "ReviewStageInput",
+    "ReviewStageRuntimeConfig",
     "ReviewSummaryStore",
     "ReviewWorkflow",
     "ReviewWorkflowConfig",

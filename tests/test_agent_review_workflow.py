@@ -14,8 +14,11 @@ from shinbot.agent.review import (
     ReplyDecisionStageOutput,
     ReviewContextBuilderAdapter,
     ReviewLLMRunnerConfig,
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
     ReviewScanStageOutput,
     ReviewStageInput,
+    ReviewStageRuntimeConfig,
     ReviewWorkflow,
     ReviewWorkflowConfig,
     parse_json_object,
@@ -397,6 +400,95 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
     assert model_runtime.calls[0].instance_id == "bot"
     assert model_runtime.calls[0].response_format["type"] == "json_schema"
     assert model_runtime.calls[0].metadata["candidate_message_id"] == 3
+
+
+@pytest.mark.asyncio
+async def test_review_runner_factory_keeps_disabled_stages_noop() -> None:
+    model_runtime = FakeModelRuntime(
+        ['{"candidate_message_ids": [9], "reason": "should_not_run"}']
+    )
+    factory = ReviewRunnerFactory(model_runtime)
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[{"id": 1}],
+    )
+
+    scan = await factory.create_review_scan_runner().run(stage_input)
+    bootstrap = await factory.create_active_chat_bootstrap_runner(
+        fallback_initial_interest=0.2,
+    ).run(stage_input)
+    workflow_kwargs = factory.create_workflow_runner_kwargs(
+        fallback_active_chat_interest=0.2,
+    )
+
+    assert scan.candidate_message_ids == []
+    assert bootstrap.initial_interest == 0.2
+    assert set(workflow_kwargs) == {
+        "compression_runner",
+        "scan_runner",
+        "reply_runner",
+        "bootstrap_runner",
+    }
+    assert model_runtime.calls == []
+
+
+@pytest.mark.asyncio
+async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
+    model_runtime = FakeModelRuntime(['{"candidate_message_ids": [9], "reason": "selected"}'])
+    factory = ReviewRunnerFactory(
+        model_runtime,
+        config=ReviewRuntimeConfig(
+            review_scan=ReviewStageRuntimeConfig(
+                enabled=True,
+                route_id="route-a",
+                model_id="model-a",
+                caller="test.review",
+                params={"temperature": 0},
+            ),
+        ),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[{"id": 1}],
+    )
+
+    scan = await factory.create_review_scan_runner().run(stage_input)
+
+    assert scan.candidate_message_ids == [9]
+    assert scan.reason == "selected"
+    assert model_runtime.calls[0].route_id == "route-a"
+    assert model_runtime.calls[0].model_id == "model-a"
+    assert model_runtime.calls[0].caller == "test.review"
+    assert model_runtime.calls[0].params == {"temperature": 0}
+
+
+def test_review_runtime_config_loads_plain_mapping() -> None:
+    config = ReviewRuntimeConfig.from_mapping(
+        {
+            "review_scan": {
+                "enabled": True,
+                "route_id": "route-a",
+                "model_id": "model-a",
+                "caller": "custom.review",
+                "system_prompt": "Return JSON.",
+                "params": {"temperature": 0},
+            },
+            "reply_decision": "ignored",
+            "active_chat_bootstrap": {"enabled": True, "params": "ignored"},
+        }
+    )
+
+    assert config.review_scan.enabled is True
+    assert config.review_scan.route_id == "route-a"
+    assert config.review_scan.model_id == "model-a"
+    assert config.review_scan.caller == "custom.review"
+    assert config.review_scan.system_prompt == "Return JSON."
+    assert config.review_scan.params == {"temperature": 0}
+    assert config.reply_decision.enabled is False
+    assert config.active_chat_bootstrap.enabled is True
+    assert config.active_chat_bootstrap.params == {}
 
 
 @pytest.mark.asyncio
