@@ -5,6 +5,7 @@ import pytest
 from shinbot.agent.review import (
     DatabaseReviewMessageStore,
     ReviewContextBuilderAdapter,
+    ReviewScanStageOutput,
     ReviewWorkflow,
     ReviewWorkflowConfig,
 )
@@ -119,6 +120,25 @@ class RecordingReviewContextBuilder:
             }
         )
         return None
+
+
+class SelectingReviewScanRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def run(self, stage_input) -> ReviewScanStageOutput:
+        message_ids = [message["id"] for message in stage_input.source_messages]
+        self.calls.append(
+            {
+                "purpose": stage_input.purpose,
+                "message_ids": message_ids,
+                "metadata": dict(stage_input.metadata),
+            }
+        )
+        return ReviewScanStageOutput(
+            candidate_message_ids=[message_ids[-1], message_ids[-1]] if message_ids else [],
+            reason=f"selected_from_{len(message_ids)}",
+        )
 
 
 class FakeContextManager:
@@ -324,6 +344,59 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         "review_scan",
         "review_scan",
         "active_chat_bootstrap",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_review_scan_runner_selects_candidate_message_ids(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 5)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    scan_runner = SelectingReviewScanRunner()
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(review_scan_batch_size=2),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=scan_runner,
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.scan.candidate_message_ids == [message_ids[1], message_ids[3]]
+    assert result.scan.scan_reason == "selected_from_2"
+    assert result.reply.target_message_ids == [message_ids[1], message_ids[3]]
+    assert [call["purpose"] for call in scan_runner.calls] == ["review_scan", "review_scan"]
+    assert [call["message_ids"] for call in scan_runner.calls] == [
+        message_ids[:2],
+        message_ids[2:],
     ]
 
 

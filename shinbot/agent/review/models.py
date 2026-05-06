@@ -61,6 +61,14 @@ class ReviewScanResult:
 
 
 @dataclass(slots=True, frozen=True)
+class ReviewScanStageOutput:
+    """Output from one review_scan stage runner invocation."""
+
+    candidate_message_ids: list[int] = field(default_factory=list)
+    reason: str = "noop_review_scan"
+
+
+@dataclass(slots=True, frozen=True)
 class ReplyDecisionResult:
     """Stage 2 result: reply decision, intentionally independent from active chat."""
 

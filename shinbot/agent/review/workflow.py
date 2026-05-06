@@ -10,17 +10,21 @@ from typing import Protocol
 
 from shinbot.agent.review.context_builder import (
     ReviewContextBuilder,
+    ReviewContextBuilderAdapter,
     ReviewContextBuildOptions,
+    ReviewStageInput,
 )
 from shinbot.agent.review.message_store import ReviewMessageStore
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ReplyDecisionResult,
     ReviewScanResult,
+    ReviewScanStageOutput,
     ReviewWorkflowConfig,
     ReviewWorkflowResult,
     UnreadRangeSummaryRecord,
 )
+from shinbot.agent.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 from shinbot.agent.scheduler.models import (
     ReviewCompletionDecision,
     ReviewPlan,
@@ -66,11 +70,13 @@ class ReviewWorkflow:
         *,
         message_store: ReviewMessageStore | None = None,
         context_builder: ReviewContextBuilder | None = None,
+        scan_runner: ReviewScanStageRunner | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
         self._message_store = message_store
-        self._context_builder = context_builder
+        self._context_builder = context_builder or ReviewContextBuilderAdapter()
+        self._scan_runner = scan_runner or NoopReviewScanStageRunner()
         self._now = now or time.time
 
     async def run(
@@ -86,7 +92,7 @@ class ReviewWorkflow:
         try:
             unread_ranges = scheduler.unread_ranges(session_id, limit=10_000)
             unread_count = scheduler.count_unread_messages(session_id)
-            scan = self._run_review_scan(
+            scan = await self._run_review_scan(
                 session_id=session_id,
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
@@ -133,7 +139,7 @@ class ReviewWorkflow:
                 failure_reason=str(exc),
             )
 
-    def _run_review_scan(
+    async def _run_review_scan(
         self,
         *,
         session_id: str,
@@ -151,13 +157,21 @@ class ReviewWorkflow:
             unread_count=unread_count,
             unread_ranges=unread_ranges,
         )
-        loaded_message_count, stage_input_count = self._load_scan_batches(
+        (
+            loaded_message_count,
+            stage_input_count,
+            candidate_message_ids,
+            scan_reasons,
+        ) = await self._load_scan_batches(
             session_id=session_id,
             unread_ranges=unread_ranges,
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
         )
         return ReviewScanResult(
+            candidate_message_ids=_dedupe_preserve_order(candidate_message_ids),
+            scan_reason="; ".join(_dedupe_preserve_order(scan_reasons))
+            or "noop_review_scan",
             scanned_message_count=scanned_count,
             loaded_message_count=loaded_message_count,
             stage_input_count=stage_input_count,
@@ -188,20 +202,22 @@ class ReviewWorkflow:
             stage_input_built=stage_input_built,
         )
 
-    def _load_scan_batches(
+    async def _load_scan_batches(
         self,
         session_id: str,
         unread_ranges: list[UnreadRange],
         *,
         max_messages: int,
         prefer_tail: bool,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, list[int], list[str]]:
         if self._message_store is None or max_messages <= 0:
-            return 0, 0
+            return 0, 0, [], []
 
         remaining = max_messages
         loaded_count = 0
         stage_input_count = 0
+        candidate_message_ids: list[int] = []
+        scan_reasons: list[str] = []
         scan_ranges = (
             self._tail_scan_ranges(unread_ranges, max_messages=max_messages)
             if prefer_tail
@@ -218,7 +234,7 @@ class ReviewWorkflow:
                 if not batch:
                     break
                 loaded_count += len(batch)
-                if self._build_stage_input(
+                stage_input = self._build_stage_input(
                     session_id=session_id,
                     messages=batch,
                     purpose="review_scan",
@@ -228,11 +244,16 @@ class ReviewWorkflow:
                         "range_end_msg_log_id": unread_range.end_msg_log_id,
                         "offset": offset,
                     },
-                ):
+                )
+                if stage_input is not None:
                     stage_input_count += 1
+                    stage_output = await self._run_scan_stage(stage_input)
+                    candidate_message_ids.extend(stage_output.candidate_message_ids)
+                    if stage_output.reason.strip():
+                        scan_reasons.append(stage_output.reason.strip())
                 remaining -= len(batch)
                 offset += len(batch)
-        return loaded_count, stage_input_count
+        return loaded_count, stage_input_count, candidate_message_ids, scan_reasons
 
     def _load_tail_history(
         self,
@@ -259,7 +280,7 @@ class ReviewWorkflow:
                 * 1000,
                 "tail_history_end_at": ended_at * 1000,
             },
-        )
+        ) is not None
         return len(tail_history), stage_input_built
 
     def _build_stage_input(
@@ -269,16 +290,24 @@ class ReviewWorkflow:
         messages: list[dict],
         purpose: str,
         metadata: dict,
-    ) -> bool:
-        if self._context_builder is None:
-            return False
-        self._context_builder.build_for_messages(
+    ) -> ReviewStageInput | None:
+        stage_input = self._context_builder.build_for_messages(
             session_id=session_id,
             messages=messages,
             purpose=purpose,
             options=ReviewContextBuildOptions(metadata=metadata),
         )
-        return True
+        if stage_input is not None:
+            return stage_input
+        return ReviewStageInput(
+            session_id=session_id,
+            purpose=purpose,
+            source_messages=list(messages),
+            metadata={"purpose": purpose, **metadata},
+        )
+
+    async def _run_scan_stage(self, stage_input: ReviewStageInput) -> ReviewScanStageOutput:
+        return await self._scan_runner.run(stage_input)
 
     def _planned_overflow_compression(
         self,
@@ -347,3 +376,14 @@ class ReviewWorkflow:
             remaining = 0
         selected.reverse()
         return selected
+
+
+def _dedupe_preserve_order[T](items: list[T]) -> list[T]:
+    seen: set[T] = set()
+    result: list[T] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
