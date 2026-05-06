@@ -716,6 +716,13 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
     assert [(item.start_msg_log_id, item.end_msg_log_id, item.full_range) for item in result.consumed_ranges] == [
         (message_ids[0], message_ids[-1], True)
     ]
+    assert [trace.purpose for trace in result.stage_traces] == [
+        "review_scan",
+        "review_scan",
+        "review_scan",
+        "active_chat_bootstrap",
+    ]
+    assert result.stage_traces[0].message_ids == message_ids[:2]
     assert scheduler.unread_messages("bot:group:room") == []
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
     assert [call["purpose"] for call in context_builder.calls] == [
@@ -1121,6 +1128,18 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
     )
     assert "older messages summarized" in reply_call["previous_summary"]
     assert "older messages summarized" in bootstrap_call["previous_summary"]
+    assert [trace.purpose for trace in result.stage_traces] == [
+        "overflow_compression",
+        "review_scan",
+        "reply_decision",
+        "active_chat_bootstrap",
+    ]
+    assert result.stage_traces[0].reason == "compressed_old_messages"
+    assert result.stage_traces[0].candidate_message_ids == [message_ids[0]]
+    assert result.stage_traces[1].metadata["overflow_summaries"][0]["summary"] == (
+        "older messages summarized"
+    )
+    assert "older messages summarized" in result.stage_traces[1].previous_summary
 
 
 @pytest.mark.asyncio

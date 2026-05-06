@@ -23,6 +23,7 @@ from shinbot.agent.review.models import (
     ReplyDecisionStageOutput,
     ReviewScanResult,
     ReviewScanStageOutput,
+    ReviewStageTrace,
     ReviewWorkflowConfig,
     ReviewWorkflowResult,
     UnreadRangeSummaryRecord,
@@ -129,6 +130,7 @@ class ReviewWorkflow:
     ) -> ReviewWorkflowResult:
         """Run the review shell and always hand control back to scheduler."""
         started_at = self._now()
+        stage_traces: list[ReviewStageTrace] = []
         try:
             unread_ranges = scheduler.unread_ranges(session_id, limit=10_000)
             unread_count = scheduler.count_unread_messages(session_id)
@@ -136,13 +138,19 @@ class ReviewWorkflow:
                 session_id=session_id,
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
+                stage_traces=stage_traces,
             )
-            reply = await self._run_reply_decision(session_id=session_id, scan=scan)
+            reply = await self._run_reply_decision(
+                session_id=session_id,
+                scan=scan,
+                stage_traces=stage_traces,
+            )
             bootstrap = await self._run_active_chat_bootstrap(
                 session_id=session_id,
                 started_at=started_at,
                 summaries=scan.compressed_ranges,
                 reply=reply,
+                stage_traces=stage_traces,
             )
             applied_consumed_ranges = self._consume_review_ranges(
                 scheduler,
@@ -164,6 +172,7 @@ class ReviewWorkflow:
                 consumed_range_ids=[
                     item.range_id for item in applied_consumed_ranges if item.range_id is not None
                 ],
+                stage_traces=stage_traces,
             )
         except Exception as exc:
             logger.exception(
@@ -176,6 +185,7 @@ class ReviewWorkflow:
                 started_at=started_at,
                 summaries=[],
                 reply=ReplyDecisionResult(),
+                stage_traces=stage_traces,
             )
             completion = scheduler.complete_review(
                 session_id,
@@ -191,6 +201,7 @@ class ReviewWorkflow:
                 completion=completion,
                 failed=True,
                 failure_reason=str(exc),
+                stage_traces=stage_traces,
             )
 
     async def _run_review_scan(
@@ -199,6 +210,7 @@ class ReviewWorkflow:
         session_id: str,
         unread_count: int,
         unread_ranges: list[UnreadRange],
+        stage_traces: list[ReviewStageTrace],
     ) -> tuple[ReviewScanResult, list[ConsumedUnreadRange]]:
         scanned_count = min(unread_count, self._config.overflow_threshold_messages)
         batch_count = (
@@ -210,6 +222,7 @@ class ReviewWorkflow:
             session_id=session_id,
             unread_count=unread_count,
             unread_ranges=unread_ranges,
+            stage_traces=stage_traces,
         )
         (
             loaded_message_count,
@@ -223,6 +236,7 @@ class ReviewWorkflow:
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
             summaries=compressed_ranges,
+            stage_traces=stage_traces,
         )
         return (
             ReviewScanResult(
@@ -252,6 +266,7 @@ class ReviewWorkflow:
         *,
         session_id: str,
         scan: ReviewScanResult,
+        stage_traces: list[ReviewStageTrace],
     ) -> ReplyDecisionResult:
         if not scan.candidate_message_ids:
             return ReplyDecisionResult()
@@ -292,6 +307,7 @@ class ReviewWorkflow:
                 continue
             stage_input_count += 1
             stage_output = await self._run_reply_stage(stage_input)
+            stage_traces.append(_trace_for_reply(stage_input, stage_output))
             replied = replied or stage_output.replied
             if reply_message_id is None:
                 reply_message_id = stage_output.reply_message_id
@@ -315,6 +331,7 @@ class ReviewWorkflow:
         session_id: str,
         unread_count: int,
         unread_ranges: list[UnreadRange],
+        stage_traces: list[ReviewStageTrace],
     ) -> list[UnreadRangeSummaryRecord]:
         summaries: list[UnreadRangeSummaryRecord] = []
         overflow_count = unread_count - self._config.overflow_threshold_messages
@@ -347,6 +364,7 @@ class ReviewWorkflow:
                 summary = await self._run_overflow_compression_batch(
                     session_id=session_id,
                     messages=messages,
+                    stage_traces=stage_traces,
                 )
                 if summary is not None:
                     self._save_overflow_summary(summary)
@@ -361,6 +379,7 @@ class ReviewWorkflow:
         *,
         session_id: str,
         messages: list[dict],
+        stage_traces: list[ReviewStageTrace],
     ) -> UnreadRangeSummaryRecord | None:
         actual_start_msg_log_id = int(messages[0]["id"])
         actual_end_msg_log_id = int(messages[-1]["id"])
@@ -381,6 +400,7 @@ class ReviewWorkflow:
             return None
 
         stage_output = await self._run_compression_stage(stage_input)
+        stage_traces.append(_trace_for_compression(stage_input, stage_output))
         return UnreadRangeSummaryRecord(
             session_id=session_id,
             start_msg_log_id=actual_start_msg_log_id,
@@ -400,6 +420,7 @@ class ReviewWorkflow:
         started_at: float,
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
+        stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
         (
@@ -412,6 +433,7 @@ class ReviewWorkflow:
             ended_at=ended_at,
             summaries=summaries,
             reply=reply,
+            stage_traces=stage_traces,
         )
         return ActiveChatBootstrapResult(
             initial_interest=stage_output.initial_interest,
@@ -431,6 +453,7 @@ class ReviewWorkflow:
         max_messages: int,
         prefer_tail: bool,
         summaries: list[UnreadRangeSummaryRecord],
+        stage_traces: list[ReviewStageTrace],
     ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange]]:
         if self._message_store is None or max_messages <= 0:
             return 0, 0, [], [], []
@@ -474,6 +497,7 @@ class ReviewWorkflow:
                 if stage_input is not None:
                     stage_input_count += 1
                     stage_output = await self._run_scan_stage(stage_input)
+                    stage_traces.append(_trace_for_scan(stage_input, stage_output))
                     candidate_message_ids.extend(stage_output.candidate_message_ids)
                     if stage_output.reason.strip():
                         scan_reasons.append(stage_output.reason.strip())
@@ -497,6 +521,7 @@ class ReviewWorkflow:
         ended_at: float,
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
+        stage_traces: list[ReviewStageTrace],
     ) -> tuple[int, bool, ActiveChatBootstrapStageOutput]:
         if self._message_store is None:
             return (
@@ -540,6 +565,7 @@ class ReviewWorkflow:
                 ),
             )
         stage_output = await self._run_bootstrap_stage(stage_input)
+        stage_traces.append(_trace_for_bootstrap(stage_input, stage_output))
         return len(tail_history), True, stage_output
 
     def _build_stage_input(
@@ -561,6 +587,18 @@ class ReviewWorkflow:
             ),
         )
         if stage_input is not None:
+            if previous_summary and "previous_summary" not in stage_input.metadata:
+                return ReviewStageInput(
+                    session_id=stage_input.session_id,
+                    purpose=stage_input.purpose,
+                    source_messages=list(stage_input.source_messages),
+                    instruction_content=list(stage_input.instruction_content),
+                    context_messages=list(stage_input.context_messages),
+                    metadata={
+                        **dict(stage_input.metadata),
+                        "previous_summary": previous_summary,
+                    },
+                )
             return stage_input
         return ReviewStageInput(
             session_id=session_id,
@@ -772,6 +810,66 @@ def _should_persist_summary(record: UnreadRangeSummaryRecord) -> bool:
         bool(record.summary.strip())
         or bool(record.candidate_message_ids)
         or record.reason.strip() not in {"", "noop_overflow_compression"}
+    )
+
+
+def _trace_base(stage_input: ReviewStageInput) -> dict[str, object]:
+    return {
+        "purpose": stage_input.purpose,
+        "message_ids": [
+            int(message["id"])
+            for message in stage_input.source_messages
+            if "id" in message
+        ],
+        "metadata": dict(stage_input.metadata),
+        "previous_summary": str(stage_input.metadata.get("previous_summary") or ""),
+    }
+
+
+def _trace_for_compression(
+    stage_input: ReviewStageInput,
+    stage_output: OverflowCompressionStageOutput,
+) -> ReviewStageTrace:
+    return ReviewStageTrace(
+        **_trace_base(stage_input),
+        reason=stage_output.reason,
+        candidate_message_ids=list(stage_output.candidate_message_ids),
+    )
+
+
+def _trace_for_scan(
+    stage_input: ReviewStageInput,
+    stage_output: ReviewScanStageOutput,
+) -> ReviewStageTrace:
+    return ReviewStageTrace(
+        **_trace_base(stage_input),
+        reason=stage_output.reason,
+        candidate_message_ids=list(stage_output.candidate_message_ids),
+    )
+
+
+def _trace_for_reply(
+    stage_input: ReviewStageInput,
+    stage_output: ReplyDecisionStageOutput,
+) -> ReviewStageTrace:
+    return ReviewStageTrace(
+        **_trace_base(stage_input),
+        reason=stage_output.reason,
+        target_message_ids=list(stage_output.target_message_ids),
+        replied=stage_output.replied,
+        reply_message_id=stage_output.reply_message_id,
+    )
+
+
+def _trace_for_bootstrap(
+    stage_input: ReviewStageInput,
+    stage_output: ActiveChatBootstrapStageOutput,
+) -> ReviewStageTrace:
+    return ReviewStageTrace(
+        **_trace_base(stage_input),
+        reason=stage_output.reason,
+        initial_interest=stage_output.initial_interest,
+        decay_half_life_seconds=stage_output.decay_half_life_seconds,
     )
 
 

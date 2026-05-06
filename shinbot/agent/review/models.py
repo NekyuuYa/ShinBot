@@ -62,6 +62,23 @@ class ConsumedUnreadRange:
 
 
 @dataclass(slots=True, frozen=True)
+class ReviewStageTrace:
+    """Explainability record for one review stage runner invocation."""
+
+    purpose: str
+    message_ids: list[int] = field(default_factory=list)
+    metadata: dict[str, object] = field(default_factory=dict)
+    previous_summary: str = ""
+    reason: str = ""
+    candidate_message_ids: list[int] = field(default_factory=list)
+    target_message_ids: list[int] = field(default_factory=list)
+    replied: bool | None = None
+    reply_message_id: int | None = None
+    initial_interest: float | None = None
+    decay_half_life_seconds: float | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class ReviewScanResult:
     """Stage 1 result: candidate message ids selected for closer reply review."""
 
@@ -147,5 +164,6 @@ class ReviewWorkflowResult:
     completion: ReviewCompletionDecision | None = None
     consumed_ranges: list[ConsumedUnreadRange] = field(default_factory=list)
     consumed_range_ids: list[int] = field(default_factory=list)
+    stage_traces: list[ReviewStageTrace] = field(default_factory=list)
     failed: bool = False
     failure_reason: str | None = None
