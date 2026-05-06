@@ -27,6 +27,17 @@ from shinbot.agent.tools.schema import ToolCallRequest
 
 logger = logging.getLogger(__name__)
 
+_REPLY_TOOLLESS_REPAIR_PROMPT = """
+上一轮 reply_decision 输出了裸文本或没有调用工具，但 review reply 阶段不会把裸文本发送给用户。
+请重新决策，并必须调用工具：
+- 需要回复时，按发送顺序调用一个或多个 send_reply。
+- 第一条 send_reply 必须带 quote_message_log_id，且必须指向 candidate_message_ids 中的核心消息。
+- 后续 send_reply 可以不带 quote_message_log_id，用于延续第一条回复。
+- 不需要回复时调用 no_reply。
+- send_poke 是可选互动，只能与至少一个 send_reply 出现在同一批 tool call 中。
+不要再输出裸文本作为最终回复。
+""".strip()
+
 
 @dataclass(slots=True, frozen=True)
 class ReviewLLMRunnerConfig:
@@ -79,6 +90,21 @@ class ReviewLLMStageRunnerBase:
                 stage_input.session_id,
             )
             return None
+        return await self._generate_with_parts(
+            stage_input,
+            messages=messages,
+            tools=tools,
+            metadata=metadata,
+        )
+
+    async def _generate_with_parts(
+        self,
+        stage_input: ReviewStageInput,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> Any | None:
         try:
             result = await self._model_runtime.generate(
                 ModelRuntimeCall(
@@ -319,7 +345,8 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         "timeline points; later send_reply calls may omit it when they naturally "
         "continue the first reply. send_poke is optional and only valid together "
         "with a send_reply; do not use it as a standalone response. This stage "
-        "must not decide active chat parameters."
+        "must not decide active chat parameters. Bare assistant text is invalid "
+        "when tools are available."
     )
     response_format = _json_schema_response_format(
         "agent_review_reply_decision",
@@ -334,11 +361,41 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
     )
 
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
-        result = await self._generate_result(stage_input)
+        try:
+            messages, tools, metadata = self._build_model_call_parts(stage_input)
+        except Exception:
+            logger.exception(
+                "Review prompt build failed for stage %s session %s",
+                stage_input.purpose,
+                stage_input.session_id,
+            )
+            return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
+        result = await self._generate_with_parts(
+            stage_input,
+            messages=messages,
+            tools=tools,
+            metadata=metadata,
+        )
         if result is None:
             return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
         if result.tool_calls:
             return await self._run_tool_decision(stage_input, result)
+        if tools:
+            repaired = await self._repair_toolless_reply_decision(
+                stage_input,
+                messages=messages,
+                tools=tools,
+                metadata=metadata,
+                first_result=result,
+            )
+            if repaired is None:
+                return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
+            if repaired.tool_calls:
+                return await self._run_tool_decision(stage_input, repaired)
+            return ReplyDecisionStageOutput(
+                target_message_ids=_candidate_message_ids_from_stage(stage_input),
+                reason="llm_reply_decision_toolless_after_repair",
+            )
         payload = parse_json_object(result.text or "")
         if payload is None:
             return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
@@ -348,6 +405,30 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             reply_message_ids=_reply_message_ids_from_payload(payload),
             target_message_ids=_int_list(payload.get("target_message_ids")),
             reason=str(payload.get("reason") or "llm_reply_decision"),
+        )
+
+    async def _repair_toolless_reply_decision(
+        self,
+        stage_input: ReviewStageInput,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        metadata: dict[str, Any],
+        first_result: Any,
+    ) -> Any | None:
+        repaired_messages = _repair_messages_for_toolless_reply(
+            messages,
+            text=str(first_result.text or ""),
+        )
+        return await self._generate_with_parts(
+            stage_input,
+            messages=repaired_messages,
+            tools=tools,
+            metadata={
+                **dict(metadata),
+                "repair_attempt": 1,
+                "repair_reason": "reply_decision_toolless_output",
+            },
         )
 
     def _build_prompt_injections(
@@ -570,6 +651,23 @@ def _reply_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:
         return ids
     reply_message_id = _optional_int(payload.get("reply_message_id"))
     return [reply_message_id] if reply_message_id is not None else []
+
+
+def _repair_messages_for_toolless_reply(
+    messages: list[dict[str, Any]],
+    *,
+    text: str,
+) -> list[dict[str, Any]]:
+    repaired_messages = list(messages)
+    if text.strip():
+        repaired_messages.append({"role": "assistant", "content": text.strip()})
+    repaired_messages.append(
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": _REPLY_TOOLLESS_REPAIR_PROMPT}],
+        }
+    )
+    return repaired_messages
 
 
 def _tool_call_function(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:

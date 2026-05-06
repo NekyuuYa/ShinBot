@@ -91,8 +91,9 @@ def _review_prompt_components() -> list[PromptComponent]:
             "Later send_reply calls may omit quote_message_log_id when they "
             "continue the same reply sequence. send_poke is optional and may "
             "appear anywhere in the same tool-call batch, but it only makes sense "
-            "when accompanied by at least one send_reply. Do not decide or emit "
-            "active chat parameters in this stage.",
+            "when accompanied by at least one send_reply. Bare assistant text is "
+            "invalid in this stage; always use send_reply/no_reply, with optional "
+            "send_poke. Do not decide or emit active chat parameters in this stage.",
             "Review Reply Decision Constraints",
         ),
         _component(

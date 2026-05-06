@@ -843,6 +843,85 @@ async def test_reply_decision_runner_requires_first_quote_to_target_candidate() 
 
 
 @pytest.mark.asyncio
+async def test_reply_decision_runner_repairs_toolless_text_response() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            "我应该回复一下",
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "hello", "quote_message_log_id": 7}',
+                        },
+                    }
+                ]
+            },
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is True
+    assert result.reply_message_ids == [42]
+    assert result.reason == "send_reply_tool"
+    assert len(model_runtime.calls) == 2
+    repair_call = model_runtime.calls[1]
+    assert repair_call.metadata["repair_attempt"] == 1
+    assert repair_call.metadata["repair_reason"] == "reply_decision_toolless_output"
+    assert repair_call.messages[-2] == {
+        "role": "assistant",
+        "content": "我应该回复一下",
+    }
+    repair_text = repair_call.messages[-1]["content"][0]["text"]
+    assert "必须调用工具" in repair_text
+    assert "第一条 send_reply 必须带 quote_message_log_id" in repair_text
+    assert tool_manager.execute_calls[0].tool_name == "send_reply"
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_fails_after_toolless_repair() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(["raw text", "still raw"])
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [7]
+    assert result.reason == "llm_reply_decision_toolless_after_repair"
+    assert len(model_runtime.calls) == 2
+    assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
 async def test_review_llm_runner_uses_configured_prompt_components() -> None:
     prompt_registry = PromptRegistry()
     prompt_registry.register_component(
@@ -936,6 +1015,7 @@ async def test_review_llm_runner_uses_registered_builtin_review_prompts() -> Non
     )
     assert "The first send_reply MUST include quote_message_log_id" in message_text
     assert "candidate_message_ids are the core messages under reply consideration" in message_text
+    assert "Bare assistant text is invalid" in message_text
     assert "send_poke is optional" in message_text
 
 
