@@ -20,7 +20,12 @@ from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
 
 
-def _insert_message(db: DatabaseManager, *, msg_id: str = "msg-1") -> int:
+def _insert_message(
+    db: DatabaseManager,
+    *,
+    msg_id: str = "msg-1",
+    created_at: float = 10_000.0,
+) -> int:
     return db.message_logs.insert(
         MessageLogRecord(
             session_id="bot:group:room",
@@ -30,7 +35,7 @@ def _insert_message(db: DatabaseManager, *, msg_id: str = "msg-1") -> int:
             raw_text="hello",
             content_json="[]",
             role="user",
-            created_at=10_000.0,
+            created_at=created_at,
         )
     )
 
@@ -67,6 +72,10 @@ def test_agent_scheduler_repository_persists_state_and_inbox(tmp_path) -> None:
         message_log_id
     ]
     assert [
+        (item.start_msg_log_id, item.end_msg_log_id, item.message_count)
+        for item in db.agent_scheduler.list_unread_ranges("bot:group:room")
+    ] == [(message_log_id, message_log_id, 1)]
+    assert [
         event.kind for event in db.agent_scheduler.list_high_priority_events("bot:group:room")
     ] == [HighPriorityEventKind.MENTION]
     assert [
@@ -74,6 +83,84 @@ def test_agent_scheduler_repository_persists_state_and_inbox(tmp_path) -> None:
         for event in db.agent_scheduler.mark_high_priority_events_handled("bot:group:room")
     ] == [HighPriorityEventKind.MENTION]
     assert db.agent_scheduler.list_high_priority_events("bot:group:room") == []
+
+
+def test_agent_scheduler_repository_merges_and_splits_unread_ranges(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, msg_id=f"msg-{index}", created_at=float(index))
+        for index in [1, 2, 3]
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+
+    unread_range = db.agent_scheduler.list_unread_ranges("bot:group:room")[0]
+
+    assert (unread_range.start_msg_log_id, unread_range.end_msg_log_id) == (
+        message_ids[0],
+        message_ids[-1],
+    )
+    assert unread_range.message_count == 3
+
+    db.agent_scheduler.split_review_consumed(
+        range_id=unread_range.id or 0,
+        consumed_start_msg_log_id=message_ids[1],
+        consumed_end_msg_log_id=message_ids[1],
+    )
+
+    assert [
+        item.message_log_id for item in db.agent_scheduler.list_unread("bot:group:room")
+    ] == [message_ids[0], message_ids[2]]
+    assert [
+        (item.start_msg_log_id, item.end_msg_log_id, item.message_count)
+        for item in db.agent_scheduler.list_unread_ranges("bot:group:room")
+    ] == [
+        (message_ids[0], message_ids[0], 1),
+        (message_ids[2], message_ids[2], 1),
+    ]
+
+
+def test_agent_scheduler_repository_does_not_merge_across_skipped_session_message(
+    tmp_path,
+) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    first_id = _insert_message(db, msg_id="msg-1", created_at=1.0)
+    skipped_id = _insert_message(db, msg_id="msg-old", created_at=0.5)
+    latest_id = _insert_message(db, msg_id="msg-2", created_at=2.0)
+
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=first_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=latest_id,
+            sender_id="user-1",
+            created_at=2.0,
+        )
+    )
+
+    assert skipped_id not in [
+        item.message_log_id for item in db.agent_scheduler.list_unread("bot:group:room")
+    ]
+    assert [
+        (item.start_msg_log_id, item.end_msg_log_id)
+        for item in db.agent_scheduler.list_unread_ranges("bot:group:room")
+    ] == [(first_id, first_id), (latest_id, latest_id)]
 
 
 def test_agent_scheduler_repository_counts_recent_mentions(tmp_path) -> None:

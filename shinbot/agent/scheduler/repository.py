@@ -15,6 +15,7 @@ from shinbot.agent.scheduler.models import (
     MentionSensitivity,
     ReviewPlan,
     UnreadMessage,
+    UnreadRange,
 )
 from shinbot.agent.scheduler.state_store import AgentStateStore
 from shinbot.persistence.repositories.base import Repository
@@ -182,17 +183,61 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
 
     def add_unread(self, message: UnreadMessage) -> None:
         with self.connect() as conn:
-            conn.execute(
+            existing = conn.execute(
                 """
-                INSERT OR IGNORE INTO agent_unread_messages (
-                    session_id, message_log_id, sender_id, created_at,
-                    review_consumed, chat_consumed
-                ) VALUES (?, ?, ?, ?, 0, 0)
+                SELECT id
+                FROM agent_unread_ranges
+                WHERE session_id = ?
+                  AND review_consumed = 0
+                  AND start_msg_log_id <= ?
+                  AND end_msg_log_id >= ?
+                LIMIT 1
                 """,
                 (
                     message.session_id,
                     message.message_log_id,
-                    message.sender_id,
+                    message.message_log_id,
+                ),
+            ).fetchone()
+            if existing is not None:
+                return
+
+            tail = conn.execute(
+                """
+                SELECT id, end_msg_log_id, end_at, message_count
+                FROM agent_unread_ranges
+                WHERE session_id = ?
+                  AND review_consumed = 0
+                ORDER BY end_at DESC, end_msg_log_id DESC
+                LIMIT 1
+                """,
+                (message.session_id,),
+            ).fetchone()
+            if tail is not None and self._can_extend_tail_range(conn, message, tail):
+                conn.execute(
+                    """
+                    UPDATE agent_unread_ranges
+                    SET end_msg_log_id = ?,
+                        end_at = ?,
+                        message_count = message_count + 1
+                    WHERE id = ?
+                    """,
+                    (message.message_log_id, message.created_at, int(tail["id"])),
+                )
+                return
+
+            conn.execute(
+                """
+                INSERT INTO agent_unread_ranges (
+                    session_id, start_msg_log_id, end_msg_log_id, start_at, end_at,
+                    message_count, review_consumed, chat_consumed
+                ) VALUES (?, ?, ?, ?, ?, 1, 0, 0)
+                """,
+                (
+                    message.session_id,
+                    message.message_log_id,
+                    message.message_log_id,
+                    message.created_at,
                     message.created_at,
                 ),
             )
@@ -201,11 +246,15 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT session_id, message_log_id, sender_id, created_at
-                FROM agent_unread_messages
-                WHERE session_id = ?
-                  AND review_consumed = 0
-                ORDER BY created_at ASC, id ASC
+                SELECT m.session_id, m.id AS message_log_id, m.sender_id, m.created_at
+                FROM agent_unread_ranges r
+                JOIN message_logs m
+                  ON m.session_id = r.session_id
+                 AND m.id >= r.start_msg_log_id
+                 AND m.id <= r.end_msg_log_id
+                WHERE r.session_id = ?
+                  AND r.review_consumed = 0
+                ORDER BY m.created_at ASC, m.id ASC
                 """,
                 (session_id,),
             ).fetchall()
@@ -218,6 +267,95 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             )
             for row in rows
         ]
+
+    def list_unread_ranges(self, session_id: str, *, limit: int = 50) -> list[UnreadRange]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, start_msg_log_id, end_msg_log_id,
+                       start_at, end_at, message_count, review_consumed, chat_consumed
+                FROM agent_unread_ranges
+                WHERE session_id = ?
+                  AND review_consumed = 0
+                ORDER BY start_at ASC, start_msg_log_id ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [self._unread_range_from_row(row) for row in rows]
+
+    def count_unread_messages(self, session_id: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(message_count), 0) AS cnt
+                FROM agent_unread_ranges
+                WHERE session_id = ?
+                  AND review_consumed = 0
+                """,
+                (session_id,),
+            ).fetchone()
+        return int(row["cnt"]) if row is not None else 0
+
+    def split_review_consumed(
+        self,
+        *,
+        range_id: int,
+        consumed_start_msg_log_id: int,
+        consumed_end_msg_log_id: int,
+    ) -> None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, session_id, start_msg_log_id, end_msg_log_id,
+                       start_at, end_at, message_count, review_consumed, chat_consumed
+                FROM agent_unread_ranges
+                WHERE id = ?
+                  AND review_consumed = 0
+                """,
+                (range_id,),
+            ).fetchone()
+            if row is None:
+                return
+
+            unread_range = self._unread_range_from_row(row)
+            conn.execute("DELETE FROM agent_unread_ranges WHERE id = ?", (range_id,))
+            for replacement in self._remaining_ranges_after_consumed(
+                conn,
+                unread_range,
+                consumed_start_msg_log_id=consumed_start_msg_log_id,
+                consumed_end_msg_log_id=consumed_end_msg_log_id,
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO agent_unread_ranges (
+                        session_id, start_msg_log_id, end_msg_log_id, start_at, end_at,
+                        message_count, review_consumed, chat_consumed
+                    ) VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                    """,
+                    (
+                        replacement.session_id,
+                        replacement.start_msg_log_id,
+                        replacement.end_msg_log_id,
+                        replacement.start_at,
+                        replacement.end_at,
+                        replacement.message_count,
+                    ),
+                )
+
+    def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
+        if not range_ids:
+            return
+        placeholders = ",".join("?" for _ in range_ids)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE agent_unread_ranges
+                SET review_consumed = 1
+                WHERE id IN ({placeholders})
+                """,
+                tuple(range_ids),
+            )
 
     def add_high_priority_events(self, events: list[HighPriorityEvent]) -> None:
         if not events:
@@ -303,6 +441,89 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return int(row["cnt"]) if row is not None else 0
 
     @staticmethod
+    def _can_extend_tail_range(conn, message: UnreadMessage, tail) -> bool:
+        if int(tail["end_msg_log_id"]) >= message.message_log_id:
+            return False
+        if float(tail["end_at"]) > message.created_at:
+            return False
+        gap = conn.execute(
+            """
+            SELECT 1
+            FROM message_logs
+            WHERE session_id = ?
+              AND id > ?
+              AND id < ?
+            LIMIT 1
+            """,
+            (message.session_id, int(tail["end_msg_log_id"]), message.message_log_id),
+        ).fetchone()
+        return gap is None
+
+    @staticmethod
+    def _remaining_ranges_after_consumed(
+        conn,
+        unread_range: UnreadRange,
+        *,
+        consumed_start_msg_log_id: int,
+        consumed_end_msg_log_id: int,
+    ) -> list[UnreadRange]:
+        ranges: list[UnreadRange] = []
+        before = AgentSchedulerRepository._range_for_message_bounds(
+            conn,
+            unread_range,
+            start_msg_log_id=unread_range.start_msg_log_id,
+            end_msg_log_id=consumed_start_msg_log_id - 1,
+        )
+        if before is not None:
+            ranges.append(before)
+        after = AgentSchedulerRepository._range_for_message_bounds(
+            conn,
+            unread_range,
+            start_msg_log_id=consumed_end_msg_log_id + 1,
+            end_msg_log_id=unread_range.end_msg_log_id,
+        )
+        if after is not None:
+            ranges.append(after)
+        return ranges
+
+    @staticmethod
+    def _range_for_message_bounds(
+        conn,
+        source: UnreadRange,
+        *,
+        start_msg_log_id: int,
+        end_msg_log_id: int,
+    ) -> UnreadRange | None:
+        if start_msg_log_id > end_msg_log_id:
+            return None
+        row = conn.execute(
+            """
+            SELECT MIN(id) AS start_id,
+                   MAX(id) AS end_id,
+                   MIN(created_at) AS start_at,
+                   MAX(created_at) AS end_at,
+                   COUNT(*) AS cnt
+            FROM message_logs
+            WHERE session_id = ?
+              AND id >= ?
+              AND id <= ?
+            """,
+            (source.session_id, start_msg_log_id, end_msg_log_id),
+        ).fetchone()
+        if row is None or int(row["cnt"] or 0) == 0:
+            return None
+        return UnreadRange(
+            id=None,
+            session_id=source.session_id,
+            start_msg_log_id=int(row["start_id"]),
+            end_msg_log_id=int(row["end_id"]),
+            start_at=float(row["start_at"]),
+            end_at=float(row["end_at"]),
+            message_count=int(row["cnt"]),
+            chat_consumed=source.chat_consumed,
+        )
+
+    @staticmethod
     def _high_priority_from_row(row) -> HighPriorityEvent:
         try:
             kind = HighPriorityEventKind(str(row["kind"]))
@@ -315,6 +536,20 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             kind=kind,
             created_at=float(row["created_at"]),
             reason=str(row["reason"]),
+        )
+
+    @staticmethod
+    def _unread_range_from_row(row) -> UnreadRange:
+        return UnreadRange(
+            id=int(row["id"]),
+            session_id=str(row["session_id"]),
+            start_msg_log_id=int(row["start_msg_log_id"]),
+            end_msg_log_id=int(row["end_msg_log_id"]),
+            start_at=float(row["start_at"]),
+            end_at=float(row["end_at"]),
+            message_count=int(row["message_count"]),
+            review_consumed=bool(row["review_consumed"]),
+            chat_consumed=bool(row["chat_consumed"]),
         )
 
     @staticmethod

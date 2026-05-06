@@ -334,6 +334,25 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ON agent_unread_messages(session_id, review_consumed, created_at)
     """,
     """
+    CREATE TABLE IF NOT EXISTS agent_unread_ranges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        start_msg_log_id INTEGER NOT NULL,
+        end_msg_log_id INTEGER NOT NULL,
+        start_at REAL NOT NULL,
+        end_at REAL NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        review_consumed INTEGER NOT NULL DEFAULT 0,
+        chat_consumed INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(start_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE,
+        FOREIGN KEY(end_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_unread_ranges_session
+    ON agent_unread_ranges(session_id, review_consumed, start_at, start_msg_log_id)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS agent_high_priority_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -894,6 +913,45 @@ def _migrate_agent_scheduler_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE agent_scheduler_states ADD COLUMN {col} {spec}")
 
 
+def _migrate_agent_unread_ranges(conn: sqlite3.Connection) -> None:
+    range_columns = _table_columns(conn, "agent_unread_ranges")
+    message_columns = _table_columns(conn, "agent_unread_messages")
+    if not range_columns or not message_columns:
+        return
+    existing = conn.execute("SELECT COUNT(*) AS cnt FROM agent_unread_ranges").fetchone()
+    if existing is not None and int(existing["cnt"] or 0) > 0:
+        return
+    rows = conn.execute(
+        """
+        SELECT session_id, message_log_id, created_at, review_consumed, chat_consumed
+        FROM agent_unread_messages
+        ORDER BY session_id ASC, created_at ASC, message_log_id ASC
+        """
+    ).fetchall()
+    if not rows:
+        return
+    conn.executemany(
+        """
+        INSERT INTO agent_unread_ranges (
+            session_id, start_msg_log_id, end_msg_log_id, start_at, end_at,
+            message_count, review_consumed, chat_consumed
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        [
+            (
+                row["session_id"],
+                row["message_log_id"],
+                row["message_log_id"],
+                row["created_at"],
+                row["created_at"],
+                row["review_consumed"],
+                row["chat_consumed"],
+            )
+            for row in rows
+        ],
+    )
+
+
 def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "workflow_runs")
     if not columns:
@@ -966,4 +1024,5 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_ai_interactions_schema(conn)
     _migrate_message_logs_schema(conn)
     _migrate_agent_scheduler_schema(conn)
+    _migrate_agent_unread_ranges(conn)
     _migrate_workflow_runs_schema(conn)

@@ -35,9 +35,38 @@ def test_in_memory_agent_inbox_records_unread_and_high_priority_events() -> None
     inbox.add_high_priority_events([event])
 
     assert inbox.list_unread("bot:group:room") == [unread]
+    assert [item.message_count for item in inbox.list_unread_ranges("bot:group:room")] == [1]
+    assert inbox.count_unread_messages("bot:group:room") == 1
     assert inbox.list_high_priority_events("bot:group:room") == [event]
     assert inbox.mark_high_priority_events_handled("bot:group:room") == [event]
     assert inbox.list_high_priority_events("bot:group:room") == []
+
+
+def test_in_memory_agent_inbox_splits_consumed_unread_range() -> None:
+    inbox = InMemoryAgentInbox()
+    for message_id in [1, 2, 3]:
+        inbox.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id=f"user-{message_id}",
+                created_at=float(message_id),
+            )
+        )
+    unread_range = inbox.list_unread_ranges("bot:group:room")[0]
+
+    inbox.split_review_consumed(
+        range_id=unread_range.id or 0,
+        consumed_start_msg_log_id=2,
+        consumed_end_msg_log_id=2,
+    )
+
+    assert [item.message_log_id for item in inbox.list_unread("bot:group:room")] == [1, 3]
+    assert [
+        (item.start_msg_log_id, item.end_msg_log_id)
+        for item in inbox.list_unread_ranges("bot:group:room")
+    ] == [(1, 1), (3, 3)]
+    assert inbox.count_unread_messages("bot:group:room") == 2
 
 
 def test_in_memory_agent_inbox_counts_mentions_in_window() -> None:

@@ -74,6 +74,21 @@ class UnreadMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class UnreadRange:
+    """A contiguous unread timeline range known to Agent."""
+
+    id: int | None
+    session_id: str
+    start_msg_log_id: int
+    end_msg_log_id: int
+    start_at: float
+    end_at: float
+    message_count: int
+    review_consumed: bool = False
+    chat_consumed: bool = False
+
+
+@dataclass(slots=True, frozen=True)
 class HighPriorityEvent:
     """A high-priority notification queued for active reply handling."""
 

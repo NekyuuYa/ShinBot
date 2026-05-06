@@ -20,6 +20,7 @@ from shinbot.agent.scheduler.models import (
     ReviewDueDecision,
     ReviewPlan,
     UnreadMessage,
+    UnreadRange,
 )
 from shinbot.agent.scheduler.priority_policy import (
     DefaultPriorityPolicy,
@@ -71,4 +72,5 @@ __all__ = [
     "ReviewPolicy",
     "ReviewPolicyConfig",
     "UnreadMessage",
+    "UnreadRange",
 ]
