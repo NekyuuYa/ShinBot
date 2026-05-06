@@ -8,6 +8,10 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
+from shinbot.agent.review.bootstrap import (
+    ActiveChatBootstrapStageRunner,
+    NoopActiveChatBootstrapStageRunner,
+)
 from shinbot.agent.review.context_builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
@@ -17,6 +21,7 @@ from shinbot.agent.review.context_builder import (
 from shinbot.agent.review.message_store import ReviewMessageStore
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
+    ActiveChatBootstrapStageOutput,
     ReplyDecisionResult,
     ReplyDecisionStageOutput,
     ReviewScanResult,
@@ -52,6 +57,7 @@ class ReviewSchedulerPort(Protocol):
         *,
         enter_active_chat: bool = False,
         active_chat_initial_interest: float | None = None,
+        active_chat_decay_half_life_seconds: float | None = None,
         next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
     ) -> ReviewCompletionDecision:
@@ -74,6 +80,7 @@ class ReviewWorkflow:
         context_builder: ReviewContextBuilder | None = None,
         scan_runner: ReviewScanStageRunner | None = None,
         reply_runner: ReplyDecisionStageRunner | None = None,
+        bootstrap_runner: ActiveChatBootstrapStageRunner | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
@@ -81,6 +88,9 @@ class ReviewWorkflow:
         self._context_builder = context_builder or ReviewContextBuilderAdapter()
         self._scan_runner = scan_runner or NoopReviewScanStageRunner()
         self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
+        self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner(
+            initial_interest=self._config.fallback_active_chat_interest,
+        )
         self._now = now or time.time
 
     async def run(
@@ -102,14 +112,16 @@ class ReviewWorkflow:
                 unread_ranges=unread_ranges,
             )
             reply = await self._run_reply_decision(session_id=session_id, scan=scan)
-            bootstrap = self._run_active_chat_bootstrap(
+            bootstrap = await self._run_active_chat_bootstrap(
                 session_id=session_id,
                 started_at=started_at,
+                reply=reply,
             )
             completion = scheduler.complete_review(
                 session_id,
                 enter_active_chat=True,
                 active_chat_initial_interest=bootstrap.initial_interest,
+                active_chat_decay_half_life_seconds=bootstrap.decay_half_life_seconds,
             )
             return ReviewWorkflowResult(
                 scan=scan,
@@ -124,14 +136,16 @@ class ReviewWorkflow:
                 session_id,
                 review_plan.reason,
             )
-            bootstrap = self._run_active_chat_bootstrap(
+            bootstrap = await self._run_active_chat_bootstrap(
                 session_id=session_id,
                 started_at=started_at,
+                reply=ReplyDecisionResult(),
             )
             completion = scheduler.complete_review(
                 session_id,
                 enter_active_chat=True,
                 active_chat_initial_interest=bootstrap.initial_interest,
+                active_chat_decay_half_life_seconds=bootstrap.decay_half_life_seconds,
             )
             return ReviewWorkflowResult(
                 scan=ReviewScanResult(),
@@ -243,20 +257,28 @@ class ReviewWorkflow:
             stage_input_count=stage_input_count,
         )
 
-    def _run_active_chat_bootstrap(
+    async def _run_active_chat_bootstrap(
         self,
         *,
         session_id: str,
         started_at: float,
+        reply: ReplyDecisionResult,
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
-        tail_history_message_count, stage_input_built = self._load_tail_history(
+        (
+            tail_history_message_count,
+            stage_input_built,
+            stage_output,
+        ) = await self._load_tail_history(
             session_id=session_id,
             started_at=started_at,
             ended_at=ended_at,
+            reply=reply,
         )
         return ActiveChatBootstrapResult(
-            initial_interest=self._config.fallback_active_chat_interest,
+            initial_interest=stage_output.initial_interest,
+            decay_half_life_seconds=stage_output.decay_half_life_seconds,
+            reason=stage_output.reason,
             tail_history_start_at=(started_at - self._config.tail_history_before_seconds) * 1000,
             tail_history_end_at=ended_at * 1000,
             tail_history_message_count=tail_history_message_count,
@@ -316,15 +338,23 @@ class ReviewWorkflow:
                 offset += len(batch)
         return loaded_count, stage_input_count, candidate_message_ids, scan_reasons
 
-    def _load_tail_history(
+    async def _load_tail_history(
         self,
         *,
         session_id: str,
         started_at: float,
         ended_at: float,
-    ) -> tuple[int, bool]:
+        reply: ReplyDecisionResult,
+    ) -> tuple[int, bool, ActiveChatBootstrapStageOutput]:
         if self._message_store is None:
-            return 0, False
+            return (
+                0,
+                False,
+                ActiveChatBootstrapStageOutput(
+                    initial_interest=self._config.fallback_active_chat_interest,
+                    reason="active_chat_bootstrap_skipped_no_message_store",
+                ),
+            )
 
         tail_history = self._message_store.list_by_time(
             session_id=session_id,
@@ -332,7 +362,7 @@ class ReviewWorkflow:
             end_at=ended_at * 1000,
             limit=self._config.tail_history_limit,
         )
-        stage_input_built = self._build_stage_input(
+        stage_input = self._build_stage_input(
             session_id=session_id,
             messages=tail_history,
             purpose="active_chat_bootstrap",
@@ -340,9 +370,23 @@ class ReviewWorkflow:
                 "tail_history_start_at": (started_at - self._config.tail_history_before_seconds)
                 * 1000,
                 "tail_history_end_at": ended_at * 1000,
+                "reply_replied": reply.replied,
+                "reply_message_id": reply.reply_message_id,
+                "reply_target_message_ids": reply.target_message_ids,
+                "reply_reason": reply.reply_reason,
             },
-        ) is not None
-        return len(tail_history), stage_input_built
+        )
+        if stage_input is None:
+            return (
+                len(tail_history),
+                False,
+                ActiveChatBootstrapStageOutput(
+                    initial_interest=self._config.fallback_active_chat_interest,
+                    reason="active_chat_bootstrap_skipped_no_stage_input",
+                ),
+            )
+        stage_output = await self._run_bootstrap_stage(stage_input)
+        return len(tail_history), True, stage_output
 
     def _build_stage_input(
         self,
@@ -372,6 +416,12 @@ class ReviewWorkflow:
 
     async def _run_reply_stage(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
         return await self._reply_runner.run(stage_input)
+
+    async def _run_bootstrap_stage(
+        self,
+        stage_input: ReviewStageInput,
+    ) -> ActiveChatBootstrapStageOutput:
+        return await self._bootstrap_runner.run(stage_input)
 
     def _planned_overflow_compression(
         self,

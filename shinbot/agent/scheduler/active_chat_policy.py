@@ -30,6 +30,7 @@ class ActiveChatPolicy(Protocol):
         session_id: str,
         now: float,
         initial_interest_value: float | None = None,
+        decay_half_life_seconds: float | None = None,
     ) -> ActiveChatState:
         """Build the initial active chat interest state."""
 
@@ -62,6 +63,7 @@ class DefaultActiveChatPolicy:
         session_id: str,
         now: float,
         initial_interest_value: float | None = None,
+        decay_half_life_seconds: float | None = None,
     ) -> ActiveChatState:
         return ActiveChatState(
             session_id=session_id,
@@ -70,7 +72,11 @@ class DefaultActiveChatPolicy:
                 if initial_interest_value is None
                 else initial_interest_value
             ),
-            decay_half_life_seconds=self._config.decay_half_life_seconds,
+            decay_half_life_seconds=(
+                self._config.decay_half_life_seconds
+                if decay_half_life_seconds is None
+                else decay_half_life_seconds
+            ),
             entered_at=now,
             updated_at=now,
         )

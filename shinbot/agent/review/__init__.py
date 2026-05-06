@@ -1,5 +1,9 @@
 """Review workflow primitives for Agent internals."""
 
+from shinbot.agent.review.bootstrap import (
+    ActiveChatBootstrapStageRunner,
+    NoopActiveChatBootstrapStageRunner,
+)
 from shinbot.agent.review.context_builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
@@ -13,6 +17,7 @@ from shinbot.agent.review.message_store import (
 )
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
+    ActiveChatBootstrapStageOutput,
     ReplyDecisionResult,
     ReplyDecisionStageOutput,
     ReviewScanResult,
@@ -28,9 +33,12 @@ from shinbot.agent.review.workflow import ReviewWorkflow
 
 __all__ = [
     "ActiveChatBootstrapResult",
+    "ActiveChatBootstrapStageOutput",
+    "ActiveChatBootstrapStageRunner",
     "DatabaseReviewMessageStore",
     "MessageLogPayload",
     "NoopReplyDecisionStageRunner",
+    "NoopActiveChatBootstrapStageRunner",
     "NoopReviewScanStageRunner",
     "ReplyDecisionResult",
     "ReplyDecisionStageOutput",

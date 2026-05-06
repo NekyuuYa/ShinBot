@@ -346,6 +346,7 @@ class AgentScheduler:
         *,
         enter_active_chat: bool = False,
         active_chat_initial_interest: float | None = None,
+        active_chat_decay_half_life_seconds: float | None = None,
         next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
     ) -> ReviewCompletionDecision:
@@ -364,6 +365,7 @@ class AgentScheduler:
                 session_id=session_id,
                 now=checked_at,
                 initial_interest_value=active_chat_initial_interest,
+                decay_half_life_seconds=active_chat_decay_half_life_seconds,
             )
             self._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
             self._state_store.set_active_chat_state(active_chat_state)

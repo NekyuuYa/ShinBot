@@ -106,6 +106,15 @@ class ActiveChatBootstrapResult:
 
 
 @dataclass(slots=True, frozen=True)
+class ActiveChatBootstrapStageOutput:
+    """Output from the active_chat_bootstrap stage runner."""
+
+    initial_interest: float
+    decay_half_life_seconds: float | None = None
+    reason: str = "noop_active_chat_bootstrap"
+
+
+@dataclass(slots=True, frozen=True)
 class ReviewWorkflowResult:
     """Whole review workflow result across scan, reply, and active chat bootstrap."""
 

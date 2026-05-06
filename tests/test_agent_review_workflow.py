@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.review import (
+    ActiveChatBootstrapStageOutput,
     DatabaseReviewMessageStore,
     ReplyDecisionStageOutput,
     ReviewContextBuilderAdapter,
@@ -81,6 +82,7 @@ class FakeReviewScheduler:
         *,
         enter_active_chat: bool = False,
         active_chat_initial_interest: float | None = None,
+        active_chat_decay_half_life_seconds: float | None = None,
         next_review_plan: ReviewPlan | None = None,
         now: float | None = None,
     ) -> ReviewCompletionDecision:
@@ -89,6 +91,7 @@ class FakeReviewScheduler:
                 "session_id": session_id,
                 "enter_active_chat": enter_active_chat,
                 "active_chat_initial_interest": active_chat_initial_interest,
+                "active_chat_decay_half_life_seconds": active_chat_decay_half_life_seconds,
                 "next_review_plan": next_review_plan,
                 "now": now,
             }
@@ -161,6 +164,26 @@ class RecordingReplyDecisionRunner:
             replied=False,
             target_message_ids=[candidate_id],
             reason=f"checked_{candidate_id}",
+        )
+
+
+class RecordingActiveChatBootstrapRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def run(self, stage_input) -> ActiveChatBootstrapStageOutput:
+        message_ids = [message["id"] for message in stage_input.source_messages]
+        self.calls.append(
+            {
+                "purpose": stage_input.purpose,
+                "message_ids": message_ids,
+                "metadata": dict(stage_input.metadata),
+            }
+        )
+        return ActiveChatBootstrapStageOutput(
+            initial_interest=0.7,
+            decay_half_life_seconds=30.0,
+            reason="bootstrap_selected_interest",
         )
 
 
@@ -307,6 +330,7 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
             "session_id": "bot:group:room",
             "enter_active_chat": True,
             "active_chat_initial_interest": 0.05,
+            "active_chat_decay_half_life_seconds": None,
             "next_review_plan": None,
             "now": None,
         }
@@ -495,6 +519,80 @@ async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> 
         "review_scan",
         "reply_decision",
         "active_chat_bootstrap",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_facts(
+    tmp_path,
+) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 5)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    bootstrap_runner = RecordingActiveChatBootstrapRunner()
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=4,
+            reply_context_before_messages=1,
+            reply_context_after_messages=1,
+            tail_history_before_seconds=10.0,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=SelectingReviewScanRunner(),
+        reply_runner=RecordingReplyDecisionRunner(),
+        bootstrap_runner=bootstrap_runner,
+        now=lambda: 4.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.bootstrap.initial_interest == 0.7
+    assert result.bootstrap.decay_half_life_seconds == 30.0
+    assert result.bootstrap.reason == "bootstrap_selected_interest"
+    assert result.completion.active_chat_state.interest_value == 0.7
+    assert result.completion.active_chat_state.decay_half_life_seconds == 30.0
+    assert bootstrap_runner.calls == [
+        {
+            "purpose": "active_chat_bootstrap",
+            "message_ids": message_ids,
+            "metadata": {
+                "purpose": "active_chat_bootstrap",
+                "tail_history_start_at": -6000.0,
+                "tail_history_end_at": 4000.0,
+                "reply_replied": False,
+                "reply_message_id": None,
+                "reply_target_message_ids": [message_ids[-1]],
+                "reply_reason": f"checked_{message_ids[-1]}",
+            },
+        }
     ]
 
 
