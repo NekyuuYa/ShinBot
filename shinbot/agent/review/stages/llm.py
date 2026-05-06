@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.review.context_builder import ReviewStageInput
+from shinbot.agent.review.context.builder import ReviewStageInput
 from shinbot.agent.review.models import (
     ActiveChatBootstrapStageOutput,
     OverflowCompressionStageOutput,

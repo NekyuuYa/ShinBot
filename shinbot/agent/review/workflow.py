@@ -8,21 +8,12 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
-from shinbot.agent.review.bootstrap import (
-    ActiveChatBootstrapStageRunner,
-    NoopActiveChatBootstrapStageRunner,
-)
-from shinbot.agent.review.compression import (
-    NoopOverflowCompressionStageRunner,
-    OverflowCompressionStageRunner,
-)
-from shinbot.agent.review.context_builder import (
+from shinbot.agent.review.context.builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
     ReviewContextBuildOptions,
     ReviewStageInput,
 )
-from shinbot.agent.review.message_store import ReviewMessageStore
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
@@ -36,9 +27,21 @@ from shinbot.agent.review.models import (
     ReviewWorkflowResult,
     UnreadRangeSummaryRecord,
 )
-from shinbot.agent.review.reply import NoopReplyDecisionStageRunner, ReplyDecisionStageRunner
-from shinbot.agent.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
-from shinbot.agent.review.summary_store import ReviewSummaryStore
+from shinbot.agent.review.stages.bootstrap import (
+    ActiveChatBootstrapStageRunner,
+    NoopActiveChatBootstrapStageRunner,
+)
+from shinbot.agent.review.stages.compression import (
+    NoopOverflowCompressionStageRunner,
+    OverflowCompressionStageRunner,
+)
+from shinbot.agent.review.stages.reply import (
+    NoopReplyDecisionStageRunner,
+    ReplyDecisionStageRunner,
+)
+from shinbot.agent.review.stages.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.review.stores.message_store import ReviewMessageStore
+from shinbot.agent.review.stores.summary_store import ReviewSummaryStore
 from shinbot.agent.scheduler.models import (
     ReviewCompletionDecision,
     ReviewPlan,

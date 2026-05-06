@@ -1,37 +1,10 @@
 """Review workflow primitives for Agent internals."""
 
-from shinbot.agent.review.bootstrap import (
-    ActiveChatBootstrapStageRunner,
-    NoopActiveChatBootstrapStageRunner,
-)
-from shinbot.agent.review.compression import (
-    NoopOverflowCompressionStageRunner,
-    OverflowCompressionStageRunner,
-)
-from shinbot.agent.review.context_builder import (
+from shinbot.agent.review.context.builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
     ReviewContextBuildOptions,
     ReviewStageInput,
-)
-from shinbot.agent.review.factory import (
-    ReviewRunnerFactory,
-    ReviewRuntimeConfig,
-    ReviewStageRuntimeConfig,
-)
-from shinbot.agent.review.llm import (
-    LLMActiveChatBootstrapStageRunner,
-    LLMOverflowCompressionStageRunner,
-    LLMReplyDecisionStageRunner,
-    LLMReviewScanStageRunner,
-    ReviewLLMRunnerConfig,
-    ReviewLLMStageRunnerBase,
-    parse_json_object,
-)
-from shinbot.agent.review.message_store import (
-    DatabaseReviewMessageStore,
-    MessageLogPayload,
-    ReviewMessageStore,
 )
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
@@ -47,9 +20,39 @@ from shinbot.agent.review.models import (
     UnreadRangeIgnoreRecord,
     UnreadRangeSummaryRecord,
 )
-from shinbot.agent.review.reply import NoopReplyDecisionStageRunner, ReplyDecisionStageRunner
-from shinbot.agent.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
-from shinbot.agent.review.summary_store import (
+from shinbot.agent.review.stages.bootstrap import (
+    ActiveChatBootstrapStageRunner,
+    NoopActiveChatBootstrapStageRunner,
+)
+from shinbot.agent.review.stages.compression import (
+    NoopOverflowCompressionStageRunner,
+    OverflowCompressionStageRunner,
+)
+from shinbot.agent.review.stages.factory import (
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
+    ReviewStageRuntimeConfig,
+)
+from shinbot.agent.review.stages.llm import (
+    LLMActiveChatBootstrapStageRunner,
+    LLMOverflowCompressionStageRunner,
+    LLMReplyDecisionStageRunner,
+    LLMReviewScanStageRunner,
+    ReviewLLMRunnerConfig,
+    ReviewLLMStageRunnerBase,
+    parse_json_object,
+)
+from shinbot.agent.review.stages.reply import (
+    NoopReplyDecisionStageRunner,
+    ReplyDecisionStageRunner,
+)
+from shinbot.agent.review.stages.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.review.stores.message_store import (
+    DatabaseReviewMessageStore,
+    MessageLogPayload,
+    ReviewMessageStore,
+)
+from shinbot.agent.review.stores.summary_store import (
     DatabaseReviewSummaryStore,
     ReviewSummaryStore,
 )
