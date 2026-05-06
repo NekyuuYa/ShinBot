@@ -146,6 +146,49 @@ def test_prompt_registry_sorts_stage_records_stably() -> None:
     ]
 
 
+def test_prompt_registry_exposes_stage_assembly_before_projection() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_component(
+        PromptComponent(
+            id="instructions",
+            stage=PromptStage.INSTRUCTIONS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="do work",
+        )
+    )
+
+    stage_assembly = registry.assemble_stages(
+        PromptAssemblyRequest(
+            component_overrides=["system", "instructions"],
+            metadata={"purpose": "test"},
+        )
+    )
+    messages, tools = registry.project_messages(stage_assembly)
+
+    assert not hasattr(stage_assembly, "messages")
+    assert [stage.stage for stage in stage_assembly.stages] == [
+        PromptStage.SYSTEM_BASE,
+        PromptStage.IDENTITY,
+        PromptStage.ABILITIES,
+        PromptStage.CONTEXT,
+        PromptStage.COMPATIBILITY,
+        PromptStage.INSTRUCTIONS,
+        PromptStage.CONSTRAINTS,
+    ]
+    assert stage_assembly.prompt_signature
+    assert stage_assembly.metadata == {"purpose": "test"}
+    assert messages[0]["role"] == "system"
+    assert tools == []
+
+
 def test_prompt_registry_supports_template_and_resolver_components() -> None:
     registry = PromptRegistry()
     registry.register_component(

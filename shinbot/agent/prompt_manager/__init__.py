@@ -28,6 +28,7 @@ __all__ = [
     "PromptSource",
     "PromptSourceType",
     "PromptStage",
+    "PromptStageAssembly",
     "PromptStageBlock",
 ]
 
@@ -49,6 +50,7 @@ _EXPORT_MODULES = {
     "PromptSource": "shinbot.agent.prompt_manager.schema",
     "PromptSourceType": "shinbot.agent.prompt_manager.schema",
     "PromptStage": "shinbot.agent.prompt_manager.schema",
+    "PromptStageAssembly": "shinbot.agent.prompt_manager.schema",
     "PromptStageBlock": "shinbot.agent.prompt_manager.schema",
 }
 

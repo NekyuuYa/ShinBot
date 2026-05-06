@@ -29,6 +29,7 @@ from shinbot.agent.prompt_manager.schema import (
     PromptSource,
     PromptSourceType,
     PromptStage,
+    PromptStageAssembly,
     PromptStageBlock,
     stable_text_hash,
 )
@@ -217,6 +218,25 @@ class PromptRegistry:
         )
 
     def assemble(self, request: PromptAssemblyRequest) -> PromptAssemblyResult:
+        """Assemble stages and project them with the default chat policy."""
+        stage_assembly = self.assemble_stages(request)
+        messages, tools = self.project_messages(stage_assembly)
+        return PromptAssemblyResult(
+            profile_id=stage_assembly.profile_id,
+            caller=stage_assembly.caller,
+            stages=stage_assembly.stages,
+            ordered_components=stage_assembly.ordered_components,
+            messages=messages,
+            tools=tools,
+            prompt_signature=stage_assembly.prompt_signature,
+            compatibility_used=stage_assembly.compatibility_used,
+            has_unknown_source=stage_assembly.has_unknown_source,
+            truncation=stage_assembly.truncation,
+            metadata=dict(stage_assembly.metadata),
+        )
+
+    def assemble_stages(self, request: PromptAssemblyRequest) -> PromptStageAssembly:
+        """Assemble selected prompt material into ordered 7-stage blocks."""
         profile = self._profiles.get(request.profile_id)
         if request.profile_id and profile is None:
             raise ValueError(f"Prompt profile {request.profile_id!r} is not registered")
@@ -309,8 +329,6 @@ class PromptRegistry:
                     )
                 )
 
-        stage_by_name = {block.stage: block for block in stage_blocks}
-
         # Guard: require at least one system_base component
         has_system_stage = bool(sorted_records_by_stage[PromptStage.SYSTEM_BASE]) or bool(
             sorted_records_by_stage[PromptStage.IDENTITY]
@@ -320,7 +338,26 @@ class PromptRegistry:
                 "Prompt assembly requires at least one component in SYSTEM_BASE or IDENTITY stage"
             )
 
-        # ── Compose Chat Completions structure ──────────────────────────
+        prompt_signature = self._build_signature(stage_blocks)
+
+        return PromptStageAssembly(
+            profile_id=request.profile_id,
+            caller=request.caller,
+            stages=stage_blocks,
+            ordered_components=ordered_records,
+            prompt_signature=prompt_signature,
+            compatibility_used=bool(records_by_stage[PromptStage.COMPATIBILITY]),
+            has_unknown_source=has_unknown_source,
+            truncation={},
+            metadata=dict(request.metadata),
+        )
+
+    def project_messages(
+        self,
+        stage_assembly: PromptStageAssembly,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Project 7-stage blocks into default Chat Completions messages/tools."""
+        stage_by_name = {block.stage: block for block in stage_assembly.stages}
 
         # System message: SYSTEM_BASE + IDENTITY (content array)
         system_content: list[dict[str, Any]] = []
@@ -357,21 +394,7 @@ class PromptRegistry:
         if final_content:
             messages.append({"role": "user", "content": final_content})
 
-        prompt_signature = self._build_signature(stage_blocks)
-
-        return PromptAssemblyResult(
-            profile_id=request.profile_id,
-            caller=request.caller,
-            stages=stage_blocks,
-            ordered_components=ordered_records,
-            messages=messages,
-            tools=tools,
-            prompt_signature=prompt_signature,
-            compatibility_used=bool(records_by_stage[PromptStage.COMPATIBILITY]),
-            has_unknown_source=has_unknown_source,
-            truncation={},
-            metadata=dict(request.metadata),
-        )
+        return messages, tools
 
     def _component_ids_for_build_request(self, request: PromptBuildRequest) -> list[str]:
         component_ids: list[str] = []

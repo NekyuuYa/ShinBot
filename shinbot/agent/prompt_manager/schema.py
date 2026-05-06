@@ -236,6 +236,20 @@ class PromptAssemblyResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PromptStageAssembly(BaseModel):
+    """Intermediate 7-stage prompt material before message/tool projection."""
+
+    profile_id: str = ""
+    caller: str = ""
+    stages: list[PromptStageBlock] = Field(default_factory=list)
+    ordered_components: list[PromptComponentRecord] = Field(default_factory=list)
+    prompt_signature: str = ""
+    compatibility_used: bool = False
+    has_unknown_source: bool = False
+    truncation: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PromptBuildResult(BaseModel):
     """Workflow-facing prompt build result."""
 
