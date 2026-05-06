@@ -326,6 +326,7 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         {
             "replied": {"type": "boolean"},
             "reply_message_id": {"type": ["integer", "null"]},
+            "reply_message_ids": {"type": "array", "items": {"type": "integer"}},
             "target_message_ids": {"type": "array", "items": {"type": "integer"}},
             "reason": {"type": "string"},
         },
@@ -344,6 +345,7 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         return ReplyDecisionStageOutput(
             replied=bool(payload.get("replied")),
             reply_message_id=_optional_int(payload.get("reply_message_id")),
+            reply_message_ids=_reply_message_ids_from_payload(payload),
             target_message_ids=_int_list(payload.get("target_message_ids")),
             reason=str(payload.get("reason") or "llm_reply_decision"),
         )
@@ -418,14 +420,23 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             None,
         )
         if first_reply_arguments is not None:
-            if _optional_int(first_reply_arguments.get("quote_message_log_id")) is None:
+            quote_message_log_id = _optional_int(
+                first_reply_arguments.get("quote_message_log_id")
+            )
+            if quote_message_log_id is None:
                 return ReplyDecisionStageOutput(
                     target_message_ids=target_message_ids,
                     reason="reply_tool_missing_quote_message_log_id",
                 )
+            if quote_message_log_id not in set(target_message_ids):
+                return ReplyDecisionStageOutput(
+                    target_message_ids=target_message_ids,
+                    reason="reply_tool_quote_message_log_id_not_candidate",
+                )
 
         replied = False
         reply_message_id: int | None = None
+        reply_message_ids: list[int] = []
         reply_count = 0
         poke_count = 0
         saw_no_reply = False
@@ -464,12 +475,18 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
                     reply_message_id = _optional_int(
                         _tool_output_value(tool_result.output, "message_log_id")
                     )
+                output_message_id = _optional_int(
+                    _tool_output_value(tool_result.output, "message_log_id")
+                )
+                if output_message_id is not None:
+                    reply_message_ids.append(output_message_id)
                 continue
             poke_count += 1
         if replied:
             return ReplyDecisionStageOutput(
                 replied=True,
                 reply_message_id=reply_message_id,
+                reply_message_ids=reply_message_ids,
                 target_message_ids=target_message_ids,
                 reason=_reply_tool_reason(reply_count=reply_count, poke_count=poke_count),
             )
@@ -545,6 +562,14 @@ def _candidate_message_ids_from_stage(stage_input: ReviewStageInput) -> list[int
     if isinstance(values, list):
         return _int_list(values)
     return _int_list([stage_input.metadata.get("candidate_message_id")])
+
+
+def _reply_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:
+    ids = _int_list(payload.get("reply_message_ids"))
+    if ids:
+        return ids
+    reply_message_id = _optional_int(payload.get("reply_message_id"))
+    return [reply_message_id] if reply_message_id is not None else []
 
 
 def _tool_call_function(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:

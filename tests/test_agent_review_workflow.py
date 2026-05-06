@@ -506,6 +506,7 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
     assert scan.reason == "selected"
     assert reply.replied is True
     assert reply.reply_message_id == 10
+    assert reply.reply_message_ids == [10]
     assert reply.target_message_ids == [3]
     assert bootstrap.initial_interest == 1.0
     assert bootstrap.decay_half_life_seconds == 30.0
@@ -596,6 +597,7 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     assert call.response_format is None
     assert result.replied is True
     assert result.reply_message_id == 42
+    assert result.reply_message_ids == [42]
     assert result.target_message_ids == [7]
     assert result.reason == "send_reply_tool"
     assert tool_manager.execute_calls[0].tool_name == "send_reply"
@@ -648,6 +650,7 @@ async def test_reply_decision_runner_executes_multiple_replies_in_order() -> Non
 
     assert result.replied is True
     assert result.reply_message_id == 42
+    assert result.reply_message_ids == [42, 43]
     assert result.target_message_ids == [7, 8]
     assert result.reason == "send_reply_tool:2"
     assert [call.tool_name for call in tool_manager.execute_calls] == [
@@ -711,6 +714,7 @@ async def test_reply_decision_runner_allows_poke_after_reply_only() -> None:
     )
 
     assert result.replied is True
+    assert result.reply_message_ids == [42]
     assert result.reason == "send_reply_tool:1;send_poke_tool:2"
     assert [call.tool_name for call in tool_manager.execute_calls] == [
         "send_poke",
@@ -795,6 +799,46 @@ async def test_reply_decision_runner_requires_quoted_reply_message() -> None:
     assert result.replied is False
     assert result.target_message_ids == [7]
     assert result.reason == "reply_tool_missing_quote_message_log_id"
+    assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_requires_first_quote_to_target_candidate() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "hello", "quote_message_log_id": 99}',
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}, {"id": 99, "raw_text": "nearby"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [7]
+    assert result.reason == "reply_tool_quote_message_log_id_not_candidate"
     assert tool_manager.execute_calls == []
 
 
@@ -1425,6 +1469,7 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
                 "tail_history_end_at": 4000.0,
                 "reply_replied": False,
                 "reply_message_id": None,
+                "reply_message_ids": [],
                 "reply_target_message_ids": [message_ids[-1]],
                 "reply_reason": f"checked_{message_ids[-1]}",
             },
@@ -1675,6 +1720,7 @@ def test_review_workflow_explanation_summarizes_result() -> None:
         reply=ReplyDecisionResult(
             replied=True,
             reply_message_id=10,
+            reply_message_ids=[10],
             target_message_ids=[3],
             reply_reason="answered",
         ),
@@ -1703,6 +1749,7 @@ def test_review_workflow_explanation_summarizes_result() -> None:
                 target_message_ids=[3],
                 replied=True,
                 reply_message_id=10,
+                reply_message_ids=[10],
             ),
             ReviewStageTrace(
                 purpose="active_chat_bootstrap",
@@ -1724,6 +1771,7 @@ def test_review_workflow_explanation_summarizes_result() -> None:
     assert explanation.reply_target_message_ids == [3]
     assert explanation.replied is True
     assert explanation.reply_message_id == 10
+    assert explanation.reply_message_ids == [10]
     assert explanation.overflow_summary_count == 1
     assert explanation.overflow_summary_message_count == 2
     assert explanation.consumed_range_ids == [7]
@@ -1738,6 +1786,7 @@ def test_review_workflow_explanation_summarizes_result() -> None:
     assert explanation.stages[0].input_message_count == 3
     assert explanation.stages[0].target_message_ids == [3]
     assert explanation.stages[0].replied is True
+    assert explanation.stages[0].reply_message_ids == [10]
     assert explanation.stages[1].initial_interest == 0.4
 
 

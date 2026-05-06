@@ -74,6 +74,7 @@ class ReviewStageTrace:
     target_message_ids: list[int] = field(default_factory=list)
     replied: bool | None = None
     reply_message_id: int | None = None
+    reply_message_ids: list[int] = field(default_factory=list)
     initial_interest: float | None = None
     decay_half_life_seconds: float | None = None
 
@@ -89,6 +90,7 @@ class ReviewStageExplanation:
     target_message_ids: list[int] = field(default_factory=list)
     replied: bool | None = None
     reply_message_id: int | None = None
+    reply_message_ids: list[int] = field(default_factory=list)
     initial_interest: float | None = None
     decay_half_life_seconds: float | None = None
 
@@ -107,6 +109,7 @@ class ReviewWorkflowExplanation:
     reply_target_message_ids: list[int] = field(default_factory=list)
     replied: bool = False
     reply_message_id: int | None = None
+    reply_message_ids: list[int] = field(default_factory=list)
     overflow_summary_count: int = 0
     overflow_summary_message_count: int = 0
     consumed_range_ids: list[int] = field(default_factory=list)
@@ -154,6 +157,7 @@ class ReplyDecisionResult:
 
     replied: bool = False
     reply_message_id: int | None = None
+    reply_message_ids: list[int] = field(default_factory=list)
     target_message_ids: list[int] = field(default_factory=list)
     reply_reason: str = "review_reply_skeleton_no_llm"
     loaded_message_count: int = 0
@@ -166,6 +170,7 @@ class ReplyDecisionStageOutput:
 
     replied: bool = False
     reply_message_id: int | None = None
+    reply_message_ids: list[int] = field(default_factory=list)
     target_message_ids: list[int] = field(default_factory=list)
     reason: str = "noop_reply_decision"
 
@@ -224,6 +229,7 @@ def build_review_workflow_explanation(
         reply_target_message_ids=list(result.reply.target_message_ids),
         replied=result.reply.replied,
         reply_message_id=result.reply.reply_message_id,
+        reply_message_ids=list(result.reply.reply_message_ids),
         overflow_summary_count=len(result.scan.compressed_ranges),
         overflow_summary_message_count=sum(
             record.message_count for record in result.scan.compressed_ranges
@@ -246,6 +252,7 @@ def _stage_explanation(trace: ReviewStageTrace) -> ReviewStageExplanation:
         target_message_ids=list(trace.target_message_ids),
         replied=trace.replied,
         reply_message_id=trace.reply_message_id,
+        reply_message_ids=list(trace.reply_message_ids),
         initial_interest=trace.initial_interest,
         decay_half_life_seconds=trace.decay_half_life_seconds,
     )

@@ -314,6 +314,7 @@ class ReviewWorkflow:
         stage_input_count = 0
         replied = False
         reply_message_id = None
+        reply_message_ids: list[int] = []
         target_message_ids: list[int] = []
         reply_reasons: list[str] = []
 
@@ -346,6 +347,7 @@ class ReviewWorkflow:
             replied = replied or stage_output.replied
             if reply_message_id is None:
                 reply_message_id = stage_output.reply_message_id
+            reply_message_ids.extend(stage_output.reply_message_ids)
             target_message_ids.extend(stage_output.target_message_ids)
             if stage_output.reason.strip():
                 reply_reasons.append(stage_output.reason.strip())
@@ -353,6 +355,7 @@ class ReviewWorkflow:
         return ReplyDecisionResult(
             replied=replied,
             reply_message_id=reply_message_id,
+            reply_message_ids=_dedupe_preserve_order(reply_message_ids),
             target_message_ids=_dedupe_preserve_order(target_message_ids),
             reply_reason="; ".join(_dedupe_preserve_order(reply_reasons))
             or "noop_reply_decision",
@@ -614,6 +617,7 @@ class ReviewWorkflow:
                 "tail_history_end_at": ended_at * 1000,
                 "reply_replied": reply.replied,
                 "reply_message_id": reply.reply_message_id,
+                "reply_message_ids": reply.reply_message_ids,
                 "reply_target_message_ids": reply.target_message_ids,
                 "reply_reason": reply.reply_reason,
                 **_summary_metadata_payload(summaries),
@@ -934,6 +938,7 @@ def _trace_for_reply(
         target_message_ids=list(stage_output.target_message_ids),
         replied=stage_output.replied,
         reply_message_id=stage_output.reply_message_id,
+        reply_message_ids=list(stage_output.reply_message_ids),
     )
 
 
