@@ -322,7 +322,10 @@ class FakeReviewToolManager:
                     "description": "send reply",
                     "parameters": {
                         "type": "object",
-                        "properties": {"text": {"type": "string"}},
+                        "properties": {
+                            "text": {"type": "string"},
+                            "quote_message_log_id": {"type": "integer"},
+                        },
                         "required": ["text"],
                     },
                 },
@@ -539,7 +542,7 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
                         "id": "tool-1",
                         "function": {
                             "name": "send_reply",
-                            "arguments": '{"text": "hello"}',
+                            "arguments": '{"text": "hello", "quote_message_log_id": 7}',
                         },
                     }
                 ]
@@ -565,6 +568,8 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     call = model_runtime.calls[0]
     tool_names = [tool["function"]["name"] for tool in call.tools]
     assert tool_names == ["no_reply", "send_reply"]
+    send_reply_tool = call.tools[1]
+    assert "quote_message_log_id" in send_reply_tool["function"]["parameters"]["required"]
     assert call.response_format is None
     assert result.replied is True
     assert result.reply_message_id == 42
@@ -574,6 +579,47 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     assert tool_manager.execute_calls[0].caller == "test.review"
     assert tool_manager.execute_calls[0].session_id == "bot:group:room"
     assert tool_manager.execute_calls[0].instance_id == "bot"
+    assert tool_manager.execute_calls[0].arguments["quote_message_log_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_requires_quoted_reply_message() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "hello"}',
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [7]
+    assert result.reason == "reply_tool_missing_quote_message_log_id"
+    assert tool_manager.execute_calls == []
 
 
 @pytest.mark.asyncio

@@ -266,7 +266,9 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
     task_prompt = (
         "Decide whether the candidate message should be replied to based on the "
         "local context. If reply tools are available, finish by calling exactly one of "
-        "send_reply or no_reply. This stage must not decide active chat parameters."
+        "send_reply or no_reply. When calling send_reply, quote the specific message "
+        "being answered by passing quote_message_log_id, because review replies may "
+        "refer to older timeline points. This stage must not decide active chat parameters."
     )
     response_format = _json_schema_response_format(
         "agent_review_reply_decision",
@@ -329,7 +331,7 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             tags={"attention"},
         )
         return [
-            tool
+            _review_reply_tool_schema(tool)
             for tool in tools
             if tool.get("function", {}).get("name") in {"send_reply", "no_reply"}
         ]
@@ -346,6 +348,13 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             tool_name, arguments = _tool_call_function(tool_call)
             if tool_name not in {"send_reply", "no_reply"}:
                 continue
+            if tool_name == "send_reply" and _optional_int(
+                arguments.get("quote_message_log_id")
+            ) is None:
+                return ReplyDecisionStageOutput(
+                    target_message_ids=target_message_ids,
+                    reason="reply_tool_missing_quote_message_log_id",
+                )
             tool_result = await self._tool_manager.execute(
                 ToolCallRequest(
                     tool_name=tool_name,
@@ -469,6 +478,41 @@ def _tool_output_value(output: Any, key: str) -> Any:
     if isinstance(output, dict):
         return output.get(key)
     return None
+
+
+def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    function = tool.get("function")
+    if not isinstance(function, dict) or function.get("name") != "send_reply":
+        return tool
+    reviewed = {
+        **tool,
+        "function": {
+            **function,
+            "description": (
+                str(function.get("description") or "")
+                + "\nReview reply requirement: quote_message_log_id is required. "
+                "Use one of the candidate message ids from the review context."
+            ),
+        },
+    }
+    parameters = reviewed["function"].get("parameters")
+    if not isinstance(parameters, dict):
+        return reviewed
+    reviewed_parameters = dict(parameters)
+    properties = dict(reviewed_parameters.get("properties") or {})
+    quote_schema = dict(properties.get("quote_message_log_id") or {})
+    quote_schema["description"] = (
+        "Required for review replies. Message log id being answered; choose one "
+        "of the candidate message ids supplied in metadata/context."
+    )
+    properties["quote_message_log_id"] = quote_schema
+    required = list(reviewed_parameters.get("required") or [])
+    if "quote_message_log_id" not in required:
+        required.append("quote_message_log_id")
+    reviewed_parameters["properties"] = properties
+    reviewed_parameters["required"] = required
+    reviewed["function"]["parameters"] = reviewed_parameters
+    return reviewed
 
 
 def _int_list(value: Any) -> list[int]:
