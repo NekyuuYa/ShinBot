@@ -82,6 +82,33 @@ class QueuedModelRuntime:
         )()
 
 
+class FakeCompressionContextManager:
+    def __init__(self) -> None:
+        self.preview_calls: list[dict[str, object]] = []
+
+    def preview_usage_eviction(
+        self,
+        session_id: str,
+        usage: dict[str, object] | None,
+        *,
+        max_context_tokens: int,
+        evict_ratio: float,
+    ) -> dict[str, object]:
+        self.preview_calls.append(
+            {
+                "session_id": session_id,
+                "usage": usage,
+                "max_context_tokens": max_context_tokens,
+                "evict_ratio": evict_ratio,
+            }
+        )
+        return {
+            "triggered": True,
+            "source_text": "[msgid: 1] 用户说喜欢猫咖",
+            "source_block_ids": ["block-1"],
+        }
+
+
 def _seed_workflow_runtime(
     db: DatabaseManager,
     *,
@@ -172,6 +199,45 @@ def _seed_workflow_runtime(
             updated_at=now,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_workflow_context_compression_uses_prompt_registry(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    runtime = QueuedModelRuntime([{"text": "用户喜欢猫咖"}])
+    context_manager = FakeCompressionContextManager()
+    runner = WorkflowRunner(
+        db,
+        PromptRegistry(),
+        runtime,
+        ToolManager(ToolRegistry(), permission_engine=PermissionEngine()),
+        AttentionEngine(AttentionConfig(), db.attention),
+        AdapterManager(),
+        context_manager=context_manager,
+    )
+
+    text = await runner._maybe_build_context_compression(
+        session_id="inst-workflow:group:1",
+        instance_id="inst-workflow",
+        run_id="run-compress",
+        usage={"prompt_tokens": 100},
+        runtime_config={"max_context_tokens": 10, "context_evict_ratio": 0.5},
+        default_route_id="route.workflow.test",
+        default_model_id="",
+        default_model_target="route.workflow.test",
+    )
+
+    assert text == "用户喜欢猫咖"
+    assert len(runtime.calls) == 1
+    call = runtime.calls[0]
+    assert call.purpose == "context_compression"
+    assert [message["role"] for message in call.messages] == ["system", "user"]
+    assert "conversation context" in call.messages[0]["content"][0]["text"]
+    assert "[msgid: 1]" in call.messages[1]["content"][0]["text"]
+    assert call.metadata["workflow_id"] == "attention"
+    assert call.metadata["stage_id"] == "context_compression"
+    assert call.metadata["source_block_ids"] == ["block-1"]
 
 
 @pytest.mark.asyncio

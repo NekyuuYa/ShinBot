@@ -14,6 +14,9 @@ from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_manager import (
     PromptAssemblyRequest,
     PromptAssemblyResult,
+    PromptBuildRequest,
+    PromptContextPolicy,
+    PromptInjection,
     PromptRegistry,
     PromptStage,
 )
@@ -823,6 +826,38 @@ class WorkflowRunner:
             f"4. 输出控制在 {max_chars} 个汉字以内。\n\n"
             f"{source_text}"
         )
+        prompt_result = self._prompt_registry.build_messages(
+            PromptBuildRequest(
+                caller="attention.workflow_runner",
+                workflow_id="attention",
+                stage_id="context_compression",
+                identity_enabled=False,
+                session_id=session_id,
+                instance_id=instance_id,
+                route_id=route_id,
+                model_id=model_id,
+                injections=[
+                    PromptInjection(
+                        stage=PromptStage.SYSTEM_BASE,
+                        component_id="attention.context_compression.system",
+                        text=CONTEXT_COMPRESSION_SYSTEM_PROMPT,
+                        priority=10,
+                    ),
+                    PromptInjection(
+                        stage=PromptStage.INSTRUCTIONS,
+                        component_id="attention.context_compression.instruction",
+                        text=user_prompt,
+                        priority=10,
+                    ),
+                ],
+                context_policy=PromptContextPolicy.DISABLED,
+                metadata={
+                    "workflow_run_id": run_id,
+                    "compression_target": resolved_target,
+                    "source_block_ids": list(preview.get("source_block_ids") or []),
+                },
+            )
+        )
 
         try:
             result = await self._model_runtime.generate(
@@ -833,15 +868,8 @@ class WorkflowRunner:
                     session_id=session_id,
                     instance_id=instance_id,
                     purpose="context_compression",
-                    messages=[
-                        {"role": "system", "content": CONTEXT_COMPRESSION_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    metadata={
-                        "workflow_run_id": run_id,
-                        "compression_target": resolved_target,
-                        "source_block_ids": list(preview.get("source_block_ids") or []),
-                    },
+                    messages=prompt_result.messages,
+                    metadata=dict(prompt_result.metadata),
                 )
             )
         except ModelCallError:
