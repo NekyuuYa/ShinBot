@@ -139,6 +139,7 @@ class RecordingReviewContextBuilder:
                 "message_ids": [message["id"] for message in messages],
                 "purpose": purpose,
                 "metadata": dict(options.metadata) if options is not None else {},
+                "previous_summary": options.previous_summary if options is not None else "",
             }
         )
         return None
@@ -1105,6 +1106,21 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
         "overflow_compression",
         "review_scan",
     ]
+    review_scan_call = next(
+        call for call in context_builder.calls if call["purpose"] == "review_scan"
+    )
+    assert "older messages summarized" in review_scan_call["previous_summary"]
+    assert review_scan_call["metadata"]["overflow_summaries"][0]["summary"] == (
+        "older messages summarized"
+    )
+    reply_call = next(
+        call for call in context_builder.calls if call["purpose"] == "reply_decision"
+    )
+    bootstrap_call = next(
+        call for call in context_builder.calls if call["purpose"] == "active_chat_bootstrap"
+    )
+    assert "older messages summarized" in reply_call["previous_summary"]
+    assert "older messages summarized" in bootstrap_call["previous_summary"]
 
 
 @pytest.mark.asyncio

@@ -141,6 +141,7 @@ class ReviewWorkflow:
             bootstrap = await self._run_active_chat_bootstrap(
                 session_id=session_id,
                 started_at=started_at,
+                summaries=scan.compressed_ranges,
                 reply=reply,
             )
             applied_consumed_ranges = self._consume_review_ranges(
@@ -173,6 +174,7 @@ class ReviewWorkflow:
             bootstrap = await self._run_active_chat_bootstrap(
                 session_id=session_id,
                 started_at=started_at,
+                summaries=[],
                 reply=ReplyDecisionResult(),
             )
             completion = scheduler.complete_review(
@@ -220,6 +222,7 @@ class ReviewWorkflow:
             unread_ranges=unread_ranges,
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
+            summaries=compressed_ranges,
         )
         return (
             ReviewScanResult(
@@ -281,7 +284,9 @@ class ReviewWorkflow:
                     "candidate_message_id": candidate_message_id,
                     "before_messages": self._config.reply_context_before_messages,
                     "after_messages": self._config.reply_context_after_messages,
+                    **_summary_metadata_payload(scan.compressed_ranges),
                 },
+                previous_summary=_format_overflow_summaries(scan.compressed_ranges),
             )
             if stage_input is None:
                 continue
@@ -393,6 +398,7 @@ class ReviewWorkflow:
         *,
         session_id: str,
         started_at: float,
+        summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
@@ -404,6 +410,7 @@ class ReviewWorkflow:
             session_id=session_id,
             started_at=started_at,
             ended_at=ended_at,
+            summaries=summaries,
             reply=reply,
         )
         return ActiveChatBootstrapResult(
@@ -423,6 +430,7 @@ class ReviewWorkflow:
         *,
         max_messages: int,
         prefer_tail: bool,
+        summaries: list[UnreadRangeSummaryRecord],
     ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange]]:
         if self._message_store is None or max_messages <= 0:
             return 0, 0, [], [], []
@@ -459,7 +467,9 @@ class ReviewWorkflow:
                         "range_start_msg_log_id": unread_range.start_msg_log_id,
                         "range_end_msg_log_id": unread_range.end_msg_log_id,
                         "offset": offset,
+                        **_summary_metadata_payload(summaries),
                     },
+                    previous_summary=_format_overflow_summaries(summaries),
                 )
                 if stage_input is not None:
                     stage_input_count += 1
@@ -485,6 +495,7 @@ class ReviewWorkflow:
         session_id: str,
         started_at: float,
         ended_at: float,
+        summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
     ) -> tuple[int, bool, ActiveChatBootstrapStageOutput]:
         if self._message_store is None:
@@ -515,7 +526,9 @@ class ReviewWorkflow:
                 "reply_message_id": reply.reply_message_id,
                 "reply_target_message_ids": reply.target_message_ids,
                 "reply_reason": reply.reply_reason,
+                **_summary_metadata_payload(summaries),
             },
+            previous_summary=_format_overflow_summaries(summaries),
         )
         if stage_input is None:
             return (
@@ -536,12 +549,16 @@ class ReviewWorkflow:
         messages: list[dict],
         purpose: str,
         metadata: dict,
+        previous_summary: str = "",
     ) -> ReviewStageInput | None:
         stage_input = self._context_builder.build_for_messages(
             session_id=session_id,
             messages=messages,
             purpose=purpose,
-            options=ReviewContextBuildOptions(metadata=metadata),
+            options=ReviewContextBuildOptions(
+                previous_summary=previous_summary,
+                metadata=metadata,
+            ),
         )
         if stage_input is not None:
             return stage_input
@@ -549,7 +566,11 @@ class ReviewWorkflow:
             session_id=session_id,
             purpose=purpose,
             source_messages=list(messages),
-            metadata={"purpose": purpose, **metadata},
+            metadata={
+                "purpose": purpose,
+                **metadata,
+                **({"previous_summary": previous_summary} if previous_summary else {}),
+            },
         )
 
     async def _run_scan_stage(self, stage_input: ReviewStageInput) -> ReviewScanStageOutput:
@@ -752,3 +773,41 @@ def _should_persist_summary(record: UnreadRangeSummaryRecord) -> bool:
         or bool(record.candidate_message_ids)
         or record.reason.strip() not in {"", "noop_overflow_compression"}
     )
+
+
+def _summary_metadata(records: list[UnreadRangeSummaryRecord]) -> list[dict[str, object]]:
+    return [
+        {
+            "start_msg_log_id": record.start_msg_log_id,
+            "end_msg_log_id": record.end_msg_log_id,
+            "message_count": record.message_count,
+            "summary": record.summary,
+            "candidate_message_ids": list(record.candidate_message_ids),
+            "reason": record.reason,
+        }
+        for record in records
+        if _should_persist_summary(record)
+    ]
+
+
+def _summary_metadata_payload(
+    records: list[UnreadRangeSummaryRecord],
+) -> dict[str, list[dict[str, object]]]:
+    summaries = _summary_metadata(records)
+    return {"overflow_summaries": summaries} if summaries else {}
+
+
+def _format_overflow_summaries(records: list[UnreadRangeSummaryRecord]) -> str:
+    lines: list[str] = []
+    for record in records:
+        if not _should_persist_summary(record):
+            continue
+        summary = record.summary.strip() or "(no textual summary)"
+        candidate_ids = ", ".join(str(item) for item in record.candidate_message_ids)
+        candidate_suffix = f"; candidate_msgids={candidate_ids}" if candidate_ids else ""
+        lines.append(
+            "Unread overflow summary "
+            f"[msgid {record.start_msg_log_id}-{record.end_msg_log_id}; "
+            f"count={record.message_count}{candidate_suffix}]: {summary}"
+        )
+    return "\n".join(lines)
