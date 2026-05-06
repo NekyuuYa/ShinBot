@@ -51,6 +51,14 @@ class PromptSourceType(StrEnum):
     UNKNOWN_SOURCE = "unknown_source"
 
 
+class PromptContextPolicy(StrEnum):
+    """How PromptRegistry should handle context-manager backed prompt memory."""
+
+    DISABLED = "disabled"
+    PROVIDED = "provided"
+    MEMORY = "memory"
+
+
 class PromptSource(BaseModel):
     source_type: PromptSourceType = PromptSourceType.UNKNOWN_SOURCE
     source_id: str = ""
@@ -117,6 +125,25 @@ class PromptProfile(BaseModel):
     default_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PromptInjection(BaseModel):
+    """Workflow-provided prompt material injected into one prompt stage."""
+
+    stage: PromptStage
+    component_id: str
+    text: str = ""
+    content_blocks: list[dict[str, Any]] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    priority: int = 100
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_injection_shape(self) -> PromptInjection:
+        if not self.component_id.strip():
+            raise ValueError("PromptInjection.component_id must not be empty")
+        return self
+
+
 class PromptAssemblyRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -131,6 +158,35 @@ class PromptAssemblyRequest(BaseModel):
     task_id: str = ""
     component_overrides: list[str] = Field(default_factory=list)
     disabled_components: list[str] = Field(default_factory=list)
+    injections: list[PromptInjection] = Field(default_factory=list)
+    context_policy: PromptContextPolicy = PromptContextPolicy.MEMORY
+    template_inputs: dict[str, Any] = Field(default_factory=dict)
+    context_inputs: dict[str, Any] = Field(default_factory=dict)
+    abilities_inputs: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptBuildRequest(BaseModel):
+    """Workflow-facing prompt build request."""
+
+    model_config = {"extra": "forbid"}
+
+    caller: str
+    workflow_id: str
+    stage_id: str
+    session_id: str = ""
+    instance_id: str = ""
+    route_id: str = ""
+    model_id: str = ""
+    model_context_window: int | None = None
+    task_id: str = ""
+    profile_id: str = ""
+    identity_enabled: bool = True
+    component_ids_by_stage: dict[PromptStage, list[str]] = Field(default_factory=dict)
+    disabled_components: list[str] = Field(default_factory=list)
+    injections: list[PromptInjection] = Field(default_factory=list)
+    source_messages: list[dict[str, Any]] = Field(default_factory=list)
+    context_policy: PromptContextPolicy = PromptContextPolicy.PROVIDED
     template_inputs: dict[str, Any] = Field(default_factory=dict)
     context_inputs: dict[str, Any] = Field(default_factory=dict)
     abilities_inputs: dict[str, Any] = Field(default_factory=dict)
@@ -177,6 +233,22 @@ class PromptAssemblyResult(BaseModel):
     compatibility_used: bool = False
     has_unknown_source: bool = False
     truncation: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptBuildResult(BaseModel):
+    """Workflow-facing prompt build result."""
+
+    caller: str = ""
+    workflow_id: str = ""
+    stage_id: str = ""
+    stages: list[PromptStageBlock] = Field(default_factory=list)
+    ordered_components: list[PromptComponentRecord] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    prompt_signature: str = ""
+    compatibility_used: bool = False
+    has_unknown_source: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

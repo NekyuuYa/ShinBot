@@ -16,9 +16,13 @@ from shinbot.agent.prompt_manager.schema import (
     PROMPT_STAGE_ORDER,
     PromptAssemblyRequest,
     PromptAssemblyResult,
+    PromptBuildRequest,
+    PromptBuildResult,
     PromptComponent,
     PromptComponentKind,
     PromptComponentRecord,
+    PromptContextPolicy,
+    PromptInjection,
     PromptLoggerRecord,
     PromptProfile,
     PromptSnapshot,
@@ -154,6 +158,64 @@ class PromptRegistry:
 
     # ── Assembly ────────────────────────────────────────────────────────
 
+    def build_messages(self, request: PromptBuildRequest) -> PromptBuildResult:
+        """Build LLM request messages/tools from a workflow-facing request."""
+        component_overrides = self._component_ids_for_build_request(request)
+        injections = list(request.injections)
+        if request.context_policy == PromptContextPolicy.PROVIDED and request.source_messages:
+            injections.append(
+                PromptInjection(
+                    stage=PromptStage.CONTEXT,
+                    component_id=f"{request.workflow_id}.{request.stage_id}.source_messages",
+                    messages=list(request.source_messages),
+                    priority=10,
+                    metadata={
+                        "workflow_id": request.workflow_id,
+                        "stage_id": request.stage_id,
+                        "source": "source_messages",
+                    },
+                )
+            )
+        metadata = {
+            "workflow_id": request.workflow_id,
+            "stage_id": request.stage_id,
+            **dict(request.metadata),
+        }
+        assembly = self.assemble(
+            PromptAssemblyRequest(
+                profile_id=request.profile_id,
+                identity_enabled=request.identity_enabled,
+                caller=request.caller,
+                session_id=request.session_id,
+                instance_id=request.instance_id,
+                route_id=request.route_id,
+                model_id=request.model_id,
+                model_context_window=request.model_context_window,
+                task_id=request.task_id,
+                component_overrides=component_overrides,
+                disabled_components=request.disabled_components,
+                injections=injections,
+                context_policy=request.context_policy,
+                template_inputs=request.template_inputs,
+                context_inputs=request.context_inputs,
+                abilities_inputs=request.abilities_inputs,
+                metadata=metadata,
+            )
+        )
+        return PromptBuildResult(
+            caller=assembly.caller,
+            workflow_id=request.workflow_id,
+            stage_id=request.stage_id,
+            stages=assembly.stages,
+            ordered_components=assembly.ordered_components,
+            messages=assembly.messages,
+            tools=assembly.tools,
+            prompt_signature=assembly.prompt_signature,
+            compatibility_used=assembly.compatibility_used,
+            has_unknown_source=assembly.has_unknown_source,
+            metadata=assembly.metadata,
+        )
+
     def assemble(self, request: PromptAssemblyRequest) -> PromptAssemblyResult:
         profile = self._profiles.get(request.profile_id)
         if request.profile_id and profile is None:
@@ -189,6 +251,7 @@ class PromptRegistry:
                 ordered_records=ordered_records,
             )
 
+        self._inject_explicit_records(request.injections, records_by_stage, ordered_records)
         self._inject_context_management_records(request, records_by_stage, ordered_records)
         if request.identity_enabled:
             self._inject_identity_prompts(request, records_by_stage, ordered_records)
@@ -310,6 +373,61 @@ class PromptRegistry:
             metadata=dict(request.metadata),
         )
 
+    def _component_ids_for_build_request(self, request: PromptBuildRequest) -> list[str]:
+        component_ids: list[str] = []
+        for stage in PROMPT_STAGE_ORDER:
+            for component_id in request.component_ids_by_stage.get(stage, []):
+                component = self._components.get(component_id)
+                if component is None:
+                    raise ValueError(f"Prompt component {component_id!r} is not registered")
+                if component.stage != stage:
+                    raise ValueError(
+                        f"Prompt component {component_id!r} belongs to stage "
+                        f"{component.stage.value!r}, not {stage.value!r}"
+                    )
+                component_ids.append(component_id)
+        return self._dedupe(component_ids)
+
+    def _inject_explicit_records(
+        self,
+        injections: list[PromptInjection],
+        records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
+        ordered_records: list[PromptComponentRecord],
+    ) -> None:
+        for injection in injections:
+            hash_input = json.dumps(
+                {
+                    "stage": injection.stage.value,
+                    "text": injection.text,
+                    "content_blocks": injection.content_blocks,
+                    "messages": injection.messages,
+                    "tools": injection.tools,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            record = PromptComponentRecord(
+                component_id=injection.component_id,
+                stage=injection.stage,
+                kind=PromptComponentKind.EXTERNAL_INJECTION,
+                version="1.0.0",
+                priority=injection.priority,
+                source=PromptSource(
+                    source_type=PromptSourceType.EXTERNAL_INJECTION,
+                    source_id=injection.component_id,
+                ),
+                rendered_text=injection.text,
+                rendered_data=list(injection.tools) if injection.tools else None,
+                rendered_messages=list(injection.messages) if injection.messages else None,
+                rendered_content_blocks=(
+                    list(injection.content_blocks) if injection.content_blocks else None
+                ),
+                text_hash=stable_text_hash(hash_input),
+                metadata=dict(injection.metadata),
+            )
+            records_by_stage[injection.stage].append(record)
+            ordered_records.append(record)
+
     # ── Snapshot / logging ──────────────────────────────────────────────
 
     def create_snapshot(
@@ -420,6 +538,8 @@ class PromptRegistry:
         records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
         ordered_records: list[PromptComponentRecord],
     ) -> None:
+        if request.context_policy != PromptContextPolicy.MEMORY:
+            return
         if self._context_manager is None or not request.session_id:
             return
 

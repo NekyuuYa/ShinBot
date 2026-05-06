@@ -17,8 +17,11 @@ from shinbot.agent.media import (
 )
 from shinbot.agent.prompt_manager import (
     PromptAssemblyRequest,
+    PromptBuildRequest,
     PromptComponent,
     PromptComponentKind,
+    PromptContextPolicy,
+    PromptInjection,
     PromptProfile,
     PromptRegistry,
     PromptStage,
@@ -203,6 +206,128 @@ def test_prompt_registry_supports_template_and_resolver_components() -> None:
     assert final_user_msg["role"] == "user"
     final_text = " ".join(block["text"] for block in final_user_msg["content"])
     assert "task=summarize" in final_text
+
+
+def test_prompt_registry_build_messages_supports_workflow_injections() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+
+    result = registry.build_messages(
+        PromptBuildRequest(
+            caller="agent.review",
+            workflow_id="review",
+            stage_id="review_scan",
+            component_ids_by_stage={PromptStage.SYSTEM_BASE: ["system"]},
+            injections=[
+                PromptInjection(
+                    stage=PromptStage.INSTRUCTIONS,
+                    component_id="review.scan.task",
+                    content_blocks=[{"type": "text", "text": "select message ids"}],
+                    priority=10,
+                ),
+                PromptInjection(
+                    stage=PromptStage.CONSTRAINTS,
+                    component_id="review.scan.contract",
+                    text="return json",
+                    priority=20,
+                ),
+            ],
+            source_messages=[
+                {"role": "user", "content": [{"type": "text", "text": "history"}]}
+            ],
+            context_policy=PromptContextPolicy.PROVIDED,
+        )
+    )
+
+    assert result.workflow_id == "review"
+    assert result.stage_id == "review_scan"
+    assert result.messages[0]["role"] == "system"
+    assert result.messages[1] == {
+        "role": "user",
+        "content": [{"type": "text", "text": "history"}],
+    }
+    final_text = " ".join(block["text"] for block in result.messages[-1]["content"])
+    assert "select message ids" in final_text
+    assert "return json" in final_text
+    assert result.tools == []
+    assert result.metadata["workflow_id"] == "review"
+    assert result.metadata["stage_id"] == "review_scan"
+
+
+def test_prompt_registry_build_messages_keeps_tools_out_of_messages() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    tool_schema = {
+        "type": "function",
+        "function": {
+            "name": "send_reply",
+            "description": "Send a reply",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+    result = registry.build_messages(
+        PromptBuildRequest(
+            caller="agent.review",
+            workflow_id="review",
+            stage_id="reply_decision",
+            component_ids_by_stage={PromptStage.SYSTEM_BASE: ["system"]},
+            injections=[
+                PromptInjection(
+                    stage=PromptStage.ABILITIES,
+                    component_id="reply.tools",
+                    tools=[tool_schema],
+                ),
+                PromptInjection(
+                    stage=PromptStage.INSTRUCTIONS,
+                    component_id="reply.tool_rules",
+                    text="use send_reply when needed",
+                ),
+            ],
+            context_policy=PromptContextPolicy.DISABLED,
+        )
+    )
+
+    assert result.tools == [tool_schema]
+    message_text = "\n".join(_extract_message_texts(result.messages))
+    assert "use send_reply when needed" in message_text
+    assert "description" not in message_text
+
+
+def test_prompt_registry_build_messages_validates_stage_component_mapping() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+
+    with pytest.raises(ValueError, match="belongs to stage"):
+        registry.build_messages(
+            PromptBuildRequest(
+                caller="agent.review",
+                workflow_id="review",
+                stage_id="review_scan",
+                component_ids_by_stage={PromptStage.INSTRUCTIONS: ["system"]},
+            )
+        )
 
 
 def test_prompt_registry_requires_system_base() -> None:
