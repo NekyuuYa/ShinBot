@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from shinbot.agent.prompt_manager import PromptStage
 from shinbot.agent.review.stages.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
@@ -35,6 +36,8 @@ class ReviewStageRuntimeConfig:
     route_id: str | None = None
     model_id: str | None = None
     caller: str = "agent.review"
+    profile_id: str = ""
+    component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     system_prompt: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -48,6 +51,10 @@ class ReviewStageRuntimeConfig:
             route_id=_optional_str(value.get("route_id")),
             model_id=_optional_str(value.get("model_id")),
             caller=str(value.get("caller") or "agent.review"),
+            profile_id=str(value.get("profile_id") or ""),
+            component_ids_by_stage=_component_ids_by_stage(
+                value.get("component_ids_by_stage")
+            ),
             system_prompt=_optional_str(value.get("system_prompt")),
             params=dict(_mapping_or_empty(value.get("params"))),
         )
@@ -58,6 +65,8 @@ class ReviewStageRuntimeConfig:
             "caller": self.caller,
             "route_id": self.route_id,
             "model_id": self.model_id,
+            "profile_id": self.profile_id,
+            "component_ids_by_stage": dict(self.component_ids_by_stage),
             "params": dict(self.params),
         }
         if self.system_prompt is not None:
@@ -191,6 +200,26 @@ def _mapping_or_none(value: Any) -> dict[str, Any] | None:
 
 def _mapping_or_empty(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _component_ids_by_stage(value: Any) -> dict[PromptStage, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[PromptStage, list[str]] = {}
+    for raw_stage, raw_ids in value.items():
+        try:
+            stage = raw_stage if isinstance(raw_stage, PromptStage) else PromptStage(str(raw_stage))
+        except ValueError:
+            continue
+        if isinstance(raw_ids, str):
+            ids = [raw_ids]
+        elif isinstance(raw_ids, list):
+            ids = [str(item) for item in raw_ids if str(item).strip()]
+        else:
+            ids = []
+        if ids:
+            result[stage] = ids
+    return result
 
 
 __all__ = [

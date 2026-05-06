@@ -33,6 +33,8 @@ class ReviewLLMRunnerConfig:
     caller: str = "agent.review"
     route_id: str | None = None
     model_id: str | None = None
+    profile_id: str = ""
+    component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     system_prompt: str = (
         "You are an internal ShinBot Agent review stage. Return only valid JSON "
         "matching the requested schema. Do not send user-visible replies."
@@ -102,6 +104,8 @@ class ReviewLLMStageRunnerBase:
                     stage_id=stage_input.purpose,
                     session_id=stage_input.session_id,
                     instance_id=_instance_id_from_session(stage_input.session_id),
+                    profile_id=self._config.profile_id,
+                    component_ids_by_stage=self._config.component_ids_by_stage,
                     injections=self._build_prompt_injections(stage_input),
                     context_policy=PromptContextPolicy.DISABLED,
                     metadata=fallback_metadata,

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.agent.prompt_manager import PromptRegistry
+from shinbot.agent.prompt_manager import (
+    PromptComponent,
+    PromptComponentKind,
+    PromptRegistry,
+    PromptStage,
+)
 from shinbot.agent.review import (
     ActiveChatBootstrapStageOutput,
     DatabaseReviewMessageStore,
@@ -436,6 +441,57 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_llm_runner_uses_configured_prompt_components() -> None:
+    prompt_registry = PromptRegistry()
+    prompt_registry.register_component(
+        PromptComponent(
+            id="review.scan.system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="registered review system",
+        )
+    )
+    prompt_registry.register_component(
+        PromptComponent(
+            id="review.scan.contract",
+            stage=PromptStage.CONSTRAINTS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="registered output contract",
+        )
+    )
+    model_runtime = FakeModelRuntime(['{"candidate_message_ids": [8], "reason": "selected"}'])
+    runner = LLMReviewScanStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(
+            component_ids_by_stage={
+                PromptStage.SYSTEM_BASE: ["review.scan.system"],
+                PromptStage.CONSTRAINTS: ["review.scan.contract"],
+            },
+        ),
+        prompt_registry=prompt_registry,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="review_scan",
+            source_messages=[{"id": 8, "raw_text": "hello"}],
+        )
+    )
+
+    assert result.candidate_message_ids == [8]
+    call = model_runtime.calls[0]
+    message_text = "\n".join(
+        block["text"]
+        for message in call.messages
+        for block in message["content"]
+        if isinstance(block, dict) and "text" in block
+    )
+    assert "registered review system" in message_text
+    assert "registered output contract" in message_text
+
+
+@pytest.mark.asyncio
 async def test_review_runner_factory_keeps_disabled_stages_noop() -> None:
     model_runtime = FakeModelRuntime(
         ['{"candidate_message_ids": [9], "reason": "should_not_run"}']
@@ -477,6 +533,9 @@ async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
                 route_id="route-a",
                 model_id="model-a",
                 caller="test.review",
+                component_ids_by_stage={
+                    PromptStage.CONSTRAINTS: ["review.scan.contract"],
+                },
                 params={"temperature": 0},
             ),
         ),
@@ -505,6 +564,12 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
                 "route_id": "route-a",
                 "model_id": "model-a",
                 "caller": "custom.review",
+                "profile_id": "review.profile",
+                "component_ids_by_stage": {
+                    "system_base": ["review.system"],
+                    "constraints": "review.contract",
+                    "unknown": ["ignored"],
+                },
                 "system_prompt": "Return JSON.",
                 "params": {"temperature": 0},
             },
@@ -517,6 +582,11 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
     assert config.review_scan.route_id == "route-a"
     assert config.review_scan.model_id == "model-a"
     assert config.review_scan.caller == "custom.review"
+    assert config.review_scan.profile_id == "review.profile"
+    assert config.review_scan.component_ids_by_stage == {
+        PromptStage.SYSTEM_BASE: ["review.system"],
+        PromptStage.CONSTRAINTS: ["review.contract"],
+    }
     assert config.review_scan.system_prompt == "Return JSON."
     assert config.review_scan.params == {"temperature": 0}
     assert config.reply_decision.enabled is False
