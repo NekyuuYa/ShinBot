@@ -202,6 +202,7 @@ class AgentRuntime:
             self.model_runtime,
             config=self.review_runtime_config,
             prompt_registry=self.prompt_registry,
+            tool_manager=self.tool_manager,
         )
         return ReviewWorkflow(
             config,

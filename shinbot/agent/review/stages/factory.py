@@ -117,10 +117,12 @@ class ReviewRunnerFactory:
         *,
         config: ReviewRuntimeConfig | None = None,
         prompt_registry: Any | None = None,
+        tool_manager: Any | None = None,
     ) -> None:
         self._model_runtime = model_runtime
         self._config = config or ReviewRuntimeConfig()
         self._prompt_registry = prompt_registry
+        self._tool_manager = tool_manager
 
     def create_overflow_compression_runner(self) -> OverflowCompressionStageRunner:
         stage_config = self._config.overflow_compression
@@ -149,6 +151,7 @@ class ReviewRunnerFactory:
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
                 prompt_registry=self._prompt_registry,
+                tool_manager=self._tool_manager,
             )
         return NoopReplyDecisionStageRunner()
 

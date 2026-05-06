@@ -22,6 +22,7 @@ from shinbot.agent.review.models import (
     ReplyDecisionStageOutput,
     ReviewScanStageOutput,
 )
+from shinbot.agent.tools.schema import ToolCallRequest
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,12 @@ class ReviewLLMStageRunnerBase:
         self._prompt_registry = prompt_registry
 
     async def _generate_payload(self, stage_input: ReviewStageInput) -> dict[str, Any] | None:
+        result = await self._generate_result(stage_input)
+        if result is None:
+            return None
+        return parse_json_object(result.text or "")
+
+    async def _generate_result(self, stage_input: ReviewStageInput) -> Any | None:
         try:
             messages, tools, metadata = self._build_model_call_parts(stage_input)
         except Exception:
@@ -82,7 +89,7 @@ class ReviewLLMStageRunnerBase:
                     purpose=stage_input.purpose,
                     messages=messages,
                     tools=tools,
-                    response_format=self.response_format,
+                    response_format=self._response_format_for(stage_input, tools),
                     metadata=metadata,
                     params=dict(self._config.params),
                 )
@@ -94,7 +101,7 @@ class ReviewLLMStageRunnerBase:
                 stage_input.session_id,
             )
             return None
-        return parse_json_object(result.text or "")
+        return result
 
     def _build_model_call_parts(
         self,
@@ -156,6 +163,13 @@ class ReviewLLMStageRunnerBase:
                 }
             )
         return content
+
+    def _response_format_for(
+        self,
+        stage_input: ReviewStageInput,
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        return self.response_format
 
 
 def _json_schema_response_format(
@@ -234,9 +248,25 @@ class LLMReviewScanStageRunner(ReviewLLMStageRunnerBase):
 class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
     """Run the reply-decision stage through the model runtime."""
 
+    def __init__(
+        self,
+        model_runtime: Any,
+        *,
+        config: ReviewLLMRunnerConfig | None = None,
+        prompt_registry: PromptRegistry,
+        tool_manager: Any | None = None,
+    ) -> None:
+        super().__init__(
+            model_runtime,
+            config=config,
+            prompt_registry=prompt_registry,
+        )
+        self._tool_manager = tool_manager
+
     task_prompt = (
         "Decide whether the candidate message should be replied to based on the "
-        "local context. This stage may identify targets, but must not decide active chat parameters."
+        "local context. If reply tools are available, finish by calling exactly one of "
+        "send_reply or no_reply. This stage must not decide active chat parameters."
     )
     response_format = _json_schema_response_format(
         "agent_review_reply_decision",
@@ -250,7 +280,12 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
     )
 
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
-        payload = await self._generate_payload(stage_input)
+        result = await self._generate_result(stage_input)
+        if result is None:
+            return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
+        if result.tool_calls:
+            return await self._run_tool_decision(stage_input, result)
+        payload = parse_json_object(result.text or "")
         if payload is None:
             return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
         return ReplyDecisionStageOutput(
@@ -258,6 +293,96 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             reply_message_id=_optional_int(payload.get("reply_message_id")),
             target_message_ids=_int_list(payload.get("target_message_ids")),
             reason=str(payload.get("reason") or "llm_reply_decision"),
+        )
+
+    def _build_prompt_injections(self, stage_input: ReviewStageInput) -> list[PromptInjection]:
+        injections = super()._build_prompt_injections(stage_input)
+        tools = self._reply_decision_tools(stage_input)
+        if tools:
+            injections.append(
+                PromptInjection(
+                    stage=PromptStage.ABILITIES,
+                    component_id="review.reply_decision.terminal_tools",
+                    tools=tools,
+                    priority=10,
+                    metadata={"review_stage": stage_input.purpose},
+                )
+            )
+        return injections
+
+    def _response_format_for(
+        self,
+        stage_input: ReviewStageInput,
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if tools:
+            return None
+        return self.response_format
+
+    def _reply_decision_tools(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
+        if self._tool_manager is None:
+            return []
+        tools = self._tool_manager.export_model_tools(
+            caller=self._config.caller,
+            instance_id=_instance_id_from_session(stage_input.session_id),
+            session_id=stage_input.session_id,
+            tags={"attention"},
+        )
+        return [
+            tool
+            for tool in tools
+            if tool.get("function", {}).get("name") in {"send_reply", "no_reply"}
+        ]
+
+    async def _run_tool_decision(
+        self,
+        stage_input: ReviewStageInput,
+        result: Any,
+    ) -> ReplyDecisionStageOutput:
+        if self._tool_manager is None:
+            return ReplyDecisionStageOutput(reason="llm_reply_tool_call_skipped_no_tool_manager")
+        target_message_ids = _candidate_message_ids_from_stage(stage_input)
+        for tool_call in result.tool_calls:
+            tool_name, arguments = _tool_call_function(tool_call)
+            if tool_name not in {"send_reply", "no_reply"}:
+                continue
+            tool_result = await self._tool_manager.execute(
+                ToolCallRequest(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    caller=self._config.caller,
+                    instance_id=_instance_id_from_session(stage_input.session_id),
+                    session_id=stage_input.session_id,
+                    run_id=str(result.execution_id or ""),
+                    metadata={
+                        "workflow_id": "review",
+                        "stage_id": stage_input.purpose,
+                        "candidate_message_ids": target_message_ids,
+                    },
+                )
+            )
+            if not tool_result.success:
+                return ReplyDecisionStageOutput(
+                    target_message_ids=target_message_ids,
+                    reason=f"reply_tool_failed:{tool_result.error_code}",
+                )
+            if tool_name == "send_reply":
+                return ReplyDecisionStageOutput(
+                    replied=True,
+                    reply_message_id=_optional_int(
+                        _tool_output_value(tool_result.output, "message_log_id")
+                    ),
+                    target_message_ids=target_message_ids,
+                    reason="send_reply_tool",
+                )
+            return ReplyDecisionStageOutput(
+                replied=False,
+                target_message_ids=target_message_ids,
+                reason="no_reply_tool",
+            )
+        return ReplyDecisionStageOutput(
+            target_message_ids=target_message_ids,
+            reason="llm_reply_decision_no_terminal_tool",
         )
 
 
@@ -314,6 +439,36 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
 
 def _instance_id_from_session(session_id: str) -> str:
     return session_id.split(":", 1)[0] if ":" in session_id else ""
+
+
+def _candidate_message_ids_from_stage(stage_input: ReviewStageInput) -> list[int]:
+    values = stage_input.metadata.get("candidate_message_ids")
+    if isinstance(values, list):
+        return _int_list(values)
+    return _int_list([stage_input.metadata.get("candidate_message_id")])
+
+
+def _tool_call_function(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    function = tool_call.get("function") if isinstance(tool_call, dict) else None
+    if not isinstance(function, dict):
+        return "", {}
+    arguments = function.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            parsed_arguments = {}
+    elif isinstance(arguments, dict):
+        parsed_arguments = dict(arguments)
+    else:
+        parsed_arguments = {}
+    return str(function.get("name") or ""), parsed_arguments
+
+
+def _tool_output_value(output: Any, key: str) -> Any:
+    if isinstance(output, dict):
+        return output.get(key)
+    return None
 
 
 def _int_list(value: Any) -> list[int]:

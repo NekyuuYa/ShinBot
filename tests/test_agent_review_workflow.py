@@ -272,25 +272,81 @@ class FakeContextManager:
 
 
 class FakeModelRuntime:
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[str | dict]) -> None:
         self.responses = list(responses)
         self.calls: list[object] = []
 
     async def generate(self, call):
         self.calls.append(call)
-        text = self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, dict):
+            text = str(response.get("text", "") or "")
+            tool_calls = list(response.get("tool_calls", []))
+        else:
+            text = response
+            tool_calls = []
         return type(
             "FakeGenerateResult",
             (),
             {
                 "text": text,
-                "tool_calls": [],
+                "tool_calls": tool_calls,
                 "raw_response": None,
                 "execution_id": "exec-1",
                 "route_id": "",
                 "provider_id": "",
                 "model_id": "",
                 "usage": {},
+            },
+        )()
+
+
+class FakeReviewToolManager:
+    def __init__(self) -> None:
+        self.execute_calls: list[object] = []
+
+    def export_model_tools(self, **kwargs):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "no_reply",
+                    "description": "do not reply",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_reply",
+                    "description": "send reply",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "attention.inspect_state",
+                    "description": "other attention tool",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+        ]
+
+    async def execute(self, call):
+        self.execute_calls.append(call)
+        return type(
+            "FakeToolCallResult",
+            (),
+            {
+                "success": True,
+                "output": {"message_log_id": 42},
+                "error_code": "",
+                "error_message": "",
             },
         )()
 
@@ -470,6 +526,54 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
     assert call.metadata["stage_id"] == "review_scan"
     assert call.metadata["review_stage"] == "review_scan"
     assert call.metadata["batch"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "hello"}',
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    call = model_runtime.calls[0]
+    tool_names = [tool["function"]["name"] for tool in call.tools]
+    assert tool_names == ["no_reply", "send_reply"]
+    assert call.response_format is None
+    assert result.replied is True
+    assert result.reply_message_id == 42
+    assert result.target_message_ids == [7]
+    assert result.reason == "send_reply_tool"
+    assert tool_manager.execute_calls[0].tool_name == "send_reply"
+    assert tool_manager.execute_calls[0].caller == "test.review"
+    assert tool_manager.execute_calls[0].session_id == "bot:group:room"
+    assert tool_manager.execute_calls[0].instance_id == "bot"
 
 
 @pytest.mark.asyncio
