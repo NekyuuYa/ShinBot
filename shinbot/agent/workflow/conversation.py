@@ -13,7 +13,6 @@ from shinbot.agent.attention.models import SessionAttentionState, WorkflowRunRec
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_manager import (
     PromptBuildRequest,
-    PromptBuildResult,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
@@ -24,6 +23,10 @@ from shinbot.agent.prompt_manager.runtime_sync import (
 )
 from shinbot.agent.workflow.formatting import (
     format_incremental_messages,
+)
+from shinbot.agent.workflow.message_layout import (
+    AttentionWorkflowMessageLayout,
+    mark_latest_workflow_segment_boundary,
 )
 from shinbot.agent.workflow.model_resolution import resolve_model_target
 from shinbot.agent.workflow.persistence import (
@@ -48,20 +51,6 @@ logger = get_logger(__name__)
 _MAX_ITERATIONS = 30
 _CONTINUATION_TTL_SECONDS = 15.0
 _MAX_TOOLLESS_REPAIR_ATTEMPTS = 3
-
-_WORKFLOW_CONTROL_PROMPT = """
-### Workflow 控制协议
-- 用户看不见裸文本 assistant 输出；需要回复时必须调用 send_reply。
-- 决定不回复时必须调用 no_reply，并可用 internal_summary 保留观察摘要。
-- 需要轻量互动时可以调用 send_poke。
-- 终局工具 no_reply / send_reply / send_poke 必须单独调用，不要和普通工具放在同一批。
-- 回复具体消息时优先引用上下文里的 [msgid: 数字]，用 send_reply.quote_message_log_id 填数字。
-""".strip()
-
-_FINAL_TAIL_REMINDER = (
-    "现在请基于最新未读消息和 workflow 过程继续决策。不要输出裸文本；"
-    "需要结束本轮时调用且只调用一个终局工具：send_reply、no_reply 或 send_poke。"
-)
 
 _TOOLLESS_RESPONSE_REPAIR_PROMPT = """
 上一轮模型输出了裸文本，但 attention workflow 不会把裸文本发送给用户。
@@ -138,6 +127,7 @@ class WorkflowRunner:
         self._media_service = media_service
         self._context_manager = context_manager
         self._continuations: dict[str, _WorkflowContinuation] = {}
+        self._message_layout = AttentionWorkflowMessageLayout()
 
     async def run(
         self,
@@ -269,7 +259,7 @@ class WorkflowRunner:
         # exchange. It starts from the assembled prompt messages and grows
         # with assistant replies, tool results, and incremental user msgs.
 
-        initial_messages = self._build_initial_workflow_messages(
+        initial_messages = self._message_layout.build_initial(
             prompt_result,
             explicit_prompt_cache_enabled=resolved_config.explicit_prompt_cache_enabled,
         )
@@ -277,7 +267,7 @@ class WorkflowRunner:
         # Save prompt snapshot after workflow-specific message rearrangement so
         # audits match the actual first model-facing prompt.
         snapshot = self._prompt_registry.create_build_snapshot(prompt_result, request)
-        snapshot.full_messages = self._build_model_call_messages(initial_messages)
+        snapshot.full_messages = self._message_layout.build_model_call(initial_messages)
         snapshot.full_tools = all_tools
         try:
             persist_prompt_snapshot(self._database, snapshot)
@@ -338,7 +328,7 @@ class WorkflowRunner:
                         session_id=session_id,
                         instance_id=instance_id,
                         purpose="attention_workflow",
-                        messages=self._build_model_call_messages(conversation_messages),
+                        messages=self._message_layout.build_model_call(conversation_messages),
                         tools=all_tools,
                         prompt_snapshot_id=snapshot.id,
                         metadata={
@@ -553,85 +543,6 @@ class WorkflowRunner:
         )
         return record
 
-    # ── Model-facing message layout ─────────────────────────────────
-
-    def _build_initial_workflow_messages(
-        self,
-        assembly: PromptBuildResult,
-        *,
-        explicit_prompt_cache_enabled: bool,
-    ) -> list[dict[str, Any]]:
-        """Rearrange assembled stages into cache-friendly workflow segments."""
-
-        stage_by_name = {stage.stage: stage for stage in assembly.stages}
-        system_message = (
-            deepcopy(assembly.messages[0])
-            if assembly.messages
-            else {"role": "system", "content": []}
-        )
-        messages: list[dict[str, Any]] = [system_message]
-
-        context_stage = stage_by_name.get(PromptStage.CONTEXT)
-        if context_stage is not None:
-            messages.extend(deepcopy(context_stage.messages))
-
-        control_blocks = self._collect_workflow_control_blocks(stage_by_name)
-        control_blocks.append({"type": "text", "text": _WORKFLOW_CONTROL_PROMPT})
-        control_message = {"role": "user", "content": control_blocks}
-        if explicit_prompt_cache_enabled:
-            control_message = _mark_cache_boundary(control_message)
-        messages.append(control_message)
-
-        unread_blocks = self._collect_unread_instruction_blocks(stage_by_name)
-        if unread_blocks:
-            messages.append({"role": "user", "content": unread_blocks})
-
-        return messages
-
-    def _build_model_call_messages(
-        self,
-        conversation_messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        messages = deepcopy(conversation_messages)
-        messages.append(
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": _FINAL_TAIL_REMINDER}],
-            }
-        )
-        return messages
-
-    def _collect_workflow_control_blocks(
-        self,
-        stage_by_name: dict[PromptStage, Any],
-    ) -> list[dict[str, Any]]:
-        blocks: list[dict[str, Any]] = []
-        for stage in (
-            PromptStage.COMPATIBILITY,
-            PromptStage.INSTRUCTIONS,
-            PromptStage.CONSTRAINTS,
-        ):
-            stage_block = stage_by_name.get(stage)
-            if stage_block is None:
-                continue
-            for record in stage_block.components:
-                if record.component_id == PromptRegistry.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID:
-                    continue
-                blocks.extend(_record_to_content_blocks(record))
-        return blocks
-
-    def _collect_unread_instruction_blocks(
-        self,
-        stage_by_name: dict[PromptStage, Any],
-    ) -> list[dict[str, Any]]:
-        instruction_stage = stage_by_name.get(PromptStage.INSTRUCTIONS)
-        if instruction_stage is None:
-            return []
-        for record in instruction_stage.components:
-            if record.component_id == PromptRegistry.BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID:
-                return deepcopy(record.rendered_content_blocks or [])
-        return []
-
     # ── Short-lived continuation cache ──────────────────────────────
 
     def _pop_continuation(
@@ -684,9 +595,7 @@ class WorkflowRunner:
 
         continuation_messages = deepcopy(messages)
         if explicit_prompt_cache_enabled:
-            continuation_messages = _mark_latest_workflow_segment_boundary(
-                continuation_messages
-            )
+            continuation_messages = mark_latest_workflow_segment_boundary(continuation_messages)
         self._continuations[session_id] = _WorkflowContinuation(
             session_id=session_id,
             instance_id=instance_id,
@@ -894,53 +803,3 @@ def _clip_context_compression_text(text: str, max_chars: int) -> str:
     if max_chars <= 3:
         return normalized[:max_chars]
     return normalized[: max_chars - 3].rstrip() + "..."
-
-
-def _record_to_content_blocks(record: Any) -> list[dict[str, Any]]:
-    rendered_blocks = getattr(record, "rendered_content_blocks", None)
-    if rendered_blocks:
-        return deepcopy(rendered_blocks)
-    rendered_text = str(getattr(record, "rendered_text", "") or "").strip()
-    if rendered_text:
-        return [{"type": "text", "text": rendered_text}]
-    return []
-
-
-def _mark_latest_workflow_segment_boundary(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    updated = list(messages)
-    for index in range(len(updated) - 1, -1, -1):
-        message = updated[index]
-        if not isinstance(message, dict):
-            continue
-        marked = _mark_cache_boundary(message)
-        if marked != message:
-            updated[index] = marked
-            return updated
-    return messages
-
-
-def _mark_cache_boundary(message: dict[str, Any]) -> dict[str, Any]:
-    updated_message = deepcopy(message)
-    content = updated_message.get("content")
-    if isinstance(content, list):
-        for block_index in range(len(content) - 1, -1, -1):
-            block = content[block_index]
-            if not isinstance(block, dict):
-                continue
-            if str(block.get("type") or "text") != "text":
-                continue
-            if not str(block.get("text", "") or "").strip():
-                continue
-            updated_block = dict(block)
-            updated_block["cache_control"] = {"type": "ephemeral"}
-            updated_content = list(content)
-            updated_content[block_index] = updated_block
-            updated_message["content"] = updated_content
-            return updated_message
-        return message
-    if isinstance(content, str) and content.strip():
-        updated_message["cache_control"] = {"type": "ephemeral"}
-        return updated_message
-    return message
