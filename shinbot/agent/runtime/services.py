@@ -31,7 +31,7 @@ from shinbot.agent.media import (
     register_media_runtime,
 )
 from shinbot.agent.prompt_manager import PromptRegistry
-from shinbot.agent.review import ReviewWorkflow
+from shinbot.agent.review import DatabaseReviewMessageStore, ReviewWorkflow
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.scheduler import AgentScheduler, AttentionActiveReplyDispatcher
 from shinbot.agent.tools import ToolManager, ToolRegistry
@@ -157,7 +157,9 @@ class AgentRuntime:
         self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=AttentionActiveReplyDispatcher(
                 self.attention_scheduler,
-                review_workflow=ReviewWorkflow(),
+                review_workflow=ReviewWorkflow(
+                    message_store=DatabaseReviewMessageStore(database),
+                ),
             ),
         )
         register_attention_runtime(

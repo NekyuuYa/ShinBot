@@ -2,10 +2,21 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.agent.review import ReviewWorkflow, ReviewWorkflowConfig
+from shinbot.agent.review import (
+    DatabaseReviewMessageStore,
+    ReviewWorkflow,
+    ReviewWorkflowConfig,
+)
 from shinbot.agent.scheduler import AgentScheduler, AgentState, AttentionActiveReplyDispatcher
-from shinbot.agent.scheduler.models import ReviewCompletionDecision, ReviewPlan, UnreadRange
+from shinbot.agent.scheduler.models import (
+    ReviewCompletionDecision,
+    ReviewPlan,
+    UnreadMessage,
+    UnreadRange,
+)
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
+from shinbot.persistence import DatabaseManager
+from shinbot.persistence.records import MessageLogRecord
 
 
 class FixedReviewPolicy:
@@ -86,6 +97,64 @@ class FakeReviewScheduler:
         )
 
 
+def _insert_message(
+    db: DatabaseManager,
+    *,
+    session_id: str = "bot:group:room",
+    raw_text: str,
+    created_at: float,
+) -> int:
+    return db.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id=f"msg-{raw_text}",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text=raw_text,
+            content_json="[]",
+            role="user",
+            created_at=created_at,
+        )
+    )
+
+
+def test_database_review_message_store_reads_review_windows(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 6)
+    ]
+    store = DatabaseReviewMessageStore(db)
+    unread_range = UnreadRange(
+        id=1,
+        session_id="bot:group:room",
+        start_msg_log_id=message_ids[1],
+        end_msg_log_id=message_ids[3],
+        start_at=2000.0,
+        end_at=4000.0,
+        message_count=3,
+    )
+
+    range_rows = store.list_for_unread_range(unread_range, limit=2, offset=1)
+    around_rows = store.list_around_message(
+        session_id="bot:group:room",
+        message_log_id=message_ids[2],
+        before=1,
+        after=2,
+    )
+    time_rows = store.list_by_time(
+        session_id="bot:group:room",
+        start_at=2000.0,
+        end_at=5000.0,
+        limit=10,
+    )
+
+    assert [row["raw_text"] for row in range_rows] == ["m3", "m4"]
+    assert [row["raw_text"] for row in around_rows] == ["m2", "m3", "m4", "m5"]
+    assert [row["raw_text"] for row in time_rows] == ["m2", "m3", "m4", "m5"]
+
+
 @pytest.mark.asyncio
 async def test_review_workflow_records_overflow_plan_and_enters_active_chat() -> None:
     scheduler = FakeReviewScheduler()
@@ -111,6 +180,7 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
 
     assert result.failed is False
     assert result.scan.scanned_message_count == 3
+    assert result.scan.loaded_message_count == 0
     assert result.scan.batch_count == 2
     assert len(result.scan.compressed_ranges) == 1
     assert result.scan.compressed_ranges[0].start_msg_log_id == 1
@@ -118,6 +188,8 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
     assert result.scan.compressed_ranges[0].message_count == 2
     assert result.reply.target_message_ids == []
     assert result.bootstrap.initial_interest == 0.05
+    assert result.bootstrap.tail_history_start_at == -80_000.0
+    assert result.bootstrap.tail_history_end_at == 100_000.0
     assert result.consumed_range_ids == []
     assert scheduler.complete_review_calls == [
         {
@@ -128,6 +200,53 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
             "now": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 6)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(review_scan_batch_size=2),
+        message_store=DatabaseReviewMessageStore(db),
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.scan.scanned_message_count == 5
+    assert result.scan.loaded_message_count == 5
+    assert result.scan.batch_count == 3
+    assert result.bootstrap.tail_history_message_count == 5
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
 
 
 @pytest.mark.asyncio

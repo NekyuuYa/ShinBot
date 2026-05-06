@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
+from shinbot.agent.review.message_store import ReviewMessageStore
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ReplyDecisionResult,
@@ -59,9 +60,11 @@ class ReviewWorkflow:
         self,
         config: ReviewWorkflowConfig | None = None,
         *,
+        message_store: ReviewMessageStore | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
+        self._message_store = message_store
         self._now = now or time.time
 
     async def run(
@@ -83,7 +86,10 @@ class ReviewWorkflow:
                 unread_ranges=unread_ranges,
             )
             reply = self._run_reply_decision(scan)
-            bootstrap = self._run_active_chat_bootstrap(started_at=started_at)
+            bootstrap = self._run_active_chat_bootstrap(
+                session_id=session_id,
+                started_at=started_at,
+            )
             completion = scheduler.complete_review(
                 session_id,
                 enter_active_chat=True,
@@ -102,7 +108,10 @@ class ReviewWorkflow:
                 session_id,
                 review_plan.reason,
             )
-            bootstrap = self._run_active_chat_bootstrap(started_at=started_at)
+            bootstrap = self._run_active_chat_bootstrap(
+                session_id=session_id,
+                started_at=started_at,
+            )
             completion = scheduler.complete_review(
                 session_id,
                 enter_active_chat=True,
@@ -136,8 +145,14 @@ class ReviewWorkflow:
             unread_count=unread_count,
             unread_ranges=unread_ranges,
         )
+        loaded_message_count = self._load_scan_batches(
+            unread_ranges,
+            max_messages=scanned_count,
+            prefer_tail=unread_count > self._config.overflow_threshold_messages,
+        )
         return ReviewScanResult(
             scanned_message_count=scanned_count,
+            loaded_message_count=loaded_message_count,
             batch_count=batch_count,
             compressed_ranges=compressed_ranges,
         )
@@ -145,13 +160,74 @@ class ReviewWorkflow:
     def _run_reply_decision(self, scan: ReviewScanResult) -> ReplyDecisionResult:
         return ReplyDecisionResult(target_message_ids=scan.candidate_message_ids)
 
-    def _run_active_chat_bootstrap(self, *, started_at: float) -> ActiveChatBootstrapResult:
+    def _run_active_chat_bootstrap(
+        self,
+        *,
+        session_id: str,
+        started_at: float,
+    ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
+        tail_history_message_count = self._load_tail_history(
+            session_id=session_id,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
         return ActiveChatBootstrapResult(
             initial_interest=self._config.fallback_active_chat_interest,
-            tail_history_start_at=started_at - self._config.tail_history_before_seconds,
-            tail_history_end_at=ended_at,
+            tail_history_start_at=(started_at - self._config.tail_history_before_seconds) * 1000,
+            tail_history_end_at=ended_at * 1000,
+            tail_history_message_count=tail_history_message_count,
         )
+
+    def _load_scan_batches(
+        self,
+        unread_ranges: list[UnreadRange],
+        *,
+        max_messages: int,
+        prefer_tail: bool,
+    ) -> int:
+        if self._message_store is None or max_messages <= 0:
+            return 0
+
+        remaining = max_messages
+        loaded_count = 0
+        scan_ranges = (
+            self._tail_scan_ranges(unread_ranges, max_messages=max_messages)
+            if prefer_tail
+            else unread_ranges
+        )
+        for unread_range in scan_ranges:
+            offset = 0
+            while remaining > 0:
+                batch = self._message_store.list_for_unread_range(
+                    unread_range,
+                    limit=min(self._config.review_scan_batch_size, remaining),
+                    offset=offset,
+                )
+                if not batch:
+                    break
+                loaded_count += len(batch)
+                remaining -= len(batch)
+                offset += len(batch)
+        return loaded_count
+
+    def _load_tail_history(
+        self,
+        *,
+        session_id: str,
+        started_at: float,
+        ended_at: float,
+    ) -> int:
+        if self._message_store is None:
+            return 0
+
+        tail_history = self._message_store.list_by_time(
+            session_id=session_id,
+            start_at=(started_at - self._config.tail_history_before_seconds) * 1000,
+            end_at=ended_at * 1000,
+            limit=self._config.tail_history_limit,
+        )
+        return len(tail_history)
 
     def _planned_overflow_compression(
         self,
@@ -187,3 +263,36 @@ class ReviewWorkflow:
             )
             remaining -= message_count
         return records
+
+    def _tail_scan_ranges(
+        self,
+        unread_ranges: list[UnreadRange],
+        *,
+        max_messages: int,
+    ) -> list[UnreadRange]:
+        remaining = max_messages
+        selected: list[UnreadRange] = []
+        for unread_range in reversed(unread_ranges):
+            if remaining <= 0:
+                break
+            if unread_range.message_count <= remaining:
+                selected.append(unread_range)
+                remaining -= unread_range.message_count
+                continue
+
+            selected.append(
+                UnreadRange(
+                    id=unread_range.id,
+                    session_id=unread_range.session_id,
+                    start_msg_log_id=unread_range.end_msg_log_id - remaining + 1,
+                    end_msg_log_id=unread_range.end_msg_log_id,
+                    start_at=unread_range.start_at,
+                    end_at=unread_range.end_at,
+                    message_count=remaining,
+                    review_consumed=unread_range.review_consumed,
+                    chat_consumed=unread_range.chat_consumed,
+                )
+            )
+            remaining = 0
+        selected.reverse()
+        return selected

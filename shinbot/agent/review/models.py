@@ -14,6 +14,7 @@ class ReviewWorkflowConfig:
     review_scan_batch_size: int = 500
     overflow_threshold_messages: int = 3000
     tail_history_before_seconds: float = 180.0
+    tail_history_limit: int = 500
     fallback_active_chat_interest: float = 0.05
 
 
@@ -52,6 +53,7 @@ class ReviewScanResult:
     candidate_message_ids: list[int] = field(default_factory=list)
     scan_reason: str = "review_workflow_skeleton_no_llm"
     scanned_message_count: int = 0
+    loaded_message_count: int = 0
     batch_count: int = 0
     compressed_ranges: list[UnreadRangeSummaryRecord] = field(default_factory=list)
     ignored_ranges: list[UnreadRangeIgnoreRecord] = field(default_factory=list)
@@ -76,6 +78,7 @@ class ActiveChatBootstrapResult:
     reason: str = "review_bootstrap_skeleton_low_interest"
     tail_history_start_at: float | None = None
     tail_history_end_at: float | None = None
+    tail_history_message_count: int = 0
 
 
 @dataclass(slots=True, frozen=True)
