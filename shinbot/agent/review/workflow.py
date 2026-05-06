@@ -6,6 +6,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from shinbot.agent.review.context.builder import (
@@ -51,6 +52,39 @@ from shinbot.agent.scheduler.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _ReplyDecisionWindow:
+    candidate_message_ids: list[int]
+    messages: list[dict] = field(default_factory=list)
+
+    @property
+    def message_ids(self) -> list[int]:
+        return _message_ids(self.messages)
+
+    def overlaps(self, messages: list[dict]) -> bool:
+        own_ids = set(self.message_ids)
+        return any(_message_id(message) in own_ids for message in messages)
+
+    def extend(self, *, candidate_message_id: int, messages: list[dict]) -> None:
+        self.candidate_message_ids.append(candidate_message_id)
+        merged: dict[int, dict] = {
+            message_id: message
+            for message in self.messages
+            if (message_id := _message_id(message)) is not None
+        }
+        for message in messages:
+            message_id = _message_id(message)
+            if message_id is not None:
+                merged[message_id] = message
+        self.messages = sorted(
+            merged.values(),
+            key=lambda message: (
+                float(message.get("created_at", 0.0) or 0.0),
+                int(message.get("id", 0) or 0),
+            ),
+        )
 
 
 class ReviewSchedulerPort(Protocol):
@@ -283,20 +317,21 @@ class ReviewWorkflow:
         target_message_ids: list[int] = []
         reply_reasons: list[str] = []
 
-        for candidate_message_id in scan.candidate_message_ids:
-            local_context = self._message_store.list_around_message(
-                session_id=session_id,
-                message_log_id=candidate_message_id,
-                before=self._config.reply_context_before_messages,
-                after=self._config.reply_context_after_messages,
-            )
-            loaded_message_count += len(local_context)
+        for window in self._build_reply_decision_windows(
+            session_id=session_id,
+            candidate_message_ids=scan.candidate_message_ids,
+        ):
+            if not window.messages:
+                continue
+            primary_candidate_message_id = window.candidate_message_ids[0]
+            loaded_message_count += len(window.messages)
             stage_input = self._build_stage_input(
                 session_id=session_id,
-                messages=local_context,
+                messages=window.messages,
                 purpose="reply_decision",
                 metadata={
-                    "candidate_message_id": candidate_message_id,
+                    "candidate_message_id": primary_candidate_message_id,
+                    "candidate_message_ids": list(window.candidate_message_ids),
                     "before_messages": self._config.reply_context_before_messages,
                     "after_messages": self._config.reply_context_after_messages,
                     **_summary_metadata_payload(scan.compressed_ranges),
@@ -324,6 +359,36 @@ class ReviewWorkflow:
             loaded_message_count=loaded_message_count,
             stage_input_count=stage_input_count,
         )
+
+    def _build_reply_decision_windows(
+        self,
+        *,
+        session_id: str,
+        candidate_message_ids: list[int],
+    ) -> list[_ReplyDecisionWindow]:
+        windows: list[_ReplyDecisionWindow] = []
+        for candidate_message_id in _dedupe_preserve_order(candidate_message_ids):
+            local_context = self._message_store.list_around_message(
+                session_id=session_id,
+                message_log_id=candidate_message_id,
+                before=self._config.reply_context_before_messages,
+                after=self._config.reply_context_after_messages,
+            )
+            if not local_context:
+                continue
+            if windows and windows[-1].overlaps(local_context):
+                windows[-1].extend(
+                    candidate_message_id=candidate_message_id,
+                    messages=local_context,
+                )
+                continue
+            windows.append(
+                _ReplyDecisionWindow(
+                    candidate_message_ids=[candidate_message_id],
+                    messages=list(local_context),
+                )
+            )
+        return windows
 
     async def _run_overflow_compression(
         self,
@@ -803,6 +868,17 @@ def _dedupe_preserve_order[T](items: list[T]) -> list[T]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _message_id(message: dict) -> int | None:
+    value = message.get("id")
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _message_ids(messages: list[dict]) -> list[int]:
+    return [message_id for message in messages if (message_id := _message_id(message)) is not None]
 
 
 def _should_persist_summary(record: UnreadRangeSummaryRecord) -> bool:

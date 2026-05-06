@@ -14,8 +14,8 @@ class ReviewWorkflowConfig:
     review_scan_batch_size: int = 500
     overflow_threshold_messages: int = 3000
     overflow_compression_batch_size: int = 500
-    reply_context_before_messages: int = 20
-    reply_context_after_messages: int = 20
+    reply_context_before_messages: int = 30
+    reply_context_after_messages: int = 10
     tail_history_before_seconds: float = 180.0
     tail_history_limit: int = 500
     fallback_active_chat_interest: float = 0.05

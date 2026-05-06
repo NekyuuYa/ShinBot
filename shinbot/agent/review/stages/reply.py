@@ -19,17 +19,20 @@ class NoopReplyDecisionStageRunner:
     """Default reply_decision runner used before LLM reply logic is wired."""
 
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
-        candidate_id = _candidate_message_id(stage_input)
+        candidate_ids = _candidate_message_ids(stage_input)
         return ReplyDecisionStageOutput(
-            target_message_ids=[candidate_id] if candidate_id is not None else [],
+            target_message_ids=candidate_ids,
         )
 
 
-def _candidate_message_id(stage_input: ReviewStageInput) -> int | None:
+def _candidate_message_ids(stage_input: ReviewStageInput) -> list[int]:
+    values = stage_input.metadata.get("candidate_message_ids")
+    if isinstance(values, list):
+        return [value for value in values if isinstance(value, int)]
     value = stage_input.metadata.get("candidate_message_id")
     if isinstance(value, int):
-        return value
-    return None
+        return [value]
+    return []
 
 
 __all__ = ["NoopReplyDecisionStageRunner", "ReplyDecisionStageRunner"]

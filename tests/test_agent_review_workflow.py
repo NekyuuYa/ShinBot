@@ -192,6 +192,7 @@ class RecordingReplyDecisionRunner:
     async def run(self, stage_input) -> ReplyDecisionStageOutput:
         message_ids = [message["id"] for message in stage_input.source_messages]
         candidate_id = stage_input.metadata["candidate_message_id"]
+        candidate_ids = stage_input.metadata.get("candidate_message_ids", [candidate_id])
         self.calls.append(
             {
                 "purpose": stage_input.purpose,
@@ -200,10 +201,28 @@ class RecordingReplyDecisionRunner:
                 "metadata": dict(stage_input.metadata),
             }
         )
+        if not isinstance(candidate_ids, list):
+            candidate_ids = [candidate_id]
+        reason_target = (
+            str(candidate_ids[0])
+            if len(candidate_ids) == 1
+            else ",".join(str(item) for item in candidate_ids)
+        )
         return ReplyDecisionStageOutput(
             replied=False,
-            target_message_ids=[candidate_id],
-            reason=f"checked_{candidate_id}",
+            target_message_ids=[item for item in candidate_ids if isinstance(item, int)],
+            reason=f"checked_{reason_target}",
+        )
+
+
+class FixedCandidateScanRunner:
+    def __init__(self, candidate_message_ids: list[int]) -> None:
+        self.candidate_message_ids = candidate_message_ids
+
+    async def run(self, stage_input) -> ReviewScanStageOutput:
+        return ReviewScanStageOutput(
+            candidate_message_ids=list(self.candidate_message_ids),
+            reason="fixed_candidates",
         )
 
 
@@ -850,6 +869,7 @@ async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> 
             "metadata": {
                 "purpose": "reply_decision",
                 "candidate_message_id": message_ids[-1],
+                "candidate_message_ids": [message_ids[-1]],
                 "before_messages": 1,
                 "after_messages": 1,
             },
@@ -859,6 +879,78 @@ async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> 
         "review_scan",
         "reply_decision",
         "active_chat_bootstrap",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_groups_overlapping_candidate_contexts(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 8)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    reply_runner = RecordingReplyDecisionRunner()
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=7,
+            reply_context_before_messages=1,
+            reply_context_after_messages=1,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=FixedCandidateScanRunner([message_ids[2], message_ids[3]]),
+        reply_runner=reply_runner,
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.scan.candidate_message_ids == [message_ids[2], message_ids[3]]
+    assert result.reply.target_message_ids == [message_ids[2], message_ids[3]]
+    assert result.reply.stage_input_count == 1
+    assert result.reply.loaded_message_count == 4
+    assert reply_runner.calls == [
+        {
+            "purpose": "reply_decision",
+            "candidate_id": message_ids[2],
+            "message_ids": message_ids[1:5],
+            "metadata": {
+                "purpose": "reply_decision",
+                "candidate_message_id": message_ids[2],
+                "candidate_message_ids": [message_ids[2], message_ids[3]],
+                "before_messages": 1,
+                "after_messages": 1,
+            },
+        }
+    ]
+    assert result.stage_traces[1].metadata["candidate_message_ids"] == [
+        message_ids[2],
+        message_ids[3],
     ]
 
 
