@@ -33,6 +33,7 @@ from shinbot.agent.media import (
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.review import (
     DatabaseReviewMessageStore,
+    DatabaseReviewSummaryStore,
     ReviewContextBuilderAdapter,
     ReviewWorkflow,
 )
@@ -163,6 +164,7 @@ class AgentRuntime:
                 self.attention_scheduler,
                 review_workflow=ReviewWorkflow(
                     message_store=DatabaseReviewMessageStore(database),
+                    summary_store=DatabaseReviewSummaryStore(database),
                     context_builder=ReviewContextBuilderAdapter(self.context_manager),
                 ),
             ),

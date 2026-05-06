@@ -38,6 +38,7 @@ from shinbot.agent.review.models import (
 )
 from shinbot.agent.review.reply import NoopReplyDecisionStageRunner, ReplyDecisionStageRunner
 from shinbot.agent.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.review.summary_store import ReviewSummaryStore
 from shinbot.agent.scheduler.models import (
     ReviewCompletionDecision,
     ReviewPlan,
@@ -95,6 +96,7 @@ class ReviewWorkflow:
         config: ReviewWorkflowConfig | None = None,
         *,
         message_store: ReviewMessageStore | None = None,
+        summary_store: ReviewSummaryStore | None = None,
         context_builder: ReviewContextBuilder | None = None,
         compression_runner: OverflowCompressionStageRunner | None = None,
         scan_runner: ReviewScanStageRunner | None = None,
@@ -104,6 +106,7 @@ class ReviewWorkflow:
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
         self._message_store = message_store
+        self._summary_store = summary_store
         self._context_builder = context_builder or ReviewContextBuilderAdapter()
         self._compression_runner = compression_runner or NoopOverflowCompressionStageRunner()
         self._scan_runner = scan_runner or NoopReviewScanStageRunner()
@@ -305,58 +308,82 @@ class ReviewWorkflow:
         unread_count: int,
         unread_ranges: list[UnreadRange],
     ) -> list[UnreadRangeSummaryRecord]:
-        planned_ranges = self._planned_overflow_compression(
-            session_id=session_id,
-            unread_count=unread_count,
-            unread_ranges=unread_ranges,
-        )
-        if not planned_ranges or self._message_store is None:
-            return planned_ranges
-
         summaries: list[UnreadRangeSummaryRecord] = []
-        for planned in planned_ranges:
-            messages = self._message_store.list_for_unread_range(
-                UnreadRange(
-                    id=None,
-                    session_id=planned.session_id,
-                    start_msg_log_id=planned.start_msg_log_id,
-                    end_msg_log_id=planned.end_msg_log_id,
-                    start_at=planned.start_at,
-                    end_at=planned.end_at,
-                    message_count=planned.message_count,
-                ),
-                limit=self._config.overflow_compression_batch_size,
-            )
-            stage_input = self._build_stage_input(
+        overflow_count = unread_count - self._config.overflow_threshold_messages
+        if overflow_count <= 0:
+            return summaries
+        if self._message_store is None:
+            return self._planned_overflow_compression(
                 session_id=session_id,
-                messages=messages,
-                purpose="overflow_compression",
-                metadata={
-                    "start_msg_log_id": planned.start_msg_log_id,
-                    "end_msg_log_id": planned.end_msg_log_id,
-                    "message_count": planned.message_count,
-                    "reason": planned.reason,
-                },
+                unread_count=unread_count,
+                unread_ranges=unread_ranges,
             )
-            if stage_input is None:
-                summaries.append(planned)
-                continue
 
-            stage_output = await self._run_compression_stage(stage_input)
-            summaries.append(
-                UnreadRangeSummaryRecord(
-                    session_id=planned.session_id,
-                    start_msg_log_id=planned.start_msg_log_id,
-                    end_msg_log_id=planned.end_msg_log_id,
-                    start_at=planned.start_at,
-                    end_at=planned.end_at,
-                    message_count=planned.message_count,
-                    summary=stage_output.summary,
-                    candidate_message_ids=stage_output.candidate_message_ids,
-                    reason=stage_output.reason,
+        remaining = overflow_count
+        for unread_range in unread_ranges:
+            if remaining <= 0:
+                break
+            range_remaining = min(remaining, unread_range.message_count)
+            offset = 0
+            while range_remaining > 0:
+                messages = self._message_store.list_for_unread_range(
+                    unread_range,
+                    limit=min(
+                        self._config.overflow_compression_batch_size,
+                        range_remaining,
+                    ),
+                    offset=offset,
                 )
-            )
+                if not messages:
+                    break
+                summary = await self._run_overflow_compression_batch(
+                    session_id=session_id,
+                    messages=messages,
+                )
+                if summary is not None:
+                    self._save_overflow_summary(summary)
+                    summaries.append(summary)
+                range_remaining -= len(messages)
+                remaining -= len(messages)
+                offset += len(messages)
         return summaries
+
+    async def _run_overflow_compression_batch(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict],
+    ) -> UnreadRangeSummaryRecord | None:
+        actual_start_msg_log_id = int(messages[0]["id"])
+        actual_end_msg_log_id = int(messages[-1]["id"])
+        actual_start_at = float(messages[0]["created_at"])
+        actual_end_at = float(messages[-1]["created_at"])
+        stage_input = self._build_stage_input(
+            session_id=session_id,
+            messages=messages,
+            purpose="overflow_compression",
+            metadata={
+                "start_msg_log_id": actual_start_msg_log_id,
+                "end_msg_log_id": actual_end_msg_log_id,
+                "message_count": len(messages),
+                "reason": "overflow_pending_compression",
+            },
+        )
+        if stage_input is None:
+            return None
+
+        stage_output = await self._run_compression_stage(stage_input)
+        return UnreadRangeSummaryRecord(
+            session_id=session_id,
+            start_msg_log_id=actual_start_msg_log_id,
+            end_msg_log_id=actual_end_msg_log_id,
+            start_at=actual_start_at,
+            end_at=actual_end_at,
+            message_count=len(messages),
+            summary=stage_output.summary,
+            candidate_message_ids=stage_output.candidate_message_ids,
+            reason=stage_output.reason,
+        )
 
     async def _run_active_chat_bootstrap(
         self,
@@ -404,7 +431,7 @@ class ReviewWorkflow:
         scan_reasons: list[str] = []
         consumed_ranges: list[ConsumedUnreadRange] = []
         scan_ranges = (
-            self._tail_scan_ranges(unread_ranges, max_messages=max_messages)
+            self._tail_scan_ranges_from_store(unread_ranges, max_messages=max_messages)
             if prefer_tail
             else [self._full_consumed_range(item) for item in unread_ranges]
         )
@@ -540,6 +567,19 @@ class ReviewWorkflow:
     ) -> ActiveChatBootstrapStageOutput:
         return await self._bootstrap_runner.run(stage_input)
 
+    def _save_overflow_summary(self, record: UnreadRangeSummaryRecord) -> None:
+        if self._summary_store is None or not _should_persist_summary(record):
+            return
+        try:
+            self._summary_store.save_summary(record, created_at=self._now())
+        except Exception:
+            logger.exception(
+                "Failed to persist review summary for session %s range %s-%s",
+                record.session_id,
+                record.start_msg_log_id,
+                record.end_msg_log_id,
+            )
+
     def _consume_review_ranges(
         self,
         scheduler: ReviewSchedulerPort,
@@ -631,6 +671,43 @@ class ReviewWorkflow:
         selected.reverse()
         return selected
 
+    def _tail_scan_ranges_from_store(
+        self,
+        unread_ranges: list[UnreadRange],
+        *,
+        max_messages: int,
+    ) -> list[ConsumedUnreadRange]:
+        if self._message_store is None:
+            return self._tail_scan_ranges(unread_ranges, max_messages=max_messages)
+
+        remaining = max_messages
+        selected: list[ConsumedUnreadRange] = []
+        for unread_range in reversed(unread_ranges):
+            if remaining <= 0:
+                break
+            take = min(remaining, unread_range.message_count)
+            offset = max(unread_range.message_count - take, 0)
+            messages = self._message_store.list_for_unread_range(
+                unread_range,
+                limit=take,
+                offset=offset,
+            )
+            if not messages:
+                continue
+            selected.append(
+                ConsumedUnreadRange(
+                    range_id=unread_range.id,
+                    session_id=unread_range.session_id,
+                    start_msg_log_id=int(messages[0]["id"]),
+                    end_msg_log_id=int(messages[-1]["id"]),
+                    message_count=len(messages),
+                    full_range=len(messages) == unread_range.message_count,
+                )
+            )
+            remaining -= len(messages)
+        selected.reverse()
+        return selected
+
     @staticmethod
     def _full_consumed_range(unread_range: UnreadRange) -> ConsumedUnreadRange:
         return ConsumedUnreadRange(
@@ -664,3 +741,11 @@ def _dedupe_preserve_order[T](items: list[T]) -> list[T]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _should_persist_summary(record: UnreadRangeSummaryRecord) -> bool:
+    return (
+        bool(record.summary.strip())
+        or bool(record.candidate_message_ids)
+        or record.reason.strip() not in {"", "noop_overflow_compression"}
+    )

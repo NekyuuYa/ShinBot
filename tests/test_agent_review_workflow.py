@@ -5,6 +5,7 @@ import pytest
 from shinbot.agent.review import (
     ActiveChatBootstrapStageOutput,
     DatabaseReviewMessageStore,
+    DatabaseReviewSummaryStore,
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
     ReviewContextBuilderAdapter,
@@ -752,6 +753,7 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
             overflow_threshold_messages=3,
         ),
         message_store=DatabaseReviewMessageStore(db),
+        summary_store=DatabaseReviewSummaryStore(db),
         context_builder=context_builder,
         compression_runner=compression_runner,
         now=lambda: 5.0,
@@ -771,6 +773,13 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
     assert compressed.reason == "compressed_old_messages"
     assert result.scan.candidate_message_ids == [message_ids[0]]
     assert result.reply.target_message_ids == [message_ids[0]]
+    persisted_summaries = DatabaseReviewSummaryStore(db).list_summaries("bot:group:room")
+    assert len(persisted_summaries) == 1
+    assert persisted_summaries[0].summary == "older messages summarized"
+    assert persisted_summaries[0].candidate_message_ids == [message_ids[0]]
+    assert persisted_summaries[0].reason == "compressed_old_messages"
+    assert persisted_summaries[0].start_msg_log_id == message_ids[0]
+    assert persisted_summaries[0].end_msg_log_id == message_ids[1]
     assert compression_runner.calls == [
         {
             "purpose": "overflow_compression",
@@ -791,4 +800,71 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
     assert [call["purpose"] for call in context_builder.calls][:2] == [
         "overflow_compression",
         "review_scan",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_review_workflow_uses_actual_message_bounds_for_interleaved_sessions(
+    tmp_path,
+) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text="room-1", created_at=1000.0),
+        _insert_message(db, session_id="bot:group:other", raw_text="other-1", created_at=1500.0),
+        _insert_message(db, raw_text="room-2", created_at=2000.0),
+        _insert_message(db, session_id="bot:group:other", raw_text="other-2", created_at=2500.0),
+        _insert_message(db, raw_text="room-3", created_at=3000.0),
+    ]
+    room_message_ids = [message_ids[0], message_ids[2], message_ids[4]]
+    for message_id in room_message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    compression_runner = RecordingOverflowCompressionRunner()
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=10,
+            overflow_threshold_messages=1,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        summary_store=DatabaseReviewSummaryStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        compression_runner=compression_runner,
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert [call["message_ids"] for call in compression_runner.calls] == [
+        room_message_ids[:2]
+    ]
+    assert result.scan.compressed_ranges[0].start_msg_log_id == room_message_ids[0]
+    assert result.scan.compressed_ranges[0].end_msg_log_id == room_message_ids[1]
+    assert [(item.start_msg_log_id, item.end_msg_log_id) for item in result.consumed_ranges] == [
+        (room_message_ids[2], room_message_ids[2])
+    ]
+    assert [message.message_log_id for message in scheduler.unread_messages("bot:group:room")] == [
+        room_message_ids[0],
+        room_message_ids[1],
     ]

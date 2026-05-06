@@ -353,6 +353,27 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ON agent_unread_ranges(session_id, review_consumed, start_at, start_msg_log_id)
     """,
     """
+    CREATE TABLE IF NOT EXISTS agent_review_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        start_msg_log_id INTEGER NOT NULL,
+        end_msg_log_id INTEGER NOT NULL,
+        start_at REAL NOT NULL,
+        end_at REAL NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT NOT NULL DEFAULT '',
+        candidate_message_ids_json TEXT NOT NULL DEFAULT '[]',
+        reason TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        FOREIGN KEY(start_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE,
+        FOREIGN KEY(end_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_review_summaries_session
+    ON agent_review_summaries(session_id, start_at, start_msg_log_id)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS agent_high_priority_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
