@@ -79,6 +79,45 @@ class ReviewStageTrace:
 
 
 @dataclass(slots=True, frozen=True)
+class ReviewStageExplanation:
+    """Stable summary of one review stage for logs or user-facing explanations."""
+
+    purpose: str
+    input_message_count: int
+    reason: str = ""
+    candidate_message_ids: list[int] = field(default_factory=list)
+    target_message_ids: list[int] = field(default_factory=list)
+    replied: bool | None = None
+    reply_message_id: int | None = None
+    initial_interest: float | None = None
+    decay_half_life_seconds: float | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ReviewWorkflowExplanation:
+    """Stable review result summary decoupled from internal per-stage traces."""
+
+    review_started_at: float
+    failed: bool = False
+    failure_reason: str | None = None
+    scanned_message_count: int = 0
+    loaded_message_count: int = 0
+    reviewed_batch_count: int = 0
+    candidate_message_ids: list[int] = field(default_factory=list)
+    reply_target_message_ids: list[int] = field(default_factory=list)
+    replied: bool = False
+    reply_message_id: int | None = None
+    overflow_summary_count: int = 0
+    overflow_summary_message_count: int = 0
+    consumed_range_ids: list[int] = field(default_factory=list)
+    consumed_message_count: int = 0
+    active_chat_initial_interest: float | None = None
+    active_chat_decay_half_life_seconds: float | None = None
+    active_chat_reason: str = ""
+    stages: list[ReviewStageExplanation] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
 class ReviewScanResult:
     """Stage 1 result: candidate message ids selected for closer reply review."""
 
@@ -167,3 +206,46 @@ class ReviewWorkflowResult:
     stage_traces: list[ReviewStageTrace] = field(default_factory=list)
     failed: bool = False
     failure_reason: str | None = None
+
+
+def build_review_workflow_explanation(
+    result: ReviewWorkflowResult,
+) -> ReviewWorkflowExplanation:
+    """Build a concise, stable explanation from a detailed review workflow result."""
+
+    return ReviewWorkflowExplanation(
+        review_started_at=result.review_started_at,
+        failed=result.failed,
+        failure_reason=result.failure_reason,
+        scanned_message_count=result.scan.scanned_message_count,
+        loaded_message_count=result.scan.loaded_message_count,
+        reviewed_batch_count=result.scan.batch_count,
+        candidate_message_ids=list(result.scan.candidate_message_ids),
+        reply_target_message_ids=list(result.reply.target_message_ids),
+        replied=result.reply.replied,
+        reply_message_id=result.reply.reply_message_id,
+        overflow_summary_count=len(result.scan.compressed_ranges),
+        overflow_summary_message_count=sum(
+            record.message_count for record in result.scan.compressed_ranges
+        ),
+        consumed_range_ids=list(result.consumed_range_ids),
+        consumed_message_count=sum(record.message_count for record in result.consumed_ranges),
+        active_chat_initial_interest=result.bootstrap.initial_interest,
+        active_chat_decay_half_life_seconds=result.bootstrap.decay_half_life_seconds,
+        active_chat_reason=result.bootstrap.reason,
+        stages=[_stage_explanation(trace) for trace in result.stage_traces],
+    )
+
+
+def _stage_explanation(trace: ReviewStageTrace) -> ReviewStageExplanation:
+    return ReviewStageExplanation(
+        purpose=trace.purpose,
+        input_message_count=len(trace.message_ids),
+        reason=trace.reason,
+        candidate_message_ids=list(trace.candidate_message_ids),
+        target_message_ids=list(trace.target_message_ids),
+        replied=trace.replied,
+        reply_message_id=trace.reply_message_id,
+        initial_interest=trace.initial_interest,
+        decay_half_life_seconds=trace.decay_half_life_seconds,
+    )

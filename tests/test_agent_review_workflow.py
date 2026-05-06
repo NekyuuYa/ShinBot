@@ -27,6 +27,7 @@ from shinbot.agent.review import (
     ReviewStageRuntimeConfig,
     ReviewWorkflow,
     ReviewWorkflowConfig,
+    build_review_workflow_explanation,
     parse_json_object,
 )
 from shinbot.agent.scheduler import AgentScheduler, AgentState, AttentionActiveReplyDispatcher
@@ -1140,6 +1141,104 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
         "older messages summarized"
     )
     assert "older messages summarized" in result.stage_traces[1].previous_summary
+
+
+def test_review_workflow_explanation_summarizes_result() -> None:
+    from shinbot.agent.review import (
+        ActiveChatBootstrapResult,
+        ConsumedUnreadRange,
+        ReplyDecisionResult,
+        ReviewScanResult,
+        ReviewStageTrace,
+        ReviewWorkflowResult,
+        UnreadRangeSummaryRecord,
+    )
+
+    result = ReviewWorkflowResult(
+        scan=ReviewScanResult(
+            candidate_message_ids=[3],
+            scanned_message_count=5,
+            loaded_message_count=3,
+            batch_count=2,
+            compressed_ranges=[
+                UnreadRangeSummaryRecord(
+                    session_id="bot:group:room",
+                    start_msg_log_id=1,
+                    end_msg_log_id=2,
+                    start_at=1.0,
+                    end_at=2.0,
+                    message_count=2,
+                    summary="older context",
+                )
+            ],
+        ),
+        reply=ReplyDecisionResult(
+            replied=True,
+            reply_message_id=10,
+            target_message_ids=[3],
+            reply_reason="answered",
+        ),
+        bootstrap=ActiveChatBootstrapResult(
+            initial_interest=0.4,
+            decay_half_life_seconds=30.0,
+            reason="keep_chatting",
+        ),
+        review_started_at=100.0,
+        consumed_range_ids=[7],
+        consumed_ranges=[
+            ConsumedUnreadRange(
+                range_id=7,
+                session_id="bot:group:room",
+                start_msg_log_id=3,
+                end_msg_log_id=5,
+                message_count=3,
+                full_range=True,
+            )
+        ],
+        stage_traces=[
+            ReviewStageTrace(
+                purpose="reply_decision",
+                message_ids=[2, 3, 4],
+                reason="answered",
+                target_message_ids=[3],
+                replied=True,
+                reply_message_id=10,
+            ),
+            ReviewStageTrace(
+                purpose="active_chat_bootstrap",
+                message_ids=[3, 4, 5],
+                reason="keep_chatting",
+                initial_interest=0.4,
+                decay_half_life_seconds=30.0,
+            ),
+        ],
+    )
+
+    explanation = build_review_workflow_explanation(result)
+
+    assert explanation.review_started_at == 100.0
+    assert explanation.scanned_message_count == 5
+    assert explanation.loaded_message_count == 3
+    assert explanation.reviewed_batch_count == 2
+    assert explanation.candidate_message_ids == [3]
+    assert explanation.reply_target_message_ids == [3]
+    assert explanation.replied is True
+    assert explanation.reply_message_id == 10
+    assert explanation.overflow_summary_count == 1
+    assert explanation.overflow_summary_message_count == 2
+    assert explanation.consumed_range_ids == [7]
+    assert explanation.consumed_message_count == 3
+    assert explanation.active_chat_initial_interest == 0.4
+    assert explanation.active_chat_decay_half_life_seconds == 30.0
+    assert explanation.active_chat_reason == "keep_chatting"
+    assert [stage.purpose for stage in explanation.stages] == [
+        "reply_decision",
+        "active_chat_bootstrap",
+    ]
+    assert explanation.stages[0].input_message_count == 3
+    assert explanation.stages[0].target_message_ids == [3]
+    assert explanation.stages[0].replied is True
+    assert explanation.stages[1].initial_interest == 0.4
 
 
 @pytest.mark.asyncio
