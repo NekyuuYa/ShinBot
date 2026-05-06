@@ -6,12 +6,19 @@ from shinbot.agent.review import (
     ActiveChatBootstrapStageOutput,
     DatabaseReviewMessageStore,
     DatabaseReviewSummaryStore,
+    LLMActiveChatBootstrapStageRunner,
+    LLMOverflowCompressionStageRunner,
+    LLMReplyDecisionStageRunner,
+    LLMReviewScanStageRunner,
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
     ReviewContextBuilderAdapter,
+    ReviewLLMRunnerConfig,
     ReviewScanStageOutput,
+    ReviewStageInput,
     ReviewWorkflow,
     ReviewWorkflowConfig,
+    parse_json_object,
 )
 from shinbot.agent.scheduler import AgentScheduler, AgentState, AttentionActiveReplyDispatcher
 from shinbot.agent.scheduler.models import (
@@ -234,6 +241,30 @@ class FakeContextManager:
         return [{"type": "text", "text": f"{len(unread_records)} messages"}]
 
 
+class FakeModelRuntime:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.calls: list[object] = []
+
+    async def generate(self, call):
+        self.calls.append(call)
+        text = self.responses.pop(0)
+        return type(
+            "FakeGenerateResult",
+            (),
+            {
+                "text": text,
+                "tool_calls": [],
+                "raw_response": None,
+                "execution_id": "exec-1",
+                "route_id": "",
+                "provider_id": "",
+                "model_id": "",
+                "usage": {},
+            },
+        )()
+
+
 def _insert_message(
     db: DatabaseManager,
     *,
@@ -309,6 +340,63 @@ def test_review_context_builder_adapter_uses_context_manager() -> None:
     assert stage_input.instruction_content == [{"type": "text", "text": "1 messages"}]
     assert stage_input.metadata == {"purpose": "review_scan"}
     assert context_manager.calls[0]["message_ids"] == [1]
+
+
+def test_review_llm_json_parser_accepts_fenced_object() -> None:
+    payload = parse_json_object('```json\n{"candidate_message_ids": [1], "reason": "ok"}\n```')
+
+    assert payload == {"candidate_message_ids": [1], "reason": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
+    model_runtime = FakeModelRuntime(
+        [
+            '{"summary": "old context", "candidate_message_ids": [1, "2"], "reason": "compressed"}',
+            '{"candidate_message_ids": [3, 3], "reason": "selected"}',
+            '{"replied": true, "reply_message_id": 10, "target_message_ids": [3], "reason": "reply"}',
+            '{"initial_interest": 1.7, "decay_half_life_seconds": "30", "reason": "chat"}',
+        ]
+    )
+    config = ReviewLLMRunnerConfig(
+        route_id="route-a",
+        model_id="model-a",
+        caller="test.review",
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[{"id": 1, "raw_text": "hello"}],
+        metadata={"candidate_message_id": 3},
+    )
+
+    compression = await LLMOverflowCompressionStageRunner(
+        model_runtime,
+        config=config,
+    ).run(stage_input)
+    scan = await LLMReviewScanStageRunner(model_runtime, config=config).run(stage_input)
+    reply = await LLMReplyDecisionStageRunner(model_runtime, config=config).run(stage_input)
+    bootstrap = await LLMActiveChatBootstrapStageRunner(
+        model_runtime,
+        config=config,
+    ).run(stage_input)
+
+    assert compression.summary == "old context"
+    assert compression.candidate_message_ids == [1, 2]
+    assert compression.reason == "compressed"
+    assert scan.candidate_message_ids == [3, 3]
+    assert scan.reason == "selected"
+    assert reply.replied is True
+    assert reply.reply_message_id == 10
+    assert reply.target_message_ids == [3]
+    assert bootstrap.initial_interest == 1.0
+    assert bootstrap.decay_half_life_seconds == 30.0
+    assert model_runtime.calls[0].route_id == "route-a"
+    assert model_runtime.calls[0].model_id == "model-a"
+    assert model_runtime.calls[0].caller == "test.review"
+    assert model_runtime.calls[0].instance_id == "bot"
+    assert model_runtime.calls[0].response_format["type"] == "json_schema"
+    assert model_runtime.calls[0].metadata["candidate_message_id"] == 3
 
 
 @pytest.mark.asyncio
