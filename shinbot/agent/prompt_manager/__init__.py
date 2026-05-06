@@ -22,6 +22,7 @@ __all__ = [
     "PromptInjection",
     "PromptLogger",
     "PromptLoggerRecord",
+    "PromptMessageBuilder",
     "PromptProfile",
     "PromptRegistry",
     "PromptSnapshot",
@@ -35,6 +36,7 @@ __all__ = [
 _EXPORT_MODULES = {
     "PromptRegistry": "shinbot.agent.prompt_manager.registry",
     "PromptLogger": "shinbot.agent.prompt_manager.logger",
+    "PromptMessageBuilder": "shinbot.agent.prompt_manager.message_builder",
     "PromptAssemblyRequest": "shinbot.agent.prompt_manager.schema",
     "PromptAssemblyResult": "shinbot.agent.prompt_manager.schema",
     "PromptBuildRequest": "shinbot.agent.prompt_manager.schema",

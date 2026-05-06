@@ -26,6 +26,7 @@ from shinbot.agent.prompt_manager import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.prompt_manager.message_builder import PromptMessageBuilder
 from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.persistence import DatabaseManager, MediaSemanticRecord, MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
@@ -186,6 +187,41 @@ def test_prompt_registry_exposes_stage_assembly_before_projection() -> None:
     assert stage_assembly.prompt_signature
     assert stage_assembly.metadata == {"purpose": "test"}
     assert messages[0]["role"] == "system"
+    assert tools == []
+
+
+def test_prompt_message_builder_projects_stage_assembly() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_component(
+        PromptComponent(
+            id="instructions",
+            stage=PromptStage.INSTRUCTIONS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="do work",
+        )
+    )
+
+    stage_assembly = registry.assemble_stages(
+        PromptAssemblyRequest(component_overrides=["system", "instructions"])
+    )
+    messages, tools = PromptMessageBuilder().build(stage_assembly)
+
+    assert messages[0] == {
+        "role": "system",
+        "content": [{"type": "text", "text": "system"}],
+    }
+    assert messages[-1] == {
+        "role": "user",
+        "content": [{"type": "text", "text": "do work"}],
+    }
     assert tools == []
 
 

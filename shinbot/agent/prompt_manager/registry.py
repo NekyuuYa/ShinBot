@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.context.projectors.projection import PromptMemoryProjectionRequest
+from shinbot.agent.prompt_manager.message_builder import PromptMessageBuilder
 from shinbot.agent.prompt_manager.rendering import (
     expand_component_tree,
     infer_component_source,
@@ -78,12 +79,14 @@ class PromptRegistry:
         *,
         context_manager: ContextManager | None = None,
         identity_store: IdentityStore | None = None,
+        message_builder: PromptMessageBuilder | None = None,
     ) -> None:
         self._components: dict[str, PromptComponent] = {}
         self._profiles: dict[str, PromptProfile] = {}
         self._resolvers: dict[str, Resolver] = {}
         self._context_manager = context_manager
         self._identity_store = identity_store
+        self._message_builder = message_builder or PromptMessageBuilder()
 
     # ── Registration ────────────────────────────────────────────────────
 
@@ -357,44 +360,7 @@ class PromptRegistry:
         stage_assembly: PromptStageAssembly,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Project 7-stage blocks into default Chat Completions messages/tools."""
-        stage_by_name = {block.stage: block for block in stage_assembly.stages}
-
-        # System message: SYSTEM_BASE + IDENTITY (content array)
-        system_content: list[dict[str, Any]] = []
-        for stage_key in (PromptStage.SYSTEM_BASE, PromptStage.IDENTITY):
-            block = stage_by_name[stage_key]
-            for record in block.components:
-                if record.rendered_text:
-                    system_content.append({"type": "text", "text": record.rendered_text})
-        system_message: dict[str, Any] = {"role": "system", "content": system_content}
-
-        # Tools: ABILITIES
-        tools = list(stage_by_name[PromptStage.ABILITIES].tools)
-
-        # Context messages: CONTEXT
-        context_stage = stage_by_name[PromptStage.CONTEXT]
-        context_messages = list(context_stage.messages)
-
-        # Final user message: COMPATIBILITY → INSTRUCTIONS → CONSTRAINTS
-        final_content: list[dict[str, Any]] = []
-        for stage_key in (
-            PromptStage.COMPATIBILITY,
-            PromptStage.INSTRUCTIONS,
-            PromptStage.CONSTRAINTS,
-        ):
-            block = stage_by_name[stage_key]
-            for record in block.components:
-                if record.rendered_content_blocks:
-                    final_content.extend(record.rendered_content_blocks)
-                    continue
-                if record.rendered_text:
-                    final_content.append({"type": "text", "text": record.rendered_text})
-
-        messages: list[dict[str, Any]] = [system_message, *context_messages]
-        if final_content:
-            messages.append({"role": "user", "content": final_content})
-
-        return messages, tools
+        return self._message_builder.build(stage_assembly)
 
     def _component_ids_for_build_request(self, request: PromptBuildRequest) -> list[str]:
         component_ids: list[str] = []
