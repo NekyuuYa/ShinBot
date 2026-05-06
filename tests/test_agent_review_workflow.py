@@ -378,16 +378,27 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
         source_messages=[{"id": 1, "raw_text": "hello"}],
         metadata={"candidate_message_id": 3},
     )
+    prompt_registry = PromptRegistry()
 
     compression = await LLMOverflowCompressionStageRunner(
         model_runtime,
         config=config,
+        prompt_registry=prompt_registry,
     ).run(stage_input)
-    scan = await LLMReviewScanStageRunner(model_runtime, config=config).run(stage_input)
-    reply = await LLMReplyDecisionStageRunner(model_runtime, config=config).run(stage_input)
+    scan = await LLMReviewScanStageRunner(
+        model_runtime,
+        config=config,
+        prompt_registry=prompt_registry,
+    ).run(stage_input)
+    reply = await LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=config,
+        prompt_registry=prompt_registry,
+    ).run(stage_input)
     bootstrap = await LLMActiveChatBootstrapStageRunner(
         model_runtime,
         config=config,
+        prompt_registry=prompt_registry,
     ).run(stage_input)
 
     assert compression.summary == "old context"
@@ -525,6 +536,15 @@ async def test_review_runner_factory_keeps_disabled_stages_noop() -> None:
 @pytest.mark.asyncio
 async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
     model_runtime = FakeModelRuntime(['{"candidate_message_ids": [9], "reason": "selected"}'])
+    prompt_registry = PromptRegistry()
+    prompt_registry.register_component(
+        PromptComponent(
+            id="review.scan.contract",
+            stage=PromptStage.CONSTRAINTS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="return candidate ids",
+        )
+    )
     factory = ReviewRunnerFactory(
         model_runtime,
         config=ReviewRuntimeConfig(
@@ -539,6 +559,7 @@ async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
                 params={"temperature": 0},
             ),
         ),
+        prompt_registry=prompt_registry,
     )
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
