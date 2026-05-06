@@ -385,6 +385,11 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
     assert result.scan.batch_count == 3
     assert result.bootstrap.tail_history_message_count == 5
     assert result.bootstrap.stage_input_built is True
+    assert result.consumed_range_ids == [1]
+    assert [(item.start_msg_log_id, item.end_msg_log_id, item.full_range) for item in result.consumed_ranges] == [
+        (message_ids[0], message_ids[-1], True)
+    ]
+    assert scheduler.unread_messages("bot:group:room") == []
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
     assert [call["purpose"] for call in context_builder.calls] == [
         "review_scan",
@@ -631,3 +636,61 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
     active_chat_state = scheduler.active_chat_state_for("bot:group:room")
     assert active_chat_state is not None
     assert active_chat_state.interest_value == 0.05
+
+
+@pytest.mark.asyncio
+async def test_review_workflow_splits_partially_consumed_overflow_range(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 6)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=10,
+            overflow_threshold_messages=3,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.scan.scanned_message_count == 3
+    assert [(item.start_msg_log_id, item.end_msg_log_id, item.full_range) for item in result.consumed_ranges] == [
+        (message_ids[2], message_ids[-1], False)
+    ]
+    assert [message.message_log_id for message in scheduler.unread_messages("bot:group:room")] == [
+        message_ids[0],
+        message_ids[1],
+    ]
+    assert [
+        (item.start_msg_log_id, item.end_msg_log_id, item.message_count)
+        for item in scheduler.unread_ranges("bot:group:room")
+    ] == [(message_ids[0], message_ids[1], 2)]

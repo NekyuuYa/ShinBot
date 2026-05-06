@@ -49,6 +49,18 @@ class UnreadRangeIgnoreRecord:
 
 
 @dataclass(slots=True, frozen=True)
+class ConsumedUnreadRange:
+    """Unread range interval consumed by one review run."""
+
+    range_id: int | None
+    session_id: str
+    start_msg_log_id: int
+    end_msg_log_id: int
+    message_count: int
+    full_range: bool = False
+
+
+@dataclass(slots=True, frozen=True)
 class ReviewScanResult:
     """Stage 1 result: candidate message ids selected for closer reply review."""
 
@@ -123,6 +135,7 @@ class ReviewWorkflowResult:
     bootstrap: ActiveChatBootstrapResult
     review_started_at: float
     completion: ReviewCompletionDecision | None = None
+    consumed_ranges: list[ConsumedUnreadRange] = field(default_factory=list)
     consumed_range_ids: list[int] = field(default_factory=list)
     failed: bool = False
     failure_reason: str | None = None

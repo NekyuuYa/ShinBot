@@ -194,6 +194,24 @@ class AgentScheduler:
         """Return unread message count known to AgentScheduler for one session."""
         return self._inbox.count_unread_messages(session_id)
 
+    def split_review_consumed(
+        self,
+        *,
+        range_id: int,
+        consumed_start_msg_log_id: int,
+        consumed_end_msg_log_id: int,
+    ) -> None:
+        """Mark one interval inside an unread range consumed by review."""
+        self._inbox.split_review_consumed(
+            range_id=range_id,
+            consumed_start_msg_log_id=consumed_start_msg_log_id,
+            consumed_end_msg_log_id=consumed_end_msg_log_id,
+        )
+
+    def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
+        """Mark whole unread ranges consumed by review."""
+        self._inbox.mark_ranges_review_consumed(range_ids)
+
     def high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
         """Return high-priority events known to AgentScheduler for one session."""
         return self._inbox.list_high_priority_events(session_id)

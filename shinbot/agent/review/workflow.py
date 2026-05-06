@@ -22,6 +22,7 @@ from shinbot.agent.review.message_store import ReviewMessageStore
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
+    ConsumedUnreadRange,
     ReplyDecisionResult,
     ReplyDecisionStageOutput,
     ReviewScanResult,
@@ -62,6 +63,18 @@ class ReviewSchedulerPort(Protocol):
         now: float | None = None,
     ) -> ReviewCompletionDecision:
         """Complete scheduler-side review state."""
+
+    def split_review_consumed(
+        self,
+        *,
+        range_id: int,
+        consumed_start_msg_log_id: int,
+        consumed_end_msg_log_id: int,
+    ) -> None:
+        """Mark one interval inside an unread range consumed by review."""
+
+    def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
+        """Mark whole unread ranges consumed by review."""
 
 
 class ReviewWorkflow:
@@ -106,7 +119,7 @@ class ReviewWorkflow:
         try:
             unread_ranges = scheduler.unread_ranges(session_id, limit=10_000)
             unread_count = scheduler.count_unread_messages(session_id)
-            scan = await self._run_review_scan(
+            scan, consumed_ranges = await self._run_review_scan(
                 session_id=session_id,
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
@@ -116,6 +129,10 @@ class ReviewWorkflow:
                 session_id=session_id,
                 started_at=started_at,
                 reply=reply,
+            )
+            applied_consumed_ranges = self._consume_review_ranges(
+                scheduler,
+                consumed_ranges,
             )
             completion = scheduler.complete_review(
                 session_id,
@@ -129,6 +146,10 @@ class ReviewWorkflow:
                 bootstrap=bootstrap,
                 review_started_at=started_at,
                 completion=completion,
+                consumed_ranges=applied_consumed_ranges,
+                consumed_range_ids=[
+                    item.range_id for item in applied_consumed_ranges if item.range_id is not None
+                ],
             )
         except Exception as exc:
             logger.exception(
@@ -163,7 +184,7 @@ class ReviewWorkflow:
         session_id: str,
         unread_count: int,
         unread_ranges: list[UnreadRange],
-    ) -> ReviewScanResult:
+    ) -> tuple[ReviewScanResult, list[ConsumedUnreadRange]]:
         scanned_count = min(unread_count, self._config.overflow_threshold_messages)
         batch_count = (
             math.ceil(scanned_count / self._config.review_scan_batch_size)
@@ -180,21 +201,25 @@ class ReviewWorkflow:
             stage_input_count,
             candidate_message_ids,
             scan_reasons,
+            consumed_ranges,
         ) = await self._load_scan_batches(
             session_id=session_id,
             unread_ranges=unread_ranges,
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
         )
-        return ReviewScanResult(
-            candidate_message_ids=_dedupe_preserve_order(candidate_message_ids),
-            scan_reason="; ".join(_dedupe_preserve_order(scan_reasons))
-            or "noop_review_scan",
-            scanned_message_count=scanned_count,
-            loaded_message_count=loaded_message_count,
-            stage_input_count=stage_input_count,
-            batch_count=batch_count,
-            compressed_ranges=compressed_ranges,
+        return (
+            ReviewScanResult(
+                candidate_message_ids=_dedupe_preserve_order(candidate_message_ids),
+                scan_reason="; ".join(_dedupe_preserve_order(scan_reasons))
+                or "noop_review_scan",
+                scanned_message_count=scanned_count,
+                loaded_message_count=loaded_message_count,
+                stage_input_count=stage_input_count,
+                batch_count=batch_count,
+                compressed_ranges=compressed_ranges,
+            ),
+            consumed_ranges,
         )
 
     async def _run_reply_decision(
@@ -292,23 +317,25 @@ class ReviewWorkflow:
         *,
         max_messages: int,
         prefer_tail: bool,
-    ) -> tuple[int, int, list[int], list[str]]:
+    ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange]]:
         if self._message_store is None or max_messages <= 0:
-            return 0, 0, [], []
+            return 0, 0, [], [], []
 
         remaining = max_messages
         loaded_count = 0
         stage_input_count = 0
         candidate_message_ids: list[int] = []
         scan_reasons: list[str] = []
+        consumed_ranges: list[ConsumedUnreadRange] = []
         scan_ranges = (
             self._tail_scan_ranges(unread_ranges, max_messages=max_messages)
             if prefer_tail
-            else unread_ranges
+            else [self._full_consumed_range(item) for item in unread_ranges]
         )
-        for unread_range in scan_ranges:
+        for consumed_range in scan_ranges:
             offset = 0
             while remaining > 0:
+                unread_range = self._unread_range_from_consumed(consumed_range)
                 batch = self._message_store.list_for_unread_range(
                     unread_range,
                     limit=min(self._config.review_scan_batch_size, remaining),
@@ -336,7 +363,15 @@ class ReviewWorkflow:
                         scan_reasons.append(stage_output.reason.strip())
                 remaining -= len(batch)
                 offset += len(batch)
-        return loaded_count, stage_input_count, candidate_message_ids, scan_reasons
+            if offset > 0:
+                consumed_ranges.append(consumed_range)
+        return (
+            loaded_count,
+            stage_input_count,
+            candidate_message_ids,
+            scan_reasons,
+            consumed_ranges,
+        )
 
     async def _load_tail_history(
         self,
@@ -423,6 +458,32 @@ class ReviewWorkflow:
     ) -> ActiveChatBootstrapStageOutput:
         return await self._bootstrap_runner.run(stage_input)
 
+    def _consume_review_ranges(
+        self,
+        scheduler: ReviewSchedulerPort,
+        consumed_ranges: list[ConsumedUnreadRange],
+    ) -> list[ConsumedUnreadRange]:
+        if not consumed_ranges:
+            return []
+
+        applied: list[ConsumedUnreadRange] = []
+        whole_range_ids: list[int] = []
+        for consumed_range in consumed_ranges:
+            if consumed_range.range_id is None:
+                continue
+            applied.append(consumed_range)
+            if consumed_range.full_range:
+                whole_range_ids.append(consumed_range.range_id)
+                continue
+            scheduler.split_review_consumed(
+                range_id=consumed_range.range_id,
+                consumed_start_msg_log_id=consumed_range.start_msg_log_id,
+                consumed_end_msg_log_id=consumed_range.end_msg_log_id,
+            )
+
+        scheduler.mark_ranges_review_consumed(_dedupe_preserve_order(whole_range_ids))
+        return applied
+
     def _planned_overflow_compression(
         self,
         *,
@@ -463,33 +524,53 @@ class ReviewWorkflow:
         unread_ranges: list[UnreadRange],
         *,
         max_messages: int,
-    ) -> list[UnreadRange]:
+    ) -> list[ConsumedUnreadRange]:
         remaining = max_messages
-        selected: list[UnreadRange] = []
+        selected: list[ConsumedUnreadRange] = []
         for unread_range in reversed(unread_ranges):
             if remaining <= 0:
                 break
             if unread_range.message_count <= remaining:
-                selected.append(unread_range)
+                selected.append(self._full_consumed_range(unread_range))
                 remaining -= unread_range.message_count
                 continue
 
             selected.append(
-                UnreadRange(
-                    id=unread_range.id,
+                ConsumedUnreadRange(
+                    range_id=unread_range.id,
                     session_id=unread_range.session_id,
                     start_msg_log_id=unread_range.end_msg_log_id - remaining + 1,
                     end_msg_log_id=unread_range.end_msg_log_id,
-                    start_at=unread_range.start_at,
-                    end_at=unread_range.end_at,
                     message_count=remaining,
-                    review_consumed=unread_range.review_consumed,
-                    chat_consumed=unread_range.chat_consumed,
+                    full_range=False,
                 )
             )
             remaining = 0
         selected.reverse()
         return selected
+
+    @staticmethod
+    def _full_consumed_range(unread_range: UnreadRange) -> ConsumedUnreadRange:
+        return ConsumedUnreadRange(
+            range_id=unread_range.id,
+            session_id=unread_range.session_id,
+            start_msg_log_id=unread_range.start_msg_log_id,
+            end_msg_log_id=unread_range.end_msg_log_id,
+            message_count=unread_range.message_count,
+            full_range=True,
+        )
+
+    @staticmethod
+    def _unread_range_from_consumed(consumed_range: ConsumedUnreadRange) -> UnreadRange:
+        return UnreadRange(
+            id=consumed_range.range_id,
+            session_id=consumed_range.session_id,
+            start_msg_log_id=consumed_range.start_msg_log_id,
+            end_msg_log_id=consumed_range.end_msg_log_id,
+            start_at=0.0,
+            end_at=0.0,
+            message_count=consumed_range.message_count,
+        )
 
 
 def _dedupe_preserve_order[T](items: list[T]) -> list[T]:
