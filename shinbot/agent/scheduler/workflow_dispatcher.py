@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from shinbot.agent.scheduler.models import (
     ActiveChatState,
@@ -10,6 +10,10 @@ from shinbot.agent.scheduler.models import (
     ReviewPlan,
     UnreadMessage,
 )
+
+if TYPE_CHECKING:
+    from shinbot.agent.review import ReviewWorkflow
+    from shinbot.agent.scheduler.scheduler import AgentScheduler
 
 
 class AgentWorkflowDispatcher(Protocol):
@@ -56,8 +60,19 @@ class AgentWorkflowDispatcher(Protocol):
 class AttentionActiveReplyDispatcher:
     """Compatibility dispatcher that uses the existing attention scheduler."""
 
-    def __init__(self, attention_scheduler) -> None:
+    def __init__(
+        self,
+        attention_scheduler,
+        *,
+        review_workflow: ReviewWorkflow | None = None,
+    ) -> None:
         self._attention_scheduler = attention_scheduler
+        self._review_workflow = review_workflow
+        self._agent_scheduler: AgentScheduler | None = None
+
+    def bind_agent_scheduler(self, scheduler: AgentScheduler) -> None:
+        """Bind the owning scheduler so review workflow can return state decisions."""
+        self._agent_scheduler = scheduler
 
     async def run_active_reply(
         self,
@@ -91,8 +106,15 @@ class AttentionActiveReplyDispatcher:
         review_plan: ReviewPlan,
         unread_messages: list[UnreadMessage],
     ) -> None:
-        """Compatibility placeholder until the dedicated review workflow exists."""
-        return
+        if self._review_workflow is None or self._agent_scheduler is None:
+            return
+
+        await self._review_workflow.run(
+            scheduler=self._agent_scheduler,
+            session_id=session_id,
+            review_plan=review_plan,
+            unread_messages=unread_messages,
+        )
 
     async def notify_active_chat_message(
         self,

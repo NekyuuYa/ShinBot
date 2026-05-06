@@ -23,6 +23,7 @@ from shinbot.agent.scheduler.models import (
     ReviewDueDecision,
     ReviewPlan,
     UnreadMessage,
+    UnreadRange,
 )
 from shinbot.agent.scheduler.priority_policy import (
     DefaultPriorityPolicy,
@@ -81,6 +82,9 @@ class AgentScheduler:
         self._review_policy = review_policy or DefaultReviewPolicy()
         self._active_chat_policy = active_chat_policy or DefaultActiveChatPolicy()
         self._now = now or time.time
+        bind_scheduler = getattr(self._workflow_dispatcher, "bind_agent_scheduler", None)
+        if bind_scheduler is not None:
+            bind_scheduler(self)
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
         """Accept one message signal from core and decide scheduler-side action."""
@@ -182,6 +186,14 @@ class AgentScheduler:
         """Return unread messages known to AgentScheduler for one session."""
         return self._inbox.list_unread(session_id)
 
+    def unread_ranges(self, session_id: str, *, limit: int = 50) -> list[UnreadRange]:
+        """Return unread timeline ranges known to AgentScheduler for one session."""
+        return self._inbox.list_unread_ranges(session_id, limit=limit)
+
+    def count_unread_messages(self, session_id: str) -> int:
+        """Return unread message count known to AgentScheduler for one session."""
+        return self._inbox.count_unread_messages(session_id)
+
     def high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
         """Return high-priority events known to AgentScheduler for one session."""
         return self._inbox.list_high_priority_events(session_id)
@@ -270,6 +282,7 @@ class AgentScheduler:
             unread_messages=self._inbox.list_unread(session_id),
         )
         decision.review_workflow_started = True
+        decision.state = self._state_store.get_state(session_id)
         return decision
 
     async def complete_active_reply(
@@ -324,6 +337,7 @@ class AgentScheduler:
             unread_messages=self._inbox.list_unread(session_id),
         )
         decision.review_workflow_started = True
+        decision.state = self._state_store.get_state(session_id)
         return decision
 
     def complete_review(
