@@ -35,7 +35,10 @@ from shinbot.agent.review import (
     DatabaseReviewMessageStore,
     DatabaseReviewSummaryStore,
     ReviewContextBuilderAdapter,
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
     ReviewWorkflow,
+    ReviewWorkflowConfig,
 )
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.scheduler import AgentScheduler, AttentionActiveReplyDispatcher
@@ -69,10 +72,12 @@ class AgentRuntime:
         attention_config: AttentionConfig | None = None,
         attention_scheduler_config: AttentionSchedulerConfig | None = None,
         attention_debug: bool = False,
+        review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
     ) -> None:
         runtime_data_dir = Path(data_dir)
         self.database = database
         self.model_runtime = model_runtime
+        self.review_runtime_config = _coerce_review_runtime_config(review_runtime_config)
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
         self.context_manager = (
@@ -162,11 +167,7 @@ class AgentRuntime:
         self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=AttentionActiveReplyDispatcher(
                 self.attention_scheduler,
-                review_workflow=ReviewWorkflow(
-                    message_store=DatabaseReviewMessageStore(database),
-                    summary_store=DatabaseReviewSummaryStore(database),
-                    context_builder=ReviewContextBuilderAdapter(self.context_manager),
-                ),
+                review_workflow=self._create_review_workflow(database),
             ),
         )
         register_attention_runtime(
@@ -193,6 +194,22 @@ class AgentRuntime:
             response_profile_resolver=self._resolve_response_profile,
             inbox=store,
             state_store=store,
+        )
+
+    def _create_review_workflow(self, database: DatabaseManager) -> ReviewWorkflow:
+        config = ReviewWorkflowConfig()
+        runner_factory = ReviewRunnerFactory(
+            self.model_runtime,
+            config=self.review_runtime_config,
+        )
+        return ReviewWorkflow(
+            config,
+            message_store=DatabaseReviewMessageStore(database),
+            summary_store=DatabaseReviewSummaryStore(database),
+            context_builder=ReviewContextBuilderAdapter(self.context_manager),
+            **runner_factory.create_workflow_runner_kwargs(
+                fallback_active_chat_interest=config.fallback_active_chat_interest,
+            ),
         )
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
@@ -249,6 +266,7 @@ def install_agent_runtime(
     attention_config: AttentionConfig | None = None,
     attention_scheduler_config: AttentionSchedulerConfig | None = None,
     attention_debug: bool = False,
+    review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
 ) -> AgentRuntime:
     """Create and mount the default Agent runtime system onto a ShinBot app."""
     from shinbot.core.runtime.model import install_model_runtime
@@ -264,9 +282,18 @@ def install_agent_runtime(
         attention_config=attention_config,
         attention_scheduler_config=attention_scheduler_config,
         attention_debug=attention_debug,
+        review_runtime_config=review_runtime_config,
     )
     bot.mount_agent_runtime(runtime)
     return runtime
+
+
+def _coerce_review_runtime_config(
+    value: ReviewRuntimeConfig | dict[str, Any] | None,
+) -> ReviewRuntimeConfig:
+    if isinstance(value, ReviewRuntimeConfig):
+        return value
+    return ReviewRuntimeConfig.from_mapping(value)
 
 
 __all__ = ["AgentRuntime", "install_agent_runtime"]

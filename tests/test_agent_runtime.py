@@ -5,6 +5,11 @@ from typing import Any
 
 import pytest
 
+from shinbot.agent.review import (
+    LLMReviewScanStageRunner,
+    ReviewRuntimeConfig,
+    ReviewStageRuntimeConfig,
+)
 from shinbot.agent.runtime import install_agent_runtime
 from shinbot.agent.scheduler import AgentScheduler
 from shinbot.core.application.app import ShinBot
@@ -53,6 +58,46 @@ def make_signal(
         is_mentioned=is_mentioned,
         is_reply_to_bot=is_reply_to_bot,
     )
+
+
+def test_agent_runtime_wires_review_runner_config(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        review_runtime_config=ReviewRuntimeConfig(
+            review_scan=ReviewStageRuntimeConfig(
+                enabled=True,
+                route_id="route-a",
+                model_id="model-a",
+            ),
+        ),
+    )
+
+    dispatcher = runtime.agent_scheduler._workflow_dispatcher
+    workflow = dispatcher._review_workflow
+
+    assert isinstance(workflow._scan_runner, LLMReviewScanStageRunner)
+    assert workflow._scan_runner._config.route_id == "route-a"
+    assert workflow._scan_runner._config.model_id == "model-a"
+
+
+def test_agent_runtime_accepts_review_runner_config_mapping(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        review_runtime_config={
+            "review_scan": {
+                "enabled": True,
+                "route_id": "route-a",
+            },
+        },
+    )
+
+    dispatcher = runtime.agent_scheduler._workflow_dispatcher
+    workflow = dispatcher._review_workflow
+
+    assert isinstance(workflow._scan_runner, LLMReviewScanStageRunner)
+    assert workflow._scan_runner._config.route_id == "route-a"
 
 
 @pytest.mark.asyncio
