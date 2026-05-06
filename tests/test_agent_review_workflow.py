@@ -5,6 +5,7 @@ import pytest
 from shinbot.agent.review import (
     ActiveChatBootstrapStageOutput,
     DatabaseReviewMessageStore,
+    OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
     ReviewContextBuilderAdapter,
     ReviewScanStageOutput,
@@ -142,6 +143,26 @@ class SelectingReviewScanRunner:
         return ReviewScanStageOutput(
             candidate_message_ids=[message_ids[-1], message_ids[-1]] if message_ids else [],
             reason=f"selected_from_{len(message_ids)}",
+        )
+
+
+class RecordingOverflowCompressionRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def run(self, stage_input) -> OverflowCompressionStageOutput:
+        message_ids = [message["id"] for message in stage_input.source_messages]
+        self.calls.append(
+            {
+                "purpose": stage_input.purpose,
+                "message_ids": message_ids,
+                "metadata": dict(stage_input.metadata),
+            }
+        )
+        return OverflowCompressionStageOutput(
+            summary="older messages summarized",
+            candidate_message_ids=[message_ids[0]] if message_ids else [],
+            reason="compressed_old_messages",
         )
 
 
@@ -694,3 +715,80 @@ async def test_review_workflow_splits_partially_consumed_overflow_range(tmp_path
         (item.start_msg_log_id, item.end_msg_log_id, item.message_count)
         for item in scheduler.unread_ranges("bot:group:room")
     ] == [(message_ids[0], message_ids[1], 2)]
+
+
+@pytest.mark.asyncio
+async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 6)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    compression_runner = RecordingOverflowCompressionRunner()
+    context_builder = RecordingReviewContextBuilder()
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=10,
+            overflow_threshold_messages=3,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=context_builder,
+        compression_runner=compression_runner,
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert len(result.scan.compressed_ranges) == 1
+    compressed = result.scan.compressed_ranges[0]
+    assert compressed.summary == "older messages summarized"
+    assert compressed.candidate_message_ids == [message_ids[0]]
+    assert compressed.reason == "compressed_old_messages"
+    assert result.scan.candidate_message_ids == [message_ids[0]]
+    assert result.reply.target_message_ids == [message_ids[0]]
+    assert compression_runner.calls == [
+        {
+            "purpose": "overflow_compression",
+            "message_ids": message_ids[:2],
+            "metadata": {
+                "purpose": "overflow_compression",
+                "start_msg_log_id": message_ids[0],
+                "end_msg_log_id": message_ids[1],
+                "message_count": 2,
+                "reason": "overflow_pending_compression",
+            },
+        }
+    ]
+    assert [message.message_log_id for message in scheduler.unread_messages("bot:group:room")] == [
+        message_ids[0],
+        message_ids[1],
+    ]
+    assert [call["purpose"] for call in context_builder.calls][:2] == [
+        "overflow_compression",
+        "review_scan",
+    ]

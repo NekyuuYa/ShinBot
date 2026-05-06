@@ -4,6 +4,10 @@ from shinbot.agent.review.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
 )
+from shinbot.agent.review.compression import (
+    NoopOverflowCompressionStageRunner,
+    OverflowCompressionStageRunner,
+)
 from shinbot.agent.review.context_builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
@@ -19,6 +23,7 @@ from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
     ConsumedUnreadRange,
+    OverflowCompressionStageOutput,
     ReplyDecisionResult,
     ReplyDecisionStageOutput,
     ReviewScanResult,
@@ -39,9 +44,12 @@ __all__ = [
     "ConsumedUnreadRange",
     "DatabaseReviewMessageStore",
     "MessageLogPayload",
-    "NoopReplyDecisionStageRunner",
     "NoopActiveChatBootstrapStageRunner",
+    "NoopOverflowCompressionStageRunner",
+    "NoopReplyDecisionStageRunner",
     "NoopReviewScanStageRunner",
+    "OverflowCompressionStageOutput",
+    "OverflowCompressionStageRunner",
     "ReplyDecisionResult",
     "ReplyDecisionStageOutput",
     "ReplyDecisionStageRunner",

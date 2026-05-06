@@ -13,6 +13,7 @@ class ReviewWorkflowConfig:
 
     review_scan_batch_size: int = 500
     overflow_threshold_messages: int = 3000
+    overflow_compression_batch_size: int = 500
     reply_context_before_messages: int = 20
     reply_context_after_messages: int = 20
     tail_history_before_seconds: float = 180.0
@@ -80,6 +81,15 @@ class ReviewScanStageOutput:
 
     candidate_message_ids: list[int] = field(default_factory=list)
     reason: str = "noop_review_scan"
+
+
+@dataclass(slots=True, frozen=True)
+class OverflowCompressionStageOutput:
+    """Output from one overflow compression runner invocation."""
+
+    summary: str = ""
+    candidate_message_ids: list[int] = field(default_factory=list)
+    reason: str = "noop_overflow_compression"
 
 
 @dataclass(slots=True, frozen=True)

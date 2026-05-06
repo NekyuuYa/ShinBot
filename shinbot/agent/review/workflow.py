@@ -12,6 +12,10 @@ from shinbot.agent.review.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
 )
+from shinbot.agent.review.compression import (
+    NoopOverflowCompressionStageRunner,
+    OverflowCompressionStageRunner,
+)
 from shinbot.agent.review.context_builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
@@ -23,6 +27,7 @@ from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
     ConsumedUnreadRange,
+    OverflowCompressionStageOutput,
     ReplyDecisionResult,
     ReplyDecisionStageOutput,
     ReviewScanResult,
@@ -91,6 +96,7 @@ class ReviewWorkflow:
         *,
         message_store: ReviewMessageStore | None = None,
         context_builder: ReviewContextBuilder | None = None,
+        compression_runner: OverflowCompressionStageRunner | None = None,
         scan_runner: ReviewScanStageRunner | None = None,
         reply_runner: ReplyDecisionStageRunner | None = None,
         bootstrap_runner: ActiveChatBootstrapStageRunner | None = None,
@@ -99,6 +105,7 @@ class ReviewWorkflow:
         self._config = config or ReviewWorkflowConfig()
         self._message_store = message_store
         self._context_builder = context_builder or ReviewContextBuilderAdapter()
+        self._compression_runner = compression_runner or NoopOverflowCompressionStageRunner()
         self._scan_runner = scan_runner or NoopReviewScanStageRunner()
         self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
         self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner(
@@ -191,7 +198,7 @@ class ReviewWorkflow:
             if scanned_count
             else 0
         )
-        compressed_ranges = self._planned_overflow_compression(
+        compressed_ranges = await self._run_overflow_compression(
             session_id=session_id,
             unread_count=unread_count,
             unread_ranges=unread_ranges,
@@ -210,7 +217,16 @@ class ReviewWorkflow:
         )
         return (
             ReviewScanResult(
-                candidate_message_ids=_dedupe_preserve_order(candidate_message_ids),
+                candidate_message_ids=_dedupe_preserve_order(
+                    [
+                        *[
+                            candidate_id
+                            for item in compressed_ranges
+                            for candidate_id in item.candidate_message_ids
+                        ],
+                        *candidate_message_ids,
+                    ]
+                ),
                 scan_reason="; ".join(_dedupe_preserve_order(scan_reasons))
                 or "noop_review_scan",
                 scanned_message_count=scanned_count,
@@ -281,6 +297,66 @@ class ReviewWorkflow:
             loaded_message_count=loaded_message_count,
             stage_input_count=stage_input_count,
         )
+
+    async def _run_overflow_compression(
+        self,
+        *,
+        session_id: str,
+        unread_count: int,
+        unread_ranges: list[UnreadRange],
+    ) -> list[UnreadRangeSummaryRecord]:
+        planned_ranges = self._planned_overflow_compression(
+            session_id=session_id,
+            unread_count=unread_count,
+            unread_ranges=unread_ranges,
+        )
+        if not planned_ranges or self._message_store is None:
+            return planned_ranges
+
+        summaries: list[UnreadRangeSummaryRecord] = []
+        for planned in planned_ranges:
+            messages = self._message_store.list_for_unread_range(
+                UnreadRange(
+                    id=None,
+                    session_id=planned.session_id,
+                    start_msg_log_id=planned.start_msg_log_id,
+                    end_msg_log_id=planned.end_msg_log_id,
+                    start_at=planned.start_at,
+                    end_at=planned.end_at,
+                    message_count=planned.message_count,
+                ),
+                limit=self._config.overflow_compression_batch_size,
+            )
+            stage_input = self._build_stage_input(
+                session_id=session_id,
+                messages=messages,
+                purpose="overflow_compression",
+                metadata={
+                    "start_msg_log_id": planned.start_msg_log_id,
+                    "end_msg_log_id": planned.end_msg_log_id,
+                    "message_count": planned.message_count,
+                    "reason": planned.reason,
+                },
+            )
+            if stage_input is None:
+                summaries.append(planned)
+                continue
+
+            stage_output = await self._run_compression_stage(stage_input)
+            summaries.append(
+                UnreadRangeSummaryRecord(
+                    session_id=planned.session_id,
+                    start_msg_log_id=planned.start_msg_log_id,
+                    end_msg_log_id=planned.end_msg_log_id,
+                    start_at=planned.start_at,
+                    end_at=planned.end_at,
+                    message_count=planned.message_count,
+                    summary=stage_output.summary,
+                    candidate_message_ids=stage_output.candidate_message_ids,
+                    reason=stage_output.reason,
+                )
+            )
+        return summaries
 
     async def _run_active_chat_bootstrap(
         self,
@@ -448,6 +524,12 @@ class ReviewWorkflow:
 
     async def _run_scan_stage(self, stage_input: ReviewStageInput) -> ReviewScanStageOutput:
         return await self._scan_runner.run(stage_input)
+
+    async def _run_compression_stage(
+        self,
+        stage_input: ReviewStageInput,
+    ) -> OverflowCompressionStageOutput:
+        return await self._compression_runner.run(stage_input)
 
     async def _run_reply_stage(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
         return await self._reply_runner.run(stage_input)
