@@ -182,6 +182,7 @@ class PromptBuildRequest(BaseModel):
     task_id: str = ""
     profile_id: str = ""
     identity_enabled: bool = True
+    component_ids: list[str] = Field(default_factory=list)
     component_ids_by_stage: dict[PromptStage, list[str]] = Field(default_factory=dict)
     disabled_components: list[str] = Field(default_factory=list)
     injections: list[PromptInjection] = Field(default_factory=list)

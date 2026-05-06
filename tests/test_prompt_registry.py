@@ -340,6 +340,43 @@ def test_prompt_registry_build_messages_supports_workflow_injections() -> None:
     assert result.metadata["stage_id"] == "review_scan"
 
 
+def test_prompt_registry_build_messages_accepts_flat_component_ids() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_component(
+        PromptComponent(
+            id="instructions",
+            stage=PromptStage.INSTRUCTIONS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="do work",
+        )
+    )
+
+    result = registry.build_messages(
+        PromptBuildRequest(
+            caller="attention.workflow_runner",
+            workflow_id="attention",
+            stage_id="attention_workflow",
+            component_ids=["system", "instructions"],
+            context_policy=PromptContextPolicy.DISABLED,
+        )
+    )
+
+    assert [component.component_id for component in result.ordered_components] == [
+        "system",
+        "instructions",
+    ]
+    assert "system" in result.messages[0]["content"][0]["text"]
+    assert "do work" in result.messages[-1]["content"][0]["text"]
+
+
 def test_prompt_registry_build_messages_keeps_tools_out_of_messages() -> None:
     registry = PromptRegistry()
     registry.register_component(

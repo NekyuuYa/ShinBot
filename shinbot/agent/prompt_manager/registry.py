@@ -363,7 +363,7 @@ class PromptRegistry:
         return self._message_builder.build(stage_assembly)
 
     def _component_ids_for_build_request(self, request: PromptBuildRequest) -> list[str]:
-        component_ids: list[str] = []
+        component_ids: list[str] = list(request.component_ids)
         for stage in PROMPT_STAGE_ORDER:
             for component_id in request.component_ids_by_stage.get(stage, []):
                 component = self._components.get(component_id)
