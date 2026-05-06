@@ -11,8 +11,14 @@ from shinbot.agent.media.config import (
     BUILTIN_STICKER_SUMMARY_PROMPT,
     BUILTIN_STICKER_SUMMARY_PROMPT_ID,
 )
-from shinbot.agent.prompt_manager import PromptAssemblyRequest
-from shinbot.agent.prompt_manager.rendering import infer_component_source, render_component_text
+from shinbot.agent.prompt_manager import (
+    PromptBuildRequest,
+    PromptComponent,
+    PromptComponentKind,
+    PromptContextPolicy,
+    PromptInjection,
+    PromptStage,
+)
 from shinbot.agent.prompt_manager.runtime_sync import sync_prompt_definition_component
 
 MEDIA_REANALYSIS_SYSTEM_PROMPT = """
@@ -23,6 +29,7 @@ Describe only what is visibly supported by the image.
 If identity, source character, or text content is uncertain, say so explicitly.
 Prefer concise Chinese answers that are useful inside a chat workflow.
 """.strip()
+MEDIA_REANALYSIS_PROMPT_ID = "builtin.prompt.media_reanalysis"
 
 
 def build_media_inspection_messages(
@@ -126,42 +133,76 @@ def _build_media_prompt_messages(
         prompt_refs=[resolved_prompt_ref],
         fallback_component_id=builtin_prompt_id,
     )
-    request = PromptAssemblyRequest(
-        caller=caller,
-        identity_enabled=False,
-        session_id="",
-        instance_id=instance_id,
-        model_context_window=model_context_window,
-        component_overrides=component_ids,
-        template_inputs={
-            "session_id": session_id,
-            "instance_id": instance_id,
-            "platform": "",
-            "message_text": instruction_text,
-            "user_id": "",
-        },
-        metadata={
-            "trigger": trigger,
-            "inspection_prompt_ref": resolved_prompt_ref,
-            "inspection_llm_ref": resolved_llm_ref,
-            "raw_hash": raw_hash,
-        },
-    )
-    prompt_text = _resolve_media_prompt_text(
+    _ensure_media_prompt_component(
         prompt_registry=prompt_registry,
-        component_ids=component_ids,
-        request=request,
-        fallback_prompt=builtin_prompt,
+        component_id=builtin_prompt_id,
+        content=builtin_prompt,
     )
-    return _build_multimodal_user_messages(
-        prompt_text=prompt_text,
-        instruction_text=instruction_text,
-        asset=asset,
+    image_block = {"type": "image_url", "image_url": {"url": build_media_data_url(asset)}}
+    result = prompt_registry.build_messages(
+        PromptBuildRequest(
+            caller=caller,
+            workflow_id="media",
+            stage_id=trigger,
+            identity_enabled=False,
+            session_id=session_id,
+            instance_id=instance_id,
+            model_context_window=model_context_window,
+            component_ids_by_stage={PromptStage.SYSTEM_BASE: component_ids},
+            injections=[
+                PromptInjection(
+                    stage=PromptStage.INSTRUCTIONS,
+                    component_id=f"media.{trigger}.instruction",
+                    content_blocks=[
+                        {"type": "text", "text": instruction_text},
+                        image_block,
+                    ],
+                    priority=10,
+                )
+            ],
+            context_policy=PromptContextPolicy.DISABLED,
+            template_inputs={
+                "session_id": session_id,
+                "instance_id": instance_id,
+                "platform": "",
+                "message_text": instruction_text,
+                "user_id": "",
+            },
+            metadata={
+                "trigger": trigger,
+                "inspection_prompt_ref": resolved_prompt_ref,
+                "inspection_llm_ref": resolved_llm_ref,
+                "raw_hash": raw_hash,
+            },
+        )
+    )
+    return result.messages
+
+
+def _ensure_media_prompt_component(
+    *,
+    prompt_registry: Any,
+    component_id: str,
+    content: str,
+) -> None:
+    if prompt_registry.get_component(component_id) is not None:
+        return
+    prompt_registry.upsert_component(
+        PromptComponent(
+            id=component_id,
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            priority=100,
+            enabled=True,
+            content=content,
+            metadata={"builtin": True},
+        )
     )
 
 
 def build_media_reanalysis_messages(
     *,
+    prompt_registry: Any | None = None,
     instance_id: str,
     session_id: str,
     raw_hash: str,
@@ -177,6 +218,43 @@ def build_media_reanalysis_messages(
         asset=asset,
         question=question,
     )
+    if prompt_registry is not None:
+        _ensure_media_prompt_component(
+            prompt_registry=prompt_registry,
+            component_id=MEDIA_REANALYSIS_PROMPT_ID,
+            content=MEDIA_REANALYSIS_SYSTEM_PROMPT,
+        )
+        result = prompt_registry.build_messages(
+            PromptBuildRequest(
+                caller="media.reanalysis_runner",
+                workflow_id="media",
+                stage_id="media_reanalysis",
+                identity_enabled=False,
+                session_id=session_id,
+                instance_id=instance_id,
+                model_context_window=model_context_window,
+                component_ids_by_stage={
+                    PromptStage.SYSTEM_BASE: [MEDIA_REANALYSIS_PROMPT_ID]
+                },
+                injections=[
+                    PromptInjection(
+                        stage=PromptStage.INSTRUCTIONS,
+                        component_id="media.reanalysis.instruction",
+                        content_blocks=[
+                            {"type": "text", "text": instruction_text},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": build_media_data_url(asset)},
+                            },
+                        ],
+                        priority=10,
+                    )
+                ],
+                context_policy=PromptContextPolicy.DISABLED,
+                metadata={"raw_hash": raw_hash, "question": question},
+            )
+        )
+        return result.messages
     return _build_multimodal_user_messages(
         prompt_text=MEDIA_REANALYSIS_SYSTEM_PROMPT,
         instruction_text=instruction_text,
@@ -286,32 +364,6 @@ def _build_multimodal_user_messages(
             ],
         }
     ]
-
-
-def _resolve_media_prompt_text(
-    *,
-    prompt_registry: Any,
-    component_ids: list[str],
-    request: PromptAssemblyRequest,
-    fallback_prompt: str,
-) -> str:
-    rendered_parts: list[str] = []
-    try:
-        for component_id in component_ids:
-            component = prompt_registry.get_component(component_id)
-            if component is None or not component.enabled:
-                continue
-            rendered = render_component_text(
-                component=component,
-                request=request,
-                source=infer_component_source(component),
-                resolvers=getattr(prompt_registry, "_resolvers", {}),
-            ).strip()
-            if rendered:
-                rendered_parts.append(rendered)
-    except Exception:
-        return fallback_prompt
-    return "\n\n".join(rendered_parts) or fallback_prompt
 
 
 def _resolve_prompt_component_ids(

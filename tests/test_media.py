@@ -19,6 +19,7 @@ from shinbot.agent.media import (
     resolve_media_inspection_config,
 )
 from shinbot.agent.media.config import BUILTIN_MEDIA_INSPECTION_PROMPT_ID
+from shinbot.agent.media.prompt_building import build_media_reanalysis_messages
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
 from shinbot.agent.workflow.formatting import (
@@ -649,10 +650,12 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
     call = runtime.calls[0]
     assert call.caller == "media.inspection_runner"
     assert call.response_format["type"] == "json_schema"
-    assert [message["role"] for message in call.messages] == ["user"]
+    assert [message["role"] for message in call.messages] == ["system", "user"]
+    system_content = call.messages[0]["content"]
+    assert system_content[0]["type"] == "text"
+    assert "You are ShinBot's media inspection agent." in system_content[0]["text"]
     user_content = call.messages[-1]["content"]
     assert user_content[0]["type"] == "text"
-    assert "You are ShinBot's media inspection agent." in user_content[0]["text"]
     assert "repeat_count_14d=3" in user_content[0]["text"]
     assert user_content[1]["type"] == "image_url"
     assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
@@ -741,7 +744,7 @@ async def test_sticker_summary_uses_separate_runtime_caller(tmp_path):
     assert call.route_id == "route.sticker.summary"
     assert call.metadata["inspection_llm_ref"] == "route.sticker.summary"
     assert call.metadata["summary_mode"] == "sticker"
-    assert [message["role"] for message in call.messages] == ["user"]
+    assert [message["role"] for message in call.messages] == ["system", "user"]
     assert "You are ShinBot's sticker summary agent." in call.messages[0]["content"][0]["text"]
 
 
@@ -789,7 +792,26 @@ async def test_media_inspection_runner_supports_custom_prompt_id(tmp_path):
     assert runtime.calls[0].metadata["inspection_prompt_ref"] == "prompt.media.custom"
     rendered_text = json.dumps(runtime.calls[0].messages, ensure_ascii=False)
     assert "You are a custom media inspector." in rendered_text
-    assert [message["role"] for message in runtime.calls[0].messages] == ["user"]
+    assert [message["role"] for message in runtime.calls[0].messages] == ["system", "user"]
+
+
+def test_media_reanalysis_messages_use_prompt_registry(tmp_path):
+    image_path = _write_png(tmp_path / "assets" / "reanalysis.png", color=(80, 90, 100))
+
+    messages = build_media_reanalysis_messages(
+        prompt_registry=PromptRegistry(),
+        instance_id="inst-media",
+        session_id="inst-media:group:1",
+        raw_hash="raw-hash",
+        asset={"storage_path": str(image_path), "mime_type": "image/png", "width": 8, "height": 8},
+        question="这张图是什么？",
+        model_context_window=64000,
+    )
+
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert "media reanalysis agent" in messages[0]["content"][0]["text"]
+    assert "这张图是什么？" in messages[1]["content"][0]["text"]
+    assert messages[1]["content"][1]["type"] == "image_url"
 
 
 @pytest.mark.asyncio

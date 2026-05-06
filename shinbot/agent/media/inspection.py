@@ -232,6 +232,7 @@ class MediaInspectionRunner:
 
         try:
             messages = build_media_reanalysis_messages(
+                prompt_registry=self._prompt_registry,
                 instance_id=instance_id,
                 session_id=session_id,
                 raw_hash=raw_hash,
