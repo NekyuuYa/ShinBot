@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.scheduler import (
+    ActiveChatDisposition,
     ActiveChatState,
     AgentState,
     HighPriorityEvent,
@@ -210,6 +211,10 @@ def test_agent_scheduler_repository_persists_active_chat_state(tmp_path) -> None
         decay_half_life_seconds=30.0,
         entered_at=10.0,
         updated_at=10.0,
+        tick_count=2,
+        active_epoch=10_000,
+        bootstrap_applied=True,
+        bootstrap_disposition=ActiveChatDisposition.CASUAL,
     )
 
     db.agent_scheduler.set_active_chat_state(state)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from shinbot.agent.scheduler.models import ReviewCompletionDecision
+from shinbot.agent.scheduler.models import ActiveChatDisposition, ReviewCompletionDecision
 
 
 @dataclass(slots=True, frozen=True)
@@ -18,7 +18,9 @@ class ReviewWorkflowConfig:
     reply_context_after_messages: int = 10
     tail_history_before_seconds: float = 180.0
     tail_history_limit: int = 500
-    fallback_active_chat_interest: float = 5.0
+    provisional_active_chat_interest: float = 15.0
+    provisional_active_chat_half_life_seconds: float = 20.0
+    active_chat_bootstrap_timeout_seconds: float = 20.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -75,8 +77,10 @@ class ReviewStageTrace:
     replied: bool | None = None
     reply_message_id: int | None = None
     reply_message_ids: list[int] = field(default_factory=list)
-    initial_interest: float | None = None
-    decay_half_life_seconds: float | None = None
+    active_chat_disposition: ActiveChatDisposition | None = None
+    active_chat_bootstrap_applied: bool | None = None
+    active_chat_interest_value: float | None = None
+    active_chat_decay_half_life_seconds: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,8 +95,10 @@ class ReviewStageExplanation:
     replied: bool | None = None
     reply_message_id: int | None = None
     reply_message_ids: list[int] = field(default_factory=list)
-    initial_interest: float | None = None
-    decay_half_life_seconds: float | None = None
+    active_chat_disposition: ActiveChatDisposition | None = None
+    active_chat_bootstrap_applied: bool | None = None
+    active_chat_interest_value: float | None = None
+    active_chat_decay_half_life_seconds: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -116,6 +122,8 @@ class ReviewWorkflowExplanation:
     consumed_message_count: int = 0
     active_chat_initial_interest: float | None = None
     active_chat_decay_half_life_seconds: float | None = None
+    active_chat_disposition: ActiveChatDisposition | None = None
+    active_chat_bootstrap_applied: bool = False
     active_chat_reason: str = ""
     stages: list[ReviewStageExplanation] = field(default_factory=list)
 
@@ -177,11 +185,13 @@ class ReplyDecisionStageOutput:
 
 @dataclass(slots=True, frozen=True)
 class ActiveChatBootstrapResult:
-    """Stage 3 result: initial active chat state after review/reply finishes."""
+    """Stage 3 result: delayed active chat disposition after review/reply finishes."""
 
-    initial_interest: float
-    decay_half_life_seconds: float | None = None
+    disposition: ActiveChatDisposition | None = None
     reason: str = "review_bootstrap_skeleton_low_interest"
+    bootstrap_applied: bool = False
+    active_chat_interest_value: float | None = None
+    active_chat_decay_half_life_seconds: float | None = None
     tail_history_start_at: float | None = None
     tail_history_end_at: float | None = None
     tail_history_message_count: int = 0
@@ -192,8 +202,7 @@ class ActiveChatBootstrapResult:
 class ActiveChatBootstrapStageOutput:
     """Output from the active_chat_bootstrap stage runner."""
 
-    initial_interest: float
-    decay_half_life_seconds: float | None = None
+    disposition: ActiveChatDisposition | None = None
     reason: str = "noop_active_chat_bootstrap"
 
 
@@ -236,8 +245,10 @@ def build_review_workflow_explanation(
         ),
         consumed_range_ids=list(result.consumed_range_ids),
         consumed_message_count=sum(record.message_count for record in result.consumed_ranges),
-        active_chat_initial_interest=result.bootstrap.initial_interest,
-        active_chat_decay_half_life_seconds=result.bootstrap.decay_half_life_seconds,
+        active_chat_initial_interest=result.bootstrap.active_chat_interest_value,
+        active_chat_decay_half_life_seconds=result.bootstrap.active_chat_decay_half_life_seconds,
+        active_chat_disposition=result.bootstrap.disposition,
+        active_chat_bootstrap_applied=result.bootstrap.bootstrap_applied,
         active_chat_reason=result.bootstrap.reason,
         stages=[_stage_explanation(trace) for trace in result.stage_traces],
     )
@@ -253,6 +264,8 @@ def _stage_explanation(trace: ReviewStageTrace) -> ReviewStageExplanation:
         replied=trace.replied,
         reply_message_id=trace.reply_message_id,
         reply_message_ids=list(trace.reply_message_ids),
-        initial_interest=trace.initial_interest,
-        decay_half_life_seconds=trace.decay_half_life_seconds,
+        active_chat_disposition=trace.active_chat_disposition,
+        active_chat_bootstrap_applied=trace.active_chat_bootstrap_applied,
+        active_chat_interest_value=trace.active_chat_interest_value,
+        active_chat_decay_half_life_seconds=trace.active_chat_decay_half_life_seconds,
     )

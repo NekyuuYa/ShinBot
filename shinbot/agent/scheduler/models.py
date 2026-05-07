@@ -32,6 +32,16 @@ class MentionSensitivity(StrEnum):
     HIGH = "high"
 
 
+class ActiveChatDisposition(StrEnum):
+    """Semantic active-chat bootstrap disposition chosen by review stage 3."""
+
+    EXIT_SOON = "exit_soon"
+    WATCH = "watch"
+    CASUAL = "casual"
+    ENGAGED = "engaged"
+    FOCUSED = "focused"
+
+
 @dataclass(slots=True, frozen=True)
 class ActiveReplyThreshold:
     """Wake threshold for mention bursts during one review interval."""
@@ -61,6 +71,10 @@ class ActiveChatState:
     decay_half_life_seconds: float
     entered_at: float
     updated_at: float
+    tick_count: int = 0
+    active_epoch: int = 0
+    bootstrap_applied: bool = False
+    bootstrap_disposition: ActiveChatDisposition | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -164,5 +178,18 @@ class ActiveChatTickDecision:
     state: AgentState
     active_chat_state: ActiveChatState | None = None
     next_review_plan: ReviewPlan | None = None
+    returned_to_idle: bool = False
+    skipped_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ActiveChatBootstrapApplyDecision:
+    """Result of applying delayed review stage-3 active-chat bootstrap output."""
+
+    session_id: str
+    state: AgentState
+    active_chat_state: ActiveChatState | None = None
+    next_review_plan: ReviewPlan | None = None
+    bootstrap_applied: bool = False
     returned_to_idle: bool = False
     skipped_reason: str | None = None

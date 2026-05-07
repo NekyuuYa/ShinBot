@@ -155,11 +155,7 @@ class ReviewRunnerFactory:
             )
         return NoopReplyDecisionStageRunner()
 
-    def create_active_chat_bootstrap_runner(
-        self,
-        *,
-        fallback_initial_interest: float,
-    ) -> ActiveChatBootstrapStageRunner:
+    def create_active_chat_bootstrap_runner(self) -> ActiveChatBootstrapStageRunner:
         stage_config = self._config.active_chat_bootstrap
         if self._enabled(stage_config):
             return LLMActiveChatBootstrapStageRunner(
@@ -167,23 +163,15 @@ class ReviewRunnerFactory:
                 config=stage_config.to_llm_config(),
                 prompt_registry=self._prompt_registry,
             )
-        return NoopActiveChatBootstrapStageRunner(
-            initial_interest=fallback_initial_interest,
-        )
+        return NoopActiveChatBootstrapStageRunner()
 
-    def create_workflow_runner_kwargs(
-        self,
-        *,
-        fallback_active_chat_interest: float,
-    ) -> dict[str, Any]:
+    def create_workflow_runner_kwargs(self) -> dict[str, Any]:
         """Return ReviewWorkflow constructor kwargs for all stage runners."""
         return {
             "compression_runner": self.create_overflow_compression_runner(),
             "scan_runner": self.create_review_scan_runner(),
             "reply_runner": self.create_reply_decision_runner(),
-            "bootstrap_runner": self.create_active_chat_bootstrap_runner(
-                fallback_initial_interest=fallback_active_chat_interest,
-            ),
+            "bootstrap_runner": self.create_active_chat_bootstrap_runner(),
         }
 
     def _enabled(self, stage_config: ReviewStageRuntimeConfig) -> bool:

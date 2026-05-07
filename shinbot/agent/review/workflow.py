@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -45,6 +46,8 @@ from shinbot.agent.review.stages.scan import NoopReviewScanStageRunner, ReviewSc
 from shinbot.agent.review.stores.message_store import ReviewMessageStore
 from shinbot.agent.review.stores.summary_store import ReviewSummaryStore
 from shinbot.agent.scheduler.models import (
+    ActiveChatBootstrapApplyDecision,
+    ActiveChatDisposition,
     ReviewCompletionDecision,
     ReviewPlan,
     UnreadMessage,
@@ -120,6 +123,16 @@ class ReviewSchedulerPort(Protocol):
     def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
         """Mark whole unread ranges consumed by review."""
 
+    def apply_active_chat_bootstrap(
+        self,
+        session_id: str,
+        *,
+        disposition: ActiveChatDisposition,
+        active_epoch: int | None = None,
+        now: float | None = None,
+    ) -> ActiveChatBootstrapApplyDecision:
+        """Apply delayed stage-3 active chat disposition."""
+
 
 class ReviewWorkflow:
     """Three-stage review workflow shell.
@@ -149,9 +162,7 @@ class ReviewWorkflow:
         self._compression_runner = compression_runner or NoopOverflowCompressionStageRunner()
         self._scan_runner = scan_runner or NoopReviewScanStageRunner()
         self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
-        self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner(
-            initial_interest=self._config.fallback_active_chat_interest,
-        )
+        self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner()
         self._now = now or time.time
 
     async def run(
@@ -179,22 +190,38 @@ class ReviewWorkflow:
                 scan=scan,
                 stage_traces=stage_traces,
             )
-            bootstrap = await self._run_active_chat_bootstrap(
+            completion = scheduler.complete_review(
+                session_id,
+                enter_active_chat=True,
+                active_chat_initial_interest=self._config.provisional_active_chat_interest,
+                active_chat_decay_half_life_seconds=(
+                    self._config.provisional_active_chat_half_life_seconds
+                ),
+            )
+            active_epoch = (
+                completion.active_chat_state.active_epoch
+                if completion.active_chat_state is not None
+                else None
+            )
+            try:
+                applied_consumed_ranges = self._consume_review_ranges(
+                    scheduler,
+                    consumed_ranges,
+                )
+            except Exception:
+                logger.exception(
+                    "Review consumed range writeback failed for session %s",
+                    session_id,
+                )
+                applied_consumed_ranges = []
+            bootstrap = await self._run_active_chat_bootstrap_with_timeout(
+                scheduler=scheduler,
                 session_id=session_id,
                 started_at=started_at,
                 summaries=scan.compressed_ranges,
                 reply=reply,
+                active_epoch=active_epoch,
                 stage_traces=stage_traces,
-            )
-            applied_consumed_ranges = self._consume_review_ranges(
-                scheduler,
-                consumed_ranges,
-            )
-            completion = scheduler.complete_review(
-                session_id,
-                enter_active_chat=True,
-                active_chat_initial_interest=bootstrap.initial_interest,
-                active_chat_decay_half_life_seconds=bootstrap.decay_half_life_seconds,
             )
             return ReviewWorkflowResult(
                 scan=scan,
@@ -214,18 +241,26 @@ class ReviewWorkflow:
                 session_id,
                 review_plan.reason,
             )
-            bootstrap = await self._run_active_chat_bootstrap(
-                session_id=session_id,
-                started_at=started_at,
-                summaries=[],
-                reply=ReplyDecisionResult(),
-                stage_traces=stage_traces,
-            )
             completion = scheduler.complete_review(
                 session_id,
                 enter_active_chat=True,
-                active_chat_initial_interest=bootstrap.initial_interest,
-                active_chat_decay_half_life_seconds=bootstrap.decay_half_life_seconds,
+                active_chat_initial_interest=self._config.provisional_active_chat_interest,
+                active_chat_decay_half_life_seconds=(
+                    self._config.provisional_active_chat_half_life_seconds
+                ),
+            )
+            bootstrap = ActiveChatBootstrapResult(
+                reason="review_failed_provisional_active_chat",
+                active_chat_interest_value=(
+                    completion.active_chat_state.interest_value
+                    if completion.active_chat_state is not None
+                    else None
+                ),
+                active_chat_decay_half_life_seconds=(
+                    completion.active_chat_state.decay_half_life_seconds
+                    if completion.active_chat_state is not None
+                    else None
+                ),
             )
             return ReviewWorkflowResult(
                 scan=ReviewScanResult(),
@@ -481,13 +516,52 @@ class ReviewWorkflow:
             reason=stage_output.reason,
         )
 
-    async def _run_active_chat_bootstrap(
+    async def _run_active_chat_bootstrap_with_timeout(
         self,
         *,
+        scheduler: ReviewSchedulerPort,
         session_id: str,
         started_at: float,
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
+        active_epoch: int | None,
+        stage_traces: list[ReviewStageTrace],
+    ) -> ActiveChatBootstrapResult:
+        try:
+            return await asyncio.wait_for(
+                self._run_active_chat_bootstrap(
+                    scheduler=scheduler,
+                    session_id=session_id,
+                    started_at=started_at,
+                    summaries=summaries,
+                    reply=reply,
+                    active_epoch=active_epoch,
+                    stage_traces=stage_traces,
+                ),
+                timeout=self._config.active_chat_bootstrap_timeout_seconds,
+            )
+        except TimeoutError:
+            return ActiveChatBootstrapResult(
+                reason="active_chat_bootstrap_timeout",
+            )
+        except Exception:
+            logger.exception(
+                "Active chat bootstrap failed for session %s after active chat started",
+                session_id,
+            )
+            return ActiveChatBootstrapResult(
+                reason="active_chat_bootstrap_failed",
+            )
+
+    async def _run_active_chat_bootstrap(
+        self,
+        *,
+        scheduler: ReviewSchedulerPort,
+        session_id: str,
+        started_at: float,
+        summaries: list[UnreadRangeSummaryRecord],
+        reply: ReplyDecisionResult,
+        active_epoch: int | None,
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
@@ -503,10 +577,31 @@ class ReviewWorkflow:
             reply=reply,
             stage_traces=stage_traces,
         )
+        apply_decision = None
+        if stage_output.disposition is not None:
+            apply_decision = scheduler.apply_active_chat_bootstrap(
+                session_id,
+                disposition=stage_output.disposition,
+                active_epoch=active_epoch,
+            )
         return ActiveChatBootstrapResult(
-            initial_interest=stage_output.initial_interest,
-            decay_half_life_seconds=stage_output.decay_half_life_seconds,
+            disposition=stage_output.disposition,
             reason=stage_output.reason,
+            bootstrap_applied=bool(
+                apply_decision is not None and apply_decision.bootstrap_applied
+            ),
+            active_chat_interest_value=(
+                apply_decision.active_chat_state.interest_value
+                if apply_decision is not None
+                and apply_decision.active_chat_state is not None
+                else None
+            ),
+            active_chat_decay_half_life_seconds=(
+                apply_decision.active_chat_state.decay_half_life_seconds
+                if apply_decision is not None
+                and apply_decision.active_chat_state is not None
+                else None
+            ),
             tail_history_start_at=(started_at - self._config.tail_history_before_seconds) * 1000,
             tail_history_end_at=ended_at * 1000,
             tail_history_message_count=tail_history_message_count,
@@ -596,7 +691,6 @@ class ReviewWorkflow:
                 0,
                 False,
                 ActiveChatBootstrapStageOutput(
-                    initial_interest=self._config.fallback_active_chat_interest,
                     reason="active_chat_bootstrap_skipped_no_message_store",
                 ),
             )
@@ -629,7 +723,6 @@ class ReviewWorkflow:
                 len(tail_history),
                 False,
                 ActiveChatBootstrapStageOutput(
-                    initial_interest=self._config.fallback_active_chat_interest,
                     reason="active_chat_bootstrap_skipped_no_stage_input",
                 ),
             )
@@ -949,8 +1042,7 @@ def _trace_for_bootstrap(
     return ReviewStageTrace(
         **_trace_base(stage_input),
         reason=stage_output.reason,
-        initial_interest=stage_output.initial_interest,
-        decay_half_life_seconds=stage_output.decay_half_life_seconds,
+        active_chat_disposition=stage_output.disposition,
     )
 
 

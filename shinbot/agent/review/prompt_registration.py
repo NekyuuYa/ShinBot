@@ -106,11 +106,11 @@ def _review_prompt_components() -> list[PromptComponent]:
             "review.active_chat_bootstrap.constraints",
             PromptStage.CONSTRAINTS,
             "Choose only active chat bootstrap parameters after review/reply has "
-            "finished. Do not send replies. Use a 0-100 interest scale: 1-10 means "
-            "low-intent active observation, 30-60 means normal participation, and "
-            "80-100 means strong continued participation. Active chat exits by "
-            "threshold after decay, not by waiting for interest to reach zero. "
-            "Return the requested JSON object.",
+            "finished. Do not send replies. Choose one semantic disposition only: "
+            "exit_soon, watch, casual, engaged, or focused. Do not output numeric "
+            "interest or decay parameters; ShinBot maps the disposition to internal "
+            "active chat curves and applies delayed correction itself. Return the "
+            "requested JSON object.",
             "Review Active Chat Bootstrap Constraints",
         ),
     ]

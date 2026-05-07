@@ -31,7 +31,14 @@ from shinbot.agent.review import (
     parse_json_object,
     register_review_prompt_components,
 )
-from shinbot.agent.scheduler import AgentScheduler, AgentState, AttentionActiveReplyDispatcher
+from shinbot.agent.scheduler import (
+    ActiveChatBootstrapApplyDecision,
+    ActiveChatDisposition,
+    ActiveChatState,
+    AgentScheduler,
+    AgentState,
+    AttentionActiveReplyDispatcher,
+)
 from shinbot.agent.scheduler.models import (
     ReviewCompletionDecision,
     ReviewPlan,
@@ -70,6 +77,7 @@ class FixedReviewPolicy:
 class FakeReviewScheduler:
     def __init__(self) -> None:
         self.complete_review_calls: list[dict[str, object]] = []
+        self.apply_bootstrap_calls: list[dict[str, object]] = []
 
     def unread_ranges(self, session_id: str, *, limit: int = 50) -> list[UnreadRange]:
         return [
@@ -119,7 +127,45 @@ class FakeReviewScheduler:
         return ReviewCompletionDecision(
             session_id=session_id,
             state=AgentState.ACTIVE_CHAT,
+            active_chat_state=ActiveChatState(
+                session_id=session_id,
+                interest_value=active_chat_initial_interest or 0.0,
+                decay_half_life_seconds=active_chat_decay_half_life_seconds or 0.0,
+                entered_at=0.0,
+                updated_at=0.0,
+            ),
             active_chat_started=True,
+        )
+
+    def apply_active_chat_bootstrap(
+        self,
+        session_id: str,
+        *,
+        disposition: ActiveChatDisposition,
+        active_epoch: int | None = None,
+        now: float | None = None,
+    ) -> ActiveChatBootstrapApplyDecision:
+        self.apply_bootstrap_calls.append(
+            {
+                "session_id": session_id,
+                "disposition": disposition,
+                "active_epoch": active_epoch,
+                "now": now,
+            }
+        )
+        return ActiveChatBootstrapApplyDecision(
+            session_id=session_id,
+            state=AgentState.ACTIVE_CHAT,
+            active_chat_state=ActiveChatState(
+                session_id=session_id,
+                interest_value=20.0,
+                decay_half_life_seconds=10.0,
+                entered_at=0.0,
+                updated_at=0.0,
+                bootstrap_applied=True,
+                bootstrap_disposition=disposition,
+            ),
+            bootstrap_applied=True,
         )
 
 
@@ -241,8 +287,7 @@ class RecordingActiveChatBootstrapRunner:
             }
         )
         return ActiveChatBootstrapStageOutput(
-            initial_interest=70.0,
-            decay_half_life_seconds=30.0,
+            disposition=ActiveChatDisposition.ENGAGED,
             reason="bootstrap_selected_interest",
         )
 
@@ -462,7 +507,7 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
             '{"summary": "old context", "candidate_message_ids": [1, "2"], "reason": "compressed"}',
             '{"candidate_message_ids": [3, 3], "reason": "selected"}',
             '{"replied": true, "reply_message_id": 10, "target_message_ids": [3], "reason": "reply"}',
-            '{"initial_interest": 170, "decay_half_life_seconds": "30", "reason": "chat"}',
+            '{"disposition": "engaged", "reason": "chat"}',
         ]
     )
     config = ReviewLLMRunnerConfig(
@@ -508,8 +553,7 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
     assert reply.reply_message_id == 10
     assert reply.reply_message_ids == [10]
     assert reply.target_message_ids == [3]
-    assert bootstrap.initial_interest == 100.0
-    assert bootstrap.decay_half_life_seconds == 30.0
+    assert bootstrap.disposition == ActiveChatDisposition.ENGAGED
     assert model_runtime.calls[0].route_id == "route-a"
     assert model_runtime.calls[0].model_id == "model-a"
     assert model_runtime.calls[0].caller == "test.review"
@@ -1064,15 +1108,11 @@ async def test_review_runner_factory_keeps_disabled_stages_noop() -> None:
     )
 
     scan = await factory.create_review_scan_runner().run(stage_input)
-    bootstrap = await factory.create_active_chat_bootstrap_runner(
-        fallback_initial_interest=20.0,
-    ).run(stage_input)
-    workflow_kwargs = factory.create_workflow_runner_kwargs(
-        fallback_active_chat_interest=20.0,
-    )
+    bootstrap = await factory.create_active_chat_bootstrap_runner().run(stage_input)
+    workflow_kwargs = factory.create_workflow_runner_kwargs()
 
     assert scan.candidate_message_ids == []
-    assert bootstrap.initial_interest == 20.0
+    assert bootstrap.disposition is None
     assert set(workflow_kwargs) == {
         "compression_runner",
         "scan_runner",
@@ -1171,7 +1211,8 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
         ReviewWorkflowConfig(
             review_scan_batch_size=2,
             overflow_threshold_messages=3,
-            fallback_active_chat_interest=5.0,
+            provisional_active_chat_interest=15.0,
+            provisional_active_chat_half_life_seconds=20.0,
         ),
         now=lambda: 100.0,
     )
@@ -1196,7 +1237,7 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
     assert result.scan.compressed_ranges[0].end_msg_log_id == 2
     assert result.scan.compressed_ranges[0].message_count == 2
     assert result.reply.target_message_ids == []
-    assert result.bootstrap.initial_interest == 5.0
+    assert result.bootstrap.disposition is None
     assert result.bootstrap.tail_history_start_at == -80_000.0
     assert result.bootstrap.tail_history_end_at == 100_000.0
     assert result.consumed_range_ids == []
@@ -1204,8 +1245,8 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
         {
             "session_id": "bot:group:room",
             "enter_active_chat": True,
-            "active_chat_initial_interest": 5.0,
-            "active_chat_decay_half_life_seconds": None,
+            "active_chat_initial_interest": 15.0,
+            "active_chat_decay_half_life_seconds": 20.0,
             "next_review_plan": None,
             "now": None,
         }
@@ -1534,11 +1575,13 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
         unread_messages=scheduler.unread_messages("bot:group:room"),
     )
 
-    assert result.bootstrap.initial_interest == 70.0
-    assert result.bootstrap.decay_half_life_seconds == 30.0
+    assert result.bootstrap.disposition == ActiveChatDisposition.ENGAGED
+    assert result.bootstrap.bootstrap_applied is True
+    assert result.bootstrap.active_chat_interest_value == 40.0
+    assert result.bootstrap.active_chat_decay_half_life_seconds == 35.0
     assert result.bootstrap.reason == "bootstrap_selected_interest"
-    assert result.completion.active_chat_state.interest_value == 70.0
-    assert result.completion.active_chat_state.decay_half_life_seconds == 30.0
+    assert result.completion.active_chat_state.interest_value == 15.0
+    assert result.completion.active_chat_state.decay_half_life_seconds == 20.0
     assert bootstrap_runner.calls == [
         {
             "purpose": "active_chat_bootstrap",
@@ -1591,10 +1634,10 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
     active_chat_state = scheduler.active_chat_state_for("bot:group:room")
     assert active_chat_state is not None
-    assert active_chat_state.interest_value == 5.0
+    assert active_chat_state.interest_value == 15.0
     assert dispatcher.last_review_result is not None
     assert dispatcher.last_review_explanation is not None
-    assert dispatcher.last_review_explanation.active_chat_initial_interest == 5.0
+    assert dispatcher.last_review_explanation.active_chat_initial_interest is None
     assert dispatcher.last_review_explanation.replied is False
 
 
@@ -1805,8 +1848,10 @@ def test_review_workflow_explanation_summarizes_result() -> None:
             reply_reason="answered",
         ),
         bootstrap=ActiveChatBootstrapResult(
-            initial_interest=40.0,
-            decay_half_life_seconds=30.0,
+            disposition=ActiveChatDisposition.CASUAL,
+            bootstrap_applied=True,
+            active_chat_interest_value=40.0,
+            active_chat_decay_half_life_seconds=30.0,
             reason="keep_chatting",
         ),
         review_started_at=100.0,
@@ -1835,8 +1880,10 @@ def test_review_workflow_explanation_summarizes_result() -> None:
                 purpose="active_chat_bootstrap",
                 message_ids=[3, 4, 5],
                 reason="keep_chatting",
-                initial_interest=40.0,
-                decay_half_life_seconds=30.0,
+                active_chat_disposition=ActiveChatDisposition.CASUAL,
+                active_chat_bootstrap_applied=True,
+                active_chat_interest_value=40.0,
+                active_chat_decay_half_life_seconds=30.0,
             ),
         ],
     )
@@ -1858,6 +1905,8 @@ def test_review_workflow_explanation_summarizes_result() -> None:
     assert explanation.consumed_message_count == 3
     assert explanation.active_chat_initial_interest == 40.0
     assert explanation.active_chat_decay_half_life_seconds == 30.0
+    assert explanation.active_chat_disposition == ActiveChatDisposition.CASUAL
+    assert explanation.active_chat_bootstrap_applied is True
     assert explanation.active_chat_reason == "keep_chatting"
     assert [stage.purpose for stage in explanation.stages] == [
         "reply_decision",
@@ -1867,7 +1916,8 @@ def test_review_workflow_explanation_summarizes_result() -> None:
     assert explanation.stages[0].target_message_ids == [3]
     assert explanation.stages[0].replied is True
     assert explanation.stages[0].reply_message_ids == [10]
-    assert explanation.stages[1].initial_interest == 40.0
+    assert explanation.stages[1].active_chat_interest_value == 40.0
+    assert explanation.stages[1].active_chat_disposition == ActiveChatDisposition.CASUAL
 
 
 @pytest.mark.asyncio

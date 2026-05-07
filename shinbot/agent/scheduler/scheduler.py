@@ -13,6 +13,8 @@ from shinbot.agent.scheduler.active_chat_policy import (
 )
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveChatBootstrapApplyDecision,
+    ActiveChatDisposition,
     ActiveChatState,
     ActiveChatTickDecision,
     ActiveReplyCompletionDecision,
@@ -433,7 +435,11 @@ class AgentScheduler:
                 now=checked_at,
             )
 
-        decayed_state = self._active_chat_policy.decay(active_chat_state, now=checked_at)
+        decayed_state = self._active_chat_policy.decay(
+            active_chat_state,
+            now=checked_at,
+            count_tick=True,
+        )
         self._state_store.set_active_chat_state(decayed_state)
         if not self._active_chat_policy.should_return_idle(decayed_state):
             return ActiveChatTickDecision(
@@ -455,6 +461,77 @@ class AgentScheduler:
             state=AgentState.IDLE,
             active_chat_state=decayed_state,
             next_review_plan=plan,
+            returned_to_idle=True,
+        )
+
+    def apply_active_chat_bootstrap(
+        self,
+        session_id: str,
+        *,
+        disposition: ActiveChatDisposition,
+        active_epoch: int | None = None,
+        now: float | None = None,
+    ) -> ActiveChatBootstrapApplyDecision:
+        """Apply delayed review stage-3 disposition to the current active chat state."""
+        current_state = self._state_store.get_state(session_id)
+        if current_state != AgentState.ACTIVE_CHAT:
+            return ActiveChatBootstrapApplyDecision(
+                session_id=session_id,
+                state=current_state,
+                skipped_reason="not_active_chat",
+            )
+
+        active_chat_state = self._state_store.get_active_chat_state(session_id)
+        if active_chat_state is None:
+            return ActiveChatBootstrapApplyDecision(
+                session_id=session_id,
+                state=current_state,
+                skipped_reason="missing_active_chat_state",
+            )
+        if active_epoch is not None and active_chat_state.active_epoch != active_epoch:
+            return ActiveChatBootstrapApplyDecision(
+                session_id=session_id,
+                state=current_state,
+                active_chat_state=active_chat_state,
+                skipped_reason="active_epoch_mismatch",
+            )
+        if active_chat_state.bootstrap_applied:
+            return ActiveChatBootstrapApplyDecision(
+                session_id=session_id,
+                state=current_state,
+                active_chat_state=active_chat_state,
+                skipped_reason="bootstrap_already_applied",
+            )
+
+        checked_at = self._now() if now is None else now
+        corrected_state = self._active_chat_policy.apply_bootstrap_disposition(
+            active_chat_state,
+            disposition=disposition,
+            now=checked_at,
+        )
+        self._state_store.set_active_chat_state(corrected_state)
+        if not self._active_chat_policy.should_return_idle(corrected_state):
+            return ActiveChatBootstrapApplyDecision(
+                session_id=session_id,
+                state=AgentState.ACTIVE_CHAT,
+                active_chat_state=corrected_state,
+                bootstrap_applied=True,
+            )
+
+        plan = self._review_policy.plan_after_review(
+            session_id=session_id,
+            now=checked_at,
+            previous_plan=self._state_store.get_review_plan(session_id),
+        )
+        self._state_store.set_state(session_id, AgentState.IDLE)
+        self._state_store.clear_active_chat_state(session_id)
+        self._state_store.set_review_plan(plan)
+        return ActiveChatBootstrapApplyDecision(
+            session_id=session_id,
+            state=AgentState.IDLE,
+            active_chat_state=corrected_state,
+            next_review_plan=plan,
+            bootstrap_applied=True,
             returned_to_idle=True,
         )
 

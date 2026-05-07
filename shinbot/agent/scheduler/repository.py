@@ -7,6 +7,7 @@ import time
 
 from shinbot.agent.scheduler.inbox import AgentInbox
 from shinbot.agent.scheduler.models import (
+    ActiveChatDisposition,
     ActiveChatState,
     ActiveReplyThreshold,
     AgentState,
@@ -137,12 +138,25 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             return None
         if not payload:
             return None
+        disposition_value = payload.get("bootstrap_disposition")
+        try:
+            bootstrap_disposition = (
+                ActiveChatDisposition(str(disposition_value))
+                if disposition_value
+                else None
+            )
+        except ValueError:
+            bootstrap_disposition = None
         return ActiveChatState(
             session_id=session_id,
             interest_value=float(payload.get("interest_value") or 0.0),
             decay_half_life_seconds=float(payload.get("decay_half_life_seconds") or 0.0),
             entered_at=float(payload.get("entered_at") or 0.0),
             updated_at=float(payload.get("updated_at") or 0.0),
+            tick_count=int(payload.get("tick_count") or 0),
+            active_epoch=int(payload.get("active_epoch") or 0),
+            bootstrap_applied=bool(payload.get("bootstrap_applied") or False),
+            bootstrap_disposition=bootstrap_disposition,
         )
 
     def set_active_chat_state(self, state: ActiveChatState) -> None:
@@ -152,6 +166,14 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 "decay_half_life_seconds": state.decay_half_life_seconds,
                 "entered_at": state.entered_at,
                 "updated_at": state.updated_at,
+                "tick_count": state.tick_count,
+                "active_epoch": state.active_epoch,
+                "bootstrap_applied": state.bootstrap_applied,
+                "bootstrap_disposition": (
+                    state.bootstrap_disposition.value
+                    if state.bootstrap_disposition is not None
+                    else None
+                ),
             },
             ensure_ascii=False,
         )

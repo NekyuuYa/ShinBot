@@ -211,9 +211,7 @@ class AgentRuntime:
             message_store=DatabaseReviewMessageStore(database),
             summary_store=DatabaseReviewSummaryStore(database),
             context_builder=ReviewContextBuilderAdapter(self.context_manager),
-            **runner_factory.create_workflow_runner_kwargs(
-                fallback_active_chat_interest=config.fallback_active_chat_interest,
-            ),
+            **runner_factory.create_workflow_runner_kwargs(),
         )
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:

@@ -6,6 +6,7 @@ from typing import Protocol
 
 from shinbot.agent.review.context.builder import ReviewStageInput
 from shinbot.agent.review.models import ActiveChatBootstrapStageOutput
+from shinbot.agent.scheduler.models import ActiveChatDisposition
 
 
 class ActiveChatBootstrapStageRunner(Protocol):
@@ -18,12 +19,12 @@ class ActiveChatBootstrapStageRunner(Protocol):
 class NoopActiveChatBootstrapStageRunner:
     """Default bootstrap runner used before an LLM policy is wired."""
 
-    def __init__(self, *, initial_interest: float) -> None:
-        self._initial_interest = initial_interest
+    def __init__(self, *, disposition: ActiveChatDisposition | None = None) -> None:
+        self._disposition = disposition
 
     async def run(self, stage_input: ReviewStageInput) -> ActiveChatBootstrapStageOutput:
         return ActiveChatBootstrapStageOutput(
-            initial_interest=self._initial_interest,
+            disposition=self._disposition,
             reason="noop_active_chat_bootstrap",
         )
 

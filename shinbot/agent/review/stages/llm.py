@@ -23,6 +23,7 @@ from shinbot.agent.review.models import (
     ReviewScanStageOutput,
 )
 from shinbot.agent.review.prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
+from shinbot.agent.scheduler.models import ActiveChatDisposition
 from shinbot.agent.tools.schema import ToolCallRequest
 
 logger = logging.getLogger(__name__)
@@ -587,34 +588,35 @@ class LLMActiveChatBootstrapStageRunner(ReviewLLMStageRunnerBase):
     """Choose active-chat bootstrap parameters through the model runtime."""
 
     task_prompt = (
-        "Choose the initial active chat interest after review and reply-decision stages. "
-        "Use the 0-100 interest scale: low values for weak observation, higher values "
-        "for likely continued participation."
+        "Choose the active chat disposition after review and reply-decision stages. "
+        "Return only the semantic disposition; numeric interest and decay parameters "
+        "are controlled by ShinBot internals."
     )
     response_format = _json_schema_response_format(
         "agent_review_active_chat_bootstrap",
         {
-            "initial_interest": {"type": "number", "minimum": 0, "maximum": 100},
-            "decay_half_life_seconds": {"type": ["number", "null"], "minimum": 0},
+            "disposition": {
+                "type": "string",
+                "enum": [item.value for item in ActiveChatDisposition],
+            },
             "reason": {"type": "string"},
         },
-        ["initial_interest", "decay_half_life_seconds", "reason"],
+        ["disposition", "reason"],
     )
 
     async def run(self, stage_input: ReviewStageInput) -> ActiveChatBootstrapStageOutput:
         payload = await self._generate_payload(stage_input)
         if payload is None:
             return ActiveChatBootstrapStageOutput(
-                initial_interest=5.0,
                 reason="llm_active_chat_bootstrap_failed",
             )
+        disposition = _active_chat_disposition(payload.get("disposition"))
+        if disposition is None:
+            return ActiveChatBootstrapStageOutput(
+                reason="llm_active_chat_bootstrap_invalid_disposition",
+            )
         return ActiveChatBootstrapStageOutput(
-            initial_interest=_clamp_float(
-                payload.get("initial_interest"),
-                minimum=0.0,
-                maximum=100.0,
-            ),
-            decay_half_life_seconds=_optional_float(payload.get("decay_half_life_seconds")),
+            disposition=disposition,
             reason=str(payload.get("reason") or "llm_active_chat_bootstrap"),
         )
 
@@ -656,6 +658,13 @@ def _reply_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:
         return ids
     reply_message_id = _optional_int(payload.get("reply_message_id"))
     return [reply_message_id] if reply_message_id is not None else []
+
+
+def _active_chat_disposition(value: Any) -> ActiveChatDisposition | None:
+    try:
+        return ActiveChatDisposition(str(value))
+    except ValueError:
+        return None
 
 
 def _repair_messages_for_toolless_reply(
