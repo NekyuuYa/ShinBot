@@ -116,6 +116,13 @@ def build_litellm_kwargs(
     kwargs.update(provider.get("default_params") or {})
     kwargs.update(model.get("default_params") or {})
     kwargs.update(call.params)
+
+    # Remap custom request headers for liteLLM
+    request_headers = kwargs.pop("requestHeaders", None)
+    if isinstance(request_headers, dict):
+        extra_headers = kwargs.get("extra_headers", {})
+        kwargs["extra_headers"] = {**extra_headers, **request_headers}
+
     _drop_empty_runtime_params(kwargs)
     kwargs["model"] = model["litellm_model"]
 
