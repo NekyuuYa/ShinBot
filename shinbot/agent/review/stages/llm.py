@@ -588,12 +588,13 @@ class LLMActiveChatBootstrapStageRunner(ReviewLLMStageRunnerBase):
 
     task_prompt = (
         "Choose the initial active chat interest after review and reply-decision stages. "
-        "Use a low value for weak observation, higher values for likely continued participation."
+        "Use the 0-100 interest scale: low values for weak observation, higher values "
+        "for likely continued participation."
     )
     response_format = _json_schema_response_format(
         "agent_review_active_chat_bootstrap",
         {
-            "initial_interest": {"type": "number", "minimum": 0, "maximum": 1},
+            "initial_interest": {"type": "number", "minimum": 0, "maximum": 100},
             "decay_half_life_seconds": {"type": ["number", "null"], "minimum": 0},
             "reason": {"type": "string"},
         },
@@ -604,11 +605,15 @@ class LLMActiveChatBootstrapStageRunner(ReviewLLMStageRunnerBase):
         payload = await self._generate_payload(stage_input)
         if payload is None:
             return ActiveChatBootstrapStageOutput(
-                initial_interest=0.05,
+                initial_interest=5.0,
                 reason="llm_active_chat_bootstrap_failed",
             )
         return ActiveChatBootstrapStageOutput(
-            initial_interest=_clamp_float(payload.get("initial_interest"), minimum=0.0, maximum=1.0),
+            initial_interest=_clamp_float(
+                payload.get("initial_interest"),
+                minimum=0.0,
+                maximum=100.0,
+            ),
             decay_half_life_seconds=_optional_float(payload.get("decay_half_life_seconds")),
             reason=str(payload.get("reason") or "llm_active_chat_bootstrap"),
         )

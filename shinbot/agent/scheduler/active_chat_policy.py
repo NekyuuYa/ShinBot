@@ -10,15 +10,20 @@ from shinbot.agent.scheduler.models import ActiveChatState
 
 @dataclass(slots=True, frozen=True)
 class ActiveChatPolicyConfig:
-    """Defaults for the first active chat interest implementation."""
+    """Defaults for the first active chat interest implementation.
 
-    initial_interest_value: float = 1.0
+    Interest values use a 0-100 scale. Active chat exits when the decayed
+    value reaches ``idle_interest_threshold``; exponential decay is not
+    expected to hit zero exactly.
+    """
+
+    initial_interest_value: float = 50.0
     decay_half_life_seconds: float = 300.0
-    idle_interest_threshold: float = 0.05
-    message_interest_delta: float = 0.1
-    mention_interest_delta: float = 0.4
-    reply_interest_delta: float = 0.3
-    max_interest_value: float = 3.0
+    idle_interest_threshold: float = 5.0
+    message_interest_delta: float = 10.0
+    mention_interest_delta: float = 40.0
+    reply_interest_delta: float = 30.0
+    max_interest_value: float = 100.0
 
 
 class ActiveChatPolicy(Protocol):
@@ -65,12 +70,16 @@ class DefaultActiveChatPolicy:
         initial_interest_value: float | None = None,
         decay_half_life_seconds: float | None = None,
     ) -> ActiveChatState:
+        raw_interest_value = (
+            self._config.initial_interest_value
+            if initial_interest_value is None
+            else initial_interest_value
+        )
         return ActiveChatState(
             session_id=session_id,
-            interest_value=(
-                self._config.initial_interest_value
-                if initial_interest_value is None
-                else initial_interest_value
+            interest_value=max(
+                0.0,
+                min(self._config.max_interest_value, raw_interest_value),
             ),
             decay_half_life_seconds=(
                 self._config.decay_half_life_seconds

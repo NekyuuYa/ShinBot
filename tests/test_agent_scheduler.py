@@ -462,7 +462,7 @@ async def test_scheduler_completes_review_to_active_chat() -> None:
     decision = scheduler.complete_review(
         "bot:group:room",
         enter_active_chat=True,
-        active_chat_initial_interest=2.0,
+        active_chat_initial_interest=20.0,
         now=60.0,
     )
 
@@ -470,7 +470,7 @@ async def test_scheduler_completes_review_to_active_chat() -> None:
     assert decision.returned_to_idle is False
     assert decision.state == AgentState.ACTIVE_CHAT
     assert decision.active_chat_state is not None
-    assert decision.active_chat_state.interest_value == 2.0
+    assert decision.active_chat_state.interest_value == 20.0
     assert decision.active_chat_state.entered_at == 60.0
     assert decision.next_review_plan is None
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
@@ -484,9 +484,9 @@ async def test_scheduler_ticks_active_chat_without_returning_idle() -> None:
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
             ActiveChatPolicyConfig(
-                initial_interest_value=1.0,
+                initial_interest_value=10.0,
                 decay_half_life_seconds=10.0,
-                idle_interest_threshold=0.1,
+                idle_interest_threshold=1.0,
             )
         ),
         now=lambda: 10.0,
@@ -500,7 +500,7 @@ async def test_scheduler_ticks_active_chat_without_returning_idle() -> None:
     assert decision.returned_to_idle is False
     assert decision.state == AgentState.ACTIVE_CHAT
     assert decision.active_chat_state is not None
-    assert decision.active_chat_state.interest_value == 0.5
+    assert decision.active_chat_state.interest_value == 5.0
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
 
 
@@ -512,10 +512,10 @@ async def test_scheduler_observes_message_during_active_chat() -> None:
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
             ActiveChatPolicyConfig(
-                initial_interest_value=1.0,
+                initial_interest_value=10.0,
                 decay_half_life_seconds=10.0,
-                idle_interest_threshold=0.1,
-                message_interest_delta=0.2,
+                idle_interest_threshold=1.0,
+                message_interest_delta=2.0,
             )
         ),
         now=lambda: now,
@@ -531,7 +531,7 @@ async def test_scheduler_observes_message_during_active_chat() -> None:
     assert decision.active_reply_started is False
     assert decision.state == AgentState.ACTIVE_CHAT
     assert decision.active_chat_state is not None
-    assert decision.active_chat_state.interest_value == pytest.approx(0.7)
+    assert decision.active_chat_state.interest_value == pytest.approx(7.0)
     assert scheduler.active_chat_state_for("bot:group:room") == decision.active_chat_state
 
 
@@ -545,9 +545,9 @@ async def test_scheduler_notifies_active_chat_workflow_for_observed_message() ->
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
             ActiveChatPolicyConfig(
-                initial_interest_value=1.0,
+                initial_interest_value=10.0,
                 decay_half_life_seconds=10.0,
-                message_interest_delta=0.2,
+                message_interest_delta=2.0,
             )
         ),
         now=lambda: now,
@@ -576,9 +576,9 @@ async def test_scheduler_active_reply_interrupt_skips_active_chat_observation() 
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
             ActiveChatPolicyConfig(
-                initial_interest_value=1.0,
+                initial_interest_value=10.0,
                 decay_half_life_seconds=10.0,
-                message_interest_delta=0.2,
+                message_interest_delta=2.0,
             )
         ),
         now=lambda: 10.0,
@@ -611,9 +611,9 @@ async def test_scheduler_ticks_active_chat_to_idle_with_next_review_plan() -> No
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
             ActiveChatPolicyConfig(
-                initial_interest_value=1.0,
+                initial_interest_value=10.0,
                 decay_half_life_seconds=10.0,
-                idle_interest_threshold=0.5,
+                idle_interest_threshold=5.0,
             )
         ),
         now=lambda: 10.0,
@@ -627,7 +627,7 @@ async def test_scheduler_ticks_active_chat_to_idle_with_next_review_plan() -> No
     assert decision.returned_to_idle is True
     assert decision.state == AgentState.IDLE
     assert decision.active_chat_state is not None
-    assert decision.active_chat_state.interest_value == 0.5
+    assert decision.active_chat_state.interest_value == 5.0
     assert decision.next_review_plan is not None
     assert decision.next_review_plan.next_review_at == 170.0
     assert scheduler.state_for("bot:group:room") == AgentState.IDLE

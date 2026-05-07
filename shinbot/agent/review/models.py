@@ -18,7 +18,7 @@ class ReviewWorkflowConfig:
     reply_context_after_messages: int = 10
     tail_history_before_seconds: float = 180.0
     tail_history_limit: int = 500
-    fallback_active_chat_interest: float = 0.05
+    fallback_active_chat_interest: float = 5.0
 
 
 @dataclass(slots=True, frozen=True)
