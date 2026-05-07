@@ -134,10 +134,27 @@ def build_litellm_kwargs(
             call.messages,
             custom_llm_provider=custom_llm_provider,
         )
+        
+        # When tools are requested, we bypass LiteLLM's strict parameter capability checks.
+        # This addresses issues where LiteLLM's internal registry for some providers (like xiaomi_mimo)
+        # is outdated and falsely claims they do not support `tools`.
+        allowed_openai_params: list[str] = kwargs.get("allowed_openai_params", [])
+        
         if call.tools:
             kwargs["tools"] = call.tools
+            if "tools" not in allowed_openai_params:
+                allowed_openai_params.append("tools")
+            if "tool_choice" not in allowed_openai_params:
+                allowed_openai_params.append("tool_choice")
+                
         if call.response_format is not None:
             kwargs["response_format"] = call.response_format
+            if "response_format" not in allowed_openai_params:
+                allowed_openai_params.append("response_format")
+
+        if allowed_openai_params:
+            kwargs["allowed_openai_params"] = allowed_openai_params
+
     elif mode in ("embedding", "speech"):
         kwargs["input"] = call.input_data if call.input_data is not None else ""
 
