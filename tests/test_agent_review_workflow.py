@@ -1238,9 +1238,15 @@ async def test_review_workflow_records_overflow_plan_and_enters_active_chat() ->
     assert result.scan.compressed_ranges[0].message_count == 2
     assert result.reply.target_message_ids == []
     assert result.bootstrap.disposition is None
+    assert result.bootstrap.reason == "active_chat_bootstrap_scheduled"
     assert result.bootstrap.tail_history_start_at == -80_000.0
-    assert result.bootstrap.tail_history_end_at == 100_000.0
+    assert result.bootstrap.tail_history_end_at is None
     assert result.consumed_range_ids == []
+    await workflow.wait_pending_bootstraps()
+    completed_bootstrap = workflow.last_bootstrap_result("bot:group:room")
+    assert completed_bootstrap is not None
+    assert completed_bootstrap.reason == "active_chat_bootstrap_skipped_no_message_store"
+    assert completed_bootstrap.tail_history_end_at == 100_000.0
     assert scheduler.complete_review_calls == [
         {
             "session_id": "bot:group:room",
@@ -1299,8 +1305,7 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
     assert result.scan.loaded_message_count == 5
     assert result.scan.stage_input_count == 3
     assert result.scan.batch_count == 3
-    assert result.bootstrap.tail_history_message_count == 5
-    assert result.bootstrap.stage_input_built is True
+    assert result.bootstrap.reason == "active_chat_bootstrap_scheduled"
     assert result.consumed_range_ids == [1]
     assert [(item.start_msg_log_id, item.end_msg_log_id, item.full_range) for item in result.consumed_ranges] == [
         (message_ids[0], message_ids[-1], True)
@@ -1309,11 +1314,15 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         "review_scan",
         "review_scan",
         "review_scan",
-        "active_chat_bootstrap",
     ]
     assert result.stage_traces[0].message_ids == message_ids[:2]
     assert scheduler.unread_messages("bot:group:room") == []
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    await workflow.wait_pending_bootstraps()
+    completed_bootstrap = workflow.last_bootstrap_result("bot:group:room")
+    assert completed_bootstrap is not None
+    assert completed_bootstrap.tail_history_message_count == 5
+    assert completed_bootstrap.stage_input_built is True
     assert [call["purpose"] for call in context_builder.calls] == [
         "review_scan",
         "review_scan",
@@ -1447,6 +1456,11 @@ async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> 
     assert [call["purpose"] for call in context_builder.calls] == [
         "review_scan",
         "reply_decision",
+    ]
+    await workflow.wait_pending_bootstraps()
+    assert [call["purpose"] for call in context_builder.calls] == [
+        "review_scan",
+        "reply_decision",
         "active_chat_bootstrap",
     ]
 
@@ -1575,13 +1589,17 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
         unread_messages=scheduler.unread_messages("bot:group:room"),
     )
 
-    assert result.bootstrap.disposition == ActiveChatDisposition.ENGAGED
-    assert result.bootstrap.bootstrap_applied is True
-    assert result.bootstrap.active_chat_interest_value == 40.0
-    assert result.bootstrap.active_chat_decay_half_life_seconds == 35.0
-    assert result.bootstrap.reason == "bootstrap_selected_interest"
+    assert result.bootstrap.reason == "active_chat_bootstrap_scheduled"
     assert result.completion.active_chat_state.interest_value == 15.0
     assert result.completion.active_chat_state.decay_half_life_seconds == 20.0
+    await workflow.wait_pending_bootstraps()
+    completed_bootstrap = workflow.last_bootstrap_result("bot:group:room")
+    assert completed_bootstrap is not None
+    assert completed_bootstrap.disposition == ActiveChatDisposition.ENGAGED
+    assert completed_bootstrap.bootstrap_applied is True
+    assert completed_bootstrap.active_chat_interest_value == 40.0
+    assert completed_bootstrap.active_chat_decay_half_life_seconds == 35.0
+    assert completed_bootstrap.reason == "bootstrap_selected_interest"
     assert bootstrap_runner.calls == [
         {
             "purpose": "active_chat_bootstrap",
@@ -1792,6 +1810,7 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
     reply_call = next(
         call for call in context_builder.calls if call["purpose"] == "reply_decision"
     )
+    await workflow.wait_pending_bootstraps()
     bootstrap_call = next(
         call for call in context_builder.calls if call["purpose"] == "active_chat_bootstrap"
     )
@@ -1801,7 +1820,6 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
         "overflow_compression",
         "review_scan",
         "reply_decision",
-        "active_chat_bootstrap",
     ]
     assert result.stage_traces[0].reason == "compressed_old_messages"
     assert result.stage_traces[0].candidate_message_ids == [message_ids[0]]

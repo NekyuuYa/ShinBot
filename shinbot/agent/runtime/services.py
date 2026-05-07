@@ -145,6 +145,7 @@ class AgentRuntime:
         self.active_chat_timer = ActiveChatTimerService()
         self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
         self.workflow_runner: WorkflowRunner | None = None
+        self.review_workflow: ReviewWorkflow | None = None
 
         if database is None:
             return
@@ -171,10 +172,11 @@ class AgentRuntime:
         self.attention_scheduler.set_workflow_dispatcher(
             self._dispatch_attention_workflow,
         )
+        self.review_workflow = self._create_review_workflow(database)
         self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=AttentionActiveReplyDispatcher(
                 self.attention_scheduler,
-                review_workflow=self._create_review_workflow(database),
+                review_workflow=self.review_workflow,
             ),
         )
         register_attention_runtime(
@@ -238,6 +240,8 @@ class AgentRuntime:
 
     async def shutdown(self) -> None:
         """Shut down Agent-side background services."""
+        if self.review_workflow is not None:
+            await self.review_workflow.shutdown()
         await self.active_chat_timer.shutdown()
         if self.attention_scheduler is not None:
             await self.attention_scheduler.shutdown()

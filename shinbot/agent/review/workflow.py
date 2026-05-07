@@ -164,6 +164,8 @@ class ReviewWorkflow:
         self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
         self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner()
         self._now = now or time.time
+        self._bootstrap_tasks: set[asyncio.Task[ActiveChatBootstrapResult]] = set()
+        self._last_bootstrap_results: dict[str, ActiveChatBootstrapResult] = {}
 
     async def run(
         self,
@@ -214,7 +216,7 @@ class ReviewWorkflow:
                     session_id,
                 )
                 applied_consumed_ranges = []
-            bootstrap = await self._run_active_chat_bootstrap_with_timeout(
+            bootstrap = self._schedule_active_chat_bootstrap(
                 scheduler=scheduler,
                 session_id=session_id,
                 started_at=started_at,
@@ -272,6 +274,26 @@ class ReviewWorkflow:
                 failure_reason=str(exc),
                 stage_traces=stage_traces,
             )
+
+    async def wait_pending_bootstraps(self) -> None:
+        """Wait for currently scheduled active chat bootstrap tasks."""
+        tasks = list(self._bootstrap_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        """Cancel pending background active chat bootstrap tasks."""
+        tasks = list(self._bootstrap_tasks)
+        self._bootstrap_tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def last_bootstrap_result(self, session_id: str) -> ActiveChatBootstrapResult | None:
+        """Return the latest completed background bootstrap result for one session."""
+        return self._last_bootstrap_results.get(session_id)
 
     async def _run_review_scan(
         self,
@@ -515,6 +537,57 @@ class ReviewWorkflow:
             candidate_message_ids=stage_output.candidate_message_ids,
             reason=stage_output.reason,
         )
+
+    def _schedule_active_chat_bootstrap(
+        self,
+        *,
+        scheduler: ReviewSchedulerPort,
+        session_id: str,
+        started_at: float,
+        summaries: list[UnreadRangeSummaryRecord],
+        reply: ReplyDecisionResult,
+        active_epoch: int | None,
+        stage_traces: list[ReviewStageTrace],
+    ) -> ActiveChatBootstrapResult:
+        task = asyncio.create_task(
+            self._run_active_chat_bootstrap_with_timeout(
+                scheduler=scheduler,
+                session_id=session_id,
+                started_at=started_at,
+                summaries=summaries,
+                reply=reply,
+                active_epoch=active_epoch,
+                stage_traces=list(stage_traces),
+            ),
+            name=f"review-active-chat-bootstrap:{session_id}",
+        )
+        self._bootstrap_tasks.add(task)
+        task.add_done_callback(
+            lambda completed, task_session_id=session_id: self._finish_bootstrap_task(
+                task_session_id,
+                completed,
+            )
+        )
+        return ActiveChatBootstrapResult(
+            reason="active_chat_bootstrap_scheduled",
+            tail_history_start_at=(started_at - self._config.tail_history_before_seconds)
+            * 1000,
+        )
+
+    def _finish_bootstrap_task(
+        self,
+        session_id: str,
+        task: asyncio.Task[ActiveChatBootstrapResult],
+    ) -> None:
+        self._bootstrap_tasks.discard(task)
+        try:
+            result = task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Active chat bootstrap task crashed for session %s", session_id)
+            return
+        self._last_bootstrap_results[session_id] = result
 
     async def _run_active_chat_bootstrap_with_timeout(
         self,
