@@ -108,9 +108,8 @@ async def execute_workflow_tool_calls(
             if _tool_result_terminates(tool_result.output):
                 outcome.terminal_action = "send_poke"
                 outcome.finish_reason = "send_poke"
-        elif tool_name in _TERMINAL_TOOL_NAMES and not tool_result.success:
-            outcome.invalid_reason = "terminal_tool_failed"
-            outcome.finish_reason = outcome.invalid_reason
+        # 故意不在终端工具执行失败时设置 finish_reason，
+        # 从而允许循环控制器将错误（如无效的引用 ID）传回给大模型进行自我修复。
 
         outcome.tool_messages.append(
             {
