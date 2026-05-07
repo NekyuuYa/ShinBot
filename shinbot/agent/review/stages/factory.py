@@ -32,7 +32,7 @@ from shinbot.agent.review.stages.scan import NoopReviewScanStageRunner, ReviewSc
 class ReviewStageRuntimeConfig:
     """Runtime model settings for one review stage."""
 
-    enabled: bool = False
+    enabled: bool = True
     route_id: str | None = None
     model_id: str | None = None
     caller: str = "agent.review"
@@ -47,7 +47,7 @@ class ReviewStageRuntimeConfig:
         if not value:
             return cls()
         return cls(
-            enabled=bool(value.get("enabled", False)),
+            enabled=bool(value.get("enabled", True)),
             route_id=_optional_str(value.get("route_id")),
             model_id=_optional_str(value.get("model_id")),
             caller=str(value.get("caller") or "agent.review"),

@@ -1096,11 +1096,17 @@ async def test_review_llm_runner_avoids_duplicate_inline_system_prompt() -> None
 
 
 @pytest.mark.asyncio
-async def test_review_runner_factory_keeps_disabled_stages_noop() -> None:
+async def test_review_runner_factory_uses_llm_stages_by_default() -> None:
     model_runtime = FakeModelRuntime(
-        ['{"candidate_message_ids": [9], "reason": "should_not_run"}']
+        [
+            '{"candidate_message_ids": [9], "reason": "selected"}',
+            '{"disposition": "watch", "reason": "observe"}',
+        ]
     )
-    factory = ReviewRunnerFactory(model_runtime)
+    factory = ReviewRunnerFactory(
+        model_runtime,
+        prompt_registry=PromptRegistry(),
+    )
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
         purpose="review_scan",
@@ -1111,14 +1117,41 @@ async def test_review_runner_factory_keeps_disabled_stages_noop() -> None:
     bootstrap = await factory.create_active_chat_bootstrap_runner().run(stage_input)
     workflow_kwargs = factory.create_workflow_runner_kwargs()
 
-    assert scan.candidate_message_ids == []
-    assert bootstrap.disposition is None
+    assert scan.candidate_message_ids == [9]
+    assert bootstrap.disposition == ActiveChatDisposition.WATCH
     assert set(workflow_kwargs) == {
         "compression_runner",
         "scan_runner",
         "reply_runner",
         "bootstrap_runner",
     }
+    assert len(model_runtime.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_review_runner_factory_keeps_explicitly_disabled_stages_noop() -> None:
+    model_runtime = FakeModelRuntime(
+        ['{"candidate_message_ids": [9], "reason": "should_not_run"}']
+    )
+    factory = ReviewRunnerFactory(
+        model_runtime,
+        config=ReviewRuntimeConfig(
+            review_scan=ReviewStageRuntimeConfig(enabled=False),
+            active_chat_bootstrap=ReviewStageRuntimeConfig(enabled=False),
+        ),
+        prompt_registry=PromptRegistry(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[{"id": 1}],
+    )
+
+    scan = await factory.create_review_scan_runner().run(stage_input)
+    bootstrap = await factory.create_active_chat_bootstrap_runner().run(stage_input)
+
+    assert scan.candidate_message_ids == []
+    assert bootstrap.disposition is None
     assert model_runtime.calls == []
 
 
@@ -1147,6 +1180,9 @@ async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
                 },
                 params={"temperature": 0},
             ),
+            reply_decision=ReviewStageRuntimeConfig(enabled=False),
+            overflow_compression=ReviewStageRuntimeConfig(enabled=False),
+            active_chat_bootstrap=ReviewStageRuntimeConfig(enabled=False),
         ),
         prompt_registry=prompt_registry,
     )
@@ -1184,7 +1220,7 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
                 "params": {"temperature": 0},
             },
             "reply_decision": "ignored",
-            "active_chat_bootstrap": {"enabled": True, "params": "ignored"},
+            "active_chat_bootstrap": {"enabled": False, "params": "ignored"},
         }
     )
 
@@ -1199,8 +1235,8 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
     }
     assert config.review_scan.system_prompt == "Return JSON."
     assert config.review_scan.params == {"temperature": 0}
-    assert config.reply_decision.enabled is False
-    assert config.active_chat_bootstrap.enabled is True
+    assert config.reply_decision.enabled is True
+    assert config.active_chat_bootstrap.enabled is False
     assert config.active_chat_bootstrap.params == {}
 
 
