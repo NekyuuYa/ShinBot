@@ -11,6 +11,7 @@ from shinbot.agent.scheduler.active_chat_policy import (
     ActiveChatPolicy,
     DefaultActiveChatPolicy,
 )
+from shinbot.agent.scheduler.active_chat_timer import ActiveChatTimer
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
@@ -71,6 +72,7 @@ class AgentScheduler:
         priority_policy: PriorityPolicy | None = None,
         review_policy: ReviewPolicy | None = None,
         active_chat_policy: ActiveChatPolicy | None = None,
+        active_chat_timer: ActiveChatTimer | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._workflow_dispatcher = workflow_dispatcher
@@ -83,10 +85,13 @@ class AgentScheduler:
         )
         self._review_policy = review_policy or DefaultReviewPolicy()
         self._active_chat_policy = active_chat_policy or DefaultActiveChatPolicy()
+        self._active_chat_timer = active_chat_timer
         self._now = now or time.time
         bind_scheduler = getattr(self._workflow_dispatcher, "bind_agent_scheduler", None)
         if bind_scheduler is not None:
             bind_scheduler(self)
+        if self._active_chat_timer is not None:
+            self._active_chat_timer.bind_agent_scheduler(self)
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
         """Accept one message signal from core and decide scheduler-side action."""
@@ -131,6 +136,7 @@ class AgentScheduler:
 
         if priority_decision.should_start_active_reply and self._workflow_dispatcher is not None:
             self._state_store.set_state(signal.session_id, AgentState.ACTIVE_REPLY)
+            self._cancel_active_chat_timer(signal.session_id)
             await self._workflow_dispatcher.run_active_reply(
                 session_id=signal.session_id,
                 message_log_id=signal.message_log_id,
@@ -159,6 +165,7 @@ class AgentScheduler:
                 is_mentioned=signal.is_mentioned,
                 is_reply_to_bot=signal.is_reply_to_bot,
             )
+            self._start_active_chat_timer(signal.session_id)
             active_chat_observed = True
             if self._workflow_dispatcher is not None:
                 await self._workflow_dispatcher.notify_active_chat_message(
@@ -331,6 +338,7 @@ class AgentScheduler:
         )
         if not should_review or plan is None:
             self._state_store.set_state(session_id, AgentState.IDLE)
+            self._cancel_active_chat_timer(session_id)
             return ActiveReplyCompletionDecision(
                 session_id=session_id,
                 state=AgentState.IDLE,
@@ -389,6 +397,7 @@ class AgentScheduler:
             )
             self._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
             self._state_store.set_active_chat_state(active_chat_state)
+            self._start_active_chat_timer(session_id)
             return ReviewCompletionDecision(
                 session_id=session_id,
                 state=AgentState.ACTIVE_CHAT,
@@ -404,6 +413,7 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
+        self._cancel_active_chat_timer(session_id)
         return ReviewCompletionDecision(
             session_id=session_id,
             state=AgentState.IDLE,
@@ -456,6 +466,7 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
+        self._cancel_active_chat_timer(session_id)
         return ActiveChatTickDecision(
             session_id=session_id,
             state=AgentState.IDLE,
@@ -526,6 +537,7 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
+        self._cancel_active_chat_timer(session_id)
         return ActiveChatBootstrapApplyDecision(
             session_id=session_id,
             state=AgentState.IDLE,
@@ -557,6 +569,14 @@ class AgentScheduler:
         )
         self._state_store.set_active_chat_state(observed_state)
         return observed_state
+
+    def _start_active_chat_timer(self, session_id: str) -> None:
+        if self._active_chat_timer is not None:
+            self._active_chat_timer.start(session_id)
+
+    def _cancel_active_chat_timer(self, session_id: str) -> None:
+        if self._active_chat_timer is not None:
+            self._active_chat_timer.cancel(session_id)
 
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:

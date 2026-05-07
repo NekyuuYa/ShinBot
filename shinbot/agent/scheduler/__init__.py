@@ -10,6 +10,7 @@ from shinbot.agent.scheduler.active_chat_policy import (
     calculate_bootstrap_correction,
     interest_curve_after_ticks,
 )
+from shinbot.agent.scheduler.active_chat_timer import ActiveChatTimer, ActiveChatTimerService
 from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
@@ -59,6 +60,8 @@ __all__ = [
     "ActiveChatPreset",
     "ActiveChatState",
     "ActiveChatTickDecision",
+    "ActiveChatTimer",
+    "ActiveChatTimerService",
     "AgentScheduleDecision",
     "AgentScheduler",
     "AgentSchedulerConfig",

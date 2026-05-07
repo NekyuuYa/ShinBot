@@ -42,7 +42,11 @@ from shinbot.agent.review import (
     register_review_prompt_components,
 )
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
-from shinbot.agent.scheduler import AgentScheduler, AttentionActiveReplyDispatcher
+from shinbot.agent.scheduler import (
+    ActiveChatTimerService,
+    AgentScheduler,
+    AttentionActiveReplyDispatcher,
+)
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflow import WorkflowRunner
 from shinbot.core.bot_config import select_response_profile
@@ -138,6 +142,7 @@ class AgentRuntime:
         )
         self.attention_engine: AttentionEngine | None = None
         self.attention_scheduler: AttentionScheduler | None = None
+        self.active_chat_timer = ActiveChatTimerService()
         self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
         self.workflow_runner: WorkflowRunner | None = None
 
@@ -196,6 +201,7 @@ class AgentRuntime:
             response_profile_resolver=self._resolve_response_profile,
             inbox=store,
             state_store=store,
+            active_chat_timer=self.active_chat_timer,
         )
 
     def _create_review_workflow(self, database: DatabaseManager) -> ReviewWorkflow:
@@ -232,6 +238,7 @@ class AgentRuntime:
 
     async def shutdown(self) -> None:
         """Shut down Agent-side background services."""
+        await self.active_chat_timer.shutdown()
         if self.attention_scheduler is not None:
             await self.attention_scheduler.shutdown()
         if self.media_inspection_runner is not None:
