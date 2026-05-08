@@ -72,6 +72,7 @@ class ActiveChatAttentionState:
     mode: ActiveChatMode = ActiveChatMode.FAST
     active_epoch: int = 0
     review_result_summary: Any = None
+    conversation_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True, frozen=True)
@@ -94,6 +95,7 @@ class ActiveChatBatch:
     response_profile: str
     mode: ActiveChatMode = ActiveChatMode.FAST
     review_result_summary: Any = None
+    conversation_messages: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def message_log_ids(self) -> list[int]:
@@ -111,6 +113,7 @@ class ActiveChatRoundResult:
     reply_intensity: ActiveChatReplyIntensity = ActiveChatReplyIntensity.LIGHT
     no_reply_intensity: ActiveChatNoReplyIntensity = ActiveChatNoReplyIntensity.NORMAL
     consumed_message_log_ids: list[int] = field(default_factory=list)
+    conversation_messages_delta: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True, frozen=True)

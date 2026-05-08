@@ -124,7 +124,7 @@ class ActiveChatFastRunner:
                 reason="active_chat_model_call_failed",
             )
         if result.tool_calls:
-            return _with_consumed_message_log_ids(
+            return _round_result_from_tool_loop(
                 await self._tool_loop.execute(
                     result.tool_calls,
                     tool_manager=self._tool_manager,
@@ -132,7 +132,9 @@ class ActiveChatFastRunner:
                     session_id=batch.session_id,
                     run_id=str(result.execution_id or ""),
                 ),
-                batch.message_log_ids,
+                message_log_ids=batch.message_log_ids,
+                assistant_text=str(result.text or ""),
+                tool_calls=result.tool_calls,
             )
 
         repair_batch, repaired = await self._repair_toolless_round(
@@ -156,7 +158,7 @@ class ActiveChatFastRunner:
                 reason="active_chat_toolless_after_repair",
                 consumed_message_log_ids=repair_batch.message_log_ids,
             )
-        return _with_consumed_message_log_ids(
+        return _round_result_from_tool_loop(
             await self._tool_loop.execute(
                 repaired.tool_calls,
                 tool_manager=self._tool_manager,
@@ -164,7 +166,9 @@ class ActiveChatFastRunner:
                 session_id=batch.session_id,
                 run_id=str(repaired.execution_id or ""),
             ),
-            repair_batch.message_log_ids,
+            message_log_ids=repair_batch.message_log_ids,
+            assistant_text=str(repaired.text or ""),
+            tool_calls=repaired.tool_calls,
         )
 
     def _build_model_call_parts(
@@ -292,6 +296,16 @@ class ActiveChatFastRunner:
                     component_id="active_chat.fast_mode.context",
                     messages=context_messages,
                     priority=10,
+                    metadata={"active_chat_stage": self.stage_id},
+                )
+            )
+        if batch.conversation_messages:
+            injections.append(
+                PromptInjection(
+                    stage=PromptStage.CONTEXT,
+                    component_id="active_chat.fast_mode.conversation_trace",
+                    messages=list(batch.conversation_messages),
+                    priority=20,
                     metadata={"active_chat_stage": self.stage_id},
                 )
             )
@@ -480,6 +494,7 @@ class ActiveChatFastRunner:
             response_profile=latest.response_profile or batch.response_profile,
             mode=batch.mode,
             review_result_summary=batch.review_result_summary,
+            conversation_messages=batch.conversation_messages,
         )
 
 
@@ -614,14 +629,37 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _with_consumed_message_log_ids(
+def _round_result_from_tool_loop(
     tool_loop_result: Any,
+    *,
     message_log_ids: list[int],
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
 ) -> ActiveChatRoundResult:
     return replace(
         tool_loop_result.round_result,
         consumed_message_log_ids=list(message_log_ids),
+        conversation_messages_delta=[
+            _assistant_tool_call_message(
+                assistant_text=assistant_text,
+                tool_calls=tool_calls,
+            ),
+            *tool_loop_result.tool_messages,
+        ],
     )
+
+
+def _assistant_tool_call_message(
+    *,
+    assistant_text: str,
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": assistant_text,
+        "tool_calls": list(tool_calls),
+    }
+    return message
 
 
 __all__ = [

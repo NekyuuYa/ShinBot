@@ -160,6 +160,7 @@ def make_batch(
     *,
     review_result_summary: Any | None = None,
     self_platform_id: str = "",
+    conversation_messages: list[dict[str, Any]] | None = None,
 ) -> ActiveChatBatch:
     active_state = ActiveChatState(
         session_id="bot:group:room",
@@ -186,6 +187,7 @@ def make_batch(
             if review_result_summary is None
             else review_result_summary
         ),
+        conversation_messages=list(conversation_messages or []),
     )
 
 
@@ -228,12 +230,67 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
     assert model_runtime.calls[0].metadata["review_result_summary"] == {
         "summary": "review found a running topic"
     }
+    assert result.consumed_message_log_ids == [101]
+    assert [message["role"] for message in result.conversation_messages_delta] == [
+        "assistant",
+        "tool",
+    ]
+    assert result.conversation_messages_delta[0]["tool_calls"][0]["function"]["name"] == (
+        "send_reply"
+    )
     rendered_prompt_text = json.dumps(
         model_runtime.calls[0].messages,
         ensure_ascii=False,
     )
     assert "current active_chat batch is the primary target" in rendered_prompt_text
     assert "never output numeric interest" in rendered_prompt_text
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_injects_previous_conversation_trace() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    await runner.run(
+        make_batch(
+            conversation_messages=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        make_tool_call("send_reply", {"text": "上一轮回复"})
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-send_reply",
+                    "content": "{\"ok\": true}",
+                },
+            ]
+        )
+    )
+
+    rendered_prompt_text = json.dumps(
+        model_runtime.calls[0].messages,
+        ensure_ascii=False,
+    )
+    assert "send_reply" in rendered_prompt_text
+    assert "call-send_reply" in rendered_prompt_text
 
 
 @pytest.mark.asyncio
