@@ -27,6 +27,7 @@ class RecordingWorkflowDispatcher:
         self.calls: list[dict[str, Any]] = []
         self.review_calls: list[dict[str, Any]] = []
         self.active_chat_calls: list[dict[str, Any]] = []
+        self.active_chat_stops: list[str] = []
 
     async def run_active_reply(
         self,
@@ -76,6 +77,9 @@ class RecordingWorkflowDispatcher:
                 **kwargs,
             }
         )
+
+    def stop_active_chat(self, session_id: str) -> None:
+        self.active_chat_stops.append(session_id)
 
 
 class RecordingActiveChatTimer:
@@ -640,8 +644,10 @@ async def test_scheduler_active_chat_handles_mentions_without_active_reply_inter
 
 @pytest.mark.asyncio
 async def test_scheduler_ticks_active_chat_to_idle_with_next_review_plan() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
     timer = RecordingActiveChatTimer()
     scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
         response_profile_resolver=lambda _signal: "balanced",
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
@@ -672,6 +678,7 @@ async def test_scheduler_ticks_active_chat_to_idle_with_next_review_plan() -> No
     assert scheduler.active_chat_state_for("bot:group:room") is None
     assert scheduler.review_plan_for("bot:group:room") == decision.next_review_plan
     assert timer.cancelled == ["bot:group:room"]
+    assert dispatcher.active_chat_stops == ["bot:group:room"]
 
 
 def test_scheduler_adjusts_active_chat_interest() -> None:
@@ -705,8 +712,10 @@ def test_scheduler_adjusts_active_chat_interest() -> None:
 
 
 def test_scheduler_force_exits_active_chat_from_interest_adjustment() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
     timer = RecordingActiveChatTimer()
     scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
         response_profile_resolver=lambda _signal: "balanced",
         review_policy=FixedReviewPolicy(),
         active_chat_timer=timer,
@@ -735,6 +744,7 @@ def test_scheduler_force_exits_active_chat_from_interest_adjustment() -> None:
     assert decision.next_review_plan.next_review_at == 170.0
     assert scheduler.active_chat_state_for("bot:group:room") is None
     assert timer.cancelled == ["bot:group:room"]
+    assert dispatcher.active_chat_stops == ["bot:group:room"]
 
 
 @pytest.mark.asyncio

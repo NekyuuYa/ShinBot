@@ -257,4 +257,6 @@ async def test_active_chat_workflow_keeps_pending_without_handler() -> None:
     state = workflow.attention_state_for("bot:group:room")
     assert state is not None
     assert [message.message_log_id for message in state.pending_buffer] == [1]
+    workflow.stop_active_chat("bot:group:room")
+    assert workflow.attention_state_for("bot:group:room") is None
     await workflow.shutdown()

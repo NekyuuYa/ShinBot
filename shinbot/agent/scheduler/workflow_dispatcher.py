@@ -53,6 +53,9 @@ class AgentWorkflowDispatcher(Protocol):
     ) -> None:
         """Start an active chat workflow session after review completion."""
 
+    def stop_active_chat(self, session_id: str) -> None:
+        """Stop active chat workflow runtime state after scheduler exit."""
+
     async def notify_active_chat_message(
         self,
         *,
@@ -162,6 +165,12 @@ class AttentionActiveReplyDispatcher:
             active_chat_state=active_chat_state,
             review_result_summary=review_result_summary,
         )
+
+    def stop_active_chat(self, session_id: str) -> None:
+        if self._active_chat_workflow is None:
+            return
+
+        self._active_chat_workflow.stop_active_chat(session_id)
 
     async def notify_active_chat_message(
         self,

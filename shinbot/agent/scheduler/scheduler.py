@@ -322,7 +322,7 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
-        self._cancel_active_chat_timer(session_id)
+        self._stop_active_chat_runtime(session_id)
         return ActiveChatInterestAdjustDecision(
             session_id=session_id,
             state=AgentState.IDLE,
@@ -563,7 +563,7 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
-        self._cancel_active_chat_timer(session_id)
+        self._stop_active_chat_runtime(session_id)
         return ActiveChatTickDecision(
             session_id=session_id,
             state=AgentState.IDLE,
@@ -634,7 +634,7 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
-        self._cancel_active_chat_timer(session_id)
+        self._stop_active_chat_runtime(session_id)
         return ActiveChatBootstrapApplyDecision(
             session_id=session_id,
             state=AgentState.IDLE,
@@ -680,6 +680,12 @@ class AgentScheduler:
     def _cancel_active_chat_timer(self, session_id: str) -> None:
         if self._active_chat_timer is not None:
             self._active_chat_timer.cancel(session_id)
+
+    def _stop_active_chat_runtime(self, session_id: str) -> None:
+        stop_active_chat = getattr(self._workflow_dispatcher, "stop_active_chat", None)
+        if stop_active_chat is not None:
+            stop_active_chat(session_id)
+        self._cancel_active_chat_timer(session_id)
 
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:

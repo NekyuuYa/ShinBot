@@ -174,6 +174,12 @@ class ActiveChatWorkflow:
         self._running_rounds.clear()
         self._states.clear()
 
+    def stop_active_chat(self, session_id: str) -> None:
+        """Clear session-bound active chat workflow state after scheduler exit."""
+        self._cancel_semantic_wait_locked(session_id)
+        self._states.pop(session_id, None)
+        self.last_batches.pop(session_id, None)
+
     def attention_state_for(self, session_id: str) -> ActiveChatAttentionState | None:
         """Return in-memory attention state for tests and diagnostics."""
         return self._states.get(session_id)
