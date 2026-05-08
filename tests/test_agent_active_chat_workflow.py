@@ -75,6 +75,31 @@ def test_active_chat_attention_threshold_uses_interest() -> None:
 
 
 @pytest.mark.asyncio
+async def test_active_chat_workflow_start_initializes_session_without_llm_round() -> None:
+    batches: list[ActiveChatBatch] = []
+
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        batches.append(batch)
+        return ActiveChatRoundResult(success=True)
+
+    workflow = ActiveChatWorkflow(round_handler=handler, now=lambda: 10.0)
+
+    result = await workflow.start_active_chat(
+        session_id="bot:group:room",
+        active_chat_state=make_active_state(),
+        review_result_summary={"reason": "review_done"},
+    )
+
+    assert result.accepted is True
+    state = workflow.attention_state_for("bot:group:room")
+    assert state is not None
+    assert state.active_epoch == 0
+    assert state.review_result_summary == {"reason": "review_done"}
+    assert state.pending_buffer == []
+    assert batches == []
+
+
+@pytest.mark.asyncio
 async def test_active_chat_workflow_flushes_after_semantic_wait() -> None:
     batches: list[ActiveChatBatch] = []
 

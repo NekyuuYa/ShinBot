@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from shinbot.agent.scheduler.models import ActiveChatState
 
@@ -43,6 +44,18 @@ class ActiveChatAttentionState:
     pending_buffer: list[ActiveChatMessageSignal] = field(default_factory=list)
     last_sender_id: str = ""
     mode: ActiveChatMode = ActiveChatMode.FAST
+    active_epoch: int = 0
+    review_result_summary: Any = None
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatStartResult:
+    """Observable result of starting one active chat session."""
+
+    accepted: bool
+    session_id: str
+    active_epoch: int = 0
+    skipped_reason: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,4 +104,5 @@ __all__ = [
     "ActiveChatMode",
     "ActiveChatNotifyResult",
     "ActiveChatRoundResult",
+    "ActiveChatStartResult",
 ]

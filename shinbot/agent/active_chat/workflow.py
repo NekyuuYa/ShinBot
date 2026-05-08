@@ -15,6 +15,7 @@ from shinbot.agent.active_chat.models import (
     ActiveChatMessageSignal,
     ActiveChatNotifyResult,
     ActiveChatRoundResult,
+    ActiveChatStartResult,
 )
 from shinbot.agent.scheduler.models import ActiveChatState
 
@@ -44,6 +45,29 @@ class ActiveChatWorkflow:
         self._semantic_wait_tasks: dict[str, asyncio.Task[None]] = {}
         self._running_rounds: dict[str, asyncio.Task[None]] = {}
         self.last_batches: dict[str, ActiveChatBatch] = {}
+
+    async def start_active_chat(
+        self,
+        *,
+        session_id: str,
+        active_chat_state: ActiveChatState,
+        review_result_summary=None,
+    ) -> ActiveChatStartResult:
+        """Initialize an active chat session without triggering an LLM round."""
+        async with self._get_lock(session_id):
+            self._cancel_semantic_wait_locked(session_id)
+            state = ActiveChatAttentionState(
+                session_id=session_id,
+                last_update_at=self._now(),
+                active_epoch=active_chat_state.active_epoch,
+                review_result_summary=review_result_summary,
+            )
+            self._states[session_id] = state
+        return ActiveChatStartResult(
+            accepted=True,
+            session_id=session_id,
+            active_epoch=active_chat_state.active_epoch,
+        )
 
     @property
     def attention_config(self) -> ActiveChatAttentionConfig:
@@ -169,7 +193,7 @@ class ActiveChatWorkflow:
         timer_reset = False
         if existing is not None and not existing.done():
             if previous_sender_id == sender_id:
-                existing.cancel()
+                self._cancel_semantic_wait_locked(session_id)
                 timer_reset = True
             else:
                 return False, False
@@ -185,6 +209,11 @@ class ActiveChatWorkflow:
         )
         self._semantic_wait_tasks[session_id] = task
         return True, timer_reset
+
+    def _cancel_semantic_wait_locked(self, session_id: str) -> None:
+        task = self._semantic_wait_tasks.pop(session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     async def _semantic_wait_then_flush(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from shinbot.agent.active_chat import ActiveChatWorkflow
 from shinbot.agent.prompt_manager import (
     PromptComponent,
     PromptComponentKind,
@@ -1657,7 +1658,12 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
 @pytest.mark.asyncio
 async def test_attention_dispatcher_can_run_review_workflow() -> None:
     workflow = ReviewWorkflow(now=lambda: 100.0)
-    dispatcher = AttentionActiveReplyDispatcher(None, review_workflow=workflow)
+    active_chat_workflow = ActiveChatWorkflow(now=lambda: 100.0)
+    dispatcher = AttentionActiveReplyDispatcher(
+        None,
+        review_workflow=workflow,
+        active_chat_workflow=active_chat_workflow,
+    )
     scheduler = AgentScheduler(
         workflow_dispatcher=dispatcher,
         response_profile_resolver=lambda _signal: "balanced",
@@ -1693,6 +1699,9 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
     assert dispatcher.last_review_explanation is not None
     assert dispatcher.last_review_explanation.active_chat_initial_interest is None
     assert dispatcher.last_review_explanation.replied is False
+    active_attention_state = active_chat_workflow.attention_state_for("bot:group:room")
+    assert active_attention_state is not None
+    assert active_attention_state.review_result_summary == dispatcher.last_review_explanation
 
 
 @pytest.mark.asyncio

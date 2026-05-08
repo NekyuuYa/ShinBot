@@ -8,6 +8,7 @@ from shinbot.agent.active_chat.models import (
     ActiveChatMode,
     ActiveChatNotifyResult,
     ActiveChatRoundResult,
+    ActiveChatStartResult,
 )
 from shinbot.agent.active_chat.workflow import ActiveChatRoundHandler, ActiveChatWorkflow
 
@@ -21,5 +22,6 @@ __all__ = [
     "ActiveChatNotifyResult",
     "ActiveChatRoundHandler",
     "ActiveChatRoundResult",
+    "ActiveChatStartResult",
     "ActiveChatWorkflow",
 ]

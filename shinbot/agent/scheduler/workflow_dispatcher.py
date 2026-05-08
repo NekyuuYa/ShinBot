@@ -44,6 +44,15 @@ class AgentWorkflowDispatcher(Protocol):
     ) -> None:
         """Run the review workflow for unread messages selected by Agent internals."""
 
+    async def start_active_chat(
+        self,
+        *,
+        session_id: str,
+        active_chat_state: ActiveChatState,
+        review_result_summary=None,
+    ) -> None:
+        """Start an active chat workflow session after review completion."""
+
     async def notify_active_chat_message(
         self,
         *,
@@ -126,6 +135,33 @@ class AttentionActiveReplyDispatcher:
         )
         self.last_review_result = result
         self.last_review_explanation = build_review_workflow_explanation(result)
+        if (
+            self._active_chat_workflow is not None
+            and result.completion is not None
+            and result.completion.active_chat_started
+            and result.completion.active_chat_state is not None
+        ):
+            await self.start_active_chat(
+                session_id=session_id,
+                active_chat_state=result.completion.active_chat_state,
+                review_result_summary=self.last_review_explanation,
+            )
+
+    async def start_active_chat(
+        self,
+        *,
+        session_id: str,
+        active_chat_state: ActiveChatState,
+        review_result_summary=None,
+    ) -> None:
+        if self._active_chat_workflow is None:
+            return
+
+        await self._active_chat_workflow.start_active_chat(
+            session_id=session_id,
+            active_chat_state=active_chat_state,
+            review_result_summary=review_result_summary,
+        )
 
     async def notify_active_chat_message(
         self,
