@@ -276,6 +276,8 @@ class ActiveChatWorkflow:
                     return
                 messages = list(state.pending_buffer)
                 state.pending_buffer.clear()
+                handled_accumulated = state.accumulated
+                state.accumulated = 0.0
 
             latest_signal = messages[-1]
             active_chat_state = latest_signal.active_chat_state
@@ -326,7 +328,15 @@ class ActiveChatWorkflow:
             async with self._get_lock(session_id):
                 state = self._states.get(session_id)
                 if state is not None:
-                    self._attention.cool_after_round(state)
+                    state.accumulated += (
+                        handled_accumulated
+                        * self._attention.config.post_round_accumulated_multiplier
+                    )
+                    self._arm_next_round_if_pending_locked(
+                        scheduler=scheduler,
+                        session_id=session_id,
+                        state=state,
+                    )
         except Exception:
             logger.exception("Active chat round failed for session %s", session_id)
             self._restore_pending(session_id, messages if "messages" in locals() else [])
@@ -345,6 +355,29 @@ class ActiveChatWorkflow:
             state = ActiveChatAttentionState(session_id=session_id, last_update_at=self._now())
             self._states[session_id] = state
         state.pending_buffer = messages + state.pending_buffer
+
+    def _arm_next_round_if_pending_locked(
+        self,
+        *,
+        scheduler,
+        session_id: str,
+        state: ActiveChatAttentionState,
+    ) -> None:
+        if not state.pending_buffer:
+            return
+        latest_signal = state.pending_buffer[-1]
+        active_chat_state = latest_signal.active_chat_state
+        if active_chat_state is None:
+            return
+        threshold = self._attention.effective_threshold(active_chat_state.interest_value)
+        if state.accumulated < threshold:
+            return
+        self._arm_semantic_wait_locked(
+            scheduler=scheduler,
+            session_id=session_id,
+            sender_id=state.last_sender_id,
+            previous_sender_id="",
+        )
 
     def _is_round_running(self, session_id: str) -> bool:
         running = self._running_rounds.get(session_id)

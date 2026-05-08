@@ -175,6 +175,12 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
     assert model_runtime.calls[0].metadata["review_result_summary"] == {
         "summary": "review found a running topic"
     }
+    rendered_prompt_text = json.dumps(
+        model_runtime.calls[0].messages,
+        ensure_ascii=False,
+    )
+    assert "current active_chat batch is the primary target" in rendered_prompt_text
+    assert "never output numeric interest" in rendered_prompt_text
 
 
 @pytest.mark.asyncio
