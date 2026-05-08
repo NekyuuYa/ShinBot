@@ -5,6 +5,12 @@ from shinbot.agent.active_chat.actions import (
     interest_effect_for_round,
 )
 from shinbot.agent.active_chat.attention import ActiveChatAttention, ActiveChatAttentionConfig
+from shinbot.agent.active_chat.context import (
+    ActiveChatContextBuilder,
+    ActiveChatContextBuilderAdapter,
+    ActiveChatContextBuildOptions,
+    ActiveChatStageInput,
+)
 from shinbot.agent.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatAttentionState,
@@ -22,7 +28,6 @@ from shinbot.agent.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.active_chat.runner import (
-    ActiveChatContextBuilder,
     ActiveChatFastRunner,
     ActiveChatFastRunnerConfig,
     ActiveChatMessageStore,
@@ -37,6 +42,8 @@ __all__ = [
     "ActiveChatAttentionState",
     "ActiveChatBatch",
     "ActiveChatContextBuilder",
+    "ActiveChatContextBuilderAdapter",
+    "ActiveChatContextBuildOptions",
     "ActiveChatFastRunner",
     "ActiveChatFastRunnerConfig",
     "ActiveChatInterestEffect",
@@ -49,6 +56,7 @@ __all__ = [
     "ActiveChatRoundHandler",
     "ActiveChatRoundResult",
     "ActiveChatStartResult",
+    "ActiveChatStageInput",
     "ActiveChatToolLoop",
     "ActiveChatToolLoopResult",
     "ActiveChatWorkflow",

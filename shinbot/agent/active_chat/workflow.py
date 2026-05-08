@@ -48,6 +48,10 @@ class ActiveChatWorkflow:
         self._running_rounds: dict[str, asyncio.Task[None]] = {}
         self.last_batches: dict[str, ActiveChatBatch] = {}
 
+    def set_round_handler(self, round_handler: ActiveChatRoundHandler | None) -> None:
+        """Replace the active chat round handler."""
+        self._round_handler = round_handler
+
     async def start_active_chat(
         self,
         *,
@@ -187,6 +191,19 @@ class ActiveChatWorkflow:
         """Return in-memory attention state for tests and diagnostics."""
         return self._states.get(session_id)
 
+    async def drain_pending_for_repair(
+        self,
+        batch: ActiveChatBatch,
+    ) -> list[ActiveChatMessageSignal]:
+        """Drain messages that arrived while a round was preparing repair."""
+        async with self._get_lock(batch.session_id):
+            state = self._states.get(batch.session_id)
+            if state is None or state.active_epoch != batch.active_chat_state.active_epoch:
+                return []
+            messages = list(state.pending_buffer)
+            state.pending_buffer.clear()
+            return messages
+
     def _get_lock(self, session_id: str) -> asyncio.Lock:
         if session_id not in self._locks:
             self._locks[session_id] = asyncio.Lock()
@@ -294,7 +311,10 @@ class ActiveChatWorkflow:
                 self._restore_pending(session_id, messages)
                 return
 
-            scheduler.mark_active_chat_consumed(session_id, batch.message_log_ids)
+            consumed_message_log_ids = (
+                result.consumed_message_log_ids or batch.message_log_ids
+            )
+            scheduler.mark_active_chat_consumed(session_id, consumed_message_log_ids)
             effect = interest_effect_for_round(result)
             self.last_batches[session_id] = batch
             scheduler.adjust_active_chat_interest(

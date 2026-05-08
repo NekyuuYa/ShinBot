@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.active_chat import (
+    ActiveChatContextBuilderAdapter,
     ActiveChatFastRunner,
     ActiveChatWorkflow,
     register_active_chat_prompt_components,
@@ -180,16 +181,16 @@ class AgentRuntime:
             self._dispatch_attention_workflow,
         )
         self.review_workflow = self._create_review_workflow(database)
+        self.active_chat_workflow = ActiveChatWorkflow()
         active_chat_fast_runner = ActiveChatFastRunner(
             self.model_runtime,
             prompt_registry=self.prompt_registry,
             tool_manager=self.tool_manager,
             message_store=database.message_logs,
-            context_builder=ReviewContextBuilderAdapter(self.context_manager),
+            context_builder=ActiveChatContextBuilderAdapter(self.context_manager),
+            pending_message_provider=self.active_chat_workflow.drain_pending_for_repair,
         )
-        self.active_chat_workflow = ActiveChatWorkflow(
-            round_handler=active_chat_fast_runner.run,
-        )
+        self.active_chat_workflow.set_round_handler(active_chat_fast_runner.run)
         self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=AttentionActiveReplyDispatcher(
                 self.attention_scheduler,

@@ -110,6 +110,7 @@ class ActiveChatRoundResult:
     action: ActiveChatActionKind = ActiveChatActionKind.WATCH
     reply_intensity: ActiveChatReplyIntensity = ActiveChatReplyIntensity.LIGHT
     no_reply_intensity: ActiveChatNoReplyIntensity = ActiveChatNoReplyIntensity.NORMAL
+    consumed_message_log_ids: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True, frozen=True)

@@ -212,6 +212,49 @@ async def test_active_chat_fast_runner_repairs_toolless_output_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_active_chat_fast_runner_merges_pending_messages_into_repair() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(text="I would reply without tools."),
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "merged batch"})
+                ]
+            ),
+        ]
+    )
+
+    async def pending_provider(batch: ActiveChatBatch) -> list[ActiveChatMessageSignal]:
+        return [
+            ActiveChatMessageSignal(
+                session_id=batch.session_id,
+                message_log_id=102,
+                sender_id="bob",
+                response_profile="balanced",
+                active_chat_state=batch.active_chat_state,
+            )
+        ]
+
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        pending_message_provider=pending_provider,
+    )
+
+    result = await runner.run(make_batch())
+
+    assert result.success is True
+    assert result.action == ActiveChatActionKind.NO_REPLY
+    assert result.consumed_message_log_ids == [101, 102]
+    assert model_runtime.calls[0].metadata["message_log_ids"] == [101]
+    assert model_runtime.calls[1].metadata["message_log_ids"] == [101, 102]
+
+
+@pytest.mark.asyncio
 async def test_active_chat_fast_runner_accepts_dataclass_review_handoff_summary() -> None:
     prompt_registry = PromptRegistry()
     register_active_chat_prompt_components(prompt_registry)

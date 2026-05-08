@@ -313,6 +313,44 @@ async def test_active_chat_workflow_retry_failed_consumes_batch_and_adjusts_inte
 
 
 @pytest.mark.asyncio
+async def test_active_chat_workflow_uses_round_result_consumed_message_ids() -> None:
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        return ActiveChatRoundResult(success=True, consumed_message_log_ids=[1, 2])
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.sleep(0.05)
+
+    assert scheduler.consumed == [("bot:group:room", [1, 2])]
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_active_chat_workflow_stop_cancels_running_round_without_consuming() -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()

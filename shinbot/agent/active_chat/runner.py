@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field, is_dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from enum import Enum
+from inspect import isawaitable
 from typing import Any, Protocol
 
+from shinbot.agent.active_chat.context import ActiveChatContextBuilder
 from shinbot.agent.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
+    ActiveChatMessageSignal,
     ActiveChatRoundResult,
 )
 from shinbot.agent.active_chat.prompt_registration import (
@@ -47,20 +51,6 @@ class ActiveChatMessageStore(Protocol):
         """Return one message-log payload."""
 
 
-class ActiveChatContextBuilder(Protocol):
-    """Build prompt-adjacent context from selected message records."""
-
-    def build_for_messages(
-        self,
-        *,
-        session_id: str,
-        messages: list[dict[str, Any]],
-        purpose: str,
-        options: Any | None = None,
-    ) -> Any:
-        """Return an object with source_messages/instruction_content/metadata fields."""
-
-
 @dataclass(slots=True, frozen=True)
 class ActiveChatFastRunnerConfig:
     """Model routing and prompt configuration for active chat fast mode."""
@@ -87,6 +77,13 @@ class ActiveChatFastRunner:
         message_store: ActiveChatMessageStore | None = None,
         context_builder: ActiveChatContextBuilder | None = None,
         tool_loop: ActiveChatToolLoop | None = None,
+        pending_message_provider: (
+            Callable[
+                [ActiveChatBatch],
+                list[ActiveChatMessageSignal] | Awaitable[list[ActiveChatMessageSignal]],
+            ]
+            | None
+        ) = None,
         config: ActiveChatFastRunnerConfig | None = None,
     ) -> None:
         self._model_runtime = model_runtime
@@ -95,6 +92,7 @@ class ActiveChatFastRunner:
         self._message_store = message_store
         self._context_builder = context_builder
         self._tool_loop = tool_loop or ActiveChatToolLoop()
+        self._pending_message_provider = pending_message_provider
         self._config = config or ActiveChatFastRunnerConfig()
 
     async def run(self, batch: ActiveChatBatch) -> ActiveChatRoundResult:
@@ -123,17 +121,18 @@ class ActiveChatFastRunner:
                 reason="active_chat_model_call_failed",
             )
         if result.tool_calls:
-            return (
+            return _with_consumed_message_log_ids(
                 await self._tool_loop.execute(
                     result.tool_calls,
                     tool_manager=self._tool_manager,
                     instance_id=_instance_id_from_session(batch.session_id),
                     session_id=batch.session_id,
                     run_id=str(result.execution_id or ""),
-                )
-            ).round_result
+                ),
+                batch.message_log_ids,
+            )
 
-        repaired = await self._repair_toolless_round(
+        repair_batch, repaired = await self._repair_toolless_round(
             batch,
             messages=messages,
             tools=tools,
@@ -145,22 +144,25 @@ class ActiveChatFastRunner:
                 success=True,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason="active_chat_toolless_repair_failed",
+                consumed_message_log_ids=repair_batch.message_log_ids,
             )
         if not repaired.tool_calls:
             return ActiveChatRoundResult(
                 success=True,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason="active_chat_toolless_after_repair",
+                consumed_message_log_ids=repair_batch.message_log_ids,
             )
-        return (
+        return _with_consumed_message_log_ids(
             await self._tool_loop.execute(
                 repaired.tool_calls,
                 tool_manager=self._tool_manager,
                 instance_id=_instance_id_from_session(batch.session_id),
                 session_id=batch.session_id,
                 run_id=str(repaired.execution_id or ""),
-            )
-        ).round_result
+            ),
+            repair_batch.message_log_ids,
+        )
 
     def _build_model_call_parts(
         self,
@@ -404,8 +406,19 @@ class ActiveChatFastRunner:
         tools: list[dict[str, Any]],
         metadata: dict[str, Any],
         first_result: Any,
-    ) -> Any | None:
-        repair_messages = list(messages)
+    ) -> tuple[ActiveChatBatch, Any | None]:
+        repair_batch = await self._batch_for_repair(batch)
+        if repair_batch.message_log_ids != batch.message_log_ids:
+            try:
+                repair_messages, tools, metadata = self._build_model_call_parts(repair_batch)
+            except Exception:
+                logger.exception(
+                    "Active chat repair prompt rebuild failed for session %s",
+                    batch.session_id,
+                )
+                return repair_batch, None
+        else:
+            repair_messages = list(messages)
         if str(first_result.text or "").strip():
             repair_messages.append(
                 {"role": "assistant", "content": str(first_result.text or "").strip()}
@@ -416,12 +429,36 @@ class ActiveChatFastRunner:
                 "content": [{"type": "text", "text": _TOOLLESS_REPAIR_PROMPT}],
             }
         )
-        return await self._generate(
-            batch,
+        return repair_batch, await self._generate(
+            repair_batch,
             messages=repair_messages,
             tools=tools,
             metadata=metadata,
             repair_attempt=1,
+        )
+
+    async def _batch_for_repair(self, batch: ActiveChatBatch) -> ActiveChatBatch:
+        if self._pending_message_provider is None:
+            return batch
+        pending = self._pending_message_provider(batch)
+        if isawaitable(pending):
+            pending = await pending
+        existing_ids = set(batch.message_log_ids)
+        extra_messages = [
+            message
+            for message in pending
+            if message.message_log_id not in existing_ids
+        ]
+        if not extra_messages:
+            return batch
+        latest = extra_messages[-1]
+        return ActiveChatBatch(
+            session_id=batch.session_id,
+            messages=[*batch.messages, *extra_messages],
+            active_chat_state=latest.active_chat_state or batch.active_chat_state,
+            response_profile=latest.response_profile or batch.response_profile,
+            mode=batch.mode,
+            review_result_summary=batch.review_result_summary,
         )
 
 
@@ -547,6 +584,16 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, list | tuple | set):
         return [_jsonable(item) for item in value]
     return value
+
+
+def _with_consumed_message_log_ids(
+    tool_loop_result: Any,
+    message_log_ids: list[int],
+) -> ActiveChatRoundResult:
+    return replace(
+        tool_loop_result.round_result,
+        consumed_message_log_ids=list(message_log_ids),
+    )
 
 
 __all__ = [
