@@ -8,6 +8,7 @@ import pytest
 from shinbot.agent.active_chat import (
     ActiveChatActionKind,
     ActiveChatBatch,
+    ActiveChatContextBuilderAdapter,
     ActiveChatFastRunner,
     ActiveChatMessageSignal,
     ActiveChatNoReplyIntensity,
@@ -84,6 +85,53 @@ class FakeMessageStore:
         }
 
 
+class FakeContextManager:
+    def __init__(self) -> None:
+        self.instruction_calls: list[dict[str, Any]] = []
+        self.context_calls: list[dict[str, Any]] = []
+
+    def build_instruction_stage_content(
+        self,
+        session_id: str,
+        unread_records: list[dict[str, Any]],
+        *,
+        previous_summary: str = "",
+        self_platform_id: str = "",
+        now_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.instruction_calls.append(
+            {
+                "session_id": session_id,
+                "message_ids": [record["id"] for record in unread_records],
+                "previous_summary": previous_summary,
+                "self_platform_id": self_platform_id,
+                "now_ms": now_ms,
+            }
+        )
+        return [{"type": "text", "text": "Active batch from context builder"}]
+
+    def build_context_stage_messages(
+        self,
+        session_id: str,
+        *,
+        self_platform_id: str = "",
+        now_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.context_calls.append(
+            {
+                "session_id": session_id,
+                "self_platform_id": self_platform_id,
+                "now_ms": now_ms,
+            }
+        )
+        return [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Recent tail context"}],
+            }
+        ]
+
+
 def make_result(*, text: str = "", tool_calls: list[dict[str, Any]] | None = None) -> GenerateResult:
     return GenerateResult(
         text=text,
@@ -108,7 +156,11 @@ def make_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def make_batch(*, review_result_summary: Any | None = None) -> ActiveChatBatch:
+def make_batch(
+    *,
+    review_result_summary: Any | None = None,
+    self_platform_id: str = "",
+) -> ActiveChatBatch:
     active_state = ActiveChatState(
         session_id="bot:group:room",
         interest_value=42.0,
@@ -124,6 +176,7 @@ def make_batch(*, review_result_summary: Any | None = None) -> ActiveChatBatch:
                 message_log_id=101,
                 sender_id="alice",
                 response_profile="balanced",
+                self_platform_id=self_platform_id,
             )
         ],
         active_chat_state=active_state,
@@ -258,6 +311,39 @@ async def test_active_chat_fast_runner_merges_pending_messages_into_repair() -> 
     assert result.consumed_message_log_ids == [101, 102]
     assert model_runtime.calls[0].metadata["message_log_ids"] == [101]
     assert model_runtime.calls[1].metadata["message_log_ids"] == [101, 102]
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_injects_active_context_messages() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    context_manager = FakeContextManager()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        context_builder=ActiveChatContextBuilderAdapter(context_manager),
+    )
+
+    result = await runner.run(make_batch(self_platform_id="bot-self"))
+
+    assert result.success is True
+    assert context_manager.instruction_calls[0]["self_platform_id"] == "bot-self"
+    assert context_manager.context_calls[0]["self_platform_id"] == "bot-self"
+    assert any(
+        "Recent tail context" in str(message.get("content", ""))
+        for message in model_runtime.calls[0].messages
+    )
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ class ActiveChatContextBuildOptions:
     self_platform_id: str = ""
     previous_summary: str = ""
     now_ms: int | None = None
+    include_context_stage: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -77,11 +78,19 @@ class ActiveChatContextBuilderAdapter:
             self_platform_id=resolved_options.self_platform_id,
             now_ms=now_ms,
         )
+        context_messages = []
+        if resolved_options.include_context_stage:
+            context_messages = self._context_manager.build_context_stage_messages(
+                session_id,
+                self_platform_id=resolved_options.self_platform_id,
+                now_ms=now_ms,
+            )
         return ActiveChatStageInput(
             session_id=session_id,
             purpose=purpose,
             source_messages=list(messages),
             instruction_content=instruction_content,
+            context_messages=context_messages,
             metadata=metadata,
         )
 

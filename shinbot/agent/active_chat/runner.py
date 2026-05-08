@@ -10,7 +10,10 @@ from enum import Enum
 from inspect import isawaitable
 from typing import Any, Protocol
 
-from shinbot.agent.active_chat.context import ActiveChatContextBuilder
+from shinbot.agent.active_chat.context import (
+    ActiveChatContextBuilder,
+    ActiveChatContextBuildOptions,
+)
 from shinbot.agent.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
@@ -237,7 +240,14 @@ class ActiveChatFastRunner:
             session_id=batch.session_id,
             messages=source_messages,
             purpose="active_chat_fast",
-            options=None,
+            options=ActiveChatContextBuildOptions(
+                self_platform_id=_self_platform_id_from_batch(batch),
+                metadata={
+                    "message_log_ids": batch.message_log_ids,
+                    "active_epoch": batch.active_chat_state.active_epoch,
+                    "interest_value": batch.active_chat_state.interest_value,
+                },
+            ),
         )
 
     def _build_prompt_injections(
@@ -274,6 +284,17 @@ class ActiveChatFastRunner:
                 metadata={"active_chat_stage": self.stage_id},
             )
         )
+        context_messages = list(getattr(context, "context_messages", []) or [])
+        if context_messages:
+            injections.append(
+                PromptInjection(
+                    stage=PromptStage.CONTEXT,
+                    component_id="active_chat.fast_mode.context",
+                    messages=context_messages,
+                    priority=10,
+                    metadata={"active_chat_stage": self.stage_id},
+                )
+            )
         tools = self._active_chat_tools(batch)
         if tools:
             injections.append(
@@ -572,6 +593,13 @@ def _virtual_tool_schemas() -> list[dict[str, Any]]:
 
 def _instance_id_from_session(session_id: str) -> str:
     return session_id.split(":", 1)[0] if ":" in session_id else ""
+
+
+def _self_platform_id_from_batch(batch: ActiveChatBatch) -> str:
+    for message in reversed(batch.messages):
+        if message.self_platform_id:
+            return message.self_platform_id
+    return ""
 
 
 def _jsonable(value: Any) -> Any:
