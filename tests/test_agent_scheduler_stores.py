@@ -69,6 +69,43 @@ def test_in_memory_agent_inbox_splits_consumed_unread_range() -> None:
     assert inbox.count_unread_messages("bot:group:room") == 2
 
 
+def test_in_memory_agent_inbox_marks_active_chat_consumed() -> None:
+    inbox = InMemoryAgentInbox()
+    for message_id in [1, 2, 3, 4]:
+        inbox.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id=f"user-{message_id}",
+                created_at=float(message_id),
+            )
+        )
+
+    consumed = inbox.mark_active_chat_consumed(
+        session_id="bot:group:room",
+        message_log_ids=[2, 3],
+    )
+
+    assert [item.message_log_id for item in consumed] == [2, 3]
+    assert [item.message_log_id for item in inbox.list_unread("bot:group:room")] == [1, 4]
+    assert [
+        (item.start_msg_log_id, item.end_msg_log_id)
+        for item in inbox.list_unread_ranges("bot:group:room")
+    ] == [(1, 1), (4, 4)]
+    assert inbox.count_unread_messages("bot:group:room") == 2
+
+    inbox.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=2,
+            sender_id="user-2",
+            created_at=2.0,
+        )
+    )
+
+    assert [item.message_log_id for item in inbox.list_unread("bot:group:room")] == [1, 4]
+
+
 def test_in_memory_agent_inbox_counts_mentions_in_window() -> None:
     inbox = InMemoryAgentInbox()
     inbox.record_mention("bot:group:room", 10.0)

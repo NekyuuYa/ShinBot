@@ -109,6 +109,32 @@ def test_default_active_chat_policy_observes_message_without_natural_decay() -> 
     assert observed.tick_count == 0
 
 
+def test_default_active_chat_policy_uses_conservative_message_interest() -> None:
+    policy = DefaultActiveChatPolicy(
+        ActiveChatPolicyConfig(
+            initial_interest_value=10.0,
+            max_interest_value=100.0,
+        )
+    )
+    state = policy.initial_state(session_id="bot:group:room", now=10.0)
+
+    ordinary = policy.observe_message(state, now=11.0)
+    mentioned = policy.observe_message(state, now=12.0, is_mentioned=True)
+    replied = policy.observe_message(state, now=13.0, is_reply_to_bot=True)
+    poked = policy.observe_message(
+        state,
+        now=14.0,
+        is_poke_to_bot=True,
+        is_poke_to_other=True,
+        is_mention_to_other=True,
+    )
+
+    assert ordinary.interest_value == 11.0
+    assert mentioned.interest_value == 19.0
+    assert replied.interest_value == 16.0
+    assert poked.interest_value == 11.0
+
+
 def test_default_active_chat_policy_caps_message_interest() -> None:
     policy = DefaultActiveChatPolicy(
         ActiveChatPolicyConfig(

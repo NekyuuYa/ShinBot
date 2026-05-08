@@ -125,16 +125,24 @@ class AgentScheduler:
         )
         self._inbox.add_unread(unread)
 
-        priority_decision = self._priority_policy.evaluate(
-            signal,
-            now=now,
-            inbox=self._inbox,
-        )
-        high_priority_events = priority_decision.events
-        if high_priority_events:
-            self._inbox.add_high_priority_events(high_priority_events)
+        if initial_state == AgentState.ACTIVE_CHAT:
+            priority_decision = None
+            high_priority_events = []
+        else:
+            priority_decision = self._priority_policy.evaluate(
+                signal,
+                now=now,
+                inbox=self._inbox,
+            )
+            high_priority_events = priority_decision.events
+            if high_priority_events:
+                self._inbox.add_high_priority_events(high_priority_events)
 
-        if priority_decision.should_start_active_reply and self._workflow_dispatcher is not None:
+        if (
+            priority_decision is not None
+            and priority_decision.should_start_active_reply
+            and self._workflow_dispatcher is not None
+        ):
             self._state_store.set_state(signal.session_id, AgentState.ACTIVE_REPLY)
             self._cancel_active_chat_timer(signal.session_id)
             await self._workflow_dispatcher.run_active_reply(
@@ -164,6 +172,9 @@ class AgentScheduler:
                 now=now,
                 is_mentioned=signal.is_mentioned,
                 is_reply_to_bot=signal.is_reply_to_bot,
+                is_mention_to_other=signal.is_mention_to_other,
+                is_poke_to_bot=signal.is_poke_to_bot,
+                is_poke_to_other=signal.is_poke_to_other,
             )
             self._start_active_chat_timer(signal.session_id)
             active_chat_observed = True
@@ -175,6 +186,9 @@ class AgentScheduler:
                     response_profile=self._response_profile_resolver(signal),
                     is_mentioned=signal.is_mentioned,
                     is_reply_to_bot=signal.is_reply_to_bot,
+                    is_mention_to_other=signal.is_mention_to_other,
+                    is_poke_to_bot=signal.is_poke_to_bot,
+                    is_poke_to_other=signal.is_poke_to_other,
                     self_platform_id=signal.self_id,
                     active_chat_state=active_chat_state,
                 )
@@ -220,6 +234,17 @@ class AgentScheduler:
     def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
         """Mark whole unread ranges consumed by review."""
         self._inbox.mark_ranges_review_consumed(range_ids)
+
+    def mark_active_chat_consumed(
+        self,
+        session_id: str,
+        message_log_ids: list[int],
+    ) -> list[UnreadMessage]:
+        """Mark messages consumed by active chat."""
+        return self._inbox.mark_active_chat_consumed(
+            session_id=session_id,
+            message_log_ids=message_log_ids,
+        )
 
     def high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
         """Return high-priority events known to AgentScheduler for one session."""
@@ -554,6 +579,9 @@ class AgentScheduler:
         now: float,
         is_mentioned: bool,
         is_reply_to_bot: bool,
+        is_mention_to_other: bool,
+        is_poke_to_bot: bool,
+        is_poke_to_other: bool,
     ) -> ActiveChatState:
         active_chat_state = self._state_store.get_active_chat_state(session_id)
         if active_chat_state is None:
@@ -566,6 +594,9 @@ class AgentScheduler:
             now=now,
             is_mentioned=is_mentioned,
             is_reply_to_bot=is_reply_to_bot,
+            is_mention_to_other=is_mention_to_other,
+            is_poke_to_bot=is_poke_to_bot,
+            is_poke_to_other=is_poke_to_other,
         )
         self._state_store.set_active_chat_state(observed_state)
         return observed_state

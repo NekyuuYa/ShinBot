@@ -598,7 +598,7 @@ async def test_scheduler_notifies_active_chat_workflow_for_observed_message() ->
 
 
 @pytest.mark.asyncio
-async def test_scheduler_active_reply_interrupt_skips_active_chat_observation() -> None:
+async def test_scheduler_active_chat_handles_mentions_without_active_reply_interrupt() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     timer = RecordingActiveChatTimer()
     scheduler = AgentScheduler(
@@ -625,16 +625,17 @@ async def test_scheduler_active_reply_interrupt_skips_active_chat_observation() 
 
     decision = await scheduler.accept_signal(make_signal(message_log_id=2, is_mentioned=True))
 
-    assert decision.active_reply_started is True
-    assert decision.active_chat_observed is False
-    assert decision.active_chat_workflow_notified is False
-    assert decision.active_chat_state is None
-    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_REPLY
-    assert dispatcher.active_chat_calls == []
-    assert scheduler.active_chat_state_for("bot:group:room") == (
-        active_chat_decision.active_chat_state
-    )
-    assert timer.cancelled == ["bot:group:room"]
+    assert decision.active_reply_started is False
+    assert decision.active_chat_observed is True
+    assert decision.active_chat_workflow_notified is True
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.interest_value == pytest.approx(20.0)
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert dispatcher.calls == []
+    assert dispatcher.active_chat_calls[0]["message_log_id"] == 2
+    assert scheduler.active_chat_state_for("bot:group:room") == decision.active_chat_state
+    assert active_chat_decision.active_chat_state is not None
+    assert timer.cancelled == []
 
 
 @pytest.mark.asyncio
@@ -708,7 +709,7 @@ async def test_scheduler_applies_active_chat_bootstrap_correction() -> None:
     assert decision.active_chat_state.bootstrap_disposition == ActiveChatDisposition.EXIT_SOON
     assert decision.active_chat_state.bootstrap_applied is True
     assert decision.active_chat_state.decay_half_life_seconds == 10.0
-    assert decision.active_chat_state.interest_value == pytest.approx(20.6066, rel=1e-4)
+    assert decision.active_chat_state.interest_value == pytest.approx(11.6066, rel=1e-4)
 
 
 @pytest.mark.asyncio

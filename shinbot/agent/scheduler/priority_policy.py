@@ -89,6 +89,17 @@ class DefaultPriorityPolicy:
                     reason="message_replies_to_self",
                 )
             )
+        if signal.is_poke_to_bot:
+            events.append(
+                HighPriorityEvent(
+                    session_id=signal.session_id,
+                    message_log_id=signal.message_log_id or 0,
+                    sender_id=signal.sender_id,
+                    kind=HighPriorityEventKind.POKE,
+                    created_at=now,
+                    reason="message_pokes_self",
+                )
+            )
         return events
 
     def _should_wake(
@@ -99,6 +110,8 @@ class DefaultPriorityPolicy:
         inbox: AgentInbox,
     ) -> bool:
         if signal.is_reply_to_bot:
+            return True
+        if signal.is_poke_to_bot:
             return True
         if not signal.is_mentioned:
             return False

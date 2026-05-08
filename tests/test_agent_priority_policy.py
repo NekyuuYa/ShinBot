@@ -14,6 +14,7 @@ def make_signal(
     message_log_id: int = 1,
     is_mentioned: bool = False,
     is_reply_to_bot: bool = False,
+    is_poke_to_bot: bool = False,
 ) -> AgentEntrySignal:
     return AgentEntrySignal(
         session_id="bot:group:room",
@@ -26,6 +27,7 @@ def make_signal(
         is_private=False,
         is_mentioned=is_mentioned,
         is_reply_to_bot=is_reply_to_bot,
+        is_poke_to_bot=is_poke_to_bot,
     )
 
 
@@ -69,6 +71,16 @@ def test_default_priority_policy_wakes_immediately_for_reply_to_bot() -> None:
     decision = policy.evaluate(make_signal(is_reply_to_bot=True), now=10.0, inbox=inbox)
 
     assert [event.kind for event in decision.events] == [HighPriorityEventKind.REPLY_TO_BOT]
+    assert decision.should_start_active_reply is True
+
+
+def test_default_priority_policy_wakes_immediately_for_poke_to_bot() -> None:
+    inbox = InMemoryAgentInbox()
+    policy = DefaultPriorityPolicy()
+
+    decision = policy.evaluate(make_signal(is_poke_to_bot=True), now=10.0, inbox=inbox)
+
+    assert [event.kind for event in decision.events] == [HighPriorityEventKind.POKE]
     assert decision.should_start_active_reply is True
 
 

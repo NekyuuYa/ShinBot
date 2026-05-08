@@ -35,6 +35,14 @@ class AgentInbox(Protocol):
     def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
         """Mark whole unread ranges consumed by review."""
 
+    def mark_active_chat_consumed(
+        self,
+        *,
+        session_id: str,
+        message_log_ids: list[int],
+    ) -> list[UnreadMessage]:
+        """Mark messages consumed by active chat and return the consumed messages."""
+
     def add_high_priority_events(self, events: list[HighPriorityEvent]) -> None:
         """Record high-priority events."""
 
@@ -59,9 +67,12 @@ class InMemoryAgentInbox:
         self._ranges: dict[str, list[UnreadRange]] = defaultdict(list)
         self._high_priority: dict[str, list[HighPriorityEvent]] = defaultdict(list)
         self._recent_mentions: dict[str, deque[float]] = defaultdict(deque)
+        self._active_chat_consumed_ids: dict[str, set[int]] = defaultdict(set)
         self._next_range_id = 1
 
     def add_unread(self, message: UnreadMessage) -> None:
+        if message.message_log_id in self._active_chat_consumed_ids[message.session_id]:
+            return
         if any(item.message_log_id == message.message_log_id for item in self._unread[message.session_id]):
             return
         self._unread[message.session_id].append(message)
@@ -144,6 +155,37 @@ class InMemoryAgentInbox:
                 )
                 for item in ranges
             ]
+
+    def mark_active_chat_consumed(
+        self,
+        *,
+        session_id: str,
+        message_log_ids: list[int],
+    ) -> list[UnreadMessage]:
+        if not message_log_ids:
+            return []
+        consumed_ids = set(message_log_ids)
+        consumed = [
+            message
+            for message in self._unread.get(session_id, [])
+            if message.message_log_id in consumed_ids
+        ]
+        if not consumed:
+            return []
+
+        self._unread[session_id] = [
+            message
+            for message in self._unread.get(session_id, [])
+            if message.message_log_id not in consumed_ids
+        ]
+        self._active_chat_consumed_ids[session_id].update(
+            message.message_log_id for message in consumed
+        )
+        self._ranges[session_id] = self._ranges_from_messages(
+            session_id,
+            list(self._unread.get(session_id, [])),
+        )
+        return sorted(consumed, key=lambda item: (item.created_at, item.message_log_id))
 
     def add_high_priority_events(self, events: list[HighPriorityEvent]) -> None:
         for event in events:

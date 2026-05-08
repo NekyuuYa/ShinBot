@@ -52,6 +52,9 @@ class AgentWorkflowDispatcher(Protocol):
         response_profile: str,
         is_mentioned: bool,
         is_reply_to_bot: bool,
+        is_mention_to_other: bool,
+        is_poke_to_bot: bool,
+        is_poke_to_other: bool,
         self_platform_id: str,
         active_chat_state: ActiveChatState,
     ) -> None:
@@ -130,6 +133,9 @@ class AttentionActiveReplyDispatcher:
         response_profile: str,
         is_mentioned: bool,
         is_reply_to_bot: bool,
+        is_mention_to_other: bool,
+        is_poke_to_bot: bool,
+        is_poke_to_other: bool,
         self_platform_id: str,
         active_chat_state: ActiveChatState,
     ) -> None:

@@ -21,9 +21,9 @@ class ActiveChatPolicyConfig:
     decay_half_life_seconds: float = 20.0
     tick_interval_seconds: float = 5.0
     idle_interest_threshold: float = 5.0
-    message_interest_delta: float = 10.0
-    mention_interest_delta: float = 40.0
-    reply_interest_delta: float = 30.0
+    message_interest_delta: float = 1.0
+    mention_interest_delta: float = 8.0
+    reply_interest_delta: float = 5.0
     max_interest_value: float = 100.0
 
 
@@ -100,6 +100,9 @@ class ActiveChatPolicy(Protocol):
         now: float,
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
+        is_mention_to_other: bool = False,
+        is_poke_to_bot: bool = False,
+        is_poke_to_other: bool = False,
     ) -> ActiveChatState:
         """Apply message-driven interest changes."""
 
@@ -187,6 +190,9 @@ class DefaultActiveChatPolicy:
         now: float,
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
+        is_mention_to_other: bool = False,
+        is_poke_to_bot: bool = False,
+        is_poke_to_other: bool = False,
     ) -> ActiveChatState:
         delta = self._config.message_interest_delta
         if is_mentioned:

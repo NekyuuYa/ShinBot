@@ -230,6 +230,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 FROM agent_unread_ranges
                 WHERE session_id = ?
                   AND review_consumed = 0
+                  AND chat_consumed = 0
                 ORDER BY end_at DESC, end_msg_log_id DESC
                 LIMIT 1
                 """,
@@ -276,6 +277,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                  AND m.id <= r.end_msg_log_id
                 WHERE r.session_id = ?
                   AND r.review_consumed = 0
+                  AND r.chat_consumed = 0
                 ORDER BY m.created_at ASC, m.id ASC
                 """,
                 (session_id,),
@@ -299,6 +301,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 FROM agent_unread_ranges
                 WHERE session_id = ?
                   AND review_consumed = 0
+                  AND chat_consumed = 0
                 ORDER BY start_at ASC, start_msg_log_id ASC
                 LIMIT ?
                 """,
@@ -314,6 +317,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 FROM agent_unread_ranges
                 WHERE session_id = ?
                   AND review_consumed = 0
+                  AND chat_consumed = 0
                 """,
                 (session_id,),
             ).fetchone()
@@ -334,6 +338,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 FROM agent_unread_ranges
                 WHERE id = ?
                   AND review_consumed = 0
+                  AND chat_consumed = 0
                 """,
                 (range_id,),
             ).fetchone()
@@ -378,6 +383,118 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 """,
                 tuple(range_ids),
             )
+
+    def mark_active_chat_consumed(
+        self,
+        *,
+        session_id: str,
+        message_log_ids: list[int],
+    ) -> list[UnreadMessage]:
+        if not message_log_ids:
+            return []
+        consumed: list[UnreadMessage] = []
+        groups = _group_consecutive_ids(sorted(set(message_log_ids)))
+        consumed_message_ids: list[int] = []
+        with self.connect() as conn:
+            for start_msg_log_id, end_msg_log_id in groups:
+                rows = conn.execute(
+                    """
+                    SELECT id, session_id, start_msg_log_id, end_msg_log_id,
+                           start_at, end_at, message_count, review_consumed, chat_consumed
+                    FROM agent_unread_ranges
+                    WHERE session_id = ?
+                      AND review_consumed = 0
+                      AND chat_consumed = 0
+                      AND end_msg_log_id >= ?
+                      AND start_msg_log_id <= ?
+                    ORDER BY start_msg_log_id ASC
+                    """,
+                    (session_id, start_msg_log_id, end_msg_log_id),
+                ).fetchall()
+                for row in rows:
+                    unread_range = self._unread_range_from_row(row)
+                    consumed_start = max(unread_range.start_msg_log_id, start_msg_log_id)
+                    consumed_end = min(unread_range.end_msg_log_id, end_msg_log_id)
+                    if consumed_start > consumed_end:
+                        continue
+                    consumed_message_ids.extend(range(consumed_start, consumed_end + 1))
+
+                    conn.execute(
+                        "DELETE FROM agent_unread_ranges WHERE id = ?",
+                        (unread_range.id,),
+                    )
+                    for replacement, chat_consumed in (
+                        (
+                            self._range_for_message_bounds(
+                                conn,
+                                unread_range,
+                                start_msg_log_id=unread_range.start_msg_log_id,
+                                end_msg_log_id=consumed_start - 1,
+                            ),
+                            False,
+                        ),
+                        (
+                            self._range_for_message_bounds(
+                                conn,
+                                unread_range,
+                                start_msg_log_id=consumed_start,
+                                end_msg_log_id=consumed_end,
+                            ),
+                            True,
+                        ),
+                        (
+                            self._range_for_message_bounds(
+                                conn,
+                                unread_range,
+                                start_msg_log_id=consumed_end + 1,
+                                end_msg_log_id=unread_range.end_msg_log_id,
+                            ),
+                            False,
+                        ),
+                    ):
+                        if replacement is None:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT INTO agent_unread_ranges (
+                                session_id, start_msg_log_id, end_msg_log_id,
+                                start_at, end_at, message_count,
+                                review_consumed, chat_consumed
+                            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                            """,
+                            (
+                                replacement.session_id,
+                                replacement.start_msg_log_id,
+                                replacement.end_msg_log_id,
+                                replacement.start_at,
+                                replacement.end_at,
+                                replacement.message_count,
+                                1 if chat_consumed else 0,
+                            ),
+                        )
+
+            if consumed_message_ids:
+                placeholders = ",".join("?" for _ in consumed_message_ids)
+                rows = conn.execute(
+                    f"""
+                    SELECT session_id, id AS message_log_id, sender_id, created_at
+                    FROM message_logs
+                    WHERE session_id = ?
+                      AND id IN ({placeholders})
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (session_id, *consumed_message_ids),
+                ).fetchall()
+                consumed = [
+                    UnreadMessage(
+                        session_id=str(row["session_id"]),
+                        message_log_id=int(row["message_log_id"]),
+                        sender_id=str(row["sender_id"]),
+                        created_at=float(row["created_at"]),
+                    )
+                    for row in rows
+                ]
+        return consumed
 
     def add_high_priority_events(self, events: list[HighPriorityEvent]) -> None:
         if not events:
@@ -595,6 +712,23 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             ),
             updated_at=float(row["updated_at"] or 0.0),
         )
+
+
+def _group_consecutive_ids(message_log_ids: list[int]) -> list[tuple[int, int]]:
+    if not message_log_ids:
+        return []
+    groups: list[tuple[int, int]] = []
+    start = message_log_ids[0]
+    previous = message_log_ids[0]
+    for message_log_id in message_log_ids[1:]:
+        if message_log_id == previous + 1:
+            previous = message_log_id
+            continue
+        groups.append((start, previous))
+        start = message_log_id
+        previous = message_log_id
+    groups.append((start, previous))
+    return groups
 
 
 __all__ = ["AgentSchedulerRepository"]

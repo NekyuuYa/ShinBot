@@ -660,7 +660,10 @@ async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path)
     assert signal.self_id == "bot-1"
     assert signal.is_private is False
     assert signal.is_mentioned is False
+    assert signal.is_mention_to_other is False
     assert signal.is_reply_to_bot is False
+    assert signal.is_poke_to_bot is False
+    assert signal.is_poke_to_other is False
     assert signal.already_handled is False
     assert signal.is_stopped is False
     assert not hasattr(signal, "message")

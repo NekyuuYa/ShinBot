@@ -129,6 +129,42 @@ def test_agent_scheduler_repository_merges_and_splits_unread_ranges(tmp_path) ->
     ]
 
 
+def test_agent_scheduler_repository_marks_active_chat_consumed(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, msg_id=f"msg-{index}", created_at=float(index))
+        for index in [1, 2, 3, 4]
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+
+    consumed = db.agent_scheduler.mark_active_chat_consumed(
+        session_id="bot:group:room",
+        message_log_ids=message_ids[1:3],
+    )
+
+    assert [item.message_log_id for item in consumed] == message_ids[1:3]
+    assert [
+        item.message_log_id for item in db.agent_scheduler.list_unread("bot:group:room")
+    ] == [message_ids[0], message_ids[3]]
+    assert [
+        (item.start_msg_log_id, item.end_msg_log_id, item.message_count)
+        for item in db.agent_scheduler.list_unread_ranges("bot:group:room")
+    ] == [
+        (message_ids[0], message_ids[0], 1),
+        (message_ids[3], message_ids[3], 1),
+    ]
+    assert db.agent_scheduler.count_unread_messages("bot:group:room") == 2
+
+
 def test_agent_scheduler_repository_does_not_merge_across_skipped_session_message(
     tmp_path,
 ) -> None:

@@ -10,6 +10,7 @@ from inspect import isawaitable
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
 from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule
+from shinbot.core.message_analysis import iter_message_elements
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 
@@ -33,6 +34,9 @@ class AgentEntrySignal:
     is_private: bool
     is_mentioned: bool
     is_reply_to_bot: bool
+    is_mention_to_other: bool = False
+    is_poke_to_bot: bool = False
+    is_poke_to_other: bool = False
     already_handled: bool = False
     is_stopped: bool = False
 
@@ -99,7 +103,19 @@ class AgentEntryDispatcher:
             self_id=bot.event.self_id,
             is_private=bot.is_private,
             is_mentioned=bot.is_mentioned,
+            is_mention_to_other=_contains_mention_to_other(
+                bot.message,
+                bot.event.self_id,
+            ),
             is_reply_to_bot=bot.is_reply_to_bot(),
+            is_poke_to_bot=_contains_poke_to(
+                bot.message,
+                bot.event.self_id,
+            ),
+            is_poke_to_other=_contains_poke_to_other(
+                bot.message,
+                bot.event.self_id,
+            ),
             already_handled=bool(bot._sent_messages),
             is_stopped=bot.is_stopped,
         )
@@ -108,6 +124,42 @@ class AgentEntryDispatcher:
             result = self._handler(signal)
             if isawaitable(result):
                 await result
+
+
+def _contains_mention_to_other(message: Message, self_id: str) -> bool:
+    self_id = str(self_id or "").strip()
+    for element in iter_message_elements(message):
+        if element.type != "at":
+            continue
+        target = str(element.attrs.get("id") or "").strip()
+        if target and target != self_id:
+            return True
+    return False
+
+
+def _contains_poke_to(message: Message, target_id: str) -> bool:
+    target_id = str(target_id or "").strip()
+    if not target_id:
+        return False
+    for element in iter_message_elements(message):
+        if element.type != "sb:poke":
+            continue
+        target = str(element.attrs.get("target") or "").strip()
+        if target == target_id:
+            return True
+    return False
+
+
+def _contains_poke_to_other(message: Message, self_id: str) -> bool:
+    self_id = str(self_id or "").strip()
+    for element in iter_message_elements(message):
+        if element.type != "sb:poke":
+            continue
+        target = str(element.attrs.get("target") or "").strip()
+        if target and target != self_id:
+            return True
+    return False
+
 
 def make_agent_entry_fallback_route_rule(
     *,
