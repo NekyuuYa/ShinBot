@@ -147,6 +147,10 @@ def make_signal(
     message_log_id: int | None = 1,
     is_mentioned: bool = False,
     is_reply_to_bot: bool = False,
+    is_mention_to_other: bool = False,
+    is_poke_to_bot: bool = False,
+    is_poke_to_other: bool = False,
+    sender_id: str = "user-1",
     already_handled: bool = False,
     is_stopped: bool = False,
 ) -> AgentEntrySignal:
@@ -154,13 +158,16 @@ def make_signal(
         session_id="bot:group:room",
         message_log_id=message_log_id,
         event_type="message-created",
-        sender_id="user-1",
+        sender_id=sender_id,
         instance_id="bot",
         platform="mock",
         self_id="bot-self",
         is_private=False,
         is_mentioned=is_mentioned,
         is_reply_to_bot=is_reply_to_bot,
+        is_mention_to_other=is_mention_to_other,
+        is_poke_to_bot=is_poke_to_bot,
+        is_poke_to_other=is_poke_to_other,
         already_handled=already_handled,
         is_stopped=is_stopped,
     )
@@ -633,13 +640,73 @@ async def test_scheduler_active_chat_handles_mentions_without_active_reply_inter
     assert decision.active_chat_observed is True
     assert decision.active_chat_workflow_notified is True
     assert decision.active_chat_state is not None
-    assert decision.active_chat_state.interest_value == pytest.approx(20.0)
+    assert decision.active_chat_state.interest_value == pytest.approx(18.0)
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
     assert dispatcher.calls == []
     assert dispatcher.active_chat_calls[0]["message_log_id"] == 2
     assert scheduler.active_chat_state_for("bot:group:room") == decision.active_chat_state
     assert active_chat_decision.active_chat_state is not None
     assert timer.cancelled == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_active_chat_message_interest_ignores_low_signal_events() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "active_chat",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=10.0,
+                message_interest_delta=2.0,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+
+    decision = await scheduler.accept_signal(
+        make_signal(
+            message_log_id=2,
+            is_mention_to_other=True,
+            is_poke_to_bot=True,
+            is_poke_to_other=True,
+        )
+    )
+
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.interest_value == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_active_chat_message_interest_ignores_bot_self_messages() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "active_chat",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=10.0,
+                message_interest_delta=2.0,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+
+    decision = await scheduler.accept_signal(
+        make_signal(
+            message_log_id=2,
+            sender_id="bot-self",
+            is_mentioned=True,
+            is_reply_to_bot=True,
+        )
+    )
+
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.interest_value == pytest.approx(10.0)
 
 
 @pytest.mark.asyncio

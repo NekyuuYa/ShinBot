@@ -98,6 +98,7 @@ class ActiveChatPolicy(Protocol):
         state: ActiveChatState,
         *,
         now: float,
+        is_from_bot: bool = False,
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
         is_mention_to_other: bool = False,
@@ -198,17 +199,21 @@ class DefaultActiveChatPolicy:
         state: ActiveChatState,
         *,
         now: float,
+        is_from_bot: bool = False,
         is_mentioned: bool = False,
         is_reply_to_bot: bool = False,
         is_mention_to_other: bool = False,
         is_poke_to_bot: bool = False,
         is_poke_to_other: bool = False,
     ) -> ActiveChatState:
-        delta = self._config.message_interest_delta
-        if is_mentioned:
-            delta += self._config.mention_interest_delta
-        if is_reply_to_bot:
-            delta += self._config.reply_interest_delta
+        delta = self._message_interest_delta(
+            is_from_bot=is_from_bot,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+            is_mention_to_other=is_mention_to_other,
+            is_poke_to_bot=is_poke_to_bot,
+            is_poke_to_other=is_poke_to_other,
+        )
         return ActiveChatState(
             session_id=state.session_id,
             interest_value=min(
@@ -223,6 +228,26 @@ class DefaultActiveChatPolicy:
             bootstrap_applied=state.bootstrap_applied,
             bootstrap_disposition=state.bootstrap_disposition,
         )
+
+    def _message_interest_delta(
+        self,
+        *,
+        is_from_bot: bool,
+        is_mentioned: bool,
+        is_reply_to_bot: bool,
+        is_mention_to_other: bool,
+        is_poke_to_bot: bool,
+        is_poke_to_other: bool,
+    ) -> float:
+        if is_from_bot:
+            return 0.0
+        if is_mentioned:
+            return self._config.mention_interest_delta
+        if is_reply_to_bot:
+            return self._config.reply_interest_delta
+        if is_mention_to_other or is_poke_to_bot or is_poke_to_other:
+            return 0.0
+        return self._config.message_interest_delta
 
     def should_return_idle(self, state: ActiveChatState) -> bool:
         return state.interest_value <= self._config.idle_interest_threshold + 1e-9

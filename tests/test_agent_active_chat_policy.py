@@ -89,7 +89,7 @@ def test_default_active_chat_policy_observes_message_without_natural_decay() -> 
             decay_half_life_seconds=10.0,
             idle_interest_threshold=5.0,
             message_interest_delta=20.0,
-            mention_interest_delta=30.0,
+            mention_interest_delta=120.0,
             reply_interest_delta=40.0,
             max_interest_value=100.0,
         )
@@ -128,11 +128,19 @@ def test_default_active_chat_policy_uses_conservative_message_interest() -> None
         is_poke_to_other=True,
         is_mention_to_other=True,
     )
+    from_bot = policy.observe_message(
+        state,
+        now=15.0,
+        is_from_bot=True,
+        is_mentioned=True,
+        is_reply_to_bot=True,
+    )
 
     assert ordinary.interest_value == 11.0
-    assert mentioned.interest_value == 19.0
-    assert replied.interest_value == 16.0
-    assert poked.interest_value == 11.0
+    assert mentioned.interest_value == 18.0
+    assert replied.interest_value == 15.0
+    assert poked.interest_value == 10.0
+    assert from_bot.interest_value == 10.0
 
 
 def test_default_active_chat_policy_caps_message_interest() -> None:

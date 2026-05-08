@@ -171,6 +171,7 @@ class AgentScheduler:
             active_chat_state = self._observe_active_chat_message(
                 session_id=signal.session_id,
                 now=now,
+                is_from_bot=bool(signal.sender_id and signal.sender_id == signal.self_id),
                 is_mentioned=signal.is_mentioned,
                 is_reply_to_bot=signal.is_reply_to_bot,
                 is_mention_to_other=signal.is_mention_to_other,
@@ -649,6 +650,7 @@ class AgentScheduler:
         *,
         session_id: str,
         now: float,
+        is_from_bot: bool,
         is_mentioned: bool,
         is_reply_to_bot: bool,
         is_mention_to_other: bool,
@@ -664,6 +666,7 @@ class AgentScheduler:
         observed_state = self._active_chat_policy.observe_message(
             active_chat_state,
             now=now,
+            is_from_bot=is_from_bot,
             is_mentioned=is_mentioned,
             is_reply_to_bot=is_reply_to_bot,
             is_mention_to_other=is_mention_to_other,
