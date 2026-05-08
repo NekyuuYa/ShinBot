@@ -13,6 +13,7 @@ from shinbot.agent.scheduler.models import (
 )
 
 if TYPE_CHECKING:
+    from shinbot.agent.active_chat import ActiveChatWorkflow
     from shinbot.agent.review import ReviewWorkflow, ReviewWorkflowExplanation, ReviewWorkflowResult
     from shinbot.agent.scheduler.scheduler import AgentScheduler
 
@@ -69,9 +70,11 @@ class AttentionActiveReplyDispatcher:
         attention_scheduler,
         *,
         review_workflow: ReviewWorkflow | None = None,
+        active_chat_workflow: ActiveChatWorkflow | None = None,
     ) -> None:
         self._attention_scheduler = attention_scheduler
         self._review_workflow = review_workflow
+        self._active_chat_workflow = active_chat_workflow
         self._agent_scheduler: AgentScheduler | None = None
         self.last_review_result: ReviewWorkflowResult | None = None
         self.last_review_explanation: ReviewWorkflowExplanation | None = None
@@ -139,5 +142,20 @@ class AttentionActiveReplyDispatcher:
         self_platform_id: str,
         active_chat_state: ActiveChatState,
     ) -> None:
-        """Compatibility placeholder until the dedicated active chat workflow exists."""
-        return
+        if self._active_chat_workflow is None or self._agent_scheduler is None:
+            return
+
+        await self._active_chat_workflow.notify_message(
+            scheduler=self._agent_scheduler,
+            session_id=session_id,
+            message_log_id=message_log_id,
+            sender_id=sender_id,
+            response_profile=response_profile,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+            is_mention_to_other=is_mention_to_other,
+            is_poke_to_bot=is_poke_to_bot,
+            is_poke_to_other=is_poke_to_other,
+            self_platform_id=self_platform_id,
+            active_chat_state=active_chat_state,
+        )

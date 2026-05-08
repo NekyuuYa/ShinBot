@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.active_chat import ActiveChatWorkflow
 from shinbot.agent.attention import (
     AttentionConfig,
     AttentionEngine,
@@ -146,6 +147,7 @@ class AgentRuntime:
         self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
         self.workflow_runner: WorkflowRunner | None = None
         self.review_workflow: ReviewWorkflow | None = None
+        self.active_chat_workflow = ActiveChatWorkflow()
 
         if database is None:
             return
@@ -177,6 +179,7 @@ class AgentRuntime:
             workflow_dispatcher=AttentionActiveReplyDispatcher(
                 self.attention_scheduler,
                 review_workflow=self.review_workflow,
+                active_chat_workflow=self.active_chat_workflow,
             ),
         )
         register_attention_runtime(
@@ -242,6 +245,7 @@ class AgentRuntime:
         """Shut down Agent-side background services."""
         if self.review_workflow is not None:
             await self.review_workflow.shutdown()
+        await self.active_chat_workflow.shutdown()
         await self.active_chat_timer.shutdown()
         if self.attention_scheduler is not None:
             await self.attention_scheduler.shutdown()
