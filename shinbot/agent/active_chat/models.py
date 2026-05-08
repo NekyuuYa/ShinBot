@@ -93,6 +93,7 @@ class ActiveChatBatch:
     active_chat_state: ActiveChatState
     response_profile: str
     mode: ActiveChatMode = ActiveChatMode.FAST
+    review_result_summary: Any = None
 
     @property
     def message_log_ids(self) -> list[int]:

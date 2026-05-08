@@ -262,6 +262,7 @@ class ActiveChatWorkflow:
                 messages=messages,
                 active_chat_state=active_chat_state,
                 response_profile=latest_signal.response_profile,
+                review_result_summary=state.review_result_summary,
             )
             if self._round_handler is None:
                 self._restore_pending(session_id, messages)

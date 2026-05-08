@@ -172,6 +172,7 @@ class ActiveChatFastRunner:
             "message_log_ids": batch.message_log_ids,
             "interest_value": batch.active_chat_state.interest_value,
             "active_epoch": batch.active_chat_state.active_epoch,
+            "review_result_summary": batch.review_result_summary,
             **dict(getattr(context, "metadata", {}) or {}),
         }
         component_ids_by_stage = self._component_ids_by_stage()
@@ -300,6 +301,14 @@ class ActiveChatFastRunner:
                 ),
             }
         ]
+        if batch.review_result_summary is not None:
+            content.append(
+                {
+                    "type": "text",
+                    "text": "Review handoff summary JSON:\n"
+                    + json.dumps(batch.review_result_summary, ensure_ascii=False),
+                }
+            )
         instruction_content = list(getattr(context, "instruction_content", []) or [])
         if instruction_content:
             content.extend(instruction_content)

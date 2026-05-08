@@ -181,6 +181,11 @@ async def test_active_chat_workflow_flushes_after_semantic_wait() -> None:
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await workflow.start_active_chat(
+        session_id="bot:group:room",
+        active_chat_state=make_active_state(),
+        review_result_summary={"summary": "review handoff"},
+    )
 
     result = await workflow.notify_message(
         scheduler=scheduler,
@@ -201,6 +206,7 @@ async def test_active_chat_workflow_flushes_after_semantic_wait() -> None:
     assert result.triggered is True
     assert result.timer_started is True
     assert [batch.message_log_ids for batch in batches] == [[1]]
+    assert batches[0].review_result_summary == {"summary": "review handoff"}
     assert scheduler.consumed == [("bot:group:room", [1])]
     assert scheduler.adjustments == [
         {
