@@ -10,7 +10,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.active_chat import ActiveChatWorkflow
+from shinbot.agent.active_chat import (
+    ActiveChatFastRunner,
+    ActiveChatWorkflow,
+    register_active_chat_prompt_components,
+)
 from shinbot.agent.attention import (
     AttentionConfig,
     AttentionEngine,
@@ -111,6 +115,7 @@ class AgentRuntime:
         )
         register_media_prompt_components(self.prompt_registry)
         register_review_prompt_components(self.prompt_registry)
+        register_active_chat_prompt_components(self.prompt_registry)
 
         self.media_inspection_runner = (
             MediaInspectionRunner(
@@ -175,6 +180,16 @@ class AgentRuntime:
             self._dispatch_attention_workflow,
         )
         self.review_workflow = self._create_review_workflow(database)
+        active_chat_fast_runner = ActiveChatFastRunner(
+            self.model_runtime,
+            prompt_registry=self.prompt_registry,
+            tool_manager=self.tool_manager,
+            message_store=database.message_logs,
+            context_builder=ReviewContextBuilderAdapter(self.context_manager),
+        )
+        self.active_chat_workflow = ActiveChatWorkflow(
+            round_handler=active_chat_fast_runner.run,
+        )
         self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=AttentionActiveReplyDispatcher(
                 self.attention_scheduler,
