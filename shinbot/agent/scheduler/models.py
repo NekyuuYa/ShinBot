@@ -193,3 +193,18 @@ class ActiveChatBootstrapApplyDecision:
     bootstrap_applied: bool = False
     returned_to_idle: bool = False
     skipped_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ActiveChatInterestAdjustDecision:
+    """Result of applying active chat workflow interest adjustment."""
+
+    session_id: str
+    state: AgentState
+    active_chat_state: ActiveChatState | None = None
+    next_review_plan: ReviewPlan | None = None
+    delta: float = 0.0
+    force_exit: bool = False
+    returned_to_idle: bool = False
+    reason: str = ""
+    skipped_reason: str | None = None

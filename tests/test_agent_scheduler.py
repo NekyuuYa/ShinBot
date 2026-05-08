@@ -674,6 +674,69 @@ async def test_scheduler_ticks_active_chat_to_idle_with_next_review_plan() -> No
     assert timer.cancelled == ["bot:group:room"]
 
 
+def test_scheduler_adjusts_active_chat_interest() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=15.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+
+    decision = scheduler.adjust_active_chat_interest(
+        "bot:group:room",
+        delta=5.0,
+        reason="send_reply_light",
+        now=65.0,
+    )
+
+    assert decision.returned_to_idle is False
+    assert decision.state == AgentState.ACTIVE_CHAT
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.interest_value == 20.0
+    assert decision.reason == "send_reply_light"
+    assert scheduler.active_chat_state_for("bot:group:room") == decision.active_chat_state
+
+
+def test_scheduler_force_exits_active_chat_from_interest_adjustment() -> None:
+    timer = RecordingActiveChatTimer()
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_timer=timer,
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=15.0,
+        now=60.0,
+    )
+
+    decision = scheduler.adjust_active_chat_interest(
+        "bot:group:room",
+        force_exit=True,
+        reason="topic_done",
+        now=70.0,
+    )
+
+    assert decision.returned_to_idle is True
+    assert decision.state == AgentState.IDLE
+    assert decision.force_exit is True
+    assert decision.reason == "topic_done"
+    assert decision.next_review_plan is not None
+    assert decision.next_review_plan.next_review_at == 170.0
+    assert scheduler.active_chat_state_for("bot:group:room") is None
+    assert timer.cancelled == ["bot:group:room"]
+
+
 @pytest.mark.asyncio
 async def test_scheduler_applies_active_chat_bootstrap_correction() -> None:
     scheduler = AgentScheduler(

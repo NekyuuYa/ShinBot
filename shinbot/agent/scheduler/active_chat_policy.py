@@ -109,6 +109,16 @@ class ActiveChatPolicy(Protocol):
     def should_return_idle(self, state: ActiveChatState) -> bool:
         """Return whether decayed interest is low enough to leave active chat."""
 
+    def adjust_interest(
+        self,
+        state: ActiveChatState,
+        *,
+        delta: float,
+        now: float,
+        force_exit: bool = False,
+    ) -> ActiveChatState:
+        """Apply workflow-driven interest adjustment."""
+
     def apply_bootstrap_disposition(
         self,
         state: ActiveChatState,
@@ -216,6 +226,33 @@ class DefaultActiveChatPolicy:
 
     def should_return_idle(self, state: ActiveChatState) -> bool:
         return state.interest_value <= self._config.idle_interest_threshold + 1e-9
+
+    def adjust_interest(
+        self,
+        state: ActiveChatState,
+        *,
+        delta: float,
+        now: float,
+        force_exit: bool = False,
+    ) -> ActiveChatState:
+        if force_exit:
+            interest_value = 0.0
+        else:
+            interest_value = max(
+                0.0,
+                min(self._config.max_interest_value, state.interest_value + delta),
+            )
+        return ActiveChatState(
+            session_id=state.session_id,
+            interest_value=interest_value,
+            decay_half_life_seconds=state.decay_half_life_seconds,
+            entered_at=state.entered_at,
+            updated_at=now,
+            tick_count=state.tick_count,
+            active_epoch=state.active_epoch,
+            bootstrap_applied=state.bootstrap_applied,
+            bootstrap_disposition=state.bootstrap_disposition,
+        )
 
     def apply_bootstrap_disposition(
         self,

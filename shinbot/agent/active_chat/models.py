@@ -16,6 +16,32 @@ class ActiveChatMode(StrEnum):
     THINK = "think"
 
 
+class ActiveChatActionKind(StrEnum):
+    """Semantic terminal action produced by one active chat round."""
+
+    WATCH = "watch"
+    NO_REPLY = "no_reply"
+    SEND_POKE = "send_poke"
+    SEND_REPLY = "send_reply"
+    REQUEST_THINK_MODE = "request_think_mode"
+    EXIT_ACTIVE = "exit_active"
+    RETRY_FAILED = "retry_failed"
+
+
+class ActiveChatReplyIntensity(StrEnum):
+    """Reply intensity used for interest adjustment."""
+
+    LIGHT = "light"
+    ENGAGED = "engaged"
+
+
+class ActiveChatNoReplyIntensity(StrEnum):
+    """No-reply intensity used for interest adjustment."""
+
+    NORMAL = "normal"
+    STRONG = "strong"
+
+
 @dataclass(slots=True, frozen=True)
 class ActiveChatMessageSignal:
     """One active chat message notification from AgentScheduler."""
@@ -80,6 +106,9 @@ class ActiveChatRoundResult:
 
     success: bool = True
     reason: str = ""
+    action: ActiveChatActionKind = ActiveChatActionKind.WATCH
+    reply_intensity: ActiveChatReplyIntensity = ActiveChatReplyIntensity.LIGHT
+    no_reply_intensity: ActiveChatNoReplyIntensity = ActiveChatNoReplyIntensity.NORMAL
 
 
 @dataclass(slots=True, frozen=True)
@@ -98,11 +127,14 @@ class ActiveChatNotifyResult:
 
 
 __all__ = [
+    "ActiveChatActionKind",
     "ActiveChatAttentionState",
     "ActiveChatBatch",
     "ActiveChatMessageSignal",
     "ActiveChatMode",
     "ActiveChatNotifyResult",
+    "ActiveChatNoReplyIntensity",
+    "ActiveChatReplyIntensity",
     "ActiveChatRoundResult",
     "ActiveChatStartResult",
 ]

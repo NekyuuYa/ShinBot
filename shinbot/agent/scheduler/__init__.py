@@ -15,6 +15,7 @@ from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
+    ActiveChatInterestAdjustDecision,
     ActiveChatState,
     ActiveChatTickDecision,
     ActiveReplyCompletionDecision,
@@ -57,6 +58,7 @@ __all__ = [
     "ActiveChatBootstrapCorrection",
     "ActiveChatPolicyConfig",
     "ActiveChatDisposition",
+    "ActiveChatInterestAdjustDecision",
     "ActiveChatPreset",
     "ActiveChatState",
     "ActiveChatTickDecision",

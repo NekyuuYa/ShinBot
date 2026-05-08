@@ -8,8 +8,10 @@ import time
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 
+from shinbot.agent.active_chat.actions import interest_effect_for_round
 from shinbot.agent.active_chat.attention import ActiveChatAttention, ActiveChatAttentionConfig
 from shinbot.agent.active_chat.models import (
+    ActiveChatActionKind,
     ActiveChatAttentionState,
     ActiveChatBatch,
     ActiveChatMessageSignal,
@@ -271,8 +273,18 @@ class ActiveChatWorkflow:
             if not result.success:
                 self._restore_pending(session_id, messages)
                 return
+            if result.action == ActiveChatActionKind.EXIT_ACTIVE and not result.reason.strip():
+                self._restore_pending(session_id, messages)
+                return
 
             scheduler.mark_active_chat_consumed(session_id, batch.message_log_ids)
+            effect = interest_effect_for_round(result)
+            scheduler.adjust_active_chat_interest(
+                session_id,
+                delta=effect.delta,
+                force_exit=effect.force_exit,
+                reason=effect.reason,
+            )
             self.last_batches[session_id] = batch
             async with self._get_lock(session_id):
                 state = self._states.get(session_id)

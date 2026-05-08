@@ -16,6 +16,7 @@ from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
+    ActiveChatInterestAdjustDecision,
     ActiveChatState,
     ActiveChatTickDecision,
     ActiveReplyCompletionDecision,
@@ -261,6 +262,77 @@ class AgentScheduler:
     def active_chat_state_for(self, session_id: str) -> ActiveChatState | None:
         """Return current active chat interest state for one session, if any."""
         return self._state_store.get_active_chat_state(session_id)
+
+    def adjust_active_chat_interest(
+        self,
+        session_id: str,
+        *,
+        delta: float = 0.0,
+        force_exit: bool = False,
+        reason: str = "",
+        next_review_plan: ReviewPlan | None = None,
+        now: float | None = None,
+    ) -> ActiveChatInterestAdjustDecision:
+        """Apply workflow-driven active chat interest adjustment."""
+        current_state = self._state_store.get_state(session_id)
+        if current_state != AgentState.ACTIVE_CHAT:
+            return ActiveChatInterestAdjustDecision(
+                session_id=session_id,
+                state=current_state,
+                delta=delta,
+                force_exit=force_exit,
+                reason=reason,
+                skipped_reason="not_active_chat",
+            )
+
+        active_chat_state = self._state_store.get_active_chat_state(session_id)
+        if active_chat_state is None:
+            return ActiveChatInterestAdjustDecision(
+                session_id=session_id,
+                state=current_state,
+                delta=delta,
+                force_exit=force_exit,
+                reason=reason,
+                skipped_reason="missing_active_chat_state",
+            )
+
+        checked_at = self._now() if now is None else now
+        adjusted_state = self._active_chat_policy.adjust_interest(
+            active_chat_state,
+            delta=delta,
+            force_exit=force_exit,
+            now=checked_at,
+        )
+        self._state_store.set_active_chat_state(adjusted_state)
+        if not force_exit and not self._active_chat_policy.should_return_idle(adjusted_state):
+            return ActiveChatInterestAdjustDecision(
+                session_id=session_id,
+                state=AgentState.ACTIVE_CHAT,
+                active_chat_state=adjusted_state,
+                delta=delta,
+                force_exit=force_exit,
+                reason=reason,
+            )
+
+        plan = next_review_plan or self._review_policy.plan_after_review(
+            session_id=session_id,
+            now=checked_at,
+            previous_plan=self._state_store.get_review_plan(session_id),
+        )
+        self._state_store.set_state(session_id, AgentState.IDLE)
+        self._state_store.clear_active_chat_state(session_id)
+        self._state_store.set_review_plan(plan)
+        self._cancel_active_chat_timer(session_id)
+        return ActiveChatInterestAdjustDecision(
+            session_id=session_id,
+            state=AgentState.IDLE,
+            active_chat_state=adjusted_state,
+            next_review_plan=plan,
+            delta=delta,
+            force_exit=force_exit,
+            returned_to_idle=True,
+            reason=reason,
+        )
 
     def due_review_plans(self, *, now: float | None = None, limit: int = 50) -> list[ReviewPlan]:
         """Return review plans whose scheduled review time has arrived."""
