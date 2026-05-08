@@ -17,6 +17,7 @@ from shinbot.agent.active_chat.models import (
     ActiveChatRoundResult,
     ActiveChatStartResult,
 )
+from shinbot.agent.active_chat.tool_loop import ActiveChatToolLoop, ActiveChatToolLoopResult
 from shinbot.agent.active_chat.workflow import ActiveChatRoundHandler, ActiveChatWorkflow
 
 __all__ = [
@@ -34,6 +35,8 @@ __all__ = [
     "ActiveChatRoundHandler",
     "ActiveChatRoundResult",
     "ActiveChatStartResult",
+    "ActiveChatToolLoop",
+    "ActiveChatToolLoopResult",
     "ActiveChatWorkflow",
     "interest_effect_for_round",
 ]
