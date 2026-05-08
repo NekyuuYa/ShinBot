@@ -260,3 +260,106 @@ async def test_active_chat_workflow_keeps_pending_without_handler() -> None:
     workflow.stop_active_chat("bot:group:room")
     assert workflow.attention_state_for("bot:group:room") is None
     await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_retry_failed_consumes_batch_and_adjusts_interest() -> None:
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        return ActiveChatRoundResult(
+            success=True,
+            action=ActiveChatActionKind.RETRY_FAILED,
+            reason="tool_failed",
+        )
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.sleep(0.05)
+
+    assert scheduler.consumed == [("bot:group:room", [1])]
+    assert scheduler.adjustments == [
+        {
+            "session_id": "bot:group:room",
+            "delta": -3.0,
+            "force_exit": False,
+            "reason": "tool_failed",
+        }
+    ]
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_stop_cancels_running_round_without_consuming() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        started.set()
+        try:
+            await asyncio.sleep(60.0)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ActiveChatRoundResult(success=True, reason="late")
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    workflow.stop_active_chat("bot:group:room")
+    await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert scheduler.consumed == []
+    assert scheduler.adjustments == []
+    assert workflow.attention_state_for("bot:group:room") is None
+    await workflow.shutdown()

@@ -113,7 +113,7 @@ class ActiveChatToolLoop:
             reason = "; ".join(reason for reason in failure_reasons if reason)
             result.invalid_reason = reason or "all_tool_calls_failed"
             result.round_result = ActiveChatRoundResult(
-                success=False,
+                success=True,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason=result.invalid_reason,
             )
@@ -123,7 +123,7 @@ class ActiveChatToolLoop:
         if round_result.action == ActiveChatActionKind.EXIT_ACTIVE and not round_result.reason:
             result.invalid_reason = "exit_active_missing_reason"
             result.round_result = ActiveChatRoundResult(
-                success=False,
+                success=True,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason=result.invalid_reason,
             )

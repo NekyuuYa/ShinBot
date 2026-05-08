@@ -15,7 +15,8 @@ from shinbot.agent.active_chat import (
 )
 from shinbot.agent.model_runtime import GenerateResult
 from shinbot.agent.prompt_manager import PromptRegistry
-from shinbot.agent.scheduler import ActiveChatState
+from shinbot.agent.review.models import ReviewWorkflowExplanation
+from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
 
 
@@ -107,7 +108,7 @@ def make_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def make_batch() -> ActiveChatBatch:
+def make_batch(*, review_result_summary: Any | None = None) -> ActiveChatBatch:
     active_state = ActiveChatState(
         session_id="bot:group:room",
         interest_value=42.0,
@@ -127,7 +128,11 @@ def make_batch() -> ActiveChatBatch:
         ],
         active_chat_state=active_state,
         response_profile="balanced",
-        review_result_summary={"summary": "review found a running topic"},
+        review_result_summary=(
+            {"summary": "review found a running topic"}
+            if review_result_summary is None
+            else review_result_summary
+        ),
     )
 
 
@@ -204,3 +209,49 @@ async def test_active_chat_fast_runner_repairs_toolless_output_once() -> None:
     assert len(model_runtime.calls) == 2
     assert model_runtime.calls[1].metadata["repair_attempt"] == 1
     assert model_runtime.calls[1].messages[-1]["role"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_accepts_dataclass_review_handoff_summary() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    handoff = ReviewWorkflowExplanation(
+        review_started_at=123.0,
+        candidate_message_ids=[99],
+        active_chat_disposition=ActiveChatDisposition.EXIT_SOON,
+        active_chat_reason="low interest",
+    )
+    result = await runner.run(make_batch(review_result_summary=handoff))
+
+    assert result.success is True
+    assert result.action == ActiveChatActionKind.NO_REPLY
+    assert model_runtime.calls[0].metadata["review_result_summary"][
+        "active_chat_disposition"
+    ] == "exit_soon"
+    handoff_blocks = [
+        block
+        for message in model_runtime.calls[0].messages
+        for block in (
+            message.get("content", [])
+            if isinstance(message.get("content"), list)
+            else []
+        )
+        if "Review handoff summary JSON" in str(block.get("text", ""))
+    ]
+    assert handoff_blocks

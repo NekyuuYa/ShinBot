@@ -177,6 +177,9 @@ class ActiveChatWorkflow:
     def stop_active_chat(self, session_id: str) -> None:
         """Clear session-bound active chat workflow state after scheduler exit."""
         self._cancel_semantic_wait_locked(session_id)
+        task = self._running_rounds.pop(session_id, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
         self._states.pop(session_id, None)
         self.last_batches.pop(session_id, None)
 
@@ -280,19 +283,26 @@ class ActiveChatWorkflow:
             if not result.success:
                 self._restore_pending(session_id, messages)
                 return
+            async with self._get_lock(session_id):
+                current_state = self._states.get(session_id)
+                if (
+                    current_state is None
+                    or current_state.active_epoch != batch.active_chat_state.active_epoch
+                ):
+                    return
             if result.action == ActiveChatActionKind.EXIT_ACTIVE and not result.reason.strip():
                 self._restore_pending(session_id, messages)
                 return
 
             scheduler.mark_active_chat_consumed(session_id, batch.message_log_ids)
             effect = interest_effect_for_round(result)
+            self.last_batches[session_id] = batch
             scheduler.adjust_active_chat_interest(
                 session_id,
                 delta=effect.delta,
                 force_exit=effect.force_exit,
                 reason=effect.reason,
             )
-            self.last_batches[session_id] = batch
             async with self._get_lock(session_id):
                 state = self._states.get(session_id)
                 if state is not None:

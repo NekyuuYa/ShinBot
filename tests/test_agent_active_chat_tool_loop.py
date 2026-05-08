@@ -147,8 +147,27 @@ async def test_active_chat_tool_loop_rejects_exit_active_without_reason() -> Non
     )
 
     assert manager.calls == []
-    assert result.round_result.success is False
+    assert result.round_result.success is True
+    assert result.round_result.action == ActiveChatActionKind.RETRY_FAILED
     assert result.invalid_reason == "exit_active_missing_reason"
+
+
+@pytest.mark.asyncio
+async def test_active_chat_tool_loop_maps_all_failed_calls_to_retry_failed_action() -> None:
+    manager = FakeToolManager()
+    loop = ActiveChatToolLoop()
+
+    result = await loop.execute(
+        [make_tool_call("fail_tool", {})],
+        tool_manager=manager,
+        instance_id="bot",
+        session_id="bot:group:room",
+    )
+
+    assert [call.tool_name for call in manager.calls] == ["fail_tool"]
+    assert result.round_result.success is True
+    assert result.round_result.action == ActiveChatActionKind.RETRY_FAILED
+    assert result.round_result.reason == "tool failed"
 
 
 @pytest.mark.asyncio

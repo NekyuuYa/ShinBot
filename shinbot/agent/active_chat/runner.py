@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
+from enum import Enum
 from typing import Any, Protocol
 
 from shinbot.agent.active_chat.models import (
@@ -167,12 +168,13 @@ class ActiveChatFastRunner:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         source_messages = self._load_source_messages(batch)
         context = self._build_context(batch, source_messages)
+        review_result_summary = _jsonable(batch.review_result_summary)
         metadata = {
             "active_chat_stage": self.stage_id,
             "message_log_ids": batch.message_log_ids,
             "interest_value": batch.active_chat_state.interest_value,
             "active_epoch": batch.active_chat_state.active_epoch,
-            "review_result_summary": batch.review_result_summary,
+            "review_result_summary": review_result_summary,
             **dict(getattr(context, "metadata", {}) or {}),
         }
         component_ids_by_stage = self._component_ids_by_stage()
@@ -306,7 +308,7 @@ class ActiveChatFastRunner:
                 {
                     "type": "text",
                     "text": "Review handoff summary JSON:\n"
-                    + json.dumps(batch.review_result_summary, ensure_ascii=False),
+                    + json.dumps(_jsonable(batch.review_result_summary), ensure_ascii=False),
                 }
             )
         instruction_content = list(getattr(context, "instruction_content", []) or [])
@@ -533,6 +535,18 @@ def _virtual_tool_schemas() -> list[dict[str, Any]]:
 
 def _instance_id_from_session(session_id: str) -> str:
     return session_id.split(":", 1)[0] if ":" in session_id else ""
+
+
+def _jsonable(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return _jsonable(asdict(value))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 __all__ = [
