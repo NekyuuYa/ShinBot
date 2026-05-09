@@ -486,8 +486,11 @@ async def test_active_chat_workflow_compacts_old_conversation_trace() -> None:
     assert [batch.message_log_ids for batch in batches] == [[1], [2], [3]]
     state = workflow.attention_state_for("bot:group:room")
     assert state is not None
-    assert len(state.conversation_messages) == 3
-    assert state.conversation_messages[0]["role"] == "tool"
+    assert len(state.conversation_messages) == 2
+    assert state.conversation_messages[0]["role"] == "assistant"
+    assert state.conversation_messages[0]["tool_calls"][0]["id"] == "call-3"
+    assert state.conversation_messages[1]["role"] == "tool"
+    assert state.conversation_messages[1]["tool_call_id"] == "call-3"
     assert "compacted_messages" in state.conversation_summary
     assert "send_reply" in state.conversation_summary
     assert batches[2].conversation_summary

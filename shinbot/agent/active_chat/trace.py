@@ -39,6 +39,8 @@ class ActiveChatTraceCompactor:
 
         evicted = state.conversation_messages[:overflow]
         del state.conversation_messages[:overflow]
+        orphaned_tools = self._pop_orphaned_leading_tools(state.conversation_messages)
+        evicted.extend(orphaned_tools)
         state.conversation_summary = self._merge_summary(
             state.conversation_summary,
             self._summarize_evicted(evicted),
@@ -65,6 +67,15 @@ class ActiveChatTraceCompactor:
         if tool_actions:
             payload["recent_tool_actions"] = tool_actions[-8:]
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    def _pop_orphaned_leading_tools(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        orphaned: list[dict[str, Any]] = []
+        while messages and messages[0].get("role") == "tool":
+            orphaned.append(messages.pop(0))
+        return orphaned
 
 
 def _tool_action_names(message: dict[str, Any]) -> list[str]:
