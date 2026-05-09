@@ -22,20 +22,17 @@ from shinbot.agent.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.runners.review.factory import (
+from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig, parse_json_object
+from shinbot.agent.runners._review_factory import (
     ReviewRunnerFactory,
     ReviewRuntimeConfig,
     ReviewStageRuntimeConfig,
+    register_review_prompt_components,
 )
-from shinbot.agent.runners.review.llm import (
-    LLMActiveChatBootstrapStageRunner,
-    LLMOverflowCompressionStageRunner,
-    LLMReplyDecisionStageRunner,
-    LLMReviewScanStageRunner,
-    ReviewLLMRunnerConfig,
-    parse_json_object,
-)
-from shinbot.agent.runners.review.prompt_registration import register_review_prompt_components
+from shinbot.agent.runners.review_bootstrap import LLMActiveChatBootstrapStageRunner
+from shinbot.agent.runners.review_compression import LLMOverflowCompressionStageRunner
+from shinbot.agent.runners.review_reply import LLMReplyDecisionStageRunner
+from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
 from shinbot.agent.scheduler import (

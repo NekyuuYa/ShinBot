@@ -29,8 +29,11 @@ from shinbot.agent.media import (
     register_media_runtime,
 )
 from shinbot.agent.prompt_engine import PromptRegistry
-from shinbot.agent.runners.review.factory import ReviewRunnerFactory, ReviewRuntimeConfig
-from shinbot.agent.runners.review.prompt_registration import register_review_prompt_components
+from shinbot.agent.runners._review_factory import (
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
+    register_review_prompt_components,
+)
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore

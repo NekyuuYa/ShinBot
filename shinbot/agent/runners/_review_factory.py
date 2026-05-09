@@ -1,4 +1,4 @@
-"""Factory helpers for review workflow stage runners."""
+"""Factory and config for review stage runners."""
 
 from __future__ import annotations
 
@@ -6,26 +6,31 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from shinbot.agent.prompt_engine import PromptStage
-from shinbot.agent.runners.review.bootstrap import (
+from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
+from shinbot.agent.runners.review_bootstrap import (
     ActiveChatBootstrapStageRunner,
+    LLMActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
+    register_review_bootstrap_prompt_components,
 )
-from shinbot.agent.runners.review.compression import (
+from shinbot.agent.runners.review_compression import (
+    LLMOverflowCompressionStageRunner,
     NoopOverflowCompressionStageRunner,
     OverflowCompressionStageRunner,
+    register_review_compression_prompt_components,
 )
-from shinbot.agent.runners.review.llm import (
-    LLMActiveChatBootstrapStageRunner,
-    LLMOverflowCompressionStageRunner,
+from shinbot.agent.runners.review_reply import (
     LLMReplyDecisionStageRunner,
-    LLMReviewScanStageRunner,
-    ReviewLLMRunnerConfig,
-)
-from shinbot.agent.runners.review.reply import (
     NoopReplyDecisionStageRunner,
     ReplyDecisionStageRunner,
+    register_review_reply_prompt_components,
 )
-from shinbot.agent.runners.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.runners.review_scan import (
+    LLMReviewScanStageRunner,
+    NoopReviewScanStageRunner,
+    ReviewScanStageRunner,
+    register_review_scan_prompt_components,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -43,7 +48,6 @@ class ReviewStageRuntimeConfig:
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any] | None) -> ReviewStageRuntimeConfig:
-        """Build stage config from a plain runtime-config mapping."""
         if not value:
             return cls()
         return cls(
@@ -60,7 +64,6 @@ class ReviewStageRuntimeConfig:
         )
 
     def to_llm_config(self) -> ReviewLLMRunnerConfig:
-        """Convert to the lower-level LLM runner config."""
         kwargs: dict[str, Any] = {
             "caller": self.caller,
             "route_id": self.route_id,
@@ -89,7 +92,6 @@ class ReviewRuntimeConfig:
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any] | None) -> ReviewRuntimeConfig:
-        """Build review runtime config from a plain mapping."""
         if not value:
             return cls()
         return cls(
@@ -178,6 +180,14 @@ class ReviewRunnerFactory:
         return bool(stage_config.enabled and self._model_runtime is not None)
 
 
+def register_review_prompt_components(registry) -> None:
+    """Register all review stage prompt components."""
+    register_review_compression_prompt_components(registry)
+    register_review_scan_prompt_components(registry)
+    register_review_reply_prompt_components(registry)
+    register_review_bootstrap_prompt_components(registry)
+
+
 def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -217,4 +227,5 @@ __all__ = [
     "ReviewRunnerFactory",
     "ReviewRuntimeConfig",
     "ReviewStageRuntimeConfig",
+    "register_review_prompt_components",
 ]
