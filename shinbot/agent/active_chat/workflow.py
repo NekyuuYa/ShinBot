@@ -78,6 +78,12 @@ class ActiveChatWorkflow:
                 review_result_summary=review_result_summary,
             )
             self._states[session_id] = state
+        logger.info(
+            "Active chat session started for %s epoch=%s interest=%.2f",
+            session_id,
+            active_chat_state.active_epoch,
+            active_chat_state.interest_value,
+        )
         return ActiveChatStartResult(
             accepted=True,
             session_id=session_id,
@@ -113,6 +119,11 @@ class ActiveChatWorkflow:
                 skipped_reason="missing_message_log_id",
             )
         if sender_id and self_platform_id and sender_id == self_platform_id:
+            logger.debug(
+                "Active chat ignored self message session=%s message_log_id=%s",
+                session_id,
+                message_log_id,
+            )
             return ActiveChatNotifyResult(
                 accepted=False,
                 session_id=session_id,
@@ -139,6 +150,12 @@ class ActiveChatWorkflow:
         async with self._get_lock(session_id):
             state = self._states.get(session_id)
             if state is None:
+                logger.debug(
+                    "Active chat ignored message before session start session=%s "
+                    "message_log_id=%s",
+                    session_id,
+                    message_log_id,
+                )
                 return ActiveChatNotifyResult(
                     accepted=False,
                     session_id=session_id,
@@ -146,6 +163,14 @@ class ActiveChatWorkflow:
                     skipped_reason="inactive_session",
                 )
             elif state.active_epoch != active_chat_state.active_epoch:
+                logger.debug(
+                    "Active chat ignored stale epoch message session=%s message_log_id=%s "
+                    "state_epoch=%s signal_epoch=%s",
+                    session_id,
+                    message_log_id,
+                    state.active_epoch,
+                    active_chat_state.active_epoch,
+                )
                 return ActiveChatNotifyResult(
                     accepted=False,
                     session_id=session_id,
@@ -157,6 +182,15 @@ class ActiveChatWorkflow:
             self._attention.observe(state, signal, now=now)
             threshold = self._attention.effective_threshold(active_chat_state.interest_value)
             triggered = state.accumulated >= threshold
+            logger.debug(
+                "Active chat observed message session=%s message_log_id=%s "
+                "accumulated=%.3f threshold=%.3f triggered=%s",
+                session_id,
+                message_log_id,
+                state.accumulated,
+                threshold,
+                triggered,
+            )
             if not triggered:
                 return ActiveChatNotifyResult(
                     accepted=True,
@@ -168,6 +202,14 @@ class ActiveChatWorkflow:
                 )
 
             if self._is_round_running(session_id):
+                logger.debug(
+                    "Active chat buffered message while round is running session=%s "
+                    "message_log_id=%s accumulated=%.3f threshold=%.3f",
+                    session_id,
+                    message_log_id,
+                    state.accumulated,
+                    threshold,
+                )
                 return ActiveChatNotifyResult(
                     accepted=True,
                     session_id=session_id,
@@ -207,10 +249,17 @@ class ActiveChatWorkflow:
 
     def stop_active_chat(self, session_id: str) -> None:
         """Clear session-bound active chat workflow state after scheduler exit."""
+        state = self._states.get(session_id)
+        pending_count = len(state.pending_buffer) if state is not None else 0
         self._cancel_semantic_wait_locked(session_id)
         self._cancel_running_round_locked(session_id)
         self._states.pop(session_id, None)
         self.last_batches.pop(session_id, None)
+        logger.info(
+            "Active chat session stopped session=%s pending_count=%s",
+            session_id,
+            pending_count,
+        )
 
     def attention_state_for(self, session_id: str) -> ActiveChatAttentionState | None:
         """Return in-memory attention state for tests and diagnostics."""
@@ -250,7 +299,19 @@ class ActiveChatWorkflow:
             if previous_sender_id == sender_id:
                 self._cancel_semantic_wait_locked(session_id)
                 timer_reset = True
+                logger.debug(
+                    "Active chat semantic wait reset session=%s sender_id=%s",
+                    session_id,
+                    sender_id,
+                )
             else:
+                logger.debug(
+                    "Active chat semantic wait already running session=%s sender_id=%s "
+                    "previous_sender_id=%s",
+                    session_id,
+                    sender_id,
+                    previous_sender_id,
+                )
                 return False, False
 
         wait_seconds = self._attention.config.semantic_wait_ms / 1000.0
@@ -263,17 +324,24 @@ class ActiveChatWorkflow:
             name=f"active-chat-wait-{session_id}",
         )
         self._semantic_wait_tasks[session_id] = task
+        logger.debug(
+            "Active chat semantic wait started session=%s wait_seconds=%.3f",
+            session_id,
+            wait_seconds,
+        )
         return True, timer_reset
 
     def _cancel_semantic_wait_locked(self, session_id: str) -> None:
         task = self._semantic_wait_tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
+            logger.debug("Active chat semantic wait cancelled session=%s", session_id)
 
     def _cancel_running_round_locked(self, session_id: str) -> None:
         task = self._running_rounds.pop(session_id, None)
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
+            logger.debug("Active chat running round cancelled session=%s", session_id)
 
     async def _semantic_wait_then_flush(
         self,
@@ -293,18 +361,28 @@ class ActiveChatWorkflow:
 
         async with self._get_lock(session_id):
             if self._is_round_running(session_id):
+                logger.debug(
+                    "Active chat skipped semantic flush because round is running session=%s",
+                    session_id,
+                )
                 return
             task = asyncio.create_task(
                 self._flush(session_id=session_id, scheduler=scheduler),
                 name=f"active-chat-round-{session_id}",
             )
             self._running_rounds[session_id] = task
+            logger.debug("Active chat semantic wait flushed session=%s", session_id)
 
     async def _flush(self, *, session_id: str, scheduler) -> None:
         try:
             async with self._get_lock(session_id):
                 state = self._states.get(session_id)
                 if state is None or not state.pending_buffer:
+                    logger.debug(
+                        "Active chat flush skipped session=%s reason=%s",
+                        session_id,
+                        "missing_state" if state is None else "empty_pending",
+                    )
                     return
                 messages = list(state.pending_buffer)
                 state.pending_buffer.clear()
@@ -317,6 +395,11 @@ class ActiveChatWorkflow:
             latest_signal = messages[-1]
             active_chat_state = latest_signal.active_chat_state
             if active_chat_state is None:
+                logger.warning(
+                    "Active chat batch missing active state session=%s message_log_ids=%s",
+                    session_id,
+                    _message_ids(messages),
+                )
                 self._restore_pending(
                     session_id,
                     messages,
@@ -334,6 +417,12 @@ class ActiveChatWorkflow:
                 conversation_messages=conversation_messages,
             )
             if self._round_handler is None:
+                logger.warning(
+                    "Active chat batch restored because no round handler is configured "
+                    "session=%s message_log_ids=%s",
+                    session_id,
+                    batch.message_log_ids,
+                )
                 self._restore_pending(
                     session_id,
                     messages,
@@ -341,13 +430,27 @@ class ActiveChatWorkflow:
                 )
                 return
 
+            logger.info(
+                "Active chat round started session=%s message_log_ids=%s accumulated=%.3f",
+                session_id,
+                batch.message_log_ids,
+                handled_accumulated,
+            )
             result = self._round_handler(batch)
             if isawaitable(result):
                 result = await result
             if not result.success:
+                restored_messages = result.restored_messages or messages
+                logger.warning(
+                    "Active chat round restored pending session=%s reason=%s "
+                    "message_log_ids=%s",
+                    session_id,
+                    result.reason,
+                    _message_ids(restored_messages),
+                )
                 self._restore_pending(
                     session_id,
-                    result.restored_messages or messages,
+                    restored_messages,
                     accumulated=handled_accumulated,
                 )
                 return
@@ -357,8 +460,20 @@ class ActiveChatWorkflow:
                     current_state is None
                     or current_state.active_epoch != batch.active_chat_state.active_epoch
                 ):
+                    logger.warning(
+                        "Active chat round result discarded for stale runtime session=%s "
+                        "message_log_ids=%s",
+                        session_id,
+                        batch.message_log_ids,
+                    )
                     return
                 if result.action == ActiveChatActionKind.EXIT_ACTIVE and not result.reason.strip():
+                    logger.warning(
+                        "Active chat exit_active without reason restored session=%s "
+                        "message_log_ids=%s",
+                        session_id,
+                        batch.message_log_ids,
+                    )
                     self._restore_pending(
                         session_id,
                         messages,
@@ -376,6 +491,16 @@ class ActiveChatWorkflow:
             scheduler.mark_active_chat_consumed(session_id, consumed_message_log_ids)
             effect = interest_effect_for_round(result)
             self.last_batches[session_id] = batch
+            logger.info(
+                "Active chat round completed session=%s action=%s consumed_message_log_ids=%s "
+                "interest_delta=%.2f force_exit=%s reason=%s",
+                session_id,
+                result.action.value,
+                consumed_message_log_ids,
+                effect.delta,
+                effect.force_exit,
+                effect.reason,
+            )
             scheduler.adjust_active_chat_interest(
                 session_id,
                 delta=effect.delta,
@@ -419,6 +544,12 @@ class ActiveChatWorkflow:
             self._states[session_id] = state
         state.pending_buffer = messages + state.pending_buffer
         state.accumulated += accumulated
+        logger.debug(
+            "Active chat pending restored session=%s message_log_ids=%s accumulated=%.3f",
+            session_id,
+            _message_ids(messages),
+            state.accumulated,
+        )
 
     def _append_conversation_messages_locked(
         self,
@@ -443,6 +574,13 @@ class ActiveChatWorkflow:
         threshold = self._attention.effective_threshold(active_chat_state.interest_value)
         if state.accumulated < threshold:
             return
+        logger.debug(
+            "Active chat pending still over threshold session=%s accumulated=%.3f "
+            "threshold=%.3f",
+            session_id,
+            state.accumulated,
+            threshold,
+        )
         self._arm_semantic_wait_locked(
             scheduler=scheduler,
             session_id=session_id,
@@ -453,6 +591,10 @@ class ActiveChatWorkflow:
     def _is_round_running(self, session_id: str) -> bool:
         running = self._running_rounds.get(session_id)
         return running is not None and not running.done()
+
+
+def _message_ids(messages: list[ActiveChatMessageSignal]) -> list[int]:
+    return [message.message_log_id for message in messages]
 
 
 __all__ = ["ActiveChatRoundHandler", "ActiveChatWorkflow"]

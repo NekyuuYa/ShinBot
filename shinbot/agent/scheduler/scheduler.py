@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -37,6 +38,8 @@ from shinbot.agent.scheduler.priority_policy import (
 from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy, ReviewPolicy
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from shinbot.core.dispatch.dispatchers import AgentEntrySignal
@@ -346,6 +349,16 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
+        logger.info(
+            "Active chat exited from interest adjustment session=%s force_exit=%s "
+            "delta=%.2f interest=%.2f reason=%s next_review_at=%.2f",
+            session_id,
+            force_exit,
+            delta,
+            adjusted_state.interest_value,
+            reason,
+            plan.next_review_at,
+        )
         self._stop_active_chat_runtime(session_id)
         return ActiveChatInterestAdjustDecision(
             session_id=session_id,
@@ -587,6 +600,14 @@ class AgentScheduler:
         self._state_store.set_state(session_id, AgentState.IDLE)
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
+        logger.info(
+            "Active chat exited from decay tick session=%s interest=%.2f "
+            "tick_count=%s next_review_at=%.2f",
+            session_id,
+            decayed_state.interest_value,
+            decayed_state.tick_count,
+            plan.next_review_at,
+        )
         self._stop_active_chat_runtime(session_id)
         return ActiveChatTickDecision(
             session_id=session_id,
