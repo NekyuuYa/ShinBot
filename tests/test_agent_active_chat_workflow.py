@@ -952,3 +952,65 @@ async def test_active_chat_workflow_stop_cancels_running_round_without_consuming
     assert scheduler.adjustments == []
     assert workflow.attention_state_for("bot:group:room") is None
     await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_restart_cancels_old_round_and_resets_state() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        started.set()
+        try:
+            await asyncio.sleep(60.0)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ActiveChatRoundResult(success=True, reason=f"late-{batch.active_chat_state.active_epoch}")
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+    await start_workflow(workflow)
+    workflow.last_batches["bot:group:room"] = ActiveChatBatch(
+        session_id="bot:group:room",
+        messages=[make_signal(message_log_id=99)],
+        active_chat_state=make_active_state(),
+        response_profile="balanced",
+    )
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    await start_workflow(workflow, active_state=make_active_state(active_epoch=2))
+    await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+
+    state = workflow.attention_state_for("bot:group:room")
+    assert state is not None
+    assert state.active_epoch == 2
+    assert state.pending_buffer == []
+    assert workflow.last_batches == {}
+    assert scheduler.consumed == []
+    await workflow.shutdown()

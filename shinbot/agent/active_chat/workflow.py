@@ -69,6 +69,8 @@ class ActiveChatWorkflow:
         """Initialize an active chat session without triggering an LLM round."""
         async with self._get_lock(session_id):
             self._cancel_semantic_wait_locked(session_id)
+            self._cancel_running_round_locked(session_id)
+            self.last_batches.pop(session_id, None)
             state = ActiveChatAttentionState(
                 session_id=session_id,
                 last_update_at=self._now(),
@@ -206,9 +208,7 @@ class ActiveChatWorkflow:
     def stop_active_chat(self, session_id: str) -> None:
         """Clear session-bound active chat workflow state after scheduler exit."""
         self._cancel_semantic_wait_locked(session_id)
-        task = self._running_rounds.pop(session_id, None)
-        if task is not None and not task.done() and task is not asyncio.current_task():
-            task.cancel()
+        self._cancel_running_round_locked(session_id)
         self._states.pop(session_id, None)
         self.last_batches.pop(session_id, None)
 
@@ -268,6 +268,11 @@ class ActiveChatWorkflow:
     def _cancel_semantic_wait_locked(self, session_id: str) -> None:
         task = self._semantic_wait_tasks.pop(session_id, None)
         if task is not None and not task.done():
+            task.cancel()
+
+    def _cancel_running_round_locked(self, session_id: str) -> None:
+        task = self._running_rounds.pop(session_id, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
     async def _semantic_wait_then_flush(
