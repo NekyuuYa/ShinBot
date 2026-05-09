@@ -8,7 +8,7 @@ from shinbot.persistence.records import PromptSnapshotRecord
 
 if TYPE_CHECKING:
     from shinbot.agent.attention.models import WorkflowRunRecord
-    from shinbot.agent.prompt_manager import PromptSnapshot
+    from shinbot.agent.prompts import PromptSnapshot
     from shinbot.persistence.engine import DatabaseManager
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.active_chat import ActiveChatCoordinator
-from shinbot.agent.prompt_manager import (
+from shinbot.agent.prompts import (
     PromptComponent,
     PromptComponentKind,
     PromptRegistry,

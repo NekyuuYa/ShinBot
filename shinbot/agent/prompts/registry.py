@@ -7,13 +7,13 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.context.projectors.projection import PromptMemoryProjectionRequest
-from shinbot.agent.prompt_manager.message_builder import PromptMessageBuilder
-from shinbot.agent.prompt_manager.rendering import (
+from shinbot.agent.prompts.message_builder import PromptMessageBuilder
+from shinbot.agent.prompts.rendering import (
     expand_component_tree,
     infer_component_source,
     render_component_text,
 )
-from shinbot.agent.prompt_manager.schema import (
+from shinbot.agent.prompts.schema import (
     PROMPT_STAGE_ORDER,
     PromptAssemblyRequest,
     PromptAssemblyResult,
@@ -34,7 +34,7 @@ from shinbot.agent.prompt_manager.schema import (
     PromptStageBlock,
     stable_text_hash,
 )
-from shinbot.agent.prompt_manager.snapshots import (
+from shinbot.agent.prompts.snapshots import (
     build_prompt_log_record,
     build_prompt_signature,
     create_prompt_build_snapshot,
@@ -740,7 +740,7 @@ class PromptRegistry:
 
 
 def _normalize_content_blocks(value: Any) -> list[dict[str, Any]] | None:
-    from shinbot.agent.prompt_manager.rendering import _extract_content_blocks
+    from shinbot.agent.prompts.rendering import _extract_content_blocks
 
     return _extract_content_blocks(value)
 

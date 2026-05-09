@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shinbot.agent.prompt_manager.schema import (
+from shinbot.agent.prompts.schema import (
     PromptStage,
     PromptStageAssembly,
 )

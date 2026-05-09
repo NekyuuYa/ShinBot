@@ -1,19 +1,19 @@
 """Stage runner boundaries and implementations for Agent review workflows."""
 
-from shinbot.agent.review.stages.bootstrap import (
+from shinbot.agent.workflows.review.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
 )
-from shinbot.agent.review.stages.compression import (
+from shinbot.agent.workflows.review.compression import (
     NoopOverflowCompressionStageRunner,
     OverflowCompressionStageRunner,
 )
-from shinbot.agent.review.stages.factory import (
+from shinbot.agent.workflows.review.factory import (
     ReviewRunnerFactory,
     ReviewRuntimeConfig,
     ReviewStageRuntimeConfig,
 )
-from shinbot.agent.review.stages.llm import (
+from shinbot.agent.workflows.review.llm import (
     LLMActiveChatBootstrapStageRunner,
     LLMOverflowCompressionStageRunner,
     LLMReplyDecisionStageRunner,
@@ -22,11 +22,11 @@ from shinbot.agent.review.stages.llm import (
     ReviewLLMStageRunnerBase,
     parse_json_object,
 )
-from shinbot.agent.review.stages.reply import (
+from shinbot.agent.workflows.review.reply import (
     NoopReplyDecisionStageRunner,
     ReplyDecisionStageRunner,
 )
-from shinbot.agent.review.stages.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.workflows.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 
 __all__ = [
     "ActiveChatBootstrapStageRunner",

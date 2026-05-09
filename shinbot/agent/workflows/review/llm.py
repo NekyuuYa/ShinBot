@@ -7,22 +7,22 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from shinbot.agent.context.review_context_builder import ReviewStageInput
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.prompt_manager import (
+from shinbot.agent.prompts import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.review.context.builder import ReviewStageInput
+from shinbot.agent.prompts.review_prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
 from shinbot.agent.review.models import (
     ActiveChatBootstrapStageOutput,
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
     ReviewScanStageOutput,
 )
-from shinbot.agent.review.prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
 from shinbot.agent.scheduler.models import ActiveChatDisposition
 from shinbot.agent.tools.schema import ToolCallRequest
 

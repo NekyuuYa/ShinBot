@@ -9,8 +9,6 @@ from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from typing import Any
 
-from shinbot.agent.active_chat.actions import interest_effect_for_round
-from shinbot.agent.active_chat.attention import ActiveChatAttention, ActiveChatAttentionConfig
 from shinbot.agent.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatAttentionState,
@@ -20,8 +18,10 @@ from shinbot.agent.active_chat.models import (
     ActiveChatRoundResult,
     ActiveChatStartResult,
 )
-from shinbot.agent.active_chat.trace import ActiveChatTraceCompactor, ActiveChatTraceConfig
 from shinbot.agent.scheduler.models import ActiveChatState
+from shinbot.agent.utils.active_chat_actions import interest_effect_for_round
+from shinbot.agent.utils.active_chat_attention import ActiveChatAttention, ActiveChatAttentionConfig
+from shinbot.agent.utils.active_chat_trace import ActiveChatTraceCompactor, ActiveChatTraceConfig
 
 logger = logging.getLogger(__name__)
 

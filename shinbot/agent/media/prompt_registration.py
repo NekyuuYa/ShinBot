@@ -8,7 +8,7 @@ from shinbot.agent.media.config import (
     BUILTIN_STICKER_SUMMARY_PROMPT,
     BUILTIN_STICKER_SUMMARY_PROMPT_ID,
 )
-from shinbot.agent.prompt_manager.schema import (
+from shinbot.agent.prompts.schema import (
     PromptComponent,
     PromptComponentKind,
     PromptStage,

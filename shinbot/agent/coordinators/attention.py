@@ -11,25 +11,25 @@ from typing import TYPE_CHECKING, Any
 from shinbot.agent.attention.engine import AttentionEngine
 from shinbot.agent.attention.models import SessionAttentionState, WorkflowRunRecord
 from shinbot.agent.model_runtime import ModelRuntimeCall
-from shinbot.agent.prompt_manager import (
+from shinbot.agent.prompts import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.prompt_manager.runtime_sync import (
+from shinbot.agent.prompts.runtime_sync import (
     build_runtime_component_ids,
 )
-from shinbot.agent.workflow.formatting import format_incremental_messages
-from shinbot.agent.workflow.message_layout import (
-    AttentionWorkflowMessageLayout,
-    mark_latest_workflow_segment_boundary,
-)
-from shinbot.agent.workflow.model_resolution import resolve_model_target
-from shinbot.agent.workflow.persistence import (
+from shinbot.agent.runtime.workflow_persistence import (
     persist_prompt_snapshot,
     persist_workflow_run,
+)
+from shinbot.agent.utils.model_resolution import resolve_model_target
+from shinbot.agent.utils.workflow_formatting import format_incremental_messages
+from shinbot.agent.utils.workflow_message_layout import (
+    AttentionWorkflowMessageLayout,
+    mark_latest_workflow_segment_boundary,
 )
 from shinbot.agent.workflows.attention import WorkflowRunner
 from shinbot.core.bot_config import resolve_bot_runtime_config

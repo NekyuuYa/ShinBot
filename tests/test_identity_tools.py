@@ -12,8 +12,8 @@ from shinbot.agent.identity import (
     register_identity_prompt_components,
     register_identity_tools,
 )
-from shinbot.agent.prompt_manager import PromptRegistry
-from shinbot.agent.prompt_manager.schema import (
+from shinbot.agent.prompts import PromptRegistry
+from shinbot.agent.prompts.schema import (
     PromptAssemblyRequest,
     PromptComponent,
     PromptComponentKind,

@@ -11,7 +11,7 @@ from shinbot.agent.media.config import (
     BUILTIN_STICKER_SUMMARY_PROMPT,
     BUILTIN_STICKER_SUMMARY_PROMPT_ID,
 )
-from shinbot.agent.prompt_manager import (
+from shinbot.agent.prompts import (
     PromptBuildRequest,
     PromptComponent,
     PromptComponentKind,
@@ -19,7 +19,7 @@ from shinbot.agent.prompt_manager import (
     PromptInjection,
     PromptStage,
 )
-from shinbot.agent.prompt_manager.runtime_sync import sync_prompt_definition_component
+from shinbot.agent.prompts.runtime_sync import sync_prompt_definition_component
 
 MEDIA_REANALYSIS_SYSTEM_PROMPT = """
 You are ShinBot's media reanalysis agent.

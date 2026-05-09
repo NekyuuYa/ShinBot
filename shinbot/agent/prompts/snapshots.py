@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from shinbot.agent.prompt_manager.schema import (
+from shinbot.agent.prompts.schema import (
     PromptAssemblyRequest,
     PromptAssemblyResult,
     PromptBuildRequest,

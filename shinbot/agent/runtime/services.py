@@ -37,7 +37,7 @@ from shinbot.agent.media import (
     register_media_prompt_components,
     register_media_runtime,
 )
-from shinbot.agent.prompt_manager import PromptRegistry
+from shinbot.agent.prompts import PromptRegistry
 from shinbot.agent.review import (
     DatabaseReviewMessageStore,
     DatabaseReviewSummaryStore,

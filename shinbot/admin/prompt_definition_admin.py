@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from shinbot.agent.prompt_manager import PromptComponent, PromptComponentKind, PromptStage
+from shinbot.agent.prompts import PromptComponent, PromptComponentKind, PromptStage
 from shinbot.persistence.records import PromptDefinitionRecord, utc_now_iso
 
 

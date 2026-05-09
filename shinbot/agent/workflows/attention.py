@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.prompt_manager import PromptRegistry
-from shinbot.agent.workflow.formatting import format_incremental_messages
-from shinbot.agent.workflow.message_layout import AttentionWorkflowMessageLayout
+from shinbot.agent.prompts import PromptRegistry
+from shinbot.agent.utils.workflow_formatting import format_incremental_messages
+from shinbot.agent.utils.workflow_message_layout import AttentionWorkflowMessageLayout
 from shinbot.agent.workflows.attention_tool_loop import execute_workflow_tool_calls
 
 if TYPE_CHECKING:

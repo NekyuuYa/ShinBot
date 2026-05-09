@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from shinbot.agent.review.context.builder import ReviewStageInput
+from shinbot.agent.context.review_context_builder import ReviewStageInput
 from shinbot.agent.review.models import ReplyDecisionStageOutput
 
 

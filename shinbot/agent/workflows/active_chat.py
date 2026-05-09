@@ -10,28 +10,28 @@ from enum import Enum
 from inspect import isawaitable
 from typing import Any, Protocol
 
-from shinbot.agent.active_chat.context import (
-    ActiveChatContextBuilder,
-    ActiveChatContextBuildOptions,
-)
 from shinbot.agent.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
     ActiveChatMessageSignal,
     ActiveChatRoundResult,
 )
-from shinbot.agent.active_chat.prompt_registration import (
-    ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
+from shinbot.agent.context.active_chat_context import (
+    ActiveChatContextBuilder,
+    ActiveChatContextBuildOptions,
 )
-from shinbot.agent.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.prompt_manager import (
+from shinbot.agent.prompts import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.prompts.active_chat_prompt_registration import (
+    ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
+)
+from shinbot.agent.utils.active_chat_trace import sanitize_conversation_trace_messages
 from shinbot.agent.workflows.active_chat_tool_loop import ActiveChatToolLoop
 
 logger = logging.getLogger(__name__)

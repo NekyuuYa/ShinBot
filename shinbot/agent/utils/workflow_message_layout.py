@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from shinbot.agent.prompt_manager import PromptBuildResult, PromptRegistry, PromptStage
+from shinbot.agent.prompts import PromptBuildResult, PromptRegistry, PromptStage
 
 WORKFLOW_CONTROL_PROMPT = """
 ### Workflow 控制协议

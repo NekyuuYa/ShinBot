@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from shinbot.agent.prompt_manager.schema import (
+from shinbot.agent.prompts.schema import (
     PromptComponent,
     PromptComponentKind,
     PromptStage,
 )
 
 if TYPE_CHECKING:
-    from shinbot.agent.prompt_manager import PromptRegistry
+    from shinbot.agent.prompts import PromptRegistry
     from shinbot.persistence.engine import DatabaseManager
 
 

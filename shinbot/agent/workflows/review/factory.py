@@ -5,27 +5,27 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from shinbot.agent.prompt_manager import PromptStage
-from shinbot.agent.review.stages.bootstrap import (
+from shinbot.agent.prompts import PromptStage
+from shinbot.agent.workflows.review.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
 )
-from shinbot.agent.review.stages.compression import (
+from shinbot.agent.workflows.review.compression import (
     NoopOverflowCompressionStageRunner,
     OverflowCompressionStageRunner,
 )
-from shinbot.agent.review.stages.llm import (
+from shinbot.agent.workflows.review.llm import (
     LLMActiveChatBootstrapStageRunner,
     LLMOverflowCompressionStageRunner,
     LLMReplyDecisionStageRunner,
     LLMReviewScanStageRunner,
     ReviewLLMRunnerConfig,
 )
-from shinbot.agent.review.stages.reply import (
+from shinbot.agent.workflows.review.reply import (
     NoopReplyDecisionStageRunner,
     ReplyDecisionStageRunner,
 )
-from shinbot.agent.review.stages.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.workflows.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 
 
 @dataclass(slots=True, frozen=True)
