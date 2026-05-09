@@ -114,6 +114,12 @@ class AgentScheduler:
                 state=self._state_store.get_state(signal.session_id),
                 skipped_reason="stopped",
             )
+        if _is_self_message(signal):
+            return AgentScheduleDecision(
+                accepted=False,
+                state=self._state_store.get_state(signal.session_id),
+                skipped_reason="self_message",
+            )
 
         now = self._now()
         initial_state = self._state_store.get_state(signal.session_id)
@@ -171,7 +177,7 @@ class AgentScheduler:
             active_chat_state = self._observe_active_chat_message(
                 session_id=signal.session_id,
                 now=now,
-                is_from_bot=bool(signal.sender_id and signal.sender_id == signal.self_id),
+                is_from_bot=False,
                 is_mentioned=signal.is_mentioned,
                 is_reply_to_bot=signal.is_reply_to_bot,
                 is_mention_to_other=signal.is_mention_to_other,
@@ -709,3 +715,7 @@ class AgentScheduler:
         if review_after is not None:
             return review_after
         return plan.next_review_at <= now
+
+
+def _is_self_message(signal: AgentEntrySignal) -> bool:
+    return bool(signal.sender_id and signal.self_id and signal.sender_id == signal.self_id)

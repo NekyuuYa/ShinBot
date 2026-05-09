@@ -681,7 +681,9 @@ async def test_scheduler_active_chat_message_interest_ignores_low_signal_events(
 
 @pytest.mark.asyncio
 async def test_scheduler_active_chat_message_interest_ignores_bot_self_messages() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
         response_profile_resolver=lambda _signal: "active_chat",
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
@@ -705,8 +707,14 @@ async def test_scheduler_active_chat_message_interest_ignores_bot_self_messages(
         )
     )
 
-    assert decision.active_chat_state is not None
-    assert decision.active_chat_state.interest_value == pytest.approx(10.0)
+    assert decision.accepted is False
+    assert decision.skipped_reason == "self_message"
+    assert decision.active_chat_observed is False
+    assert dispatcher.active_chat_calls == []
+    assert scheduler.active_chat_state_for("bot:group:room").interest_value == pytest.approx(10.0)
+    assert [message.message_log_id for message in scheduler.unread_messages("bot:group:room")] == [
+        1
+    ]
 
 
 @pytest.mark.asyncio
@@ -936,11 +944,18 @@ async def test_scheduler_skips_unusable_signals() -> None:
     missing = await scheduler.accept_signal(make_signal(message_log_id=None))
     handled = await scheduler.accept_signal(make_signal(already_handled=True))
     stopped = await scheduler.accept_signal(make_signal(is_stopped=True))
+    self_message = await scheduler.accept_signal(make_signal(sender_id="bot-self"))
 
-    assert [missing.skipped_reason, handled.skipped_reason, stopped.skipped_reason] == [
+    assert [
+        missing.skipped_reason,
+        handled.skipped_reason,
+        stopped.skipped_reason,
+        self_message.skipped_reason,
+    ] == [
         "missing_message_log_id",
         "already_handled",
         "stopped",
+        "self_message",
     ]
     assert dispatcher.calls == []
     assert scheduler.unread_messages("bot:group:room") == []
