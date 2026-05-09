@@ -21,7 +21,6 @@ from shinbot.agent.prompt_manager import (
 from shinbot.agent.prompt_manager.runtime_sync import (
     build_runtime_component_ids,
 )
-from shinbot.agent.workflow.conversation import WorkflowRunner
 from shinbot.agent.workflow.formatting import format_incremental_messages
 from shinbot.agent.workflow.message_layout import (
     AttentionWorkflowMessageLayout,
@@ -32,6 +31,7 @@ from shinbot.agent.workflow.persistence import (
     persist_prompt_snapshot,
     persist_workflow_run,
 )
+from shinbot.agent.workflows.attention import WorkflowRunner
 from shinbot.core.bot_config import resolve_bot_runtime_config
 from shinbot.utils.logger import get_logger
 

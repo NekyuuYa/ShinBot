@@ -23,7 +23,6 @@ from shinbot.agent.active_chat.models import (
 from shinbot.agent.active_chat.prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )
-from shinbot.agent.active_chat.tool_loop import ActiveChatToolLoop
 from shinbot.agent.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_manager import (
@@ -33,6 +32,7 @@ from shinbot.agent.prompt_manager import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.workflows.active_chat_tool_loop import ActiveChatToolLoop
 
 logger = logging.getLogger(__name__)
 

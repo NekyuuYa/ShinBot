@@ -1,7 +1,6 @@
-"""Conversation workflow runtime.
+"""Agent coordinator layer — orchestration for review, active chat, attention workflows.
 
-Re-exports from new locations for backward compatibility.
-Uses lazy loading to avoid circular imports.
+Keep package exports lazy to avoid circular imports during bootstrap.
 """
 
 from __future__ import annotations
@@ -9,13 +8,18 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-__all__ = ["AttentionCoordinator", "WorkflowLoopResult", "WorkflowRunner", "execute_workflow_tool_calls"]
+__all__ = [
+    "ActiveChatCoordinator",
+    "ActiveChatRoundHandler",
+    "AttentionCoordinator",
+    "ReviewCoordinator",
+]
 
 _EXPORT_MODULES = {
+    "ActiveChatCoordinator": "shinbot.agent.coordinators.active_chat",
+    "ActiveChatRoundHandler": "shinbot.agent.coordinators.active_chat",
     "AttentionCoordinator": "shinbot.agent.coordinators.attention",
-    "WorkflowLoopResult": "shinbot.agent.workflows.attention",
-    "WorkflowRunner": "shinbot.agent.workflows.attention",
-    "execute_workflow_tool_calls": "shinbot.agent.workflows.attention_tool_loop",
+    "ReviewCoordinator": "shinbot.agent.coordinators.review",
 }
 
 

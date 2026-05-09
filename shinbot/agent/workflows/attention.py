@@ -11,7 +11,7 @@ from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.workflow.formatting import format_incremental_messages
 from shinbot.agent.workflow.message_layout import AttentionWorkflowMessageLayout
-from shinbot.agent.workflow.tool_loop import execute_workflow_tool_calls
+from shinbot.agent.workflows.attention_tool_loop import execute_workflow_tool_calls
 
 if TYPE_CHECKING:
     from shinbot.agent.media import MediaService

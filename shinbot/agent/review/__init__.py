@@ -1,12 +1,12 @@
 """Review coordinator and workflow primitives for Agent internals."""
 
+from shinbot.agent.coordinators.review import ReviewCoordinator
 from shinbot.agent.review.context.builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
     ReviewContextBuildOptions,
     ReviewStageInput,
 )
-from shinbot.agent.review.coordinator import ReviewCoordinator
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,

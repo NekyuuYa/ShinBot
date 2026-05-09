@@ -11,7 +11,6 @@ from shinbot.agent.active_chat.context import (
     ActiveChatContextBuildOptions,
     ActiveChatStageInput,
 )
-from shinbot.agent.active_chat.coordinator import ActiveChatCoordinator, ActiveChatRoundHandler
 from shinbot.agent.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatAttentionState,
@@ -28,16 +27,20 @@ from shinbot.agent.active_chat.prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
     register_active_chat_prompt_components,
 )
-from shinbot.agent.active_chat.runner import (
-    ActiveChatFastRunner,
-    ActiveChatFastRunnerConfig,
-    ActiveChatMessageStore,
-)
-from shinbot.agent.active_chat.tool_loop import ActiveChatToolLoop, ActiveChatToolLoopResult
 from shinbot.agent.active_chat.trace import (
     ActiveChatTraceCompactor,
     ActiveChatTraceConfig,
     sanitize_conversation_trace_messages,
+)
+from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator, ActiveChatRoundHandler
+from shinbot.agent.workflows.active_chat import (
+    ActiveChatFastRunner,
+    ActiveChatFastRunnerConfig,
+    ActiveChatMessageStore,
+)
+from shinbot.agent.workflows.active_chat_tool_loop import (
+    ActiveChatToolLoop,
+    ActiveChatToolLoopResult,
 )
 
 __all__ = [

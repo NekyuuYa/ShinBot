@@ -24,6 +24,7 @@ from shinbot.agent.attention import (
     register_attention_runtime,
 )
 from shinbot.agent.context import ContextManager
+from shinbot.agent.coordinators import AttentionCoordinator
 from shinbot.agent.identity import (
     IdentityStore,
     register_identity_prompt_components,
@@ -54,7 +55,6 @@ from shinbot.agent.scheduler import (
     AttentionActiveReplyDispatcher,
 )
 from shinbot.agent.tools import ToolManager, ToolRegistry
-from shinbot.agent.workflow import AttentionCoordinator
 from shinbot.core.bot_config import select_response_profile
 
 if TYPE_CHECKING:

@@ -90,8 +90,8 @@ _EXPORT_MODULES = {
     "ToolRegistry": "shinbot.agent.tools",
     "ToolRiskLevel": "shinbot.agent.tools",
     "ToolVisibility": "shinbot.agent.tools",
-    "AttentionCoordinator": "shinbot.agent.workflow",
-    "WorkflowRunner": "shinbot.agent.workflow",
+    "AttentionCoordinator": "shinbot.agent.coordinators",
+    "WorkflowRunner": "shinbot.agent.workflows",
 }
 
 
