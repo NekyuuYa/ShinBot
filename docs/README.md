@@ -35,10 +35,11 @@
 5. `design/README.md`
 6. `design/core/00_core_philosophy.md`
 7. `design/core/01_message_workflow.md`
-8. `design/runtime/21_prompt_registry.md`
-9. `design/runtime/23_tool_registry_and_manager.md`
-10. `design/extensibility/07_plugin_system_design.md`
-11. `plugins/capabilities.md`
+8. `design/runtime/agent_runtime_index.md`
+9. `design/runtime/21_prompt_registry.md`
+10. `design/runtime/23_tool_registry_and_manager.md`
+11. `design/extensibility/07_plugin_system_design.md`
+12. `plugins/capabilities.md`
 
 ## 维护规则
 

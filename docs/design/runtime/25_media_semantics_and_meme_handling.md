@@ -1,5 +1,7 @@
 # ShinBot 技术规范：媒体语义与 Meme 处理 (Media Semantics & Meme Handling)
 
+> **审计状态 (2026-05-10)**：现行。核心设计已实现于 `media/`：fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis。`inspection.py`（LLM 图片理解）、`fingerprint.py`、`classification.py`、`parsing.py`、`prompt_building.py` 属于 Utils 层（无状态能力）；`service.py`、`ingress.py` 属于 Runtime 层。详见 `../../architecture/agent_module_layers.md` 分类表。
+
 本文档定义 ShinBot 在会话工作流中的图片、表情包与其它媒体资源的语义处理策略。
 
 目标不是把所有 `img` 一律交给多模态模型，也不是把所有媒体都先压扁成一句文本，而是建立一条可治理、可缓存、可回看、成本受控的媒体处理链路：

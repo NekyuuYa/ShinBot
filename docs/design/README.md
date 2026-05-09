@@ -30,6 +30,8 @@
 
 ### `runtime/`
 
+- `agent_runtime_index.md` — Agent 运行时文档索引（阅读入口）。
+- `active_chat_workflow.md` — Active Chat 双层触发模型、会话生命周期、兴趣衰减。
 - `03_command_system.md`
 - `04_session_management.md`
 - `05_permission_system.md`

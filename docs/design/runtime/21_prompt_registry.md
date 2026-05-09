@@ -1,5 +1,7 @@
 # ShinBot 技术规范：PromptRegistry（提示词注册表）
 
+> **审计状态 (2026-05-10)**：现行。七阶段装配协议已实现。所有模型调用（WorkflowRunner、ActiveChatFastRunner、ReviewLLMStage、MediaInspectionRunner、AttentionCoordinator context compression）均通过 PromptRegistry 组装 messages。PromptComponent 注册、PromptBuildRequest、PromptSnapshot 快照记录均已实现于 `prompt_manager/`。
+
 本文档定义 ShinBot 在 Agent、系统任务与插件侧的统一 Prompt 编排机制。
 
 数据结构与实现字段定义见 `22_prompt_registry_schema.md`。

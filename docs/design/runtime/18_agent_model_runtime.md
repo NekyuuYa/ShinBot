@@ -1,5 +1,7 @@
 # ShinBot 技术规范：Agent 模型接入与路由运行时 (Agent Model Runtime)
 
+> **审计状态 (2026-05-10)**：现行。ModelRuntime 独立于 Agent，可服务非 Agent 调用（如媒体 inspection、admin probe）。Provider → Model → Route → Execution Runtime 四层架构已实现于 `model_runtime/`。所有 Agent 侧模型调用均通过 PromptRegistry 组装 messages 后调用 `ModelRuntime.generate()`。
+
 本文档定义 ShinBot 在 Agent 与插件侧的统一模型接入层设计。
 
 目标不是为每个插件分别接不同 SDK，而是建立一套稳定的模型运行时：
