@@ -22,8 +22,8 @@ from shinbot.agent.media.service import (
     MediaService,
 )
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntime, ModelRuntimeCall
-from shinbot.agent.prompts import PromptRegistry
-from shinbot.agent.prompts.runtime_sync import build_runtime_component_ids
+from shinbot.agent.prompt_engine import PromptRegistry
+from shinbot.agent.prompt_engine.runtime_sync import build_runtime_component_ids
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import MediaSemanticRecord
 from shinbot.utils.logger import get_logger

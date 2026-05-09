@@ -5,15 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.prompts.schema import (
+from shinbot.agent.prompt_engine.schema import (
     PromptComponent,
     PromptComponentKind,
     PromptStage,
 )
 
 if TYPE_CHECKING:
-    from shinbot.agent.prompts import PromptRegistry
-    from shinbot.agent.prompts.schema import PromptAssemblyRequest, PromptSource
+    from shinbot.agent.prompt_engine import PromptRegistry
+    from shinbot.agent.prompt_engine.schema import PromptAssemblyRequest, PromptSource
 
 
 def register_identity_prompt_components(

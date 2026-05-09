@@ -1,7 +1,7 @@
 """Agent-related runtime services.
 
 Keep package exports lazy so importing a submodule such as
-``shinbot.agent.prompts`` does not eagerly import the full runtime graph.
+``shinbot.agent.prompt_engine`` does not eagerly import the full runtime graph.
 That avoids circular imports during application bootstrap.
 """
 
@@ -65,20 +65,20 @@ _EXPORT_MODULES = {
     "ModelCallError": "shinbot.agent.model_runtime",
     "ModelRuntime": "shinbot.agent.model_runtime",
     "ModelRuntimeCall": "shinbot.agent.model_runtime",
-    "PromptAssemblyRequest": "shinbot.agent.prompts",
-    "PromptAssemblyResult": "shinbot.agent.prompts",
-    "PromptComponent": "shinbot.agent.prompts",
-    "PromptComponentKind": "shinbot.agent.prompts",
-    "PromptComponentRecord": "shinbot.agent.prompts",
-    "PromptLogger": "shinbot.agent.prompts",
-    "PromptLoggerRecord": "shinbot.agent.prompts",
-    "PromptProfile": "shinbot.agent.prompts",
-    "PromptRegistry": "shinbot.agent.prompts",
-    "PromptSnapshot": "shinbot.agent.prompts",
-    "PromptSource": "shinbot.agent.prompts",
-    "PromptSourceType": "shinbot.agent.prompts",
-    "PromptStage": "shinbot.agent.prompts",
-    "PromptStageBlock": "shinbot.agent.prompts",
+    "PromptAssemblyRequest": "shinbot.agent.prompt_engine",
+    "PromptAssemblyResult": "shinbot.agent.prompt_engine",
+    "PromptComponent": "shinbot.agent.prompt_engine",
+    "PromptComponentKind": "shinbot.agent.prompt_engine",
+    "PromptComponentRecord": "shinbot.agent.prompt_engine",
+    "PromptLogger": "shinbot.agent.prompt_engine",
+    "PromptLoggerRecord": "shinbot.agent.prompt_engine",
+    "PromptProfile": "shinbot.agent.prompt_engine",
+    "PromptRegistry": "shinbot.agent.prompt_engine",
+    "PromptSnapshot": "shinbot.agent.prompt_engine",
+    "PromptSource": "shinbot.agent.prompt_engine",
+    "PromptSourceType": "shinbot.agent.prompt_engine",
+    "PromptStage": "shinbot.agent.prompt_engine",
+    "PromptStageBlock": "shinbot.agent.prompt_engine",
     "ResolvedMediaInspectionConfig": "shinbot.agent.media",
     "register_media_tools": "shinbot.agent.media",
     "ToolCallRequest": "shinbot.agent.tools",

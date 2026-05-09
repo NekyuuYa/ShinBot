@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from shinbot.agent.prompts import PromptStage
+from shinbot.agent.prompt_engine import PromptStage
 from shinbot.agent.workflows.review.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,

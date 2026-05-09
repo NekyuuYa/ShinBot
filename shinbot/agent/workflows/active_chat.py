@@ -21,17 +21,17 @@ from shinbot.agent.models.active_chat import (
     ActiveChatMessageSignal,
     ActiveChatRoundResult,
 )
-from shinbot.agent.prompts import (
+from shinbot.agent.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.prompts.active_chat_prompt_registration import (
+from shinbot.agent.utils.active_chat_trace import sanitize_conversation_trace_messages
+from shinbot.agent.workflows.active_chat_prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )
-from shinbot.agent.utils.active_chat_trace import sanitize_conversation_trace_messages
 from shinbot.agent.workflows.active_chat_tool_loop import ActiveChatToolLoop
 
 logger = logging.getLogger(__name__)

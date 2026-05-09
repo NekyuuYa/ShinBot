@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from shinbot.agent.prompts.schema import (
+from shinbot.agent.prompt_engine.schema import (
     PromptAssemblyRequest,
     PromptComponent,
     PromptComponentKind,

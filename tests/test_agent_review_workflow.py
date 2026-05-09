@@ -16,13 +16,12 @@ from shinbot.agent.models.review import (
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
 )
-from shinbot.agent.prompts import (
+from shinbot.agent.prompt_engine import (
     PromptComponent,
     PromptComponentKind,
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.prompts.review_prompt_registration import register_review_prompt_components
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
 from shinbot.agent.scheduler import (
@@ -52,6 +51,7 @@ from shinbot.agent.workflows.review.llm import (
     ReviewLLMRunnerConfig,
     parse_json_object,
 )
+from shinbot.agent.workflows.review.prompt_registration import register_review_prompt_components
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord

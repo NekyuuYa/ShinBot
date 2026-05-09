@@ -15,7 +15,7 @@ from shinbot.agent.media import (
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
     MediaService,
 )
-from shinbot.agent.prompts import (
+from shinbot.agent.prompt_engine import (
     PromptAssemblyRequest,
     PromptBuildRequest,
     PromptComponent,
@@ -26,7 +26,7 @@ from shinbot.agent.prompts import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.prompts.message_builder import PromptMessageBuilder
+from shinbot.agent.prompt_engine.message_builder import PromptMessageBuilder
 from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.persistence import DatabaseManager, MediaSemanticRecord, MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement

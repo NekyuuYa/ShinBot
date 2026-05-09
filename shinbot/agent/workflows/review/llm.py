@@ -15,16 +15,16 @@ from shinbot.agent.models.review import (
     ReplyDecisionStageOutput,
     ReviewScanStageOutput,
 )
-from shinbot.agent.prompts import (
+from shinbot.agent.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.prompts.review_prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
 from shinbot.agent.scheduler.models import ActiveChatDisposition
 from shinbot.agent.tools.schema import ToolCallRequest
+from shinbot.agent.workflows.review.prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
 
 logger = logging.getLogger(__name__)
 

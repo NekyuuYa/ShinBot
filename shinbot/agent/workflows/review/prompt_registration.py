@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from shinbot.agent.prompts.schema import (
+from shinbot.agent.prompt_engine.schema import (
     PromptComponent,
     PromptComponentKind,
     PromptStage,

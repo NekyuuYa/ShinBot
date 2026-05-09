@@ -28,11 +28,7 @@ from shinbot.agent.media import (
     register_media_runtime,
 )
 from shinbot.agent.models.review import ReviewWorkflowConfig
-from shinbot.agent.prompts import PromptRegistry
-from shinbot.agent.prompts.active_chat_prompt_registration import (
-    register_active_chat_prompt_components,
-)
-from shinbot.agent.prompts.review_prompt_registration import register_review_prompt_components
+from shinbot.agent.prompt_engine import PromptRegistry
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
@@ -44,7 +40,11 @@ from shinbot.agent.scheduler import (
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.tools.active_chat_tools import register_active_chat_tools
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
+from shinbot.agent.workflows.active_chat_prompt_registration import (
+    register_active_chat_prompt_components,
+)
 from shinbot.agent.workflows.review.factory import ReviewRunnerFactory, ReviewRuntimeConfig
+from shinbot.agent.workflows.review.prompt_registration import register_review_prompt_components
 from shinbot.core.bot_config import select_response_profile
 
 if TYPE_CHECKING:
