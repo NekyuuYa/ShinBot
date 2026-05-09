@@ -6,26 +6,26 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from shinbot.agent.prompt_engine import PromptStage
-from shinbot.agent.workflows.review.bootstrap import (
+from shinbot.agent.runners.review.bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
 )
-from shinbot.agent.workflows.review.compression import (
+from shinbot.agent.runners.review.compression import (
     NoopOverflowCompressionStageRunner,
     OverflowCompressionStageRunner,
 )
-from shinbot.agent.workflows.review.llm import (
+from shinbot.agent.runners.review.llm import (
     LLMActiveChatBootstrapStageRunner,
     LLMOverflowCompressionStageRunner,
     LLMReplyDecisionStageRunner,
     LLMReviewScanStageRunner,
     ReviewLLMRunnerConfig,
 )
-from shinbot.agent.workflows.review.reply import (
+from shinbot.agent.runners.review.reply import (
     NoopReplyDecisionStageRunner,
     ReplyDecisionStageRunner,
 )
-from shinbot.agent.workflows.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
+from shinbot.agent.runners.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 
 
 @dataclass(slots=True, frozen=True)

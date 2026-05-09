@@ -22,9 +22,9 @@ from shinbot.agent.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.runners.review.prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
 from shinbot.agent.scheduler.models import ActiveChatDisposition
 from shinbot.agent.tools.schema import ToolCallRequest
-from shinbot.agent.workflows.review.prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
 
 logger = logging.getLogger(__name__)
 

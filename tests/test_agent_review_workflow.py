@@ -22,6 +22,20 @@ from shinbot.agent.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.runners.review.factory import (
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
+    ReviewStageRuntimeConfig,
+)
+from shinbot.agent.runners.review.llm import (
+    LLMActiveChatBootstrapStageRunner,
+    LLMOverflowCompressionStageRunner,
+    LLMReplyDecisionStageRunner,
+    LLMReviewScanStageRunner,
+    ReviewLLMRunnerConfig,
+    parse_json_object,
+)
+from shinbot.agent.runners.review.prompt_registration import register_review_prompt_components
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
 from shinbot.agent.scheduler import (
@@ -38,20 +52,6 @@ from shinbot.agent.scheduler.models import (
     UnreadMessage,
     UnreadRange,
 )
-from shinbot.agent.workflows.review.factory import (
-    ReviewRunnerFactory,
-    ReviewRuntimeConfig,
-    ReviewStageRuntimeConfig,
-)
-from shinbot.agent.workflows.review.llm import (
-    LLMActiveChatBootstrapStageRunner,
-    LLMOverflowCompressionStageRunner,
-    LLMReplyDecisionStageRunner,
-    LLMReviewScanStageRunner,
-    ReviewLLMRunnerConfig,
-    parse_json_object,
-)
-from shinbot.agent.workflows.review.prompt_registration import register_review_prompt_components
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord

@@ -1,4 +1,4 @@
-"""Agent workflow layer — concrete LLM/Tool execution loops.
+"""Agent workflow layer — multi-round LLM/Tool execution loops.
 
 Keep package exports lazy to avoid circular imports during bootstrap.
 """
@@ -18,8 +18,8 @@ __all__ = [
 _EXPORT_MODULES = {
     "ActiveChatFastRunner": "shinbot.agent.workflows.active_chat",
     "ActiveChatFastRunnerConfig": "shinbot.agent.workflows.active_chat",
-    "ActiveChatToolLoop": "shinbot.agent.workflows.active_chat_tool_loop",
-    "ActiveChatToolLoopResult": "shinbot.agent.workflows.active_chat_tool_loop",
+    "ActiveChatToolLoop": "shinbot.agent.workflows.active_chat",
+    "ActiveChatToolLoopResult": "shinbot.agent.workflows.active_chat",
 }
 
 

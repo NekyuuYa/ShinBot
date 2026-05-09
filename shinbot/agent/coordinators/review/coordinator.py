@@ -30,6 +30,19 @@ from shinbot.agent.coordinators.review.models import (
     ReviewWorkflowResult,
     UnreadRangeSummaryRecord,
 )
+from shinbot.agent.runners.review.bootstrap import (
+    ActiveChatBootstrapStageRunner,
+    NoopActiveChatBootstrapStageRunner,
+)
+from shinbot.agent.runners.review.compression import (
+    NoopOverflowCompressionStageRunner,
+    OverflowCompressionStageRunner,
+)
+from shinbot.agent.runners.review.reply import (
+    NoopReplyDecisionStageRunner,
+    ReplyDecisionStageRunner,
+)
+from shinbot.agent.runners.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 from shinbot.agent.runtime.review_message_store import ReviewMessageStore
 from shinbot.agent.runtime.review_summary_store import ReviewSummaryStore
 from shinbot.agent.scheduler.models import (
@@ -40,19 +53,6 @@ from shinbot.agent.scheduler.models import (
     UnreadMessage,
     UnreadRange,
 )
-from shinbot.agent.workflows.review.bootstrap import (
-    ActiveChatBootstrapStageRunner,
-    NoopActiveChatBootstrapStageRunner,
-)
-from shinbot.agent.workflows.review.compression import (
-    NoopOverflowCompressionStageRunner,
-    OverflowCompressionStageRunner,
-)
-from shinbot.agent.workflows.review.reply import (
-    NoopReplyDecisionStageRunner,
-    ReplyDecisionStageRunner,
-)
-from shinbot.agent.workflows.review.scan import NoopReviewScanStageRunner, ReviewScanStageRunner
 
 logger = logging.getLogger(__name__)
 
