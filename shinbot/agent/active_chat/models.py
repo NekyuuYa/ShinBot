@@ -72,6 +72,7 @@ class ActiveChatAttentionState:
     mode: ActiveChatMode = ActiveChatMode.FAST
     active_epoch: int = 0
     review_result_summary: Any = None
+    conversation_summary: str = ""
     conversation_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -95,6 +96,7 @@ class ActiveChatBatch:
     response_profile: str
     mode: ActiveChatMode = ActiveChatMode.FAST
     review_result_summary: Any = None
+    conversation_summary: str = ""
     conversation_messages: list[dict[str, Any]] = field(default_factory=list)
 
     @property

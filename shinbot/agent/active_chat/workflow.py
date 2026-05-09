@@ -20,6 +20,7 @@ from shinbot.agent.active_chat.models import (
     ActiveChatRoundResult,
     ActiveChatStartResult,
 )
+from shinbot.agent.active_chat.trace import ActiveChatTraceCompactor, ActiveChatTraceConfig
 from shinbot.agent.scheduler.models import ActiveChatState
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,14 @@ class ActiveChatWorkflow:
         round_handler: ActiveChatRoundHandler | None = None,
         now: Callable[[], float] | None = None,
         conversation_message_limit: int = 80,
+        trace_compactor: ActiveChatTraceCompactor | None = None,
     ) -> None:
         self._attention = attention or ActiveChatAttention()
         self._round_handler = round_handler
         self._now = now or time.time
-        self._conversation_message_limit = max(0, conversation_message_limit)
+        self._trace_compactor = trace_compactor or ActiveChatTraceCompactor(
+            ActiveChatTraceConfig(message_limit=max(0, conversation_message_limit))
+        )
         self._states: dict[str, ActiveChatAttentionState] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._semantic_wait_tasks: dict[str, asyncio.Task[None]] = {}
@@ -282,6 +286,7 @@ class ActiveChatWorkflow:
                 handled_accumulated = state.accumulated
                 state.accumulated = 0.0
                 review_result_summary = state.review_result_summary
+                conversation_summary = state.conversation_summary
                 conversation_messages = list(state.conversation_messages)
 
             latest_signal = messages[-1]
@@ -296,6 +301,7 @@ class ActiveChatWorkflow:
                 active_chat_state=active_chat_state,
                 response_profile=latest_signal.response_profile,
                 review_result_summary=review_result_summary,
+                conversation_summary=conversation_summary,
                 conversation_messages=conversation_messages,
             )
             if self._round_handler is None:
@@ -371,12 +377,7 @@ class ActiveChatWorkflow:
         state: ActiveChatAttentionState,
         messages: list[dict[str, Any]],
     ) -> None:
-        if not messages or self._conversation_message_limit == 0:
-            return
-        state.conversation_messages.extend(dict(message) for message in messages)
-        overflow = len(state.conversation_messages) - self._conversation_message_limit
-        if overflow > 0:
-            del state.conversation_messages[:overflow]
+        self._trace_compactor.append(state, messages)
 
     def _arm_next_round_if_pending_locked(
         self,

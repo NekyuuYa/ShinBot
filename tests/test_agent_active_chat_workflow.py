@@ -420,6 +420,81 @@ async def test_active_chat_workflow_carries_conversation_trace_to_next_batch() -
 
 
 @pytest.mark.asyncio
+async def test_active_chat_workflow_compacts_old_conversation_trace() -> None:
+    batches: list[ActiveChatBatch] = []
+
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        batches.append(batch)
+        round_no = len(batches)
+        return ActiveChatRoundResult(
+            success=True,
+            reason=f"round-{round_no}",
+            conversation_messages_delta=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"call-{round_no}",
+                            "type": "function",
+                            "function": {
+                                "name": "send_reply",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": f"call-{round_no}",
+                    "content": "{\"action\": \"send_reply\"}",
+                },
+            ],
+        )
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+        conversation_message_limit=3,
+    )
+
+    for message_log_id in (1, 2, 3):
+        await workflow.notify_message(
+            scheduler=scheduler,
+            session_id="bot:group:room",
+            message_log_id=message_log_id,
+            sender_id="user-1",
+            response_profile="balanced",
+            is_mentioned=True,
+            is_reply_to_bot=False,
+            is_mention_to_other=False,
+            is_poke_to_bot=False,
+            is_poke_to_other=False,
+            self_platform_id="bot-self",
+            active_chat_state=make_active_state(),
+        )
+        await asyncio.sleep(0.05)
+
+    assert [batch.message_log_ids for batch in batches] == [[1], [2], [3]]
+    state = workflow.attention_state_for("bot:group:room")
+    assert state is not None
+    assert len(state.conversation_messages) == 3
+    assert state.conversation_messages[0]["role"] == "tool"
+    assert "compacted_messages" in state.conversation_summary
+    assert "send_reply" in state.conversation_summary
+    assert batches[2].conversation_summary
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_active_chat_workflow_runs_next_batch_for_messages_arriving_during_round() -> None:
     first_round_started = asyncio.Event()
     release_first_round = asyncio.Event()

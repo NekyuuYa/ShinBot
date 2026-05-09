@@ -33,6 +33,7 @@ from shinbot.agent.active_chat.runner import (
     ActiveChatMessageStore,
 )
 from shinbot.agent.active_chat.tool_loop import ActiveChatToolLoop, ActiveChatToolLoopResult
+from shinbot.agent.active_chat.trace import ActiveChatTraceCompactor, ActiveChatTraceConfig
 from shinbot.agent.active_chat.workflow import ActiveChatRoundHandler, ActiveChatWorkflow
 
 __all__ = [
@@ -59,6 +60,8 @@ __all__ = [
     "ActiveChatStageInput",
     "ActiveChatToolLoop",
     "ActiveChatToolLoopResult",
+    "ActiveChatTraceCompactor",
+    "ActiveChatTraceConfig",
     "ActiveChatWorkflow",
     "ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE",
     "interest_effect_for_round",

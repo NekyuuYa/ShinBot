@@ -160,6 +160,7 @@ def make_batch(
     *,
     review_result_summary: Any | None = None,
     self_platform_id: str = "",
+    conversation_summary: str = "",
     conversation_messages: list[dict[str, Any]] | None = None,
 ) -> ActiveChatBatch:
     active_state = ActiveChatState(
@@ -187,6 +188,7 @@ def make_batch(
             if review_result_summary is None
             else review_result_summary
         ),
+        conversation_summary=conversation_summary,
         conversation_messages=list(conversation_messages or []),
     )
 
@@ -291,6 +293,41 @@ async def test_active_chat_fast_runner_injects_previous_conversation_trace() -> 
     )
     assert "send_reply" in rendered_prompt_text
     assert "call-send_reply" in rendered_prompt_text
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_injects_compacted_conversation_summary() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    await runner.run(
+        make_batch(
+            conversation_summary='{"compacted_messages": 4, "recent_tool_actions": ["send_reply"]}'
+        )
+    )
+
+    rendered_prompt_text = json.dumps(
+        model_runtime.calls[0].messages,
+        ensure_ascii=False,
+    )
+    assert "Active chat compacted conversation trace summary" in rendered_prompt_text
+    assert "compacted_messages" in rendered_prompt_text
+    assert "send_reply" in rendered_prompt_text
 
 
 @pytest.mark.asyncio

@@ -299,6 +299,29 @@ class ActiveChatFastRunner:
                     metadata={"active_chat_stage": self.stage_id},
                 )
             )
+        if batch.conversation_summary:
+            injections.append(
+                PromptInjection(
+                    stage=PromptStage.CONTEXT,
+                    component_id="active_chat.fast_mode.conversation_summary",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "Active chat compacted conversation trace summary:\n"
+                                        + batch.conversation_summary
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                    priority=15,
+                    metadata={"active_chat_stage": self.stage_id},
+                )
+            )
         if batch.conversation_messages:
             injections.append(
                 PromptInjection(
@@ -494,6 +517,7 @@ class ActiveChatFastRunner:
             response_profile=latest.response_profile or batch.response_profile,
             mode=batch.mode,
             review_result_summary=batch.review_result_summary,
+            conversation_summary=batch.conversation_summary,
             conversation_messages=batch.conversation_messages,
         )
 
