@@ -295,3 +295,74 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
         assert state.pending_buffer == []
     finally:
         await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_keeps_active_chat_pending_unread_on_exit(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime(
+        [
+            make_generate_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "unused"}),
+                ]
+            )
+        ]
+    )
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:group:1"
+    message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="platform-msg-2",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="@bot are you there?",
+            content_json="[]",
+            role="user",
+            created_at=20_000.0,
+            is_mentioned=True,
+        )
+    )
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=60.0,
+        decay_half_life_seconds=20.0,
+        entered_at=10.0,
+        updated_at=10.0,
+        active_epoch=4,
+    )
+    runtime.agent_scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    runtime.agent_scheduler._state_store.set_active_chat_state(active_state)
+    await runtime.active_chat_workflow.start_active_chat(
+        session_id=session_id,
+        active_chat_state=active_state,
+    )
+
+    try:
+        await runtime.handle_agent_entry(
+            make_signal(message_log_id=message_log_id, is_mentioned=True)
+        )
+        state = runtime.active_chat_workflow.attention_state_for(session_id)
+        assert state is not None
+        assert [message.message_log_id for message in state.pending_buffer] == [message_log_id]
+
+        decision = runtime.agent_scheduler.adjust_active_chat_interest(
+            session_id,
+            force_exit=True,
+            reason="test_exit_before_batch",
+        )
+
+        assert decision.returned_to_idle is True
+        unread_message_ids = [
+            message.message_log_id
+            for message in runtime.agent_scheduler.unread_messages(session_id)
+        ]
+        assert unread_message_ids == [message_log_id]
+        assert runtime.active_chat_workflow.attention_state_for(session_id) is None
+        assert model_runtime.calls == []
+    finally:
+        await runtime.shutdown()
