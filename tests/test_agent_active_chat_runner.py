@@ -5,20 +5,22 @@ from typing import Any
 
 import pytest
 
-from shinbot.agent.active_chat import (
+from shinbot.agent.context.active_chat_context import ActiveChatContextBuilderAdapter
+from shinbot.agent.model_runtime import GenerateResult, ModelCallError
+from shinbot.agent.models.active_chat import (
     ActiveChatActionKind,
     ActiveChatBatch,
-    ActiveChatContextBuilderAdapter,
-    ActiveChatFastRunner,
     ActiveChatMessageSignal,
     ActiveChatNoReplyIntensity,
-    register_active_chat_prompt_components,
 )
-from shinbot.agent.model_runtime import GenerateResult, ModelCallError
 from shinbot.agent.models.review import ReviewWorkflowExplanation
 from shinbot.agent.prompts import PromptRegistry
+from shinbot.agent.prompts.active_chat_prompt_registration import (
+    register_active_chat_prompt_components,
+)
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
+from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 
 
 class FakeModelRuntime:

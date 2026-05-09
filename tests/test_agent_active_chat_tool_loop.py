@@ -5,13 +5,13 @@ from typing import Any
 
 import pytest
 
-from shinbot.agent.active_chat import (
+from shinbot.agent.models.active_chat import (
     ActiveChatActionKind,
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,
-    ActiveChatToolLoop,
 )
 from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
+from shinbot.agent.workflows.active_chat_tool_loop import ActiveChatToolLoop
 
 
 class FakeToolManager:

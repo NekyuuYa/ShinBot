@@ -8,13 +8,10 @@ from typing import Any
 import pytest
 
 from shinbot.agent.model_runtime import GenerateResult
-from shinbot.agent.review import (
-    LLMReviewScanStageRunner,
-    ReviewRuntimeConfig,
-    ReviewStageRuntimeConfig,
-)
 from shinbot.agent.runtime import install_agent_runtime
 from shinbot.agent.scheduler import ActiveChatState, AgentScheduler, AgentState
+from shinbot.agent.workflows.review.factory import ReviewRuntimeConfig, ReviewStageRuntimeConfig
+from shinbot.agent.workflows.review.llm import LLMReviewScanStageRunner
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence.records import BotConfigRecord, MessageLogRecord

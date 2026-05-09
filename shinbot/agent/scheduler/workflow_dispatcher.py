@@ -13,12 +13,9 @@ from shinbot.agent.scheduler.models import (
 )
 
 if TYPE_CHECKING:
-    from shinbot.agent.active_chat import ActiveChatCoordinator
-    from shinbot.agent.review import (
-        ReviewCoordinator,
-        ReviewWorkflowExplanation,
-        ReviewWorkflowResult,
-    )
+    from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
+    from shinbot.agent.coordinators.review import ReviewCoordinator
+    from shinbot.agent.models.review import ReviewWorkflowExplanation, ReviewWorkflowResult
     from shinbot.agent.scheduler.scheduler import AgentScheduler
 
 

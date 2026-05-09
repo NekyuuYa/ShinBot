@@ -10,12 +10,6 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.active_chat import (
-    ActiveChatContextBuilderAdapter,
-    ActiveChatCoordinator,
-    ActiveChatFastRunner,
-    register_active_chat_prompt_components,
-)
 from shinbot.agent.attention import (
     AttentionConfig,
     AttentionEngine,
@@ -24,7 +18,11 @@ from shinbot.agent.attention import (
     register_attention_runtime,
 )
 from shinbot.agent.context import ContextManager
+from shinbot.agent.context.active_chat_context import ActiveChatContextBuilderAdapter
+from shinbot.agent.context.review_context_builder import ReviewContextBuilderAdapter
 from shinbot.agent.coordinators import AttentionCoordinator
+from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
+from shinbot.agent.coordinators.review import ReviewCoordinator
 from shinbot.agent.identity import (
     IdentityStore,
     register_identity_prompt_components,
@@ -37,24 +35,23 @@ from shinbot.agent.media import (
     register_media_prompt_components,
     register_media_runtime,
 )
+from shinbot.agent.models.review import ReviewWorkflowConfig
 from shinbot.agent.prompts import PromptRegistry
-from shinbot.agent.review import (
-    DatabaseReviewMessageStore,
-    DatabaseReviewSummaryStore,
-    ReviewContextBuilderAdapter,
-    ReviewCoordinator,
-    ReviewRunnerFactory,
-    ReviewRuntimeConfig,
-    ReviewWorkflowConfig,
-    register_review_prompt_components,
+from shinbot.agent.prompts.active_chat_prompt_registration import (
+    register_active_chat_prompt_components,
 )
+from shinbot.agent.prompts.review_prompt_registration import register_review_prompt_components
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
+from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
+from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
     AgentScheduler,
     AttentionActiveReplyDispatcher,
 )
 from shinbot.agent.tools import ToolManager, ToolRegistry
+from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
+from shinbot.agent.workflows.review.factory import ReviewRunnerFactory, ReviewRuntimeConfig
 from shinbot.core.bot_config import select_response_profile
 
 if TYPE_CHECKING:

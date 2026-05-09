@@ -9,11 +9,11 @@ from shinbot.agent.attention.engine import AttentionConfig, AttentionEngine
 from shinbot.agent.attention.models import SessionAttentionState
 from shinbot.agent.attention.tools import register_attention_tools
 from shinbot.agent.context import ContextManager
+from shinbot.agent.coordinators.attention import AttentionCoordinator
 from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
 from shinbot.agent.prompts import PromptRegistry
 from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
-from shinbot.agent.workflow import AttentionCoordinator
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import Session, SessionManager

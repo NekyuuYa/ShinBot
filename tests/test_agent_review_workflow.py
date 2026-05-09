@@ -2,36 +2,29 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.agent.active_chat import ActiveChatCoordinator
+from shinbot.agent.context.review_context_builder import (
+    ReviewContextBuilderAdapter,
+    ReviewStageInput,
+)
+from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
+from shinbot.agent.coordinators.review import ReviewCoordinator
+from shinbot.agent.models.review import (
+    ActiveChatBootstrapStageOutput,
+    OverflowCompressionStageOutput,
+    ReplyDecisionStageOutput,
+    ReviewScanStageOutput,
+    ReviewWorkflowConfig,
+    build_review_workflow_explanation,
+)
 from shinbot.agent.prompts import (
     PromptComponent,
     PromptComponentKind,
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.review import (
-    ActiveChatBootstrapStageOutput,
-    DatabaseReviewMessageStore,
-    DatabaseReviewSummaryStore,
-    LLMActiveChatBootstrapStageRunner,
-    LLMOverflowCompressionStageRunner,
-    LLMReplyDecisionStageRunner,
-    LLMReviewScanStageRunner,
-    OverflowCompressionStageOutput,
-    ReplyDecisionStageOutput,
-    ReviewContextBuilderAdapter,
-    ReviewCoordinator,
-    ReviewLLMRunnerConfig,
-    ReviewRunnerFactory,
-    ReviewRuntimeConfig,
-    ReviewScanStageOutput,
-    ReviewStageInput,
-    ReviewStageRuntimeConfig,
-    ReviewWorkflowConfig,
-    build_review_workflow_explanation,
-    parse_json_object,
-    register_review_prompt_components,
-)
+from shinbot.agent.prompts.review_prompt_registration import register_review_prompt_components
+from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
+from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
 from shinbot.agent.scheduler import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
@@ -45,6 +38,19 @@ from shinbot.agent.scheduler.models import (
     ReviewPlan,
     UnreadMessage,
     UnreadRange,
+)
+from shinbot.agent.workflows.review.factory import (
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
+    ReviewStageRuntimeConfig,
+)
+from shinbot.agent.workflows.review.llm import (
+    LLMActiveChatBootstrapStageRunner,
+    LLMOverflowCompressionStageRunner,
+    LLMReplyDecisionStageRunner,
+    LLMReviewScanStageRunner,
+    ReviewLLMRunnerConfig,
+    parse_json_object,
 )
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
@@ -2033,7 +2039,7 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
 
 
 def test_review_workflow_explanation_summarizes_result() -> None:
-    from shinbot.agent.review import (
+    from shinbot.agent.models.review import (
         ActiveChatBootstrapResult,
         ConsumedUnreadRange,
         ReplyDecisionResult,
