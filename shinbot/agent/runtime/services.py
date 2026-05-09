@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.active_chat import (
     ActiveChatContextBuilderAdapter,
+    ActiveChatCoordinator,
     ActiveChatFastRunner,
-    ActiveChatWorkflow,
     register_active_chat_prompt_components,
 )
 from shinbot.agent.attention import (
@@ -41,9 +41,9 @@ from shinbot.agent.review import (
     DatabaseReviewMessageStore,
     DatabaseReviewSummaryStore,
     ReviewContextBuilderAdapter,
+    ReviewCoordinator,
     ReviewRunnerFactory,
     ReviewRuntimeConfig,
-    ReviewWorkflow,
     ReviewWorkflowConfig,
     register_review_prompt_components,
 )
@@ -152,8 +152,8 @@ class AgentRuntime:
         self.active_chat_timer = ActiveChatTimerService()
         self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
         self.workflow_runner: WorkflowRunner | None = None
-        self.review_workflow: ReviewWorkflow | None = None
-        self.active_chat_workflow = ActiveChatWorkflow()
+        self.review_coordinator: ReviewCoordinator | None = None
+        self.active_chat_workflow = ActiveChatCoordinator()
 
         if database is None:
             return
@@ -180,8 +180,8 @@ class AgentRuntime:
         self.attention_scheduler.set_workflow_dispatcher(
             self._dispatch_attention_workflow,
         )
-        self.review_workflow = self._create_review_workflow(database)
-        self.active_chat_workflow = ActiveChatWorkflow()
+        self.review_coordinator = self._create_review_coordinator(database)
+        self.active_chat_workflow = ActiveChatCoordinator()
         active_chat_fast_runner = ActiveChatFastRunner(
             self.model_runtime,
             prompt_registry=self.prompt_registry,
@@ -194,7 +194,7 @@ class AgentRuntime:
         self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=AttentionActiveReplyDispatcher(
                 self.attention_scheduler,
-                review_workflow=self.review_workflow,
+                review_coordinator=self.review_coordinator,
                 active_chat_workflow=self.active_chat_workflow,
             ),
         )
@@ -225,7 +225,7 @@ class AgentRuntime:
             active_chat_timer=self.active_chat_timer,
         )
 
-    def _create_review_workflow(self, database: DatabaseManager) -> ReviewWorkflow:
+    def _create_review_coordinator(self, database: DatabaseManager) -> ReviewCoordinator:
         config = ReviewWorkflowConfig()
         runner_factory = ReviewRunnerFactory(
             self.model_runtime,
@@ -233,7 +233,7 @@ class AgentRuntime:
             prompt_registry=self.prompt_registry,
             tool_manager=self.tool_manager,
         )
-        return ReviewWorkflow(
+        return ReviewCoordinator(
             config,
             message_store=DatabaseReviewMessageStore(database),
             summary_store=DatabaseReviewSummaryStore(database),
@@ -259,8 +259,8 @@ class AgentRuntime:
 
     async def shutdown(self) -> None:
         """Shut down Agent-side background services."""
-        if self.review_workflow is not None:
-            await self.review_workflow.shutdown()
+        if self.review_coordinator is not None:
+            await self.review_coordinator.shutdown()
         await self.active_chat_workflow.shutdown()
         await self.active_chat_timer.shutdown()
         if self.attention_scheduler is not None:

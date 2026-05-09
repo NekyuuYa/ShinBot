@@ -12,6 +12,7 @@ from shinbot.agent.active_chat.models import (
     ActiveChatReplyIntensity,
     ActiveChatRoundResult,
 )
+from shinbot.agent.tools.parsing import parse_tool_call
 from shinbot.agent.tools.schema import ToolCallRequest
 
 _VIRTUAL_TOOL_NAMES = {"exit_active", "request_think_mode"}
@@ -44,7 +45,7 @@ class ActiveChatToolLoop:
         trace_id: str = "",
     ) -> ActiveChatToolLoopResult:
         """Execute tool calls sequentially and derive the strongest semantic action."""
-        parsed_calls = [_parse_tool_call(tool_call) for tool_call in tool_calls]
+        parsed_calls = [parse_tool_call(tool_call) for tool_call in tool_calls]
         result = ActiveChatToolLoopResult(
             round_result=ActiveChatRoundResult(
                 success=False,
@@ -198,20 +199,6 @@ class _ActionState:
             self.action = action
 
 
-def _parse_tool_call(tool_call: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
-    tool_call_id = str(tool_call.get("id", "") or "")
-    function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-    tool_name = str(function.get("name", "") or "")
-    raw_arguments = function.get("arguments", "{}")
-    try:
-        arguments = (
-            json.loads(raw_arguments)
-            if isinstance(raw_arguments, str)
-            else dict(raw_arguments or {})
-        )
-    except (json.JSONDecodeError, TypeError, ValueError):
-        arguments = {}
-    return tool_call_id, tool_name, arguments
 
 
 def _execute_virtual_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

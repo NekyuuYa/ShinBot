@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from shinbot.agent.tools.parsing import parse_tool_call
 from shinbot.agent.tools.schema import ToolCallRequest
 
 _TERMINAL_TOOL_NAMES = {"no_reply", "send_reply", "send_poke"}
@@ -37,7 +38,7 @@ async def execute_workflow_tool_calls(
     """Execute one batch of tool calls and normalize outputs for the model."""
 
     outcome = WorkflowToolLoopResult()
-    parsed_calls = [_parse_tool_call(tool_call) for tool_call in tool_calls]
+    parsed_calls = [parse_tool_call(tool_call) for tool_call in tool_calls]
     outcome.tool_calls_log.extend(
         {"name": tool_name, "arguments": tool_args}
         for _, tool_name, tool_args in parsed_calls
@@ -123,20 +124,6 @@ async def execute_workflow_tool_calls(
     return outcome
 
 
-def _parse_tool_call(tool_call: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
-    tool_call_id = str(tool_call.get("id", "") or "")
-    func = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
-    tool_name = str(func.get("name", "") or "")
-    tool_args_raw = func.get("arguments", "{}")
-    try:
-        tool_args = (
-            json.loads(tool_args_raw)
-            if isinstance(tool_args_raw, str)
-            else dict(tool_args_raw or {})
-        )
-    except (json.JSONDecodeError, TypeError, ValueError):
-        tool_args = {}
-    return tool_call_id, tool_name, tool_args
 
 
 def _is_terminal_tool_call(tool_name: str, tool_args: dict[str, Any]) -> bool:

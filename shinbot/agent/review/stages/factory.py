@@ -166,7 +166,7 @@ class ReviewRunnerFactory:
         return NoopActiveChatBootstrapStageRunner()
 
     def create_workflow_runner_kwargs(self) -> dict[str, Any]:
-        """Return ReviewWorkflow constructor kwargs for all stage runners."""
+        """Return ReviewCoordinator constructor kwargs for all stage runners."""
         return {
             "compression_runner": self.create_overflow_compression_runner(),
             "scan_runner": self.create_review_scan_runner(),

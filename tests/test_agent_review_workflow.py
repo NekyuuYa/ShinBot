@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.agent.active_chat import ActiveChatWorkflow
+from shinbot.agent.active_chat import ActiveChatCoordinator
 from shinbot.agent.prompt_manager import (
     PromptComponent,
     PromptComponentKind,
@@ -20,13 +20,13 @@ from shinbot.agent.review import (
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
     ReviewContextBuilderAdapter,
+    ReviewCoordinator,
     ReviewLLMRunnerConfig,
     ReviewRunnerFactory,
     ReviewRuntimeConfig,
     ReviewScanStageOutput,
     ReviewStageInput,
     ReviewStageRuntimeConfig,
-    ReviewWorkflow,
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
     parse_json_object,
@@ -1244,7 +1244,7 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
 @pytest.mark.asyncio
 async def test_review_workflow_records_overflow_plan_and_enters_active_chat() -> None:
     scheduler = FakeReviewScheduler()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(
             review_scan_batch_size=2,
             overflow_threshold_messages=3,
@@ -1324,7 +1324,7 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
     context_builder = RecordingReviewContextBuilder()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(review_scan_batch_size=2),
         message_store=DatabaseReviewMessageStore(db),
         context_builder=context_builder,
@@ -1412,7 +1412,7 @@ async def test_review_workflow_freezes_unread_snapshot_at_entry(tmp_path) -> Non
     )
 
     context_builder = RecordingReviewContextBuilder()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(review_scan_batch_size=10),
         message_store=DatabaseReviewMessageStore(db),
         context_builder=context_builder,
@@ -1467,7 +1467,7 @@ async def test_review_scan_runner_selects_candidate_message_ids(tmp_path) -> Non
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
     scan_runner = SelectingReviewScanRunner()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(review_scan_batch_size=2),
         message_store=DatabaseReviewMessageStore(db),
         context_builder=RecordingReviewContextBuilder(),
@@ -1522,7 +1522,7 @@ async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> 
     scan_runner = SelectingReviewScanRunner()
     reply_runner = RecordingReplyDecisionRunner()
     context_builder = RecordingReviewContextBuilder()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(
             review_scan_batch_size=5,
             reply_context_before_messages=1,
@@ -1601,7 +1601,7 @@ async def test_reply_decision_groups_overlapping_candidate_contexts(tmp_path) ->
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
     reply_runner = RecordingReplyDecisionRunner()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(
             review_scan_batch_size=7,
             reply_context_before_messages=1,
@@ -1675,7 +1675,7 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
     bootstrap_runner = RecordingActiveChatBootstrapRunner()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(
             review_scan_batch_size=4,
             reply_context_before_messages=1,
@@ -1728,11 +1728,11 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
 
 @pytest.mark.asyncio
 async def test_attention_dispatcher_can_run_review_workflow() -> None:
-    workflow = ReviewWorkflow(now=lambda: 100.0)
-    active_chat_workflow = ActiveChatWorkflow(now=lambda: 100.0)
+    workflow = ReviewCoordinator(now=lambda: 100.0)
+    active_chat_workflow = ActiveChatCoordinator(now=lambda: 100.0)
     dispatcher = AttentionActiveReplyDispatcher(
         None,
-        review_workflow=workflow,
+        review_coordinator=workflow,
         active_chat_workflow=active_chat_workflow,
     )
     scheduler = AgentScheduler(
@@ -1784,10 +1784,10 @@ async def test_attention_dispatcher_feeds_review_added_unread_to_active_chat(tmp
     review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
     db.agent_scheduler.set_review_plan(review_plan)
 
-    active_chat_workflow = ActiveChatWorkflow(now=lambda: 100.0)
+    active_chat_workflow = ActiveChatCoordinator(now=lambda: 100.0)
     dispatcher = AttentionActiveReplyDispatcher(
         None,
-        review_workflow=ReviewWorkflow(
+        review_coordinator=ReviewCoordinator(
             ReviewWorkflowConfig(review_scan_batch_size=10),
             message_store=DatabaseReviewMessageStore(db),
             context_builder=RecordingReviewContextBuilder(),
@@ -1889,7 +1889,7 @@ async def test_review_workflow_splits_partially_consumed_overflow_range(tmp_path
         now=lambda: 10.0,
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(
             review_scan_batch_size=10,
             overflow_threshold_messages=3,
@@ -1949,7 +1949,7 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
     scheduler.prepare_due_review("bot:group:room", now=10.0)
     compression_runner = RecordingOverflowCompressionRunner()
     context_builder = RecordingReviewContextBuilder()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(
             review_scan_batch_size=10,
             overflow_threshold_messages=3,
@@ -2175,7 +2175,7 @@ async def test_review_workflow_uses_actual_message_bounds_for_interleaved_sessio
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
     compression_runner = RecordingOverflowCompressionRunner()
-    workflow = ReviewWorkflow(
+    workflow = ReviewCoordinator(
         ReviewWorkflowConfig(
             review_scan_batch_size=10,
             overflow_threshold_messages=1,

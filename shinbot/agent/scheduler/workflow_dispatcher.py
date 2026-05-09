@@ -13,8 +13,12 @@ from shinbot.agent.scheduler.models import (
 )
 
 if TYPE_CHECKING:
-    from shinbot.agent.active_chat import ActiveChatWorkflow
-    from shinbot.agent.review import ReviewWorkflow, ReviewWorkflowExplanation, ReviewWorkflowResult
+    from shinbot.agent.active_chat import ActiveChatCoordinator
+    from shinbot.agent.review import (
+        ReviewCoordinator,
+        ReviewWorkflowExplanation,
+        ReviewWorkflowResult,
+    )
     from shinbot.agent.scheduler.scheduler import AgentScheduler
 
 
@@ -82,11 +86,11 @@ class AttentionActiveReplyDispatcher:
         self,
         attention_scheduler,
         *,
-        review_workflow: ReviewWorkflow | None = None,
-        active_chat_workflow: ActiveChatWorkflow | None = None,
+        review_coordinator: ReviewCoordinator | None = None,
+        active_chat_workflow: ActiveChatCoordinator | None = None,
     ) -> None:
         self._attention_scheduler = attention_scheduler
-        self._review_workflow = review_workflow
+        self._review_coordinator = review_coordinator
         self._active_chat_workflow = active_chat_workflow
         self._agent_scheduler: AgentScheduler | None = None
         self.last_review_result: ReviewWorkflowResult | None = None
@@ -128,10 +132,10 @@ class AttentionActiveReplyDispatcher:
         review_plan: ReviewPlan,
         unread_messages: list[UnreadMessage],
     ) -> None:
-        if self._review_workflow is None or self._agent_scheduler is None:
+        if self._review_coordinator is None or self._agent_scheduler is None:
             return
 
-        result = await self._review_workflow.run(
+        result = await self._review_coordinator.run(
             scheduler=self._agent_scheduler,
             session_id=session_id,
             review_plan=review_plan,

@@ -1,4 +1,4 @@
-"""Active chat workflow package."""
+"""Active chat coordinator and workflow package."""
 
 from shinbot.agent.active_chat.actions import (
     ActiveChatInterestEffect,
@@ -11,6 +11,7 @@ from shinbot.agent.active_chat.context import (
     ActiveChatContextBuildOptions,
     ActiveChatStageInput,
 )
+from shinbot.agent.active_chat.coordinator import ActiveChatCoordinator, ActiveChatRoundHandler
 from shinbot.agent.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatAttentionState,
@@ -38,7 +39,6 @@ from shinbot.agent.active_chat.trace import (
     ActiveChatTraceConfig,
     sanitize_conversation_trace_messages,
 )
-from shinbot.agent.active_chat.workflow import ActiveChatRoundHandler, ActiveChatWorkflow
 
 __all__ = [
     "ActiveChatActionKind",
@@ -66,7 +66,7 @@ __all__ = [
     "ActiveChatToolLoopResult",
     "ActiveChatTraceCompactor",
     "ActiveChatTraceConfig",
-    "ActiveChatWorkflow",
+    "ActiveChatCoordinator",
     "ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE",
     "interest_effect_for_round",
     "register_active_chat_prompt_components",

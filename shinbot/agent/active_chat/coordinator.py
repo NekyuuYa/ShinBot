@@ -1,4 +1,4 @@
-"""Active chat workflow orchestration."""
+"""Active chat coordinator — session lifecycle, pending buffers, round scheduling."""
 
 from __future__ import annotations
 
@@ -31,8 +31,13 @@ ActiveChatRoundHandler = Callable[
 ]
 
 
-class ActiveChatWorkflow:
-    """MVP active chat workflow with attention batching and semantic wait."""
+class ActiveChatCoordinator:
+    """Active chat coordinator with attention batching and semantic wait.
+
+    Manages session lifecycle, pending message buffers, semantic wait timers,
+    round scheduling, and failure recovery. Does not execute LLM calls directly;
+    delegates to a round handler (e.g. ActiveChatFastRunner).
+    """
 
     def __init__(
         self,
@@ -597,4 +602,4 @@ def _message_ids(messages: list[ActiveChatMessageSignal]) -> list[int]:
     return [message.message_log_id for message in messages]
 
 
-__all__ = ["ActiveChatRoundHandler", "ActiveChatWorkflow"]
+__all__ = ["ActiveChatCoordinator", "ActiveChatRoundHandler"]

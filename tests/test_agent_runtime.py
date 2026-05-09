@@ -119,7 +119,7 @@ def test_agent_runtime_wires_review_runner_config(tmp_path: Path) -> None:
     )
 
     dispatcher = runtime.agent_scheduler._workflow_dispatcher
-    workflow = dispatcher._review_workflow
+    workflow = dispatcher._review_coordinator
 
     assert isinstance(workflow._scan_runner, LLMReviewScanStageRunner)
     assert workflow._scan_runner._config.route_id == "route-a"
@@ -139,7 +139,7 @@ def test_agent_runtime_accepts_review_runner_config_mapping(tmp_path: Path) -> N
     )
 
     dispatcher = runtime.agent_scheduler._workflow_dispatcher
-    workflow = dispatcher._review_workflow
+    workflow = dispatcher._review_coordinator
 
     assert isinstance(workflow._scan_runner, LLMReviewScanStageRunner)
     assert workflow._scan_runner._config.route_id == "route-a"

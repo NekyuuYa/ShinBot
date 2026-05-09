@@ -1,4 +1,4 @@
-"""Skeleton implementation for the Agent review workflow."""
+"""Review coordinator — stage orchestration, scheduler callbacks, bootstrap."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ class ReviewSchedulerPort(Protocol):
         """Apply delayed stage-3 active chat disposition."""
 
 
-class ReviewWorkflow:
+class ReviewCoordinator:
     """Three-stage review workflow shell.
 
     The current implementation deliberately avoids LLM calls and context assembly.

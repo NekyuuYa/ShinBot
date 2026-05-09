@@ -9,11 +9,11 @@ from shinbot.agent.active_chat import (
     ActiveChatAttention,
     ActiveChatAttentionConfig,
     ActiveChatBatch,
+    ActiveChatCoordinator,
     ActiveChatMessageSignal,
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,
     ActiveChatRoundResult,
-    ActiveChatWorkflow,
     interest_effect_for_round,
 )
 from shinbot.agent.scheduler import ActiveChatState
@@ -79,7 +79,7 @@ def make_signal(**kwargs) -> ActiveChatMessageSignal:
 
 
 async def start_workflow(
-    workflow: ActiveChatWorkflow,
+    workflow: ActiveChatCoordinator,
     *,
     active_state: ActiveChatState | None = None,
     review_result_summary: object | None = None,
@@ -164,7 +164,7 @@ async def test_active_chat_workflow_start_initializes_session_without_llm_round(
         batches.append(batch)
         return ActiveChatRoundResult(success=True)
 
-    workflow = ActiveChatWorkflow(round_handler=handler, now=lambda: 10.0)
+    workflow = ActiveChatCoordinator(round_handler=handler, now=lambda: 10.0)
 
     result = await workflow.start_active_chat(
         session_id="bot:group:room",
@@ -184,7 +184,7 @@ async def test_active_chat_workflow_start_initializes_session_without_llm_round(
 @pytest.mark.asyncio
 async def test_active_chat_workflow_skips_self_platform_messages() -> None:
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -227,7 +227,7 @@ async def test_active_chat_workflow_skips_self_platform_messages() -> None:
 @pytest.mark.asyncio
 async def test_active_chat_workflow_skips_stale_epoch_messages() -> None:
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -271,7 +271,7 @@ async def test_active_chat_workflow_skips_stale_epoch_messages() -> None:
 @pytest.mark.asyncio
 async def test_active_chat_workflow_rejects_message_before_session_start() -> None:
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(now=lambda: 10.0)
+    workflow = ActiveChatCoordinator(now=lambda: 10.0)
 
     result = await workflow.notify_message(
         scheduler=scheduler,
@@ -304,7 +304,7 @@ async def test_active_chat_workflow_flushes_after_semantic_wait() -> None:
         return ActiveChatRoundResult(success=True, reason="ok")
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -360,7 +360,7 @@ async def test_active_chat_workflow_flushes_after_semantic_wait() -> None:
 @pytest.mark.asyncio
 async def test_active_chat_workflow_keeps_pending_without_handler() -> None:
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -407,7 +407,7 @@ async def test_active_chat_workflow_retry_failed_consumes_batch_and_adjusts_inte
         )
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -458,7 +458,7 @@ async def test_active_chat_workflow_exit_active_forwards_reason_to_scheduler() -
         )
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -510,7 +510,7 @@ async def test_active_chat_workflow_failed_round_restores_pending_attention() ->
         return ActiveChatRoundResult(success=True, reason="ok")
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -579,7 +579,7 @@ async def test_active_chat_workflow_failed_round_restores_handler_supplied_messa
         )
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -621,7 +621,7 @@ async def test_active_chat_workflow_uses_round_result_consumed_message_ids() -> 
         return ActiveChatRoundResult(success=True, consumed_message_log_ids=[1, 2])
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -687,7 +687,7 @@ async def test_active_chat_workflow_carries_conversation_trace_to_next_batch() -
         )
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -758,7 +758,7 @@ async def test_active_chat_workflow_compacts_old_conversation_trace() -> None:
         )
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -817,7 +817,7 @@ async def test_active_chat_workflow_runs_next_batch_for_messages_arriving_during
         return ActiveChatRoundResult(success=True, reason=f"round-{len(batches)}")
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -888,7 +888,7 @@ async def test_active_chat_workflow_drain_pending_for_repair_clears_pending_atte
         )
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -964,7 +964,7 @@ async def test_active_chat_workflow_stop_cancels_running_round_without_consuming
         return ActiveChatRoundResult(success=True, reason="late")
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,
@@ -1018,7 +1018,7 @@ async def test_active_chat_workflow_restart_cancels_old_round_and_resets_state()
         return ActiveChatRoundResult(success=True, reason=f"late-{batch.active_chat_state.active_epoch}")
 
     scheduler = RecordingScheduler()
-    workflow = ActiveChatWorkflow(
+    workflow = ActiveChatCoordinator(
         attention=ActiveChatAttention(
             ActiveChatAttentionConfig(
                 base_threshold=2.0,

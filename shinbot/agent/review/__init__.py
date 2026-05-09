@@ -1,4 +1,4 @@
-"""Review workflow primitives for Agent internals."""
+"""Review coordinator and workflow primitives for Agent internals."""
 
 from shinbot.agent.review.context.builder import (
     ReviewContextBuilder,
@@ -6,6 +6,7 @@ from shinbot.agent.review.context.builder import (
     ReviewContextBuildOptions,
     ReviewStageInput,
 )
+from shinbot.agent.review.coordinator import ReviewCoordinator
 from shinbot.agent.review.models import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
@@ -64,7 +65,6 @@ from shinbot.agent.review.stores.summary_store import (
     DatabaseReviewSummaryStore,
     ReviewSummaryStore,
 )
-from shinbot.agent.review.workflow import ReviewWorkflow
 
 __all__ = [
     "ActiveChatBootstrapResult",
@@ -104,7 +104,7 @@ __all__ = [
     "ReviewStageRuntimeConfig",
     "ReviewWorkflowExplanation",
     "ReviewSummaryStore",
-    "ReviewWorkflow",
+    "ReviewCoordinator",
     "ReviewWorkflowConfig",
     "ReviewWorkflowResult",
     "REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE",
