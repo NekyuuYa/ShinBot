@@ -5,7 +5,12 @@ import asyncio
 import pytest
 
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
-from shinbot.agent.models.active_chat import (
+from shinbot.agent.coordinators.active_chat.actions import interest_effect_for_round
+from shinbot.agent.coordinators.active_chat.attention import (
+    ActiveChatAttention,
+    ActiveChatAttentionConfig,
+)
+from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
     ActiveChatMessageSignal,
@@ -14,8 +19,6 @@ from shinbot.agent.models.active_chat import (
     ActiveChatRoundResult,
 )
 from shinbot.agent.scheduler import ActiveChatState
-from shinbot.agent.utils.active_chat_actions import interest_effect_for_round
-from shinbot.agent.utils.active_chat_attention import ActiveChatAttention, ActiveChatAttentionConfig
 
 
 class RecordingScheduler:

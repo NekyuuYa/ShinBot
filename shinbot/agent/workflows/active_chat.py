@@ -14,13 +14,14 @@ from shinbot.agent.context.active_chat_context import (
     ActiveChatContextBuilder,
     ActiveChatContextBuildOptions,
 )
-from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.models.active_chat import (
+from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
     ActiveChatMessageSignal,
     ActiveChatRoundResult,
 )
+from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
+from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
@@ -28,7 +29,6 @@ from shinbot.agent.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.utils.active_chat_trace import sanitize_conversation_trace_messages
 from shinbot.agent.workflows.active_chat_prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )

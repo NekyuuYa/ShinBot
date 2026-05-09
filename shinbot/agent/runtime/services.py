@@ -15,6 +15,7 @@ from shinbot.agent.context.active_chat_context import ActiveChatContextBuilderAd
 from shinbot.agent.context.review_context_builder import ReviewContextBuilderAdapter
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
 from shinbot.agent.coordinators.review import ReviewCoordinator
+from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
 from shinbot.agent.identity import (
     IdentityStore,
     register_identity_prompt_components,
@@ -27,7 +28,6 @@ from shinbot.agent.media import (
     register_media_prompt_components,
     register_media_runtime,
 )
-from shinbot.agent.models.review import ReviewWorkflowConfig
 from shinbot.agent.prompt_engine import PromptRegistry
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore

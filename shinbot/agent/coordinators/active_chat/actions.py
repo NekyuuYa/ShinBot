@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from shinbot.agent.models.active_chat import (
+from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,

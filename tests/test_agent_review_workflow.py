@@ -8,7 +8,7 @@ from shinbot.agent.context.review_context_builder import (
 )
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
 from shinbot.agent.coordinators.review import ReviewCoordinator
-from shinbot.agent.models.review import (
+from shinbot.agent.coordinators.review.models import (
     ActiveChatBootstrapStageOutput,
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
@@ -2037,7 +2037,7 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
 
 
 def test_review_workflow_explanation_summarizes_result() -> None:
-    from shinbot.agent.models.review import (
+    from shinbot.agent.coordinators.review.models import (
         ActiveChatBootstrapResult,
         ConsumedUnreadRange,
         ReplyDecisionResult,

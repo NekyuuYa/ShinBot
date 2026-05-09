@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any, Protocol
 
-from shinbot.agent.models.review import UnreadRangeSummaryRecord
+from shinbot.agent.coordinators.review.models import UnreadRangeSummaryRecord
 
 
 class ReviewSummaryStore(Protocol):

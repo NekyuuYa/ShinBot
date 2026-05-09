@@ -1,4 +1,4 @@
-"""Agent coordinator layer — orchestration for review, active chat, attention workflows.
+"""Agent coordinator layer — orchestration for review and active chat workflows.
 
 Keep package exports lazy to avoid circular imports during bootstrap.
 """

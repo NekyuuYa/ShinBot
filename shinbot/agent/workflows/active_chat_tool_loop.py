@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from shinbot.agent.models.active_chat import (
+from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Protocol
 
-from shinbot.agent.models.review import build_review_workflow_explanation
+from shinbot.agent.coordinators.review.models import build_review_workflow_explanation
 from shinbot.agent.scheduler.models import (
     ActiveChatState,
     HighPriorityEvent,
@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
     from shinbot.agent.coordinators.review import ReviewCoordinator
-    from shinbot.agent.models.review import ReviewWorkflowExplanation, ReviewWorkflowResult
+    from shinbot.agent.coordinators.review.models import (
+        ReviewWorkflowExplanation,
+        ReviewWorkflowResult,
+    )
     from shinbot.agent.scheduler.scheduler import AgentScheduler
 
 
