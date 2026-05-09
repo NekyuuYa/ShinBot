@@ -78,6 +78,64 @@ class ActiveChatTraceCompactor:
         return orphaned
 
 
+def sanitize_conversation_trace_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return prompt-safe conversation trace messages.
+
+    Tool messages are only kept as part of a complete assistant tool-call group.
+    This keeps the model request from containing orphaned tool results or an
+    assistant tool-call message whose required tool results are missing.
+    """
+    safe_messages: list[dict[str, Any]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        role = message.get("role")
+        if role == "tool":
+            index += 1
+            continue
+
+        tool_calls = message.get("tool_calls", [])
+        if role == "assistant" and tool_calls:
+            expected_ids = _tool_call_ids(tool_calls)
+            if not expected_ids:
+                index += 1
+                continue
+
+            tool_messages: list[dict[str, Any]] = []
+            found_ids: set[str] = set()
+            next_index = index + 1
+            while next_index < len(messages) and messages[next_index].get("role") == "tool":
+                tool_message = messages[next_index]
+                tool_call_id = str(tool_message.get("tool_call_id", "") or "")
+                if tool_call_id in expected_ids:
+                    tool_messages.append(dict(tool_message))
+                    found_ids.add(tool_call_id)
+                next_index += 1
+
+            if found_ids == expected_ids:
+                safe_messages.append(dict(message))
+                safe_messages.extend(tool_messages)
+            index = next_index
+            continue
+
+        safe_messages.append(dict(message))
+        index += 1
+
+    return safe_messages
+
+
+def _tool_call_ids(tool_calls: Any) -> set[str]:
+    if not isinstance(tool_calls, list):
+        return set()
+    return {
+        str(tool_call.get("id", "") or "")
+        for tool_call in tool_calls
+        if isinstance(tool_call, dict) and str(tool_call.get("id", "") or "")
+    }
+
+
 def _tool_action_names(message: dict[str, Any]) -> list[str]:
     names: list[str] = []
     for tool_call in message.get("tool_calls", []) or []:
@@ -98,4 +156,8 @@ def _tool_action_names(message: dict[str, Any]) -> list[str]:
     return names
 
 
-__all__ = ["ActiveChatTraceCompactor", "ActiveChatTraceConfig"]
+__all__ = [
+    "ActiveChatTraceCompactor",
+    "ActiveChatTraceConfig",
+    "sanitize_conversation_trace_messages",
+]

@@ -24,6 +24,7 @@ from shinbot.agent.active_chat.prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )
 from shinbot.agent.active_chat.tool_loop import ActiveChatToolLoop
+from shinbot.agent.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.prompt_manager import (
     PromptBuildRequest,
@@ -322,12 +323,15 @@ class ActiveChatFastRunner:
                     metadata={"active_chat_stage": self.stage_id},
                 )
             )
-        if batch.conversation_messages:
+        conversation_messages = sanitize_conversation_trace_messages(
+            list(batch.conversation_messages)
+        )
+        if conversation_messages:
             injections.append(
                 PromptInjection(
                     stage=PromptStage.CONTEXT,
                     component_id="active_chat.fast_mode.conversation_trace",
-                    messages=list(batch.conversation_messages),
+                    messages=conversation_messages,
                     priority=20,
                     metadata={"active_chat_stage": self.stage_id},
                 )

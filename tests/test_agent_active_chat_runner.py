@@ -296,6 +296,127 @@ async def test_active_chat_fast_runner_injects_previous_conversation_trace() -> 
 
 
 @pytest.mark.asyncio
+async def test_active_chat_fast_runner_sanitizes_conversation_trace() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    await runner.run(
+        make_batch(
+            conversation_messages=[
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-orphan",
+                    "content": "{\"action\": \"send_reply\"}",
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        make_tool_call("send_reply", {"text": "missing result"}),
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        make_tool_call("send_reply", {"text": "valid result"}),
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-send_reply",
+                    "content": "{\"action\": \"send_reply\"}",
+                },
+            ]
+        )
+    )
+
+    rendered_prompt_text = json.dumps(
+        model_runtime.calls[0].messages,
+        ensure_ascii=False,
+    )
+    assert "call-orphan" not in rendered_prompt_text
+    assert "missing result" not in rendered_prompt_text
+    assert "valid result" in rendered_prompt_text
+    assert "call-send_reply" in rendered_prompt_text
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_orders_context_before_current_batch() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    context_manager = FakeContextManager()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        context_builder=ActiveChatContextBuilderAdapter(context_manager),
+    )
+
+    await runner.run(
+        make_batch(
+            self_platform_id="bot-self",
+            conversation_summary="{\"compacted_messages\": 2}",
+            conversation_messages=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        make_tool_call("send_reply", {"text": "previous reply"}),
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-send_reply",
+                    "content": "{\"action\": \"send_reply\"}",
+                },
+            ],
+        )
+    )
+
+    messages = model_runtime.calls[0].messages
+    assert [message["role"] for message in messages] == [
+        "system",
+        "user",
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert "Recent tail context" in str(messages[1]["content"])
+    assert "compacted_messages" in str(messages[2]["content"])
+    assert messages[3]["tool_calls"][0]["id"] == "call-send_reply"
+    assert messages[4]["tool_call_id"] == "call-send_reply"
+    assert "Message log ids: [101]" in str(messages[-1]["content"])
+    assert "current active_chat batch is the primary target" in str(messages[-1]["content"])
+
+
+@pytest.mark.asyncio
 async def test_active_chat_fast_runner_injects_compacted_conversation_summary() -> None:
     prompt_registry = PromptRegistry()
     register_active_chat_prompt_components(prompt_registry)
