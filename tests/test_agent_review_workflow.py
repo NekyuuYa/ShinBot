@@ -1776,6 +1776,88 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_attention_dispatcher_feeds_review_added_unread_to_active_chat(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    before_review_id = _insert_message(db, raw_text="before review", created_at=1000.0)
+    during_review_id = _insert_message(db, raw_text="during review", created_at=2000.0)
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+
+    active_chat_workflow = ActiveChatWorkflow(now=lambda: 100.0)
+    dispatcher = AttentionActiveReplyDispatcher(
+        None,
+        review_workflow=ReviewWorkflow(
+            ReviewWorkflowConfig(review_scan_batch_size=10),
+            message_store=DatabaseReviewMessageStore(db),
+            context_builder=RecordingReviewContextBuilder(),
+            now=lambda: 100.0,
+        ),
+        active_chat_workflow=active_chat_workflow,
+    )
+    now = 10.0
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: now,
+    )
+    await scheduler.accept_signal(
+        AgentEntrySignal(
+            session_id="bot:group:room",
+            message_log_id=before_review_id,
+            event_type="message-created",
+            sender_id="user-1",
+            instance_id="bot",
+            platform="mock",
+            self_id="bot-self",
+            is_private=False,
+            is_mentioned=False,
+            is_reply_to_bot=False,
+        )
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    frozen_unread = scheduler.unread_messages("bot:group:room")
+
+    now = 11.0
+    await scheduler.accept_signal(
+        AgentEntrySignal(
+            session_id="bot:group:room",
+            message_log_id=during_review_id,
+            event_type="message-created",
+            sender_id="user-2",
+            instance_id="bot",
+            platform="mock",
+            self_id="bot-self",
+            is_private=False,
+            is_mentioned=False,
+            is_reply_to_bot=False,
+        )
+    )
+
+    await dispatcher.run_review(
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=frozen_unread,
+    )
+
+    active_attention_state = active_chat_workflow.attention_state_for("bot:group:room")
+    assert active_attention_state is not None
+    assert [
+        message.message_log_id
+        for message in active_attention_state.pending_buffer
+    ] == [during_review_id]
+    assert [message.message_log_id for message in scheduler.unread_messages("bot:group:room")] == [
+        during_review_id
+    ]
+    assert dispatcher.last_review_result is not None
+    assert dispatcher.last_review_result.consumed_ranges[0].start_msg_log_id == before_review_id
+    await active_chat_workflow.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_review_workflow_splits_partially_consumed_overflow_range(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()

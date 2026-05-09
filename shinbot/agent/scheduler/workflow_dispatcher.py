@@ -50,6 +50,7 @@ class AgentWorkflowDispatcher(Protocol):
         session_id: str,
         active_chat_state: ActiveChatState,
         review_result_summary=None,
+        initial_unread_messages: list[UnreadMessage] | None = None,
     ) -> None:
         """Start an active chat workflow session after review completion."""
 
@@ -148,6 +149,10 @@ class AttentionActiveReplyDispatcher:
                 session_id=session_id,
                 active_chat_state=result.completion.active_chat_state,
                 review_result_summary=self.last_review_explanation,
+                initial_unread_messages=_unread_messages_added_after_review(
+                    before=unread_messages,
+                    after=self._agent_scheduler.unread_messages(session_id),
+                ),
             )
 
     async def start_active_chat(
@@ -156,6 +161,7 @@ class AttentionActiveReplyDispatcher:
         session_id: str,
         active_chat_state: ActiveChatState,
         review_result_summary=None,
+        initial_unread_messages: list[UnreadMessage] | None = None,
     ) -> None:
         if self._active_chat_workflow is None:
             return
@@ -165,6 +171,24 @@ class AttentionActiveReplyDispatcher:
             active_chat_state=active_chat_state,
             review_result_summary=review_result_summary,
         )
+        if self._agent_scheduler is None:
+            return
+        for message in initial_unread_messages or []:
+            if message.session_id != session_id:
+                continue
+            await self.notify_active_chat_message(
+                session_id=session_id,
+                message_log_id=message.message_log_id,
+                sender_id=message.sender_id,
+                response_profile="balanced",
+                is_mentioned=False,
+                is_reply_to_bot=False,
+                is_mention_to_other=False,
+                is_poke_to_bot=False,
+                is_poke_to_other=False,
+                self_platform_id="",
+                active_chat_state=active_chat_state,
+            )
 
     def stop_active_chat(self, session_id: str) -> None:
         if self._active_chat_workflow is None:
@@ -204,3 +228,16 @@ class AttentionActiveReplyDispatcher:
             self_platform_id=self_platform_id,
             active_chat_state=active_chat_state,
         )
+
+
+def _unread_messages_added_after_review(
+    *,
+    before: list[UnreadMessage],
+    after: list[UnreadMessage],
+) -> list[UnreadMessage]:
+    before_ids = {message.message_log_id for message in before}
+    return [
+        message
+        for message in after
+        if message.message_log_id not in before_ids
+    ]
