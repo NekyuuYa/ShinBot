@@ -48,6 +48,7 @@ __all__ = [
     "ToolRegistry",
     "ToolRiskLevel",
     "ToolVisibility",
+    "AttentionCoordinator",
     "WorkflowRunner",
 ]
 
@@ -89,6 +90,7 @@ _EXPORT_MODULES = {
     "ToolRegistry": "shinbot.agent.tools",
     "ToolRiskLevel": "shinbot.agent.tools",
     "ToolVisibility": "shinbot.agent.tools",
+    "AttentionCoordinator": "shinbot.agent.workflow",
     "WorkflowRunner": "shinbot.agent.workflow",
 }
 

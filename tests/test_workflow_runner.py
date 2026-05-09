@@ -13,7 +13,7 @@ from shinbot.agent.identity import IdentityStore, register_identity_prompt_compo
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.runtime import register_runtime_prompt_components
 from shinbot.agent.tools import ToolManager, ToolRegistry
-from shinbot.agent.workflow import WorkflowRunner
+from shinbot.agent.workflow import AttentionCoordinator
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import Session, SessionManager
@@ -207,7 +207,7 @@ async def test_workflow_context_compression_uses_prompt_registry(tmp_path):
     db.initialize()
     runtime = QueuedModelRuntime([{"text": "用户喜欢猫咖"}])
     context_manager = FakeCompressionContextManager()
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -311,7 +311,7 @@ async def test_workflow_runner_continues_after_send_reply_when_not_terminating(t
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -415,7 +415,7 @@ async def test_workflow_runner_send_reply_can_quote_platform_message(tmp_path):
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -548,7 +548,7 @@ async def test_workflow_runner_uses_single_user_message_for_batch_prompt(tmp_pat
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         prompt_registry,
         runtime,
@@ -701,7 +701,7 @@ async def test_workflow_runner_marks_control_prefix_not_volatile_batch_for_cache
             }
         ]
     )
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         prompt_registry,
         runtime,
@@ -821,7 +821,7 @@ async def test_workflow_runner_keeps_quote_and_self_mention_inline_while_splitti
     image_path = tmp_path / "prompt-inline.png"
     Image.new("RGB", (8, 8), (255, 0, 0)).save(image_path)
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         prompt_registry,
         runtime,
@@ -939,7 +939,7 @@ async def test_workflow_runner_poke_tool_counts_as_visible_action(tmp_path):
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -1034,7 +1034,7 @@ async def test_workflow_runner_resets_mention_streak_on_no_reply(tmp_path):
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -1132,7 +1132,7 @@ async def test_workflow_runner_retries_after_toolless_text(tmp_path):
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -1234,7 +1234,7 @@ async def test_workflow_runner_stops_after_three_toolless_repair_failures(tmp_pa
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -1333,7 +1333,7 @@ async def test_workflow_runner_rejects_terminal_tool_mixed_with_other_tools(tmp_
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,
@@ -1442,7 +1442,7 @@ async def test_workflow_runner_resumes_recent_session_continuation(tmp_path):
         ]
     )
 
-    runner = WorkflowRunner(
+    runner = AttentionCoordinator(
         db,
         PromptRegistry(),
         runtime,

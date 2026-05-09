@@ -54,7 +54,7 @@ from shinbot.agent.scheduler import (
     AttentionActiveReplyDispatcher,
 )
 from shinbot.agent.tools import ToolManager, ToolRegistry
-from shinbot.agent.workflow import WorkflowRunner
+from shinbot.agent.workflow import AttentionCoordinator
 from shinbot.core.bot_config import select_response_profile
 
 if TYPE_CHECKING:
@@ -151,7 +151,7 @@ class AgentRuntime:
         self.attention_scheduler: AttentionScheduler | None = None
         self.active_chat_timer = ActiveChatTimerService()
         self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
-        self.workflow_runner: WorkflowRunner | None = None
+        self.attention_coordinator: AttentionCoordinator | None = None
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = ActiveChatCoordinator()
 
@@ -167,7 +167,7 @@ class AgentRuntime:
             self.attention_scheduler_config,
             context_manager=self.context_manager,
         )
-        self.workflow_runner = WorkflowRunner(
+        self.attention_coordinator = AttentionCoordinator(
             database,
             self.prompt_registry,
             self.model_runtime,
@@ -275,14 +275,14 @@ class AgentRuntime:
         attention_state: Any,
         response_profile: str,
     ) -> None:
-        if self.workflow_runner is None:
+        if self.attention_coordinator is None:
             return
 
         parts = session_id.split(":", 2)
         instance_id = parts[0] if parts else ""
 
         try:
-            await self.workflow_runner.run(
+            await self.attention_coordinator.run(
                 session_id,
                 batch,
                 attention_state,
