@@ -1,51 +1,20 @@
-"""Message-log reading boundary for Agent review workflows."""
+"""SQLite-backed store adapters for Agent review workflows."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+import json
+import time
+from typing import Any
 
+from shinbot.agent.coordinators.review.models import UnreadRangeSummaryRecord
+from shinbot.agent.coordinators.review.stores import MessageLogPayload
 from shinbot.agent.scheduler.models import UnreadRange
-
-MessageLogPayload = dict[str, Any]
-
-
-class ReviewMessageStore(Protocol):
-    """Read message logs for review stages without constructing prompts."""
-
-    def list_for_unread_range(
-        self,
-        unread_range: UnreadRange,
-        *,
-        limit: int,
-        offset: int = 0,
-    ) -> list[MessageLogPayload]:
-        """Read messages inside one unread range in chronological order."""
-
-    def list_around_message(
-        self,
-        *,
-        session_id: str,
-        message_log_id: int,
-        before: int,
-        after: int,
-    ) -> list[MessageLogPayload]:
-        """Read a local context window around a candidate message."""
-
-    def list_by_time(
-        self,
-        *,
-        session_id: str,
-        start_at: float,
-        end_at: float,
-        limit: int,
-    ) -> list[MessageLogPayload]:
-        """Read messages in a timestamp window in chronological order."""
 
 
 class DatabaseReviewMessageStore:
     """SQLite-backed review message store using the existing message_logs table."""
 
-    def __init__(self, database) -> None:
+    def __init__(self, database: Any) -> None:
         self._database = database
 
     def list_for_unread_range(
@@ -132,6 +101,80 @@ class DatabaseReviewMessageStore:
         )
 
 
+class DatabaseReviewSummaryStore:
+    """SQLite-backed review summary store."""
+
+    def __init__(self, database: Any) -> None:
+        self._database = database
+
+    def save_summary(
+        self,
+        record: UnreadRangeSummaryRecord,
+        *,
+        created_at: float | None = None,
+    ) -> int:
+        with self._database.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO agent_review_summaries (
+                    session_id, start_msg_log_id, end_msg_log_id, start_at, end_at,
+                    message_count, summary, candidate_message_ids_json, reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.session_id,
+                    record.start_msg_log_id,
+                    record.end_msg_log_id,
+                    record.start_at,
+                    record.end_at,
+                    record.message_count,
+                    record.summary,
+                    json.dumps(record.candidate_message_ids, ensure_ascii=False),
+                    record.reason,
+                    created_at if created_at is not None else time.time(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_summaries(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[UnreadRangeSummaryRecord]:
+        with self._database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, start_msg_log_id, end_msg_log_id, start_at, end_at,
+                       message_count, summary, candidate_message_ids_json, reason
+                FROM agent_review_summaries
+                WHERE session_id = ?
+                ORDER BY start_at ASC, start_msg_log_id ASC, id ASC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
+    @staticmethod
+    def _record_from_row(row: Any) -> UnreadRangeSummaryRecord:
+        try:
+            candidate_message_ids = json.loads(row["candidate_message_ids_json"] or "[]")
+        except Exception:
+            candidate_message_ids = []
+        return UnreadRangeSummaryRecord(
+            session_id=row["session_id"],
+            start_msg_log_id=int(row["start_msg_log_id"]),
+            end_msg_log_id=int(row["end_msg_log_id"]),
+            start_at=float(row["start_at"]),
+            end_at=float(row["end_at"]),
+            message_count=int(row["message_count"]),
+            summary=str(row["summary"] or ""),
+            candidate_message_ids=[int(item) for item in candidate_message_ids],
+            reason=str(row["reason"] or ""),
+        )
+
+
 def _row_to_payload(row: Any) -> MessageLogPayload:
     return {
         "id": row["id"],
@@ -151,4 +194,4 @@ def _row_to_payload(row: Any) -> MessageLogPayload:
     }
 
 
-__all__ = ["DatabaseReviewMessageStore", "MessageLogPayload", "ReviewMessageStore"]
+__all__ = ["DatabaseReviewMessageStore", "DatabaseReviewSummaryStore"]

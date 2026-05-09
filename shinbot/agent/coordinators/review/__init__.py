@@ -15,6 +15,9 @@ __all__ = [
     "ReviewWorkflowExplanation",
     "build_review_workflow_explanation",
     "register_review_prompt_components",
+    "MessageLogPayload",
+    "ReviewMessageStore",
+    "ReviewSummaryStore",
 ]
 
 _EXPORT_MODULES = {
@@ -27,6 +30,9 @@ _EXPORT_MODULES = {
     "ReviewWorkflowExplanation": "shinbot.agent.coordinators.review.models",
     "build_review_workflow_explanation": "shinbot.agent.coordinators.review.models",
     "register_review_prompt_components": "shinbot.agent.coordinators.review.factory",
+    "MessageLogPayload": "shinbot.agent.coordinators.review.stores",
+    "ReviewMessageStore": "shinbot.agent.coordinators.review.stores",
+    "ReviewSummaryStore": "shinbot.agent.coordinators.review.stores",
 }
 
 

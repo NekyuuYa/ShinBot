@@ -26,8 +26,10 @@ from shinbot.agent.runners.review_models import (
 )
 from shinbot.agent.runners.review_reply import LLMReplyDecisionStageRunner
 from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
-from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
-from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
+from shinbot.agent.runtime.review_stores import (
+    DatabaseReviewMessageStore,
+    DatabaseReviewSummaryStore,
+)
 from shinbot.agent.scheduler import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
@@ -445,7 +447,7 @@ def _insert_message(
     )
 
 
-def test_database_review_message_store_reads_review_windows(tmp_path) -> None:
+def test_database_review_store_reads_review_windows(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     message_ids = [

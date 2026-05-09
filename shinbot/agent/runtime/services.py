@@ -21,8 +21,10 @@ from shinbot.agent.coordinators.review.factory import (
 )
 from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
-from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
-from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
+from shinbot.agent.runtime.review_stores import (
+    DatabaseReviewMessageStore,
+    DatabaseReviewSummaryStore,
+)
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
     AgentScheduler,

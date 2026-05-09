@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from shinbot.agent.runtime.review_message_store import MessageLogPayload
+from shinbot.agent.coordinators.review.stores import MessageLogPayload
 
 
 @dataclass(slots=True, frozen=True)
