@@ -10,17 +10,9 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.attention import (
-    AttentionConfig,
-    AttentionEngine,
-    AttentionScheduler,
-    AttentionSchedulerConfig,
-    register_attention_runtime,
-)
 from shinbot.agent.context import ContextManager
 from shinbot.agent.context.active_chat_context import ActiveChatContextBuilderAdapter
 from shinbot.agent.context.review_context_builder import ReviewContextBuilderAdapter
-from shinbot.agent.coordinators import AttentionCoordinator
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
 from shinbot.agent.coordinators.review import ReviewCoordinator
 from shinbot.agent.identity import (
@@ -46,10 +38,11 @@ from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStor
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
+    ActiveReplyDispatcher,
     AgentScheduler,
-    AttentionActiveReplyDispatcher,
 )
 from shinbot.agent.tools import ToolManager, ToolRegistry
+from shinbot.agent.tools.active_chat_tools import register_active_chat_tools
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.review.factory import ReviewRunnerFactory, ReviewRuntimeConfig
 from shinbot.core.bot_config import select_response_profile
@@ -66,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
-    """Owns Agent-side context, tools, media, attention, and workflow services."""
+    """Owns Agent-side context, tools, media, and workflow services."""
 
     def __init__(
         self,
@@ -77,9 +70,6 @@ class AgentRuntime:
         audit_logger: AuditLogger,
         adapter_manager: AdapterManager,
         model_runtime: Any,
-        attention_config: AttentionConfig | None = None,
-        attention_scheduler_config: AttentionSchedulerConfig | None = None,
-        attention_debug: bool = False,
         review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
     ) -> None:
         runtime_data_dir = Path(data_dir)
@@ -137,46 +127,14 @@ class AgentRuntime:
         )
         register_identity_tools(self.tool_registry, self.identity_store, self.context_manager)
 
-        self.attention_config = attention_config or AttentionConfig()
-        if attention_debug:
-            self.attention_config.debug = True
-        self.attention_scheduler_config = (
-            attention_scheduler_config
-            or AttentionSchedulerConfig.from_engine_config(self.attention_config)
-        )
-        self.attention_engine: AttentionEngine | None = None
-        self.attention_scheduler: AttentionScheduler | None = None
         self.active_chat_timer = ActiveChatTimerService()
         self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
-        self.attention_coordinator: AttentionCoordinator | None = None
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = ActiveChatCoordinator()
 
         if database is None:
             return
 
-        self.attention_engine = AttentionEngine(
-            self.attention_config,
-            database.attention,
-        )
-        self.attention_scheduler = AttentionScheduler(
-            self.attention_engine,
-            self.attention_scheduler_config,
-            context_manager=self.context_manager,
-        )
-        self.attention_coordinator = AttentionCoordinator(
-            database,
-            self.prompt_registry,
-            self.model_runtime,
-            self.tool_manager,
-            self.attention_engine,
-            adapter_manager,
-            self.media_service,
-            self.context_manager,
-        )
-        self.attention_scheduler.set_workflow_dispatcher(
-            self._dispatch_attention_workflow,
-        )
         self.review_coordinator = self._create_review_coordinator(database)
         self.active_chat_workflow = ActiveChatCoordinator()
         active_chat_fast_runner = ActiveChatFastRunner(
@@ -189,15 +147,13 @@ class AgentRuntime:
         )
         self.active_chat_workflow.set_round_handler(active_chat_fast_runner.run)
         self.agent_scheduler = self._create_agent_scheduler(
-            workflow_dispatcher=AttentionActiveReplyDispatcher(
-                self.attention_scheduler,
+            workflow_dispatcher=ActiveReplyDispatcher(
                 review_coordinator=self.review_coordinator,
                 active_chat_workflow=self.active_chat_workflow,
             ),
         )
-        register_attention_runtime(
+        register_active_chat_tools(
             self.tool_registry,
-            engine=self.attention_engine,
             adapter_manager=adapter_manager,
             database=database,
             context_manager=self.context_manager,
@@ -260,42 +216,13 @@ class AgentRuntime:
             await self.review_coordinator.shutdown()
         await self.active_chat_workflow.shutdown()
         await self.active_chat_timer.shutdown()
-        if self.attention_scheduler is not None:
-            await self.attention_scheduler.shutdown()
         if self.media_inspection_runner is not None:
             await self.media_inspection_runner.shutdown()
-
-    async def _dispatch_attention_workflow(
-        self,
-        session_id: str,
-        batch: list[dict[str, Any]],
-        attention_state: Any,
-        response_profile: str,
-    ) -> None:
-        if self.attention_coordinator is None:
-            return
-
-        parts = session_id.split(":", 2)
-        instance_id = parts[0] if parts else ""
-
-        try:
-            await self.attention_coordinator.run(
-                session_id,
-                batch,
-                attention_state,
-                instance_id=instance_id,
-                response_profile=response_profile,
-            )
-        except Exception:
-            logger.exception("Attention workflow failed for session %s", session_id)
 
 
 def install_agent_runtime(
     bot: ShinBot,
     *,
-    attention_config: AttentionConfig | None = None,
-    attention_scheduler_config: AttentionSchedulerConfig | None = None,
-    attention_debug: bool = False,
     review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
 ) -> AgentRuntime:
     """Create and mount the default Agent runtime system onto a ShinBot app."""
@@ -309,9 +236,6 @@ def install_agent_runtime(
         audit_logger=bot.audit_logger,
         adapter_manager=bot.adapter_manager,
         model_runtime=model_runtime,
-        attention_config=attention_config,
-        attention_scheduler_config=attention_scheduler_config,
-        attention_debug=attention_debug,
         review_runtime_config=review_runtime_config,
     )
     bot.mount_agent_runtime(runtime)

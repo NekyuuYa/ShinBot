@@ -29,9 +29,9 @@ from shinbot.agent.scheduler import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
     ActiveChatState,
+    ActiveReplyDispatcher,
     AgentScheduler,
     AgentState,
-    AttentionActiveReplyDispatcher,
 )
 from shinbot.agent.scheduler.models import (
     ReviewCompletionDecision,
@@ -1736,8 +1736,7 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
 async def test_attention_dispatcher_can_run_review_workflow() -> None:
     workflow = ReviewCoordinator(now=lambda: 100.0)
     active_chat_workflow = ActiveChatCoordinator(now=lambda: 100.0)
-    dispatcher = AttentionActiveReplyDispatcher(
-        None,
+    dispatcher = ActiveReplyDispatcher(
         review_coordinator=workflow,
         active_chat_workflow=active_chat_workflow,
     )
@@ -1791,8 +1790,7 @@ async def test_attention_dispatcher_feeds_review_added_unread_to_active_chat(tmp
     db.agent_scheduler.set_review_plan(review_plan)
 
     active_chat_workflow = ActiveChatCoordinator(now=lambda: 100.0)
-    dispatcher = AttentionActiveReplyDispatcher(
-        None,
+    dispatcher = ActiveReplyDispatcher(
         review_coordinator=ReviewCoordinator(
             ReviewWorkflowConfig(review_scan_batch_size=10),
             message_store=DatabaseReviewMessageStore(db),

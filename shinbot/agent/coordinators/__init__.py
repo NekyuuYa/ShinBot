@@ -11,14 +11,12 @@ from typing import Any
 __all__ = [
     "ActiveChatCoordinator",
     "ActiveChatRoundHandler",
-    "AttentionCoordinator",
     "ReviewCoordinator",
 ]
 
 _EXPORT_MODULES = {
     "ActiveChatCoordinator": "shinbot.agent.coordinators.active_chat",
     "ActiveChatRoundHandler": "shinbot.agent.coordinators.active_chat",
-    "AttentionCoordinator": "shinbot.agent.coordinators.attention",
     "ReviewCoordinator": "shinbot.agent.coordinators.review",
 }
 

@@ -8,7 +8,6 @@ import types
 
 import pytest
 
-from shinbot.agent.attention.engine import AttentionConfig
 from shinbot.agent.runtime import install_agent_runtime
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
@@ -66,22 +65,6 @@ class TestShinBotInit:
         bot = ShinBot(data_dir=tmp_path)
         assert bot.database is not None
         assert (tmp_path / "db" / "shinbot.sqlite3").exists()
-
-    def test_attention_debug_parameter(self):
-        bot_no_debug = ShinBot()
-        install_agent_runtime(bot_no_debug, attention_debug=False)
-        assert bot_no_debug.agent_runtime.attention_config.debug is False
-
-        bot_debug = ShinBot()
-        install_agent_runtime(bot_debug, attention_debug=True)
-        assert bot_debug.agent_runtime.attention_config.debug is True
-
-    def test_attention_config_parameter(self):
-        config = AttentionConfig(decay_k=0.002, decay_idle_grace_seconds=300.0)
-        bot = ShinBot()
-        install_agent_runtime(bot, attention_config=config)
-        assert bot.agent_runtime.attention_config.decay_k == 0.002
-        assert bot.agent_runtime.attention_config.decay_idle_grace_seconds == 300.0
 
     def test_plugin_manager_shares_registry(self):
         """PluginManager must use the same registry as message ingress."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Protocol
 
 from shinbot.agent.models.review import build_review_workflow_explanation
@@ -11,6 +12,8 @@ from shinbot.agent.scheduler.models import (
     ReviewPlan,
     UnreadMessage,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
@@ -76,17 +79,15 @@ class AgentWorkflowDispatcher(Protocol):
         """Notify active chat workflow about one observed message signal."""
 
 
-class AttentionActiveReplyDispatcher:
-    """Compatibility dispatcher that uses the existing attention scheduler."""
+class ActiveReplyDispatcher:
+    """Dispatcher for the 4-state machine's active reply path."""
 
     def __init__(
         self,
-        attention_scheduler,
         *,
         review_coordinator: ReviewCoordinator | None = None,
         active_chat_workflow: ActiveChatCoordinator | None = None,
     ) -> None:
-        self._attention_scheduler = attention_scheduler
         self._review_coordinator = review_coordinator
         self._active_chat_workflow = active_chat_workflow
         self._agent_scheduler: AgentScheduler | None = None
@@ -109,17 +110,16 @@ class AttentionActiveReplyDispatcher:
         self_platform_id: str,
         events: list[HighPriorityEvent],
     ) -> None:
-        if self._attention_scheduler is None:
-            return
+        """Handle a high-priority message in ACTIVE_REPLY state.
 
-        await self._attention_scheduler.on_message(
+        TODO: implement direct LLM workflow dispatch for active replies.
+        Currently a stub — the old AttentionEngine chain has been archived.
+        """
+        logger.info(
+            "Active reply dispatched (stub) session=%s msg=%s sender=%s",
             session_id,
             message_log_id,
             sender_id,
-            response_profile=response_profile,
-            is_mentioned=is_mentioned,
-            is_reply_to_bot=is_reply_to_bot,
-            self_platform_id=self_platform_id,
         )
 
     async def run_review(

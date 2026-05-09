@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from shinbot.persistence.records import PromptSnapshotRecord
 
 if TYPE_CHECKING:
-    from shinbot.agent.attention.models import WorkflowRunRecord
     from shinbot.agent.prompts import PromptSnapshot
     from shinbot.persistence.engine import DatabaseManager
 
@@ -35,12 +34,3 @@ def persist_prompt_snapshot(
             created_at=snapshot.timestamp,
         )
     )
-
-
-def persist_workflow_run(
-    database: DatabaseManager,
-    record: WorkflowRunRecord,
-) -> None:
-    """Persist one workflow run audit record."""
-
-    database.workflow_runs.insert(record)

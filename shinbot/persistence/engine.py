@@ -54,12 +54,9 @@ class DatabaseManager:
         self.session_media_occurrences = SessionMediaOccurrenceRepository(self)
         self.media_semantics = MediaSemanticRepository(self)
 
-        # Lazy-imported to avoid circular dependency (attention -> model_runtime -> persistence)
-        from shinbot.agent.attention.repository import AttentionRepository, WorkflowRunRepository
+        # Lazy-imported to avoid circular dependency
         from shinbot.agent.scheduler.repository import AgentSchedulerRepository
 
-        self.attention = AttentionRepository(self)
-        self.workflow_runs = WorkflowRunRepository(self)
         self.agent_scheduler = AgentSchedulerRepository(self)
 
     @classmethod

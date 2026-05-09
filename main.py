@@ -21,7 +21,6 @@ async def _run(
     log_level: str,
     api_host: str,
     api_port: int,
-    attention_debug: bool,
     operator_cli: bool,
 ) -> int:
     runtime_control = RuntimeControl()
@@ -29,7 +28,6 @@ async def _run(
         config_path=config_path,
         data_dir="data",
         log_level=log_level,
-        attention_debug=attention_debug,
     )
     await controller.boot()
 
@@ -108,11 +106,6 @@ def main() -> None:
         help="Management API listen port (default: 3945)",
     )
     parser.add_argument(
-        "--attention-debug",
-        action="store_true",
-        help="Enable attention system debug traces in console",
-    )
-    parser.add_argument(
         "--operator-cli",
         action="store_true",
         help="Attach an interactive operator CLI for live runtime control",
@@ -126,7 +119,6 @@ def main() -> None:
                 args.log_level,
                 args.api_host,
                 args.api_port,
-                args.attention_debug,
                 args.operator_cli,
             )
         )

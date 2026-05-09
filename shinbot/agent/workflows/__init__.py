@@ -13,9 +13,6 @@ __all__ = [
     "ActiveChatFastRunnerConfig",
     "ActiveChatToolLoop",
     "ActiveChatToolLoopResult",
-    "WorkflowLoopResult",
-    "WorkflowRunner",
-    "execute_workflow_tool_calls",
 ]
 
 _EXPORT_MODULES = {
@@ -23,9 +20,6 @@ _EXPORT_MODULES = {
     "ActiveChatFastRunnerConfig": "shinbot.agent.workflows.active_chat",
     "ActiveChatToolLoop": "shinbot.agent.workflows.active_chat_tool_loop",
     "ActiveChatToolLoopResult": "shinbot.agent.workflows.active_chat_tool_loop",
-    "WorkflowLoopResult": "shinbot.agent.workflows.attention",
-    "WorkflowRunner": "shinbot.agent.workflows.attention",
-    "execute_workflow_tool_calls": "shinbot.agent.workflows.attention_tool_loop",
 }
 
 
