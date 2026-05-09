@@ -29,10 +29,10 @@ from shinbot.agent.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.workflows.active_chat_prompt_registration import (
+from shinbot.agent.workflows.active_chat.prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )
-from shinbot.agent.workflows.active_chat_tool_loop import ActiveChatToolLoop
+from shinbot.agent.workflows.active_chat.tool_loop import ActiveChatToolLoop
 
 logger = logging.getLogger(__name__)
 

@@ -40,7 +40,7 @@ from shinbot.agent.scheduler import (
 from shinbot.agent.tools import ToolManager, ToolRegistry
 from shinbot.agent.tools.active_chat_tools import register_active_chat_tools
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
-from shinbot.agent.workflows.active_chat_prompt_registration import (
+from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.workflows.review.factory import ReviewRunnerFactory, ReviewRuntimeConfig

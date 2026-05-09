@@ -18,7 +18,7 @@ from shinbot.agent.prompt_engine import PromptRegistry
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
-from shinbot.agent.workflows.active_chat_prompt_registration import (
+from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 

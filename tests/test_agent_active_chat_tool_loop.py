@@ -11,7 +11,7 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatReplyIntensity,
 )
 from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
-from shinbot.agent.workflows.active_chat_tool_loop import ActiveChatToolLoop
+from shinbot.agent.workflows.active_chat.tool_loop import ActiveChatToolLoop
 
 
 class FakeToolManager:
