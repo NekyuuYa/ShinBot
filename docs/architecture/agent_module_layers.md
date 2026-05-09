@@ -173,11 +173,24 @@ shinbot/agent/
 
 该目录形态是目标结构，不要求一次性迁移完成。后续改动应优先避免继续把 coordinator、workflow 和 utils 混在同一个模块里。
 
-## 当前代码的命名调整方向
+## Context 模块内部分层
 
-- 当前 `ActiveChatWorkflow` 更接近 active chat 的 coordinator/session controller，后续可考虑迁移或改名为 `ActiveChatCoordinator`。
-- 当前 `ActiveChatFastRunner` 更接近真正的 chat workflow。
-- `ActiveChatToolLoop` 属于 chat workflow 的内部执行组件。
-- attention 累计、semantic wait、pending batch 管理属于 active chat coordinator。
-- interest action 映射属于 coordinator 与 scheduler 之间的策略层，不应散落在 prompt 或 tool loop 中。
-- review 的整体三阶段流程应收敛为 `ReviewCoordinator`；其中压缩是 util，筛选、回复决策、active bootstrap 可作为 review/reply 相关 workflow。
+`context/` 模块跨越多个层级，内部应按以下方式分类：
+
+| 子目录 | 目标层 | 说明 |
+|--------|--------|------|
+| `builders/` | Utils | 无状态构建器：context stage builder、instruction stage builder、image summary、message parts |
+| `projectors/` | Utils | 无状态投影器：alias projector、compressed memory projector、long-term memory projector |
+| `utils/` | Utils | token 估算、eviction 辅助 |
+| `runtime/` | Runtime | 有状态会话操作：session runtime、pool runtime、eviction runtime、timeline runtime、prompt assembler |
+| `state/` | Runtime | 有状态容器：ring buffer、alias table、active pool、state store |
+| `manager.py` | Runtime | 顶层编排器，组装 builders、projectors、runtime |
+
+物理文件移动风险较高，当前以文档分类为准。后续改动应避免在 `builders/` 和 `projectors/` 中引入会话状态。
+
+## 已完成的命名调整
+
+- ~~`ActiveChatWorkflow`~~ → `ActiveChatCoordinator`（session 生命周期、pending buffer、semantic wait、round scheduling）
+- ~~`ReviewWorkflow`~~ → `ReviewCoordinator`（4 阶段编排 + scheduler 回调）
+- ~~`workflow/conversation.py` WorkflowRunner 混合体~~ → 拆分为 `AttentionCoordinator`（coordinator）+ `WorkflowRunner`（纯 LLM 循环）
+- ~~`workflow/tool_loop.py` 和 `active_chat/tool_loop.py` 重复的 `_parse_tool_call`~~ → 提取到 `tools/parsing.py`
