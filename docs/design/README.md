@@ -1,6 +1,8 @@
 # Design Docs
 
-`docs/design/` 只放“系统应该怎样设计”的长期规范，不放阶段性实现记录。当前设计文档对应的代码实现主要落在 `shinbot/core/*`、`shinbot/agent/*`、`shinbot/api/*` 与 `shinbot/persistence/*`。
+`docs/design/` 只放“某个子系统应该提供什么语义和能力”的长期规范，不放阶段性实现记录。
+
+跨多个子系统的架构边界放在 `docs/architecture/`。例如 Agent 内部的 scheduler / coordinator / workflow / utils 分层，应以 `../architecture/agent_module_layers.md` 为准，而不是散落在 runtime 设计文档里。
 
 ## 目录分层
 
@@ -58,8 +60,18 @@
 
 ## 新文档放置规则
 
-- Agent 框架设计：优先放 `runtime/` 或 `extensibility/`
+- Agent 架构分层与模块边界：放 `../architecture/`
+- Agent 内某个具体能力规格：放 `runtime/`
 - 平台接入规范：放 `extensibility/`
 - Dashboard 页面与交互：放 `interfaces/`
 - 新的核心语义模型：放 `core/`
 - 数据库、运行记录和存储边界：放 `runtime/`
+
+## 待审计文档
+
+以下文档写于早期 Agent 方案阶段，仍有局部参考价值，但需要按当前 Agent 分层重新审计：
+
+- `runtime/24_attention_driven_conversation_workflow.md`
+- `runtime/26_context_memory_architecture.md`
+
+审计完成后，如果内容仍是现行能力规格，则保留在 `design/runtime/`；如果只是历史方案，则移动到 `../archive/`；如果其中包含跨模块边界约束，则抽取到 `../architecture/`。
