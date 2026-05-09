@@ -115,6 +115,7 @@ class ActiveChatRoundResult:
     reply_intensity: ActiveChatReplyIntensity = ActiveChatReplyIntensity.LIGHT
     no_reply_intensity: ActiveChatNoReplyIntensity = ActiveChatNoReplyIntensity.NORMAL
     consumed_message_log_ids: list[int] = field(default_factory=list)
+    restored_messages: list[ActiveChatMessageSignal] = field(default_factory=list)
     conversation_messages_delta: list[dict[str, Any]] = field(default_factory=list)
 
 

@@ -40,6 +40,17 @@ class FailingModelRuntime:
         raise ModelCallError("model failed")
 
 
+class FailingRepairModelRuntime:
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    async def generate(self, call: Any) -> GenerateResult:
+        self.calls.append(call)
+        if len(self.calls) == 1:
+            return make_result(text="I would reply without tools.")
+        raise ModelCallError("repair failed")
+
+
 class FakeToolManager:
     def __init__(self) -> None:
         self.calls: list[ToolCallRequest] = []
@@ -581,6 +592,42 @@ async def test_active_chat_fast_runner_merges_pending_messages_into_repair() -> 
     assert result.success is True
     assert result.action == ActiveChatActionKind.NO_REPLY
     assert result.consumed_message_log_ids == [101, 102]
+    assert model_runtime.calls[0].metadata["message_log_ids"] == [101]
+    assert model_runtime.calls[1].metadata["message_log_ids"] == [101, 102]
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_restores_repair_batch_on_failed_repair() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FailingRepairModelRuntime()
+
+    async def pending_provider(batch: ActiveChatBatch) -> list[ActiveChatMessageSignal]:
+        return [
+            ActiveChatMessageSignal(
+                session_id=batch.session_id,
+                message_log_id=102,
+                sender_id="bob",
+                response_profile="balanced",
+                active_chat_state=batch.active_chat_state,
+            )
+        ]
+
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        pending_message_provider=pending_provider,
+    )
+
+    result = await runner.run(make_batch())
+
+    assert result.success is False
+    assert result.action == ActiveChatActionKind.RETRY_FAILED
+    assert result.reason == "active_chat_toolless_repair_failed"
+    assert result.consumed_message_log_ids == []
+    assert [message.message_log_id for message in result.restored_messages] == [101, 102]
     assert model_runtime.calls[0].metadata["message_log_ids"] == [101]
     assert model_runtime.calls[1].metadata["message_log_ids"] == [101, 102]
 

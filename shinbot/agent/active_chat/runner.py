@@ -150,6 +150,7 @@ class ActiveChatFastRunner:
                 success=False,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason="active_chat_toolless_repair_failed",
+                restored_messages=list(repair_batch.messages),
             )
         if not repaired.tool_calls:
             return ActiveChatRoundResult(

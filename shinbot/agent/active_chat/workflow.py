@@ -347,7 +347,7 @@ class ActiveChatWorkflow:
             if not result.success:
                 self._restore_pending(
                     session_id,
-                    messages,
+                    result.restored_messages or messages,
                     accumulated=handled_accumulated,
                 )
                 return
