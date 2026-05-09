@@ -51,13 +51,18 @@ class RecordingScheduler:
         return object()
 
 
-def make_active_state(*, interest_value: float = 30.0) -> ActiveChatState:
+def make_active_state(
+    *,
+    interest_value: float = 30.0,
+    active_epoch: int = 0,
+) -> ActiveChatState:
     return ActiveChatState(
         session_id="bot:group:room",
         interest_value=interest_value,
         decay_half_life_seconds=20.0,
         entered_at=10.0,
         updated_at=10.0,
+        active_epoch=active_epoch,
     )
 
 
@@ -159,6 +164,93 @@ async def test_active_chat_workflow_start_initializes_session_without_llm_round(
     assert state.review_result_summary == {"reason": "review_done"}
     assert state.pending_buffer == []
     assert batches == []
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_skips_self_platform_messages() -> None:
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    await workflow.start_active_chat(
+        session_id="bot:group:room",
+        active_chat_state=make_active_state(),
+    )
+
+    result = await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="bot-self",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+
+    assert result.accepted is False
+    assert result.skipped_reason == "self_message"
+    state = workflow.attention_state_for("bot:group:room")
+    assert state is not None
+    assert state.pending_buffer == []
+    assert state.accumulated == 0.0
+    assert scheduler.consumed == []
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_skips_stale_epoch_messages() -> None:
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    await workflow.start_active_chat(
+        session_id="bot:group:room",
+        active_chat_state=make_active_state(active_epoch=2),
+    )
+
+    result = await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(active_epoch=1),
+    )
+
+    assert result.accepted is False
+    assert result.skipped_reason == "active_epoch_mismatch"
+    state = workflow.attention_state_for("bot:group:room")
+    assert state is not None
+    assert state.active_epoch == 2
+    assert state.pending_buffer == []
+    assert state.accumulated == 0.0
+    assert scheduler.consumed == []
+    await workflow.shutdown()
 
 
 @pytest.mark.asyncio

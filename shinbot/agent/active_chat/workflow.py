@@ -110,6 +110,13 @@ class ActiveChatWorkflow:
                 session_id=session_id,
                 skipped_reason="missing_message_log_id",
             )
+        if sender_id and self_platform_id and sender_id == self_platform_id:
+            return ActiveChatNotifyResult(
+                accepted=False,
+                session_id=session_id,
+                message_log_id=message_log_id,
+                skipped_reason="self_message",
+            )
 
         now = self._now()
         signal = ActiveChatMessageSignal(
@@ -130,8 +137,19 @@ class ActiveChatWorkflow:
         async with self._get_lock(session_id):
             state = self._states.get(session_id)
             if state is None:
-                state = ActiveChatAttentionState(session_id=session_id, last_update_at=now)
+                state = ActiveChatAttentionState(
+                    session_id=session_id,
+                    last_update_at=now,
+                    active_epoch=active_chat_state.active_epoch,
+                )
                 self._states[session_id] = state
+            elif state.active_epoch != active_chat_state.active_epoch:
+                return ActiveChatNotifyResult(
+                    accepted=False,
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    skipped_reason="active_epoch_mismatch",
+                )
 
             previous_sender_id = state.last_sender_id
             self._attention.observe(state, signal, now=now)
