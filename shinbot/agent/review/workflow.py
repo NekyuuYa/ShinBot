@@ -179,12 +179,26 @@ class ReviewWorkflow:
         started_at = self._now()
         stage_traces: list[ReviewStageTrace] = []
         try:
-            unread_ranges = scheduler.unread_ranges(session_id, limit=10_000)
-            unread_count = scheduler.count_unread_messages(session_id)
+            current_unread_ranges = scheduler.unread_ranges(session_id, limit=10_000)
+            unread_ranges = _freeze_unread_ranges(
+                current_unread_ranges,
+                unread_messages,
+            )
+            use_frozen_snapshot = bool(unread_messages)
+            use_partial_consumption = (
+                use_frozen_snapshot
+                and _unread_ranges_differ(current_unread_ranges, unread_ranges)
+            )
+            unread_count = (
+                sum(unread_range.message_count for unread_range in unread_ranges)
+                if use_frozen_snapshot
+                else scheduler.count_unread_messages(session_id)
+            )
             scan, consumed_ranges = await self._run_review_scan(
                 session_id=session_id,
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
+                use_partial_consumption=use_partial_consumption,
                 stage_traces=stage_traces,
             )
             reply = await self._run_reply_decision(
@@ -302,6 +316,7 @@ class ReviewWorkflow:
         unread_count: int,
         unread_ranges: list[UnreadRange],
         stage_traces: list[ReviewStageTrace],
+        use_partial_consumption: bool = False,
     ) -> tuple[ReviewScanResult, list[ConsumedUnreadRange]]:
         scanned_count = min(unread_count, self._config.overflow_threshold_messages)
         batch_count = (
@@ -327,6 +342,7 @@ class ReviewWorkflow:
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
             summaries=compressed_ranges,
+            use_partial_consumption=use_partial_consumption,
             stage_traces=stage_traces,
         )
         return (
@@ -690,6 +706,7 @@ class ReviewWorkflow:
         prefer_tail: bool,
         summaries: list[UnreadRangeSummaryRecord],
         stage_traces: list[ReviewStageTrace],
+        use_partial_consumption: bool = False,
     ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange]]:
         if self._message_store is None or max_messages <= 0:
             return 0, 0, [], [], []
@@ -703,8 +720,26 @@ class ReviewWorkflow:
         scan_ranges = (
             self._tail_scan_ranges_from_store(unread_ranges, max_messages=max_messages)
             if prefer_tail
-            else [self._full_consumed_range(item) for item in unread_ranges]
+            else [
+                self._full_consumed_range(
+                    item,
+                    full_range=not use_partial_consumption,
+                )
+                for item in unread_ranges
+            ]
         )
+        if use_partial_consumption and prefer_tail:
+            scan_ranges = [
+                ConsumedUnreadRange(
+                    range_id=item.range_id,
+                    session_id=item.session_id,
+                    start_msg_log_id=item.start_msg_log_id,
+                    end_msg_log_id=item.end_msg_log_id,
+                    message_count=item.message_count,
+                    full_range=False,
+                )
+                for item in scan_ranges
+            ]
         for consumed_range in scan_ranges:
             offset = 0
             while remaining > 0:
@@ -1006,14 +1041,18 @@ class ReviewWorkflow:
         return selected
 
     @staticmethod
-    def _full_consumed_range(unread_range: UnreadRange) -> ConsumedUnreadRange:
+    def _full_consumed_range(
+        unread_range: UnreadRange,
+        *,
+        full_range: bool = True,
+    ) -> ConsumedUnreadRange:
         return ConsumedUnreadRange(
             range_id=unread_range.id,
             session_id=unread_range.session_id,
             start_msg_log_id=unread_range.start_msg_log_id,
             end_msg_log_id=unread_range.end_msg_log_id,
             message_count=unread_range.message_count,
-            full_range=True,
+            full_range=full_range,
         )
 
     @staticmethod
@@ -1049,6 +1088,71 @@ def _message_id(message: dict) -> int | None:
 
 def _message_ids(messages: list[dict]) -> list[int]:
     return [message_id for message in messages if (message_id := _message_id(message)) is not None]
+
+
+def _freeze_unread_ranges(
+    unread_ranges: list[UnreadRange],
+    unread_messages: list[UnreadMessage],
+) -> list[UnreadRange]:
+    """Clamp current unread ranges to the review-entry unread message snapshot."""
+    if not unread_messages:
+        return list(unread_ranges)
+
+    messages_by_id = {
+        message.message_log_id: message
+        for message in sorted(
+            unread_messages,
+            key=lambda item: (item.created_at, item.message_log_id),
+        )
+    }
+    frozen_ranges: list[UnreadRange] = []
+    for unread_range in unread_ranges:
+        messages = [
+            message
+            for message_id, message in messages_by_id.items()
+            if unread_range.start_msg_log_id <= message_id <= unread_range.end_msg_log_id
+        ]
+        if not messages:
+            continue
+        frozen_ranges.append(
+            UnreadRange(
+                id=unread_range.id,
+                session_id=unread_range.session_id,
+                start_msg_log_id=messages[0].message_log_id,
+                end_msg_log_id=messages[-1].message_log_id,
+                start_at=messages[0].created_at,
+                end_at=messages[-1].created_at,
+                message_count=len(messages),
+                review_consumed=unread_range.review_consumed,
+                chat_consumed=unread_range.chat_consumed,
+            )
+        )
+    return frozen_ranges
+
+
+def _unread_ranges_differ(
+    left: list[UnreadRange],
+    right: list[UnreadRange],
+) -> bool:
+    return [
+        (
+            item.id,
+            item.session_id,
+            item.start_msg_log_id,
+            item.end_msg_log_id,
+            item.message_count,
+        )
+        for item in left
+    ] != [
+        (
+            item.id,
+            item.session_id,
+            item.start_msg_log_id,
+            item.end_msg_log_id,
+            item.message_count,
+        )
+        for item in right
+    ]
 
 
 def _should_persist_summary(record: UnreadRangeSummaryRecord) -> bool:

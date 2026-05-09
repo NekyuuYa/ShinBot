@@ -1369,6 +1369,77 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
 
 
 @pytest.mark.asyncio
+async def test_review_workflow_freezes_unread_snapshot_at_entry(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    first_message_id = _insert_message(db, raw_text="before review", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=first_message_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    now = 10.0
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: now,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    frozen_unread = scheduler.unread_messages("bot:group:room")
+
+    second_message_id = _insert_message(db, raw_text="during review", created_at=2000.0)
+    now = 11.0
+    await scheduler.accept_signal(
+        AgentEntrySignal(
+            session_id="bot:group:room",
+            message_log_id=second_message_id,
+            event_type="message-created",
+            sender_id="user-2",
+            instance_id="bot",
+            platform="mock",
+            self_id="bot-self",
+            is_private=False,
+            is_mentioned=False,
+            is_reply_to_bot=False,
+        )
+    )
+
+    context_builder = RecordingReviewContextBuilder()
+    workflow = ReviewWorkflow(
+        ReviewWorkflowConfig(review_scan_batch_size=10),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=context_builder,
+        now=lambda: 12.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=frozen_unread,
+    )
+
+    assert result.scan.scanned_message_count == 1
+    assert [trace.message_ids for trace in result.stage_traces if trace.purpose == "review_scan"] == [
+        [first_message_id]
+    ]
+    assert [(item.start_msg_log_id, item.end_msg_log_id, item.full_range) for item in result.consumed_ranges] == [
+        (first_message_id, first_message_id, False)
+    ]
+    assert [message.message_log_id for message in scheduler.unread_messages("bot:group:room")] == [
+        second_message_id
+    ]
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+
+
+@pytest.mark.asyncio
 async def test_review_scan_runner_selects_candidate_message_ids(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
