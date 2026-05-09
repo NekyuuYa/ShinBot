@@ -67,11 +67,18 @@
 - 新的核心语义模型：放 `core/`
 - 数据库、运行记录和存储边界：放 `runtime/`
 
-## 待审计文档
+## Agent 文档审计状态
 
-以下文档写于早期 Agent 方案阶段，仍有局部参考价值，但需要按当前 Agent 分层重新审计：
+以下文档写于早期 Agent 方案阶段，已完成审计：
 
 - `runtime/24_attention_driven_conversation_workflow.md`
+  - **状态**：部分现行。核心概念（SessionAttentionState、exponential decay、response profiles、tool-driven reply）已被 `scheduler/` 和 `active_chat/` 实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `active_chat/coordinator.py`，workflow 执行已迁移到 `workflow/`。
+  - **保留原因**：仍可作为 attention 模型和 response profile 的设计参考。
+- `runtime/25_media_semantics_and_meme_handling.md`
+  - **状态**：现行。fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis 等核心设计均已实现于 `media/`。
+  - **保留原因**：仍为媒体子系统的有效能力规格。
 - `runtime/26_context_memory_architecture.md`
+  - **状态**：部分现行。三级记忆模型（short/mid/long-term）、Block 投影分离、Prefix Cache 友好的前缀稳定原则仍为设计目标。实际实现中 `context/` 模块采用 ring buffer + alias table + projector 模式，与文档描述的 MemoryBlock/PromptBlock 分离尚未完全对齐。
+  - **保留原因**：仍可作为上下文系统演进的设计参考。
 
-审计完成后，如果内容仍是现行能力规格，则保留在 `design/runtime/`；如果只是历史方案，则移动到 `../archive/`；如果其中包含跨模块边界约束，则抽取到 `../architecture/`。
+跨模块分层约束以 `../architecture/agent_module_layers.md` 为准。
