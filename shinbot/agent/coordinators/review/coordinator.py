@@ -12,13 +12,9 @@ from typing import Protocol
 
 from shinbot.agent.coordinators.review.models import (
     ActiveChatBootstrapResult,
-    ActiveChatBootstrapStageOutput,
     ConsumedUnreadRange,
-    OverflowCompressionStageOutput,
     ReplyDecisionResult,
-    ReplyDecisionStageOutput,
     ReviewScanResult,
-    ReviewScanStageOutput,
     ReviewStageTrace,
     ReviewWorkflowConfig,
     ReviewWorkflowResult,
@@ -31,6 +27,12 @@ from shinbot.agent.runners.review_bootstrap import (
 from shinbot.agent.runners.review_compression import (
     NoopOverflowCompressionStageRunner,
     OverflowCompressionStageRunner,
+)
+from shinbot.agent.runners.review_models import (
+    ActiveChatBootstrapStageOutput,
+    OverflowCompressionStageOutput,
+    ReplyDecisionStageOutput,
+    ReviewScanStageOutput,
 )
 from shinbot.agent.runners.review_reply import (
     NoopReplyDecisionStageRunner,

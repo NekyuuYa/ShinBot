@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
+from shinbot.agent.coordinators.dispatcher import ActiveReplyDispatcher
 from shinbot.agent.coordinators.review import ReviewCoordinator
 from shinbot.agent.coordinators.review.factory import (
     ReviewRunnerFactory,
@@ -11,16 +12,18 @@ from shinbot.agent.coordinators.review.factory import (
     register_review_prompt_components,
 )
 from shinbot.agent.coordinators.review.models import (
-    ActiveChatBootstrapStageOutput,
-    OverflowCompressionStageOutput,
-    ReplyDecisionStageOutput,
-    ReviewScanStageOutput,
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
 )
 from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
 from shinbot.agent.runners.review_bootstrap import LLMActiveChatBootstrapStageRunner
 from shinbot.agent.runners.review_compression import LLMOverflowCompressionStageRunner
+from shinbot.agent.runners.review_models import (
+    ActiveChatBootstrapStageOutput,
+    OverflowCompressionStageOutput,
+    ReplyDecisionStageOutput,
+    ReviewScanStageOutput,
+)
 from shinbot.agent.runners.review_reply import LLMReplyDecisionStageRunner
 from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
@@ -29,7 +32,6 @@ from shinbot.agent.scheduler import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
     ActiveChatState,
-    ActiveReplyDispatcher,
     AgentScheduler,
     AgentState,
 )

@@ -143,23 +143,6 @@ class ReviewScanResult:
 
 
 @dataclass(slots=True, frozen=True)
-class ReviewScanStageOutput:
-    """Output from one review_scan stage runner invocation."""
-
-    candidate_message_ids: list[int] = field(default_factory=list)
-    reason: str = "noop_review_scan"
-
-
-@dataclass(slots=True, frozen=True)
-class OverflowCompressionStageOutput:
-    """Output from one overflow compression runner invocation."""
-
-    summary: str = ""
-    candidate_message_ids: list[int] = field(default_factory=list)
-    reason: str = "noop_overflow_compression"
-
-
-@dataclass(slots=True, frozen=True)
 class ReplyDecisionResult:
     """Stage 2 result: reply decision, intentionally independent from active chat."""
 
@@ -170,18 +153,6 @@ class ReplyDecisionResult:
     reply_reason: str = "review_reply_skeleton_no_llm"
     loaded_message_count: int = 0
     stage_input_count: int = 0
-
-
-@dataclass(slots=True, frozen=True)
-class ReplyDecisionStageOutput:
-    """Output from one reply_decision stage runner invocation."""
-
-    replied: bool = False
-    reply_message_id: int | None = None
-    reply_message_ids: list[int] = field(default_factory=list)
-    target_message_ids: list[int] = field(default_factory=list)
-    reason: str = "noop_reply_decision"
-
 
 @dataclass(slots=True, frozen=True)
 class ActiveChatBootstrapResult:
@@ -196,15 +167,6 @@ class ActiveChatBootstrapResult:
     tail_history_end_at: float | None = None
     tail_history_message_count: int = 0
     stage_input_built: bool = False
-
-
-@dataclass(slots=True, frozen=True)
-class ActiveChatBootstrapStageOutput:
-    """Output from the active_chat_bootstrap stage runner."""
-
-    disposition: ActiveChatDisposition | None = None
-    reason: str = "noop_active_chat_bootstrap"
-
 
 @dataclass(slots=True, frozen=True)
 class ReviewWorkflowResult:

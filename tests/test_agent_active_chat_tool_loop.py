@@ -5,12 +5,12 @@ from typing import Any
 
 import pytest
 
-from shinbot.agent.coordinators.active_chat.models import (
+from shinbot.agent.services.tools.schema import ToolCallRequest, ToolCallResult
+from shinbot.agent.workflows.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,
 )
-from shinbot.agent.services.tools.schema import ToolCallRequest, ToolCallResult
 from shinbot.agent.workflows.active_chat.tool_loop import ActiveChatToolLoop
 
 

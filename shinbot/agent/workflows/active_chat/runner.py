@@ -10,12 +10,6 @@ from enum import Enum
 from inspect import isawaitable
 from typing import Any, Protocol
 
-from shinbot.agent.coordinators.active_chat.models import (
-    ActiveChatActionKind,
-    ActiveChatBatch,
-    ActiveChatMessageSignal,
-    ActiveChatRoundResult,
-)
 from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.services.context.active_chat_context import (
     ActiveChatContextBuilder,
@@ -30,10 +24,17 @@ from shinbot.agent.services.prompt_engine import (
     PromptStage,
 )
 from shinbot.agent.utils.parsing import instance_id_from_session
+from shinbot.agent.workflows.active_chat.models import (
+    ActiveChatActionKind,
+    ActiveChatBatch,
+    ActiveChatMessageSignal,
+    ActiveChatRoundResult,
+)
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )
 from shinbot.agent.workflows.active_chat.tool_loop import ActiveChatToolLoop
+from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +395,7 @@ class ActiveChatFastRunner:
             caller=self._config.caller,
             instance_id=instance_id_from_session(batch.session_id),
             session_id=batch.session_id,
-            tags={"attention"},
+            tags={CHAT_ACTION_TOOL_TAG},
         )
         active_tools = [
             _active_chat_tool_schema(tool)

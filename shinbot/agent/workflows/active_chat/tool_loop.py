@@ -6,14 +6,14 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from shinbot.agent.coordinators.active_chat.models import (
+from shinbot.agent.services.tools.parsing import parse_tool_call
+from shinbot.agent.services.tools.schema import ToolCallRequest
+from shinbot.agent.workflows.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,
     ActiveChatRoundResult,
 )
-from shinbot.agent.services.tools.parsing import parse_tool_call
-from shinbot.agent.services.tools.schema import ToolCallRequest
 
 _VIRTUAL_TOOL_NAMES = {"exit_active", "request_think_mode"}
 

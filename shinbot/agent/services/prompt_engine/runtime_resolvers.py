@@ -1,4 +1,4 @@
-"""Runtime-owned dynamic prompt resolvers."""
+"""Built-in dynamic prompt resolvers owned by the prompt engine."""
 
 from __future__ import annotations
 
@@ -69,3 +69,6 @@ def resolve_message_text_prompt(
         "content_blocks": content_blocks,
         "has_message_text": bool(text),
     }
+
+
+__all__ = ["resolve_current_time_prompt", "resolve_message_text_prompt"]

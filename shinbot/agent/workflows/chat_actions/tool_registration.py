@@ -1,4 +1,4 @@
-"""Active chat action tools — LLM-callable tools for active chat sessions."""
+"""Chat action tools — LLM-callable actions for Agent chat workflows."""
 
 from __future__ import annotations
 
@@ -20,18 +20,18 @@ if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
 
 _OWNER_TYPE = ToolOwnerType.BUILTIN_MODULE
-_OWNER_ID = "shinbot.agent.active_chat"
-_TAG = "attention"
+_OWNER_ID = "shinbot.agent.chat_actions"
+CHAT_ACTION_TOOL_TAG = "chat_action"
 
 
-def register_active_chat_tools(
+def register_chat_action_tools(
     registry: ToolRegistry,
     *,
     adapter_manager: AdapterManager,
     database: DatabaseManager | None = None,
     context_manager: ContextManager | None = None,
 ) -> None:
-    """Register active chat action tools (send_reply, no_reply, send_poke)."""
+    """Register shared chat action tools (send_reply, no_reply, send_poke)."""
 
     # ── no_reply ────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ def register_active_chat_tools(
             description=(
                 "选择不回复当前批次消息。\n"
                 "可附带 internal_summary 记录对本次观察的摘要和不回复的原因。\n"
-                "该摘要将在下一轮 workflow 触发时作为短期记忆提供给你，"
+                "该摘要将在下一轮聊天 workflow 触发时作为短期记忆提供给你，"
                 "帮助你保持对话连贯性。"
             ),
             input_schema={
@@ -66,7 +66,7 @@ def register_active_chat_tools(
             owner_type=_OWNER_TYPE,
             owner_id=_OWNER_ID,
             visibility=ToolVisibility.PUBLIC,
-            tags=[_TAG],
+            tags=[CHAT_ACTION_TOOL_TAG],
         )
     )
 
@@ -147,7 +147,7 @@ def register_active_chat_tools(
             id=f"{_OWNER_ID}.send_reply",
             name="send_reply",
             description=(
-                "向当前会话发送一条文本回复。这是 attention workflow 中让用户看见"
+                "向当前会话发送一条文本回复。这是 Agent 聊天 workflow 中让用户看见"
                 "回复的唯一方式；裸文本 assistant 输出不会发送。\n"
                 "必填 text：实际发送给用户的文本。\n"
                 "引用回复：当你是在回答某一条具体消息，尤其是纠正、逐条回应、回答"
@@ -156,7 +156,7 @@ def register_active_chat_tools(
                 "不要带中括号、前缀、昵称或消息正文。\n"
                 "如果上下文明确给出了原平台 platform_msg_id，也可以改用 "
                 "quote_message_id；不要同时填写两个引用字段。\n"
-                "terminate_round 默认 true：发送后结束本次 workflow。只有确实需要"
+                "terminate_round 默认 true：发送后结束本次聊天 workflow。只有确实需要"
                 "继续调用工具或继续多步行动时才设为 false。\n"
                 "如果决定不回复，请调用 no_reply；不要用空文本或裸文本代替。"
             ),
@@ -185,7 +185,7 @@ def register_active_chat_tools(
                     "terminate_round": {
                         "type": "boolean",
                         "description": (
-                            "是否在发送后立即结束当前 workflow 轮次。"
+                            "是否在发送后立即结束当前聊天 workflow 轮次。"
                             "默认 true；若为 false，则允许模型继续本轮后续步骤。"
                         ),
                     },
@@ -196,7 +196,7 @@ def register_active_chat_tools(
             owner_type=_OWNER_TYPE,
             owner_id=_OWNER_ID,
             visibility=ToolVisibility.PUBLIC,
-            tags=[_TAG],
+            tags=[CHAT_ACTION_TOOL_TAG],
         )
     )
 
@@ -244,7 +244,7 @@ def register_active_chat_tools(
         "适用场景：回应对方戳你、轻量调侃、或用非文本方式做极短互动。\n"
         "必填 user_id：目标用户的原始 sender_id/user_id，必须来自上下文，"
         "不要填写昵称、群名、@展示名或 message id。\n"
-        "terminate_round 默认 true：发送后结束本次 workflow。只有确实需要继续"
+        "terminate_round 默认 true：发送后结束本次聊天 workflow。只有确实需要继续"
         "调用工具或继续多步行动时才设为 false。\n"
         "如果需要表达具体内容、回答问题或引用某条消息，请使用 send_reply。"
     )
@@ -257,7 +257,7 @@ def register_active_chat_tools(
             },
             "terminate_round": {
                 "type": "boolean",
-                "description": "是否在发送后立即结束当前 workflow 轮次，默认 true",
+                "description": "是否在发送后立即结束当前聊天 workflow 轮次，默认 true",
             },
         },
         "required": ["user_id"],
@@ -273,7 +273,7 @@ def register_active_chat_tools(
             owner_type=_OWNER_TYPE,
             owner_id=_OWNER_ID,
             visibility=ToolVisibility.PUBLIC,
-            tags=[_TAG],
+            tags=[CHAT_ACTION_TOOL_TAG],
         )
     )
 
@@ -359,3 +359,6 @@ def _first_present(arguments: dict[str, Any], *keys: str) -> Any:
         if key in arguments:
             return arguments[key]
     return None
+
+
+__all__ = ["CHAT_ACTION_TOOL_TAG", "register_chat_action_tools"]

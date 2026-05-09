@@ -44,10 +44,7 @@ from shinbot.agent.scheduler.review_policy import (
 )
 from shinbot.agent.scheduler.scheduler import AgentScheduler, AgentSchedulerConfig
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
-from shinbot.agent.scheduler.workflow_dispatcher import (
-    ActiveReplyDispatcher,
-    AgentWorkflowDispatcher,
-)
+from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
 
 __all__ = [
     "ACTIVE_CHAT_DISPOSITION_PRESETS",
@@ -71,7 +68,6 @@ __all__ = [
     "AgentInbox",
     "AgentStateStore",
     "AgentWorkflowDispatcher",
-    "ActiveReplyDispatcher",
     "calculate_bootstrap_correction",
     "DefaultPriorityPolicy",
     "DefaultActiveChatPolicy",

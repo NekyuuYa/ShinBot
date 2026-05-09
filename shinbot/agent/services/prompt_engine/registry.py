@@ -6,13 +6,16 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.runtime import resolve_current_time_prompt, resolve_message_text_prompt
 from shinbot.agent.services.context.projectors.projection import PromptMemoryProjectionRequest
 from shinbot.agent.services.prompt_engine.message_builder import PromptMessageBuilder
 from shinbot.agent.services.prompt_engine.rendering import (
     expand_component_tree,
     infer_component_source,
     render_component_text,
+)
+from shinbot.agent.services.prompt_engine.runtime_resolvers import (
+    resolve_current_time_prompt,
+    resolve_message_text_prompt,
 )
 from shinbot.agent.services.prompt_engine.schema import (
     PROMPT_STAGE_ORDER,

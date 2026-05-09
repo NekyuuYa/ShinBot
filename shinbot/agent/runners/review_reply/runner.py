@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from shinbot.agent.coordinators.review.models import ReplyDecisionStageOutput
 from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig, ReviewLLMStageRunnerBase
+from shinbot.agent.runners.review_models import ReplyDecisionStageOutput
 from shinbot.agent.runners.review_reply.prompt_registration import REVIEW_REPLY_COMPONENT_IDS
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.prompt_engine import PromptInjection, PromptRegistry, PromptStage
@@ -18,6 +18,7 @@ from shinbot.agent.utils.parsing import (
     optional_int,
     parse_json_object,
 )
+from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
 
 _REPLY_TOOLLESS_REPAIR_PROMPT = (
     "上一轮 reply_decision 输出了裸文本或没有调用工具，但 review reply 阶段不会把裸文本发送给用户。\n"
@@ -198,7 +199,7 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
             caller=self._config.caller,
             instance_id=instance_id_from_session(stage_input.session_id),
             session_id=stage_input.session_id,
-            tags={"attention"},
+            tags={CHAT_ACTION_TOOL_TAG},
         )
         return [
             _review_reply_tool_schema(tool)

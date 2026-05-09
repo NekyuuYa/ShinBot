@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from shinbot.agent.coordinators.review.models import ActiveChatBootstrapStageOutput
 from shinbot.agent.runners._review_base import ReviewLLMStageRunnerBase
 from shinbot.agent.runners.review_bootstrap.prompt_registration import (
     REVIEW_BOOTSTRAP_COMPONENT_IDS,
 )
+from shinbot.agent.runners.review_models import ActiveChatBootstrapStageOutput
 from shinbot.agent.scheduler.models import ActiveChatDisposition
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.utils.parsing import json_schema_response_format

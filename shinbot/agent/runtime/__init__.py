@@ -4,17 +4,11 @@ from importlib import import_module
 from typing import Any
 
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
-from shinbot.agent.runtime.prompt_runtime import (
-    resolve_current_time_prompt,
-    resolve_message_text_prompt,
-)
 
 __all__ = [
     "AgentRuntime",
     "install_agent_runtime",
     "register_runtime_prompt_components",
-    "resolve_current_time_prompt",
-    "resolve_message_text_prompt",
 ]
 
 _EXPORT_MODULES = {

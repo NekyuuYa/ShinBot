@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
+from shinbot.agent.coordinators.active_chat import models as active_chat_coordinator_models
+from shinbot.agent.coordinators.dispatcher import ActiveReplyDispatcher
 from shinbot.agent.coordinators.review import ReviewCoordinator
 from shinbot.agent.coordinators.review.factory import (
     ReviewRunnerFactory,
@@ -23,7 +25,6 @@ from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStor
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
-    ActiveReplyDispatcher,
     AgentScheduler,
 )
 from shinbot.agent.services.context import ContextManager
@@ -43,11 +44,12 @@ from shinbot.agent.services.media import (
 )
 from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
-from shinbot.agent.services.tools.active_chat_tools import register_active_chat_tools
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
+from shinbot.agent.workflows.active_chat import models as active_chat_workflow_models
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
+from shinbot.agent.workflows.chat_actions import register_chat_action_tools
 from shinbot.core.bot_config import select_response_profile
 
 if TYPE_CHECKING:
@@ -146,16 +148,20 @@ class AgentRuntime:
             tool_manager=self.tool_manager,
             message_store=database.message_logs,
             context_builder=ActiveChatContextBuilderAdapter(self.context_manager),
-            pending_message_provider=self.active_chat_workflow.drain_pending_for_repair,
+            pending_message_provider=lambda batch: self._drain_active_chat_pending_for_repair(
+                batch
+            ),
         )
-        self.active_chat_workflow.set_round_handler(active_chat_fast_runner.run)
+        self.active_chat_workflow.set_round_handler(
+            lambda batch: self._run_active_chat_fast_round(active_chat_fast_runner, batch)
+        )
         self.agent_scheduler = self._create_agent_scheduler(
             workflow_dispatcher=ActiveReplyDispatcher(
                 review_coordinator=self.review_coordinator,
                 active_chat_workflow=self.active_chat_workflow,
             ),
         )
-        register_active_chat_tools(
+        register_chat_action_tools(
             self.tool_registry,
             adapter_manager=adapter_manager,
             database=database,
@@ -213,6 +219,26 @@ class AgentRuntime:
         """Let Agent-owned media services observe accepted inbound messages."""
         self.media_ingress_hook(context)
 
+    async def _run_active_chat_fast_round(
+        self,
+        runner: ActiveChatFastRunner,
+        batch: active_chat_coordinator_models.ActiveChatBatch,
+    ) -> active_chat_coordinator_models.ActiveChatRoundResult:
+        result = await runner.run(_workflow_active_chat_batch_from_coordinator(batch))
+        return _coordinator_active_chat_result_from_workflow(result)
+
+    async def _drain_active_chat_pending_for_repair(
+        self,
+        batch: active_chat_workflow_models.ActiveChatBatch,
+    ) -> list[active_chat_workflow_models.ActiveChatMessageSignal]:
+        coordinator_messages = await self.active_chat_workflow.drain_pending_for_repair(
+            _coordinator_active_chat_batch_from_workflow(batch)
+        )
+        return [
+            _workflow_active_chat_message_from_coordinator(message)
+            for message in coordinator_messages
+        ]
+
     async def shutdown(self) -> None:
         """Shut down Agent-side background services."""
         if self.review_coordinator is not None:
@@ -251,6 +277,102 @@ def _coerce_review_runtime_config(
     if isinstance(value, ReviewRuntimeConfig):
         return value
     return ReviewRuntimeConfig.from_mapping(value)
+
+
+def _workflow_active_chat_batch_from_coordinator(
+    batch: active_chat_coordinator_models.ActiveChatBatch,
+) -> active_chat_workflow_models.ActiveChatBatch:
+    return active_chat_workflow_models.ActiveChatBatch(
+        session_id=batch.session_id,
+        messages=[
+            _workflow_active_chat_message_from_coordinator(message)
+            for message in batch.messages
+        ],
+        active_chat_state=batch.active_chat_state,
+        response_profile=batch.response_profile,
+        mode=active_chat_workflow_models.ActiveChatMode(batch.mode.value),
+        review_result_summary=batch.review_result_summary,
+        conversation_summary=batch.conversation_summary,
+        conversation_messages=list(batch.conversation_messages),
+    )
+
+
+def _coordinator_active_chat_batch_from_workflow(
+    batch: active_chat_workflow_models.ActiveChatBatch,
+) -> active_chat_coordinator_models.ActiveChatBatch:
+    return active_chat_coordinator_models.ActiveChatBatch(
+        session_id=batch.session_id,
+        messages=[
+            _coordinator_active_chat_message_from_workflow(message)
+            for message in batch.messages
+        ],
+        active_chat_state=batch.active_chat_state,
+        response_profile=batch.response_profile,
+        mode=active_chat_coordinator_models.ActiveChatMode(batch.mode.value),
+        review_result_summary=batch.review_result_summary,
+        conversation_summary=batch.conversation_summary,
+        conversation_messages=list(batch.conversation_messages),
+    )
+
+
+def _workflow_active_chat_message_from_coordinator(
+    message: active_chat_coordinator_models.ActiveChatMessageSignal,
+) -> active_chat_workflow_models.ActiveChatMessageSignal:
+    return active_chat_workflow_models.ActiveChatMessageSignal(
+        session_id=message.session_id,
+        message_log_id=message.message_log_id,
+        sender_id=message.sender_id,
+        response_profile=message.response_profile,
+        is_mentioned=message.is_mentioned,
+        is_reply_to_bot=message.is_reply_to_bot,
+        is_mention_to_other=message.is_mention_to_other,
+        is_poke_to_bot=message.is_poke_to_bot,
+        is_poke_to_other=message.is_poke_to_other,
+        self_platform_id=message.self_platform_id,
+        active_chat_state=message.active_chat_state,
+        created_at=message.created_at,
+    )
+
+
+def _coordinator_active_chat_message_from_workflow(
+    message: active_chat_workflow_models.ActiveChatMessageSignal,
+) -> active_chat_coordinator_models.ActiveChatMessageSignal:
+    return active_chat_coordinator_models.ActiveChatMessageSignal(
+        session_id=message.session_id,
+        message_log_id=message.message_log_id,
+        sender_id=message.sender_id,
+        response_profile=message.response_profile,
+        is_mentioned=message.is_mentioned,
+        is_reply_to_bot=message.is_reply_to_bot,
+        is_mention_to_other=message.is_mention_to_other,
+        is_poke_to_bot=message.is_poke_to_bot,
+        is_poke_to_other=message.is_poke_to_other,
+        self_platform_id=message.self_platform_id,
+        active_chat_state=message.active_chat_state,
+        created_at=message.created_at,
+    )
+
+
+def _coordinator_active_chat_result_from_workflow(
+    result: active_chat_workflow_models.ActiveChatRoundResult,
+) -> active_chat_coordinator_models.ActiveChatRoundResult:
+    return active_chat_coordinator_models.ActiveChatRoundResult(
+        success=result.success,
+        reason=result.reason,
+        action=active_chat_coordinator_models.ActiveChatActionKind(result.action.value),
+        reply_intensity=active_chat_coordinator_models.ActiveChatReplyIntensity(
+            result.reply_intensity.value
+        ),
+        no_reply_intensity=active_chat_coordinator_models.ActiveChatNoReplyIntensity(
+            result.no_reply_intensity.value
+        ),
+        consumed_message_log_ids=list(result.consumed_message_log_ids),
+        restored_messages=[
+            _coordinator_active_chat_message_from_workflow(message)
+            for message in result.restored_messages
+        ],
+        conversation_messages_delta=list(result.conversation_messages_delta),
+    )
 
 
 __all__ = ["AgentRuntime", "install_agent_runtime"]
