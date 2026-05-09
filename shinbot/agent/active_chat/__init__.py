@@ -1,6 +1,13 @@
 """Active chat coordinator and workflow package."""
 
-from shinbot.agent.active_chat.models import (
+from shinbot.agent.context.active_chat_context import (
+    ActiveChatContextBuilder,
+    ActiveChatContextBuilderAdapter,
+    ActiveChatContextBuildOptions,
+    ActiveChatStageInput,
+)
+from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator, ActiveChatRoundHandler
+from shinbot.agent.models.active_chat import (
     ActiveChatActionKind,
     ActiveChatAttentionState,
     ActiveChatBatch,
@@ -12,13 +19,6 @@ from shinbot.agent.active_chat.models import (
     ActiveChatRoundResult,
     ActiveChatStartResult,
 )
-from shinbot.agent.context.active_chat_context import (
-    ActiveChatContextBuilder,
-    ActiveChatContextBuilderAdapter,
-    ActiveChatContextBuildOptions,
-    ActiveChatStageInput,
-)
-from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator, ActiveChatRoundHandler
 from shinbot.agent.prompts.active_chat_prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
     register_active_chat_prompt_components,

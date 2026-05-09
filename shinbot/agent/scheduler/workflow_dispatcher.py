@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
-from shinbot.agent.review.models import build_review_workflow_explanation
+from shinbot.agent.models.review import build_review_workflow_explanation
 from shinbot.agent.scheduler.models import (
     ActiveChatState,
     HighPriorityEvent,

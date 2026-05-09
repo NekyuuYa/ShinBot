@@ -15,8 +15,8 @@ from shinbot.agent.active_chat import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.model_runtime import GenerateResult, ModelCallError
+from shinbot.agent.models.review import ReviewWorkflowExplanation
 from shinbot.agent.prompts import PromptRegistry
-from shinbot.agent.review.models import ReviewWorkflowExplanation
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
 

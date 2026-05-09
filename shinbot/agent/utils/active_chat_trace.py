@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.active_chat.models import ActiveChatAttentionState
+from shinbot.agent.models.active_chat import ActiveChatAttentionState
 
 
 @dataclass(slots=True, frozen=True)

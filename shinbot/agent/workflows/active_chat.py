@@ -10,17 +10,17 @@ from enum import Enum
 from inspect import isawaitable
 from typing import Any, Protocol
 
-from shinbot.agent.active_chat.models import (
-    ActiveChatActionKind,
-    ActiveChatBatch,
-    ActiveChatMessageSignal,
-    ActiveChatRoundResult,
-)
 from shinbot.agent.context.active_chat_context import (
     ActiveChatContextBuilder,
     ActiveChatContextBuildOptions,
 )
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.models.active_chat import (
+    ActiveChatActionKind,
+    ActiveChatBatch,
+    ActiveChatMessageSignal,
+    ActiveChatRoundResult,
+)
 from shinbot.agent.prompts import (
     PromptBuildRequest,
     PromptContextPolicy,

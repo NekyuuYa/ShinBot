@@ -7,11 +7,7 @@ from shinbot.agent.context.review_context_builder import (
     ReviewStageInput,
 )
 from shinbot.agent.coordinators.review import ReviewCoordinator
-from shinbot.agent.prompts.review_prompt_registration import (
-    REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE,
-    register_review_prompt_components,
-)
-from shinbot.agent.review.models import (
+from shinbot.agent.models.review import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
     ConsumedUnreadRange,
@@ -28,6 +24,10 @@ from shinbot.agent.review.models import (
     UnreadRangeIgnoreRecord,
     UnreadRangeSummaryRecord,
     build_review_workflow_explanation,
+)
+from shinbot.agent.prompts.review_prompt_registration import (
+    REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE,
+    register_review_prompt_components,
 )
 from shinbot.agent.runtime.review_message_store import (
     DatabaseReviewMessageStore,

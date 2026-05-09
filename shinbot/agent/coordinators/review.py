@@ -16,7 +16,7 @@ from shinbot.agent.context.review_context_builder import (
     ReviewContextBuildOptions,
     ReviewStageInput,
 )
-from shinbot.agent.review.models import (
+from shinbot.agent.models.review import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
     ConsumedUnreadRange,

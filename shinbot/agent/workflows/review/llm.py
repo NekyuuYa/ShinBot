@@ -9,6 +9,12 @@ from typing import Any
 
 from shinbot.agent.context.review_context_builder import ReviewStageInput
 from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.models.review import (
+    ActiveChatBootstrapStageOutput,
+    OverflowCompressionStageOutput,
+    ReplyDecisionStageOutput,
+    ReviewScanStageOutput,
+)
 from shinbot.agent.prompts import (
     PromptBuildRequest,
     PromptContextPolicy,
@@ -17,12 +23,6 @@ from shinbot.agent.prompts import (
     PromptStage,
 )
 from shinbot.agent.prompts.review_prompt_registration import REVIEW_PROMPT_COMPONENT_IDS_BY_STAGE
-from shinbot.agent.review.models import (
-    ActiveChatBootstrapStageOutput,
-    OverflowCompressionStageOutput,
-    ReplyDecisionStageOutput,
-    ReviewScanStageOutput,
-)
 from shinbot.agent.scheduler.models import ActiveChatDisposition
 from shinbot.agent.tools.schema import ToolCallRequest
 

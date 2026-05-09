@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from typing import Any
 
-from shinbot.agent.active_chat.models import (
+from shinbot.agent.models.active_chat import (
     ActiveChatActionKind,
     ActiveChatAttentionState,
     ActiveChatBatch,
