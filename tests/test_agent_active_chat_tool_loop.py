@@ -20,6 +20,35 @@ class FakeToolManager:
 
     async def execute(self, call: ToolCallRequest) -> ToolCallResult:
         self.calls.append(call)
+        if call.tool_name == "send_reply":
+            return ToolCallResult(
+                tool_name=call.tool_name,
+                success=True,
+                output={
+                    "action": "send_reply",
+                    "sent": True,
+                    "length": len(str(call.arguments.get("text", ""))),
+                    "platform_msg_id": "platform-secret",
+                    "message_log_id": 9001,
+                    "quote_message_id": "quoted-platform-message",
+                    "terminate_round": True,
+                    "hint": "internal send hint",
+                },
+            )
+        if call.tool_name == "send_poke":
+            return ToolCallResult(
+                tool_name=call.tool_name,
+                success=True,
+                output={
+                    "action": "send_poke",
+                    "sent": True,
+                    "user_id": call.arguments.get("user_id", ""),
+                    "session_type": "group",
+                    "adapter_result": {"raw": "platform detail"},
+                    "terminate_round": True,
+                    "hint": "internal poke hint",
+                },
+            )
         if call.tool_name == "fail_tool":
             return ToolCallResult(
                 tool_name=call.tool_name,
@@ -74,6 +103,18 @@ async def test_active_chat_tool_loop_allows_multiple_replies_in_order() -> None:
         "call-1",
         "call-2",
     ]
+    first_tool_content = json.loads(result.tool_messages[0]["content"])
+    assert first_tool_content == {
+        "success": True,
+        "action": "send_reply",
+        "sent": True,
+        "message_log_id": 9001,
+        "quote_message_id": "quoted-platform-message",
+        "terminate_round": True,
+        "text_length": 5,
+    }
+    assert "platform-secret" not in result.tool_messages[0]["content"]
+    assert "internal send hint" not in result.tool_messages[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -91,6 +132,15 @@ async def test_active_chat_tool_loop_allows_poke_as_independent_action() -> None
     assert [call.tool_name for call in manager.calls] == ["send_poke"]
     assert result.round_result.success is True
     assert result.round_result.action == ActiveChatActionKind.SEND_POKE
+    assert json.loads(result.tool_messages[0]["content"]) == {
+        "success": True,
+        "action": "send_poke",
+        "sent": True,
+        "user_id": "alice",
+        "session_type": "group",
+        "terminate_round": True,
+    }
+    assert "platform detail" not in result.tool_messages[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -168,6 +218,11 @@ async def test_active_chat_tool_loop_maps_all_failed_calls_to_retry_failed_actio
     assert result.round_result.success is True
     assert result.round_result.action == ActiveChatActionKind.RETRY_FAILED
     assert result.round_result.reason == "tool failed"
+    assert json.loads(result.tool_messages[0]["content"]) == {
+        "success": False,
+        "action": "fail_tool",
+        "error": "tool failed",
+    }
 
 
 @pytest.mark.asyncio

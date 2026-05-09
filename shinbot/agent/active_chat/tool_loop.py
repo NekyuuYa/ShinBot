@@ -82,7 +82,12 @@ class ActiveChatToolLoop:
                         )
                     )
                 result.tool_messages.append(
-                    _tool_message(tool_call_id, output, success=success)
+                    _tool_message(
+                        tool_call_id,
+                        tool_name=tool_name,
+                        output=output,
+                        success=success,
+                    )
                 )
                 continue
 
@@ -106,7 +111,12 @@ class ActiveChatToolLoop:
                 failure_reasons.append(tool_result.error_message or tool_result.error_code)
                 output = {"error": tool_result.error_message or tool_result.error_code}
             result.tool_messages.append(
-                _tool_message(tool_call_id, output, success=tool_result.success)
+                _tool_message(
+                    tool_call_id,
+                    tool_name=tool_name,
+                    output=output,
+                    success=tool_result.success,
+                )
             )
 
         if successful_action_count == 0:
@@ -221,13 +231,66 @@ def _execute_virtual_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str
     }
 
 
-def _tool_message(tool_call_id: str, output: Any, *, success: bool) -> dict[str, Any]:
-    content = output if success else {"error": output.get("error", output)}
+def _tool_message(
+    tool_call_id: str,
+    *,
+    tool_name: str,
+    output: Any,
+    success: bool,
+) -> dict[str, Any]:
     return {
         "role": "tool",
         "tool_call_id": tool_call_id,
-        "content": json.dumps(content, ensure_ascii=False),
+        "content": json.dumps(
+            _trace_tool_output(tool_name, output, success=success),
+            ensure_ascii=False,
+        ),
     }
+
+
+def _trace_tool_output(tool_name: str, output: Any, *, success: bool) -> dict[str, Any]:
+    """Return a compact prompt-safe view of one tool result for AtC trace."""
+    if not isinstance(output, dict):
+        return {"success": success, "action": tool_name}
+
+    action = str(output.get("action") or tool_name)
+    if not success:
+        return {
+            "success": False,
+            "action": action,
+            "error": str(output.get("error") or "tool_failed"),
+        }
+
+    result: dict[str, Any] = {
+        "success": True,
+        "action": action,
+    }
+    if action == "send_reply":
+        _copy_if_present(output, result, "sent")
+        _copy_if_present(output, result, "message_log_id")
+        _copy_if_present(output, result, "quote_message_id")
+        _copy_if_present(output, result, "terminate_round")
+        if "length" in output:
+            result["text_length"] = output["length"]
+        return result
+    if action == "no_reply":
+        _copy_if_present(output, result, "summary_stored")
+        return result
+    if action == "send_poke":
+        _copy_if_present(output, result, "sent")
+        _copy_if_present(output, result, "user_id")
+        _copy_if_present(output, result, "session_type")
+        _copy_if_present(output, result, "terminate_round")
+        return result
+    if action in _VIRTUAL_TOOL_NAMES:
+        _copy_if_present(output, result, "reason")
+        return result
+    return result
+
+
+def _copy_if_present(source: dict[str, Any], target: dict[str, Any], key: str) -> None:
+    if key in source and source[key] is not None:
+        target[key] = source[key]
 
 
 def _reason_from(arguments: dict[str, Any]) -> str:
