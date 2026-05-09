@@ -33,12 +33,12 @@
 3. `architecture/design_principles.md`
 4. `architecture/agent_module_layers.md`
 5. `design/README.md`
-6. `design/core/00_core_philosophy.md`
-7. `design/core/01_message_workflow.md`
+6. `design/core/core_philosophy.md`
+7. `design/core/message_workflow.md`
 8. `design/runtime/agent_runtime_index.md`
-9. `design/runtime/21_prompt_registry.md`
-10. `design/runtime/23_tool_registry_and_manager.md`
-11. `design/extensibility/07_plugin_system_design.md`
+9. `design/runtime/prompt_registry.md`
+10. `design/runtime/tool_registry_and_manager.md`
+11. `design/extensibility/plugin_system_design.md`
 12. `plugins/capabilities.md`
 
 ## 维护规则
@@ -55,4 +55,4 @@
 ## 当前整理状态
 
 - `architecture/agent_module_layers.md` 是 Agent 后续重构的当前有效分层依据。
-- `design/runtime/24_attention_driven_conversation_workflow.md`、`design/runtime/26_context_memory_architecture.md` 等早期 Agent 文档仍有参考价值，但需要按新分层重新审计；在审计完成前，不应把其中内容视作全部现行实现约束。
+- `design/runtime/attention_driven_conversation_workflow.md`、`design/runtime/context_memory_architecture.md` 等早期 Agent 文档仍有参考价值，但需要按新分层重新审计；在审计完成前，不应把其中内容视作全部现行实现约束。

@@ -1,6 +1,6 @@
 """Permission system — RBAC with session-scoped and global-scoped bindings.
 
-Implements the permission specification (05_permission_system.md).
+Implements the permission specification (permission_system.md).
 
 Permission model:
   - Permissions are dot-separated tree paths: "tools.weather", "sys.reboot"

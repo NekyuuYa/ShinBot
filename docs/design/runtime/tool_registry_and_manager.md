@@ -386,7 +386,7 @@ ToolManager 在执行前必须：
 - `result_summary`
 - `trace_id`
 
-后续数据库建议与 `19_database_persistence_architecture.md` 中的 `agent_tool_calls` 对齐。
+后续数据库建议与 `database_persistence_architecture.md` 中的 `agent_tool_calls` 对齐。
 
 ---
 
@@ -465,7 +465,7 @@ Tool 注册也必须满足同一原则：
 
 ### 9.3 PromptRegistry
 
-`21_prompt_registry.md` 已明确：
+`prompt_registry.md` 已明确：
 
 - ToolRegistry 负责能力元数据管理
 - PromptRegistry 只消费当前可见能力投影
@@ -474,7 +474,7 @@ Tool 注册也必须满足同一原则：
 
 ### 9.4 Model Runtime
 
-`18_agent_model_runtime.md` 已预留 `tools` 调用入参。
+`agent_model_runtime.md` 已预留 `tools` 调用入参。
 
 需要补充的实现约束是：
 

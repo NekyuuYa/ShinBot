@@ -254,7 +254,7 @@
 
 ### 7.3 Model Runtime
 
-应与 `18_agent_model_runtime.md` 对齐，至少落库：
+应与 `agent_model_runtime.md` 对齐，至少落库：
 
 - `model_providers`
 - `model_definitions`

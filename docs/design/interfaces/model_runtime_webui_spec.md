@@ -2,7 +2,7 @@
 
 本文档定义 ShinBot WebUI 中“模型管理”页面的结构、交互和信息架构。
 
-本页服务于 `18_agent_model_runtime.md` 与 `19_database_persistence_architecture.md`，目标是让 Provider、Route 和模型成员配置在一个页面内完成，而不是拆成多个割裂页面。
+本页服务于 `agent_model_runtime.md` 与 `database_persistence_architecture.md`，目标是让 Provider、Route 和模型成员配置在一个页面内完成，而不是拆成多个割裂页面。
 
 ---
 

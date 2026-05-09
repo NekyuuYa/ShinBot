@@ -22,43 +22,43 @@
 
 ### `core/`
 
-- `00_core_philosophy.md`
-- `01_message_workflow.md`
-- `02_message_element_spec.md`
-- `06_message_egress_spec.md`
-- `17_resource_schema_spec.md`
+- `core_philosophy.md`
+- `message_workflow.md`
+- `message_element_spec.md`
+- `message_egress_spec.md`
+- `resource_schema_spec.md`
 
 ### `runtime/`
 
 - `agent_runtime_index.md` — Agent 运行时文档索引（阅读入口）。
 - `active_chat_workflow.md` — Active Chat 双层触发模型、会话生命周期、兴趣衰减。
-- `03_command_system.md`
-- `04_session_management.md`
-- `05_permission_system.md`
-- `12_system_boot_lifecycle.md`
-- `18_agent_model_runtime.md`
-- `19_database_persistence_architecture.md`
-- `21_prompt_registry.md`
-- `22_prompt_registry_schema.md`
-- `23_tool_registry_and_manager.md`
-- `24_attention_driven_conversation_workflow.md`
-- `25_media_semantics_and_meme_handling.md`
-- `26_context_memory_architecture.md`
+- `command_system.md`
+- `session_management.md`
+- `permission_system.md`
+- `system_boot_lifecycle.md`
+- `agent_model_runtime.md`
+- `database_persistence_architecture.md`
+- `prompt_registry.md`
+- `prompt_registry_schema.md`
+- `tool_registry_and_manager.md`
+- `attention_driven_conversation_workflow.md`
+- `media_semantics_and_meme_handling.md`
+- `context_memory_architecture.md`
 
 ### `extensibility/`
 
-- `07_plugin_system_design.md`
-- `09_adapter_interface_spec.md`
+- `plugin_system_design.md`
+- `adapter_interface_spec.md`
 
 ### `interfaces/`
 
-- `13_webui_design_spec.md`
-- `16_api_communication_spec.md`
-- `20_model_runtime_webui_spec.md`
+- `webui_design_spec.md`
+- `api_communication_spec.md`
+- `model_runtime_webui_spec.md`
 
 ### `governance/`
 
-- `10_glossary.md`
+- `glossary.md`
 
 ## 新文档放置规则
 
@@ -73,13 +73,13 @@
 
 以下文档写于早期 Agent 方案阶段，已完成审计：
 
-- `runtime/24_attention_driven_conversation_workflow.md`
+- `runtime/attention_driven_conversation_workflow.md`
   - **状态**：部分现行。核心概念（SessionAttentionState、exponential decay、response profiles、tool-driven reply）已被 `scheduler/` 和 `active_chat/` 实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `active_chat/coordinator.py`，workflow 执行已迁移到 `workflow/`。
   - **保留原因**：仍可作为 attention 模型和 response profile 的设计参考。
-- `runtime/25_media_semantics_and_meme_handling.md`
+- `runtime/media_semantics_and_meme_handling.md`
   - **状态**：现行。fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis 等核心设计均已实现于 `media/`。
   - **保留原因**：仍为媒体子系统的有效能力规格。
-- `runtime/26_context_memory_architecture.md`
+- `runtime/context_memory_architecture.md`
   - **状态**：部分现行。三级记忆模型（short/mid/long-term）、Block 投影分离、Prefix Cache 友好的前缀稳定原则仍为设计目标。实际实现中 `context/` 模块采用 ring buffer + alias table + projector 模式，与文档描述的 MemoryBlock/PromptBlock 分离尚未完全对齐。
   - **保留原因**：仍可作为上下文系统演进的设计参考。
 

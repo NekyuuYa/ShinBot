@@ -6,7 +6,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P1. Micro-Kernel + Full Plugin Architecture
 
-> "系统核心仅负责逻辑编排，所有的平台接入与业务功能均以插件形式存在。" — 07_plugin_system_design.md
+> "系统核心仅负责逻辑编排，所有的平台接入与业务功能均以插件形式存在。" — plugin_system_design.md
 
 **Rule**: `shinbot/core/` is split by responsibility:
 - `application/` for app assembly and boot lifecycle
@@ -35,7 +35,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P3. Adapter as Protocol Translator
 
-> "Core is completely decoupled from protocol implementations." — 09_adapter_interface_spec.md
+> "Core is completely decoupled from protocol implementations." — adapter_interface_spec.md
 
 **Rule**: Adapters are plugins that implement `BaseAdapter`. They translate between platform-native wire formats and ShinBot's internal `UnifiedEvent`/`MessageElement` AST.
 
@@ -47,7 +47,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P4. Satori-Aligned Message AST
 
-> "Messages are sequences of MessageElement AST nodes, following the Satori protocol model." — 02_message_element_spec.md
+> "Messages are sequences of MessageElement AST nodes, following the Satori protocol model." — message_element_spec.md
 
 **Rule**: The internal message representation is a tree of `MessageElement` nodes with Satori-compatible types (text, at, img, quote, ...).
 
@@ -59,7 +59,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P5. Three-Pillar Interaction Model
 
-> "听 (Listen), 说 (Speak), 管 (Action)" — 00_core_philosophy.md
+> "听 (Listen), 说 (Speak), 管 (Action)" — core_philosophy.md
 
 1. **Listen**: Adapter → `UnifiedEvent` → `MessageIngress` → `RouteTable`
 2. **Speak**: Plugin → `MessageElement[]` → `bot.send()` → adapter (egress)
@@ -83,7 +83,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P7. Session as Processing Unit
 
-> "Session is the minimum unit for logic processing, context maintenance, and permission binding." — 04_session_management.md
+> "Session is the minimum unit for logic processing, context maintenance, and permission binding." — session_management.md
 
 **Rule**: Session ID is a URN: `{instance_id}:{type}:{target_id}`.
 
@@ -95,7 +95,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P8. RBAC Permission Model
 
-> "Dot-separated permission tree with explicit-deny highest priority." — 05_permission_system.md
+> "Dot-separated permission tree with explicit-deny highest priority." — permission_system.md
 
 **Rule**: Permissions are hierarchical paths (`tools.weather.admin`).
 
@@ -107,7 +107,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P9. Naming Convention Enforcement
 
-> 07_plugin_system_design.md §2
+> plugin_system_design.md §2
 
 | Type | Pattern | Example |
 |------|---------|---------|
@@ -131,7 +131,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 The following items appear in docs but are Gemini implementation choices, not validated design intent. They should be treated as "current implementation" rather than "architectural constraints":
 
-1. **P0 hard-fail**: Prefix-matched but unrecognized commands error instead of falling through to LLM. (03_command_system.md — strong opinion, needs user confirmation.)
+1. **P0 hard-fail**: Prefix-matched but unrecognized commands error instead of falling through to LLM. (command_system.md — strong opinion, needs user confirmation.)
 2. **JSON file persistence** for sessions. (internals/05 — may not scale.)
 3. **Specific FastAPI admin endpoints** (`/admin/plugins`, `/admin/plugins/{id}/reload`). (internals/07 — implementation detail.)
 4. **TOML as config format**. (Never formally specified in a design doc, appeared in Gemini implementation.)

@@ -1,6 +1,6 @@
 """Session management — identity, configuration, and lifecycle.
 
-Implements the session management specification (04_session_management.md).
+Implements the session management specification (session_management.md).
 Sessions are the minimal unit of context, permission binding, and state
 isolation in ShinBot.
 
@@ -94,7 +94,7 @@ def build_session_id(
 ) -> str:
     """Build a session URN from an instance ID and a UnifiedEvent.
 
-    Rules (per 04_session_management.md):
+    Rules (per session_management.md):
       - Private: {instance_id}:private:{user_id}
       - Group (flat, e.g. QQ): {instance_id}:group:{channel_id}
       - Group (nested, e.g. Discord): {instance_id}:group:{guild_id}:{channel_id}

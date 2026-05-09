@@ -6,7 +6,7 @@
 位于 `shinbot/core/message_routes/command.py`。
 
 ### 1.1 实现方法
-- **三层匹配算法**: 严格实现了 `03_command_system.md` 规定的优先级：
+- **三层匹配算法**: 严格实现了 `command_system.md` 规定的优先级：
   1. **P0 (Prefix)**: 头部匹配前缀，失败则截断。
   2. **P1 (Exact)**: 全量匹配指令名或别名。
   3. **P2 (Regex)**: 编译后的正则表达式匹配。
