@@ -55,5 +55,5 @@
 
 ## 6. API 深入文档
 
-- 详细签名见 [API 参考](./16_api_reference.md)
-- 使用示例见 [示例代码](./17_examples.md)
+- 详细签名见 [API 参考](./api_reference.md)
+- 使用示例见 [示例代码](./examples.md)

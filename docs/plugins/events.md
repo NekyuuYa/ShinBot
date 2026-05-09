@@ -119,4 +119,4 @@ async def guard(event):
 
 事件和 route 处理器返回值不会参与后续流程；如果需要输出，请显式调用 `await bot.send(...)`。
 
-下一步：阅读 [数据存储](./05_storage.md)。
+下一步：阅读 [数据存储](./storage.md)。

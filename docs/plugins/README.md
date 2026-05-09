@@ -5,22 +5,22 @@
 ## 文档导航
 
 ### 入门
-- [快速开始](./01_getting_started.md)
-- [项目结构](./02_project_structure.md)
+- [快速开始](./getting_started.md)
+- [项目结构](./project_structure.md)
 - [核心能力速览](./capabilities.md)
 
 ### 开发主题
-- [命令系统](./03_commands.md)
-- [事件系统](./04_events.md)
-- [数据存储](./05_storage.md)
-- [配置系统](./06_configuration.md)
-- [本地化](./07_localization.md)
-- [生命周期](./10_lifecycle.md)
+- [命令系统](./commands.md)
+- [事件系统](./events.md)
+- [数据存储](./storage.md)
+- [配置系统](./configuration.md)
+- [本地化](./localization.md)
+- [生命周期](./lifecycle.md)
 
 ### 参考与示例
-- [API 参考](./16_api_reference.md)
-- [示例代码](./17_examples.md)
-- [常见问题](./18_faq.md)
+- [API 参考](./api_reference.md)
+- [示例代码](./examples.md)
+- [常见问题](./faq.md)
 
 ## 这套文档基于哪些代码
 
@@ -49,10 +49,10 @@
 
 ## 推荐阅读顺序
 
-1. [快速开始](./01_getting_started.md)
-2. [项目结构](./02_project_structure.md)
-3. [命令系统](./03_commands.md)
-4. [事件系统](./04_events.md)
-5. [API 参考](./16_api_reference.md)
+1. [快速开始](./getting_started.md)
+2. [项目结构](./project_structure.md)
+3. [命令系统](./commands.md)
+4. [事件系统](./events.md)
+5. [API 参考](./api_reference.md)
 
-开始开发：[快速开始 →](./01_getting_started.md)
+开始开发：[快速开始 →](./getting_started.md)

@@ -131,4 +131,4 @@ __plugin_locales__ = {
 }
 ```
 
-更多字段和签名见 [API 参考](./16_api_reference.md)。
+更多字段和签名见 [API 参考](./api_reference.md)。

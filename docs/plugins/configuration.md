@@ -81,6 +81,6 @@ __plugin_config_class__ = DemoConfig
 - `config.fields.<field_path>.label`
 - `config.fields.<field_path>.description`
 
-详见 [本地化](./07_localization.md)。
+详见 [本地化](./localization.md)。
 
-下一步：阅读 [本地化](./07_localization.md)。
+下一步：阅读 [本地化](./localization.md)。

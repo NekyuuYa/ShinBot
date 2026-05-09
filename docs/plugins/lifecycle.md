@@ -112,4 +112,4 @@ def teardown():
 
 当通过 `metadata.json` 目录扫描加载时，会根据 `dependencies` 做拓扑排序，尽量保证依赖先于被依赖插件。
 
-下一步：阅读 [API 参考](./16_api_reference.md)。
+下一步：阅读 [API 参考](./api_reference.md)。

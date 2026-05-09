@@ -124,4 +124,4 @@ async def admin_only(bot, args: str) -> None:
 
 当前实现没有内置“未知命令”回复。命令未命中时会继续走后续消息路由，例如关键词、自定义 route 或 `agent_entry` fallback。
 
-下一步：阅读 [事件系统](./04_events.md)。
+下一步：阅读 [事件系统](./events.md)。

@@ -100,4 +100,4 @@ def setup(plg: Plugin) -> None:
     register_events(plg)
 ```
 
-下一步：阅读 [命令系统](./03_commands.md)。
+下一步：阅读 [命令系统](./commands.md)。

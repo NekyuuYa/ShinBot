@@ -91,4 +91,4 @@ async def save(bot, args: str) -> None:
 - 高频更新建议用 SQLite
 - 多协程共享写文件时加锁，避免覆盖
 
-下一步：阅读 [配置系统](./06_configuration.md)。
+下一步：阅读 [配置系统](./configuration.md)。

@@ -100,6 +100,6 @@ hello, ShinBot
 
 下一步建议阅读：
 
-- [项目结构](./02_project_structure.md)
-- [命令系统](./03_commands.md)
-- [事件系统](./04_events.md)
+- [项目结构](./project_structure.md)
+- [命令系统](./commands.md)
+- [事件系统](./events.md)
