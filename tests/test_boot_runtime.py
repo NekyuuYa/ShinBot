@@ -63,3 +63,25 @@ async def test_boot_can_disable_model_when_agent_is_disabled(tmp_path: Path):
         assert bot.agent_runtime is None
     finally:
         await boot.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_boot_shutdown_closes_agent_runtime(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path)
+    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+    bot = await boot.boot()
+    assert bot.agent_runtime is not None
+
+    closed = False
+    original_shutdown = bot.agent_runtime.shutdown
+
+    async def shutdown_probe() -> None:
+        nonlocal closed
+        closed = True
+        await original_shutdown()
+
+    bot.agent_runtime.shutdown = shutdown_probe
+    await boot.shutdown()
+
+    assert closed is True

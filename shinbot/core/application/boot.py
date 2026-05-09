@@ -69,14 +69,20 @@ class BootController:
         # 1) Stop adapters first to stop incoming traffic.
         await self.bot.adapter_manager.shutdown_all()
 
-        # 2) Notify plugins and free plugin resources.
+        # 2) Shut down Agent-owned timers and background tasks.
+        if self.bot.agent_runtime is not None:
+            shutdown = getattr(self.bot.agent_runtime, "shutdown", None)
+            if shutdown is not None:
+                await shutdown()
+
+        # 3) Notify plugins and free plugin resources.
         await self.bot.plugin_manager.unload_all_plugins_async()
 
-        # 3) Persist session state.
+        # 4) Persist session state.
         for session in self.bot.session_manager.all_sessions:
             self.bot.session_manager.update(session)
 
-        # 4) Infrastructure teardown placeholder (DB pool not present yet).
+        # 5) Infrastructure teardown placeholder (DB pool not present yet).
         self.state = BootState.UNINITIALIZED
 
     def _phase1_environment(self) -> None:

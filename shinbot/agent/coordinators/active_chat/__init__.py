@@ -7,7 +7,6 @@ from typing import Any
 
 __all__ = [
     "ActiveChatActionKind",
-    "ActiveChatActionsConfig",
     "ActiveChatAttention",
     "ActiveChatAttentionConfig",
     "ActiveChatAttentionState",
@@ -33,7 +32,6 @@ _EXPORT_MODULES = {
     "ActiveChatTraceConfig": "shinbot.agent.coordinators.active_chat.trace",
     "sanitize_conversation_trace_messages": "shinbot.agent.coordinators.active_chat.trace",
     "interest_effect_for_round": "shinbot.agent.coordinators.active_chat.actions",
-    "ActiveChatActionsConfig": "shinbot.agent.coordinators.active_chat.actions",
     "ActiveChatActionKind": "shinbot.agent.coordinators.active_chat.models",
     "ActiveChatAttentionState": "shinbot.agent.coordinators.active_chat.models",
     "ActiveChatBatch": "shinbot.agent.coordinators.active_chat.models",
