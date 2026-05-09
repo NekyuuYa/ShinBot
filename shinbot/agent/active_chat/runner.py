@@ -106,7 +106,7 @@ class ActiveChatFastRunner:
         except Exception:
             logger.exception("Active chat prompt build failed for session %s", batch.session_id)
             return ActiveChatRoundResult(
-                success=True,
+                success=False,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason="active_chat_prompt_build_failed",
             )
@@ -120,7 +120,7 @@ class ActiveChatFastRunner:
         )
         if result is None:
             return ActiveChatRoundResult(
-                success=True,
+                success=False,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason="active_chat_model_call_failed",
             )
@@ -147,10 +147,9 @@ class ActiveChatFastRunner:
         )
         if repaired is None:
             return ActiveChatRoundResult(
-                success=True,
+                success=False,
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason="active_chat_toolless_repair_failed",
-                consumed_message_log_ids=repair_batch.message_log_ids,
             )
         if not repaired.tool_calls:
             return ActiveChatRoundResult(

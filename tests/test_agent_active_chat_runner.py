@@ -14,7 +14,7 @@ from shinbot.agent.active_chat import (
     ActiveChatNoReplyIntensity,
     register_active_chat_prompt_components,
 )
-from shinbot.agent.model_runtime import GenerateResult
+from shinbot.agent.model_runtime import GenerateResult, ModelCallError
 from shinbot.agent.prompt_manager import PromptRegistry
 from shinbot.agent.review.models import ReviewWorkflowExplanation
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
@@ -29,6 +29,15 @@ class FakeModelRuntime:
     async def generate(self, call: Any) -> GenerateResult:
         self.calls.append(call)
         return self.responses.pop(0)
+
+
+class FailingModelRuntime:
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    async def generate(self, call: Any) -> GenerateResult:
+        self.calls.append(call)
+        raise ModelCallError("model failed")
 
 
 class FakeToolManager:
@@ -130,6 +139,11 @@ class FakeContextManager:
                 "content": [{"type": "text", "text": "Recent tail context"}],
             }
         ]
+
+
+class BrokenContextBuilder:
+    def build_for_messages(self, **_kwargs: Any) -> object:
+        raise RuntimeError("context build failed")
 
 
 def make_result(*, text: str = "", tool_calls: list[dict[str, Any]] | None = None) -> GenerateResult:
@@ -483,6 +497,49 @@ async def test_active_chat_fast_runner_repairs_toolless_output_once() -> None:
     assert len(model_runtime.calls) == 2
     assert model_runtime.calls[1].metadata["repair_attempt"] == 1
     assert model_runtime.calls[1].messages[-1]["role"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_reports_unconsumable_prompt_build_failure() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime([])
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        context_builder=BrokenContextBuilder(),
+    )
+
+    result = await runner.run(make_batch())
+
+    assert result.success is False
+    assert result.action == ActiveChatActionKind.RETRY_FAILED
+    assert result.reason == "active_chat_prompt_build_failed"
+    assert result.consumed_message_log_ids == []
+    assert model_runtime.calls == []
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_reports_unconsumable_model_failure() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FailingModelRuntime()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    result = await runner.run(make_batch())
+
+    assert result.success is False
+    assert result.action == ActiveChatActionKind.RETRY_FAILED
+    assert result.reason == "active_chat_model_call_failed"
+    assert result.consumed_message_log_ids == []
+    assert len(model_runtime.calls) == 1
 
 
 @pytest.mark.asyncio
