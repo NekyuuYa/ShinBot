@@ -137,12 +137,12 @@ class ActiveChatWorkflow:
         async with self._get_lock(session_id):
             state = self._states.get(session_id)
             if state is None:
-                state = ActiveChatAttentionState(
+                return ActiveChatNotifyResult(
+                    accepted=False,
                     session_id=session_id,
-                    last_update_at=now,
-                    active_epoch=active_chat_state.active_epoch,
+                    message_log_id=message_log_id,
+                    skipped_reason="inactive_session",
                 )
-                self._states[session_id] = state
             elif state.active_epoch != active_chat_state.active_epoch:
                 return ActiveChatNotifyResult(
                     accepted=False,

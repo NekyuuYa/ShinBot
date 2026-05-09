@@ -78,6 +78,21 @@ def make_signal(**kwargs) -> ActiveChatMessageSignal:
     return ActiveChatMessageSignal(**values)
 
 
+async def start_workflow(
+    workflow: ActiveChatWorkflow,
+    *,
+    active_state: ActiveChatState | None = None,
+    review_result_summary: object | None = None,
+) -> ActiveChatState:
+    state = active_state or make_active_state()
+    await workflow.start_active_chat(
+        session_id="bot:group:room",
+        active_chat_state=state,
+        review_result_summary=review_result_summary,
+    )
+    return state
+
+
 def test_active_chat_attention_contribution_rules() -> None:
     attention = ActiveChatAttention()
 
@@ -254,6 +269,33 @@ async def test_active_chat_workflow_skips_stale_epoch_messages() -> None:
 
 
 @pytest.mark.asyncio
+async def test_active_chat_workflow_rejects_message_before_session_start() -> None:
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(now=lambda: 10.0)
+
+    result = await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+
+    assert result.accepted is False
+    assert result.skipped_reason == "inactive_session"
+    assert workflow.attention_state_for("bot:group:room") is None
+    assert scheduler.consumed == []
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_active_chat_workflow_flushes_after_semantic_wait() -> None:
     batches: list[ActiveChatBatch] = []
 
@@ -328,6 +370,7 @@ async def test_active_chat_workflow_keeps_pending_without_handler() -> None:
         ),
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
@@ -375,6 +418,7 @@ async def test_active_chat_workflow_retry_failed_consumes_batch_and_adjusts_inte
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
@@ -425,6 +469,7 @@ async def test_active_chat_workflow_exit_active_forwards_reason_to_scheduler() -
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
@@ -476,6 +521,7 @@ async def test_active_chat_workflow_failed_round_restores_pending_attention() ->
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
@@ -537,6 +583,7 @@ async def test_active_chat_workflow_uses_round_result_consumed_message_ids() -> 
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
@@ -602,6 +649,7 @@ async def test_active_chat_workflow_carries_conversation_trace_to_next_batch() -
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     for message_log_id in (1, 2):
         await workflow.notify_message(
@@ -673,6 +721,7 @@ async def test_active_chat_workflow_compacts_old_conversation_trace() -> None:
         now=lambda: 10.0,
         conversation_message_limit=3,
     )
+    await start_workflow(workflow)
 
     for message_log_id in (1, 2, 3):
         await workflow.notify_message(
@@ -730,6 +779,7 @@ async def test_active_chat_workflow_runs_next_batch_for_messages_arriving_during
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
@@ -800,6 +850,7 @@ async def test_active_chat_workflow_drain_pending_for_repair_clears_pending_atte
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
@@ -875,6 +926,7 @@ async def test_active_chat_workflow_stop_cancels_running_round_without_consuming
         round_handler=handler,
         now=lambda: 10.0,
     )
+    await start_workflow(workflow)
 
     await workflow.notify_message(
         scheduler=scheduler,
