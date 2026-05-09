@@ -860,10 +860,51 @@ async def test_scheduler_applies_active_chat_bootstrap_correction() -> None:
     assert decision.active_chat_state.interest_value == pytest.approx(11.6066, rel=1e-4)
 
 
+def test_scheduler_active_chat_bootstrap_can_return_idle_and_stop_runtime() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    timer = RecordingActiveChatTimer()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_timer=timer,
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=4.0,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+
+    decision = scheduler.apply_active_chat_bootstrap(
+        "bot:group:room",
+        disposition=ActiveChatDisposition.EXIT_SOON,
+        active_epoch=completion.active_chat_state.active_epoch,
+        now=61.0,
+    )
+
+    assert decision.bootstrap_applied is True
+    assert decision.returned_to_idle is True
+    assert decision.state == AgentState.IDLE
+    assert decision.active_chat_state is not None
+    assert decision.active_chat_state.bootstrap_disposition == ActiveChatDisposition.EXIT_SOON
+    assert decision.next_review_plan is not None
+    assert decision.next_review_plan.next_review_at == 161.0
+    assert scheduler.active_chat_state_for("bot:group:room") is None
+    assert timer.cancelled == ["bot:group:room"]
+    assert dispatcher.active_chat_stops == ["bot:group:room"]
+
+
 @pytest.mark.asyncio
 async def test_active_chat_timer_service_ticks_session_to_idle() -> None:
+    now = 60.0
     timer = ActiveChatTimerService(tick_interval_seconds=0.01)
+    dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
         response_profile_resolver=lambda _signal: "balanced",
         review_policy=FixedReviewPolicy(),
         active_chat_policy=DefaultActiveChatPolicy(
@@ -875,11 +916,13 @@ async def test_active_chat_timer_service_ticks_session_to_idle() -> None:
             )
         ),
         active_chat_timer=timer,
-        now=lambda: 60.0,
+        now=lambda: now,
     )
     await scheduler.accept_signal(make_signal())
-    scheduler.prepare_due_review("bot:group:room", now=60.0)
-    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+    now = 102.0
+    scheduler.prepare_due_review("bot:group:room", now=now)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=now)
+    now = 107.0
 
     await asyncio_sleep(0.05)
     await timer.shutdown()
@@ -887,6 +930,7 @@ async def test_active_chat_timer_service_ticks_session_to_idle() -> None:
     assert scheduler.state_for("bot:group:room") == AgentState.IDLE
     assert scheduler.active_chat_state_for("bot:group:room") is None
     assert timer.active_sessions() == []
+    assert dispatcher.active_chat_stops == ["bot:group:room"]
 
 
 def test_scheduler_tick_active_chat_skips_when_state_is_not_active_chat() -> None:
