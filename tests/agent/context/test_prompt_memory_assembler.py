@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from shinbot.agent.context import (
+from shinbot.agent.services.context import (
     LongTermMemoryItem,
     PromptMemoryAssembler,
     PromptMemoryProjectionRequest,

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from shinbot.agent.model_runtime import ModelRuntimeCall
 from shinbot.agent.runtime import install_agent_runtime
+from shinbot.agent.services.model_runtime import ModelRuntimeCall
 from shinbot.builtin_plugins.shinbot_debug_model import _build_model_record
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import ModelDefinitionRecord, ModelProviderRecord
@@ -132,7 +132,7 @@ async def test_debug_model_plugin_persists_runtime_requests(
             },
         }
 
-    monkeypatch.setattr("shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion)
+    monkeypatch.setattr("shinbot.agent.services.model_runtime.litellm_adapter.completion", fake_completion)
 
     await bot.model_runtime.generate(
         ModelRuntimeCall(

@@ -5,7 +5,6 @@ from typing import Any
 
 import pytest
 
-from shinbot.agent.context.active_chat_context import ActiveChatContextBuilderAdapter
 from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
@@ -13,10 +12,11 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatNoReplyIntensity,
 )
 from shinbot.agent.coordinators.review.models import ReviewWorkflowExplanation
-from shinbot.agent.model_runtime import GenerateResult, ModelCallError
-from shinbot.agent.prompt_engine import PromptRegistry
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
-from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
+from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
+from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
+from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.tools.schema import ToolCallRequest, ToolCallResult
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,

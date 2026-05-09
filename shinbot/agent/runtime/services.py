@@ -10,30 +10,14 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.context import ContextManager
-from shinbot.agent.context.active_chat_context import ActiveChatContextBuilderAdapter
-from shinbot.agent.context.review_context_builder import ReviewContextBuilderAdapter
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
 from shinbot.agent.coordinators.review import ReviewCoordinator
-from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
-from shinbot.agent.identity import (
-    IdentityStore,
-    register_identity_prompt_components,
-    register_identity_tools,
-)
-from shinbot.agent.media import (
-    MediaIngressHook,
-    MediaInspectionRunner,
-    MediaService,
-    register_media_prompt_components,
-    register_media_runtime,
-)
-from shinbot.agent.prompt_engine import PromptRegistry
-from shinbot.agent.runners._review_factory import (
+from shinbot.agent.coordinators.review.factory import (
     ReviewRunnerFactory,
     ReviewRuntimeConfig,
     register_review_prompt_components,
 )
+from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.runtime.review_message_store import DatabaseReviewMessageStore
 from shinbot.agent.runtime.review_summary_store import DatabaseReviewSummaryStore
@@ -42,8 +26,24 @@ from shinbot.agent.scheduler import (
     ActiveReplyDispatcher,
     AgentScheduler,
 )
-from shinbot.agent.tools import ToolManager, ToolRegistry
-from shinbot.agent.tools.active_chat_tools import register_active_chat_tools
+from shinbot.agent.services.context import ContextManager
+from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
+from shinbot.agent.services.context.review_context_builder import ReviewContextBuilderAdapter
+from shinbot.agent.services.identity import (
+    IdentityStore,
+    register_identity_prompt_components,
+    register_identity_tools,
+)
+from shinbot.agent.services.media import (
+    MediaIngressHook,
+    MediaInspectionRunner,
+    MediaService,
+    register_media_prompt_components,
+    register_media_runtime,
+)
+from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.tools import ToolManager, ToolRegistry
+from shinbot.agent.services.tools.active_chat_tools import register_active_chat_tools
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,

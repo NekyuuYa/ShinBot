@@ -7,15 +7,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from shinbot.agent.context.review_context_builder import ReviewStageInput
-from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.prompt_engine import (
+from shinbot.agent.services.context.review_context_builder import ReviewStageInput
+from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.services.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.utils.parsing import instance_id_from_session, parse_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -225,85 +226,3 @@ class ReviewLLMStageRunnerBase:
         return result
 
 
-def parse_json_object(text: str) -> dict[str, Any] | None:
-    """Parse a JSON object, tolerating simple fenced-code responses."""
-
-    candidate = text.strip()
-    if candidate.startswith("```"):
-        lines = candidate.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        candidate = "\n".join(lines).strip()
-    try:
-        payload = json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return payload
-
-
-def json_schema_response_format(
-    name: str,
-    properties: dict[str, Any],
-    required: list[str],
-) -> dict[str, Any]:
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": name,
-            "schema": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-def instance_id_from_session(session_id: str) -> str:
-    return session_id.split(":", 1)[0] if ":" in session_id else ""
-
-
-def int_list(value: Any) -> list[int]:
-    if not isinstance(value, list):
-        return []
-    result: list[int] = []
-    for item in value:
-        item_int = optional_int(item)
-        if item_int is not None:
-            result.append(item_int)
-    return result
-
-
-def optional_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
-    return None
-
-
-def optional_float(value: Any) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return None
-    return None
-
-
-def clamp_float(value: Any, *, minimum: float, maximum: float) -> float:
-    parsed = optional_float(value)
-    if parsed is None:
-        return minimum
-    return min(max(parsed, minimum), maximum)

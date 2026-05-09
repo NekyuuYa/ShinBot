@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
-from shinbot.agent.context.utils.eviction import ContextEvictionConfig, evict_context_blocks
+from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.services.context.utils.eviction import (
+    ContextEvictionConfig,
+    evict_context_blocks,
+)
 
 
 def test_eviction_removes_sealed_queue_head_before_open_block() -> None:

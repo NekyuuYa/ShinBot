@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.agent.context.review_context_builder import (
-    ReviewContextBuilderAdapter,
-    ReviewStageInput,
-)
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
 from shinbot.agent.coordinators.review import ReviewCoordinator
+from shinbot.agent.coordinators.review.factory import (
+    ReviewRunnerFactory,
+    ReviewRuntimeConfig,
+    ReviewStageRuntimeConfig,
+    register_review_prompt_components,
+)
 from shinbot.agent.coordinators.review.models import (
     ActiveChatBootstrapStageOutput,
     OverflowCompressionStageOutput,
@@ -16,19 +18,7 @@ from shinbot.agent.coordinators.review.models import (
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
 )
-from shinbot.agent.prompt_engine import (
-    PromptComponent,
-    PromptComponentKind,
-    PromptRegistry,
-    PromptStage,
-)
-from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig, parse_json_object
-from shinbot.agent.runners._review_factory import (
-    ReviewRunnerFactory,
-    ReviewRuntimeConfig,
-    ReviewStageRuntimeConfig,
-    register_review_prompt_components,
-)
+from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
 from shinbot.agent.runners.review_bootstrap import LLMActiveChatBootstrapStageRunner
 from shinbot.agent.runners.review_compression import LLMOverflowCompressionStageRunner
 from shinbot.agent.runners.review_reply import LLMReplyDecisionStageRunner
@@ -49,6 +39,17 @@ from shinbot.agent.scheduler.models import (
     UnreadMessage,
     UnreadRange,
 )
+from shinbot.agent.services.context.review_context_builder import (
+    ReviewContextBuilderAdapter,
+    ReviewStageInput,
+)
+from shinbot.agent.services.prompt_engine import (
+    PromptComponent,
+    PromptComponentKind,
+    PromptRegistry,
+    PromptStage,
+)
+from shinbot.agent.utils.parsing import parse_json_object
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord

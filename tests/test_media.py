@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from shinbot.agent.context.builders.message_parts import parse_message_parts
-from shinbot.agent.media import (
+from shinbot.agent.services.context.builders.message_parts import parse_message_parts
+from shinbot.agent.services.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
     MediaIngressHook,
@@ -18,10 +18,10 @@ from shinbot.agent.media import (
     register_media_tools,
     resolve_media_inspection_config,
 )
-from shinbot.agent.media.config import BUILTIN_MEDIA_INSPECTION_PROMPT_ID
-from shinbot.agent.media.prompt_building import build_media_reanalysis_messages
-from shinbot.agent.prompt_engine import PromptRegistry
-from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
+from shinbot.agent.services.media.config import BUILTIN_MEDIA_INSPECTION_PROMPT_ID
+from shinbot.agent.services.media.prompt_building import build_media_reanalysis_messages
+from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.tools import ToolCallRequest, ToolManager, ToolRegistry
 from shinbot.agent.utils.workflow_formatting import (
     format_incremental_messages,
     format_message_line,

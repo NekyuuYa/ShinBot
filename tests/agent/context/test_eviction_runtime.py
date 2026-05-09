@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from shinbot.agent.context import ContextEvictionRuntime
-from shinbot.agent.context.state.alias_table import AliasEntry
-from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.services.context import ContextEvictionRuntime
+from shinbot.agent.services.context.state.alias_table import AliasEntry
+from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
 
 
 def _state_with_sealed_blocks() -> ContextSessionState:

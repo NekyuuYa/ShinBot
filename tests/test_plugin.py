@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from shinbot.agent.tools import ToolRegistry
+from shinbot.agent.services.tools import ToolRegistry
 from shinbot.core.application.boot import BootController
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from shinbot.agent.context import ContextSessionRuntime
-from shinbot.agent.context.state.state_store import ContextBlockState
+from shinbot.agent.services.context import ContextSessionRuntime
+from shinbot.agent.services.context.state.state_store import ContextBlockState
 
 
 def test_session_runtime_loads_state_once_and_saves_by_session_id(tmp_path) -> None:

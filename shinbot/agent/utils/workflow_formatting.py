@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from shinbot.agent.media import MediaService
+    from shinbot.agent.services.media import MediaService
 
 # ── CJK-aware tokenization for cross-talk detection ──────────────────
 

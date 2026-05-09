@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from shinbot.agent.context.review_context_builder import ReviewStageInput
 from shinbot.agent.coordinators.review.models import OverflowCompressionStageOutput
-from shinbot.agent.runners._review_base import (
-    ReviewLLMStageRunnerBase,
-    int_list,
-    json_schema_response_format,
-)
+from shinbot.agent.runners._review_base import ReviewLLMStageRunnerBase
 from shinbot.agent.runners.review_compression.prompt_registration import (
     REVIEW_COMPRESSION_COMPONENT_IDS,
 )
+from shinbot.agent.services.context.review_context_builder import ReviewStageInput
+from shinbot.agent.utils.parsing import int_list, json_schema_response_format
 
 
 class OverflowCompressionStageRunner(Protocol):

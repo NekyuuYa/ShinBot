@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from shinbot.agent.context import ContextTimelineRuntime, TimelineRun
-from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.services.context import ContextTimelineRuntime, TimelineRun
+from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
 
 
 def test_context_timeline_runtime_reuses_cacheable_prefix_and_rebuilds_tail() -> None:

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 def create_model_runtime(database: Any) -> Any:
     """Create the concrete model runtime implementation."""
-    from shinbot.agent.model_runtime import ModelRuntime
+    from shinbot.agent.services.model_runtime import ModelRuntime
 
     return ModelRuntime(database)
 

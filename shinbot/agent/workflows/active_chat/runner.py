@@ -10,10 +10,6 @@ from enum import Enum
 from inspect import isawaitable
 from typing import Any, Protocol
 
-from shinbot.agent.context.active_chat_context import (
-    ActiveChatContextBuilder,
-    ActiveChatContextBuildOptions,
-)
 from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
@@ -21,14 +17,19 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatRoundResult,
 )
 from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
-from shinbot.agent.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.prompt_engine import (
+from shinbot.agent.services.context.active_chat_context import (
+    ActiveChatContextBuilder,
+    ActiveChatContextBuildOptions,
+)
+from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.services.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptInjection,
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.utils.parsing import instance_id_from_session
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )
@@ -129,7 +130,7 @@ class ActiveChatFastRunner:
                 await self._tool_loop.execute(
                     result.tool_calls,
                     tool_manager=self._tool_manager,
-                    instance_id=_instance_id_from_session(batch.session_id),
+                    instance_id=instance_id_from_session(batch.session_id),
                     session_id=batch.session_id,
                     run_id=str(result.execution_id or ""),
                 ),
@@ -163,7 +164,7 @@ class ActiveChatFastRunner:
             await self._tool_loop.execute(
                 repaired.tool_calls,
                 tool_manager=self._tool_manager,
-                instance_id=_instance_id_from_session(batch.session_id),
+                instance_id=instance_id_from_session(batch.session_id),
                 session_id=batch.session_id,
                 run_id=str(repaired.execution_id or ""),
             ),
@@ -194,7 +195,7 @@ class ActiveChatFastRunner:
                 workflow_id="active_chat",
                 stage_id=self.stage_id,
                 session_id=batch.session_id,
-                instance_id=_instance_id_from_session(batch.session_id),
+                instance_id=instance_id_from_session(batch.session_id),
                 profile_id=self._config.profile_id,
                 component_ids_by_stage=component_ids_by_stage,
                 injections=self._build_prompt_injections(
@@ -391,7 +392,7 @@ class ActiveChatFastRunner:
     def _active_chat_tools(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
         tools = self._tool_manager.export_model_tools(
             caller=self._config.caller,
-            instance_id=_instance_id_from_session(batch.session_id),
+            instance_id=instance_id_from_session(batch.session_id),
             session_id=batch.session_id,
             tags={"attention"},
         )
@@ -444,7 +445,7 @@ class ActiveChatFastRunner:
                     model_id=self._config.model_id,
                     caller=self._config.caller,
                     session_id=batch.session_id,
-                    instance_id=_instance_id_from_session(batch.session_id),
+                    instance_id=instance_id_from_session(batch.session_id),
                     purpose="active_chat_fast",
                     messages=messages,
                     tools=tools,
@@ -632,10 +633,6 @@ def _virtual_tool_schemas() -> list[dict[str, Any]]:
             },
         },
     ]
-
-
-def _instance_id_from_session(session_id: str) -> str:
-    return session_id.split(":", 1)[0] if ":" in session_id else ""
 
 
 def _self_platform_id_from_batch(batch: ActiveChatBatch) -> str:

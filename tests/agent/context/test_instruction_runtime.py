@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from shinbot.agent.context import InstructionRuntime
-from shinbot.agent.context.state.state_store import ContextSessionState
+from shinbot.agent.services.context import InstructionRuntime
+from shinbot.agent.services.context.state.state_store import ContextSessionState
 
 
 def test_instruction_runtime_projects_unread_records_with_session_projection_state() -> None:

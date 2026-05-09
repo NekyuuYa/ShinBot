@@ -6,16 +6,20 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from shinbot.agent.context import ContextManager, PromptMemoryBundle
-from shinbot.agent.context.state.alias_table import AliasEntry
-from shinbot.agent.context.state.state_store import CompressedMemoryState, ContextBlockState
-from shinbot.agent.identity import IdentityStore, register_identity_prompt_components
-from shinbot.agent.media import (
+from shinbot.agent.runtime import register_runtime_prompt_components
+from shinbot.agent.services.context import ContextManager, PromptMemoryBundle
+from shinbot.agent.services.context.state.alias_table import AliasEntry
+from shinbot.agent.services.context.state.state_store import (
+    CompressedMemoryState,
+    ContextBlockState,
+)
+from shinbot.agent.services.identity import IdentityStore, register_identity_prompt_components
+from shinbot.agent.services.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
     MediaService,
 )
-from shinbot.agent.prompt_engine import (
+from shinbot.agent.services.prompt_engine import (
     PromptAssemblyRequest,
     PromptBuildRequest,
     PromptComponent,
@@ -26,8 +30,7 @@ from shinbot.agent.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.prompt_engine.message_builder import PromptMessageBuilder
-from shinbot.agent.runtime import register_runtime_prompt_components
+from shinbot.agent.services.prompt_engine.message_builder import PromptMessageBuilder
 from shinbot.persistence import DatabaseManager, MediaSemanticRecord, MessageLogRecord
 from shinbot.schema.elements import Message, MessageElement
 
@@ -1277,7 +1280,7 @@ def test_prompt_registry_runtime_prompt_registration_is_inert_without_assembly_h
 
 def test_active_context_pool_incremental_tokens_on_append() -> None:
     """Token estimate should update incrementally when appending new turns."""
-    from shinbot.agent.context.manager import ActiveContextPool
+    from shinbot.agent.services.context.manager import ActiveContextPool
 
     pool = ActiveContextPool(session_id="test", max_messages=10)
     pool.load(
@@ -1302,7 +1305,7 @@ def test_active_context_pool_incremental_tokens_on_append() -> None:
 
 def test_active_context_pool_deduplication() -> None:
     """Appending the same message (by id or content) must be a no-op."""
-    from shinbot.agent.context.manager import ActiveContextPool
+    from shinbot.agent.services.context.manager import ActiveContextPool
 
     pool = ActiveContextPool(session_id="test", max_messages=10)
     pool.append({"role": "user", "raw_text": "hello", "id": 1, "created_at": 1000})
@@ -1320,7 +1323,7 @@ def test_active_context_pool_deduplication() -> None:
 
 def test_active_context_pool_export_strips_internal_keys() -> None:
     """export_turns() must not leak _record_id or _created_at."""
-    from shinbot.agent.context.manager import ActiveContextPool
+    from shinbot.agent.services.context.manager import ActiveContextPool
 
     pool = ActiveContextPool(session_id="test", max_messages=10)
     pool.append(
@@ -1336,7 +1339,7 @@ def test_active_context_pool_export_strips_internal_keys() -> None:
 
 def test_active_context_pool_maxlen_eviction_updates_tokens() -> None:
     """When deque hits max capacity, auto-eviction must update token estimate."""
-    from shinbot.agent.context.manager import ActiveContextPool
+    from shinbot.agent.services.context.manager import ActiveContextPool
 
     pool = ActiveContextPool(session_id="test", max_messages=3)
     for i in range(5):

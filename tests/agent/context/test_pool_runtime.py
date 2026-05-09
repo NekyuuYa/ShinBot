@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.context import ContextPoolRuntime
+from shinbot.agent.services.context import ContextPoolRuntime
 
 
 class FakeProvider:

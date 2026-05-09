@@ -10,7 +10,7 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,
 )
-from shinbot.agent.tools.schema import ToolCallRequest, ToolCallResult
+from shinbot.agent.services.tools.schema import ToolCallRequest, ToolCallResult
 from shinbot.agent.workflows.active_chat.tool_loop import ActiveChatToolLoop
 
 

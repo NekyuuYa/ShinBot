@@ -12,8 +12,8 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatReplyIntensity,
     ActiveChatRoundResult,
 )
-from shinbot.agent.tools.parsing import parse_tool_call
-from shinbot.agent.tools.schema import ToolCallRequest
+from shinbot.agent.services.tools.parsing import parse_tool_call
+from shinbot.agent.services.tools.schema import ToolCallRequest
 
 _VIRTUAL_TOOL_NAMES = {"exit_active", "request_think_mode"}
 

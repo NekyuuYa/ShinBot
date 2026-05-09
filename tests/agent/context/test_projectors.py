@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from shinbot.agent.context import (
+from shinbot.agent.services.context import (
     AliasContextProjector,
     CompressedMemoryProjector,
     LongTermMemoryItem,
     LongTermMemoryProjector,
 )
-from shinbot.agent.context.state.alias_table import AliasEntry
-from shinbot.agent.context.state.state_store import (
+from shinbot.agent.services.context.state.alias_table import AliasEntry
+from shinbot.agent.services.context.state.state_store import (
     CompressedMemoryState,
     ContextBlockState,
     ContextSessionState,

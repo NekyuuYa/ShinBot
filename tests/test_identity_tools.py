@@ -5,22 +5,29 @@ import time
 
 import pytest
 
-from shinbot.agent.context import ContextManager, ContextStageBuildConfig, ContextStageBuilder
-from shinbot.agent.context.state.alias_table import ALIAS_ACTIVE_WINDOW_MS, ALIAS_REBUILD_IDLE_MS
-from shinbot.agent.identity import (
+from shinbot.agent.services.context import (
+    ContextManager,
+    ContextStageBuildConfig,
+    ContextStageBuilder,
+)
+from shinbot.agent.services.context.state.alias_table import (
+    ALIAS_ACTIVE_WINDOW_MS,
+    ALIAS_REBUILD_IDLE_MS,
+)
+from shinbot.agent.services.identity import (
     IdentityStore,
     register_identity_prompt_components,
     register_identity_tools,
 )
-from shinbot.agent.prompt_engine import PromptRegistry
-from shinbot.agent.prompt_engine.schema import (
+from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.prompt_engine.schema import (
     PromptAssemblyRequest,
     PromptComponent,
     PromptComponentKind,
     PromptProfile,
     PromptStage,
 )
-from shinbot.agent.tools import ToolCallRequest, ToolManager, ToolRegistry
+from shinbot.agent.services.tools import ToolCallRequest, ToolManager, ToolRegistry
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.persistence import DatabaseManager, MessageLogRecord
 from shinbot.schema.elements import MessageElement

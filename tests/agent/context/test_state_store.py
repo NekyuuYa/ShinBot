@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from shinbot.agent.context import ShortTermMemoryState
-from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.services.context import ShortTermMemoryState
+from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
 
 
 def test_short_term_memory_wraps_prompt_blocks_without_reordering() -> None:

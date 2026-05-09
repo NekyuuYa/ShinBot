@@ -5,19 +5,19 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from shinbot.agent.context.review_context_builder import ReviewStageInput
 from shinbot.agent.coordinators.review.models import ReplyDecisionStageOutput
-from shinbot.agent.prompt_engine import PromptInjection, PromptRegistry, PromptStage
-from shinbot.agent.runners._review_base import (
-    ReviewLLMRunnerConfig,
-    ReviewLLMStageRunnerBase,
+from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig, ReviewLLMStageRunnerBase
+from shinbot.agent.runners.review_reply.prompt_registration import REVIEW_REPLY_COMPONENT_IDS
+from shinbot.agent.services.context.review_context_builder import ReviewStageInput
+from shinbot.agent.services.prompt_engine import PromptInjection, PromptRegistry, PromptStage
+from shinbot.agent.services.tools.schema import ToolCallRequest
+from shinbot.agent.utils.parsing import (
+    instance_id_from_session,
     int_list,
     json_schema_response_format,
     optional_int,
     parse_json_object,
 )
-from shinbot.agent.runners.review_reply.prompt_registration import REVIEW_REPLY_COMPONENT_IDS
-from shinbot.agent.tools.schema import ToolCallRequest
 
 _REPLY_TOOLLESS_REPAIR_PROMPT = (
     "上一轮 reply_decision 输出了裸文本或没有调用工具，但 review reply 阶段不会把裸文本发送给用户。\n"
@@ -193,7 +193,6 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
     def _reply_decision_tools(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
         if self._tool_manager is None:
             return []
-        from shinbot.agent.runners._review_base import instance_id_from_session
 
         tools = self._tool_manager.export_model_tools(
             caller=self._config.caller,
@@ -215,7 +214,6 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
     ) -> ReplyDecisionStageOutput:
         if self._tool_manager is None:
             return ReplyDecisionStageOutput(reason="llm_reply_tool_call_skipped_no_tool_manager")
-        from shinbot.agent.runners._review_base import instance_id_from_session
 
         target_message_ids = _candidate_message_ids_from_stage(stage_input)
         parsed_calls = [

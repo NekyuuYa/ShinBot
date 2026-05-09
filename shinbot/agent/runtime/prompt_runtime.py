@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from shinbot.agent.prompt_engine.schema import (
+    from shinbot.agent.services.prompt_engine.schema import (
         PromptAssemblyRequest,
         PromptComponent,
         PromptSource,

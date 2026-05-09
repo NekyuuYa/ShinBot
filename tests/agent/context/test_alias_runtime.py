@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from shinbot.agent.context import ContextAliasRuntime
-from shinbot.agent.context.state.alias_table import AliasEntry, SessionAliasTable
-from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.services.context import ContextAliasRuntime
+from shinbot.agent.services.context.state.alias_table import AliasEntry, SessionAliasTable
+from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
 
 
 class FakeIdentityStore:

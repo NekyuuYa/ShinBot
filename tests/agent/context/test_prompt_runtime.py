@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
-from shinbot.agent.context import ContextPromptRuntime
-from shinbot.agent.context.state.alias_table import SessionAliasTable
-from shinbot.agent.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.services.context import ContextPromptRuntime
+from shinbot.agent.services.context.state.alias_table import SessionAliasTable
+from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
 
 
 class FakePoolRuntime:

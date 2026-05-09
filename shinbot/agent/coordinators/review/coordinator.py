@@ -10,12 +10,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from shinbot.agent.context.review_context_builder import (
-    ReviewContextBuilder,
-    ReviewContextBuilderAdapter,
-    ReviewContextBuildOptions,
-    ReviewStageInput,
-)
 from shinbot.agent.coordinators.review.models import (
     ActiveChatBootstrapResult,
     ActiveChatBootstrapStageOutput,
@@ -52,6 +46,12 @@ from shinbot.agent.scheduler.models import (
     ReviewPlan,
     UnreadMessage,
     UnreadRange,
+)
+from shinbot.agent.services.context.review_context_builder import (
+    ReviewContextBuilder,
+    ReviewContextBuilderAdapter,
+    ReviewContextBuildOptions,
+    ReviewStageInput,
 )
 
 logger = logging.getLogger(__name__)

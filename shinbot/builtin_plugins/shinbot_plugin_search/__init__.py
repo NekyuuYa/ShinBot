@@ -12,7 +12,7 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from shinbot.agent.tools import ToolVisibility
+from shinbot.agent.services.tools import ToolVisibility
 from shinbot.core.plugins.context import Plugin
 
 _TAVILY_SEARCH_URL = "https://api.tavily.com/search"

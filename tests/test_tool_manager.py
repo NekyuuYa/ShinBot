@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from shinbot.agent.tools import (
+from shinbot.agent.services.tools import (
     ToolCallRequest,
     ToolDefinition,
     ToolManager,

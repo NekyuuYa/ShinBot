@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from shinbot.agent.context import ContextStageRuntime
-from shinbot.agent.context.state.state_store import (
+from shinbot.agent.services.context import ContextStageRuntime
+from shinbot.agent.services.context.state.state_store import (
     CompressedMemoryState,
     ContextBlockState,
     ContextSessionState,
