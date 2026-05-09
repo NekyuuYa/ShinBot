@@ -23,8 +23,8 @@
 
 | 文档 | 说明 |
 |------|------|
-| `../../internals/02_workflow_engine.md` | 消息入口（MessageIngress）、路由表（RouteTable）、Agent 边界说明。 |
-| `../../internals/parameters/01_context_management.md` | 上下文管理当前参数与阈值。 |
+| `../../internals/workflow_engine.md` | 消息入口（MessageIngress）、路由表（RouteTable）、Agent 边界说明。 |
+| `../../internals/parameters/context_management.md` | 上下文管理当前参数与阈值。 |
 
 ## 已完成的命名调整
 

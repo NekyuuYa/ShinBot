@@ -71,7 +71,7 @@ Extracted from 15 project documents. Each principle below represents validated *
 
 ## P6. Plugin Lifecycle via Plugin
 
-> "Plugin entry point is setup(plg: Plugin) — declarative, not global code execution." — internals/04_plugin_lifecycle.md
+> "Plugin entry point is setup(plg: Plugin) — declarative, not global code execution." — internals/plugin_lifecycle.md
 
 **Rule**: Plugins register capabilities (commands, keywords, custom routes, event listeners, adapter factories) through `Plugin` methods, not by mutating global state.
 

@@ -1,10 +1,10 @@
 # ShinBot 技术规范：上下文与三级记忆架构
 
-> **审计状态 (2026-05-10)**：部分现行。三级记忆模型（short/mid/long-term）和 Prefix Cache 友好的前缀稳定原则仍为设计目标。实际实现中 `context/` 模块采用 ring buffer + alias table + projector 模式，与文档描述的 MemoryBlock/PromptBlock 分离尚未完全对齐。当前参数以 `../../internals/parameters/01_context_management.md` 为准。
+> **审计状态 (2026-05-10)**：部分现行。三级记忆模型（short/mid/long-term）和 Prefix Cache 友好的前缀稳定原则仍为设计目标。实际实现中 `context/` 模块采用 ring buffer + alias table + projector 模式，与文档描述的 MemoryBlock/PromptBlock 分离尚未完全对齐。当前参数以 `../../internals/parameters/context_management.md` 为准。
 
 本文档定义 ShinBot 在 Agent 运行时中的上下文构建、短中长三级记忆分层，以及面向 Prompt Cache 的块投影模型。
 
-本文档讨论的是”系统应该怎样设计”，不是当前实现行为说明。当前实现中的参数与实际行为，应继续以 `docs/internals/parameters/01_context_management.md` 为准。
+本文档讨论的是”系统应该怎样设计”，不是当前实现行为说明。当前实现中的参数与实际行为，应继续以 `docs/internals/parameters/context_management.md` 为准。
 
 相关文档：
 
