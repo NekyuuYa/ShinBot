@@ -1798,7 +1798,7 @@ async def test_attention_dispatcher_feeds_review_added_unread_to_active_chat(tmp
     now = 10.0
     scheduler = AgentScheduler(
         workflow_dispatcher=dispatcher,
-        response_profile_resolver=lambda _signal: "balanced",
+        response_profile_resolver=lambda signal: f"profile-{signal.message_log_id}",
         review_policy=FixedReviewPolicy(),
         inbox=db.agent_scheduler,
         state_store=db.agent_scheduler,
@@ -1834,6 +1834,7 @@ async def test_attention_dispatcher_feeds_review_added_unread_to_active_chat(tmp
             is_private=False,
             is_mentioned=False,
             is_reply_to_bot=False,
+            is_mention_to_other=True,
         )
     )
 
@@ -1849,6 +1850,10 @@ async def test_attention_dispatcher_feeds_review_added_unread_to_active_chat(tmp
         message.message_log_id
         for message in active_attention_state.pending_buffer
     ] == [during_review_id]
+    seeded_signal = active_attention_state.pending_buffer[0]
+    assert seeded_signal.response_profile == f"profile-{during_review_id}"
+    assert seeded_signal.is_mention_to_other is True
+    assert active_attention_state.accumulated == 0.5
     assert [message.message_log_id for message in scheduler.unread_messages("bot:group:room")] == [
         during_review_id
     ]

@@ -85,6 +85,13 @@ class UnreadMessage:
     message_log_id: int
     sender_id: str
     created_at: float
+    response_profile: str = ""
+    is_mentioned: bool = False
+    is_reply_to_bot: bool = False
+    is_mention_to_other: bool = False
+    is_poke_to_bot: bool = False
+    is_poke_to_other: bool = False
+    self_platform_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)

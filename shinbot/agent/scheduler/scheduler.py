@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from shinbot.agent.scheduler.active_chat_policy import (
@@ -88,6 +88,7 @@ class AgentScheduler:
         self._active_chat_policy = active_chat_policy or DefaultActiveChatPolicy()
         self._active_chat_timer = active_chat_timer
         self._now = now or time.time
+        self._unread_metadata: dict[tuple[str, int], UnreadMessage] = {}
         bind_scheduler = getattr(self._workflow_dispatcher, "bind_agent_scheduler", None)
         if bind_scheduler is not None:
             bind_scheduler(self)
@@ -124,12 +125,21 @@ class AgentScheduler:
         now = self._now()
         initial_state = self._state_store.get_state(signal.session_id)
         self._ensure_review_plan(signal.session_id, now)
+        response_profile = self._response_profile_resolver(signal)
         unread = UnreadMessage(
             session_id=signal.session_id,
             message_log_id=signal.message_log_id,
             sender_id=signal.sender_id,
             created_at=now,
+            response_profile=response_profile,
+            is_mentioned=signal.is_mentioned,
+            is_reply_to_bot=signal.is_reply_to_bot,
+            is_mention_to_other=signal.is_mention_to_other,
+            is_poke_to_bot=signal.is_poke_to_bot,
+            is_poke_to_other=signal.is_poke_to_other,
+            self_platform_id=signal.self_id,
         )
+        self._unread_metadata[(unread.session_id, unread.message_log_id)] = unread
         self._inbox.add_unread(unread)
 
         if initial_state == AgentState.ACTIVE_CHAT:
@@ -156,7 +166,7 @@ class AgentScheduler:
                 session_id=signal.session_id,
                 message_log_id=signal.message_log_id,
                 sender_id=signal.sender_id,
-                response_profile=self._response_profile_resolver(signal),
+                response_profile=response_profile,
                 is_mentioned=signal.is_mentioned,
                 is_reply_to_bot=signal.is_reply_to_bot,
                 self_platform_id=signal.self_id,
@@ -191,7 +201,7 @@ class AgentScheduler:
                     session_id=signal.session_id,
                     message_log_id=signal.message_log_id,
                     sender_id=signal.sender_id,
-                    response_profile=self._response_profile_resolver(signal),
+                    response_profile=response_profile,
                     is_mentioned=signal.is_mentioned,
                     is_reply_to_bot=signal.is_reply_to_bot,
                     is_mention_to_other=signal.is_mention_to_other,
@@ -215,7 +225,10 @@ class AgentScheduler:
 
     def unread_messages(self, session_id: str) -> list[UnreadMessage]:
         """Return unread messages known to AgentScheduler for one session."""
-        return self._inbox.list_unread(session_id)
+        return [
+            self._with_unread_metadata(message)
+            for message in self._inbox.list_unread(session_id)
+        ]
 
     def unread_ranges(self, session_id: str, *, limit: int = 50) -> list[UnreadRange]:
         """Return unread timeline ranges known to AgentScheduler for one session."""
@@ -249,10 +262,14 @@ class AgentScheduler:
         message_log_ids: list[int],
     ) -> list[UnreadMessage]:
         """Mark messages consumed by active chat."""
-        return self._inbox.mark_active_chat_consumed(
+        consumed = self._inbox.mark_active_chat_consumed(
             session_id=session_id,
             message_log_ids=message_log_ids,
         )
+        hydrated = [self._with_unread_metadata(message) for message in consumed]
+        for message_log_id in message_log_ids:
+            self._unread_metadata.pop((session_id, message_log_id), None)
+        return hydrated
 
     def high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
         """Return high-priority events known to AgentScheduler for one session."""
@@ -410,7 +427,7 @@ class AgentScheduler:
         await self._workflow_dispatcher.run_review(
             session_id=session_id,
             review_plan=decision.review_plan,
-            unread_messages=self._inbox.list_unread(session_id),
+            unread_messages=self.unread_messages(session_id),
         )
         decision.review_workflow_started = True
         decision.state = self._state_store.get_state(session_id)
@@ -466,7 +483,7 @@ class AgentScheduler:
         await self._workflow_dispatcher.run_review(
             session_id=session_id,
             review_plan=plan,
-            unread_messages=self._inbox.list_unread(session_id),
+            unread_messages=self.unread_messages(session_id),
         )
         decision.review_workflow_started = True
         decision.state = self._state_store.get_state(session_id)
@@ -701,6 +718,22 @@ class AgentScheduler:
             return
         self._state_store.set_review_plan(
             self._review_policy.initial_plan(session_id=session_id, now=now)
+        )
+
+    def _with_unread_metadata(self, message: UnreadMessage) -> UnreadMessage:
+        metadata = self._unread_metadata.get((message.session_id, message.message_log_id))
+        if metadata is None:
+            return message
+
+        return replace(
+            message,
+            response_profile=message.response_profile or metadata.response_profile,
+            is_mentioned=message.is_mentioned or metadata.is_mentioned,
+            is_reply_to_bot=message.is_reply_to_bot or metadata.is_reply_to_bot,
+            is_mention_to_other=message.is_mention_to_other or metadata.is_mention_to_other,
+            is_poke_to_bot=message.is_poke_to_bot or metadata.is_poke_to_bot,
+            is_poke_to_other=message.is_poke_to_other or metadata.is_poke_to_other,
+            self_platform_id=message.self_platform_id or metadata.self_platform_id,
         )
 
     @staticmethod

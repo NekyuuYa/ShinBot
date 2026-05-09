@@ -269,7 +269,8 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT m.session_id, m.id AS message_log_id, m.sender_id, m.created_at
+                SELECT m.session_id, m.id AS message_log_id, m.sender_id,
+                       m.created_at, m.is_mentioned
                 FROM agent_unread_ranges r
                 JOIN message_logs m
                   ON m.session_id = r.session_id
@@ -288,6 +289,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 message_log_id=int(row["message_log_id"]),
                 sender_id=str(row["sender_id"]),
                 created_at=float(row["created_at"]),
+                is_mentioned=bool(row["is_mentioned"]),
             )
             for row in rows
         ]
@@ -477,7 +479,8 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 placeholders = ",".join("?" for _ in consumed_message_ids)
                 rows = conn.execute(
                     f"""
-                    SELECT session_id, id AS message_log_id, sender_id, created_at
+                    SELECT session_id, id AS message_log_id, sender_id,
+                           created_at, is_mentioned
                     FROM message_logs
                     WHERE session_id = ?
                       AND id IN ({placeholders})
@@ -491,6 +494,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                         message_log_id=int(row["message_log_id"]),
                         sender_id=str(row["sender_id"]),
                         created_at=float(row["created_at"]),
+                        is_mentioned=bool(row["is_mentioned"]),
                     )
                     for row in rows
                 ]
