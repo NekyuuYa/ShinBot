@@ -209,6 +209,8 @@ class ActiveChatWorkflow:
                 return []
             messages = list(state.pending_buffer)
             state.pending_buffer.clear()
+            if messages:
+                state.accumulated = 0.0
             return messages
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
@@ -292,7 +294,11 @@ class ActiveChatWorkflow:
             latest_signal = messages[-1]
             active_chat_state = latest_signal.active_chat_state
             if active_chat_state is None:
-                self._restore_pending(session_id, messages)
+                self._restore_pending(
+                    session_id,
+                    messages,
+                    accumulated=handled_accumulated,
+                )
                 return
 
             batch = ActiveChatBatch(
@@ -305,14 +311,22 @@ class ActiveChatWorkflow:
                 conversation_messages=conversation_messages,
             )
             if self._round_handler is None:
-                self._restore_pending(session_id, messages)
+                self._restore_pending(
+                    session_id,
+                    messages,
+                    accumulated=handled_accumulated,
+                )
                 return
 
             result = self._round_handler(batch)
             if isawaitable(result):
                 result = await result
             if not result.success:
-                self._restore_pending(session_id, messages)
+                self._restore_pending(
+                    session_id,
+                    messages,
+                    accumulated=handled_accumulated,
+                )
                 return
             async with self._get_lock(session_id):
                 current_state = self._states.get(session_id)
@@ -322,7 +336,11 @@ class ActiveChatWorkflow:
                 ):
                     return
                 if result.action == ActiveChatActionKind.EXIT_ACTIVE and not result.reason.strip():
-                    self._restore_pending(session_id, messages)
+                    self._restore_pending(
+                        session_id,
+                        messages,
+                        accumulated=handled_accumulated,
+                    )
                     return
                 self._append_conversation_messages_locked(
                     current_state,
@@ -355,7 +373,11 @@ class ActiveChatWorkflow:
                     )
         except Exception:
             logger.exception("Active chat round failed for session %s", session_id)
-            self._restore_pending(session_id, messages if "messages" in locals() else [])
+            self._restore_pending(
+                session_id,
+                messages if "messages" in locals() else [],
+                accumulated=handled_accumulated if "handled_accumulated" in locals() else 0.0,
+            )
         finally:
             self._running_rounds.pop(session_id, None)
 
@@ -363,6 +385,8 @@ class ActiveChatWorkflow:
         self,
         session_id: str,
         messages: list[ActiveChatMessageSignal],
+        *,
+        accumulated: float = 0.0,
     ) -> None:
         if not messages:
             return
@@ -371,6 +395,7 @@ class ActiveChatWorkflow:
             state = ActiveChatAttentionState(session_id=session_id, last_update_at=self._now())
             self._states[session_id] = state
         state.pending_buffer = messages + state.pending_buffer
+        state.accumulated += accumulated
 
     def _append_conversation_messages_locked(
         self,

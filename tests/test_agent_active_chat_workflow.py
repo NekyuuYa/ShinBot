@@ -313,6 +313,72 @@ async def test_active_chat_workflow_retry_failed_consumes_batch_and_adjusts_inte
 
 
 @pytest.mark.asyncio
+async def test_active_chat_workflow_failed_round_restores_pending_attention() -> None:
+    batches: list[ActiveChatBatch] = []
+
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        batches.append(batch)
+        if len(batches) == 1:
+            return ActiveChatRoundResult(success=False, reason="transient_failure")
+        return ActiveChatRoundResult(success=True, reason="ok")
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.sleep(0.05)
+
+    state = workflow.attention_state_for("bot:group:room")
+    assert state is not None
+    assert [message.message_log_id for message in state.pending_buffer] == [1]
+    assert state.accumulated == pytest.approx(4.0)
+    assert scheduler.consumed == []
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=2,
+        sender_id="user-2",
+        response_profile="balanced",
+        is_mentioned=False,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.sleep(0.05)
+
+    assert [batch.message_log_ids for batch in batches] == [[1], [1, 2]]
+    assert scheduler.consumed == [("bot:group:room", [1, 2])]
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_active_chat_workflow_uses_round_result_consumed_message_ids() -> None:
     async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
         return ActiveChatRoundResult(success=True, consumed_message_log_ids=[1, 2])
@@ -561,6 +627,83 @@ async def test_active_chat_workflow_runs_next_batch_for_messages_arriving_during
         ("bot:group:room", [1]),
         ("bot:group:room", [2]),
     ]
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_drain_pending_for_repair_clears_pending_attention() -> None:
+    first_round_started = asyncio.Event()
+    release_first_round = asyncio.Event()
+    batches: list[ActiveChatBatch] = []
+
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        batches.append(batch)
+        first_round_started.set()
+        await release_first_round.wait()
+        return ActiveChatRoundResult(
+            success=True,
+            reason="ok",
+            consumed_message_log_ids=[1, 2],
+        )
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.wait_for(first_round_started.wait(), timeout=1.0)
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=2,
+        sender_id="user-2",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    state = workflow.attention_state_for("bot:group:room")
+    assert state is not None
+    assert state.accumulated == pytest.approx(4.0)
+    assert [message.message_log_id for message in state.pending_buffer] == [2]
+
+    drained = await workflow.drain_pending_for_repair(batches[0])
+
+    assert [message.message_log_id for message in drained] == [2]
+    assert state.accumulated == 0.0
+    assert state.pending_buffer == []
+
+    release_first_round.set()
+    await asyncio.sleep(0.05)
+
+    assert scheduler.consumed == [("bot:group:room", [1, 2])]
     await workflow.shutdown()
 
 
