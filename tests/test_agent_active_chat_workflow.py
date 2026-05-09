@@ -405,6 +405,56 @@ async def test_active_chat_workflow_retry_failed_consumes_batch_and_adjusts_inte
 
 
 @pytest.mark.asyncio
+async def test_active_chat_workflow_exit_active_forwards_reason_to_scheduler() -> None:
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        return ActiveChatRoundResult(
+            success=True,
+            action=ActiveChatActionKind.EXIT_ACTIVE,
+            reason="conversation has clearly ended",
+        )
+
+    scheduler = RecordingScheduler()
+    workflow = ActiveChatWorkflow(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.sleep(0.05)
+
+    assert scheduler.consumed == [("bot:group:room", [1])]
+    assert scheduler.adjustments == [
+        {
+            "session_id": "bot:group:room",
+            "delta": 0.0,
+            "force_exit": True,
+            "reason": "conversation has clearly ended",
+        }
+    ]
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_active_chat_workflow_failed_round_restores_pending_attention() -> None:
     batches: list[ActiveChatBatch] = []
 
