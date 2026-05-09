@@ -24,9 +24,12 @@ class FakeModelRuntime:
     def __init__(self, responses: list[GenerateResult]) -> None:
         self.responses = list(responses)
         self.calls: list[Any] = []
+        self.on_generate: Any | None = None
 
     async def generate(self, call: Any) -> GenerateResult:
         self.calls.append(call)
+        if self.on_generate is not None:
+            await self.on_generate(call)
         return self.responses.pop(0)
 
 
@@ -85,10 +88,14 @@ def make_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def make_generate_result(*, tool_calls: list[dict[str, Any]]) -> GenerateResult:
+def make_generate_result(
+    *,
+    text: str = "",
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> GenerateResult:
     return GenerateResult(
-        text="",
-        tool_calls=tool_calls,
+        text=text,
+        tool_calls=list(tool_calls or []),
         raw_response={},
         execution_id="exec-active-chat",
         route_id="",
@@ -364,5 +371,104 @@ async def test_agent_runtime_keeps_active_chat_pending_unread_on_exit(
         assert unread_message_ids == [message_log_id]
         assert runtime.active_chat_workflow.attention_state_for(session_id) is None
         assert model_runtime.calls == []
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_repair_merges_active_chat_pending_messages(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime(
+        [
+            make_generate_result(text="I would answer without a tool."),
+            make_generate_result(
+                tool_calls=[
+                    make_tool_call(
+                        "no_reply",
+                        {"internal_summary": "merged live batch"},
+                    )
+                ]
+            ),
+        ]
+    )
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:group:1"
+    first_message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="platform-msg-3",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="@bot first",
+            content_json="[]",
+            role="user",
+            created_at=30_000.0,
+            is_mentioned=True,
+        )
+    )
+    second_message_log_id = bot.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="platform-msg-4",
+            sender_id="user-2",
+            sender_name="User 2",
+            raw_text="@bot second",
+            content_json="[]",
+            role="user",
+            created_at=31_000.0,
+            is_mentioned=True,
+        )
+    )
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=60.0,
+        decay_half_life_seconds=20.0,
+        entered_at=10.0,
+        updated_at=10.0,
+        active_epoch=5,
+    )
+    runtime.agent_scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    runtime.agent_scheduler._state_store.set_active_chat_state(active_state)
+    await runtime.active_chat_workflow.start_active_chat(
+        session_id=session_id,
+        active_chat_state=active_state,
+    )
+
+    async def inject_pending_message(_call: Any) -> None:
+        if len(model_runtime.calls) != 1:
+            return
+        await runtime.handle_agent_entry(
+            make_signal(message_log_id=second_message_log_id, is_mentioned=True)
+        )
+
+    model_runtime.on_generate = inject_pending_message
+
+    try:
+        await runtime.handle_agent_entry(
+            make_signal(message_log_id=first_message_log_id, is_mentioned=True)
+        )
+        await asyncio.sleep(
+            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0
+            + 0.1
+        )
+
+        assert len(model_runtime.calls) == 2
+        assert model_runtime.calls[0].metadata["message_log_ids"] == [first_message_log_id]
+        assert model_runtime.calls[0].metadata["repair_attempt"] == 0
+        assert model_runtime.calls[1].metadata["message_log_ids"] == [
+            first_message_log_id,
+            second_message_log_id,
+        ]
+        assert model_runtime.calls[1].metadata["repair_attempt"] == 1
+        assert runtime.agent_scheduler.unread_messages(session_id) == []
+        state = runtime.active_chat_workflow.attention_state_for(session_id)
+        assert state is not None
+        assert state.pending_buffer == []
+        assert state.conversation_messages[0]["tool_calls"][0]["function"]["name"] == (
+            "no_reply"
+        )
     finally:
         await runtime.shutdown()
