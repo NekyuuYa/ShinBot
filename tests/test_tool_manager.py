@@ -8,6 +8,7 @@ from shinbot.agent.services.tools import (
     ToolManager,
     ToolOwnerType,
     ToolRegistry,
+    ToolSchemaBuilder,
     ToolVisibility,
 )
 from shinbot.core.security.permission import PermissionEngine
@@ -181,3 +182,63 @@ class TestToolManager:
 
         assert result.success is False
         assert result.error_code == "permission_denied"
+
+
+class TestToolSchemaBuilder:
+    def test_build_request_tools_filters_and_preserves_requested_order(self):
+        registry = ToolRegistry()
+        registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.no_reply",
+                name="no_reply",
+                permission="",
+                tags=["chat_action"],
+            )
+        )
+        registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.send_reply",
+                name="send_reply",
+                permission="",
+                tags=["chat_action"],
+            )
+        )
+        builder = ToolSchemaBuilder(registry)
+
+        tools = builder.build_request_tools(
+            ["send_reply", "missing", "no_reply"],
+            caller="agent.review",
+            tags={"chat_action"},
+        )
+
+        assert [item["function"]["name"] for item in tools] == ["send_reply", "no_reply"]
+
+    def test_export_model_tools_hides_private_and_uses_permission_checker(self):
+        registry = ToolRegistry()
+        registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.public",
+                name="public_tool",
+                permission="tools.public",
+                visibility=ToolVisibility.PUBLIC,
+            )
+        )
+        registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.private",
+                name="private_tool",
+                permission="",
+                visibility=ToolVisibility.PRIVATE,
+            )
+        )
+        allowed = False
+
+        def permission_checker(*_args):
+            return allowed
+
+        builder = ToolSchemaBuilder(registry, permission_checker=permission_checker)
+
+        assert builder.export_model_tools(caller="agent.review") == []
+        allowed = True
+        tools = builder.export_model_tools(caller="agent.review")
+        assert [item["function"]["name"] for item in tools] == ["public_tool"]

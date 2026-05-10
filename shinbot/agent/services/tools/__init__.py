@@ -12,6 +12,7 @@ __all__ = [
     "ToolExecutionContext",
     "ToolManager",
     "ToolOwnerType",
+    "ToolSchemaBuilder",
     "ToolRegistry",
     "ToolRiskLevel",
     "ToolVisibility",
@@ -19,6 +20,7 @@ __all__ = [
 
 _EXPORT_MODULES = {
     "ToolManager": "shinbot.agent.services.tools.manager",
+    "ToolSchemaBuilder": "shinbot.agent.services.tools.schema_builder",
     "ToolRegistry": "shinbot.agent.services.tools.registry",
     "ToolCallRequest": "shinbot.agent.services.tools.schema",
     "ToolCallResult": "shinbot.agent.services.tools.schema",

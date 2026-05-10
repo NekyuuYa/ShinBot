@@ -16,8 +16,8 @@ from .schema import (
     ToolCallResult,
     ToolDefinition,
     ToolExecutionContext,
-    ToolVisibility,
 )
+from .schema_builder import ToolSchemaBuilder
 
 
 def _utc_now() -> datetime:
@@ -37,6 +37,10 @@ class ToolManager:
         self._registry = registry
         self._permission_engine = permission_engine
         self._audit_logger = audit_logger
+        self._schema_builder = ToolSchemaBuilder(
+            registry,
+            permission_checker=self._is_allowed,
+        )
 
     def list_visible_tools(
         self,
@@ -48,15 +52,14 @@ class ToolManager:
         include_private: bool = False,
         tags: set[str] | None = None,
     ) -> list[ToolDefinition]:
-        definitions = self._registry.list_tools(enabled=True, tags=tags)
-        visible: list[ToolDefinition] = []
-        for definition in definitions:
-            if definition.visibility == ToolVisibility.PRIVATE and not include_private:
-                continue
-            if not self._is_allowed(definition, instance_id, session_id, user_id):
-                continue
-            visible.append(definition)
-        return visible
+        return self._schema_builder.list_visible_tools(
+            caller=caller,
+            instance_id=instance_id,
+            session_id=session_id,
+            user_id=user_id,
+            include_private=include_private,
+            tags=tags,
+        )
 
     def export_model_tools(
         self,
@@ -67,24 +70,13 @@ class ToolManager:
         user_id: str = "",
         tags: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": definition.name,
-                    "description": definition.description,
-                    "parameters": definition.input_schema,
-                },
-            }
-            for definition in self.list_visible_tools(
-                caller=caller,
-                instance_id=instance_id,
-                session_id=session_id,
-                user_id=user_id,
-                tags=tags,
-            )
-            if definition.visibility != ToolVisibility.PRIVATE
-        ]
+        return self._schema_builder.export_model_tools(
+            caller=caller,
+            instance_id=instance_id,
+            session_id=session_id,
+            user_id=user_id,
+            tags=tags,
+        )
 
     def build_request_tools(
         self,
@@ -106,22 +98,14 @@ class ToolManager:
         Returns:
             List of tool schemas in Chat Completions format.
         """
-        requested_names = [name for name in tool_names if name]
-        schema_by_name = {
-            str(schema.get("function", {}).get("name") or ""): schema
-            for schema in self.export_model_tools(
-                caller=caller,
-                instance_id=instance_id,
-                session_id=session_id,
-                user_id=user_id,
-                tags=tags,
-            )
-        }
-        return [
-            schema_by_name[name]
-            for name in requested_names
-            if name in schema_by_name
-        ]
+        return self._schema_builder.build_request_tools(
+            tool_names,
+            caller=caller,
+            instance_id=instance_id,
+            session_id=session_id,
+            user_id=user_id,
+            tags=tags,
+        )
 
     async def execute(self, call: ToolCallRequest) -> ToolCallResult:
         started = _utc_now()
