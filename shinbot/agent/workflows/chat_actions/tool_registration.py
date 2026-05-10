@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.services.tools.schema import (
@@ -24,14 +26,94 @@ _OWNER_ID = "shinbot.agent.chat_actions"
 CHAT_ACTION_TOOL_TAG = "chat_action"
 
 
+@dataclass(slots=True, frozen=True)
+class SendReplyIdempotencyClaim:
+    """Result of checking whether one send_reply call may proceed."""
+
+    accepted: bool
+    deduplicated_reason: str = ""
+
+
+class SendReplyIdempotencyStore:
+    """Bounded in-memory idempotency guard for system-injected reply keys."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = 600.0,
+        max_entries: int = 2048,
+        now: Any | None = None,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max(1, max_entries)
+        self._now = now or time.time
+        self._completed: OrderedDict[str, float] = OrderedDict()
+        self._in_flight: set[str] = set()
+
+    def begin(self, key: str) -> SendReplyIdempotencyClaim:
+        """Claim a key before sending; duplicate completed/in-flight keys are rejected."""
+
+        key = key.strip()
+        if not key:
+            return SendReplyIdempotencyClaim(accepted=True)
+        self._prune()
+        if key in self._in_flight:
+            return SendReplyIdempotencyClaim(
+                accepted=False,
+                deduplicated_reason="in_flight",
+            )
+        if key in self._completed:
+            self._completed.move_to_end(key)
+            return SendReplyIdempotencyClaim(
+                accepted=False,
+                deduplicated_reason="completed",
+            )
+        self._in_flight.add(key)
+        return SendReplyIdempotencyClaim(accepted=True)
+
+    def finish(self, key: str) -> None:
+        """Mark a successfully sent key as completed."""
+
+        key = key.strip()
+        if not key:
+            return
+        self._in_flight.discard(key)
+        self._completed[key] = float(self._now())
+        self._completed.move_to_end(key)
+        self._prune()
+
+    def release(self, key: str) -> None:
+        """Release an in-flight key after a failed send so it can be retried."""
+
+        key = key.strip()
+        if key:
+            self._in_flight.discard(key)
+
+    def _prune(self) -> None:
+        now = float(self._now())
+        if self._ttl_seconds > 0:
+            expired = [
+                key
+                for key, created_at in self._completed.items()
+                if now - created_at > self._ttl_seconds
+            ]
+            for key in expired:
+                self._completed.pop(key, None)
+        while len(self._completed) > self._max_entries:
+            self._completed.popitem(last=False)
+
+
 def register_chat_action_tools(
     registry: ToolRegistry,
     *,
     adapter_manager: AdapterManager,
     database: DatabaseManager | None = None,
     context_manager: ContextManager | None = None,
+    send_reply_idempotency_store: SendReplyIdempotencyStore | None = None,
 ) -> None:
     """Register shared chat action tools (send_reply, no_reply, send_poke)."""
+
+    idempotency_store = send_reply_idempotency_store or SendReplyIdempotencyStore()
 
     # ── no_reply ────────────────────────────────────────────────────
 
@@ -80,6 +162,7 @@ def register_chat_action_tools(
         if not instance_id:
             return {"error": "instance_id not available in execution context"}
 
+        idempotency_key = str(arguments.get("idempotency_key") or "").strip()
         text = str(arguments.get("text", "")).strip()
         if not text:
             return {"error": "text is required and must not be empty"}
@@ -98,13 +181,29 @@ def register_chat_action_tools(
                 "error": f"Adapter not found for instance {instance_id}",
             }
 
+        idempotency_claim = idempotency_store.begin(idempotency_key)
+        if not idempotency_claim.accepted:
+            return {
+                "action": "send_reply",
+                "sent": False,
+                "deduplicated": True,
+                "deduplicated_reason": idempotency_claim.deduplicated_reason,
+                "idempotency_key": idempotency_key,
+                "hint": "此回复已通过相同 idempotency_key 发送或正在发送，跳过重复发送。",
+            }
+
         from shinbot.schema.elements import MessageElement
 
-        elements = []
-        if quote_message_id:
-            elements.append(MessageElement.quote(quote_message_id))
-        elements.append(MessageElement.text(text))
-        handle = await adapter.send(session_id, elements)
+        try:
+            elements = []
+            if quote_message_id:
+                elements.append(MessageElement.quote(quote_message_id))
+            elements.append(MessageElement.text(text))
+            handle = await adapter.send(session_id, elements)
+        except Exception:
+            idempotency_store.release(idempotency_key)
+            raise
+        idempotency_store.finish(idempotency_key)
 
         assistant_log_id = None
         if database is not None:
@@ -138,6 +237,7 @@ def register_chat_action_tools(
             "platform_msg_id": handle.message_id if handle is not None else "",
             "message_log_id": assistant_log_id,
             "quote_message_id": quote_message_id,
+            "idempotency_key": idempotency_key,
             "terminate_round": terminate_round,
             "hint": "消息已发送至会话。",
         }
@@ -361,4 +461,9 @@ def _first_present(arguments: dict[str, Any], *keys: str) -> Any:
     return None
 
 
-__all__ = ["CHAT_ACTION_TOOL_TAG", "register_chat_action_tools"]
+__all__ = [
+    "CHAT_ACTION_TOOL_TAG",
+    "SendReplyIdempotencyClaim",
+    "SendReplyIdempotencyStore",
+    "register_chat_action_tools",
+]

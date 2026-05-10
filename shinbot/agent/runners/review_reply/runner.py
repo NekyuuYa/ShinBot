@@ -189,7 +189,8 @@ class LLMReplyDecisionStageRunner:
         reply_count = 0
         poke_count = 0
         saw_no_reply = False
-        for tool_name, arguments in parsed_calls:
+        run_id = str(plan.execution_id or "")
+        for call_index, (tool_name, arguments) in enumerate(parsed_calls):
             if tool_name not in {"send_reply", "no_reply", "send_poke"}:
                 continue
             if tool_name == "no_reply":
@@ -197,14 +198,20 @@ class LLMReplyDecisionStageRunner:
                 continue
             if tool_name == "send_poke" and not has_reply_call:
                 continue
+            call_arguments = dict(arguments)
+            if tool_name == "send_reply" and run_id:
+                call_arguments.setdefault(
+                    "idempotency_key",
+                    f"{run_id}:{call_index}",
+                )
             tool_result = await self._tool_manager.execute(
                 ToolCallRequest(
                     tool_name=tool_name,
-                    arguments=arguments,
+                    arguments=call_arguments,
                     caller=self._routing.caller,
                     instance_id=instance_id_from_session(stage_input.session_id),
                     session_id=stage_input.session_id,
-                    run_id=str(plan.execution_id or ""),
+                    run_id=run_id,
                     metadata={
                         "workflow_id": "review",
                         "stage_id": stage_input.purpose,

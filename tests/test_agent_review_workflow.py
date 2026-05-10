@@ -835,6 +835,7 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     assert tool_manager.execute_calls[0].session_id == "bot:group:room"
     assert tool_manager.execute_calls[0].instance_id == "bot"
     assert tool_manager.execute_calls[0].arguments["quote_message_log_id"] == 7
+    assert tool_manager.execute_calls[0].arguments["idempotency_key"] == "exec-1:0"
 
 
 @pytest.mark.asyncio
@@ -893,6 +894,10 @@ async def test_reply_decision_runner_executes_multiple_replies_in_order() -> Non
     ]
     assert tool_manager.execute_calls[0].arguments["quote_message_log_id"] == 7
     assert "quote_message_log_id" not in tool_manager.execute_calls[1].arguments
+    assert [call.arguments["idempotency_key"] for call in tool_manager.execute_calls] == [
+        "exec-1:0",
+        "exec-1:1",
+    ]
 
 
 @pytest.mark.asyncio

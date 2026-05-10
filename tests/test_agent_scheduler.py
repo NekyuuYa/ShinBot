@@ -17,6 +17,7 @@ from shinbot.agent.scheduler import (
     InMemoryAgentInbox,
     InMemoryAgentStateStore,
     PriorityPolicyDecision,
+    calculate_bootstrap_correction,
 )
 from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
@@ -896,6 +897,77 @@ def test_scheduler_active_chat_bootstrap_can_return_idle_and_stop_runtime() -> N
     assert scheduler.active_chat_state_for("bot:group:room") is None
     assert timer.cancelled == ["bot:group:room"]
     assert dispatcher.active_chat_stops == ["bot:group:room"]
+
+
+def test_scheduler_bootstrap_rejected_on_epoch_mismatch() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    completion = scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        now=60.0,
+    )
+    assert completion.active_chat_state is not None
+    correct_epoch = completion.active_chat_state.active_epoch
+
+    # Apply with wrong epoch — should be rejected
+    decision = scheduler.apply_active_chat_bootstrap(
+        "bot:group:room",
+        disposition=ActiveChatDisposition.ENGAGED,
+        active_epoch=correct_epoch + 999,
+        now=61.0,
+    )
+    assert decision.bootstrap_applied is False
+    assert decision.skipped_reason == "active_epoch_mismatch"
+
+    # Apply with correct epoch — should succeed
+    decision = scheduler.apply_active_chat_bootstrap(
+        "bot:group:room",
+        disposition=ActiveChatDisposition.ENGAGED,
+        active_epoch=correct_epoch,
+        now=62.0,
+    )
+    assert decision.bootstrap_applied is True
+    assert decision.skipped_reason is None
+
+
+def test_bootstrap_correction_applies_tick_diff_to_current_interest() -> None:
+    """Bootstrap correction uses tick_count to compute the decay curve,
+    so a late bootstrap doesn't overwrite runtime message-driven deltas."""
+    config = ActiveChatPolicyConfig(
+        initial_interest_value=15.0,
+        decay_half_life_seconds=20.0,
+        tick_interval_seconds=5.0,
+    )
+    policy = DefaultActiveChatPolicy(config)
+    state = policy.initial_state(session_id="s", now=10.0)
+    # 6 ticks = 30 seconds = 1.5 half-lives
+    for i in range(6):
+        state = policy.decay(state, now=10.0 + (i + 1) * 5.0, count_tick=True)
+    # Simulate a message bump that raises interest mid-session
+    state = policy.observe_message(state, now=41.0, is_mentioned=True)
+    bumped_interest = state.interest_value
+
+    correction = calculate_bootstrap_correction(
+        state,
+        disposition=ActiveChatDisposition.ENGAGED,
+        config=config,
+    )
+    corrected = policy.apply_bootstrap_disposition(
+        state, disposition=ActiveChatDisposition.ENGAGED, now=42.0,
+    )
+    # The correction is added to the current (bumped) interest, not the initial
+    assert corrected.interest_value == pytest.approx(
+        bumped_interest + correction.correction, rel=1e-4,
+    )
+    # The correction accounts for 6 ticks of decay on both curves
+    assert corrected.tick_count == 6
 
 
 @pytest.mark.asyncio
