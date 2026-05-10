@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
@@ -223,6 +225,12 @@ class SelectingReviewScanRunner:
         )
 
 
+class YieldingReviewScanRunner(SelectingReviewScanRunner):
+    async def run(self, stage_input) -> ReviewScanStageOutput:
+        await asyncio.sleep(0)
+        return await super().run(stage_input)
+
+
 class RecordingOverflowCompressionRunner:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -271,6 +279,46 @@ class RecordingReplyDecisionRunner:
             target_message_ids=[item for item in candidate_ids if isinstance(item, int)],
             reason=f"checked_{reason_target}",
         )
+
+
+class RecordingBlockDigestRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def run(self, stage_input) -> ReviewBlockDigestStageOutput:
+        message_ids = [message["id"] for message in stage_input.source_messages]
+        self.calls.append(
+            {
+                "purpose": stage_input.purpose,
+                "message_ids": message_ids,
+                "metadata": dict(stage_input.metadata),
+            }
+        )
+        return ReviewBlockDigestStageOutput(
+            summary=f"digest_{stage_input.metadata['block_index']}",
+            reason="recorded_digest",
+        )
+
+
+class SlowBlockDigestRunner:
+    def __init__(self) -> None:
+        self.active_count = 0
+        self.max_active_count = 0
+
+    async def run(self, stage_input) -> ReviewBlockDigestStageOutput:
+        self.active_count += 1
+        self.max_active_count = max(self.max_active_count, self.active_count)
+        await asyncio.sleep(0)
+        self.active_count -= 1
+        return ReviewBlockDigestStageOutput(
+            summary=f"digest_{stage_input.metadata['block_index']}",
+            reason="slow_digest",
+        )
+
+
+class FailingBlockDigestRunner:
+    async def run(self, stage_input) -> ReviewBlockDigestStageOutput:
+        raise RuntimeError("digest failed")
 
 
 class FixedCandidateScanRunner:
@@ -441,6 +489,7 @@ class FakeSummaryService:
     def __init__(self) -> None:
         self.overflow_compressions: list[dict[str, object]] = []
         self.block_digests: list[dict[str, object]] = []
+        self.session_summaries: list[object] = []
 
     def save_overflow_compression(self, *args, **kwargs) -> int:
         self.overflow_compressions.append({"args": args, "kwargs": kwargs})
@@ -449,6 +498,14 @@ class FakeSummaryService:
     def save_block_digest(self, *args, **kwargs) -> int:
         self.block_digests.append({"args": args, "kwargs": kwargs})
         return len(self.block_digests)
+
+    def list_by_session(self, session_id, **kwargs):
+        return list(self.session_summaries)[: kwargs.get("limit", 50)]
+
+    def get_latest_by_session(self, session_id, **kwargs):
+        if not self.session_summaries:
+            return None
+        return self.session_summaries[-1]
 
 
 def _insert_message(
@@ -470,6 +527,19 @@ def _insert_message(
             created_at=created_at,
         )
     )
+
+
+def _strip_run_id_from_calls(calls: list[dict]) -> list[dict]:
+    """Remove dynamic review_run_id from recorded call metadata for comparison."""
+    result = []
+    for call in calls:
+        call_copy = dict(call)
+        if "metadata" in call_copy and isinstance(call_copy["metadata"], dict):
+            call_copy["metadata"] = {
+                k: v for k, v in call_copy["metadata"].items() if k != "review_run_id"
+            }
+        result.append(call_copy)
+    return result
 
 
 def test_database_review_store_reads_review_windows(tmp_path) -> None:
@@ -1238,6 +1308,7 @@ async def test_review_runner_factory_uses_llm_stages_by_default() -> None:
     assert set(workflow_kwargs) == {
         "compression_runner",
         "scan_runner",
+        "block_digest_runner",
         "reply_runner",
         "bootstrap_runner",
     }
@@ -1477,8 +1548,11 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
     assert completed_bootstrap.stage_input_built is True
     assert [call["purpose"] for call in context_builder.calls] == [
         "review_scan",
+        "review_block_digest",
         "review_scan",
+        "review_block_digest",
         "review_scan",
+        "review_block_digest",
         "active_chat_bootstrap",
     ]
 
@@ -1552,6 +1626,78 @@ async def test_review_workflow_freezes_unread_snapshot_at_entry(tmp_path) -> Non
         second_message_id
     ]
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+
+
+@pytest.mark.asyncio
+async def test_concurrent_review_runs_keep_distinct_review_run_ids(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    sessions = ["bot:group:room-a", "bot:group:room-b"]
+    message_ids_by_session: dict[str, list[int]] = {}
+    for session_index, session_id in enumerate(sessions):
+        message_ids = [
+            _insert_message(
+                db,
+                session_id=session_id,
+                raw_text=f"{session_id}-m{index}",
+                created_at=float((session_index + 1) * 10_000 + index * 1000),
+            )
+            for index in range(1, 3)
+        ]
+        message_ids_by_session[session_id] = message_ids
+        for message_id in message_ids:
+            db.agent_scheduler.add_unread(
+                UnreadMessage(
+                    session_id=session_id,
+                    message_log_id=message_id,
+                    sender_id="user-1",
+                    created_at=float(message_id),
+                )
+            )
+        db.agent_scheduler.set_review_plan(
+            FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+        )
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    review_inputs = []
+    for session_id in sessions:
+        decision = scheduler.prepare_due_review(session_id, now=10.0)
+        assert decision.review_plan is not None
+        review_inputs.append((
+            session_id,
+            decision.review_plan,
+            scheduler.unread_messages(session_id),
+        ))
+    context_builder = RecordingReviewContextBuilder()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(review_scan_batch_size=2),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=context_builder,
+        scan_runner=YieldingReviewScanRunner(),
+        reply_runner=RecordingReplyDecisionRunner(),
+        now=lambda: 5.0,
+    )
+
+    results = await asyncio.gather(*[
+        workflow.run(
+            scheduler=scheduler,
+            session_id=session_id,
+            review_plan=review_plan,
+            unread_messages=unread_messages,
+        )
+        for session_id, review_plan, unread_messages in review_inputs
+    ])
+    await workflow.wait_pending_bootstraps()
+
+    run_id_by_session = {result.completion.session_id: result.review_run_id for result in results if result.completion is not None}
+    assert len(set(run_id_by_session.values())) == 2
+    for call in context_builder.calls:
+        assert call["metadata"]["review_run_id"] == run_id_by_session[call["session_id"]]
 
 
 @pytest.mark.asyncio
@@ -1662,7 +1808,7 @@ async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> 
     assert result.reply.loaded_message_count == 2
     assert result.reply.stage_input_count == 1
     assert result.reply.reply_reason == f"checked_{message_ids[-1]}"
-    assert reply_runner.calls == [
+    assert _strip_run_id_from_calls(reply_runner.calls) == [
         {
             "purpose": "reply_decision",
             "candidate_id": message_ids[-1],
@@ -1678,11 +1824,13 @@ async def test_reply_decision_runner_reads_candidate_local_context(tmp_path) -> 
     ]
     assert [call["purpose"] for call in context_builder.calls] == [
         "review_scan",
+        "review_block_digest",
         "reply_decision",
     ]
     await workflow.wait_pending_bootstraps()
     assert [call["purpose"] for call in context_builder.calls] == [
         "review_scan",
+        "review_block_digest",
         "reply_decision",
         "active_chat_bootstrap",
     ]
@@ -1740,7 +1888,7 @@ async def test_reply_decision_groups_overlapping_candidate_contexts(tmp_path) ->
     assert result.reply.target_message_ids == [message_ids[2], message_ids[3]]
     assert result.reply.stage_input_count == 1
     assert result.reply.loaded_message_count == 4
-    assert reply_runner.calls == [
+    assert _strip_run_id_from_calls(reply_runner.calls) == [
         {
             "purpose": "reply_decision",
             "candidate_id": message_ids[2],
@@ -1758,6 +1906,228 @@ async def test_reply_decision_groups_overlapping_candidate_contexts(tmp_path) ->
         message_ids[2],
         message_ids[3],
     ]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_receives_target_and_adjacent_block_digests(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 7)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    reply_runner = RecordingReplyDecisionRunner()
+    block_digest_runner = RecordingBlockDigestRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=2,
+            reply_context_before_messages=0,
+            reply_context_after_messages=0,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=FixedCandidateScanRunner([message_ids[-1]]),
+        block_digest_runner=block_digest_runner,
+        reply_runner=reply_runner,
+        now=lambda: 5.0,
+    )
+
+    await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert [call["message_ids"] for call in block_digest_runner.calls] == [
+        message_ids[:2],
+        message_ids[2:4],
+        message_ids[4:],
+    ]
+    block_digests = reply_runner.calls[0]["metadata"]["block_digests"]
+    assert [item["block_index"] for item in block_digests] == [1, 2]
+    assert [item["msg_log_start"] for item in block_digests] == [
+        message_ids[2],
+        message_ids[4],
+    ]
+    assert "digest_0" not in reply_runner.calls[0]["metadata"]["previous_summary"]
+    assert "digest_1" in reply_runner.calls[0]["metadata"]["previous_summary"]
+    assert "digest_2" in reply_runner.calls[0]["metadata"]["previous_summary"]
+
+
+@pytest.mark.asyncio
+async def test_block_digest_runner_concurrency_is_bounded(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 7)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    block_digest_runner = SlowBlockDigestRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=1,
+            review_block_digest_concurrency=2,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=FixedCandidateScanRunner([]),
+        block_digest_runner=block_digest_runner,
+        now=lambda: 5.0,
+    )
+
+    await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert block_digest_runner.max_active_count <= 2
+
+
+@pytest.mark.asyncio
+async def test_block_digest_failure_does_not_block_scan_or_reply(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 4)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    reply_runner = RecordingReplyDecisionRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(review_scan_batch_size=3),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=FixedCandidateScanRunner([message_ids[-1]]),
+        block_digest_runner=FailingBlockDigestRunner(),
+        reply_runner=reply_runner,
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.failed is False
+    assert result.scan.candidate_message_ids == [message_ids[-1]]
+    assert result.reply.target_message_ids == [message_ids[-1]]
+    assert "block_digests" not in reply_runner.calls[0]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_uses_latest_active_chat_summary(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_id = _insert_message(db, raw_text="m1", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=float(message_id),
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    summary_service = FakeSummaryService()
+    summary_service.session_summaries = [
+        type("Summary", (), {"created_at": 1.0, "content": "old active summary"})(),
+        type("Summary", (), {"created_at": 4.0, "content": "new active summary"})(),
+    ]
+    reply_runner = RecordingReplyDecisionRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=1,
+            active_chat_summary_max_age_seconds=10,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        summary_service=summary_service,
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=FixedCandidateScanRunner([message_id]),
+        reply_runner=reply_runner,
+        now=lambda: 5.0,
+    )
+
+    await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    metadata = reply_runner.calls[0]["metadata"]
+    assert metadata["active_chat_summary"] == "new active summary"
+    assert "new active summary" in metadata["previous_summary"]
+    assert "old active summary" not in metadata["previous_summary"]
 
 
 @pytest.mark.asyncio
@@ -1823,7 +2193,7 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
     assert completed_bootstrap.active_chat_interest_value == 40.0
     assert completed_bootstrap.active_chat_decay_half_life_seconds == 35.0
     assert completed_bootstrap.reason == "bootstrap_selected_interest"
-    assert bootstrap_runner.calls == [
+    assert _strip_run_id_from_calls(bootstrap_runner.calls) == [
         {
             "purpose": "active_chat_bootstrap",
             "message_ids": message_ids,
@@ -2095,7 +2465,7 @@ async def test_overflow_compression_runner_summarizes_old_unread_prefix(tmp_path
     assert persisted_summaries[0].reason == "compressed_old_messages"
     assert persisted_summaries[0].start_msg_log_id == message_ids[0]
     assert persisted_summaries[0].end_msg_log_id == message_ids[1]
-    assert compression_runner.calls == [
+    assert _strip_run_id_from_calls(compression_runner.calls) == [
         {
             "purpose": "overflow_compression",
             "message_ids": message_ids[:2],
@@ -2157,6 +2527,7 @@ def test_review_workflow_explanation_summarizes_result() -> None:
     )
 
     result = ReviewWorkflowResult(
+        review_run_id="test_run_id",
         scan=ReviewScanResult(
             candidate_message_ids=[3],
             scanned_message_count=5,

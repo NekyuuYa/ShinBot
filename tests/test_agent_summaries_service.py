@@ -97,6 +97,26 @@ def test_list_by_session_respects_limit(svc: SummaryService) -> None:
     assert len(svc.list_by_session("s1", limit=3)) == 3
 
 
+def test_get_latest_by_session_returns_newest(svc: SummaryService) -> None:
+    svc.save(SummaryWriteRequest(
+        session_id="s1",
+        summary_type=SummaryType.ACTIVE_CHAT,
+        content="old",
+        source_run_id="run-1",
+    ))
+    svc.save(SummaryWriteRequest(
+        session_id="s1",
+        summary_type=SummaryType.ACTIVE_CHAT,
+        content="new",
+        source_run_id="run-2",
+    ))
+
+    record = svc.get_latest_by_session("s1", summary_type=SummaryType.ACTIVE_CHAT)
+
+    assert record is not None
+    assert record.content == "new"
+
+
 # -- query by run_id --
 
 

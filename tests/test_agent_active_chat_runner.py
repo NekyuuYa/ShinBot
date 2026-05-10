@@ -695,6 +695,7 @@ async def test_active_chat_fast_runner_accepts_dataclass_review_handoff_summary(
     )
 
     handoff = ReviewWorkflowExplanation(
+        review_run_id="test_run",
         review_started_at=123.0,
         candidate_message_ids=[99],
         active_chat_disposition=ActiveChatDisposition.EXIT_SOON,
