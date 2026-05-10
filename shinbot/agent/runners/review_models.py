@@ -30,6 +30,10 @@ class ReviewBlockDigestStageOutput:
 
     summary: str = ""
     reason: str = "noop_review_block_digest"
+    block_index: int | None = None
+    msg_log_start: int | None = None
+    msg_log_end: int | None = None
+    message_count: int = 0
 
 
 @dataclass(slots=True, frozen=True)

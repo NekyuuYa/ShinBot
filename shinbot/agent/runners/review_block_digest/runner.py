@@ -83,10 +83,18 @@ class LLMReviewBlockDigestStageRunner:
     async def run(self, stage_input: ReviewStageInput) -> ReviewBlockDigestStageOutput:
         payload = await self._template.run(stage_input)
         if payload is None:
-            return ReviewBlockDigestStageOutput(reason="llm_review_block_digest_failed")
+            return _output_with_metadata(
+                stage_input,
+                summary="",
+                reason="llm_review_block_digest_failed",
+            )
         output = ReviewBlockDigestStageOutput(
             summary=str(payload.get("summary") or ""),
             reason=str(payload.get("reason") or "llm_review_block_digest"),
+            block_index=_block_index(stage_input.metadata),
+            msg_log_start=_optional_int(stage_input.metadata.get("start_msg_log_id")),
+            msg_log_end=_optional_int(stage_input.metadata.get("end_msg_log_id")),
+            message_count=_optional_int(stage_input.metadata.get("message_count")) or 0,
         )
         self._save_summary(stage_input, output)
         return output
@@ -99,24 +107,42 @@ class LLMReviewBlockDigestStageRunner:
         if self._summary_service is None or not output.summary.strip():
             return
         metadata = dict(stage_input.metadata)
-        block_index = _optional_int(metadata.get("block_index"))
-        if block_index is None:
-            block_index = _optional_int(metadata.get("offset"))
         self._summary_service.save_block_digest(
             session_id=stage_input.session_id,
             source_run_id=str(metadata.get("review_run_id") or metadata.get("source_run_id") or ""),
-            block_index=block_index or 0,
+            block_index=output.block_index or 0,
             content=output.summary,
-            msg_log_start=_optional_int(metadata.get("start_msg_log_id"))
-            or _optional_int(metadata.get("range_start_msg_log_id")),
-            msg_log_end=_optional_int(metadata.get("end_msg_log_id"))
-            or _optional_int(metadata.get("range_end_msg_log_id")),
-            msg_count=_optional_int(metadata.get("message_count")) or 0,
+            msg_log_start=output.msg_log_start,
+            msg_log_end=output.msg_log_end,
+            msg_count=output.message_count,
             metadata={
                 "reason": output.reason,
                 **metadata,
             },
         )
+
+
+def _output_with_metadata(
+    stage_input: ReviewStageInput,
+    *,
+    summary: str,
+    reason: str,
+) -> ReviewBlockDigestStageOutput:
+    return ReviewBlockDigestStageOutput(
+        summary=summary,
+        reason=reason,
+        block_index=_block_index(stage_input.metadata),
+        msg_log_start=_optional_int(stage_input.metadata.get("start_msg_log_id")),
+        msg_log_end=_optional_int(stage_input.metadata.get("end_msg_log_id")),
+        message_count=_optional_int(stage_input.metadata.get("message_count")) or 0,
+    )
+
+
+def _block_index(metadata: dict[str, Any]) -> int | None:
+    block_index = _optional_int(metadata.get("block_index"))
+    if block_index is None:
+        block_index = _optional_int(metadata.get("offset"))
+    return block_index
 
 
 def _optional_int(value: Any) -> int | None:

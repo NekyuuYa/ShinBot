@@ -217,12 +217,16 @@ class ReviewRunnerFactory:
 
     def create_workflow_runner_kwargs(self) -> dict[str, Any]:
         """Return ReviewCoordinator constructor kwargs for all stage runners."""
-        return {
+        kwargs: dict[str, Any] = {
             "compression_runner": self.create_overflow_compression_runner(),
             "scan_runner": self.create_review_scan_runner(),
+            "block_digest_runner": self.create_review_block_digest_runner(),
             "reply_runner": self.create_reply_decision_runner(),
             "bootstrap_runner": self.create_active_chat_bootstrap_runner(),
         }
+        if self._summary_service is not None:
+            kwargs["summary_service"] = self._summary_service
+        return kwargs
 
     def _enabled(self, stage_config: ReviewStageRuntimeConfig) -> bool:
         return bool(stage_config.enabled and self._model_runtime is not None)

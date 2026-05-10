@@ -18,6 +18,8 @@ class ReviewWorkflowConfig:
     reply_context_after_messages: int = 10
     tail_history_before_seconds: float = 180.0
     tail_history_limit: int = 500
+    active_chat_summary_max_age_seconds: float = 1800.0
+    review_block_digest_concurrency: int = 4
     provisional_active_chat_interest: float = 15.0
     provisional_active_chat_half_life_seconds: float = 20.0
     active_chat_bootstrap_timeout_seconds: float = 20.0
@@ -105,6 +107,7 @@ class ReviewStageExplanation:
 class ReviewWorkflowExplanation:
     """Stable review result summary decoupled from internal per-stage traces."""
 
+    review_run_id: str
     review_started_at: float
     failed: bool = False
     failure_reason: str | None = None
@@ -172,6 +175,7 @@ class ActiveChatBootstrapResult:
 class ReviewWorkflowResult:
     """Whole review workflow result across scan, reply, and active chat bootstrap."""
 
+    review_run_id: str
     scan: ReviewScanResult
     reply: ReplyDecisionResult
     bootstrap: ActiveChatBootstrapResult
@@ -190,6 +194,7 @@ def build_review_workflow_explanation(
     """Build a concise, stable explanation from a detailed review workflow result."""
 
     return ReviewWorkflowExplanation(
+        review_run_id=result.review_run_id,
         review_started_at=result.review_started_at,
         failed=result.failed,
         failure_reason=result.failure_reason,

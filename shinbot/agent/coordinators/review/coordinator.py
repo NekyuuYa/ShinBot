@@ -6,9 +6,10 @@ import asyncio
 import logging
 import math
 import time
+import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Protocol
+from dataclasses import dataclass, field, replace
+from typing import Any, Protocol
 
 from shinbot.agent.coordinators.review.models import (
     ActiveChatBootstrapResult,
@@ -24,6 +25,10 @@ from shinbot.agent.coordinators.review.stores import (
     ReviewMessageStore,
     ReviewSummaryStore,
 )
+from shinbot.agent.runners.review_block_digest import (
+    NoopReviewBlockDigestStageRunner,
+    ReviewBlockDigestStageRunner,
+)
 from shinbot.agent.runners.review_bootstrap import (
     ActiveChatBootstrapStageRunner,
     NoopActiveChatBootstrapStageRunner,
@@ -36,6 +41,7 @@ from shinbot.agent.runners.review_models import (
     ActiveChatBootstrapStageOutput,
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
+    ReviewBlockDigestStageOutput,
     ReviewScanStageOutput,
 )
 from shinbot.agent.runners.review_reply import (
@@ -152,9 +158,11 @@ class ReviewCoordinator:
         *,
         message_store: ReviewMessageStore | None = None,
         summary_store: ReviewSummaryStore | None = None,
+        summary_service: Any | None = None,
         context_builder: ReviewContextBuilder | None = None,
         compression_runner: OverflowCompressionStageRunner | None = None,
         scan_runner: ReviewScanStageRunner | None = None,
+        block_digest_runner: ReviewBlockDigestStageRunner | None = None,
         reply_runner: ReplyDecisionStageRunner | None = None,
         bootstrap_runner: ActiveChatBootstrapStageRunner | None = None,
         now: Callable[[], float] | None = None,
@@ -162,9 +170,11 @@ class ReviewCoordinator:
         self._config = config or ReviewWorkflowConfig()
         self._message_store = message_store
         self._summary_store = summary_store
+        self._summary_service = summary_service
         self._context_builder = context_builder or ReviewContextBuilderAdapter()
         self._compression_runner = compression_runner or NoopOverflowCompressionStageRunner()
         self._scan_runner = scan_runner or NoopReviewScanStageRunner()
+        self._block_digest_runner = block_digest_runner or NoopReviewBlockDigestStageRunner()
         self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
         self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner()
         self._now = now or time.time
@@ -180,6 +190,7 @@ class ReviewCoordinator:
         unread_messages: list[UnreadMessage],
     ) -> ReviewWorkflowResult:
         """Run the review shell and always hand control back to scheduler."""
+        review_run_id = uuid.uuid4().hex
         started_at = self._now()
         stage_traces: list[ReviewStageTrace] = []
         try:
@@ -198,16 +209,19 @@ class ReviewCoordinator:
                 if use_frozen_snapshot
                 else scheduler.count_unread_messages(session_id)
             )
-            scan, consumed_ranges = await self._run_review_scan(
+            scan, consumed_ranges, block_digests = await self._run_review_scan(
                 session_id=session_id,
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
+                review_run_id=review_run_id,
                 use_partial_consumption=use_partial_consumption,
                 stage_traces=stage_traces,
             )
             reply = await self._run_reply_decision(
                 session_id=session_id,
                 scan=scan,
+                block_digests=block_digests,
+                review_run_id=review_run_id,
                 stage_traces=stage_traces,
             )
             completion = scheduler.complete_review(
@@ -241,9 +255,11 @@ class ReviewCoordinator:
                 summaries=scan.compressed_ranges,
                 reply=reply,
                 active_epoch=active_epoch,
+                review_run_id=review_run_id,
                 stage_traces=stage_traces,
             )
             return ReviewWorkflowResult(
+                review_run_id=review_run_id,
                 scan=scan,
                 reply=reply,
                 bootstrap=bootstrap,
@@ -283,6 +299,7 @@ class ReviewCoordinator:
                 ),
             )
             return ReviewWorkflowResult(
+                review_run_id=review_run_id,
                 scan=ReviewScanResult(),
                 reply=ReplyDecisionResult(),
                 bootstrap=bootstrap,
@@ -319,9 +336,10 @@ class ReviewCoordinator:
         session_id: str,
         unread_count: int,
         unread_ranges: list[UnreadRange],
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
         use_partial_consumption: bool = False,
-    ) -> tuple[ReviewScanResult, list[ConsumedUnreadRange]]:
+    ) -> tuple[ReviewScanResult, list[ConsumedUnreadRange], list[ReviewBlockDigestStageOutput]]:
         scanned_count = min(unread_count, self._config.overflow_threshold_messages)
         batch_count = (
             math.ceil(scanned_count / self._config.review_scan_batch_size)
@@ -332,6 +350,7 @@ class ReviewCoordinator:
             session_id=session_id,
             unread_count=unread_count,
             unread_ranges=unread_ranges,
+            review_run_id=review_run_id,
             stage_traces=stage_traces,
         )
         (
@@ -340,15 +359,18 @@ class ReviewCoordinator:
             candidate_message_ids,
             scan_reasons,
             consumed_ranges,
+            block_digest_tasks,
         ) = await self._load_scan_batches(
             session_id=session_id,
             unread_ranges=unread_ranges,
             max_messages=scanned_count,
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
             summaries=compressed_ranges,
+            review_run_id=review_run_id,
             use_partial_consumption=use_partial_consumption,
             stage_traces=stage_traces,
         )
+        block_digests = await self._await_block_digests(block_digest_tasks)
         return (
             ReviewScanResult(
                 candidate_message_ids=_dedupe_preserve_order(
@@ -370,6 +392,7 @@ class ReviewCoordinator:
                 compressed_ranges=compressed_ranges,
             ),
             consumed_ranges,
+            block_digests,
         )
 
     async def _run_reply_decision(
@@ -377,6 +400,8 @@ class ReviewCoordinator:
         *,
         session_id: str,
         scan: ReviewScanResult,
+        block_digests: list[ReviewBlockDigestStageOutput] | None = None,
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> ReplyDecisionResult:
         if not scan.candidate_message_ids:
@@ -387,6 +412,7 @@ class ReviewCoordinator:
                 reply_reason="reply_decision_skipped_no_message_store",
             )
 
+        active_chat_summary = self._query_recent_active_chat_summary(session_id)
         loaded_message_count = 0
         stage_input_count = 0
         replied = False
@@ -402,19 +428,31 @@ class ReviewCoordinator:
             if not window.messages:
                 continue
             primary_candidate_message_id = window.candidate_message_ids[0]
+            selected_block_digests = _select_reply_block_digests(
+                block_digests or [],
+                candidate_message_ids=window.candidate_message_ids,
+                messages=window.messages,
+            )
             loaded_message_count += len(window.messages)
             stage_input = self._build_stage_input(
                 session_id=session_id,
                 messages=window.messages,
                 purpose="reply_decision",
+                review_run_id=review_run_id,
                 metadata={
                     "candidate_message_id": primary_candidate_message_id,
                     "candidate_message_ids": list(window.candidate_message_ids),
                     "before_messages": self._config.reply_context_before_messages,
                     "after_messages": self._config.reply_context_after_messages,
                     **_summary_metadata_payload(scan.compressed_ranges),
+                    **_block_digest_metadata_payload(selected_block_digests),
+                    **_active_chat_summary_metadata(active_chat_summary),
                 },
-                previous_summary=_format_overflow_summaries(scan.compressed_ranges),
+                previous_summary=_format_reply_previous_summary(
+                    overflow=_format_overflow_summaries(scan.compressed_ranges),
+                    block_digests=selected_block_digests,
+                    active_chat_summary=active_chat_summary,
+                ),
             )
             if stage_input is None:
                 continue
@@ -476,6 +514,7 @@ class ReviewCoordinator:
         session_id: str,
         unread_count: int,
         unread_ranges: list[UnreadRange],
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> list[UnreadRangeSummaryRecord]:
         summaries: list[UnreadRangeSummaryRecord] = []
@@ -509,6 +548,7 @@ class ReviewCoordinator:
                 summary = await self._run_overflow_compression_batch(
                     session_id=session_id,
                     messages=messages,
+                    review_run_id=review_run_id,
                     stage_traces=stage_traces,
                 )
                 if summary is not None:
@@ -524,6 +564,7 @@ class ReviewCoordinator:
         *,
         session_id: str,
         messages: list[dict],
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> UnreadRangeSummaryRecord | None:
         actual_start_msg_log_id = int(messages[0]["id"])
@@ -534,6 +575,7 @@ class ReviewCoordinator:
             session_id=session_id,
             messages=messages,
             purpose="overflow_compression",
+            review_run_id=review_run_id,
             metadata={
                 "start_msg_log_id": actual_start_msg_log_id,
                 "end_msg_log_id": actual_end_msg_log_id,
@@ -567,6 +609,7 @@ class ReviewCoordinator:
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
         active_epoch: int | None,
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         task = asyncio.create_task(
@@ -577,6 +620,7 @@ class ReviewCoordinator:
                 summaries=summaries,
                 reply=reply,
                 active_epoch=active_epoch,
+                review_run_id=review_run_id,
                 stage_traces=list(stage_traces),
             ),
             name=f"review-active-chat-bootstrap:{session_id}",
@@ -618,6 +662,7 @@ class ReviewCoordinator:
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
         active_epoch: int | None,
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         try:
@@ -629,6 +674,7 @@ class ReviewCoordinator:
                     summaries=summaries,
                     reply=reply,
                     active_epoch=active_epoch,
+                    review_run_id=review_run_id,
                     stage_traces=stage_traces,
                 ),
                 timeout=self._config.active_chat_bootstrap_timeout_seconds,
@@ -655,6 +701,7 @@ class ReviewCoordinator:
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
         active_epoch: int | None,
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
@@ -668,6 +715,7 @@ class ReviewCoordinator:
             ended_at=ended_at,
             summaries=summaries,
             reply=reply,
+            review_run_id=review_run_id,
             stage_traces=stage_traces,
         )
         apply_decision = None
@@ -709,18 +757,24 @@ class ReviewCoordinator:
         max_messages: int,
         prefer_tail: bool,
         summaries: list[UnreadRangeSummaryRecord],
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
         use_partial_consumption: bool = False,
-    ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange]]:
+    ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange], list[asyncio.Task[ReviewBlockDigestStageOutput]]]:
         if self._message_store is None or max_messages <= 0:
-            return 0, 0, [], [], []
+            return 0, 0, [], [], [], []
 
         remaining = max_messages
         loaded_count = 0
         stage_input_count = 0
+        block_index = 0
         candidate_message_ids: list[int] = []
         scan_reasons: list[str] = []
         consumed_ranges: list[ConsumedUnreadRange] = []
+        block_digest_tasks: list[asyncio.Task[ReviewBlockDigestStageOutput]] = []
+        block_digest_semaphore = asyncio.Semaphore(
+            max(1, self._config.review_block_digest_concurrency)
+        )
         scan_ranges = (
             self._tail_scan_ranges_from_store(unread_ranges, max_messages=max_messages)
             if prefer_tail
@@ -760,6 +814,7 @@ class ReviewCoordinator:
                     session_id=session_id,
                     messages=batch,
                     purpose="review_scan",
+                    review_run_id=review_run_id,
                     metadata={
                         "range_id": unread_range.id,
                         "range_start_msg_log_id": unread_range.start_msg_log_id,
@@ -771,6 +826,19 @@ class ReviewCoordinator:
                 )
                 if stage_input is not None:
                     stage_input_count += 1
+                    block_digest_tasks.append(
+                        self._schedule_block_digest(
+                            session_id=session_id,
+                            messages=batch,
+                            block_index=block_index,
+                            range_id=unread_range.id,
+                            range_start=unread_range.start_msg_log_id,
+                            range_end=unread_range.end_msg_log_id,
+                            review_run_id=review_run_id,
+                            semaphore=block_digest_semaphore,
+                        )
+                    )
+                    block_index += 1
                     stage_output = await self._run_scan_stage(stage_input)
                     stage_traces.append(_trace_for_scan(stage_input, stage_output))
                     candidate_message_ids.extend(stage_output.candidate_message_ids)
@@ -786,6 +854,7 @@ class ReviewCoordinator:
             candidate_message_ids,
             scan_reasons,
             consumed_ranges,
+            block_digest_tasks,
         )
 
     async def _load_tail_history(
@@ -796,6 +865,7 @@ class ReviewCoordinator:
         ended_at: float,
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
+        review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> tuple[int, bool, ActiveChatBootstrapStageOutput]:
         if self._message_store is None:
@@ -817,6 +887,7 @@ class ReviewCoordinator:
             session_id=session_id,
             messages=tail_history,
             purpose="active_chat_bootstrap",
+            review_run_id=review_run_id,
             metadata={
                 "tail_history_start_at": (started_at - self._config.tail_history_before_seconds)
                 * 1000,
@@ -848,9 +919,12 @@ class ReviewCoordinator:
         session_id: str,
         messages: list[dict],
         purpose: str,
+        review_run_id: str,
         metadata: dict,
         previous_summary: str = "",
     ) -> ReviewStageInput | None:
+        if "review_run_id" not in metadata:
+            metadata = {"review_run_id": review_run_id, **metadata}
         stage_input = self._context_builder.build_for_messages(
             session_id=session_id,
             messages=messages,
@@ -902,6 +976,107 @@ class ReviewCoordinator:
         stage_input: ReviewStageInput,
     ) -> ActiveChatBootstrapStageOutput:
         return await self._bootstrap_runner.run(stage_input)
+
+    async def _run_block_digest_stage(
+        self,
+        stage_input: ReviewStageInput,
+    ) -> ReviewBlockDigestStageOutput:
+        return await self._block_digest_runner.run(stage_input)
+
+    def _query_recent_active_chat_summary(
+        self, session_id: str
+    ) -> str | None:
+        if self._summary_service is None:
+            return None
+        try:
+            from shinbot.agent.services.summaries import SummaryType
+
+            record = self._summary_service.get_latest_by_session(
+                session_id,
+                summary_type=SummaryType.ACTIVE_CHAT,
+            )
+            if record is None:
+                return None
+            max_age = self._config.active_chat_summary_max_age_seconds
+            if max_age > 0:
+                created_at = float(getattr(record, "created_at", 0) or 0)
+                if created_at > 0 and (self._now() - created_at) > max_age:
+                    return None
+            content = str(getattr(record, "content", "") or "").strip()
+            return content or None
+        except Exception:
+            logger.debug("Failed to query recent active_chat summary for %s", session_id)
+            return None
+
+    def _schedule_block_digest(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict],
+        block_index: int,
+        range_id: int | None,
+        range_start: int,
+        range_end: int,
+        review_run_id: str,
+        semaphore: asyncio.Semaphore,
+    ) -> asyncio.Task[ReviewBlockDigestStageOutput]:
+        start_msg_log_id = _message_id(messages[0]) if messages else None
+        end_msg_log_id = _message_id(messages[-1]) if messages else None
+        stage_input = self._build_stage_input(
+            session_id=session_id,
+            messages=messages,
+            purpose="review_block_digest",
+            review_run_id=review_run_id,
+            metadata={
+                "block_index": block_index,
+                "range_id": range_id,
+                "range_start_msg_log_id": range_start,
+                "range_end_msg_log_id": range_end,
+                "start_msg_log_id": start_msg_log_id,
+                "end_msg_log_id": end_msg_log_id,
+                "message_count": len(messages),
+            },
+        )
+        if stage_input is None:
+            return asyncio.ensure_future(
+                _noop_block_digest(
+                    block_index=block_index,
+                    msg_log_start=start_msg_log_id,
+                    msg_log_end=end_msg_log_id,
+                    message_count=len(messages),
+                )
+            )
+
+        async def _run() -> ReviewBlockDigestStageOutput:
+            async with semaphore:
+                result = await self._run_block_digest_stage(stage_input)
+            return _with_block_digest_metadata(
+                result,
+                block_index=block_index,
+                msg_log_start=start_msg_log_id,
+                msg_log_end=end_msg_log_id,
+                message_count=len(messages),
+            )
+
+        return asyncio.create_task(
+            _run(),
+            name=f"review-block-digest:{session_id}:{block_index}",
+        )
+
+    async def _await_block_digests(
+        self,
+        tasks: list[asyncio.Task[ReviewBlockDigestStageOutput]],
+    ) -> list[ReviewBlockDigestStageOutput]:
+        if not tasks:
+            return []
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        digests: list[ReviewBlockDigestStageOutput] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.debug("Block digest task failed: %s", result)
+                continue
+            digests.append(result)
+        return digests
 
     def _save_overflow_summary(self, record: UnreadRangeSummaryRecord) -> None:
         if self._summary_store is None or not _should_persist_summary(record):
@@ -1070,6 +1245,39 @@ class ReviewCoordinator:
             end_at=0.0,
             message_count=consumed_range.message_count,
         )
+
+
+async def _noop_block_digest(
+    *,
+    block_index: int,
+    msg_log_start: int | None,
+    msg_log_end: int | None,
+    message_count: int,
+) -> ReviewBlockDigestStageOutput:
+    return ReviewBlockDigestStageOutput(
+        reason="block_digest_skipped_no_stage_input",
+        block_index=block_index,
+        msg_log_start=msg_log_start,
+        msg_log_end=msg_log_end,
+        message_count=message_count,
+    )
+
+
+def _with_block_digest_metadata(
+    digest: ReviewBlockDigestStageOutput,
+    *,
+    block_index: int,
+    msg_log_start: int | None,
+    msg_log_end: int | None,
+    message_count: int,
+) -> ReviewBlockDigestStageOutput:
+    return replace(
+        digest,
+        block_index=block_index if digest.block_index is None else digest.block_index,
+        msg_log_start=msg_log_start if digest.msg_log_start is None else digest.msg_log_start,
+        msg_log_end=msg_log_end if digest.msg_log_end is None else digest.msg_log_end,
+        message_count=message_count if digest.message_count <= 0 else digest.message_count,
+    )
 
 
 def _dedupe_preserve_order[T](items: list[T]) -> list[T]:
@@ -1263,3 +1471,97 @@ def _format_overflow_summaries(records: list[UnreadRangeSummaryRecord]) -> str:
             f"count={record.message_count}{candidate_suffix}]: {summary}"
         )
     return "\n".join(lines)
+
+
+def _block_digest_metadata_payload(
+    digests: list[ReviewBlockDigestStageOutput],
+) -> dict[str, list[dict[str, object]]]:
+    entries = [
+        {
+            "block_index": digest.block_index,
+            "msg_log_start": digest.msg_log_start,
+            "msg_log_end": digest.msg_log_end,
+            "message_count": digest.message_count,
+            "summary": digest.summary,
+            "reason": digest.reason,
+        }
+        for digest in digests
+        if digest.summary.strip()
+    ]
+    return {"block_digests": entries} if entries else {}
+
+
+def _select_reply_block_digests(
+    digests: list[ReviewBlockDigestStageOutput],
+    *,
+    candidate_message_ids: list[int],
+    messages: list[dict],
+) -> list[ReviewBlockDigestStageOutput]:
+    if not digests:
+        return []
+
+    target_indices: set[int] = set()
+    for digest in digests:
+        if digest.block_index is None:
+            continue
+        if _digest_contains_any(digest, candidate_message_ids):
+            target_indices.add(digest.block_index)
+
+    if not target_indices:
+        message_ids = _message_ids(messages)
+        for digest in digests:
+            if digest.block_index is None:
+                continue
+            if _digest_contains_any(digest, message_ids):
+                target_indices.add(digest.block_index)
+
+    if not target_indices:
+        return []
+
+    selected_indices = {
+        index + delta
+        for index in target_indices
+        for delta in (-1, 0, 1)
+    }
+    return [
+        digest
+        for digest in digests
+        if digest.block_index is not None and digest.block_index in selected_indices
+    ]
+
+
+def _digest_contains_any(
+    digest: ReviewBlockDigestStageOutput,
+    message_ids: list[int],
+) -> bool:
+    if digest.msg_log_start is None or digest.msg_log_end is None:
+        return False
+    return any(digest.msg_log_start <= message_id <= digest.msg_log_end for message_id in message_ids)
+
+
+def _active_chat_summary_metadata(
+    active_chat_summary: str | None,
+) -> dict[str, str]:
+    if not active_chat_summary:
+        return {}
+    return {"active_chat_summary": active_chat_summary}
+
+
+def _format_reply_previous_summary(
+    *,
+    overflow: str = "",
+    block_digests: list[ReviewBlockDigestStageOutput] | None = None,
+    active_chat_summary: str | None = None,
+) -> str:
+    parts: list[str] = []
+    if overflow:
+        parts.append(overflow)
+    for digest in block_digests or []:
+        summary = digest.summary.strip()
+        if not summary:
+            continue
+        block_index = digest.block_index if digest.block_index is not None else "unknown"
+        parts.append(f"Block digest [block {block_index}]: {summary}")
+    if active_chat_summary:
+        parts.append(f"Recent active chat summary: {active_chat_summary}")
+    return "\n".join(parts)

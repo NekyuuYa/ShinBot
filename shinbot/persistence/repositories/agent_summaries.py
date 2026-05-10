@@ -79,6 +79,33 @@ class AgentSummaryRepository(Repository):
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def get_latest_by_session(
+        self,
+        session_id: str,
+        *,
+        summary_type: SummaryType | None = None,
+    ) -> SummaryRecord | None:
+        """Return the newest summary for one session."""
+        if summary_type is not None:
+            sql = """
+                SELECT * FROM agent_summaries
+                WHERE session_id = ? AND summary_type = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            """
+            params: tuple[Any, ...] = (session_id, summary_type.value)
+        else:
+            sql = """
+                SELECT * FROM agent_summaries
+                WHERE session_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            """
+            params = (session_id,)
+        with self.connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return _row_to_record(row) if row is not None else None
+
     def get_by_run_id(
         self,
         source_run_id: str,

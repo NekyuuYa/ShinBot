@@ -48,6 +48,18 @@ class SummaryService:
             session_id, summary_type=summary_type, limit=limit,
         )
 
+    def get_latest_by_session(
+        self,
+        session_id: str,
+        *,
+        summary_type: SummaryType | None = None,
+    ) -> SummaryRecord | None:
+        """Return the newest summary for a session."""
+        return self._repo.get_latest_by_session(
+            session_id,
+            summary_type=summary_type,
+        )
+
     # -- read: review run --
 
     def list_by_run_id(
