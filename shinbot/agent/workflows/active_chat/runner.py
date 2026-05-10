@@ -23,6 +23,7 @@ from shinbot.agent.services.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.services.summaries import ReviewHandoffContext, SummaryHandoffEntry
 from shinbot.agent.utils.parsing import instance_id_from_session
 from shinbot.agent.workflows.active_chat.models import (
     ActiveChatActionKind,
@@ -360,12 +361,8 @@ class ActiveChatFastRunner:
             }
         ]
         if batch.review_result_summary is not None:
-            content.append(
-                {
-                    "type": "text",
-                    "text": "Review handoff summary JSON:\n"
-                    + json.dumps(_jsonable(batch.review_result_summary), ensure_ascii=False),
-                }
+            content.extend(
+                _render_review_handoff(batch.review_result_summary)
             )
         instruction_content = list(getattr(context, "instruction_content", []) or [])
         if instruction_content:
@@ -520,6 +517,71 @@ class _FallbackActiveChatContext:
     source_messages: list[dict[str, Any]]
     instruction_content: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _render_review_handoff(review_result_summary: Any) -> list[dict[str, Any]]:
+    """Render review handoff context as structured prompt sections."""
+    if not isinstance(review_result_summary, ReviewHandoffContext):
+        return [
+            {
+                "type": "text",
+                "text": "Review handoff summary JSON:\n"
+                + json.dumps(_jsonable(review_result_summary), ensure_ascii=False),
+            }
+        ]
+
+    sections: list[dict[str, Any]] = []
+    ctx = review_result_summary
+    if ctx.overflow_summaries:
+        sections.append(
+            {
+                "type": "text",
+                "text": "Overflow summaries:\n"
+                + "\n---\n".join(
+                    _render_summary_handoff_entry(entry)
+                    for entry in ctx.overflow_summaries
+                ),
+            }
+        )
+    if ctx.block_digests:
+        digest_text = "\n".join(
+            _render_summary_handoff_entry(entry) for entry in ctx.block_digests
+        )
+        sections.append(
+            {"type": "text", "text": "Block digests:\n" + digest_text}
+        )
+    if ctx.recent_active_chat_summary:
+        sections.append(
+            {
+                "type": "text",
+                "text": "Previous active chat summary:\n"
+                + ctx.recent_active_chat_summary,
+            }
+        )
+    if not sections:
+        # Fallback: render explanation as JSON if no summaries available
+        sections.append(
+            {
+                "type": "text",
+                "text": "Review handoff summary JSON:\n"
+                + json.dumps(_jsonable(ctx.explanation), ensure_ascii=False),
+            }
+        )
+    return sections
+
+
+def _render_summary_handoff_entry(entry: SummaryHandoffEntry | str) -> str:
+    if isinstance(entry, str):
+        return entry
+    labels: list[str] = []
+    if entry.block_index is not None:
+        labels.append(f"Block {entry.block_index}")
+    if entry.msg_log_start is not None and entry.msg_log_end is not None:
+        labels.append(f"msgid {entry.msg_log_start}-{entry.msg_log_end}")
+    if entry.msg_count:
+        labels.append(f"{entry.msg_count} messages")
+    prefix = f"[{'; '.join(labels)}] " if labels else ""
+    return prefix + entry.content
 
 
 def _active_chat_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:

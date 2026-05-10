@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .handoff import ReviewHandoffContext, SummaryHandoffEntry
 from .models import SummaryRecord, SummaryType, SummaryWriteRequest
 
 if TYPE_CHECKING:
@@ -173,7 +174,9 @@ class SummaryService:
 
 __all__ = [
     "SummaryRecord",
+    "ReviewHandoffContext",
     "SummaryService",
+    "SummaryHandoffEntry",
     "SummaryType",
     "SummaryWriteRequest",
 ]

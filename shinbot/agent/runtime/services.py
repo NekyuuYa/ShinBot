@@ -85,6 +85,7 @@ class AgentRuntime:
         self.database = database
         self.model_runtime = model_runtime
         self.review_runtime_config = _coerce_review_runtime_config(review_runtime_config)
+        self.review_workflow_config = ReviewWorkflowConfig()
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
         self.message_formatter = MessageFormatterService(
@@ -170,6 +171,8 @@ class AgentRuntime:
             workflow_dispatcher=ActiveReplyDispatcher(
                 review_coordinator=self.review_coordinator,
                 active_chat_workflow=self.active_chat_workflow,
+                summary_service=self.summary_service,
+                review_config=self.review_workflow_config,
             ),
         )
         register_chat_action_tools(
@@ -199,7 +202,6 @@ class AgentRuntime:
         )
 
     def _create_review_coordinator(self, database: DatabaseManager) -> ReviewCoordinator:
-        config = ReviewWorkflowConfig()
         runner_factory = ReviewRunnerFactory(
             self.model_runtime,
             config=self.review_runtime_config,
@@ -209,7 +211,7 @@ class AgentRuntime:
             message_formatter=self.message_formatter,
         )
         return ReviewCoordinator(
-            config,
+            self.review_workflow_config,
             message_store=DatabaseReviewMessageStore(database),
             summary_store=DatabaseReviewSummaryStore(database),
             context_builder=ReviewContextBuilderAdapter(self.context_manager),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -2261,7 +2262,10 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
     assert dispatcher.last_review_explanation.replied is False
     active_attention_state = active_chat_workflow.attention_state_for("bot:group:room")
     assert active_attention_state is not None
-    assert active_attention_state.review_result_summary == dispatcher.last_review_explanation
+    from shinbot.agent.services.summaries import ReviewHandoffContext
+
+    assert isinstance(active_attention_state.review_result_summary, ReviewHandoffContext)
+    assert active_attention_state.review_result_summary.explanation == dispatcher.last_review_explanation
 
 
 @pytest.mark.asyncio
@@ -2695,3 +2699,244 @@ async def test_review_workflow_uses_actual_message_bounds_for_interleaved_sessio
         room_message_ids[0],
         room_message_ids[1],
     ]
+
+
+class _HandoffFakeSummaryRecord:
+    def __init__(
+        self,
+        *,
+        content: str,
+        block_index: int | None = None,
+        msg_log_start: int | None = None,
+        msg_log_end: int | None = None,
+        msg_count: int = 0,
+        created_at: float = 0.0,
+    ) -> None:
+        self.content = content
+        self.block_index = block_index
+        self.msg_log_start = msg_log_start
+        self.msg_log_end = msg_log_end
+        self.msg_count = msg_count
+        self.created_at = created_at
+
+
+class _HandoffFakeSummaryService:
+    def __init__(
+        self,
+        *,
+        overflow_records: list[Any] | None = None,
+        digest_records: list[Any] | None = None,
+        active_record: Any | None = None,
+    ) -> None:
+        self._overflow_records = overflow_records or []
+        self._digest_records = digest_records or []
+        self._active_record = active_record
+        self.list_by_run_id_calls: list[tuple[str, Any]] = []
+        self.get_latest_calls: list[tuple[str, Any]] = []
+
+    def list_by_run_id(
+        self, run_id: str, *, summary_type: Any = None,
+    ) -> list[Any]:
+        self.list_by_run_id_calls.append((run_id, summary_type))
+        from shinbot.agent.services.summaries import SummaryType
+
+        if summary_type == SummaryType.OVERFLOW_COMPRESSION:
+            return self._overflow_records
+        if summary_type == SummaryType.BLOCK_DIGEST:
+            return self._digest_records
+        return []
+
+    def get_latest_by_session(
+        self, session_id: str, *, summary_type: Any = None,
+    ) -> Any | None:
+        self.get_latest_calls.append((session_id, summary_type))
+        return self._active_record
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_build_handoff_context_with_summaries() -> None:
+    from shinbot.agent.coordinators.review.models import (
+        ActiveChatBootstrapResult,
+        ReplyDecisionResult,
+        ReviewScanResult,
+        ReviewWorkflowConfig,
+        ReviewWorkflowExplanation,
+        ReviewWorkflowResult,
+    )
+    from shinbot.agent.services.summaries import (
+        ReviewHandoffContext,
+        SummaryHandoffEntry,
+        SummaryType,
+    )
+
+    explanation = ReviewWorkflowExplanation(
+        review_run_id="run_abc",
+        review_started_at=100.0,
+    )
+    result = ReviewWorkflowResult(
+        review_run_id="run_abc",
+        scan=ReviewScanResult(),
+        reply=ReplyDecisionResult(),
+        bootstrap=ActiveChatBootstrapResult(),
+        review_started_at=100.0,
+    )
+
+    fake_summary_service = _HandoffFakeSummaryService(
+        overflow_records=[
+            _HandoffFakeSummaryRecord(
+                content="Old overflow summary.",
+                msg_log_start=1,
+                msg_log_end=10,
+                msg_count=10,
+            ),
+        ],
+        digest_records=[
+            _HandoffFakeSummaryRecord(
+                content="Block 0 digest.",
+                block_index=0,
+                msg_log_start=11,
+                msg_log_end=20,
+                msg_count=10,
+            ),
+            _HandoffFakeSummaryRecord(
+                content="Block 1 digest.",
+                block_index=1,
+                msg_log_start=21,
+                msg_log_end=30,
+                msg_count=10,
+            ),
+        ],
+        active_record=_HandoffFakeSummaryRecord(
+            content="Previous active chat context.",
+            created_at=9999999999.0,
+        ),
+    )
+    dispatcher = ActiveReplyDispatcher(
+        summary_service=fake_summary_service,
+        review_config=ReviewWorkflowConfig(active_chat_summary_max_age_seconds=1800.0),
+    )
+
+    handoff = await dispatcher._build_handoff_context(
+        session_id="bot:group:room",
+        result=result,
+        explanation=explanation,
+    )
+
+    assert isinstance(handoff, ReviewHandoffContext)
+    assert handoff.review_run_id == "run_abc"
+    assert handoff.explanation is explanation
+    assert handoff.overflow_summaries == [
+        SummaryHandoffEntry(
+            content="Old overflow summary.",
+            msg_log_start=1,
+            msg_log_end=10,
+            msg_count=10,
+        )
+    ]
+    assert handoff.block_digests == [
+        SummaryHandoffEntry(
+            content="Block 0 digest.",
+            block_index=0,
+            msg_log_start=11,
+            msg_log_end=20,
+            msg_count=10,
+        ),
+        SummaryHandoffEntry(
+            content="Block 1 digest.",
+            block_index=1,
+            msg_log_start=21,
+            msg_log_end=30,
+            msg_count=10,
+        ),
+    ]
+    assert handoff.recent_active_chat_summary == "Previous active chat context."
+
+    assert fake_summary_service.list_by_run_id_calls[0] == (
+        "run_abc", SummaryType.OVERFLOW_COMPRESSION,
+    )
+    assert fake_summary_service.list_by_run_id_calls[1] == (
+        "run_abc", SummaryType.BLOCK_DIGEST,
+    )
+    assert fake_summary_service.get_latest_calls[0] == (
+        "bot:group:room", SummaryType.ACTIVE_CHAT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_build_handoff_context_without_summary_service() -> None:
+    from shinbot.agent.coordinators.review.models import (
+        ActiveChatBootstrapResult,
+        ReplyDecisionResult,
+        ReviewScanResult,
+        ReviewWorkflowExplanation,
+        ReviewWorkflowResult,
+    )
+    from shinbot.agent.services.summaries import ReviewHandoffContext
+
+    explanation = ReviewWorkflowExplanation(
+        review_run_id="run_abc",
+        review_started_at=100.0,
+    )
+    result = ReviewWorkflowResult(
+        review_run_id="run_abc",
+        scan=ReviewScanResult(),
+        reply=ReplyDecisionResult(),
+        bootstrap=ActiveChatBootstrapResult(),
+        review_started_at=100.0,
+    )
+    dispatcher = ActiveReplyDispatcher()
+
+    handoff = await dispatcher._build_handoff_context(
+        session_id="bot:group:room",
+        result=result,
+        explanation=explanation,
+    )
+
+    assert isinstance(handoff, ReviewHandoffContext)
+    assert handoff.overflow_summaries == []
+    assert handoff.block_digests == []
+    assert handoff.recent_active_chat_summary is None
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_build_handoff_context_filters_stale_active_summary() -> None:
+    import time
+
+    from shinbot.agent.coordinators.review.models import (
+        ActiveChatBootstrapResult,
+        ReplyDecisionResult,
+        ReviewScanResult,
+        ReviewWorkflowConfig,
+        ReviewWorkflowExplanation,
+        ReviewWorkflowResult,
+    )
+
+    explanation = ReviewWorkflowExplanation(
+        review_run_id="run_abc",
+        review_started_at=100.0,
+    )
+    result = ReviewWorkflowResult(
+        review_run_id="run_abc",
+        scan=ReviewScanResult(),
+        reply=ReplyDecisionResult(),
+        bootstrap=ActiveChatBootstrapResult(),
+        review_started_at=100.0,
+    )
+
+    stale_record = _HandoffFakeSummaryRecord(
+        content="Stale summary.",
+        created_at=time.time() - 3600,
+    )
+    fake_summary_service = _HandoffFakeSummaryService(active_record=stale_record)
+    dispatcher = ActiveReplyDispatcher(
+        summary_service=fake_summary_service,
+        review_config=ReviewWorkflowConfig(active_chat_summary_max_age_seconds=1800.0),
+    )
+
+    handoff = await dispatcher._build_handoff_context(
+        session_id="bot:group:room",
+        result=result,
+        explanation=explanation,
+    )
+
+    assert handoff.recent_active_chat_summary is None

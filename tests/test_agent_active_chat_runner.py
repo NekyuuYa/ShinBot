@@ -10,6 +10,7 @@ from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
 from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
 from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.summaries import ReviewHandoffContext, SummaryHandoffEntry
 from shinbot.agent.services.tools.schema import ToolCallRequest, ToolCallResult
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat.models import (
@@ -719,3 +720,120 @@ async def test_active_chat_fast_runner_accepts_dataclass_review_handoff_summary(
         if "Review handoff summary JSON" in str(block.get("text", ""))
     ]
     assert handoff_blocks
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_renders_review_handoff_context_sections() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    explanation = ReviewWorkflowExplanation(
+        review_run_id="test_run",
+        review_started_at=123.0,
+        candidate_message_ids=[99],
+    )
+    handoff = ReviewHandoffContext(
+        review_run_id="test_run",
+        explanation=explanation,
+        overflow_summaries=[
+            SummaryHandoffEntry(
+                content="Old messages about topic A.",
+                msg_log_start=1,
+                msg_log_end=10,
+                msg_count=10,
+            ),
+            SummaryHandoffEntry(content="Old messages about topic B."),
+        ],
+        block_digests=[
+            SummaryHandoffEntry(block_index=0, content="Discussion about X."),
+            SummaryHandoffEntry(
+                block_index=1,
+                content="Discussion about Y.",
+                msg_log_start=11,
+                msg_log_end=20,
+                msg_count=10,
+            ),
+        ],
+        recent_active_chat_summary="Previously discussed Z.",
+    )
+    result = await runner.run(make_batch(review_result_summary=handoff))
+
+    assert result.success is True
+    all_text = " ".join(
+        block.get("text", "")
+        for message in model_runtime.calls[0].messages
+        for block in (
+            message.get("content", [])
+            if isinstance(message.get("content"), list)
+            else []
+        )
+    )
+    assert "Old messages about topic A." in all_text
+    assert "Old messages about topic B." in all_text
+    assert "[Block 0] Discussion about X." in all_text
+    assert "[Block 1; msgid 11-20; 10 messages] Discussion about Y." in all_text
+    assert "Previously discussed Z." in all_text
+    # Should NOT contain JSON dump fallback
+    assert "Review handoff summary JSON" not in all_text
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_handoff_context_fallback_when_empty() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    explanation = ReviewWorkflowExplanation(
+        review_run_id="test_run",
+        review_started_at=123.0,
+    )
+    handoff = ReviewHandoffContext(
+        review_run_id="test_run",
+        explanation=explanation,
+        overflow_summaries=[],
+        block_digests=[],
+        recent_active_chat_summary=None,
+    )
+    result = await runner.run(make_batch(review_result_summary=handoff))
+
+    assert result.success is True
+    all_text = " ".join(
+        block.get("text", "")
+        for message in model_runtime.calls[0].messages
+        for block in (
+            message.get("content", [])
+            if isinstance(message.get("content"), list)
+            else []
+        )
+    )
+    # Empty handoff falls back to explanation JSON
+    assert "Review handoff summary JSON" in all_text
