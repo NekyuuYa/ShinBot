@@ -276,6 +276,10 @@ class ActiveChatCoordinator:
         """Return in-memory attention state for tests and diagnostics."""
         return self._states.get(session_id)
 
+    def active_session_ids(self) -> list[str]:
+        """Return session ids that have in-memory active chat state."""
+        return list(self._states.keys())
+
     async def drain_pending_for_repair(
         self,
         batch: ActiveChatBatch,

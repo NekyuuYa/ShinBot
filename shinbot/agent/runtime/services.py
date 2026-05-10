@@ -145,9 +145,16 @@ class AgentRuntime:
         register_identity_tools(self.tool_registry, self.identity_store, self.context_manager)
 
         self.active_chat_timer = ActiveChatTimerService()
-        self.agent_scheduler = self._create_agent_scheduler(workflow_dispatcher=None)
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = ActiveChatCoordinator()
+        self._workflow_dispatcher = ActiveReplyDispatcher(
+            active_chat_workflow=self.active_chat_workflow,
+            summary_service=self.summary_service,
+            review_config=self.review_workflow_config,
+        )
+        self.agent_scheduler = self._create_agent_scheduler(
+            workflow_dispatcher=self._workflow_dispatcher,
+        )
 
         if database is None:
             return
@@ -167,13 +174,14 @@ class AgentRuntime:
         self.active_chat_workflow.set_round_handler(
             lambda batch: self._run_active_chat_fast_round(active_chat_fast_runner, batch)
         )
+        self._workflow_dispatcher = ActiveReplyDispatcher(
+            review_coordinator=self.review_coordinator,
+            active_chat_workflow=self.active_chat_workflow,
+            summary_service=self.summary_service,
+            review_config=self.review_workflow_config,
+        )
         self.agent_scheduler = self._create_agent_scheduler(
-            workflow_dispatcher=ActiveReplyDispatcher(
-                review_coordinator=self.review_coordinator,
-                active_chat_workflow=self.active_chat_workflow,
-                summary_service=self.summary_service,
-                review_config=self.review_workflow_config,
-            ),
+            workflow_dispatcher=self._workflow_dispatcher,
         )
         register_chat_action_tools(
             self.tool_registry,
@@ -258,6 +266,7 @@ class AgentRuntime:
         """Shut down Agent-side background services."""
         if self.review_coordinator is not None:
             await self.review_coordinator.shutdown()
+        self._workflow_dispatcher.flush_active_chat_summaries()
         await self.active_chat_workflow.shutdown()
         await self.active_chat_timer.shutdown()
         if self.media_inspection_runner is not None:

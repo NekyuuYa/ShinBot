@@ -143,6 +143,17 @@ def test_agent_runtime_accepts_review_runner_config_mapping(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_agent_runtime_without_database_shutdown_is_noop() -> None:
+    bot = ShinBot()
+    runtime = install_agent_runtime(bot)
+
+    await runtime.shutdown()
+
+    assert runtime.review_coordinator is None
+    assert runtime.active_chat_workflow.active_session_ids() == []
+
+
+@pytest.mark.asyncio
 async def test_agent_runtime_resolves_response_profile_from_agent_boundary(
     tmp_path: Path,
 ) -> None:
