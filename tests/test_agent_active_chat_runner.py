@@ -735,17 +735,18 @@ async def test_active_chat_context_adapter_falls_back_when_formatter_fails() -> 
             context_manager,
             message_formatter=BrokenMessageFormatter(),
         ),
+        message_formatter=MessageFormatterService(),
     )
 
     result = await runner.run(make_batch(self_platform_id="bot-self"))
 
     assert result.success is True
-    assert context_manager.instruction_calls[0]["message_ids"] == [101]
+    assert context_manager.instruction_calls == []
     rendered_prompt_text = json.dumps(
         model_runtime.calls[0].messages,
         ensure_ascii=False,
     )
-    assert "Active batch from context builder" in rendered_prompt_text
+    assert "[msg_log_id:101] Alice: message 101" in rendered_prompt_text
 
 
 @pytest.mark.asyncio

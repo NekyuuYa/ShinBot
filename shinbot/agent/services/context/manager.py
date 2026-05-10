@@ -30,6 +30,7 @@ from shinbot.agent.services.context.state.active_pool import ActiveContextPool
 from shinbot.agent.services.context.state.alias_table import SessionAliasTable
 from shinbot.agent.services.context.state.state_store import ContextSessionState
 from shinbot.agent.services.context.utils.token_utils import estimate_text_tokens
+from shinbot.agent.services.message_formatter import MessageFormatterService
 
 if TYPE_CHECKING:
     from shinbot.agent.services.identity import IdentityStore
@@ -95,7 +96,13 @@ class ContextManager:
             instruction_runtime=self._instruction_runtime,
             identity_store=self._identity_store,
         )
-        self._prompt_memory_assembler = PromptMemoryAssembler(self._prompt_runtime)
+        self._prompt_memory_assembler = PromptMemoryAssembler(
+            self._prompt_runtime,
+            message_formatter=MessageFormatterService(
+                identity_store=self._identity_store,
+                media_service=self._media_service,
+            ),
+        )
 
     def get_pool(self, session_id: str) -> ActiveContextPool:
         return self._pool_runtime.get_pool(session_id)

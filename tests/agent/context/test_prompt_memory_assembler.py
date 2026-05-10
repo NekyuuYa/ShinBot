@@ -30,20 +30,6 @@ def test_prompt_memory_assembler_orders_context_instruction_and_constraints() ->
             self.calls.append(f"cacheable:{session_id}")
             return 1
 
-        def build_instruction_stage_content(
-            self,
-            session_id,
-            unread_records,
-            *,
-            previous_summary="",
-            self_platform_id="",
-            now_ms=None,
-        ):
-            self.calls.append(
-                f"instruction:{session_id}:{len(unread_records)}:{previous_summary}:{self_platform_id}:{now_ms}"
-            )
-            return [{"type": "text", "text": "instruction"}]
-
         def build_active_alias_constraint_text(self, session_id, *, unread_records=None, now_ms=None):
             self.calls.append(f"constraint:{session_id}:{len(unread_records or [])}:{now_ms}")
             return "constraint"
@@ -76,7 +62,11 @@ def test_prompt_memory_assembler_orders_context_instruction_and_constraints() ->
         "inactive aliases",
         "context",
     ]
-    assert bundle.instruction_blocks == [{"type": "text", "text": "instruction"}]
+    rendered_instruction = "\n".join(
+        block["text"] for block in bundle.instruction_blocks
+    )
+    assert "[上轮观察摘要：summary]" in rendered_instruction
+    assert "[msg_log_id:1] unknown: hello" in rendered_instruction
     assert bundle.constraint_text == "constraint"
     assert bundle.cacheable_message_count == 2
     assert bundle.metadata == {"session_id": "s-assemble", "message_count": 1}
@@ -85,7 +75,6 @@ def test_prompt_memory_assembler_orders_context_instruction_and_constraints() ->
         "context:s-assemble:bot:123",
         "inactive:s-assemble:1:123",
         "cacheable:s-assemble",
-        "instruction:s-assemble:1:summary:bot:123",
         "constraint:s-assemble:1:123",
     ]
 
@@ -106,17 +95,6 @@ def test_prompt_memory_assembler_prepends_long_term_memory_messages() -> None:
 
         def get_cacheable_context_message_count(self, session_id):
             return 1
-
-        def build_instruction_stage_content(
-            self,
-            session_id,
-            unread_records,
-            *,
-            previous_summary="",
-            self_platform_id="",
-            now_ms=None,
-        ):
-            return []
 
         def build_active_alias_constraint_text(self, session_id, *, unread_records=None, now_ms=None):
             return ""

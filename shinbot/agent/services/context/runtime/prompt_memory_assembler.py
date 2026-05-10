@@ -14,6 +14,10 @@ from shinbot.agent.services.context.projectors.projection import (
     PromptMemoryBundle,
     PromptMemoryProjectionRequest,
 )
+from shinbot.agent.services.message_formatter import (
+    MessageFormatConfig,
+    MessageFormatterService,
+)
 
 
 class PromptMemoryRuntime(Protocol):
@@ -37,16 +41,6 @@ class PromptMemoryRuntime(Protocol):
 
     def get_cacheable_context_message_count(self, session_id: str) -> int: ...
 
-    def build_instruction_stage_content(
-        self,
-        session_id: str,
-        unread_records: list[dict[str, Any]],
-        *,
-        previous_summary: str = "",
-        self_platform_id: str = "",
-        now_ms: int | None = None,
-    ) -> list[dict[str, Any]]: ...
-
     def build_active_alias_constraint_text(
         self,
         session_id: str,
@@ -61,6 +55,9 @@ class PromptMemoryAssembler:
     """Assemble the context layer output consumed by PromptRegistry."""
 
     runtime: PromptMemoryRuntime
+    message_formatter: MessageFormatterService | None = field(
+        default_factory=MessageFormatterService
+    )
     long_term_provider: LongTermMemoryProvider = field(
         default_factory=NoopLongTermMemoryProvider
     )
@@ -93,13 +90,15 @@ class PromptMemoryAssembler:
             context_messages = [*long_term_messages, *context_messages]
 
         instruction_blocks: list[dict[str, Any]] = []
-        if request.unread_records:
-            instruction_blocks = self.runtime.build_instruction_stage_content(
-                request.session_id,
+        if request.unread_records and self.message_formatter is not None:
+            instruction_blocks = self.message_formatter.format_instruction_content(
                 request.unread_records,
+                MessageFormatConfig(
+                    self_platform_id=request.self_platform_id,
+                    now_ms=request.now_ms,
+                    inject_record_id=True,
+                ),
                 previous_summary=request.previous_summary,
-                self_platform_id=request.self_platform_id,
-                now_ms=request.now_ms,
             )
 
         constraint_text = self.runtime.build_active_alias_constraint_text(

@@ -77,6 +77,7 @@ class ActiveChatContextBuilderAdapter:
         resolved_options = options or ActiveChatContextBuildOptions()
         metadata = {"purpose": purpose, **resolved_options.metadata}
         instruction_content = []
+        formatter_failed = False
         if self._message_formatter is not None:
             try:
                 instruction_content = self._message_formatter.format_instruction_content(
@@ -94,11 +95,16 @@ class ActiveChatContextBuilderAdapter:
                     purpose,
                     session_id,
                 )
+                formatter_failed = True
 
         now_ms = resolved_options.now_ms
         if now_ms is None:
             now_ms = int(time.time() * 1000)
-        if not instruction_content and self._context_manager is not None:
+        if (
+            not instruction_content
+            and not formatter_failed
+            and self._context_manager is not None
+        ):
             instruction_content = self._context_manager.build_instruction_stage_content(
                 session_id,
                 list(messages),
