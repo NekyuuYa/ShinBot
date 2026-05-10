@@ -60,9 +60,6 @@ def infer_component_source(component: PromptComponent) -> PromptSource:
             source_type = PromptSourceType.CONTEXT_PLUGIN
         else:
             source_type = PromptSourceType.AGENT_PLUGIN
-    elif component.stage == PromptStage.ABILITIES:
-        source_type = PromptSourceType.TOOLING_MODULE
-
     return PromptSource(
         source_type=source_type,
         source_id=owner_plugin_id or component.id,
@@ -103,35 +100,6 @@ def render_component_text(
     raise ValueError(f"Unsupported prompt component kind: {component.kind}")
 
 
-def render_component_structured(
-    *,
-    component: PromptComponent,
-    request: PromptAssemblyRequest,
-    source: PromptSource,
-    resolvers: dict[str, Resolver],
-) -> list[dict[str, Any]]:
-    """Render one prompt component as structured data, usually tool definitions."""
-
-    if component.kind == PromptComponentKind.RESOLVER:
-        resolver = resolvers.get(component.resolver_ref)
-        if resolver is None:
-            raise ValueError(f"Prompt resolver {component.resolver_ref!r} is not registered")
-        result = resolver(request, component, source)
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict):
-            return [result]
-        raise ValueError(
-            f"ABILITIES resolver {component.resolver_ref!r} must return list[dict] or dict"
-        )
-    if component.kind == PromptComponentKind.STATIC_TEXT and component.content:
-        parsed = json.loads(component.content)
-        if isinstance(parsed, list):
-            return parsed
-        return [parsed]
-    return []
-
-
 def expand_component_tree(
     *,
     component: PromptComponent,
@@ -162,36 +130,10 @@ def expand_component_tree(
 
     source = infer_component_source(component)
 
-    if component.stage == PromptStage.ABILITIES:
-        tool_defs = render_component_structured(
-            component=component,
-            request=request,
-            source=source,
-            resolvers=resolvers,
-        )
-        hash_input = json.dumps(tool_defs, ensure_ascii=False, sort_keys=True)
-        record = PromptComponentRecord(
-            component_id=component.id,
-            stage=component.stage,
-            kind=component.kind,
-            version=component.version,
-            priority=component.priority,
-            source=source,
-            rendered_data=tool_defs,
-            text_hash=stable_text_hash(hash_input),
-            metadata=dict(component.metadata),
-        )
-        records_by_stage[component.stage].append(record)
-        ordered_records.append(record)
-        return
-
-    # For RESOLVER components outside ABILITIES/CONTEXT, call the resolver once and
-    # extract both rendered_text and rendered_content_blocks from the result.
+    # For RESOLVER components outside CONTEXT, call the resolver once and extract
+    # both rendered_text and rendered_content_blocks from the result.
     rendered_content_blocks: list[dict[str, Any]] | None = None
-    if component.kind == PromptComponentKind.RESOLVER and component.stage not in (
-        PromptStage.ABILITIES,
-        PromptStage.CONTEXT,
-    ):
+    if component.kind == PromptComponentKind.RESOLVER and component.stage != PromptStage.CONTEXT:
         resolver = resolvers.get(component.resolver_ref)
         if resolver is None:
             raise ValueError(f"Prompt resolver {component.resolver_ref!r} is not registered")

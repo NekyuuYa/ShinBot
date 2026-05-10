@@ -226,6 +226,45 @@ def test_prompt_message_builder_projects_stage_assembly() -> None:
     }
 
 
+def test_prompt_registry_projects_abilities_as_prompt_text_not_tools() -> None:
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system",
+        )
+    )
+    registry.register_component(
+        PromptComponent(
+            id="abilities",
+            stage=PromptStage.ABILITIES,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="can use chat action tools when they are provided separately",
+        )
+    )
+
+    result = registry.assemble(
+        PromptAssemblyRequest(component_overrides=["system", "abilities"])
+    )
+
+    abilities_stage = next(
+        stage for stage in result.stages if stage.stage == PromptStage.ABILITIES
+    )
+    assert abilities_stage.rendered_text == (
+        "can use chat action tools when they are provided separately"
+    )
+    system_text = "\n".join(_extract_message_texts(result.messages[:1]))
+    assert "provided separately" in system_text
+    ability_record = next(
+        component
+        for component in result.ordered_components
+        if component.component_id == "abilities"
+    )
+    assert not hasattr(ability_record, "rendered_data")
+
+
 def test_prompt_registry_supports_template_and_resolver_components() -> None:
     registry = PromptRegistry()
     registry.register_component(

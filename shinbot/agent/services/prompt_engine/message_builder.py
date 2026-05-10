@@ -1,4 +1,4 @@
-"""Project prompt stage assemblies into model request messages and tools."""
+"""Project prompt stage assemblies into model request messages."""
 
 from __future__ import annotations
 
@@ -20,7 +20,11 @@ class PromptMessageBuilder:
         stage_by_name = {block.stage: block for block in stage_assembly.stages}
 
         system_content: list[dict[str, Any]] = []
-        for stage_key in (PromptStage.SYSTEM_BASE, PromptStage.IDENTITY):
+        for stage_key in (
+            PromptStage.SYSTEM_BASE,
+            PromptStage.IDENTITY,
+            PromptStage.ABILITIES,
+        ):
             block = stage_by_name[stage_key]
             for record in block.components:
                 if record.rendered_text:

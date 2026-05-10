@@ -61,8 +61,8 @@ Resolver = Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], Any]
 class PromptRegistry:
     """In-memory prompt registry with deterministic assembly.
 
-    Produces structured ``messages`` + ``tools`` lists in Chat Completions
-    API format instead of a flat prompt string.
+    Produces structured ``messages`` in Chat Completions API format instead of
+    a flat prompt string. Tool schemas are assembled by ``services.tools``.
     """
 
     BUILTIN_IDENTITY_MAP_PROMPT_COMPONENT_ID = "builtin.instructions.identity_map"
@@ -302,14 +302,7 @@ class PromptRegistry:
             if any(r.source.source_type == PromptSourceType.UNKNOWN_SOURCE for r in records):
                 has_unknown_source = True
 
-            if stage == PromptStage.ABILITIES:
-                stage_blocks.append(
-                    PromptStageBlock(
-                        stage=stage,
-                        components=records,
-                    )
-                )
-            elif stage == PromptStage.CONTEXT:
+            if stage == PromptStage.CONTEXT:
                 msgs_for_stage = [
                     msg for r in records if r.rendered_messages for msg in r.rendered_messages
                 ]

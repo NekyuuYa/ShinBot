@@ -45,7 +45,6 @@ class PromptSourceType(StrEnum):
     BUILTIN_SYSTEM = "builtin_system"
     AGENT_PLUGIN = "agent_plugin"
     CONTEXT_PLUGIN = "context_plugin"
-    TOOLING_MODULE = "tooling_module"
     SKILL_MODULE = "skill_module"
     EXTERNAL_INJECTION = "external_injection"
     UNKNOWN_SOURCE = "unknown_source"
@@ -202,7 +201,6 @@ class PromptComponentRecord(BaseModel):
     selected: bool = True
     source: PromptSource = Field(default_factory=PromptSource)
     rendered_text: str = ""
-    rendered_data: list[dict[str, Any]] | None = None
     rendered_messages: list[dict[str, Any]] | None = None
     rendered_content_blocks: list[dict[str, Any]] | None = None
     text_hash: str = ""
@@ -235,7 +233,7 @@ class PromptAssemblyResult(BaseModel):
 
 
 class PromptStageAssembly(BaseModel):
-    """Intermediate 7-stage prompt material before message/tool projection."""
+    """Intermediate 7-stage prompt material before message projection."""
 
     profile_id: str = ""
     caller: str = ""
