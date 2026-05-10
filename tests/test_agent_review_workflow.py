@@ -16,12 +16,14 @@ from shinbot.agent.coordinators.review.models import (
     build_review_workflow_explanation,
 )
 from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
+from shinbot.agent.runners.review_block_digest import LLMReviewBlockDigestStageRunner
 from shinbot.agent.runners.review_bootstrap import LLMActiveChatBootstrapStageRunner
 from shinbot.agent.runners.review_compression import LLMOverflowCompressionStageRunner
 from shinbot.agent.runners.review_models import (
     ActiveChatBootstrapStageOutput,
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
+    ReviewBlockDigestStageOutput,
     ReviewScanStageOutput,
 )
 from shinbot.agent.runners.review_reply import LLMReplyDecisionStageRunner
@@ -359,6 +361,7 @@ class FakeModelRuntime:
 class FakeReviewToolManager:
     def __init__(self) -> None:
         self.execute_calls: list[object] = []
+        self.build_request_tool_calls: list[dict[str, object]] = []
         self._next_message_log_id = 42
 
     def export_model_tools(self, **kwargs):
@@ -409,6 +412,7 @@ class FakeReviewToolManager:
         ]
 
     def build_request_tools(self, tool_names, **kwargs):
+        self.build_request_tool_calls.append({"tool_names": list(tool_names), **kwargs})
         schemas = {
             str(item["function"]["name"]): item
             for item in self.export_model_tools(**kwargs)
@@ -431,6 +435,20 @@ class FakeReviewToolManager:
                 "error_message": "",
             },
         )()
+
+
+class FakeSummaryService:
+    def __init__(self) -> None:
+        self.overflow_compressions: list[dict[str, object]] = []
+        self.block_digests: list[dict[str, object]] = []
+
+    def save_overflow_compression(self, *args, **kwargs) -> int:
+        self.overflow_compressions.append({"args": args, "kwargs": kwargs})
+        return len(self.overflow_compressions)
+
+    def save_block_digest(self, *args, **kwargs) -> int:
+        self.block_digests.append({"args": args, "kwargs": kwargs})
+        return len(self.block_digests)
 
 
 def _insert_message(
@@ -579,6 +597,87 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_compression_runner_saves_summary() -> None:
+    summary_service = FakeSummaryService()
+    model_runtime = FakeModelRuntime(
+        ['{"summary": "older context", "candidate_message_ids": [2], "reason": "compressed"}']
+    )
+    runner = LLMOverflowCompressionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        summary_service=summary_service,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="overflow_compression",
+            source_messages=[{"id": 1, "raw_text": "old"}, {"id": 2, "raw_text": "older"}],
+            metadata={
+                "review_run_id": "review-1",
+                "start_msg_log_id": 1,
+                "end_msg_log_id": 2,
+                "message_count": 2,
+            },
+        )
+    )
+
+    assert result.summary == "older context"
+    assert result.candidate_message_ids == [2]
+    saved = summary_service.overflow_compressions[0]
+    assert saved["args"] == ()
+    assert saved["kwargs"]["session_id"] == "bot:group:room"
+    assert saved["kwargs"]["source_run_id"] == "review-1"
+    assert saved["kwargs"]["content"] == "older context"
+    assert saved["kwargs"]["msg_log_start"] == 1
+    assert saved["kwargs"]["msg_log_end"] == 2
+    assert saved["kwargs"]["msg_count"] == 2
+    assert saved["kwargs"]["metadata"]["candidate_message_ids"] == [2]
+
+
+@pytest.mark.asyncio
+async def test_review_block_digest_runner_saves_block_digest() -> None:
+    summary_service = FakeSummaryService()
+    model_runtime = FakeModelRuntime(
+        ['{"summary": "block context", "reason": "digest"}']
+    )
+    runner = LLMReviewBlockDigestStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=PromptRegistry(),
+        summary_service=summary_service,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="review_block_digest",
+            source_messages=[{"id": 10, "raw_text": "hello"}],
+            metadata={
+                "review_run_id": "review-1",
+                "block_index": 3,
+                "start_msg_log_id": 10,
+                "end_msg_log_id": 19,
+                "message_count": 10,
+            },
+        )
+    )
+
+    assert isinstance(result, ReviewBlockDigestStageOutput)
+    assert result.summary == "block context"
+    saved = summary_service.block_digests[0]
+    assert saved["args"] == ()
+    assert saved["kwargs"]["session_id"] == "bot:group:room"
+    assert saved["kwargs"]["source_run_id"] == "review-1"
+    assert saved["kwargs"]["block_index"] == 3
+    assert saved["kwargs"]["content"] == "block context"
+    assert saved["kwargs"]["msg_log_start"] == 10
+    assert saved["kwargs"]["msg_log_end"] == 19
+    assert saved["kwargs"]["msg_count"] == 10
+
+
+@pytest.mark.asyncio
 async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
     model_runtime = FakeModelRuntime(['{"candidate_message_ids": [7], "reason": "selected"}'])
     runner = LLMReviewScanStageRunner(
@@ -647,6 +746,7 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     call = model_runtime.calls[0]
     tool_names = [tool["function"]["name"] for tool in call.tools]
     assert tool_names == ["no_reply", "send_reply", "send_poke"]
+    assert tool_manager.build_request_tool_calls[0]["tags"] == {"chat_action"}
     send_reply_tool = call.tools[1]
     send_poke_tool = call.tools[2]
     assert "quote_message_log_id" not in send_reply_tool["function"]["parameters"]["required"]

@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
+from shinbot.agent.runners.review_block_digest import (
+    LLMReviewBlockDigestStageRunner,
+    NoopReviewBlockDigestStageRunner,
+    ReviewBlockDigestStageRunner,
+    register_review_block_digest_prompt_components,
+)
 from shinbot.agent.runners.review_bootstrap import (
     ActiveChatBootstrapStageRunner,
     LLMActiveChatBootstrapStageRunner,
@@ -30,6 +36,7 @@ from shinbot.agent.runners.review_scan import (
     ReviewScanStageRunner,
     register_review_scan_prompt_components,
 )
+from shinbot.agent.services.message_formatter import MessageFormatConfig
 from shinbot.agent.services.prompt_engine import PromptStage
 
 
@@ -44,7 +51,10 @@ class ReviewStageRuntimeConfig:
     profile_id: str = ""
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     system_prompt: str | None = None
+    message_format_config: MessageFormatConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
+    max_model_retries: int = 1
+    retry_backoff_seconds: float = 0.25
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any] | None) -> ReviewStageRuntimeConfig:
@@ -60,7 +70,15 @@ class ReviewStageRuntimeConfig:
                 value.get("component_ids_by_stage")
             ),
             system_prompt=_optional_str(value.get("system_prompt")),
+            message_format_config=_message_format_config(
+                value.get("message_format_config")
+            ),
             params=dict(_mapping_or_empty(value.get("params"))),
+            max_model_retries=_int_or_default(value.get("max_model_retries"), 1),
+            retry_backoff_seconds=_float_or_default(
+                value.get("retry_backoff_seconds"),
+                0.25,
+            ),
         )
 
     def to_llm_config(self) -> ReviewLLMRunnerConfig:
@@ -70,7 +88,10 @@ class ReviewStageRuntimeConfig:
             "model_id": self.model_id,
             "profile_id": self.profile_id,
             "component_ids_by_stage": dict(self.component_ids_by_stage),
+            "message_format_config": self.message_format_config,
             "params": dict(self.params),
+            "max_model_retries": self.max_model_retries,
+            "retry_backoff_seconds": self.retry_backoff_seconds,
         }
         if self.system_prompt is not None:
             kwargs["system_prompt"] = self.system_prompt
@@ -87,6 +108,9 @@ class ReviewRuntimeConfig:
     review_scan: ReviewStageRuntimeConfig = field(default_factory=ReviewStageRuntimeConfig)
     reply_decision: ReviewStageRuntimeConfig = field(default_factory=ReviewStageRuntimeConfig)
     active_chat_bootstrap: ReviewStageRuntimeConfig = field(
+        default_factory=ReviewStageRuntimeConfig
+    )
+    review_block_digest: ReviewStageRuntimeConfig = field(
         default_factory=ReviewStageRuntimeConfig
     )
 
@@ -107,6 +131,9 @@ class ReviewRuntimeConfig:
             active_chat_bootstrap=ReviewStageRuntimeConfig.from_mapping(
                 _mapping_or_none(value.get("active_chat_bootstrap"))
             ),
+            review_block_digest=ReviewStageRuntimeConfig.from_mapping(
+                _mapping_or_none(value.get("review_block_digest"))
+            ),
         )
 
 
@@ -120,11 +147,15 @@ class ReviewRunnerFactory:
         config: ReviewRuntimeConfig | None = None,
         prompt_registry: Any | None = None,
         tool_manager: Any | None = None,
+        summary_service: Any | None = None,
+        message_formatter: Any | None = None,
     ) -> None:
         self._model_runtime = model_runtime
         self._config = config or ReviewRuntimeConfig()
         self._prompt_registry = prompt_registry
         self._tool_manager = tool_manager
+        self._summary_service = summary_service
+        self._message_formatter = message_formatter
 
     def create_overflow_compression_runner(self) -> OverflowCompressionStageRunner:
         stage_config = self._config.overflow_compression
@@ -133,6 +164,8 @@ class ReviewRunnerFactory:
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
                 prompt_registry=self._prompt_registry,
+                summary_service=self._summary_service,
+                message_formatter=self._message_formatter,
             )
         return NoopOverflowCompressionStageRunner()
 
@@ -143,6 +176,7 @@ class ReviewRunnerFactory:
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
                 prompt_registry=self._prompt_registry,
+                message_formatter=self._message_formatter,
             )
         return NoopReviewScanStageRunner()
 
@@ -154,6 +188,7 @@ class ReviewRunnerFactory:
                 config=stage_config.to_llm_config(),
                 prompt_registry=self._prompt_registry,
                 tool_manager=self._tool_manager,
+                message_formatter=self._message_formatter,
             )
         return NoopReplyDecisionStageRunner()
 
@@ -164,8 +199,21 @@ class ReviewRunnerFactory:
                 self._model_runtime,
                 config=stage_config.to_llm_config(),
                 prompt_registry=self._prompt_registry,
+                message_formatter=self._message_formatter,
             )
         return NoopActiveChatBootstrapStageRunner()
+
+    def create_review_block_digest_runner(self) -> ReviewBlockDigestStageRunner:
+        stage_config = self._config.review_block_digest
+        if self._enabled(stage_config):
+            return LLMReviewBlockDigestStageRunner(
+                self._model_runtime,
+                config=stage_config.to_llm_config(),
+                prompt_registry=self._prompt_registry,
+                summary_service=self._summary_service,
+                message_formatter=self._message_formatter,
+            )
+        return NoopReviewBlockDigestStageRunner()
 
     def create_workflow_runner_kwargs(self) -> dict[str, Any]:
         """Return ReviewCoordinator constructor kwargs for all stage runners."""
@@ -184,6 +232,7 @@ def register_review_prompt_components(registry) -> None:
     """Register all review stage prompt components."""
     register_review_compression_prompt_components(registry)
     register_review_scan_prompt_components(registry)
+    register_review_block_digest_prompt_components(registry)
     register_review_reply_prompt_components(registry)
     register_review_bootstrap_prompt_components(registry)
 
@@ -201,6 +250,35 @@ def _mapping_or_none(value: Any) -> dict[str, Any] | None:
 
 def _mapping_or_empty(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_or_default(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _message_format_config(value: Any) -> MessageFormatConfig | None:
+    if isinstance(value, MessageFormatConfig):
+        return value
+    if not isinstance(value, dict):
+        return None
+    allowed = set(MessageFormatConfig.__dataclass_fields__)
+    kwargs = {key: raw for key, raw in value.items() if key in allowed}
+    if not kwargs:
+        return None
+    try:
+        return MessageFormatConfig(**kwargs)
+    except (TypeError, ValueError):
+        return None
 
 
 def _component_ids_by_stage(value: Any) -> dict[PromptStage, list[str]]:

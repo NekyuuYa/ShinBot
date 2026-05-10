@@ -44,7 +44,9 @@ from shinbot.agent.services.media import (
     register_media_prompt_components,
     register_media_runtime,
 )
+from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.summaries import SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat import models as active_chat_workflow_models
@@ -85,6 +87,13 @@ class AgentRuntime:
         self.review_runtime_config = _coerce_review_runtime_config(review_runtime_config)
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
+        self.message_formatter = MessageFormatterService(
+            identity_store=self.identity_store,
+            media_service=self.media_service,
+        )
+        self.summary_service = (
+            SummaryService(database.agent_summaries) if database is not None else None
+        )
         self.context_manager = (
             ContextManager(
                 database.message_logs,
@@ -196,6 +205,8 @@ class AgentRuntime:
             config=self.review_runtime_config,
             prompt_registry=self.prompt_registry,
             tool_manager=self.tool_manager,
+            summary_service=self.summary_service,
+            message_formatter=self.message_formatter,
         )
         return ReviewCoordinator(
             config,

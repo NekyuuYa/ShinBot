@@ -25,6 +25,14 @@ class OverflowCompressionStageOutput:
 
 
 @dataclass(slots=True, frozen=True)
+class ReviewBlockDigestStageOutput:
+    """Output from one review block digest runner invocation."""
+
+    summary: str = ""
+    reason: str = "noop_review_block_digest"
+
+
+@dataclass(slots=True, frozen=True)
 class ReplyDecisionStageOutput:
     """Output from one reply_decision stage runner invocation."""
 
@@ -46,6 +54,7 @@ class ActiveChatBootstrapStageOutput:
 __all__ = [
     "ActiveChatBootstrapStageOutput",
     "OverflowCompressionStageOutput",
+    "ReviewBlockDigestStageOutput",
     "ReplyDecisionStageOutput",
     "ReviewScanStageOutput",
 ]
