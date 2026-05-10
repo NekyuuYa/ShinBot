@@ -477,6 +477,47 @@ class TestActiveSessionIds:
 
 
 @pytest.mark.unit
+class TestActiveChatSummarySnapshot:
+    """Test active_chat summary snapshot boundary."""
+
+    async def test_snapshot_collects_summary_and_last_batch_range(self) -> None:
+        coordinator = ActiveChatCoordinator()
+        await coordinator.start_active_chat(
+            session_id="bot:group:room",
+            active_chat_state=make_active_state(active_epoch=77),
+        )
+        state = coordinator.attention_state_for("bot:group:room")
+        assert state is not None
+        state.conversation_summary = "snapshot summary"
+        state.conversation_messages = [
+            {"role": "assistant", "content": "a"},
+            {"role": "tool", "content": "{}"},
+        ]
+        coordinator.last_batches["bot:group:room"] = make_batch(
+            message_log_ids=[30, 10, 20],
+            active_epoch=77,
+        )
+
+        snapshot = coordinator.summary_snapshot_for("bot:group:room")
+
+        assert snapshot is not None
+        assert snapshot.session_id == "bot:group:room"
+        assert snapshot.active_epoch == 77
+        assert snapshot.conversation_summary == "snapshot summary"
+        assert snapshot.conversation_message_count == 2
+        assert snapshot.message_log_ids == [30, 10, 20]
+        assert snapshot.msg_log_start == 10
+        assert snapshot.msg_log_end == 30
+        assert snapshot.msg_count == 3
+        assert snapshot.range_source == "last_batch"
+
+    async def test_snapshot_returns_none_for_inactive_session(self) -> None:
+        coordinator = ActiveChatCoordinator()
+
+        assert coordinator.summary_snapshot_for("bot:group:missing") is None
+
+
+@pytest.mark.unit
 class TestShutdownFlushIntegration:
     """Test that shutdown path triggers summary flush."""
 

@@ -22,6 +22,7 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatNotifyResult,
     ActiveChatRoundResult,
     ActiveChatStartResult,
+    ActiveChatSummarySnapshot,
 )
 from shinbot.agent.coordinators.active_chat.trace import (
     ActiveChatTraceCompactor,
@@ -279,6 +280,20 @@ class ActiveChatCoordinator:
     def active_session_ids(self) -> list[str]:
         """Return session ids that have in-memory active chat state."""
         return list(self._states.keys())
+
+    def summary_snapshot_for(self, session_id: str) -> ActiveChatSummarySnapshot | None:
+        """Return an active-chat summary snapshot without exposing internal state."""
+        state = self._states.get(session_id)
+        if state is None:
+            return None
+        batch = self.last_batches.get(session_id)
+        return ActiveChatSummarySnapshot(
+            session_id=session_id,
+            active_epoch=state.active_epoch,
+            conversation_summary=state.conversation_summary,
+            conversation_message_count=len(state.conversation_messages),
+            message_log_ids=batch.message_log_ids if batch is not None else [],
+        )
 
     async def drain_pending_for_repair(
         self,

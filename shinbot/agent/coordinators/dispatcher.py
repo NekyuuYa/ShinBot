@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.coordinators.review.models import (
@@ -32,17 +31,6 @@ if TYPE_CHECKING:
         ReviewWorkflowResult,
     )
     from shinbot.agent.scheduler.scheduler import AgentScheduler
-
-
-@dataclass(slots=True, frozen=True)
-class _ActiveChatSummaryPayload:
-    session_id: str
-    source_run_id: str
-    content: str
-    msg_log_start: int | None
-    msg_log_end: int | None
-    msg_count: int
-    metadata: dict[str, object]
 
 
 class ActiveReplyDispatcher:
@@ -214,56 +202,30 @@ class ActiveReplyDispatcher:
         )
 
 
-    def _build_active_chat_summary_payload(
-        self, session_id: str,
-    ) -> _ActiveChatSummaryPayload | None:
-        """Build summary payload from coordinator in-memory state. Returns None if no content."""
-        if self._active_chat_workflow is None:
-            return None
-        state = self._active_chat_workflow.attention_state_for(session_id)
-        summary_text = (state.conversation_summary if state else "").strip()
-        if not summary_text:
-            return None
-
-        batch = self._active_chat_workflow.last_batches.get(session_id)
-        msg_log_ids = batch.message_log_ids if batch else []
-        msg_log_start = min(msg_log_ids) if msg_log_ids else None
-        msg_log_end = max(msg_log_ids) if msg_log_ids else None
-
-        active_epoch = state.active_epoch if state else 0
-        source_run_id = f"active_chat:{session_id}:{active_epoch}"
-
-        return _ActiveChatSummaryPayload(
-            session_id=session_id,
-            source_run_id=source_run_id,
-            content=summary_text,
-            msg_log_start=msg_log_start,
-            msg_log_end=msg_log_end,
-            msg_count=len(msg_log_ids),
-            metadata={
-                "active_epoch": active_epoch,
-                "conversation_message_count": len(state.conversation_messages) if state else 0,
-                "range_source": "last_batch",
-                "covered_message_log_ids": msg_log_ids,
-            },
-        )
-
     def _save_active_chat_summary(self, session_id: str) -> None:
         """Save active_chat summary. Write failure only logs, never blocks exit."""
-        if self._summary_service is None:
+        if self._summary_service is None or self._active_chat_workflow is None:
             return
         try:
-            payload = self._build_active_chat_summary_payload(session_id)
-            if payload is None:
+            snapshot = self._active_chat_workflow.summary_snapshot_for(session_id)
+            if snapshot is None:
+                return
+            summary_text = snapshot.conversation_summary.strip()
+            if not summary_text:
                 return
             self._summary_service.save_active_chat_summary(
-                session_id=payload.session_id,
-                source_run_id=payload.source_run_id,
-                content=payload.content,
-                msg_log_start=payload.msg_log_start,
-                msg_log_end=payload.msg_log_end,
-                msg_count=payload.msg_count,
-                metadata=payload.metadata,
+                session_id=snapshot.session_id,
+                source_run_id=f"active_chat:{snapshot.session_id}:{snapshot.active_epoch}",
+                content=summary_text,
+                msg_log_start=snapshot.msg_log_start,
+                msg_log_end=snapshot.msg_log_end,
+                msg_count=snapshot.msg_count,
+                metadata={
+                    "active_epoch": snapshot.active_epoch,
+                    "conversation_message_count": snapshot.conversation_message_count,
+                    "range_source": snapshot.range_source,
+                    "covered_message_log_ids": list(snapshot.message_log_ids),
+                },
             )
         except Exception:
             logger.warning(

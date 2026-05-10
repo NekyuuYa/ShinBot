@@ -134,6 +134,33 @@ class ActiveChatNotifyResult:
     skipped_reason: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class ActiveChatSummarySnapshot:
+    """Read-only summary snapshot for active chat persistence."""
+
+    session_id: str
+    active_epoch: int
+    conversation_summary: str
+    conversation_message_count: int
+    message_log_ids: list[int] = field(default_factory=list)
+    range_source: str = "last_batch"
+
+    @property
+    def msg_log_start(self) -> int | None:
+        """Return the covered message-log lower bound, if known."""
+        return min(self.message_log_ids) if self.message_log_ids else None
+
+    @property
+    def msg_log_end(self) -> int | None:
+        """Return the covered message-log upper bound, if known."""
+        return max(self.message_log_ids) if self.message_log_ids else None
+
+    @property
+    def msg_count(self) -> int:
+        """Return the number of message log ids covered by this snapshot."""
+        return len(self.message_log_ids)
+
+
 __all__ = [
     "ActiveChatActionKind",
     "ActiveChatAttentionState",
@@ -145,4 +172,5 @@ __all__ = [
     "ActiveChatReplyIntensity",
     "ActiveChatRoundResult",
     "ActiveChatStartResult",
+    "ActiveChatSummarySnapshot",
 ]
