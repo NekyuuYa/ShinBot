@@ -87,20 +87,6 @@ class FakeContextStageRuntime:
         return [{"role": "user", "content": [{"type": "text", "text": "context"}]}]
 
 
-class FakeInstructionRuntime:
-    def build_content_blocks(
-        self,
-        unread_records,
-        *,
-        alias_table,
-        session_state,
-        previous_summary="",
-        self_platform_id="",
-        now_ms=None,
-    ):
-        return [{"type": "text", "text": "instruction"}]
-
-
 def test_prompt_runtime_builds_context_stage_and_saves_state() -> None:
     session_runtime = FakeSessionRuntime()
     runtime = ContextPromptRuntime(
@@ -108,7 +94,6 @@ def test_prompt_runtime_builds_context_stage_and_saves_state() -> None:
         session_runtime=session_runtime,  # type: ignore[arg-type]
         alias_runtime=FakeAliasRuntime(),  # type: ignore[arg-type]
         context_stage_runtime=FakeContextStageRuntime(),  # type: ignore[arg-type]
-        instruction_runtime=FakeInstructionRuntime(),  # type: ignore[arg-type]
     )
 
     messages = runtime.build_context_stage_messages("s-prompt", now_ms=1)
@@ -118,25 +103,18 @@ def test_prompt_runtime_builds_context_stage_and_saves_state() -> None:
     assert runtime.get_cacheable_context_message_count("s-prompt") == 0
 
 
-def test_prompt_runtime_builds_alias_and_instruction_projection() -> None:
+def test_prompt_runtime_builds_alias_projection() -> None:
     session_runtime = FakeSessionRuntime()
     runtime = ContextPromptRuntime(
         pool_runtime=FakePoolRuntime(),  # type: ignore[arg-type]
         session_runtime=session_runtime,  # type: ignore[arg-type]
         alias_runtime=FakeAliasRuntime(),  # type: ignore[arg-type]
         context_stage_runtime=FakeContextStageRuntime(),  # type: ignore[arg-type]
-        instruction_runtime=FakeInstructionRuntime(),  # type: ignore[arg-type]
     )
 
     inactive = runtime.build_inactive_alias_context_message("s-prompt", now_ms=1)
-    instruction = runtime.build_instruction_stage_content(
-        "s-prompt",
-        [{"id": 2, "role": "user", "raw_text": "new"}],
-        now_ms=1,
-    )
     active = runtime.build_active_alias_constraint_text("s-prompt", now_ms=1)
 
     assert inactive is not None
     assert inactive["content"][0]["text"] == "inactive"
-    assert instruction[0]["text"] == "instruction"
     assert active == "active"

@@ -1,11 +1,11 @@
-"""Runtime helper for projecting current work input into instruction blocks."""
+"""Archived runtime helper for old context-owned instruction rendering."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.services.context.builders.instruction_stage_builder import (
+from shinbot.agent.services.context._archive.instruction_stage_builder import (
     InstructionStageBuilder,
 )
 from shinbot.agent.services.context.projectors.projection import ContextProjectionState

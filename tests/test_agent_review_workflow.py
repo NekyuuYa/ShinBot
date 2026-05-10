@@ -580,7 +580,7 @@ def test_database_review_store_reads_review_windows(tmp_path) -> None:
     assert [row["raw_text"] for row in time_rows] == ["m2", "m3", "m4", "m5"]
 
 
-def test_review_context_builder_adapter_uses_context_manager() -> None:
+def test_review_context_builder_adapter_keeps_source_messages_structured() -> None:
     context_manager = FakeContextManager()
     adapter = ReviewContextBuilderAdapter(context_manager)
 
@@ -594,9 +594,9 @@ def test_review_context_builder_adapter_uses_context_manager() -> None:
     assert stage_input.session_id == "bot:group:room"
     assert stage_input.purpose == "review_scan"
     assert stage_input.source_messages == [{"id": 1, "raw_text": "hello"}]
-    assert stage_input.instruction_content == [{"type": "text", "text": "1 messages"}]
+    assert stage_input.instruction_content == []
     assert stage_input.metadata == {"purpose": "review_scan"}
-    assert context_manager.calls[0]["message_ids"] == [1]
+    assert context_manager.calls == []
 
 
 def test_review_llm_json_parser_accepts_fenced_object() -> None:

@@ -6,9 +6,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.services.context.builders.context_stage_builder import ContextStageBuilder
-from shinbot.agent.services.context.builders.instruction_stage_builder import (
-    InstructionStageBuilder,
-)
 from shinbot.agent.services.context.projectors.alias_projector import AliasContextProjector
 from shinbot.agent.services.context.projectors.compressed_memory_projector import (
     CompressedMemoryProjector,
@@ -20,7 +17,6 @@ from shinbot.agent.services.context.projectors.projection import (
 from shinbot.agent.services.context.runtime.alias_runtime import ContextAliasRuntime
 from shinbot.agent.services.context.runtime.context_stage_runtime import ContextStageRuntime
 from shinbot.agent.services.context.runtime.eviction_runtime import ContextEvictionRuntime
-from shinbot.agent.services.context.runtime.instruction_runtime import InstructionRuntime
 from shinbot.agent.services.context.runtime.pool_runtime import ContextPoolRuntime
 from shinbot.agent.services.context.runtime.prompt_memory_assembler import PromptMemoryAssembler
 from shinbot.agent.services.context.runtime.prompt_runtime import ContextPromptRuntime
@@ -30,7 +26,6 @@ from shinbot.agent.services.context.state.active_pool import ActiveContextPool
 from shinbot.agent.services.context.state.alias_table import SessionAliasTable
 from shinbot.agent.services.context.state.state_store import ContextSessionState
 from shinbot.agent.services.context.utils.token_utils import estimate_text_tokens
-from shinbot.agent.services.message_formatter import MessageFormatterService
 
 if TYPE_CHECKING:
     from shinbot.agent.services.identity import IdentityStore
@@ -74,8 +69,6 @@ class ContextManager:
         self._session_runtime = ContextSessionRuntime.from_data_dir(data_dir=data_dir)
         self._context_builder = ContextStageBuilder(media_service=self._media_service)
         self._timeline_runtime = ContextTimelineRuntime(self._context_builder)
-        self._instruction_builder = InstructionStageBuilder(media_service=self._media_service)
-        self._instruction_runtime = InstructionRuntime(self._instruction_builder)
         self._alias_projector = AliasContextProjector()
         self._alias_runtime = ContextAliasRuntime(self._alias_projector)
         self._compressed_memory_projector = CompressedMemoryProjector()
@@ -93,9 +86,10 @@ class ContextManager:
             session_runtime=self._session_runtime,
             alias_runtime=self._alias_runtime,
             context_stage_runtime=self._context_stage_runtime,
-            instruction_runtime=self._instruction_runtime,
             identity_store=self._identity_store,
         )
+        from shinbot.agent.services.message_formatter import MessageFormatterService
+
         self._prompt_memory_assembler = PromptMemoryAssembler(
             self._prompt_runtime,
             message_formatter=MessageFormatterService(
@@ -154,24 +148,6 @@ class ContextManager:
         self._sync_prompt_runtime()
         return self._prompt_runtime.build_context_stage_messages(
             session_id,
-            self_platform_id=self_platform_id,
-            now_ms=now_ms,
-        )
-
-    def build_instruction_stage_content(
-        self,
-        session_id: str,
-        unread_records: list[dict[str, Any]],
-        *,
-        previous_summary: str = "",
-        self_platform_id: str = "",
-        now_ms: int | None = None,
-    ) -> list[dict[str, Any]]:
-        self._sync_prompt_runtime()
-        return self._prompt_runtime.build_instruction_stage_content(
-            session_id,
-            unread_records,
-            previous_summary=previous_summary,
             self_platform_id=self_platform_id,
             now_ms=now_ms,
         )
@@ -259,7 +235,6 @@ class ContextManager:
 
     def _sync_prompt_runtime(self) -> None:
         self._timeline_runtime.builder = self._context_builder
-        self._instruction_runtime.builder = self._instruction_builder
         self._prompt_runtime.identity_store = self._identity_store
 
     def track_message_record(self, record: MessageLogRecord, *, platform: str = "") -> None:

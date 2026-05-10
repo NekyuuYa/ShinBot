@@ -1,4 +1,9 @@
-"""Instruction-stage content block builder for unread messages."""
+"""Archived instruction-stage content block builder.
+
+Current Agent workflows render current message batches through
+``services.message_formatter``. This module is retained only as a reference for
+the old context-owned instruction rendering behavior.
+"""
 
 from __future__ import annotations
 

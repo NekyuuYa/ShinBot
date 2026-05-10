@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from shinbot.agent.services.context.projectors.long_term_memory import (
     LongTermMemoryProjector,
@@ -14,10 +14,10 @@ from shinbot.agent.services.context.projectors.projection import (
     PromptMemoryBundle,
     PromptMemoryProjectionRequest,
 )
-from shinbot.agent.services.message_formatter import (
-    MessageFormatConfig,
-    MessageFormatterService,
-)
+from shinbot.agent.services.message_formatter.models import MessageFormatConfig
+
+if TYPE_CHECKING:
+    from shinbot.agent.services.message_formatter import MessageFormatterService
 
 
 class PromptMemoryRuntime(Protocol):
@@ -55,9 +55,7 @@ class PromptMemoryAssembler:
     """Assemble the context layer output consumed by PromptRegistry."""
 
     runtime: PromptMemoryRuntime
-    message_formatter: MessageFormatterService | None = field(
-        default_factory=MessageFormatterService
-    )
+    message_formatter: MessageFormatterService | None = None
     long_term_provider: LongTermMemoryProvider = field(
         default_factory=NoopLongTermMemoryProvider
     )
@@ -90,8 +88,13 @@ class PromptMemoryAssembler:
             context_messages = [*long_term_messages, *context_messages]
 
         instruction_blocks: list[dict[str, Any]] = []
-        if request.unread_records and self.message_formatter is not None:
-            instruction_blocks = self.message_formatter.format_instruction_content(
+        message_formatter = self.message_formatter
+        if request.unread_records and message_formatter is None:
+            from shinbot.agent.services.message_formatter import MessageFormatterService
+
+            message_formatter = MessageFormatterService()
+        if request.unread_records and message_formatter is not None:
+            instruction_blocks = message_formatter.format_instruction_content(
                 request.unread_records,
                 MessageFormatConfig(
                     self_platform_id=request.self_platform_id,

@@ -8,10 +8,6 @@ from shinbot.agent.services.context.builders.image_summary import (
     ContextImageRegistry,
     ImageSummaryEntry,
 )
-from shinbot.agent.services.context.builders.instruction_stage_builder import (
-    InstructionStageBuildConfig,
-    InstructionStageBuilder,
-)
 from shinbot.agent.services.context.builders.message_parts import (
     NormalizedImagePart,
     NormalizedMessagePart,
@@ -46,7 +42,6 @@ from shinbot.agent.services.context.runtime.alias_runtime import ContextAliasRun
 from shinbot.agent.services.context.runtime.context_stage_runtime import ContextStageRuntime
 from shinbot.agent.services.context.runtime.control_signals import CacheReleaseSignal
 from shinbot.agent.services.context.runtime.eviction_runtime import ContextEvictionRuntime
-from shinbot.agent.services.context.runtime.instruction_runtime import InstructionRuntime
 from shinbot.agent.services.context.runtime.pool_runtime import ContextPoolRuntime
 from shinbot.agent.services.context.runtime.prompt_memory_assembler import (
     PromptMemoryAssembler,
@@ -93,9 +88,6 @@ __all__ = [
     "ContextTimelineRuntime",
     "ImageSummaryEntry",
     "ImageReferenceProjector",
-    "InstructionStageBuildConfig",
-    "InstructionStageBuilder",
-    "InstructionRuntime",
     "LongTermMemoryItem",
     "LongTermMemoryProjector",
     "LongTermMemoryProvider",

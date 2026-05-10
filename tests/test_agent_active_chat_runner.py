@@ -704,7 +704,7 @@ async def test_active_chat_fast_runner_injects_active_context_messages() -> None
     result = await runner.run(make_batch(self_platform_id="bot-self"))
 
     assert result.success is True
-    assert context_manager.instruction_calls[0]["self_platform_id"] == "bot-self"
+    assert context_manager.instruction_calls == []
     assert context_manager.context_calls[0]["self_platform_id"] == "bot-self"
     assert any(
         "Recent tail context" in str(message.get("content", ""))

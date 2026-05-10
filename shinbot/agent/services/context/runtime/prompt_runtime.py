@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.services.context.runtime.alias_runtime import ContextAliasRuntime
 from shinbot.agent.services.context.runtime.context_stage_runtime import ContextStageRuntime
-from shinbot.agent.services.context.runtime.instruction_runtime import InstructionRuntime
 from shinbot.agent.services.context.runtime.pool_runtime import ContextPoolRuntime
 from shinbot.agent.services.context.runtime.session_runtime import ContextSessionRuntime
 from shinbot.agent.services.context.state.alias_table import SessionAliasTable
@@ -26,7 +25,6 @@ class ContextPromptRuntime:
     session_runtime: ContextSessionRuntime
     alias_runtime: ContextAliasRuntime
     context_stage_runtime: ContextStageRuntime
-    instruction_runtime: InstructionRuntime
     identity_store: IdentityStore | None = None
 
     def get_cacheable_context_message_count(self, session_id: str) -> int:
@@ -114,35 +112,6 @@ class ContextPromptRuntime:
         )
         self.save_session_state(session_id)
         return messages
-
-    def build_instruction_stage_content(
-        self,
-        session_id: str,
-        unread_records: list[dict[str, Any]],
-        *,
-        previous_summary: str = "",
-        self_platform_id: str = "",
-        now_ms: int | None = None,
-    ) -> list[dict[str, Any]]:
-        if not session_id:
-            return []
-        timestamp_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        state = self.get_session_state(session_id)
-        alias_table, _alias_changed = self.rebuild_alias_table(
-            session_id,
-            now_ms=timestamp_ms,
-            force=not bool(state.alias_table.entries),
-        )
-        content_blocks = self.instruction_runtime.build_content_blocks(
-            unread_records,
-            alias_table=alias_table,
-            session_state=state,
-            previous_summary=previous_summary,
-            self_platform_id=self_platform_id,
-            now_ms=timestamp_ms,
-        )
-        self.save_session_state(session_id)
-        return content_blocks
 
     def build_inactive_alias_context_message(
         self,
