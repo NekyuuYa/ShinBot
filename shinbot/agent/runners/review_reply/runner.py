@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig, ReviewLLMStageRunnerBase
 from shinbot.agent.runners.review_models import ReplyDecisionStageOutput
 from shinbot.agent.runners.review_reply.prompt_registration import REVIEW_REPLY_COMPONENT_IDS
+from shinbot.agent.runners.templates import RunnerTemplateConfig, ToolCallPlanRunner
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
-from shinbot.agent.services.prompt_engine import PromptInjection, PromptRegistry, PromptStage
+from shinbot.agent.services.message_formatter import MessageFormatterService
+from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.agent.services.tools.schema import ToolCallRequest
 from shinbot.agent.utils.parsing import (
     instance_id_from_session,
@@ -31,6 +32,34 @@ _REPLY_TOOLLESS_REPAIR_PROMPT = (
     "不要再输出裸文本作为最终回复。"
 )
 
+_REPLY_RESPONSE_FORMAT = json_schema_response_format(
+    "agent_review_reply_decision",
+    {
+        "replied": {"type": "boolean"},
+        "reply_message_id": {"type": ["integer", "null"]},
+        "reply_message_ids": {"type": "array", "items": {"type": "integer"}},
+        "target_message_ids": {"type": "array", "items": {"type": "integer"}},
+        "reason": {"type": "string"},
+    },
+    ["replied", "reply_message_id", "target_message_ids", "reason"],
+)
+
+_REPLY_TASK_PROMPT = (
+    "Decide whether the candidate message should be replied to based on the "
+    "local context. If reply tools are available, call no_reply when no response "
+    "is needed, or call one or more send_reply tools in the order they should be "
+    "sent. The candidate_message_ids in metadata are the core messages under "
+    "reply consideration; use the surrounding source messages only as context, "
+    "not as an instruction to rediscover which messages are high-attention. "
+    "The first send_reply must quote the specific core message being answered "
+    "by passing quote_message_log_id, because review replies may refer to older "
+    "timeline points; later send_reply calls may omit it when they naturally "
+    "continue the first reply. send_poke is optional and only valid together "
+    "with a send_reply; do not use it as a standalone response. This stage "
+    "must not decide active chat parameters. Bare assistant text is invalid "
+    "when tools are available."
+)
+
 
 class ReplyDecisionStageRunner(Protocol):
     """Decide whether and how to reply from one candidate-local stage input."""
@@ -47,166 +76,90 @@ class NoopReplyDecisionStageRunner:
         return ReplyDecisionStageOutput(target_message_ids=candidate_ids)
 
 
-class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
+class LLMReplyDecisionStageRunner:
     """Run the reply-decision stage through the model runtime."""
-
-    builtin_component_ids = REVIEW_REPLY_COMPONENT_IDS
-    task_prompt = (
-        "Decide whether the candidate message should be replied to based on the "
-        "local context. If reply tools are available, call no_reply when no response "
-        "is needed, or call one or more send_reply tools in the order they should be "
-        "sent. The candidate_message_ids in metadata are the core messages under "
-        "reply consideration; use the surrounding source messages only as context, "
-        "not as an instruction to rediscover which messages are high-attention. "
-        "The first send_reply must quote the specific core message being answered "
-        "by passing quote_message_log_id, because review replies may refer to older "
-        "timeline points; later send_reply calls may omit it when they naturally "
-        "continue the first reply. send_poke is optional and only valid together "
-        "with a send_reply; do not use it as a standalone response. This stage "
-        "must not decide active chat parameters. Bare assistant text is invalid "
-        "when tools are available."
-    )
-    response_format = json_schema_response_format(
-        "agent_review_reply_decision",
-        {
-            "replied": {"type": "boolean"},
-            "reply_message_id": {"type": ["integer", "null"]},
-            "reply_message_ids": {"type": "array", "items": {"type": "integer"}},
-            "target_message_ids": {"type": "array", "items": {"type": "integer"}},
-            "reason": {"type": "string"},
-        },
-        ["replied", "reply_message_id", "target_message_ids", "reason"],
-    )
 
     def __init__(
         self,
         model_runtime: Any,
         *,
-        config: ReviewLLMRunnerConfig | None = None,
+        config: RunnerTemplateConfig | None = None,
         prompt_registry: PromptRegistry,
         tool_manager: Any | None = None,
+        message_formatter: MessageFormatterService | None = None,
     ) -> None:
-        super().__init__(
-            model_runtime,
-            config=config,
-            prompt_registry=prompt_registry,
-        )
+        routing = config or RunnerTemplateConfig()
         self._tool_manager = tool_manager
+        self._prompt_registry = prompt_registry
+        self._routing = routing
+        self._template = ToolCallPlanRunner(
+            model_runtime,
+            prompt_registry=prompt_registry,
+            config=RunnerTemplateConfig(
+                caller=routing.caller,
+                route_id=routing.route_id,
+                model_id=routing.model_id,
+                profile_id=routing.profile_id,
+                system_prompt=routing.system_prompt,
+                task_prompt=_REPLY_TASK_PROMPT,
+                response_format=_REPLY_RESPONSE_FORMAT,
+                component_ids_by_stage=routing.component_ids_by_stage,
+                builtin_component_ids=REVIEW_REPLY_COMPONENT_IDS,
+                message_format_config=routing.message_format_config,
+                params=routing.params,
+                max_model_retries=routing.max_model_retries,
+                retry_backoff_seconds=routing.retry_backoff_seconds,
+            ),
+            tool_manager=tool_manager,
+            tool_names=["no_reply", "send_reply", "send_poke"],
+            repair_prompt=_REPLY_TOOLLESS_REPAIR_PROMPT,
+            repair_reason="reply_decision_toolless_output",
+            tool_transform=_review_reply_tool_schema,
+            tool_tags={CHAT_ACTION_TOOL_TAG},
+            message_formatter=message_formatter,
+        )
 
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
-        try:
-            messages, metadata = self._build_model_call_parts(stage_input)
-        except Exception:
+        plan = await self._template.run(stage_input)
+        if plan.reason in ("tool_call_plan_build_failed", "tool_call_plan_llm_failed"):
             return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
-        tools = self._reply_decision_tools(stage_input)
-        result = await self._generate_with_parts(
-            stage_input,
-            messages=messages,
-            tools=tools,
-            metadata=metadata,
-        )
-        if result is None:
-            return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
-        if result.tool_calls:
-            return await self._run_tool_decision(stage_input, result)
-        if tools:
-            repaired = await self._repair_toolless_reply_decision(
-                stage_input,
-                messages=messages,
-                tools=tools,
-                metadata=metadata,
-                first_result=result,
-            )
-            if repaired is None:
-                return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
-            if repaired.tool_calls:
-                return await self._run_tool_decision(stage_input, repaired)
-            return ReplyDecisionStageOutput(
-                target_message_ids=_candidate_message_ids_from_stage(stage_input),
-                reason="llm_reply_decision_toolless_after_repair",
-            )
-        payload = parse_json_object(result.text or "")
-        if payload is None:
-            return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
+        if plan.has_tool_calls:
+            return await self._run_tool_decision(stage_input, plan)
+        # No tool calls — try JSON fallback for the text.
+        if plan.text:
+            payload = parse_json_object(plan.text)
+            if payload is not None:
+                return ReplyDecisionStageOutput(
+                    replied=bool(payload.get("replied")),
+                    reply_message_id=optional_int(payload.get("reply_message_id")),
+                    reply_message_ids=_reply_message_ids_from_payload(payload),
+                    target_message_ids=int_list(payload.get("target_message_ids")),
+                    reason=str(payload.get("reason") or "llm_reply_decision"),
+                )
+        candidate_ids = _candidate_message_ids_from_stage(stage_input)
+        reason = "llm_reply_decision_toolless_after_repair" if plan.reason == "tool_call_plan_toolless_after_repair" else (plan.reason or "llm_reply_decision_failed")
         return ReplyDecisionStageOutput(
-            replied=bool(payload.get("replied")),
-            reply_message_id=optional_int(payload.get("reply_message_id")),
-            reply_message_ids=_reply_message_ids_from_payload(payload),
-            target_message_ids=int_list(payload.get("target_message_ids")),
-            reason=str(payload.get("reason") or "llm_reply_decision"),
+            target_message_ids=candidate_ids,
+            reason=reason,
         )
-
-    async def _repair_toolless_reply_decision(
-        self,
-        stage_input: ReviewStageInput,
-        *,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        metadata: dict[str, Any],
-        first_result: Any,
-    ) -> Any | None:
-        repaired_messages = _repair_messages_for_toolless_reply(
-            messages,
-            text=str(first_result.text or ""),
-        )
-        return await self._generate_with_parts(
-            stage_input,
-            messages=repaired_messages,
-            tools=tools,
-            metadata={
-                **dict(metadata),
-                "repair_attempt": 1,
-                "repair_reason": "reply_decision_toolless_output",
-            },
-        )
-
-    def _build_prompt_injections(
-        self,
-        stage_input: ReviewStageInput,
-        *,
-        component_ids_by_stage: dict[PromptStage, list[str]],
-    ) -> list[PromptInjection]:
-        return super()._build_prompt_injections(
-            stage_input,
-            component_ids_by_stage=component_ids_by_stage,
-        )
-
-    def _response_format_for(
-        self,
-        stage_input: ReviewStageInput,
-        tools: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        if tools:
-            return None
-        return self.response_format
-
-    def _reply_decision_tools(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
-        if self._tool_manager is None:
-            return []
-
-        tools = self._tool_manager.build_request_tools(
-            ["no_reply", "send_reply", "send_poke"],
-            caller=self._config.caller,
-            instance_id=instance_id_from_session(stage_input.session_id),
-            session_id=stage_input.session_id,
-            tags={CHAT_ACTION_TOOL_TAG},
-        )
-        return [_review_reply_tool_schema(tool) for tool in tools]
 
     async def _run_tool_decision(
         self,
         stage_input: ReviewStageInput,
-        result: Any,
+        plan: Any,
     ) -> ReplyDecisionStageOutput:
         if self._tool_manager is None:
-            return ReplyDecisionStageOutput(reason="llm_reply_tool_call_skipped_no_tool_manager")
+            return ReplyDecisionStageOutput(
+                reason="llm_reply_tool_call_skipped_no_tool_manager"
+            )
 
         target_message_ids = _candidate_message_ids_from_stage(stage_input)
         parsed_calls = [
-            _tool_call_function(tool_call)
-            for tool_call in result.tool_calls
+            _tool_call_function(tool_call) for tool_call in plan.tool_calls
         ]
-        has_reply_call = any(tool_name == "send_reply" for tool_name, _ in parsed_calls)
+        has_reply_call = any(
+            tool_name == "send_reply" for tool_name, _ in parsed_calls
+        )
         first_reply_arguments = next(
             (
                 arguments
@@ -248,10 +201,10 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
                 ToolCallRequest(
                     tool_name=tool_name,
                     arguments=arguments,
-                    caller=self._config.caller,
+                    caller=self._routing.caller,
                     instance_id=instance_id_from_session(stage_input.session_id),
                     session_id=stage_input.session_id,
-                    run_id=str(result.execution_id or ""),
+                    run_id=str(plan.execution_id or ""),
                     metadata={
                         "workflow_id": "review",
                         "stage_id": stage_input.purpose,
@@ -284,7 +237,9 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
                 reply_message_id=reply_message_id,
                 reply_message_ids=reply_message_ids,
                 target_message_ids=target_message_ids,
-                reason=_reply_tool_reason(reply_count=reply_count, poke_count=poke_count),
+                reason=_reply_tool_reason(
+                    reply_count=reply_count, poke_count=poke_count
+                ),
             )
         if saw_no_reply:
             return ReplyDecisionStageOutput(
@@ -311,23 +266,6 @@ def _reply_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:
         return ids
     reply_message_id = optional_int(payload.get("reply_message_id"))
     return [reply_message_id] if reply_message_id is not None else []
-
-
-def _repair_messages_for_toolless_reply(
-    messages: list[dict[str, Any]],
-    *,
-    text: str,
-) -> list[dict[str, Any]]:
-    repaired_messages = list(messages)
-    if text.strip():
-        repaired_messages.append({"role": "assistant", "content": text.strip()})
-    repaired_messages.append(
-        {
-            "role": "system",
-            "content": [{"type": "text", "text": _REPLY_TOOLLESS_REPAIR_PROMPT}],
-        }
-    )
-    return repaired_messages
 
 
 def _tool_call_function(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -405,4 +343,6 @@ def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
 def _reply_tool_reason(*, reply_count: int, poke_count: int) -> str:
     if poke_count:
         return f"send_reply_tool:{reply_count};send_poke_tool:{poke_count}"
-    return f"send_reply_tool:{reply_count}" if reply_count != 1 else "send_reply_tool"
+    return (
+        f"send_reply_tool:{reply_count}" if reply_count != 1 else "send_reply_tool"
+    )
