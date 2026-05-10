@@ -32,14 +32,15 @@
 2. `architecture/README.md`
 3. `architecture/design_principles.md`
 4. `architecture/agent_module_layers.md`
-5. `design/README.md`
-6. `design/core/core_philosophy.md`
-7. `design/core/message_workflow.md`
-8. `design/runtime/agent_runtime_index.md`
-9. `design/runtime/prompt_registry.md`
-10. `design/runtime/tool_registry_and_manager.md`
-11. `design/extensibility/plugin_system_design.md`
-12. `plugins/capabilities.md`
+5. `architecture/agent_context_boundary.md`
+6. `design/README.md`
+7. `design/core/core_philosophy.md`
+8. `design/core/message_workflow.md`
+9. `design/runtime/agent_runtime_index.md`
+10. `design/runtime/prompt_registry.md`
+11. `design/runtime/tool_registry_and_manager.md`
+12. `design/extensibility/plugin_system_design.md`
+13. `plugins/capabilities.md`
 
 ## 维护规则
 
@@ -55,4 +56,6 @@
 ## 当前整理状态
 
 - `architecture/agent_module_layers.md` 是 Agent 后续重构的当前有效分层依据。
-- `design/runtime/attention_driven_conversation_workflow.md`、`design/runtime/context_memory_architecture.md` 等早期 Agent 文档仍有参考价值，但需要按新分层重新审计；在审计完成前，不应把其中内容视作全部现行实现约束。
+- `architecture/agent_context_boundary.md` 是 Agent context 模块当前有效职责边界。
+- `design/runtime/attention_driven_conversation_workflow.md` 等早期 Agent 文档仍有参考价值，但需要按新分层重新审计；在审计完成前，不应把其中内容视作全部现行实现约束。
+- `archive/runtime/context_memory_architecture.md` 已归档；context 现行职责以 `architecture/agent_context_boundary.md` 为准。

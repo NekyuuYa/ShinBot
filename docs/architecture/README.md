@@ -10,6 +10,8 @@
   - 跨系统设计原则。
 - `agent_module_layers.md`
   - Agent 调度、协调、工作流、工具型能力和运行时服务的分层约束。
+- `agent_context_boundary.md`
+  - Agent context 模块的职责边界：只做上下文结构化与管理，压缩生成等模型调用归 runner。
 
 ## 放置规则
 

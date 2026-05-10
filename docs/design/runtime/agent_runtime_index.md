@@ -5,6 +5,7 @@
 ## 架构分层（最高优先阅读）
 
 - `../../architecture/agent_module_layers.md` — Agent Scheduler / Coordinator / Workflow / Utils / Runtime 分层约束与命名边界。
+- `../../architecture/agent_context_boundary.md` — Agent context 模块职责边界：上下文结构化与管理，压缩生成归 runner。
 
 ## 设计规范
 
@@ -17,7 +18,12 @@
 | `active_chat_workflow.md` | **现行** | Active Chat 双层触发模型（Interest + Attention）、会话生命周期、semantic wait、batch 处理。核心设计已实现于 `active_chat/` + `scheduler/`。 |
 | `media_semantics_and_meme_handling.md` | **现行** | 媒体 fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis。核心设计已实现于 `media/`。 |
 | `attention_driven_conversation_workflow.md` | **部分现行** | 核心概念（SessionAttentionState、exponential decay、response profiles、tool-driven reply）已实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `active_chat/coordinator.py`。 |
-| `context_memory_architecture.md` | **部分现行** | 三级记忆模型（short/mid/long-term）和 Prefix Cache 友好原则仍为设计目标。实际实现采用 ring buffer + alias table + projector 模式，与 MemoryBlock/PromptBlock 分离尚未完全对齐。 |
+
+## 已归档参考
+
+| 文档 | 状态 | 说明 |
+|------|------|------|
+| `../../archive/runtime/context_memory_architecture.md` | **已归档** | 旧三级记忆与上下文块模型仍有概念参考价值，但不再作为现行 context 模块职责依据。当前边界见 `../../architecture/agent_context_boundary.md`。 |
 
 ## 实现说明
 

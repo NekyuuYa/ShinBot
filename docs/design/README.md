@@ -43,7 +43,6 @@
 - `tool_registry_and_manager.md`
 - `attention_driven_conversation_workflow.md`
 - `media_semantics_and_meme_handling.md`
-- `context_memory_architecture.md`
 
 ### `extensibility/`
 
@@ -79,8 +78,8 @@
 - `runtime/media_semantics_and_meme_handling.md`
   - **状态**：现行。fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis 等核心设计均已实现于 `media/`。
   - **保留原因**：仍为媒体子系统的有效能力规格。
-- `runtime/context_memory_architecture.md`
-  - **状态**：部分现行。三级记忆模型（short/mid/long-term）、Block 投影分离、Prefix Cache 友好的前缀稳定原则仍为设计目标。实际实现中 `context/` 模块采用 ring buffer + alias table + projector 模式，与文档描述的 MemoryBlock/PromptBlock 分离尚未完全对齐。
-  - **保留原因**：仍可作为上下文系统演进的设计参考。
+- `../archive/runtime/context_memory_architecture.md`
+  - **状态**：已归档。旧三级记忆与上下文块模型仍有概念参考价值，但不再作为现行 context 模块职责依据。
+  - **替代文档**：`../architecture/agent_context_boundary.md`。
 
 跨模块分层约束以 `../architecture/agent_module_layers.md` 为准。

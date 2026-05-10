@@ -1,17 +1,22 @@
 # ShinBot 技术规范：上下文与三级记忆架构
 
+> **归档状态 (2026-05-10)**：已归档。当前 Agent context 模块边界以 `../../architecture/agent_context_boundary.md` 和 `../../architecture/agent_module_layers.md` 为准。
+>
+> **归档原因**：本文是早期三级记忆与上下文块模型的大方案，仍有概念参考价值，但其中部分职责会让 `context` 承担消息选择、压缩生成和运行时决策。现行方向是让 `context` 只负责上下文结构化与管理，压缩摘要生成抽为 runner。
+
 > **审计状态 (2026-05-10)**：部分现行。三级记忆模型（short/mid/long-term）和 Prefix Cache 友好的前缀稳定原则仍为设计目标。实际实现中 `context/` 模块采用 ring buffer + alias table + projector 模式，与文档描述的 MemoryBlock/PromptBlock 分离尚未完全对齐。当前参数以 `../../internals/parameters/context_management.md` 为准。
 
 本文档定义 ShinBot 在 Agent 运行时中的上下文构建、短中长三级记忆分层，以及面向 Prompt Cache 的块投影模型。
 
-本文档讨论的是”系统应该怎样设计”，不是当前实现行为说明。当前实现中的参数与实际行为，应继续以 `docs/internals/parameters/context_management.md` 为准。
+本文档讨论的是”系统应该怎样设计”，不是当前实现行为说明。当前实现中的参数与实际行为，应继续以 `../../internals/parameters/context_management.md` 为准。
 
 相关文档：
 
-- `prompt_registry.md`
-- `prompt_registry_schema.md`
-- `attention_driven_conversation_workflow.md`
-- `media_semantics_and_meme_handling.md`
+- `../../architecture/agent_context_boundary.md`
+- `../../design/runtime/prompt_registry.md`
+- `../../design/runtime/prompt_registry_schema.md`
+- `../../design/runtime/attention_driven_conversation_workflow.md`
+- `../../design/runtime/media_semantics_and_meme_handling.md`
 
 ---
 
