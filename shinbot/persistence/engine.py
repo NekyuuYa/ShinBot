@@ -56,8 +56,10 @@ class DatabaseManager:
 
         # Lazy-imported to avoid circular dependency
         from shinbot.agent.scheduler.repository import AgentSchedulerRepository
+        from shinbot.persistence.repositories.agent_summaries import AgentSummaryRepository
 
         self.agent_scheduler = AgentSchedulerRepository(self)
+        self.agent_summaries = AgentSummaryRepository(self)
 
     @classmethod
     def from_bootstrap(

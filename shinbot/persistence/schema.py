@@ -402,6 +402,29 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ON agent_recent_mentions(session_id, timestamp)
     """,
     """
+    CREATE TABLE IF NOT EXISTS agent_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        summary_type TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        source_run_id TEXT NOT NULL DEFAULT '',
+        msg_log_start INTEGER,
+        msg_log_end INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at REAL NOT NULL,
+        FOREIGN KEY(msg_log_start) REFERENCES message_logs(id) ON DELETE SET NULL,
+        FOREIGN KEY(msg_log_end) REFERENCES message_logs(id) ON DELETE SET NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_summaries_session
+    ON agent_summaries(session_id, created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_summaries_run
+    ON agent_summaries(source_run_id, created_at)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS ai_interactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         execution_id TEXT NOT NULL DEFAULT '',
