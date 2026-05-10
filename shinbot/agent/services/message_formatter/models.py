@@ -39,6 +39,7 @@ class MessageFormatConfig:
     pack_mode: PackMode = PackMode.PACK
     timestamp_mode: str = "sparse"
     inject_sender: bool = True
+    inject_record_id: bool = False
     self_platform_id: str = ""
     now_ms: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

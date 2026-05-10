@@ -15,6 +15,10 @@ from shinbot.agent.services.context.active_chat_context import (
     ActiveChatContextBuilder,
     ActiveChatContextBuildOptions,
 )
+from shinbot.agent.services.message_formatter import (
+    MessageFormatConfig,
+    MessageFormatterService,
+)
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.services.prompt_engine import (
     PromptBuildRequest,
@@ -68,6 +72,7 @@ class ActiveChatFastRunnerConfig:
     profile_id: str = ""
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
+    message_format_config: MessageFormatConfig | None = None
 
 
 class ActiveChatFastRunner:
@@ -83,6 +88,7 @@ class ActiveChatFastRunner:
         tool_manager: Any,
         message_store: ActiveChatMessageStore | None = None,
         context_builder: ActiveChatContextBuilder | None = None,
+        message_formatter: MessageFormatterService | None = None,
         tool_loop: ActiveChatToolLoop | None = None,
         pending_message_provider: (
             Callable[
@@ -98,6 +104,7 @@ class ActiveChatFastRunner:
         self._tool_manager = tool_manager
         self._message_store = message_store
         self._context_builder = context_builder
+        self._message_formatter = message_formatter
         self._tool_loop = tool_loop or ActiveChatToolLoop()
         self._pending_message_provider = pending_message_provider
         self._config = config or ActiveChatFastRunnerConfig()
@@ -368,6 +375,10 @@ class ActiveChatFastRunner:
         if instruction_content:
             content.extend(instruction_content)
         else:
+            formatted_text = self._format_source_messages(source_messages)
+            if formatted_text:
+                content.append({"type": "text", "text": formatted_text})
+                return content
             content.append(
                 {
                     "type": "text",
@@ -376,6 +387,19 @@ class ActiveChatFastRunner:
                 }
             )
         return content
+
+    def _format_source_messages(self, source_messages: list[dict[str, Any]]) -> str:
+        if self._message_formatter is None or not source_messages:
+            return ""
+        try:
+            return self._message_formatter.format_text(
+                source_messages,
+                self._config.message_format_config
+                or MessageFormatConfig(inject_record_id=True),
+            )
+        except Exception:
+            logger.exception("Active chat message formatting failed")
+            return ""
 
     def _active_chat_tools(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
         tools = self._tool_manager.build_request_tools(

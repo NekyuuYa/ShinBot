@@ -227,10 +227,15 @@ def _pack_messages(
             if gap_ms > 3 * 60 * 1000:
                 lines.append(_format_timestamp(msg.created_at_ms))
 
+        id_prefix = (
+            f"[msg_log_id:{msg.record_id}] "
+            if config.inject_record_id and msg.record_id is not None
+            else ""
+        )
         if config.inject_sender:
-            lines.append(f"{msg.sender_label}: {msg.text}")
+            lines.append(f"{id_prefix}{msg.sender_label}: {msg.text}")
         else:
-            lines.append(msg.text)
+            lines.append(f"{id_prefix}{msg.text}")
 
         previous_created_at_ms = msg.created_at_ms
 

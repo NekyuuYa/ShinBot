@@ -8,6 +8,7 @@ import pytest
 from shinbot.agent.coordinators.review.models import ReviewWorkflowExplanation
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
+from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
 from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.agent.services.summaries import ReviewHandoffContext, SummaryHandoffEntry
@@ -160,6 +161,11 @@ class FakeContextManager:
                 "content": [{"type": "text", "text": "Recent tail context"}],
             }
         ]
+
+
+class BrokenMessageFormatter:
+    def format_instruction_content(self, *_args, **_kwargs) -> list[dict[str, Any]]:
+        raise RuntimeError("format failed")
 
 
 class BrokenContextBuilder:
@@ -487,6 +493,37 @@ async def test_active_chat_fast_runner_injects_compacted_conversation_summary() 
 
 
 @pytest.mark.asyncio
+async def test_active_chat_fast_runner_uses_message_formatter_without_context_builder() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        message_formatter=MessageFormatterService(),
+    )
+
+    await runner.run(make_batch())
+
+    rendered_prompt_text = json.dumps(
+        model_runtime.calls[0].messages,
+        ensure_ascii=False,
+    )
+    assert "[msg_log_id:101] Alice: message 101" in rendered_prompt_text
+    assert "Source messages JSON" not in rendered_prompt_text
+
+
+@pytest.mark.asyncio
 async def test_active_chat_fast_runner_repairs_toolless_output_once() -> None:
     prompt_registry = PromptRegistry()
     register_active_chat_prompt_components(prompt_registry)
@@ -673,6 +710,42 @@ async def test_active_chat_fast_runner_injects_active_context_messages() -> None
         "Recent tail context" in str(message.get("content", ""))
         for message in model_runtime.calls[0].messages
     )
+
+
+@pytest.mark.asyncio
+async def test_active_chat_context_adapter_falls_back_when_formatter_fails() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    context_manager = FakeContextManager()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        context_builder=ActiveChatContextBuilderAdapter(
+            context_manager,
+            message_formatter=BrokenMessageFormatter(),
+        ),
+    )
+
+    result = await runner.run(make_batch(self_platform_id="bot-self"))
+
+    assert result.success is True
+    assert context_manager.instruction_calls[0]["message_ids"] == [101]
+    rendered_prompt_text = json.dumps(
+        model_runtime.calls[0].messages,
+        ensure_ascii=False,
+    )
+    assert "Active batch from context builder" in rendered_prompt_text
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,31 @@ def test_format_plain_text_messages() -> None:
     assert "Bob: world" in result.packed_text
 
 
+def test_format_plain_text_messages_can_include_record_ids() -> None:
+    records = [_make_record(raw_text="hello", sender_name="Alice", record_id=42)]
+    config = MessageFormatConfig(
+        pack_mode=PackMode.PACK,
+        inject_sender=True,
+        inject_record_id=True,
+    )
+    result = format_messages(records, config)
+
+    assert "[msg_log_id:42] Alice: hello" in result.packed_text
+
+
+def test_service_formats_instruction_content_with_summary_and_ids() -> None:
+    service = MessageFormatterService()
+    content = service.format_instruction_content(
+        [_make_record(raw_text="hello", sender_name="Alice", record_id=42)],
+        previous_summary="previous digest",
+    )
+
+    rendered = "\n".join(block["text"] for block in content)
+    assert "[上轮观察摘要：previous digest]" in rendered
+    assert "[以下是会话中 1 条待处理消息]" in rendered
+    assert "[msg_log_id:42] Alice: hello" in rendered
+
+
 def test_format_empty_records() -> None:
     result = format_messages([], MessageFormatConfig())
     assert result.message_count == 0

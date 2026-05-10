@@ -166,7 +166,11 @@ class AgentRuntime:
             prompt_registry=self.prompt_registry,
             tool_manager=self.tool_manager,
             message_store=database.message_logs,
-            context_builder=ActiveChatContextBuilderAdapter(self.context_manager),
+            context_builder=ActiveChatContextBuilderAdapter(
+                self.context_manager,
+                message_formatter=self.message_formatter,
+            ),
+            message_formatter=self.message_formatter,
             pending_message_provider=lambda batch: self._drain_active_chat_pending_for_repair(
                 batch
             ),
@@ -222,7 +226,7 @@ class AgentRuntime:
             self.review_workflow_config,
             message_store=DatabaseReviewMessageStore(database),
             summary_store=DatabaseReviewSummaryStore(database),
-            context_builder=ReviewContextBuilderAdapter(self.context_manager),
+            context_builder=ReviewContextBuilderAdapter(),
             **runner_factory.create_workflow_runner_kwargs(),
         )
 

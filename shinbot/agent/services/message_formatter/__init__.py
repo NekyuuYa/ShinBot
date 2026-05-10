@@ -16,6 +16,7 @@ Usage::
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.services.context.builders.message_parts import parse_message_parts
@@ -82,6 +83,33 @@ class MessageFormatterService:
         """Convenience: return only the packed text output."""
         result = self.format(records, config)
         return result.packed_text
+
+    def format_instruction_content(
+        self,
+        records: list[dict[str, Any]],
+        config: MessageFormatConfig | None = None,
+        *,
+        previous_summary: str = "",
+    ) -> list[dict[str, Any]]:
+        """Render current-stage messages as prompt instruction content blocks.
+
+        This is the shared boundary for workflow/runner inputs that need to show
+        the selected message records to a model. Broader session context should
+        still come from the context service.
+        """
+        resolved_config = config or MessageFormatConfig(inject_record_id=True)
+        if not resolved_config.inject_record_id:
+            resolved_config = replace(resolved_config, inject_record_id=True)
+        formatted_text = self.format_text(records, resolved_config).strip()
+        header_lines: list[str] = []
+        summary_text = previous_summary.strip()
+        if summary_text:
+            header_lines.append(f"[上轮观察摘要：{summary_text}]")
+        header_lines.append(f"[以下是会话中 {len(records)} 条待处理消息]")
+        content = [{"type": "text", "text": "\n".join(header_lines)}]
+        if formatted_text:
+            content.append({"type": "text", "text": formatted_text})
+        return content
 
     def _resolve_display_names(
         self,
