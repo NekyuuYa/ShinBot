@@ -85,6 +85,13 @@ class FakeToolManager:
             },
         ]
 
+    def build_request_tools(self, tool_names, **_kwargs) -> list[dict[str, Any]]:
+        schemas = {
+            str(item["function"]["name"]): item
+            for item in self.export_model_tools()
+        }
+        return [schemas[name] for name in tool_names if name in schemas]
+
     async def execute(self, call: ToolCallRequest) -> ToolCallResult:
         self.calls.append(call)
         return ToolCallResult(

@@ -86,6 +86,43 @@ class ToolManager:
             if definition.visibility != ToolVisibility.PRIVATE
         ]
 
+    def build_request_tools(
+        self,
+        tool_names: list[str],
+        *,
+        caller: str = "",
+        instance_id: str = "",
+        session_id: str = "",
+        user_id: str = "",
+        tags: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Build Chat Completions tool schemas for specific tool names.
+
+        Args:
+            tool_names: Tool names to include.
+            caller, instance_id, session_id, user_id: Permission context.
+            tags: Optional registry tag filter.
+
+        Returns:
+            List of tool schemas in Chat Completions format.
+        """
+        requested_names = [name for name in tool_names if name]
+        schema_by_name = {
+            str(schema.get("function", {}).get("name") or ""): schema
+            for schema in self.export_model_tools(
+                caller=caller,
+                instance_id=instance_id,
+                session_id=session_id,
+                user_id=user_id,
+                tags=tags,
+            )
+        }
+        return [
+            schema_by_name[name]
+            for name in requested_names
+            if name in schema_by_name
+        ]
+
     async def execute(self, call: ToolCallRequest) -> ToolCallResult:
         started = _utc_now()
         definition = self._registry.get_tool_by_name(call.tool_name)

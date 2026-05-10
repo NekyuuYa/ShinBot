@@ -104,7 +104,7 @@ class ActiveChatFastRunner:
     async def run(self, batch: ActiveChatBatch) -> ActiveChatRoundResult:
         """Execute one active chat fast-mode round."""
         try:
-            messages, tools, metadata = self._build_model_call_parts(batch)
+            messages, metadata = self._build_model_call_parts(batch)
         except Exception:
             logger.exception("Active chat prompt build failed for session %s", batch.session_id)
             return ActiveChatRoundResult(
@@ -112,6 +112,7 @@ class ActiveChatFastRunner:
                 action=ActiveChatActionKind.RETRY_FAILED,
                 reason="active_chat_prompt_build_failed",
             )
+        tools = self._active_chat_tools(batch)
 
         result = await self._generate(
             batch,
@@ -177,7 +178,7 @@ class ActiveChatFastRunner:
     def _build_model_call_parts(
         self,
         batch: ActiveChatBatch,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         source_messages = self._load_source_messages(batch)
         context = self._build_context(batch, source_messages)
         review_result_summary = _jsonable(batch.review_result_summary)
@@ -209,7 +210,7 @@ class ActiveChatFastRunner:
                 metadata=metadata,
             )
         )
-        return build_result.messages, build_result.tools, dict(build_result.metadata)
+        return build_result.messages, dict(build_result.metadata)
 
     def _load_source_messages(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
         if self._message_store is None:
@@ -338,17 +339,6 @@ class ActiveChatFastRunner:
                     metadata={"active_chat_stage": self.stage_id},
                 )
             )
-        tools = self._active_chat_tools(batch)
-        if tools:
-            injections.append(
-                PromptInjection(
-                    stage=PromptStage.ABILITIES,
-                    component_id="active_chat.fast_mode.tools",
-                    tools=tools,
-                    priority=10,
-                    metadata={"active_chat_stage": self.stage_id},
-                )
-            )
         return injections
 
     def _instruction_content(
@@ -391,18 +381,14 @@ class ActiveChatFastRunner:
         return content
 
     def _active_chat_tools(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
-        tools = self._tool_manager.export_model_tools(
+        tools = self._tool_manager.build_request_tools(
+            ["send_reply", "no_reply", "send_poke"],
             caller=self._config.caller,
             instance_id=instance_id_from_session(batch.session_id),
             session_id=batch.session_id,
             tags={CHAT_ACTION_TOOL_TAG},
         )
-        active_tools = [
-            _active_chat_tool_schema(tool)
-            for tool in tools
-            if tool.get("function", {}).get("name")
-            in {"send_reply", "no_reply", "send_poke"}
-        ]
+        active_tools = [_active_chat_tool_schema(tool) for tool in tools]
         active_tools.extend(_virtual_tool_schemas())
         return active_tools
 
@@ -474,7 +460,7 @@ class ActiveChatFastRunner:
         repair_batch = await self._batch_for_repair(batch)
         if repair_batch.message_log_ids != batch.message_log_ids:
             try:
-                repair_messages, tools, metadata = self._build_model_call_parts(repair_batch)
+                repair_messages, metadata = self._build_model_call_parts(repair_batch)
             except Exception:
                 logger.exception(
                     "Active chat repair prompt rebuild failed for session %s",

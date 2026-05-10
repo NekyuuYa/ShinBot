@@ -69,7 +69,7 @@ class ReviewLLMStageRunnerBase:
 
     async def _generate_result(self, stage_input: ReviewStageInput) -> Any | None:
         try:
-            messages, tools, metadata = self._build_model_call_parts(stage_input)
+            messages, metadata = self._build_model_call_parts(stage_input)
         except Exception:
             logger.exception(
                 "Review prompt build failed for stage %s session %s",
@@ -80,7 +80,7 @@ class ReviewLLMStageRunnerBase:
         return await self._generate_with_parts(
             stage_input,
             messages=messages,
-            tools=tools,
+            tools=[],
             metadata=metadata,
         )
 
@@ -120,7 +120,7 @@ class ReviewLLMStageRunnerBase:
     def _build_model_call_parts(
         self,
         stage_input: ReviewStageInput,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         fallback_metadata = {
             "review_stage": stage_input.purpose,
             **dict(stage_input.metadata),
@@ -143,7 +143,7 @@ class ReviewLLMStageRunnerBase:
                 metadata=fallback_metadata,
             )
         )
-        return result.messages, result.tools, dict(result.metadata)
+        return result.messages, dict(result.metadata)
 
     def _build_prompt_injections(
         self,

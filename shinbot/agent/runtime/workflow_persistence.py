@@ -29,7 +29,7 @@ def persist_prompt_snapshot(
             prompt_signature=snapshot.prompt_signature,
             cache_key=snapshot.cache_key,
             messages=snapshot.full_messages,
-            tools=snapshot.full_tools,
+            tools=[],
             compatibility_used=snapshot.compatibility_used,
             created_at=snapshot.timestamp,
         )

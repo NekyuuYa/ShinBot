@@ -408,6 +408,13 @@ class FakeReviewToolManager:
             },
         ]
 
+    def build_request_tools(self, tool_names, **kwargs):
+        schemas = {
+            str(item["function"]["name"]): item
+            for item in self.export_model_tools(**kwargs)
+        }
+        return [schemas[name] for name in tool_names if name in schemas]
+
     async def execute(self, call):
         self.execute_calls.append(call)
         output = {"sent": True}

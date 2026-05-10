@@ -20,6 +20,7 @@ def _tool_definition(
     permission: str = "tools.weather.query",
     enabled: bool = True,
     visibility: ToolVisibility = ToolVisibility.SCOPED,
+    tags: list[str] | None = None,
     handler=None,
 ):
     async def default_handler(arguments, runtime):
@@ -41,6 +42,7 @@ def _tool_definition(
         permission=permission,
         enabled=enabled,
         visibility=visibility,
+        tags=tags or [],
     )
 
 
@@ -97,6 +99,36 @@ class TestToolManager:
             user_id="user1",
         )
         assert [item["function"]["name"] for item in tools] == ["weather_query"]
+
+    def test_build_request_tools_filters_by_name_tags_and_preserves_requested_order(self):
+        self.registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.no_reply",
+                name="no_reply",
+                permission="tools.chat.no_reply",
+                tags=["chat_action"],
+            )
+        )
+        self.registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.send_reply",
+                name="send_reply",
+                permission="tools.chat.send_reply",
+                tags=["chat_action"],
+            )
+        )
+        self.permissions.bind("inst1:user1", "admin")
+
+        tools = self.manager.build_request_tools(
+            ["send_reply", "missing", "no_reply"],
+            caller="agent.runtime",
+            instance_id="inst1",
+            session_id="inst1:group:g1",
+            user_id="user1",
+            tags={"chat_action"},
+        )
+
+        assert [item["function"]["name"] for item in tools] == ["send_reply", "no_reply"]
 
     @pytest.mark.asyncio
     async def test_execute_tool_success(self):

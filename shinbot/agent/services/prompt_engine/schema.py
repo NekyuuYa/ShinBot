@@ -133,7 +133,6 @@ class PromptInjection(BaseModel):
     text: str = ""
     content_blocks: list[dict[str, Any]] = Field(default_factory=list)
     messages: list[dict[str, Any]] = Field(default_factory=list)
-    tools: list[dict[str, Any]] = Field(default_factory=list)
     priority: int = 100
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -215,7 +214,6 @@ class PromptStageBlock(BaseModel):
     stage: PromptStage
     components: list[PromptComponentRecord] = Field(default_factory=list)
     rendered_text: str = ""
-    tools: list[dict[str, Any]] = Field(default_factory=list)
     messages: list[dict[str, Any]] = Field(default_factory=list)
     truncated: bool = False
     token_estimate: int = 0
@@ -228,7 +226,6 @@ class PromptAssemblyResult(BaseModel):
     stages: list[PromptStageBlock] = Field(default_factory=list)
     ordered_components: list[PromptComponentRecord] = Field(default_factory=list)
     messages: list[dict[str, Any]] = Field(default_factory=list)
-    tools: list[dict[str, Any]] = Field(default_factory=list)
     prompt_signature: str = ""
     cache_key: str = ""
     compatibility_used: bool = False
@@ -260,7 +257,6 @@ class PromptBuildResult(BaseModel):
     stages: list[PromptStageBlock] = Field(default_factory=list)
     ordered_components: list[PromptComponentRecord] = Field(default_factory=list)
     messages: list[dict[str, Any]] = Field(default_factory=list)
-    tools: list[dict[str, Any]] = Field(default_factory=list)
     prompt_signature: str = ""
     cache_key: str = ""
     compatibility_used: bool = False
@@ -283,7 +279,6 @@ class PromptSnapshot(BaseModel):
     components: list[PromptComponentRecord] = Field(default_factory=list)
     stages: list[PromptStageBlock] = Field(default_factory=list)
     full_messages: list[dict[str, Any]] = Field(default_factory=list)
-    full_tools: list[dict[str, Any]] = Field(default_factory=list)
     compatibility_used: bool = False
     truncation: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

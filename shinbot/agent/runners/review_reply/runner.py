@@ -95,9 +95,10 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
 
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
         try:
-            messages, tools, metadata = self._build_model_call_parts(stage_input)
+            messages, metadata = self._build_model_call_parts(stage_input)
         except Exception:
             return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
+        tools = self._reply_decision_tools(stage_input)
         result = await self._generate_with_parts(
             stage_input,
             messages=messages,
@@ -165,22 +166,10 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         *,
         component_ids_by_stage: dict[PromptStage, list[str]],
     ) -> list[PromptInjection]:
-        injections = super()._build_prompt_injections(
+        return super()._build_prompt_injections(
             stage_input,
             component_ids_by_stage=component_ids_by_stage,
         )
-        tools = self._reply_decision_tools(stage_input)
-        if tools:
-            injections.append(
-                PromptInjection(
-                    stage=PromptStage.ABILITIES,
-                    component_id="review.reply_decision.terminal_tools",
-                    tools=tools,
-                    priority=10,
-                    metadata={"review_stage": stage_input.purpose},
-                )
-            )
-        return injections
 
     def _response_format_for(
         self,
@@ -195,18 +184,14 @@ class LLMReplyDecisionStageRunner(ReviewLLMStageRunnerBase):
         if self._tool_manager is None:
             return []
 
-        tools = self._tool_manager.export_model_tools(
+        tools = self._tool_manager.build_request_tools(
+            ["no_reply", "send_reply", "send_poke"],
             caller=self._config.caller,
             instance_id=instance_id_from_session(stage_input.session_id),
             session_id=stage_input.session_id,
             tags={CHAT_ACTION_TOOL_TAG},
         )
-        return [
-            _review_reply_tool_schema(tool)
-            for tool in tools
-            if tool.get("function", {}).get("name")
-            in {"send_reply", "no_reply", "send_poke"}
-        ]
+        return [_review_reply_tool_schema(tool) for tool in tools]
 
     async def _run_tool_decision(
         self,

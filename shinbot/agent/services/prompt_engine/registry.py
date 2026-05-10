@@ -217,7 +217,6 @@ class PromptRegistry:
             stages=assembly.stages,
             ordered_components=assembly.ordered_components,
             messages=assembly.messages,
-            tools=assembly.tools,
             prompt_signature=assembly.prompt_signature,
             cache_key=assembly.cache_key,
             compatibility_used=assembly.compatibility_used,
@@ -229,14 +228,13 @@ class PromptRegistry:
     def assemble(self, request: PromptAssemblyRequest) -> PromptAssemblyResult:
         """Assemble stages and project them with the default chat policy."""
         stage_assembly = self.assemble_stages(request)
-        messages, tools = self.project_messages(stage_assembly)
+        messages = self.project_messages(stage_assembly)
         return PromptAssemblyResult(
             profile_id=stage_assembly.profile_id,
             caller=stage_assembly.caller,
             stages=stage_assembly.stages,
             ordered_components=stage_assembly.ordered_components,
             messages=messages,
-            tools=tools,
             prompt_signature=stage_assembly.prompt_signature,
             compatibility_used=stage_assembly.compatibility_used,
             has_unknown_source=stage_assembly.has_unknown_source,
@@ -305,14 +303,10 @@ class PromptRegistry:
                 has_unknown_source = True
 
             if stage == PromptStage.ABILITIES:
-                tools_for_stage = [
-                    tool for r in records if r.rendered_data for tool in r.rendered_data
-                ]
                 stage_blocks.append(
                     PromptStageBlock(
                         stage=stage,
                         components=records,
-                        tools=tools_for_stage,
                     )
                 )
             elif stage == PromptStage.CONTEXT:
@@ -364,8 +358,8 @@ class PromptRegistry:
     def project_messages(
         self,
         stage_assembly: PromptStageAssembly,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Project 7-stage blocks into default Chat Completions messages/tools."""
+    ) -> list[dict[str, Any]]:
+        """Project 7-stage blocks into default Chat Completions messages."""
         return self._message_builder.build(stage_assembly)
 
     def _component_ids_for_build_request(self, request: PromptBuildRequest) -> list[str]:
@@ -396,7 +390,6 @@ class PromptRegistry:
                     "text": injection.text,
                     "content_blocks": injection.content_blocks,
                     "messages": injection.messages,
-                    "tools": injection.tools,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -412,7 +405,6 @@ class PromptRegistry:
                     source_id=injection.component_id,
                 ),
                 rendered_text=injection.text,
-                rendered_data=list(injection.tools) if injection.tools else None,
                 rendered_messages=list(injection.messages) if injection.messages else None,
                 rendered_content_blocks=(
                     list(injection.content_blocks) if injection.content_blocks else None

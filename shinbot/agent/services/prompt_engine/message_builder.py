@@ -16,7 +16,7 @@ class PromptMessageBuilder:
     def build(
         self,
         stage_assembly: PromptStageAssembly,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> list[dict[str, Any]]:
         stage_by_name = {block.stage: block for block in stage_assembly.stages}
 
         system_content: list[dict[str, Any]] = []
@@ -27,7 +27,6 @@ class PromptMessageBuilder:
                     system_content.append({"type": "text", "text": record.rendered_text})
         system_message: dict[str, Any] = {"role": "system", "content": system_content}
 
-        tools = list(stage_by_name[PromptStage.ABILITIES].tools)
         context_messages = list(stage_by_name[PromptStage.CONTEXT].messages)
 
         final_content: list[dict[str, Any]] = []
@@ -48,7 +47,7 @@ class PromptMessageBuilder:
         if final_content:
             messages.append({"role": "user", "content": final_content})
 
-        return messages, tools
+        return messages
 
 
 __all__ = ["PromptMessageBuilder"]

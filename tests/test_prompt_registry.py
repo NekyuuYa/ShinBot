@@ -175,7 +175,7 @@ def test_prompt_registry_exposes_stage_assembly_before_projection() -> None:
             metadata={"purpose": "test"},
         )
     )
-    messages, tools = registry.project_messages(stage_assembly)
+    messages = registry.project_messages(stage_assembly)
 
     assert not hasattr(stage_assembly, "messages")
     assert [stage.stage for stage in stage_assembly.stages] == [
@@ -190,7 +190,6 @@ def test_prompt_registry_exposes_stage_assembly_before_projection() -> None:
     assert stage_assembly.prompt_signature
     assert stage_assembly.metadata == {"purpose": "test"}
     assert messages[0]["role"] == "system"
-    assert tools == []
 
 
 def test_prompt_message_builder_projects_stage_assembly() -> None:
@@ -215,7 +214,7 @@ def test_prompt_message_builder_projects_stage_assembly() -> None:
     stage_assembly = registry.assemble_stages(
         PromptAssemblyRequest(component_overrides=["system", "instructions"])
     )
-    messages, tools = PromptMessageBuilder().build(stage_assembly)
+    messages = PromptMessageBuilder().build(stage_assembly)
 
     assert messages[0] == {
         "role": "system",
@@ -225,7 +224,6 @@ def test_prompt_message_builder_projects_stage_assembly() -> None:
         "role": "user",
         "content": [{"type": "text", "text": "do work"}],
     }
-    assert tools == []
 
 
 def test_prompt_registry_supports_template_and_resolver_components() -> None:
@@ -338,7 +336,6 @@ def test_prompt_registry_build_messages_supports_workflow_injections() -> None:
     final_text = " ".join(block["text"] for block in result.messages[-1]["content"])
     assert "select message ids" in final_text
     assert "return json" in final_text
-    assert result.tools == []
     assert result.metadata["workflow_id"] == "review"
     assert result.metadata["stage_id"] == "review_scan"
 
@@ -414,7 +411,7 @@ def test_prompt_registry_build_messages_creates_snapshot() -> None:
     assert snapshot.metadata["stage_id"] == "attention_workflow"
 
 
-def test_prompt_registry_build_messages_keeps_tools_out_of_messages() -> None:
+def test_prompt_registry_build_messages_returns_messages_only() -> None:
     registry = PromptRegistry()
     registry.register_component(
         PromptComponent(
@@ -424,14 +421,6 @@ def test_prompt_registry_build_messages_keeps_tools_out_of_messages() -> None:
             content="system",
         )
     )
-    tool_schema = {
-        "type": "function",
-        "function": {
-            "name": "send_reply",
-            "description": "Send a reply",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
 
     result = registry.build_messages(
         PromptBuildRequest(
@@ -440,11 +429,6 @@ def test_prompt_registry_build_messages_keeps_tools_out_of_messages() -> None:
             stage_id="reply_decision",
             component_ids_by_stage={PromptStage.SYSTEM_BASE: ["system"]},
             injections=[
-                PromptInjection(
-                    stage=PromptStage.ABILITIES,
-                    component_id="reply.tools",
-                    tools=[tool_schema],
-                ),
                 PromptInjection(
                     stage=PromptStage.INSTRUCTIONS,
                     component_id="reply.tool_rules",
@@ -455,7 +439,7 @@ def test_prompt_registry_build_messages_keeps_tools_out_of_messages() -> None:
         )
     )
 
-    assert result.tools == [tool_schema]
+    assert isinstance(result.messages, list)
     message_text = "\n".join(_extract_message_texts(result.messages))
     assert "use send_reply when needed" in message_text
     assert "description" not in message_text
