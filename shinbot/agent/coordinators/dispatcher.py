@@ -70,15 +70,18 @@ class ActiveReplyDispatcher:
     ) -> None:
         """Handle a high-priority message in ACTIVE_REPLY state.
 
-        TODO: implement direct LLM workflow dispatch for active replies.
-        Currently a stub - the old AttentionEngine chain has been archived.
+        Active reply does not have its own LLM workflow yet. Keep the route
+        non-blocking for the first rollout: mark this no-op path complete and
+        let the scheduler continue to idle or the pending review flow.
         """
         logger.info(
-            "Active reply dispatched (stub) session=%s msg=%s sender=%s",
+            "Active reply skipped until workflow is implemented session=%s msg=%s sender=%s",
             session_id,
             message_log_id,
             sender_id,
         )
+        if self._agent_scheduler is not None:
+            await self._agent_scheduler.complete_active_reply(session_id)
 
     async def run_review(
         self,

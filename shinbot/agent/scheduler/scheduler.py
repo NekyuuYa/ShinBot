@@ -24,6 +24,7 @@ from shinbot.agent.scheduler.models import (
     AgentScheduleDecision,
     AgentState,
     HighPriorityEvent,
+    HighPriorityEventKind,
     ReviewCompletionDecision,
     ReviewDueDecision,
     ReviewPlan,
@@ -429,7 +430,49 @@ class AgentScheduler:
         now: float | None = None,
     ) -> ReviewDueDecision:
         """Prepare and dispatch a due review workflow when no interrupt is pending."""
-        decision = self.prepare_due_review(session_id, now=now)
+        checked_at = self._now() if now is None else now
+        decision = self.prepare_due_review(session_id, now=checked_at)
+        if (
+            decision.active_reply_pending
+            and decision.high_priority_events
+            and self._workflow_dispatcher is not None
+        ):
+            event = decision.high_priority_events[0]
+            unread = self._unread_metadata.get((session_id, event.message_log_id))
+            await self._workflow_dispatcher.run_active_reply(
+                session_id=session_id,
+                message_log_id=event.message_log_id,
+                sender_id=event.sender_id,
+                response_profile=unread.response_profile if unread is not None else "",
+                is_mentioned=_has_high_priority_kind(
+                    decision.high_priority_events,
+                    HighPriorityEventKind.MENTION,
+                    HighPriorityEventKind.REPEATED_MENTION,
+                ),
+                is_reply_to_bot=_has_high_priority_kind(
+                    decision.high_priority_events,
+                    HighPriorityEventKind.REPLY_TO_BOT,
+                ),
+                self_platform_id=unread.self_platform_id if unread is not None else "",
+                events=decision.high_priority_events,
+            )
+            decision.state = self._state_store.get_state(session_id)
+            if (
+                decision.state == AgentState.IDLE
+                and decision.review_plan is not None
+                and decision.review_plan.next_review_at <= checked_at
+            ):
+                self._state_store.set_state(session_id, AgentState.REVIEW)
+                decision.state = AgentState.REVIEW
+                decision.review_started = True
+                await self._workflow_dispatcher.run_review(
+                    session_id=session_id,
+                    review_plan=decision.review_plan,
+                    unread_messages=self.unread_messages(session_id),
+                )
+                decision.review_workflow_started = True
+                decision.state = self._state_store.get_state(session_id)
+            return decision
         if (
             not decision.review_started
             or decision.review_plan is None
@@ -773,3 +816,11 @@ class AgentScheduler:
 
 def _is_self_message(signal: AgentEntrySignal) -> bool:
     return bool(signal.sender_id and signal.self_id and signal.sender_id == signal.self_id)
+
+
+def _has_high_priority_kind(
+    events: list[HighPriorityEvent],
+    *kinds: HighPriorityEventKind,
+) -> bool:
+    kind_set = set(kinds)
+    return any(event.kind in kind_set for event in events)

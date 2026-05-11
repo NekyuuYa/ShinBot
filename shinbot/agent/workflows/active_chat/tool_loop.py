@@ -157,7 +157,8 @@ class _ActionState:
             self.reason = _reason_from(arguments)
             return
         if tool_name == "request_think_mode":
-            self._promote(ActiveChatActionKind.REQUEST_THINK_MODE)
+            # Think-mode is reserved for a later workflow. Keep hallucinated or
+            # stale calls harmless in the current fast-mode rollout.
             self.reason = _reason_from(arguments)
             return
         if tool_name == "send_reply":

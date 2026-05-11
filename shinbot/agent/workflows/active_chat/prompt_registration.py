@@ -55,8 +55,6 @@ def _active_chat_prompt_components() -> list[PromptComponent]:
             "- send_poke is a valid standalone lightweight interaction in active chat.\n"
             "- Use no_reply when the batch is not worth responding to; set "
             "intensity=strong only when the conversation should cool down more quickly.\n"
-            "- Use request_think_mode with a reason when fast mode is insufficient "
-            "and the batch needs deeper reasoning.\n"
             "- Use exit_active only when active chat should end now, and always "
             "include a clear reason.\n"
             "- Interest is controlled by ShinBot internals. You may only express "

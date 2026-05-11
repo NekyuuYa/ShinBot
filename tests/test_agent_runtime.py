@@ -305,7 +305,11 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
         assert {
             tool["function"]["name"]
             for tool in call.tools
-        } >= {"send_reply", "no_reply", "send_poke", "request_think_mode", "exit_active"}
+        } >= {"send_reply", "no_reply", "send_poke", "exit_active"}
+        assert "request_think_mode" not in {
+            tool["function"]["name"]
+            for tool in call.tools
+        }
         assert runtime.agent_scheduler.unread_messages(session_id) == []
         state = runtime.active_chat_workflow.attention_state_for(session_id)
         assert state is not None

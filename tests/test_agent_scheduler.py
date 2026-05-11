@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from shinbot.agent.coordinators.dispatcher import ActiveReplyDispatcher
 from shinbot.agent.scheduler import (
     ActiveChatDisposition,
     ActiveChatPolicyConfig,
@@ -214,6 +215,24 @@ async def test_scheduler_starts_active_reply_for_mention() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concrete_active_reply_dispatcher_noops_back_to_idle() -> None:
+    dispatcher = ActiveReplyDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "immediate",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+
+    decision = await scheduler.accept_signal(make_signal(is_mentioned=True))
+
+    assert decision.active_reply_started is True
+    assert decision.state == AgentState.IDLE
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert scheduler.high_priority_events("bot:group:room") == []
+
+
+@pytest.mark.asyncio
 async def test_scheduler_can_require_repeated_mentions_before_wake() -> None:
     now = 10.0
     dispatcher = RecordingWorkflowDispatcher()
@@ -368,7 +387,28 @@ async def test_scheduler_does_not_dispatch_review_when_high_priority_is_pending(
     assert decision.review_started is False
     assert decision.review_workflow_started is False
     assert decision.active_reply_pending is True
+    assert dispatcher.calls[0]["message_log_id"] == 1
     assert dispatcher.review_calls == []
+
+
+@pytest.mark.asyncio
+async def test_concrete_active_reply_noop_allows_due_review_to_continue() -> None:
+    dispatcher = ActiveReplyDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        config=AgentSchedulerConfig(mention_wake_count=2, mention_wake_window_seconds=60),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal(is_mentioned=True))
+
+    decision = await scheduler.run_due_review("bot:group:room", now=52.0)
+
+    assert decision.active_reply_pending is True
+    assert decision.state == AgentState.REVIEW
+    assert scheduler.state_for("bot:group:room") == AgentState.REVIEW
+    assert scheduler.high_priority_events("bot:group:room") == []
 
 
 @pytest.mark.asyncio

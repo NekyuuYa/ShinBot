@@ -267,7 +267,7 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
         tool["function"]["name"]
         for tool in model_runtime.calls[0].tools
     ]
-    assert tool_names == ["send_reply", "no_reply", "request_think_mode", "exit_active"]
+    assert tool_names == ["send_reply", "no_reply", "exit_active"]
     assert model_runtime.calls[0].purpose == "active_chat_fast"
     assert model_runtime.calls[0].metadata["message_log_ids"] == [101]
     assert model_runtime.calls[0].metadata["review_result_summary"] == {
