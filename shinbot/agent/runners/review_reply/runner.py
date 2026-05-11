@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Protocol
 
 from shinbot.agent.runners.review_models import ReplyDecisionStageOutput
 from shinbot.agent.runners.review_reply.prompt_registration import REVIEW_REPLY_COMPONENT_IDS
-from shinbot.agent.runners.templates import RunnerTemplateConfig, ToolCallPlanRunner
+from shinbot.agent.runners.templates import (
+    RunnerTemplateConfig,
+    ToolCallPlanRunner,
+)
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.prompt_engine import PromptRegistry
@@ -154,17 +156,15 @@ class LLMReplyDecisionStageRunner:
             )
 
         target_message_ids = _candidate_message_ids_from_stage(stage_input)
-        parsed_calls = [
-            _tool_call_function(tool_call) for tool_call in plan.tool_calls
-        ]
+        parsed_calls = self._template.parse_tool_calls(plan.tool_calls)
         has_reply_call = any(
-            tool_name == "send_reply" for tool_name, _ in parsed_calls
+            call.name == "send_reply" for call in parsed_calls
         )
         first_reply_arguments = next(
             (
-                arguments
-                for tool_name, arguments in parsed_calls
-                if tool_name == "send_reply"
+                call.arguments
+                for call in parsed_calls
+                if call.name == "send_reply"
             ),
             None,
         )
@@ -190,7 +190,8 @@ class LLMReplyDecisionStageRunner:
         poke_count = 0
         saw_no_reply = False
         run_id = str(plan.execution_id or "")
-        for call_index, (tool_name, arguments) in enumerate(parsed_calls):
+        for call_index, parsed_call in enumerate(parsed_calls):
+            tool_name = parsed_call.name
             if tool_name not in {"send_reply", "no_reply", "send_poke"}:
                 continue
             if tool_name == "no_reply":
@@ -198,7 +199,7 @@ class LLMReplyDecisionStageRunner:
                 continue
             if tool_name == "send_poke" and not has_reply_call:
                 continue
-            call_arguments = dict(arguments)
+            call_arguments = dict(parsed_call.arguments)
             if tool_name == "send_reply" and run_id:
                 call_arguments.setdefault(
                     "idempotency_key",
@@ -273,23 +274,6 @@ def _reply_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:
         return ids
     reply_message_id = optional_int(payload.get("reply_message_id"))
     return [reply_message_id] if reply_message_id is not None else []
-
-
-def _tool_call_function(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    function = tool_call.get("function") if isinstance(tool_call, dict) else None
-    if not isinstance(function, dict):
-        return "", {}
-    arguments = function.get("arguments", {})
-    if isinstance(arguments, str):
-        try:
-            parsed_arguments = json.loads(arguments)
-        except json.JSONDecodeError:
-            parsed_arguments = {}
-    elif isinstance(arguments, dict):
-        parsed_arguments = dict(arguments)
-    else:
-        parsed_arguments = {}
-    return str(function.get("name") or ""), parsed_arguments
 
 
 def _tool_output_value(output: Any, key: str) -> Any:

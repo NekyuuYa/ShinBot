@@ -13,6 +13,7 @@ from shinbot.agent.runners.templates import (
     StructuredOutputRunner,
     ToolCallPlanResult,
     ToolCallPlanRunner,
+    parse_tool_call_payload,
 )
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
@@ -496,6 +497,33 @@ def test_tool_call_plan_result_has_tool_calls() -> None:
     assert ToolCallPlanResult(tool_calls=[{"x": 1}]).has_tool_calls
     assert not ToolCallPlanResult().has_tool_calls
     assert not ToolCallPlanResult(tool_calls=[]).has_tool_calls
+
+
+def test_parse_tool_call_payload_normalizes_json_arguments() -> None:
+    parsed = parse_tool_call_payload(
+        {
+            "id": "call-1",
+            "function": {
+                "name": "send_reply",
+                "arguments": '{"text": "hello", "quote_message_log_id": 7}',
+            },
+        }
+    )
+
+    assert parsed.name == "send_reply"
+    assert parsed.arguments == {"text": "hello", "quote_message_log_id": 7}
+
+
+def test_parse_tool_call_payload_handles_invalid_arguments() -> None:
+    parsed = parse_tool_call_payload(
+        {
+            "id": "call-1",
+            "function": {"name": "send_reply", "arguments": "{bad json"},
+        }
+    )
+
+    assert parsed.name == "send_reply"
+    assert parsed.arguments == {}
 
 
 # -- prompt injection --

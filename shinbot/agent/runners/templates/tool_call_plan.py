@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -34,6 +35,15 @@ class ToolCallPlanResult:
     @property
     def has_tool_calls(self) -> bool:
         return bool(self.tool_calls)
+
+
+@dataclass(slots=True, frozen=True)
+class ParsedToolCall:
+    """Normalized tool call function name and arguments."""
+
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 class ToolCallPlanRunner(RunnerTemplateBase):
@@ -136,6 +146,11 @@ class ToolCallPlanRunner(RunnerTemplateBase):
         """Public accessor for the resolved tool schemas."""
         return self._build_tools(stage_input)
 
+    @staticmethod
+    def parse_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ParsedToolCall]:
+        """Normalize raw Chat Completions tool call payloads."""
+        return [parse_tool_call_payload(tool_call) for tool_call in tool_calls]
+
     # -- internal plumbing --
 
     def _build_tools(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
@@ -190,3 +205,32 @@ class ToolCallPlanRunner(RunnerTemplateBase):
             tools=tools,
             metadata={**metadata, "repair_attempt": 1, "repair_reason": self._repair_reason},
         )
+
+
+def parse_tool_call_payload(tool_call: dict[str, Any]) -> ParsedToolCall:
+    function = tool_call.get("function") if isinstance(tool_call, dict) else None
+    if not isinstance(function, dict):
+        return ParsedToolCall(name="", raw=dict(tool_call) if isinstance(tool_call, dict) else {})
+    arguments = function.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            parsed_arguments = {}
+    elif isinstance(arguments, dict):
+        parsed_arguments = dict(arguments)
+    else:
+        parsed_arguments = {}
+    return ParsedToolCall(
+        name=str(function.get("name") or ""),
+        arguments=parsed_arguments,
+        raw=dict(tool_call),
+    )
+
+
+__all__ = [
+    "ParsedToolCall",
+    "ToolCallPlanResult",
+    "ToolCallPlanRunner",
+    "parse_tool_call_payload",
+]
