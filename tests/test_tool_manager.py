@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from shinbot.agent.services.tools import (
@@ -51,10 +53,12 @@ class TestToolRegistry:
     def test_register_and_lookup_tool(self):
         registry = ToolRegistry()
         definition = _tool_definition()
+        before_revision = registry.revision
         registry.register_tool(definition)
 
         assert registry.get_tool(definition.id) is definition
         assert registry.get_tool_by_name(definition.name) is definition
+        assert registry.revision == before_revision + 1
 
     def test_duplicate_tool_name_is_rejected(self):
         registry = ToolRegistry()
@@ -74,6 +78,24 @@ class TestToolRegistry:
 
         assert removed == 2
         assert registry.list_tools() == []
+        assert registry.revision == 4
+
+    def test_replace_tool_updates_name_index_and_revision(self):
+        registry = ToolRegistry()
+        definition = _tool_definition()
+        registry.register_tool(definition)
+
+        registry.replace_tool(
+            replace(
+                definition,
+                name="weather_query_v2",
+                description="new description",
+            )
+        )
+
+        assert registry.revision == 2
+        assert registry.get_tool_by_name("weather_query") is None
+        assert registry.get_tool_by_name("weather_query_v2").description == "new description"
 
 
 class TestToolManager:
@@ -183,6 +205,32 @@ class TestToolManager:
         assert result.success is False
         assert result.error_code == "permission_denied"
 
+    def test_invalidate_tool_schema_cache_after_in_place_tool_update(self):
+        self.permissions.bind("inst1:user1", "admin")
+
+        first = self.manager.build_request_tools(
+            ["weather_query"],
+            caller="agent.runtime",
+            instance_id="inst1",
+            session_id="inst1:group:g1",
+            user_id="user1",
+        )
+        definition = self.registry.get_tool("builtin.weather_query")
+        assert definition is not None
+        definition.description = "updated weather query"
+
+        self.manager.invalidate_tool_schema_cache("builtin.weather_query")
+        second = self.manager.build_request_tools(
+            ["weather_query"],
+            caller="agent.runtime",
+            instance_id="inst1",
+            session_id="inst1:group:g1",
+            user_id="user1",
+        )
+
+        assert first[0]["function"]["description"] == "query weather"
+        assert second[0]["function"]["description"] == "updated weather query"
+
 
 class TestToolSchemaBuilder:
     def test_build_request_tools_filters_and_preserves_requested_order(self):
@@ -242,3 +290,66 @@ class TestToolSchemaBuilder:
         allowed = True
         tools = builder.export_model_tools(caller="agent.review")
         assert [item["function"]["name"] for item in tools] == ["public_tool"]
+
+    def test_schema_cache_refreshes_when_registry_revision_changes(self):
+        registry = ToolRegistry()
+        registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.one",
+                name="one",
+                permission="",
+                visibility=ToolVisibility.PUBLIC,
+            )
+        )
+        builder = ToolSchemaBuilder(registry)
+        assert [item["function"]["name"] for item in builder.export_model_tools(caller="x")] == [
+            "one"
+        ]
+
+        registry.register_tool(
+            _tool_definition(
+                tool_id="builtin.two",
+                name="two",
+                permission="",
+                visibility=ToolVisibility.PUBLIC,
+            )
+        )
+
+        assert [item["function"]["name"] for item in builder.export_model_tools(caller="x")] == [
+            "one",
+            "two",
+        ]
+
+    def test_schema_cache_refreshes_when_tool_is_replaced(self):
+        registry = ToolRegistry()
+        definition = _tool_definition(
+            tool_id="builtin.one",
+            name="one",
+            permission="",
+            visibility=ToolVisibility.PUBLIC,
+        )
+        registry.register_tool(definition)
+        builder = ToolSchemaBuilder(registry)
+
+        first = builder.export_model_tools(caller="x")
+        registry.replace_tool(replace(definition, description="updated one"))
+        second = builder.export_model_tools(caller="x")
+
+        assert first[0]["function"]["description"] == "query weather"
+        assert second[0]["function"]["description"] == "updated one"
+
+    def test_exported_schema_is_not_mutated_by_later_definition_changes(self):
+        registry = ToolRegistry()
+        definition = _tool_definition(
+            tool_id="builtin.one",
+            name="one",
+            permission="",
+            visibility=ToolVisibility.PUBLIC,
+        )
+        registry.register_tool(definition)
+        builder = ToolSchemaBuilder(registry)
+
+        schema = builder.export_model_tools(caller="x")[0]
+        definition.input_schema["properties"]["city"]["description"] = "changed"
+
+        assert "description" not in schema["function"]["parameters"]["properties"]["city"]

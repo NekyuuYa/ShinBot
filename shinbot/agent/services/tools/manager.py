@@ -107,6 +107,18 @@ class ToolManager:
             tags=tags,
         )
 
+    def invalidate_tool_schema_cache(self, tool_id: str | None = None) -> None:
+        """Invalidate cached model tool schemas.
+
+        Call this after WebUI or admin flows mutate a registered tool definition
+        in place. Registry register/unregister operations are detected
+        automatically through the registry revision.
+        """
+        if tool_id:
+            self._schema_builder.invalidate_tool(tool_id)
+            return
+        self._schema_builder.clear_cache()
+
     async def execute(self, call: ToolCallRequest) -> ToolCallResult:
         started = _utc_now()
         definition = self._registry.get_tool_by_name(call.tool_name)

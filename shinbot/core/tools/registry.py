@@ -13,25 +13,48 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools_by_id: dict[str, ToolDefinition] = {}
         self._tool_id_by_name: dict[str, str] = {}
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        """Monotonic revision for consumers that cache registry projections."""
+        return self._revision
+
+    def touch(self) -> int:
+        """Mark registry contents as changed after in-place tool edits."""
+        self._revision += 1
+        return self._revision
 
     def register_tool(self, definition: ToolDefinition) -> None:
-        if not definition.id.strip():
-            raise ValueError("Tool id must be a non-empty string")
-        if not definition.name.strip():
-            raise ValueError("Tool name must be a non-empty string")
-        if not definition.owner_id.strip():
-            raise ValueError("Tool owner_id must be a non-empty string")
+        self._validate_definition(definition)
         if definition.id in self._tools_by_id:
             raise ValueError(f"Tool id {definition.id!r} is already registered")
         if definition.name in self._tool_id_by_name:
             raise ValueError(f"Tool name {definition.name!r} is already registered")
         self._tools_by_id[definition.id] = definition
         self._tool_id_by_name[definition.name] = definition.id
+        self.touch()
+
+    def replace_tool(self, definition: ToolDefinition) -> None:
+        """Replace an existing tool definition and update name indexes."""
+        self._validate_definition(definition)
+        current = self._tools_by_id.get(definition.id)
+        if current is None:
+            raise ValueError(f"Tool id {definition.id!r} is not registered")
+        existing_name_owner = self._tool_id_by_name.get(definition.name)
+        if existing_name_owner is not None and existing_name_owner != definition.id:
+            raise ValueError(f"Tool name {definition.name!r} is already registered")
+        if current.name != definition.name:
+            self._tool_id_by_name.pop(current.name, None)
+        self._tools_by_id[definition.id] = definition
+        self._tool_id_by_name[definition.name] = definition.id
+        self.touch()
 
     def unregister_tool(self, tool_id: str) -> None:
         definition = self._tools_by_id.pop(tool_id, None)
         if definition is not None:
             self._tool_id_by_name.pop(definition.name, None)
+            self.touch()
 
     def unregister_owner(self, owner_type: str, owner_id: str) -> int:
         removed = [
@@ -95,3 +118,11 @@ class ToolRegistry:
             for definition in definitions
             if definition.visibility != ToolVisibility.PRIVATE
         ]
+
+    def _validate_definition(self, definition: ToolDefinition) -> None:
+        if not definition.id.strip():
+            raise ValueError("Tool id must be a non-empty string")
+        if not definition.name.strip():
+            raise ValueError("Tool name must be a non-empty string")
+        if not definition.owner_id.strip():
+            raise ValueError("Tool owner_id must be a non-empty string")

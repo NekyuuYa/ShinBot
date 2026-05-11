@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from .registry import ToolRegistry
@@ -24,6 +25,26 @@ class ToolSchemaBuilder:
         self._registry = registry
         self._permission_checker = permission_checker
         self._schema_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+        self._registry_revision = _registry_revision(registry)
+
+    def clear_cache(self) -> None:
+        """Clear all cached model tool schemas."""
+        self._schema_cache.clear()
+        self._registry_revision = _registry_revision(self._registry)
+
+    def invalidate_tool(self, tool_id: str) -> None:
+        """Clear cached schemas for one tool id."""
+        if not tool_id:
+            return
+        if _registry_revision(self._registry) != self._registry_revision:
+            self.clear_cache()
+            return
+        stale_keys = [
+            key for key in self._schema_cache if key and key[0] == tool_id
+        ]
+        for key in stale_keys:
+            self._schema_cache.pop(key, None)
+        self._registry_revision = _registry_revision(self._registry)
 
     def list_visible_tools(
         self,
@@ -100,6 +121,7 @@ class ToolSchemaBuilder:
         ]
 
     def _schema_for_definition(self, definition: ToolDefinition) -> dict[str, Any]:
+        self._refresh_cache_if_registry_changed()
         cache_key = _definition_cache_key(definition)
         cached = self._schema_cache.get(cache_key)
         if cached is None:
@@ -108,14 +130,17 @@ class ToolSchemaBuilder:
                 "function": {
                     "name": definition.name,
                     "description": definition.description,
-                    "parameters": definition.input_schema,
+                    "parameters": deepcopy(definition.input_schema),
                 },
             }
             self._schema_cache[cache_key] = cached
-        return {
-            "type": str(cached["type"]),
-            "function": dict(cached["function"]),
-        }
+        return deepcopy(cached)
+
+    def _refresh_cache_if_registry_changed(self) -> None:
+        revision = _registry_revision(self._registry)
+        if revision != self._registry_revision:
+            self._schema_cache.clear()
+            self._registry_revision = revision
 
 
 def _definition_cache_key(definition: ToolDefinition) -> tuple[Any, ...]:
@@ -127,6 +152,10 @@ def _definition_cache_key(definition: ToolDefinition) -> tuple[Any, ...]:
         definition.visibility,
         definition.enabled,
     )
+
+
+def _registry_revision(registry: ToolRegistry) -> int:
+    return int(getattr(registry, "revision", 0) or 0)
 
 
 __all__ = ["ToolPermissionChecker", "ToolSchemaBuilder"]
