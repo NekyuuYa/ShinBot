@@ -163,6 +163,7 @@ class PluginManager:
         if not hasattr(module, "setup"):
             raise AttributeError(f"Plugin module {module_path!r} must expose a setup(plg) function")
 
+        self._register_config_provider_from_module(plugin_id, module)
         plg = self._build_plg(plugin_id)
 
         try:
@@ -191,7 +192,6 @@ class PluginManager:
         self._modules[plugin_id] = module
         if declared_metadata is not None:
             self._declared_metadata[plugin_id] = dict(declared_metadata)
-        self._register_config_provider_from_module(plugin_id, module)
 
         logger.info("Loaded plugin %s (async, data_dir=%s)", plugin_id, meta.data_dir)
         return meta
@@ -274,6 +274,7 @@ class PluginManager:
         if not hasattr(module, "setup"):
             raise AttributeError(f"Plugin module {module_path!r} must expose a setup(plg) function")
 
+        self._register_config_provider_from_module(plugin_id, module)
         plg = self._build_plg(plugin_id)
         try:
             await self._invoke(module.setup, plg)
@@ -308,7 +309,6 @@ class PluginManager:
         meta.data_dir = str(plg.data_dir)
         self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
-        self._register_config_provider_from_module(plugin_id, module)
         logger.info("Enabled plugin %s", plugin_id)
         return meta
 
@@ -512,6 +512,7 @@ class PluginManager:
             module = importlib.import_module(module_path)
 
         logger.info("Reloading plugin %s", plugin_id)
+        self._register_config_provider_from_module(plugin_id, module)
 
         plg = self._build_plg(plugin_id)
         try:
@@ -539,7 +540,6 @@ class PluginManager:
         self._plugins[plugin_id] = new_meta
         self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
-        self._register_config_provider_from_module(plugin_id, module)
         return new_meta
 
     def _build_plugin_meta(

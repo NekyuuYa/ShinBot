@@ -15,6 +15,11 @@ from shinbot.core.application.config_sections import (
     iter_adapter_instance_records,
     normalize_adapter_instance_record,
 )
+from shinbot.core.application.provider_config_validation import (
+    ProviderConfigValidationError,
+    validate_adapter_instance_configs,
+    validate_plugin_configs,
+)
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import normalize_plugin_enabled, plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
@@ -254,7 +259,16 @@ class BootController:
         except Exception:
             logger.exception("Failed loading plugins")
 
-        for plugin_cfg in self.config.get("plugins", []):
+        configured_plugins = self.config.get("plugins", [])
+        if configured_plugins is None:
+            configured_plugins = []
+        if not isinstance(configured_plugins, list):
+            configured_plugins = []
+
+        for plugin_cfg in configured_plugins:
+            if not isinstance(plugin_cfg, dict):
+                logger.warning("Invalid plugin config entry: %s", plugin_cfg)
+                continue
             plugin_id = plugin_cfg.get("id")
             module_path = plugin_cfg.get("module")
             if not plugin_id or not module_path:
@@ -267,6 +281,7 @@ class BootController:
             except Exception:
                 logger.exception("Failed to load plugin %s from %s", plugin_id, module_path)
 
+        self._validate_plugin_provider_configs()
         await self._apply_plugin_state_overrides()
 
     async def _apply_plugin_state_overrides(self) -> None:
@@ -321,6 +336,7 @@ class BootController:
 
     def _setup_instances(self) -> None:
         assert self.bot is not None
+        self._validate_adapter_provider_configs()
         instances = iter_adapter_instance_records(self.config)
         if not instances:
             logger.warning("No instances configured - bot will start with no connections")
@@ -350,6 +366,18 @@ class BootController:
                 )
                 continue
             logger.info("Configured instance %r (platform=%s)", instance_id, platform)
+
+    def _validate_plugin_provider_configs(self) -> None:
+        assert self.bot is not None
+        issues = validate_plugin_configs(self.config, self.bot.config_provider_registry)
+        if issues:
+            raise ProviderConfigValidationError(issues)
+
+    def _validate_adapter_provider_configs(self) -> None:
+        assert self.bot is not None
+        issues = validate_adapter_instance_configs(self.config, self.bot.config_provider_registry)
+        if issues:
+            raise ProviderConfigValidationError(issues)
 
     def _setup_permissions(self) -> None:
         assert self.bot is not None

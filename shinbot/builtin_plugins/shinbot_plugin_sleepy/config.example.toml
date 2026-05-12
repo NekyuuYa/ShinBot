@@ -1,0 +1,8 @@
+enabled = true
+
+[[schedules]]
+name = "Sleep"
+start_time = "23:00"
+end_time = "08:00"
+threshold_delta = 5.0
+enabled = true

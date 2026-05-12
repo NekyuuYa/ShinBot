@@ -1,0 +1,20 @@
+[provider]
+kind = "plugin"
+id = "shinbot_plugin_sleepy"
+display_name = "Sleepy Scheduler"
+description = "Time-based attention threshold scheduler."
+config_version = "1.0.0"
+
+[[fields]]
+path = "enabled"
+type = "boolean"
+default = true
+description = "Enable scheduled attention threshold adjustments."
+
+[[fields]]
+path = "schedules"
+type = "array_object"
+default = [
+  { name = "Sleep", start_time = "23:00", end_time = "08:00", threshold_delta = 5.0, enabled = true },
+]
+description = "Schedule rows with name, start_time, end_time, threshold_delta, and enabled fields."
