@@ -21,26 +21,62 @@ class ActiveChatInterestEffect:
     reason: str = ""
 
 
-def interest_effect_for_round(result: ActiveChatRoundResult) -> ActiveChatInterestEffect:
+@dataclass(slots=True, frozen=True)
+class ActiveChatInterestEffectConfig:
+    """Interest deltas applied after one active-chat workflow round."""
+
+    send_reply_delta: float = 10.0
+    send_reply_low_delta: float = 5.0
+    no_reply_delta: float = -5.0
+    no_reply_strong_delta: float = -10.0
+    send_poke_delta: float = 3.0
+    request_think_mode_delta: float = 6.0
+    retry_failed_delta: float = -3.0
+
+
+def interest_effect_for_round(
+    result: ActiveChatRoundResult,
+    config: ActiveChatInterestEffectConfig | None = None,
+) -> ActiveChatInterestEffect:
     """Map one round result to an internal interest adjustment."""
+    resolved_config = config or ActiveChatInterestEffectConfig()
     action = result.action
     if action == ActiveChatActionKind.NO_REPLY:
         if result.no_reply_intensity == ActiveChatNoReplyIntensity.STRONG:
-            return ActiveChatInterestEffect(delta=-10.0, reason=result.reason)
-        return ActiveChatInterestEffect(delta=-5.0, reason=result.reason)
+            return ActiveChatInterestEffect(
+                delta=resolved_config.no_reply_strong_delta,
+                reason=result.reason,
+            )
+        return ActiveChatInterestEffect(delta=resolved_config.no_reply_delta, reason=result.reason)
     if action == ActiveChatActionKind.SEND_POKE:
-        return ActiveChatInterestEffect(delta=3.0, reason=result.reason)
+        return ActiveChatInterestEffect(delta=resolved_config.send_poke_delta, reason=result.reason)
     if action == ActiveChatActionKind.SEND_REPLY:
         if result.reply_intensity == ActiveChatReplyIntensity.ENGAGED:
-            return ActiveChatInterestEffect(delta=10.0, reason=result.reason)
-        return ActiveChatInterestEffect(delta=5.0, reason=result.reason)
+            return ActiveChatInterestEffect(
+                delta=resolved_config.send_reply_delta,
+                reason=result.reason,
+            )
+        return ActiveChatInterestEffect(
+            delta=resolved_config.send_reply_low_delta,
+            reason=result.reason,
+        )
     if action == ActiveChatActionKind.REQUEST_THINK_MODE:
-        return ActiveChatInterestEffect(delta=6.0, reason=result.reason)
+        return ActiveChatInterestEffect(
+            delta=resolved_config.request_think_mode_delta,
+            reason=result.reason,
+        )
     if action == ActiveChatActionKind.EXIT_ACTIVE:
         return ActiveChatInterestEffect(force_exit=True, reason=result.reason)
     if action == ActiveChatActionKind.RETRY_FAILED:
-        return ActiveChatInterestEffect(delta=-3.0, reason=result.reason)
+        return ActiveChatInterestEffect(
+            delta=resolved_config.retry_failed_delta,
+            reason=result.reason,
+        )
     return ActiveChatInterestEffect(delta=0.0, reason=result.reason)
 
 
-__all__ = ["ActiveChatInterestEffect", "interest_effect_for_round"]
+__all__ = [
+    "ActiveChatInterestEffect",
+    "ActiveChatInterestEffectConfig",
+    "interest_effect_for_round",
+]

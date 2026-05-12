@@ -166,7 +166,35 @@ class BootController:
 
         from shinbot.agent.runtime import install_agent_runtime
 
-        install_agent_runtime(self.bot)
+        install_agent_runtime(
+            self.bot,
+            agent_configs_by_bot_id=self._load_agent_runtime_configs_by_bot_id(),
+        )
+
+    def _load_agent_runtime_configs_by_bot_id(self) -> dict[str, Any]:
+        from shinbot.agent.runtime.config import (
+            AgentRuntimeConfigError,
+            load_agent_runtime_config,
+        )
+
+        configs: dict[str, Any] = {}
+        for bot_config in self.bot_service_configs:
+            if not bot_config.enabled:
+                continue
+            if bot_config.agent.mode == "none" or not bot_config.agent.config:
+                continue
+
+            config_path = self.data_dir / bot_config.agent.config
+            try:
+                configs[bot_config.id] = load_agent_runtime_config(
+                    config_path,
+                    data_dir=self.data_dir,
+                )
+            except AgentRuntimeConfigError as exc:
+                raise AgentRuntimeConfigError(
+                    f"Invalid agent config for bot {bot_config.id!r}: {exc}"
+                ) from exc
+        return configs
 
     def _runtime_feature_enabled(self, name: str, *, default: bool) -> bool:
         section = self.config.get("runtime", {})

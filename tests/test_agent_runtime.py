@@ -10,8 +10,11 @@ import pytest
 from shinbot.agent.coordinators.review.factory import ReviewRuntimeConfig, ReviewStageRuntimeConfig
 from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
 from shinbot.agent.runtime import install_agent_runtime
+from shinbot.agent.runtime.config import agent_runtime_config_from_mapping
 from shinbot.agent.scheduler import ActiveChatState, AgentScheduler, AgentState
+from shinbot.agent.services.message_formatter import ImageMode
 from shinbot.agent.services.model_runtime import GenerateResult
+from shinbot.agent.services.prompt_engine import PromptStage
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence.records import InstanceConfigRecord, MessageLogRecord
@@ -56,6 +59,7 @@ def make_signal(
     *,
     message_log_id: int = 123,
     instance_id: str = "test-bot",
+    bot_id: str = "",
     is_private: bool = False,
     is_mentioned: bool = False,
     is_reply_to_bot: bool = False,
@@ -71,6 +75,7 @@ def make_signal(
         is_private=is_private,
         is_mentioned=is_mentioned,
         is_reply_to_bot=is_reply_to_bot,
+        bot_id=bot_id,
     )
 
 
@@ -100,6 +105,111 @@ def make_generate_result(
         model_id="",
         usage={},
     )
+
+
+class RecordingScheduler:
+    def __init__(self) -> None:
+        self.calls: list[AgentEntrySignal] = []
+
+    async def accept_signal(self, signal: AgentEntrySignal) -> None:
+        self.calls.append(signal)
+
+
+def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> None:
+    config = agent_runtime_config_from_mapping(
+        {
+            "agent": {
+                "id": "full-agent",
+                "prompt_files": {
+                    "locale": "en-US",
+                    "fallback_locales": ["zh-CN"],
+                    "data_root": "custom-prompts",
+                },
+                "defaults": {
+                    "llm": {
+                        "route_id": "route-default",
+                        "model_id": "model-default",
+                        "max_model_retries": 2,
+                        "retry_backoff_seconds": 0.5,
+                        "params": {"temperature": 0.2},
+                    },
+                    "message_format": {
+                        "image_mode": "thumbnail",
+                        "include_sender": False,
+                        "include_message_id": True,
+                    },
+                },
+                "review": {
+                    "scan_batch_size": 7,
+                    "mention_wake_count": 3,
+                    "scan": {
+                        "llm": {
+                            "route_id": "route-scan",
+                            "model_id": "model-scan",
+                        },
+                        "prompts": {
+                            "system": "review.custom.system",
+                            "task": ["review.custom.task"],
+                        },
+                    },
+                },
+                "summaries": {
+                    "active_chat_summary_max_age_seconds": 999,
+                },
+                "active_chat": {
+                    "initial_interest": 42,
+                    "half_life_seconds": 60,
+                    "interest_delta": {
+                        "mention_other": 2,
+                        "poke": 4,
+                        "send_reply": 11,
+                        "no_reply": -6,
+                    },
+                    "attention": {
+                        "threshold": 9,
+                        "semantic_wait_ms": 123,
+                    },
+                    "fast_mode": {
+                        "llm": {"route_id": "route-fast"},
+                        "params": {"top_p": 0.8},
+                    },
+                },
+            }
+        },
+        data_dir=tmp_path,
+    )
+
+    assert config.agent_id == "full-agent"
+    assert config.prompt_file_config is not None
+    assert config.prompt_file_config.data_root == tmp_path / "custom-prompts"
+    assert config.default_message_format_config.image_mode == ImageMode.THUMBNAIL
+    assert config.default_message_format_config.inject_sender is False
+    assert config.default_message_format_config.inject_record_id is True
+    assert config.review_workflow_config.review_scan_batch_size == 7
+    assert config.review_workflow_config.active_chat_summary_max_age_seconds == 999
+    assert config.agent_scheduler_config.mention_wake_count == 3
+    assert config.review_runtime_config.review_scan.route_id == "route-scan"
+    assert config.review_runtime_config.review_scan.model_id == "model-scan"
+    assert config.review_runtime_config.review_scan.max_model_retries == 2
+    assert config.review_runtime_config.reply_decision.route_id == "route-default"
+    assert config.review_runtime_config.review_scan.component_ids_by_stage == {
+        PromptStage.SYSTEM_BASE: ["review.custom.system"],
+        PromptStage.INSTRUCTIONS: ["review.custom.task"],
+    }
+    assert config.active_chat_policy_config.initial_interest_value == 42
+    assert config.active_chat_policy_config.decay_half_life_seconds == 60
+    assert config.active_chat_policy_config.mention_other_interest_delta == 2
+    assert config.active_chat_policy_config.poke_interest_delta == 4
+    assert config.active_chat_attention_config.base_threshold == 9
+    assert config.active_chat_attention_config.semantic_wait_ms == 123
+    assert config.active_chat_interest_effect_config.send_reply_delta == 11
+    assert config.active_chat_interest_effect_config.no_reply_delta == -6
+    assert config.active_chat_fast_runner_config.route_id == "route-fast"
+    assert config.active_chat_fast_runner_config.model_id == "model-default"
+    assert config.active_chat_fast_runner_config.params == {
+        "temperature": 0.2,
+        "top_p": 0.8,
+    }
 
 
 def test_agent_runtime_wires_review_runner_config(tmp_path: Path) -> None:
@@ -142,6 +252,38 @@ def test_agent_runtime_accepts_review_runner_config_mapping(tmp_path: Path) -> N
 
     assert isinstance(workflow._scan_runner, LLMReviewScanStageRunner)
     assert workflow._scan_runner._config.route_id == "route-a"
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_selects_profile_by_bot_id(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        agent_configs_by_bot_id={
+            "bot-a": {
+                "agent": {
+                    "id": "agent-a",
+                    "active_chat": {"initial_interest": 77},
+                }
+            }
+        },
+    )
+    bot_a_scheduler = RecordingScheduler()
+    default_scheduler = RecordingScheduler()
+    runtime.agent_profile_for_bot("bot-a").agent_scheduler = bot_a_scheduler
+    runtime.agent_scheduler = default_scheduler
+
+    await runtime.handle_agent_entry(make_signal(bot_id="bot-a"))
+    await runtime.handle_agent_entry(make_signal(bot_id="bot-b"))
+
+    assert runtime.agent_profile_for_bot("bot-a").profile_id == "agent-a"
+    assert (
+        runtime.agent_profile_for_bot("bot-a")
+        .config.active_chat_policy_config.initial_interest_value
+        == 77
+    )
+    assert [signal.bot_id for signal in bot_a_scheduler.calls] == ["bot-a"]
+    assert [signal.bot_id for signal in default_scheduler.calls] == ["bot-b"]
 
 
 def test_agent_runtime_syncs_builtin_prompt_files_to_data_dir(tmp_path: Path) -> None:

@@ -23,7 +23,9 @@ class ActiveChatPolicyConfig:
     idle_interest_threshold: float = 5.0
     message_interest_delta: float = 1.0
     mention_interest_delta: float = 8.0
+    mention_other_interest_delta: float = 0.0
     reply_interest_delta: float = 5.0
+    poke_interest_delta: float = 0.0
     max_interest_value: float = 100.0
 
 
@@ -245,8 +247,10 @@ class DefaultActiveChatPolicy:
             return self._config.mention_interest_delta
         if is_reply_to_bot:
             return self._config.reply_interest_delta
-        if is_mention_to_other or is_poke_to_bot or is_poke_to_other:
-            return 0.0
+        if is_poke_to_bot or is_poke_to_other:
+            return self._config.poke_interest_delta
+        if is_mention_to_other:
+            return self._config.mention_other_interest_delta
         return self._config.message_interest_delta
 
     def should_return_idle(self, state: ActiveChatState) -> bool:

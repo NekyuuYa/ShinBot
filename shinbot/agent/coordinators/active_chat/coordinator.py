@@ -9,7 +9,10 @@ from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from typing import Any
 
-from shinbot.agent.coordinators.active_chat.actions import interest_effect_for_round
+from shinbot.agent.coordinators.active_chat.actions import (
+    ActiveChatInterestEffectConfig,
+    interest_effect_for_round,
+)
 from shinbot.agent.coordinators.active_chat.attention import (
     ActiveChatAttention,
     ActiveChatAttentionConfig,
@@ -54,10 +57,12 @@ class ActiveChatCoordinator:
         now: Callable[[], float] | None = None,
         conversation_message_limit: int = 80,
         trace_compactor: ActiveChatTraceCompactor | None = None,
+        interest_effect_config: ActiveChatInterestEffectConfig | None = None,
     ) -> None:
         self._attention = attention or ActiveChatAttention()
         self._round_handler = round_handler
         self._now = now or time.time
+        self._interest_effect_config = interest_effect_config or ActiveChatInterestEffectConfig()
         self._trace_compactor = trace_compactor or ActiveChatTraceCompactor(
             ActiveChatTraceConfig(message_limit=max(0, conversation_message_limit))
         )
@@ -519,7 +524,7 @@ class ActiveChatCoordinator:
                 result.consumed_message_log_ids or batch.message_log_ids
             )
             scheduler.mark_active_chat_consumed(session_id, consumed_message_log_ids)
-            effect = interest_effect_for_round(result)
+            effect = interest_effect_for_round(result, self._interest_effect_config)
             self.last_batches[session_id] = batch
             logger.info(
                 "Active chat round completed session=%s action=%s consumed_message_log_ids=%s "
