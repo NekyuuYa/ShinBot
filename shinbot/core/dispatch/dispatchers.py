@@ -41,6 +41,7 @@ class AgentEntrySignal:
     is_stopped: bool = False
     bot_id: str = ""
     bot_binding_id: str = ""
+    bot_session_id: str = ""
 
 
 AgentEntryHandler = Callable[[AgentEntrySignal], Awaitable[None] | None]
@@ -98,6 +99,7 @@ class AgentEntryDispatcher:
         signal = AgentEntrySignal(
             bot_id=bot.bot_id,
             bot_binding_id=bot.bot_binding_id,
+            bot_session_id=bot.bot_session_id,
             session_id=bot.session_id,
             message_log_id=context.message_log_id,
             event_type=bot.event.type,

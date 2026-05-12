@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from shinbot.core.application.bot_routing import (
     BotRuntimeRouter,
     bot_route_rule_enabled_for_context,
+    bot_session_id_for_selection,
     permission_scope_for_event,
 )
 from shinbot.core.dispatch.message_context import (
@@ -249,6 +250,10 @@ class MessageIngress:
         if bot_selection is not None:
             message_context.bot_service_config = bot_selection.bot
             message_context.bot_binding_config = bot_selection.binding
+            message_context.bot_session_id = bot_session_id_for_selection(
+                bot_selection,
+                event=event,
+            )
 
         observed_at = time.time()
         message_log_id = self._persist_incoming_message(

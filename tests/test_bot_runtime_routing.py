@@ -285,6 +285,8 @@ async def test_agent_entry_signal_includes_selected_bot_identity() -> None:
     await asyncio.sleep(0)
 
     assert result.matched_rules == [fallback_rule]
+    assert signals[0].session_id == "qq-main:private:user-1"
+    assert signals[0].bot_session_id == "full-agent:private:user-1"
     assert signals[0].bot_id == "full-agent"
     assert signals[0].bot_binding_id == "full-agent-private"
 

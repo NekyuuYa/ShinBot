@@ -118,6 +118,18 @@ def session_pattern_matches_event(pattern: str, event: UnifiedEvent) -> bool:
     return pattern_target == WILDCARD or pattern_target == session_target
 
 
+def bot_session_id_for_selection(
+    selection: BotRuntimeSelection | None,
+    *,
+    event: UnifiedEvent,
+) -> str:
+    """Return the bot-scoped session id for a selected bot binding."""
+
+    if selection is None:
+        return ""
+    return f"{selection.bot.id}:{session_key_for_event(event)}"
+
+
 def permission_scope_for_event(
     selection: BotRuntimeSelection | None,
     *,
@@ -138,10 +150,9 @@ def permission_scope_for_event(
             identity_id=fallback_identity_id,
             session_id=fallback_session_id,
         )
-    bot_id = selection.bot.id
     return PermissionScope(
-        identity_id=bot_id,
-        session_id=f"{bot_id}:{session_key_for_event(event)}",
+        identity_id=selection.bot.id,
+        session_id=bot_session_id_for_selection(selection, event=event),
     )
 
 

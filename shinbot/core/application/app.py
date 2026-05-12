@@ -6,11 +6,12 @@ for starting the bot framework.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 from typing import Any
 
-from shinbot.core.application.bot_routing import BotRuntimeRouter
+from shinbot.core.application.bot_routing import BotRuntimeRouter, bot_agent_enabled_for_context
 from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.config_provider import ConfigProviderRegistry
 from shinbot.core.dispatch.dispatchers import (
@@ -185,7 +186,7 @@ class ShinBot:
         )
         ingress_handler = getattr(runtime, "handle_ingress_message", None)
         if ingress_handler is not None:
-            self.message_ingress.add_pre_route_hook(ingress_handler)
+            self.message_ingress.add_pre_route_hook(_agent_ingress_hook(ingress_handler))
         handler = getattr(runtime, "handle_agent_entry", None)
         if handler is not None:
             self.set_agent_entry_handler(handler)
@@ -233,3 +234,15 @@ class ShinBot:
                 await shutdown()
         await self.adapter_manager.shutdown_all()
         logger.info("ShinBot shut down complete")
+
+
+def _agent_ingress_hook(handler: Any) -> Any:
+    def wrapper(context: Any) -> Any:
+        if not bot_agent_enabled_for_context(context.message_context):
+            return None
+        result = handler(context)
+        if inspect.isawaitable(result):
+            return result
+        return None
+
+    return wrapper

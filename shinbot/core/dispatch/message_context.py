@@ -78,6 +78,7 @@ class MessageContext:
         self._database = database
         self.bot_service_config: BotServiceConfig | None = None
         self.bot_binding_config: BotBindingConfig | None = None
+        self.bot_session_id: str = ""
 
         self.command_match: CommandMatch | None = None
 
