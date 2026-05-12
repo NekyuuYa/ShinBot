@@ -8,7 +8,13 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule
+from shinbot.core.application.bot_routing import bot_plugin_enabled_for_context
+from shinbot.core.dispatch.routing import (
+    RouteCondition,
+    RouteMatchContext,
+    RouteMatchMode,
+    RouteRule,
+)
 from shinbot.core.state.session import SessionManager
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
@@ -130,14 +136,28 @@ class KeywordDispatcher:
         self._keyword_registry = keyword_registry
         self._session_manager = session_manager
 
-    def matches(self, event: UnifiedEvent, message: Message) -> bool:
+    def matches(
+        self,
+        event: UnifiedEvent,
+        message: Message,
+        match_context: RouteMatchContext | None = None,
+    ) -> bool:
         if not event.is_message_event:
             return False
-        return bool(self._keyword_registry.match(message.get_text(self_id=event.self_id)))
+        message_context = match_context.message_context if match_context is not None else None
+        matches = self._keyword_registry.match(message.get_text(self_id=event.self_id))
+        return any(
+            bot_plugin_enabled_for_context(message_context, match.keyword.owner)
+            for match in matches
+        )
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         bot = context.require_message_context()
-        matches = self._keyword_registry.match(bot.text)
+        matches = [
+            match
+            for match in self._keyword_registry.match(bot.text)
+            if bot_plugin_enabled_for_context(bot, match.keyword.owner)
+        ]
         for match in matches:
             if bot.is_stopped:
                 break

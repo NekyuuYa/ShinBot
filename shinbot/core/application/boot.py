@@ -132,7 +132,7 @@ class BootController:
             database_url=database_url,
             database_snapshot_ttl=snapshot_ttl,
         )
-        bot.bot_service_configs = self.bot_service_configs
+        bot.configure_bot_service_configs(self.bot_service_configs)
         return bot
 
     def _mount_model_runtime(self) -> None:

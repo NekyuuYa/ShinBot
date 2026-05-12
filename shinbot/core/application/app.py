@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.application.bot_routing import BotRuntimeRouter
 from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.config_provider import ConfigProviderRegistry
 from shinbot.core.dispatch.dispatchers import (
@@ -85,6 +86,7 @@ class ShinBot:
         self.adapter_manager = AdapterManager()
         self.config_provider_registry = ConfigProviderRegistry()
         self.bot_service_configs: tuple[BotServiceConfig, ...] = ()
+        self.bot_runtime_router: BotRuntimeRouter | None = None
         self.model_runtime_system: Any | None = None
         self.model_runtime: Any | None = None
         self.agent_runtime: Any | None = None
@@ -127,6 +129,15 @@ class ShinBot:
             audit_logger=self.audit_logger,
             database=self.database,
         )
+
+    def configure_bot_service_configs(self, configs: tuple[BotServiceConfig, ...]) -> None:
+        """Install parsed bot service-unit configs into ingress routing."""
+
+        self.bot_service_configs = tuple(configs)
+        self.bot_runtime_router = (
+            BotRuntimeRouter(self.bot_service_configs) if self.bot_service_configs else None
+        )
+        self.message_ingress.set_bot_router(self.bot_runtime_router)
 
     # ── Event ingress callback ───────────────────────────────────────
 

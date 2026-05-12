@@ -19,6 +19,7 @@ from shinbot.schema.events import UnifiedEvent
 from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from shinbot.core.application.bots_config import BotBindingConfig, BotServiceConfig
     from shinbot.persistence.engine import DatabaseManager
 
 logger = get_logger(__name__)
@@ -75,6 +76,8 @@ class MessageContext:
         self.permissions = permissions
         self._waiting_registry = waiting_registry
         self._database = database
+        self.bot_service_config: BotServiceConfig | None = None
+        self.bot_binding_config: BotBindingConfig | None = None
 
         self.command_match: CommandMatch | None = None
 
@@ -104,6 +107,14 @@ class MessageContext:
     @property
     def platform(self) -> str:
         return self.event.platform
+
+    @property
+    def bot_id(self) -> str:
+        return self.bot_service_config.id if self.bot_service_config is not None else ""
+
+    @property
+    def bot_binding_id(self) -> str:
+        return self.bot_binding_config.id if self.bot_binding_config is not None else ""
 
     @property
     def is_private(self) -> bool:

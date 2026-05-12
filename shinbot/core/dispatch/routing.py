@@ -36,6 +36,7 @@ class RouteMatchContext:
     adapter: Any | None = None
     session: Any | None = None
     message_context: Any | None = None
+    rule_filter: Callable[[RouteRule], bool] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -159,6 +160,17 @@ class RouteTable:
             if not rule.enabled:
                 continue
             if self._matches_condition(rule, event, message, element_types, match_context):
+                if match_context is not None and match_context.rule_filter is not None:
+                    try:
+                        if not match_context.rule_filter(rule):
+                            continue
+                    except Exception:
+                        logger.exception(
+                            "route_rule_filter_error: rule_id=%s target=%s",
+                            rule.id,
+                            rule.target,
+                        )
+                        continue
                 matched_entries.append(entry)
 
         observers = [

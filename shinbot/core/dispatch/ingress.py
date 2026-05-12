@@ -18,6 +18,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from shinbot.core.application.bot_routing import (
+    BotRuntimeRouter,
+    bot_route_rule_enabled_for_context,
+)
 from shinbot.core.dispatch.message_context import (
     Interceptor,
     MessageContext,
@@ -131,6 +135,7 @@ class MessageIngress:
         database: DatabaseManager | None = None,
         waiting_registry: WaitingInputRegistry | None = None,
         max_message_age_seconds: int = MAX_MESSAGE_AGE_SECONDS,
+        bot_router: BotRuntimeRouter | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._permission_engine = permission_engine
@@ -140,6 +145,7 @@ class MessageIngress:
         self._database = database
         self._waiting_registry = waiting_registry or WaitingInputRegistry()
         self._max_message_age_seconds = max_message_age_seconds
+        self._bot_router = bot_router
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._pre_route_hooks: list[PreRouteHook] = []
 
@@ -151,6 +157,11 @@ class MessageIngress:
         """Register a lightweight hook that runs after gates and before route matching."""
         if hook not in self._pre_route_hooks:
             self._pre_route_hooks.append(hook)
+
+    def set_bot_router(self, bot_router: BotRuntimeRouter | None) -> None:
+        """Install or clear bot service-unit routing policy."""
+
+        self._bot_router = bot_router
 
     async def process_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         """Process one normalized event.
@@ -227,6 +238,10 @@ class MessageIngress:
             waiting_registry=self._waiting_registry,
             database=self._database,
         )
+        bot_selection = self._resolve_bot_selection(event, adapter)
+        if bot_selection is not None:
+            message_context.bot_service_config = bot_selection.bot
+            message_context.bot_binding_config = bot_selection.binding
 
         observed_at = time.time()
         message_log_id = self._persist_incoming_message(
@@ -268,6 +283,16 @@ class MessageIngress:
                 skipped_reason=ROUTING_SKIP_SESSION_MUTED,
             )
 
+        if self._bot_router is not None and bot_selection is None:
+            self._mark_skipped(message_log_id, ROUTING_SKIP_NO_ROUTE_MATCHED)
+            self._session_manager.update(session)
+            return IngressResult(
+                dispatch_context=dispatch_context,
+                matched_rules=[],
+                message_log_id=message_log_id,
+                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
+            )
+
         blocked_reason = await self._run_interceptors(message_context)
         if blocked_reason is not None:
             self._mark_skipped(message_log_id, blocked_reason)
@@ -289,6 +314,7 @@ class MessageIngress:
                 adapter=adapter,
                 session=session,
                 message_context=message_context,
+                rule_filter=lambda rule: bot_route_rule_enabled_for_context(rule, message_context),
             ),
         )
         if not matched_rules:
@@ -309,6 +335,11 @@ class MessageIngress:
             matched_rules=matched_rules,
             message_log_id=message_log_id,
         )
+
+    def _resolve_bot_selection(self, event: UnifiedEvent, adapter: BaseAdapter) -> Any | None:
+        if self._bot_router is None:
+            return None
+        return self._bot_router.resolve(adapter_instance_id=adapter.instance_id, event=event)
 
     def _process_notice_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         message = Message()

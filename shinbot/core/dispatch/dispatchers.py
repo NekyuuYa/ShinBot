@@ -39,6 +39,8 @@ class AgentEntrySignal:
     is_poke_to_other: bool = False
     already_handled: bool = False
     is_stopped: bool = False
+    bot_id: str = ""
+    bot_binding_id: str = ""
 
 
 AgentEntryHandler = Callable[[AgentEntrySignal], Awaitable[None] | None]
@@ -94,6 +96,8 @@ class AgentEntryDispatcher:
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         bot = context.require_message_context()
         signal = AgentEntrySignal(
+            bot_id=bot.bot_id,
+            bot_binding_id=bot.bot_binding_id,
             session_id=bot.session_id,
             message_log_id=context.message_log_id,
             event_type=bot.event.type,

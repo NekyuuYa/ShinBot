@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from shinbot.core.application.bot_routing import (
+    bot_commands_enabled_for_context,
+    bot_plugin_enabled_for_context,
+    command_prefixes_for_context,
+)
 from shinbot.core.dispatch.routing import (
     RouteCondition,
     RouteMatchContext,
@@ -204,16 +209,30 @@ class TextCommandDispatcher:
         message: Message,
         match_context: RouteMatchContext | None = None,
     ) -> bool:
+        message_context = match_context.message_context if match_context is not None else None
+        if not bot_commands_enabled_for_context(message_context):
+            return False
+
         prefixes = ["/"]
         if match_context is not None and match_context.session is not None:
             prefixes = match_context.session.config.prefixes
+        prefixes = command_prefixes_for_context(message_context, list(prefixes))
         plain_text = message.get_text(self_id=event.self_id)
-        return self._command_registry.resolve(plain_text, prefixes) is not None
+        match = self._command_registry.resolve(plain_text, prefixes)
+        if match is None:
+            return False
+        return bot_plugin_enabled_for_context(message_context, match.command.owner)
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         bot = context.require_message_context()
-        match = self._command_registry.resolve(bot.text, bot.session.config.prefixes)
+        if not bot_commands_enabled_for_context(bot):
+            return
+
+        prefixes = command_prefixes_for_context(bot, list(bot.session.config.prefixes))
+        match = self._command_registry.resolve(bot.text, prefixes)
         if match is None:
+            return
+        if not bot_plugin_enabled_for_context(bot, match.command.owner):
             return
 
         bot.command_match = match
