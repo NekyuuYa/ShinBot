@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.config_provider import ConfigProviderRegistry
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
@@ -83,6 +84,7 @@ class ShinBot:
         self.permission_engine = PermissionEngine()
         self.adapter_manager = AdapterManager()
         self.config_provider_registry = ConfigProviderRegistry()
+        self.bot_service_configs: tuple[BotServiceConfig, ...] = ()
         self.model_runtime_system: Any | None = None
         self.model_runtime: Any | None = None
         self.agent_runtime: Any | None = None

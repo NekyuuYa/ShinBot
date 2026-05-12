@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from shinbot.core.application.app import ShinBot
+from shinbot.core.application.bots_config import BotServiceConfig, load_bot_service_configs
 from shinbot.core.application.config_sections import (
     iter_adapter_instance_records,
     normalize_adapter_instance_record,
@@ -45,6 +46,7 @@ class BootController:
         self.log_level = log_level
         self.state = BootState.UNINITIALIZED
         self.config: dict[str, Any] = {}
+        self.bot_service_configs: tuple[BotServiceConfig, ...] = ()
         self.bot: ShinBot | None = None
         self.dashboard_dist_dir: Path | None = None
         self.dashboard_index_file: Path | None = None
@@ -94,6 +96,7 @@ class BootController:
 
         self.config = self._load_config(self.config_path)
         self._ensure_admin_defaults()
+        self.bot_service_configs = load_bot_service_configs(self.config, data_dir=self.data_dir)
         cfg_level = self.config.get("logging", {}).get("level", self.log_level)
         self._configure_logging(cfg_level)
         self._cleanup_temp_directory()
@@ -124,11 +127,13 @@ class BootController:
         db_cfg = self.config.get("database", {})
         database_url = db_cfg.get("url")
         snapshot_ttl = db_cfg.get("snapshot_ttl")
-        return ShinBot(
+        bot = ShinBot(
             data_dir=self.data_dir,
             database_url=database_url,
             database_snapshot_ttl=snapshot_ttl,
         )
+        bot.bot_service_configs = self.bot_service_configs
+        return bot
 
     def _mount_model_runtime(self) -> None:
         if self.bot is None:
