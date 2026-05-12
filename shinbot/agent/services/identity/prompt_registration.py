@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from shinbot.agent.services.prompt_engine.files import register_prompt_files
+from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, register_prompt_files
 from shinbot.agent.services.prompt_engine.schema import (
     PromptComponent,
     PromptComponentKind,
@@ -23,6 +23,7 @@ def register_identity_prompt_components(
     resolver: Callable[[PromptAssemblyRequest, PromptComponent, PromptSource], dict[str, Any]]
     | None = None,
     identity_store: Any | None = None,
+    prompt_file_config: PromptFileLoadConfig | None = None,
 ) -> None:
     """Register identity prompt components owned by the identity module."""
 
@@ -58,12 +59,26 @@ def register_identity_prompt_components(
             },
         )
     )
-    register_prompt_files(
+    register_identity_file_prompt_components(
         registry,
-        package=__package__,
-        prompt_ids=[registry.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID],
+        prompt_file_config=prompt_file_config,
     )
     registry.register_resolver(
         registry.BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER,
         resolver,
+    )
+
+
+def register_identity_file_prompt_components(
+    registry: PromptRegistry,
+    *,
+    prompt_file_config: PromptFileLoadConfig | None = None,
+) -> None:
+    """Register file-backed identity prompt components."""
+
+    register_prompt_files(
+        registry,
+        package=__package__,
+        file_config=prompt_file_config,
+        prompt_ids=[registry.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID],
     )

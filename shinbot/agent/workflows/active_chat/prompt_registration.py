@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from shinbot.agent.services.prompt_engine.files import register_prompt_files
+from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, register_prompt_files
 from shinbot.agent.services.prompt_engine.schema import PromptStage
 
 ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE: dict[str, dict[PromptStage, list[str]]] = {
@@ -13,12 +13,17 @@ ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE: dict[str, dict[PromptStage, list[str]
 }
 
 
-def register_active_chat_prompt_components(registry) -> None:
+def register_active_chat_prompt_components(
+    registry,
+    *,
+    prompt_file_config: PromptFileLoadConfig | None = None,
+) -> None:
     """Register built-in active chat workflow prompt components."""
 
     register_prompt_files(
         registry,
         package=__package__,
+        file_config=prompt_file_config,
         prompt_ids=[
             "active_chat.fast_mode.system",
             "active_chat.fast_mode.constraints",

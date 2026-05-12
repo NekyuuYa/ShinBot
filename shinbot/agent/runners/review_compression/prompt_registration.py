@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from shinbot.agent.services.prompt_engine.files import register_prompt_files
+from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, register_prompt_files
 from shinbot.agent.services.prompt_engine.schema import PromptStage
 
 REVIEW_COMPRESSION_COMPONENT_IDS: dict[PromptStage, list[str]] = {
@@ -12,11 +12,16 @@ REVIEW_COMPRESSION_COMPONENT_IDS: dict[PromptStage, list[str]] = {
 }
 
 
-def register_review_compression_prompt_components(registry) -> None:
+def register_review_compression_prompt_components(
+    registry,
+    *,
+    prompt_file_config: PromptFileLoadConfig | None = None,
+) -> None:
     """Register review overflow compression prompt components."""
     register_prompt_files(
         registry,
         package=__package__,
+        file_config=prompt_file_config,
         prompt_ids=[
             "review.overflow_compression.system",
             "review.overflow_compression.constraints",

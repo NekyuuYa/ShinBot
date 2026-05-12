@@ -23,6 +23,7 @@ __all__ = [
     "PromptLogger",
     "PromptLoggerRecord",
     "PromptMessageBuilder",
+    "PromptFileLoadConfig",
     "PromptProfile",
     "PromptRegistry",
     "PromptSnapshot",
@@ -55,6 +56,7 @@ _EXPORT_MODULES = {
     "PromptStage": "shinbot.agent.services.prompt_engine.schema",
     "PromptStageAssembly": "shinbot.agent.services.prompt_engine.schema",
     "PromptStageBlock": "shinbot.agent.services.prompt_engine.schema",
+    "PromptFileLoadConfig": "shinbot.agent.services.prompt_engine.files",
     "register_prompt_files": "shinbot.agent.services.prompt_engine.files",
 }
 

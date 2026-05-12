@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -22,11 +23,40 @@ class PromptFileError(RuntimeError):
     """Raised when a prompt markdown file cannot be loaded."""
 
 
+@dataclass(slots=True, frozen=True)
+class PromptFileLoadConfig:
+    """Runtime options for loading file-backed prompt components."""
+
+    locale: str = DEFAULT_PROMPT_LOCALE
+    fallback_locales: tuple[str, ...] = (DEFAULT_PROMPT_FALLBACK_LOCALE,)
+    data_root: Path | str = DEFAULT_PROMPT_DATA_ROOT
+    sync_to_data: bool = False
+
+    @classmethod
+    def from_data_dir(
+        cls,
+        data_dir: Path | str,
+        *,
+        locale: str = DEFAULT_PROMPT_LOCALE,
+        fallback_locales: list[str] | tuple[str, ...] = (DEFAULT_PROMPT_FALLBACK_LOCALE,),
+        sync_to_data: bool = True,
+    ) -> PromptFileLoadConfig:
+        """Build the default runtime prompt config for one ShinBot data dir."""
+
+        return cls(
+            locale=locale,
+            fallback_locales=tuple(str(item) for item in fallback_locales if str(item).strip()),
+            data_root=Path(data_dir) / "prompts",
+            sync_to_data=sync_to_data,
+        )
+
+
 def register_prompt_files(
     registry: Any,
     *,
     package: str,
     prompt_ids: list[str] | tuple[str, ...],
+    file_config: PromptFileLoadConfig | None = None,
     locale: str = DEFAULT_PROMPT_LOCALE,
     fallback_locales: list[str] | tuple[str, ...] = (DEFAULT_PROMPT_FALLBACK_LOCALE,),
     data_root: Path | str = DEFAULT_PROMPT_DATA_ROOT,
@@ -39,6 +69,12 @@ def register_prompt_files(
     performs a non-destructive copy to ``data/prompts/{locale}/{prompt_id}.md``
     and then loads the runtime copy, which is the future user-editable path.
     """
+
+    if file_config is not None:
+        locale = file_config.locale
+        fallback_locales = file_config.fallback_locales
+        data_root = file_config.data_root
+        sync_to_data = file_config.sync_to_data
 
     module_dir = _module_dir(package)
     data_root_path = Path(data_root)
@@ -53,7 +89,7 @@ def register_prompt_files(
         runtime_path = data_root_path / selected_locale / f"{prompt_id}.md"
         if sync_to_data:
             _ensure_runtime_prompt(source_path, runtime_path)
-        load_path = runtime_path if runtime_path.exists() else source_path
+        load_path = runtime_path if sync_to_data and runtime_path.exists() else source_path
         component = load_prompt_component(
             load_path,
             locale=selected_locale,
@@ -212,6 +248,7 @@ __all__ = [
     "DEFAULT_PROMPT_FALLBACK_LOCALE",
     "DEFAULT_PROMPT_LOCALE",
     "PromptFileError",
+    "PromptFileLoadConfig",
     "load_prompt_component",
     "parse_prompt_markdown",
     "register_prompt_files",

@@ -144,6 +144,67 @@ def test_agent_runtime_accepts_review_runner_config_mapping(tmp_path: Path) -> N
     assert workflow._scan_runner._config.route_id == "route-a"
 
 
+def test_agent_runtime_syncs_builtin_prompt_files_to_data_dir(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+
+    runtime_prompt = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
+    component = runtime.prompt_registry.get_component("review.review_scan.task")
+
+    assert runtime_prompt.exists()
+    assert component is not None
+    assert component.metadata["prompt_file"] == str(runtime_prompt)
+    assert component.metadata["runtime_prompt_file"] == str(runtime_prompt)
+    assert "review_scan" in component.metadata["source_prompt_file"]
+
+
+def test_agent_runtime_uses_existing_data_prompt_without_overwrite(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "prompts" / "zh-CN"
+    runtime_dir.mkdir(parents=True)
+    runtime_prompt = runtime_dir / "review.review_scan.task.md"
+    runtime_prompt.write_text(
+        """---
+id: review.review_scan.task
+stage: instructions
+kind: static_text
+priority: 100
+enabled: true
+---
+
+用户自定义 review scan prompt。
+""",
+        encoding="utf-8",
+    )
+
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    component = runtime.prompt_registry.get_component("review.review_scan.task")
+
+    assert component is not None
+    assert component.content == "用户自定义 review scan prompt。"
+    assert runtime_prompt.read_text(encoding="utf-8").endswith(
+        "用户自定义 review scan prompt。\n"
+    )
+
+
+def test_agent_runtime_reload_prompt_files_picks_up_data_edits(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    runtime_prompt = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
+
+    text = runtime_prompt.read_text(encoding="utf-8")
+    runtime_prompt.write_text(
+        text.replace("评估提供的未读消息", "用户在 WebUI 中修改后的审查提示"),
+        encoding="utf-8",
+    )
+
+    runtime.reload_prompt_files()
+    component = runtime.prompt_registry.get_component("review.review_scan.task")
+
+    assert component is not None
+    assert "用户在 WebUI 中修改后的审查提示" in component.content
+
+
 @pytest.mark.asyncio
 async def test_agent_runtime_without_database_shutdown_is_noop() -> None:
     bot = ShinBot()

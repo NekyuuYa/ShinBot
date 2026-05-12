@@ -34,6 +34,7 @@ from shinbot.agent.services.context.active_chat_context import ActiveChatContext
 from shinbot.agent.services.context.review_context_builder import ReviewContextBuilderAdapter
 from shinbot.agent.services.identity import (
     IdentityStore,
+    register_identity_file_prompt_components,
     register_identity_prompt_components,
     register_identity_tools,
 )
@@ -45,7 +46,7 @@ from shinbot.agent.services.media import (
     register_media_runtime,
 )
 from shinbot.agent.services.message_formatter import MessageFormatterService
-from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptRegistry
 from shinbot.agent.services.summaries import SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
@@ -80,11 +81,16 @@ class AgentRuntime:
         adapter_manager: AdapterManager,
         model_runtime: Any,
         review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
+        prompt_file_config: PromptFileLoadConfig | dict[str, Any] | None = None,
     ) -> None:
         runtime_data_dir = Path(data_dir)
         self.database = database
         self.model_runtime = model_runtime
         self.review_runtime_config = _coerce_review_runtime_config(review_runtime_config)
+        self.prompt_file_config = _coerce_prompt_file_config(
+            prompt_file_config,
+            runtime_data_dir,
+        )
         self.review_workflow_config = ReviewWorkflowConfig()
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
@@ -112,15 +118,25 @@ class AgentRuntime:
         register_identity_prompt_components(
             self.prompt_registry,
             identity_store=self.identity_store,
+            prompt_file_config=self.prompt_file_config,
         )
         register_runtime_prompt_components(
             self.prompt_registry,
             message_text_resolver=self.prompt_registry.resolve_builtin_message_text_prompt,
             current_time_resolver=self.prompt_registry.resolve_builtin_current_time_prompt,
         )
-        register_media_prompt_components(self.prompt_registry)
-        register_review_prompt_components(self.prompt_registry)
-        register_active_chat_prompt_components(self.prompt_registry)
+        register_media_prompt_components(
+            self.prompt_registry,
+            prompt_file_config=self.prompt_file_config,
+        )
+        register_review_prompt_components(
+            self.prompt_registry,
+            prompt_file_config=self.prompt_file_config,
+        )
+        register_active_chat_prompt_components(
+            self.prompt_registry,
+            prompt_file_config=self.prompt_file_config,
+        )
 
         self.media_inspection_runner = (
             MediaInspectionRunner(
@@ -197,6 +213,26 @@ class AgentRuntime:
             self.tool_registry,
             media_service=self.media_service,
             inspection_runner=self.media_inspection_runner,
+        )
+
+    def reload_prompt_files(self) -> None:
+        """Reload file-backed prompt components from the configured runtime prompt root."""
+
+        register_identity_file_prompt_components(
+            self.prompt_registry,
+            prompt_file_config=self.prompt_file_config,
+        )
+        register_media_prompt_components(
+            self.prompt_registry,
+            prompt_file_config=self.prompt_file_config,
+        )
+        register_review_prompt_components(
+            self.prompt_registry,
+            prompt_file_config=self.prompt_file_config,
+        )
+        register_active_chat_prompt_components(
+            self.prompt_registry,
+            prompt_file_config=self.prompt_file_config,
         )
 
     async def handle_agent_entry(self, signal: AgentEntrySignal) -> None:
@@ -281,6 +317,7 @@ def install_agent_runtime(
     bot: ShinBot,
     *,
     review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
+    prompt_file_config: PromptFileLoadConfig | dict[str, Any] | None = None,
 ) -> AgentRuntime:
     """Create and mount the default Agent runtime system onto a ShinBot app."""
     from shinbot.core.runtime.model import install_model_runtime
@@ -294,6 +331,7 @@ def install_agent_runtime(
         adapter_manager=bot.adapter_manager,
         model_runtime=model_runtime,
         review_runtime_config=review_runtime_config,
+        prompt_file_config=prompt_file_config,
     )
     bot.mount_agent_runtime(runtime)
     return runtime
@@ -305,6 +343,32 @@ def _coerce_review_runtime_config(
     if isinstance(value, ReviewRuntimeConfig):
         return value
     return ReviewRuntimeConfig.from_mapping(value)
+
+
+def _coerce_prompt_file_config(
+    value: PromptFileLoadConfig | dict[str, Any] | None,
+    runtime_data_dir: Path,
+) -> PromptFileLoadConfig:
+    if isinstance(value, PromptFileLoadConfig):
+        return value
+    if isinstance(value, dict):
+        data_root = value.get("data_root") or value.get("prompt_data_root")
+        raw_fallbacks = value.get("fallback_locales")
+        if isinstance(raw_fallbacks, str):
+            fallback_locales = (raw_fallbacks,)
+        elif isinstance(raw_fallbacks, (list, tuple)):
+            fallback_locales = tuple(
+                str(item).strip() for item in raw_fallbacks if str(item).strip()
+            )
+        else:
+            fallback_locales = ("en-US",)
+        return PromptFileLoadConfig(
+            locale=str(value.get("locale") or "zh-CN"),
+            fallback_locales=fallback_locales,
+            data_root=Path(data_root) if data_root else runtime_data_dir / "prompts",
+            sync_to_data=bool(value.get("sync_to_data", True)),
+        )
+    return PromptFileLoadConfig.from_data_dir(runtime_data_dir)
 
 
 def _workflow_active_chat_batch_from_coordinator(

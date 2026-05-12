@@ -116,6 +116,37 @@ def test_register_prompt_files_reads_source_by_default(tmp_path: Path) -> None:
     )
 
 
+def test_register_prompt_files_ignores_existing_runtime_copy_without_sync(tmp_path: Path) -> None:
+    registry = PromptRegistry()
+    runtime_dir = tmp_path / "data-prompts" / "en-US"
+    runtime_dir.mkdir(parents=True)
+    runtime_path = runtime_dir / "review.review_scan.task.md"
+    runtime_path.write_text(
+        """---
+id: review.review_scan.task
+stage: instructions
+kind: static_text
+priority: 100
+enabled: true
+---
+
+User edited prompt.
+""",
+        encoding="utf-8",
+    )
+
+    components = register_prompt_files(
+        registry,
+        package="shinbot.agent.runners.review_scan",
+        prompt_ids=["review.review_scan.task"],
+        locale="en-US",
+        data_root=tmp_path / "data-prompts",
+    )
+
+    assert "Review the supplied unread messages" in components[0].content
+    assert components[0].metadata["prompt_file"] != str(runtime_path)
+
+
 def test_register_prompt_files_syncs_runtime_copy_when_requested(tmp_path: Path) -> None:
     registry = PromptRegistry()
     data_root = tmp_path / "data-prompts"

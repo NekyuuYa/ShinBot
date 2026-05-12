@@ -8,6 +8,7 @@ from typing import Any
 __all__ = [
     "IdentityStore",
     "inject_identity_layers_into_messages",
+    "register_identity_file_prompt_components",
     "register_identity_prompt_components",
     "register_identity_tools",
     "resolve_identity_map_prompt",
@@ -16,6 +17,7 @@ __all__ = [
 _EXPORT_MODULES = {
     "IdentityStore": "shinbot.agent.services.identity.store",
     "inject_identity_layers_into_messages": "shinbot.agent.services.identity.prompt_runtime",
+    "register_identity_file_prompt_components": "shinbot.agent.services.identity.prompt_registration",
     "register_identity_prompt_components": "shinbot.agent.services.identity.prompt_registration",
     "register_identity_tools": "shinbot.agent.services.identity.tools",
     "resolve_identity_map_prompt": "shinbot.agent.services.identity.prompt_runtime",

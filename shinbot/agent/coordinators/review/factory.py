@@ -37,7 +37,7 @@ from shinbot.agent.runners.review_scan import (
     register_review_scan_prompt_components,
 )
 from shinbot.agent.services.message_formatter import MessageFormatConfig
-from shinbot.agent.services.prompt_engine import PromptStage
+from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptStage
 
 
 @dataclass(slots=True, frozen=True)
@@ -227,13 +227,32 @@ class ReviewRunnerFactory:
         return bool(stage_config.enabled and self._model_runtime is not None)
 
 
-def register_review_prompt_components(registry) -> None:
+def register_review_prompt_components(
+    registry,
+    *,
+    prompt_file_config: PromptFileLoadConfig | None = None,
+) -> None:
     """Register all review stage prompt components."""
-    register_review_compression_prompt_components(registry)
-    register_review_scan_prompt_components(registry)
-    register_review_block_digest_prompt_components(registry)
-    register_review_reply_prompt_components(registry)
-    register_review_bootstrap_prompt_components(registry)
+    register_review_compression_prompt_components(
+        registry,
+        prompt_file_config=prompt_file_config,
+    )
+    register_review_scan_prompt_components(
+        registry,
+        prompt_file_config=prompt_file_config,
+    )
+    register_review_block_digest_prompt_components(
+        registry,
+        prompt_file_config=prompt_file_config,
+    )
+    register_review_reply_prompt_components(
+        registry,
+        prompt_file_config=prompt_file_config,
+    )
+    register_review_bootstrap_prompt_components(
+        registry,
+        prompt_file_config=prompt_file_config,
+    )
 
 
 def _optional_str(value: Any) -> str | None:
