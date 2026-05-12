@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from shinbot.core.application.bot_routing import (
     BotRuntimeRouter,
     bot_route_rule_enabled_for_context,
+    permission_scope_for_event,
 )
 from shinbot.core.dispatch.message_context import (
     Interceptor,
@@ -222,10 +223,17 @@ class MessageIngress:
     ) -> IngressResult:
         session = self._session_manager.get_or_create(adapter.instance_id, event)
         session.touch()
+        bot_selection = self._resolve_bot_selection(event, adapter)
+        permission_scope = permission_scope_for_event(
+            bot_selection,
+            event=event,
+            fallback_identity_id=adapter.instance_id,
+            fallback_session_id=session.id,
+        )
 
         permissions = self._permission_engine.resolve(
-            instance_id=adapter.instance_id,
-            session_id=session.id,
+            instance_id=permission_scope.identity_id,
+            session_id=permission_scope.session_id,
             user_id=event.sender_id or "",
             session_base_group=session.permission_group,
         )
@@ -238,7 +246,6 @@ class MessageIngress:
             waiting_registry=self._waiting_registry,
             database=self._database,
         )
-        bot_selection = self._resolve_bot_selection(event, adapter)
         if bot_selection is not None:
             message_context.bot_service_config = bot_selection.bot
             message_context.bot_binding_config = bot_selection.binding

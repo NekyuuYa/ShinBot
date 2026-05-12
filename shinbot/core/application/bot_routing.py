@@ -33,6 +33,14 @@ class BotRuntimeSelection:
         return self.binding.priority
 
 
+@dataclass(slots=True, frozen=True)
+class PermissionScope:
+    """Permission identity/session keys for one incoming event."""
+
+    identity_id: str
+    session_id: str
+
+
 class BotRuntimeRouter:
     """Resolve incoming events to configured bot service units."""
 
@@ -108,6 +116,33 @@ def session_pattern_matches_event(pattern: str, event: UnifiedEvent) -> bool:
     if pattern_type != session_type:
         return False
     return pattern_target == WILDCARD or pattern_target == session_target
+
+
+def permission_scope_for_event(
+    selection: BotRuntimeSelection | None,
+    *,
+    event: UnifiedEvent,
+    fallback_identity_id: str,
+    fallback_session_id: str,
+) -> PermissionScope:
+    """Return the PermissionEngine scope for one event.
+
+    Bot configs use keys like ``{bot_id}:{user_id}`` and
+    ``{bot_id}:{session_key}.{user_id}``.  When no bot router is installed,
+    existing adapter/session scoped behavior is preserved for embedded tests
+    and lower-level API users.
+    """
+
+    if selection is None:
+        return PermissionScope(
+            identity_id=fallback_identity_id,
+            session_id=fallback_session_id,
+        )
+    bot_id = selection.bot.id
+    return PermissionScope(
+        identity_id=bot_id,
+        session_id=f"{bot_id}:{session_key_for_event(event)}",
+    )
 
 
 def command_prefixes_for_context(message_context: Any, fallback_prefixes: list[str]) -> list[str]:

@@ -114,10 +114,11 @@ def make_ingress(
     route_table: RouteTable,
     route_targets: RouteTargetRegistry,
     router: BotRuntimeRouter,
+    permission_engine: PermissionEngine | None = None,
 ) -> MessageIngress:
     return MessageIngress(
         session_manager=SessionManager(),
-        permission_engine=PermissionEngine(),
+        permission_engine=permission_engine or PermissionEngine(),
         route_table=route_table,
         route_targets=route_targets,
         bot_router=router,
@@ -286,3 +287,96 @@ async def test_agent_entry_signal_includes_selected_bot_identity() -> None:
     assert result.matched_rules == [fallback_rule]
     assert signals[0].bot_id == "full-agent"
     assert signals[0].bot_binding_id == "full-agent-private"
+
+
+@pytest.mark.asyncio
+async def test_command_permissions_use_selected_bot_global_scope() -> None:
+    permission_engine = PermissionEngine()
+    permission_engine.bind("qq-main:user-1", "admin")
+    registry = CommandRegistry()
+    calls: list[str] = []
+
+    async def secret_handler(_ctx, _args):
+        calls.append("secret")
+
+    registry.register(
+        CommandDef(
+            name="secret",
+            handler=secret_handler,
+            permission="cmd.secret",
+        )
+    )
+    dispatcher = TextCommandDispatcher(registry)
+    command_rule = make_text_command_route_rule(dispatcher)
+    table = RouteTable()
+    table.register(command_rule)
+    targets = RouteTargetRegistry()
+    targets.register(TEXT_COMMAND_DISPATCHER_TARGET, dispatcher)
+    router = BotRuntimeRouter((make_bot(bot_id="full-agent"),))
+    adapter = MockAdapter(instance_id="qq-main")
+    ingress = make_ingress(
+        route_table=table,
+        route_targets=targets,
+        router=router,
+        permission_engine=permission_engine,
+    )
+
+    denied = await ingress.process_event(make_event("/secret"), adapter)
+    await asyncio.sleep(0)
+    permission_engine.bind("full-agent:user-1", "admin")
+    allowed = await ingress.process_event(make_event("/secret"), adapter)
+    await asyncio.sleep(0)
+
+    assert denied.matched_rules == [command_rule]
+    assert allowed.matched_rules == [command_rule]
+    assert calls == ["secret"]
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0][1][0].text_content == "权限不足：需要 cmd.secret"
+
+
+@pytest.mark.asyncio
+async def test_command_permissions_use_selected_bot_session_scope() -> None:
+    permission_engine = PermissionEngine()
+    permission_engine.bind("full-agent:group:room-1.user-1", "admin")
+    registry = CommandRegistry()
+    calls: list[str] = []
+
+    async def secret_handler(_ctx, _args):
+        calls.append("secret")
+
+    registry.register(
+        CommandDef(
+            name="secret",
+            handler=secret_handler,
+            permission="cmd.secret",
+        )
+    )
+    dispatcher = TextCommandDispatcher(registry)
+    command_rule = make_text_command_route_rule(dispatcher)
+    table = RouteTable()
+    table.register(command_rule)
+    targets = RouteTargetRegistry()
+    targets.register(TEXT_COMMAND_DISPATCHER_TARGET, dispatcher)
+    router = BotRuntimeRouter(
+        (
+            make_bot(
+                bot_id="full-agent",
+                session_patterns=("group:room-1",),
+            ),
+        )
+    )
+    ingress = make_ingress(
+        route_table=table,
+        route_targets=targets,
+        router=router,
+        permission_engine=permission_engine,
+    )
+
+    result = await ingress.process_event(
+        make_event("/secret", private=False, channel_id="room-1"),
+        MockAdapter(instance_id="qq-main"),
+    )
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [command_rule]
+    assert calls == ["secret"]
