@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from shinbot.core.application.app import ShinBot
+from shinbot.core.application.config_sections import (
+    iter_adapter_instance_records,
+    normalize_adapter_instance_record,
+)
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import normalize_plugin_enabled, plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
@@ -251,6 +255,8 @@ class BootController:
             if not plugin_id or not module_path:
                 logger.warning("Invalid plugin config entry: %s", plugin_cfg)
                 continue
+            if self._configured_plugin_is_already_loaded(str(plugin_id), str(module_path)):
+                continue
             try:
                 await self.bot.load_plugin_async(plugin_id, module_path)
             except Exception:
@@ -274,6 +280,14 @@ class BootController:
                     await self.bot.plugin_manager.disable_plugin_async(meta.id)
             except Exception:
                 logger.exception("Failed to apply persisted state for plugin %s", meta.id)
+
+    def _configured_plugin_is_already_loaded(self, plugin_id: str, module_path: str) -> bool:
+        if self.bot is None:
+            return False
+        for meta in self.bot.plugin_manager.all_plugins:
+            if meta.id == plugin_id or meta.module_path == module_path:
+                return True
+        return False
 
     def _configured_plugin_enabled(self, plugin_id: str) -> bool | None:
         persisted = plugin_saved_enabled(self, plugin_id)
@@ -302,17 +316,20 @@ class BootController:
 
     def _setup_instances(self) -> None:
         assert self.bot is not None
-        instances = self.config.get("instances", [])
+        instances = iter_adapter_instance_records(self.config)
         if not instances:
             logger.warning("No instances configured - bot will start with no connections")
             return
 
         for inst_cfg in instances:
-            instance_id = inst_cfg["id"]
-            platform = inst_cfg.get("platform", "satori")
-            config_kwargs = inst_cfg.get("config", {})
-            if not isinstance(config_kwargs, dict):
-                config_kwargs = {}
+            normalized = normalize_adapter_instance_record(inst_cfg)
+            if not normalized["enabled"]:
+                logger.info("Skipping disabled adapter instance %r", normalized["id"])
+                continue
+
+            instance_id = normalized["id"]
+            platform = normalized["adapter"]
+            config_kwargs = normalized["config"]
 
             try:
                 self.bot.add_adapter(

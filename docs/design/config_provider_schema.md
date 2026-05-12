@@ -77,7 +77,7 @@ reverse_port = 8082
 reverse_path = "/onebot/v11"
 
 [[plugins]]
-id = "search"
+id = "shinbot_plugin_search"
 module = "shinbot.builtin_plugins.shinbot_plugin_search"
 enabled = false
 
@@ -161,7 +161,7 @@ Example plugin schema:
 ```toml
 [provider]
 kind = "plugin"
-id = "search"
+id = "shinbot_plugin_search"
 display_name = "Search"
 description = "Web search plugin."
 config_version = "1.0.0"

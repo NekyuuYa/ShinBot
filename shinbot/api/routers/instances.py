@@ -35,17 +35,16 @@ router = APIRouter(
 
 class CreateInstanceRequest(BaseModel):
     name: str | None = None
-    adapterType: str | None = None
+    adapter: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     id: str | None = None
-    platform: str | None = None
 
     model_config = {"extra": "allow"}
 
 
 class PatchInstanceRequest(BaseModel):
     name: str | None = None
-    adapterType: str | None = None
+    adapter: str | None = None
     config: dict[str, Any] | None = None
 
     model_config = {"extra": "allow"}
@@ -72,14 +71,14 @@ async def list_instances(bot=BotDep, boot=BootDep):
 
 @router.post("", status_code=201)
 async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep):
-    instance_id = body.id or body.name or body.adapterType
-    platform = body.adapterType or body.platform or "satori"
+    instance_id = body.id or body.name or body.adapter
+    adapter = body.adapter or ""
     try:
         inst_entry = create_instance_runtime(
             bot=bot,
             boot=boot,
             instance_id=instance_id or "",
-            platform=platform,
+            platform=adapter,
             name=body.name or (instance_id or ""),
             config=dict(body.config),
         )

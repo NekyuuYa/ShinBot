@@ -27,6 +27,7 @@ from shinbot.api.models import EC, Envelope, ErrorBody
 from shinbot.api.routers import agents as agents_router
 from shinbot.api.routers import auth as auth_router
 from shinbot.api.routers import bot_configs as bot_configs_router
+from shinbot.api.routers import config_providers as config_providers_router
 from shinbot.api.routers import context_strategies as context_strategies_router
 from shinbot.api.routers import instances as instances_router
 from shinbot.api.routers import model_runtime as model_runtime_router
@@ -42,6 +43,7 @@ from shinbot.api.ws_manager import (
     log_manager,
     status_manager,
 )
+from shinbot.core.application.config_sections import iter_adapter_instance_records
 from shinbot.core.application.system_update import DashboardDistUpdateService, SystemUpdateService
 from shinbot.utils.logger import register_log_handler_installer
 
@@ -175,6 +177,7 @@ def create_api_app(
     app.include_router(auth_router.router, prefix=api_prefix)
     app.include_router(agents_router.router, prefix=api_prefix)
     app.include_router(bot_configs_router.router, prefix=api_prefix)
+    app.include_router(config_providers_router.router, prefix=api_prefix)
     app.include_router(context_strategies_router.router, prefix=api_prefix)
     app.include_router(instances_router.router, prefix=api_prefix)
     app.include_router(model_runtime_router.router, prefix=api_prefix)
@@ -333,7 +336,7 @@ def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> di
         pass
 
     mgr = bot.adapter_manager
-    configured_instances = boot.config.get("instances", []) if boot is not None else []
+    configured_instances = iter_adapter_instance_records(boot.config) if boot is not None else []
     instances: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 

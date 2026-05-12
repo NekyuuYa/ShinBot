@@ -109,48 +109,64 @@ def _resolve_refs(schema: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def plugin_config_store(boot: Any) -> dict[str, Any]:
-    store = boot.config.setdefault("plugin_configs", {})
-    if not isinstance(store, dict):
-        store = {}
-        boot.config["plugin_configs"] = store
-    return store
+def plugin_config_entry(
+    config: dict[str, Any],
+    plugin_id: str,
+    *,
+    create: bool = False,
+) -> dict[str, Any] | None:
+    plugins = config.setdefault("plugins", []) if create else config.get("plugins", [])
+    if not isinstance(plugins, list):
+        if not create:
+            return None
+        plugins = []
+        config["plugins"] = plugins
 
+    for item in plugins:
+        if isinstance(item, dict) and item.get("id") == plugin_id:
+            return item
 
-def plugin_saved_config(boot: Any, plugin_id: str) -> dict[str, Any]:
-    store = boot.config.get("plugin_configs", {})
-    if not isinstance(store, dict):
-        return {}
-    config = store.get(plugin_id, {})
-    return dict(config) if isinstance(config, dict) else {}
-
-
-def plugin_state_store(boot: Any) -> dict[str, Any]:
-    store = boot.config.setdefault("plugin_states", {})
-    if not isinstance(store, dict):
-        store = {}
-        boot.config["plugin_states"] = store
-    return store
-
-
-def plugin_saved_enabled(boot: Any, plugin_id: str) -> bool | None:
-    store = boot.config.get("plugin_states", {})
-    if not isinstance(store, dict):
+    if not create:
         return None
 
-    state = store.get(plugin_id)
-    if isinstance(state, dict):
-        return normalize_plugin_enabled(state.get("enabled"))
-    return normalize_plugin_enabled(state)
+    item: dict[str, Any] = {"id": plugin_id, "enabled": True, "config": {}}
+    plugins.append(item)
+    return item
+
+
+def plugin_config_block(
+    config: dict[str, Any],
+    plugin_id: str,
+) -> dict[str, Any]:
+    item = plugin_config_entry(config, plugin_id)
+    if item is not None:
+        block = item.get("config", {})
+        if isinstance(block, dict):
+            return dict(block)
+    return {}
+
+
+def plugin_saved_config(
+    boot: Any,
+    plugin_id: str,
+) -> dict[str, Any]:
+    return plugin_config_block(boot.config, plugin_id)
+
+
+def plugin_saved_enabled(
+    boot: Any,
+    plugin_id: str,
+) -> bool | None:
+    item = plugin_config_entry(boot.config, plugin_id)
+    if item is not None and "enabled" in item:
+        return normalize_plugin_enabled(item.get("enabled"))
+    return None
 
 
 def set_plugin_saved_enabled(boot: Any, plugin_id: str, enabled: bool) -> None:
-    store = plugin_state_store(boot)
-    state = store.get(plugin_id)
-    if not isinstance(state, dict):
-        state = {}
-    state["enabled"] = bool(enabled)
-    store[plugin_id] = state
+    item = plugin_config_entry(boot.config, plugin_id, create=True)
+    assert item is not None
+    item["enabled"] = bool(enabled)
 
 
 def normalize_plugin_enabled(value: Any) -> bool | None:

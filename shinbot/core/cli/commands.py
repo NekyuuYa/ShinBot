@@ -144,7 +144,7 @@ class OperatorCommandRouter:
             rows.append(
                 [
                     item["id"] or "-",
-                    item["adapterType"] or "-",
+                    item["adapter"] or "-",
                     item["status"],
                     item["name"] or "-",
                 ]

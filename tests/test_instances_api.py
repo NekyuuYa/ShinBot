@@ -21,7 +21,7 @@ class _BootStub:
                 "jwt_secret": "test-secret-that-is-long-enough-for-hs256",
                 "jwt_expire_hours": 24,
             },
-            "instances": [],
+            "adapter_instances": [],
         }
         self.data_dir = data_dir
         self.dashboard_dist_dir = None
@@ -45,12 +45,11 @@ def test_delete_instance_route_removes_runtime_and_persisted_config(tmp_path: Pa
     asyncio.run(bot.adapter_manager.start_instance("inst-1"))
 
     boot = _BootStub(tmp_path)
-    boot.config["instances"] = [
+    boot.config["adapter_instances"] = [
         {
             "id": "inst-1",
             "name": "Instance 1",
-            "adapterType": "mock",
-            "platform": "mock",
+            "adapter": "mock",
             "config": {"token": "abc"},
             "createdAt": 1,
             "lastModified": 1,
@@ -66,7 +65,7 @@ def test_delete_instance_route_removes_runtime_and_persisted_config(tmp_path: Pa
     assert response.json()["data"] == {"id": "inst-1", "deleted": True}
     assert bot.adapter_manager.get_instance("inst-1") is None
     assert adapter.stopped is True
-    assert boot.config["instances"] == []
+    assert boot.config["adapter_instances"] == []
     assert boot.save_config_calls == 1
 
 
@@ -76,12 +75,11 @@ def test_update_instance_route_returns_full_instance_payload(tmp_path: Path):
     bot.add_adapter("inst-1", "mock")
 
     boot = _BootStub(tmp_path)
-    boot.config["instances"] = [
+    boot.config["adapter_instances"] = [
         {
             "id": "inst-1",
             "name": "Instance 1",
-            "adapterType": "mock",
-            "platform": "mock",
+            "adapter": "mock",
             "config": {"token": "abc"},
             "createdAt": 1,
             "lastModified": 1,
@@ -101,12 +99,12 @@ def test_update_instance_route_returns_full_instance_payload(tmp_path: Path):
     assert response.json()["data"] == {
         "id": "inst-1",
         "name": "Renamed",
-        "adapterType": "mock",
+        "adapter": "mock",
         "status": "stopped",
         "config": {"token": "xyz"},
         "botConfig": None,
         "createdAt": 1,
-        "lastModified": boot.config["instances"][0]["lastModified"],
+        "lastModified": boot.config["adapter_instances"][0]["lastModified"],
     }
 
 
@@ -120,12 +118,11 @@ def test_instances_runtime_config_serializes_dataclass_adapter_config(tmp_path: 
     bot.adapter_manager._instances["satori-1"] = adapter
 
     boot = _BootStub(tmp_path)
-    boot.config["instances"] = [
+    boot.config["adapter_instances"] = [
         {
             "id": "satori-1",
             "name": "Satori 1",
-            "adapterType": "satori",
-            "platform": "satori",
+            "adapter": "satori",
             "config": {},
             "createdAt": 1,
             "lastModified": 1,
@@ -143,6 +140,61 @@ def test_instances_runtime_config_serializes_dataclass_adapter_config(tmp_path: 
     assert payload["config"]["token"] == "abc"
 
 
+def test_list_instances_reads_normalized_adapter_instances(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    boot = _BootStub(tmp_path)
+    boot.config["adapter_instances"] = [
+        {
+            "id": "onebot-main",
+            "adapter": "onebot_v11",
+            "enabled": True,
+            "config": {"mode": "reverse"},
+        }
+    ]
+
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/instances", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    payload = response.json()["data"][0]
+    assert payload["id"] == "onebot-main"
+    assert payload["adapter"] == "onebot_v11"
+    assert payload["config"] == {"mode": "reverse"}
+
+
+def test_create_instance_persists_to_normalized_adapter_instances(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    bot.adapter_manager.register_adapter(
+        "mock",
+        lambda instance_id, platform, **_kwargs: MockAdapter(instance_id, platform),
+    )
+    boot = _BootStub(tmp_path)
+    boot.config["adapter_instances"] = []
+
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/instances",
+            headers=_auth_headers(app),
+            json={"id": "mock-main", "adapter": "mock", "config": {"token": "abc"}},
+        )
+
+    assert response.status_code == 201
+    assert boot.config["adapter_instances"] == [
+        {
+            "id": "mock-main",
+            "adapter": "mock",
+            "enabled": True,
+            "config": {"token": "abc"},
+            "createdAt": boot.config["adapter_instances"][0]["createdAt"],
+            "lastModified": boot.config["adapter_instances"][0]["lastModified"],
+        }
+    ]
+
+
 def test_update_instance_updates_dataclass_adapter_runtime_config(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     adapter = SatoriAdapter(
@@ -153,12 +205,11 @@ def test_update_instance_updates_dataclass_adapter_runtime_config(tmp_path: Path
     bot.adapter_manager._instances["satori-1"] = adapter
 
     boot = _BootStub(tmp_path)
-    boot.config["instances"] = [
+    boot.config["adapter_instances"] = [
         {
             "id": "satori-1",
             "name": "Satori 1",
-            "adapterType": "satori",
-            "platform": "satori",
+            "adapter": "satori",
             "config": {"host": "127.0.0.1:5140", "token": "abc"},
             "createdAt": 1,
             "lastModified": 1,
@@ -223,12 +274,11 @@ def test_list_instances_includes_bot_config_summary(tmp_path: Path):
     )
 
     boot = _BootStub(tmp_path)
-    boot.config["instances"] = [
+    boot.config["adapter_instances"] = [
         {
             "id": "inst-1",
             "name": "Instance 1",
-            "adapterType": "mock",
-            "platform": "mock",
+            "adapter": "mock",
             "config": {},
             "createdAt": 1,
             "lastModified": 1,
@@ -270,12 +320,11 @@ def test_status_websocket_includes_instance_details(tmp_path: Path):
     bot.add_adapter("inst-1", "mock")
 
     boot = _BootStub(tmp_path)
-    boot.config["instances"] = [
+    boot.config["adapter_instances"] = [
         {
             "id": "inst-1",
             "name": "Instance 1",
-            "adapterType": "mock",
-            "platform": "mock",
+            "adapter": "mock",
             "config": {},
             "createdAt": 1,
             "lastModified": 1,
@@ -283,8 +332,7 @@ def test_status_websocket_includes_instance_details(tmp_path: Path):
         {
             "id": "inst-2",
             "name": "Instance 2",
-            "adapterType": "mock",
-            "platform": "mock",
+            "adapter": "mock",
             "config": {},
             "createdAt": 1,
             "lastModified": 1,

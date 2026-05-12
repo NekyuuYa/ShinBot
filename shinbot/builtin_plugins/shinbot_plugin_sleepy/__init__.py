@@ -24,6 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shinbot.core.plugins.config import plugin_config_block
 from shinbot.core.plugins.context import Plugin
 from shinbot.utils.logger import get_logger
 
@@ -107,9 +108,7 @@ def _load_plugin_config(plugin_id: str) -> SleepyPluginConfig:
         if path.exists():
             with path.open("rb") as fh:
                 payload = tomllib.load(fh)
-            block = payload.get("plugin_configs", {}).get(plugin_id, {})
-            if isinstance(block, dict):
-                raw = block
+            raw = plugin_config_block(payload, plugin_id)
     except Exception:
         raw = {}
     try:

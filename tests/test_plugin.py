@@ -9,13 +9,15 @@ from pathlib import Path
 import pytest
 
 from shinbot.agent.services.tools import ToolRegistry
+from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot import BootController
-from shinbot.core.config_provider import ConfigProviderRegistry
+from shinbot.core.config_provider import ConfigProviderRegistry, load_provider_schema
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteTable
 from shinbot.core.message_routes.command import CommandRegistry
 from shinbot.core.message_routes.keyword import KeywordRegistry
+from shinbot.core.platform.adapter_manager import AdapterManager
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.manager import PluginManager, _topo_sort
 from shinbot.core.plugins.types import PluginRole, PluginState
@@ -208,6 +210,112 @@ def test_plugin_manager_ignores_plugins_without_provider_schema(tmp_path: Path) 
 
     assert [plugin.id for plugin in loaded] == ["no_schema_plugin"]
     assert registry.catalog() == []
+
+
+@pytest.mark.asyncio
+async def test_builtin_adapter_plugins_register_provider_schemas(tmp_path: Path) -> None:
+    registry = ConfigProviderRegistry()
+    mgr = PluginManager(
+        CommandRegistry(),
+        EventBus(),
+        data_dir=tmp_path,
+        adapter_manager=AdapterManager(),
+        config_provider_registry=registry,
+    )
+
+    builtin_root = Path(__file__).resolve().parents[1] / "shinbot/builtin_plugins"
+    for plugin_id, module_path in (
+        ("shinbot_adapter_satori", "shinbot.builtin_plugins.shinbot_adapter_satori"),
+        ("shinbot_adapter_onebot_v11", "shinbot.builtin_plugins.shinbot_adapter_onebot_v11"),
+        ("shinbot_adapter_qqofficial", "shinbot.builtin_plugins.shinbot_adapter_qqofficial"),
+    ):
+        metadata = json.loads(
+            (builtin_root / plugin_id / "metadata.json").read_text(encoding="utf-8")
+        )
+        await mgr.load_plugin_async(plugin_id, module_path, declared_metadata=metadata)
+
+    adapter_ids = [provider.id for provider in registry.list("adapter")]
+    assert adapter_ids == ["onebot_v11", "qqofficial", "satori"]
+    assert registry.default_config("adapter", "qqofficial")["app_secret"] == ""
+    onebot_provider = registry.get("adapter", "onebot_v11")
+    assert onebot_provider is not None
+    assert onebot_provider.example_toml.startswith('mode = "reverse"')
+
+
+@pytest.mark.asyncio
+async def test_builtin_search_plugin_registers_provider_schema(tmp_path: Path) -> None:
+    registry = ConfigProviderRegistry()
+    mgr = PluginManager(
+        CommandRegistry(),
+        EventBus(),
+        data_dir=tmp_path,
+        tool_registry=ToolRegistry(),
+        config_provider_registry=registry,
+    )
+
+    builtin_root = Path(__file__).resolve().parents[1] / "shinbot/builtin_plugins"
+    metadata = json.loads(
+        (builtin_root / "shinbot_plugin_search" / "metadata.json").read_text(encoding="utf-8")
+    )
+    await mgr.load_plugin_async(
+        "shinbot_plugin_search",
+        "shinbot.builtin_plugins.shinbot_plugin_search",
+        declared_metadata=metadata,
+    )
+
+    provider = registry.get("plugin", "shinbot_plugin_search")
+    assert provider is not None
+    assert provider.example_toml.startswith('tavily_api_key = "${TAVILY_API_KEY}"')
+
+
+@pytest.mark.asyncio
+async def test_plugin_reload_refreshes_provider_schema(tmp_path: Path) -> None:
+    plugin_id = "demo_reload_plugin"
+    schema = """
+[provider]
+kind = "plugin"
+id = "demo_reload_plugin"
+display_name = "Demo v1"
+
+[[fields]]
+path = "api_key"
+type = "string"
+default = ""
+""".strip()
+    plugins_dir = _write_metadata_plugin(tmp_path, plugin_id=plugin_id, schema_body=schema + "\n")
+    registry = ConfigProviderRegistry()
+    mgr = PluginManager(CommandRegistry(), EventBus(), data_dir=tmp_path, config_provider_registry=registry)
+
+    await mgr.load_plugins_from_metadata_dir_async(plugins_dir)
+    provider = registry.get("plugin", plugin_id)
+    assert provider is not None
+    assert provider.display_name == "Demo v1"
+
+    (plugins_dir / plugin_id / "config.schema.toml").write_text(
+        schema.replace("Demo v1", "Demo v2") + "\n",
+        encoding="utf-8",
+    )
+
+    await mgr.reload_plugin_async(plugin_id)
+
+    provider = registry.get("plugin", plugin_id)
+    assert provider is not None
+    assert provider.display_name == "Demo v2"
+
+
+def test_boot_plugin_enabled_lookup_uses_plugin_entry(tmp_path: Path) -> None:
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path)
+    boot.config = {"plugins": [{"id": "shinbot_plugin_search", "enabled": False}]}
+    bot = ShinBot(data_dir=tmp_path)
+    bot.config_provider_registry.register(
+        load_provider_schema(
+            Path(__file__).resolve().parents[1]
+            / "shinbot/builtin_plugins/shinbot_plugin_search/config.schema.toml"
+        )
+    )
+    boot.bot = bot
+
+    assert boot._configured_plugin_enabled("shinbot_plugin_search") is False
 
 
 class TestPluginManager:
@@ -682,7 +790,8 @@ async def test_boot_applies_persisted_disabled_plugin_state(
                 'password = "admin"',
                 "jwt_expire_hours = 24",
                 "",
-                f"[plugin_states.{plugin_id}]",
+                "[[plugins]]",
+                f'id = "{plugin_id}"',
                 "enabled = false",
             ]
         ),

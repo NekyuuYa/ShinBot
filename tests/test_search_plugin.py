@@ -26,14 +26,33 @@ def test_resolve_config_path_supports_cli_flag_styles():
     assert search_plugin._resolve_config_path([]) == Path("config.toml")
 
 
-def test_load_plugin_config_reads_plugin_configs_block(tmp_path: Path):
+def test_load_plugin_config_defaults_when_no_plugin_entry_exists(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+
+    config = search_plugin._load_plugin_config(
+        "shinbot_plugin_search",
+        config_path=config_path,
+    )
+
+    assert config.tavily_api_key == ""
+    assert config.default_max_results == 5
+    assert config.timeout_seconds == 15.0
+
+
+def test_load_plugin_config_reads_normalized_plugin_entry(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-[plugin_configs.shinbot_plugin_search]
-tavily_api_key = "secret-key"
-default_max_results = 7
-timeout_seconds = 22.5
+[[plugins]]
+id = "shinbot_plugin_search"
+module = "shinbot.builtin_plugins.shinbot_plugin_search"
+enabled = true
+
+[plugins.config]
+tavily_api_key = "entry-key"
+default_max_results = 6
+timeout_seconds = 18.5
 """.strip(),
         encoding="utf-8",
     )
@@ -43,9 +62,9 @@ timeout_seconds = 22.5
         config_path=config_path,
     )
 
-    assert config.tavily_api_key == "secret-key"
-    assert config.default_max_results == 7
-    assert config.timeout_seconds == 22.5
+    assert config.tavily_api_key == "entry-key"
+    assert config.default_max_results == 6
+    assert config.timeout_seconds == 18.5
 
 
 def test_setup_registers_tavily_search_tool():

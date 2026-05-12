@@ -24,12 +24,11 @@ class _BootStub:
                 "jwt_secret": "test-secret-that-is-long-enough-for-hs256",
                 "jwt_expire_hours": 24,
             },
-            "instances": [
+            "adapter_instances": [
                 {
                     "id": "inst-1",
                     "name": "Instance 1",
-                    "adapterType": "mock",
-                    "platform": "mock",
+                    "adapter": "mock",
                     "config": {},
                     "createdAt": 1,
                     "lastModified": 1,

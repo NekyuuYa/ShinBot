@@ -308,6 +308,7 @@ class PluginManager:
         meta.data_dir = str(plg.data_dir)
         self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
+        self._register_config_provider_from_module(plugin_id, module)
         logger.info("Enabled plugin %s", plugin_id)
         return meta
 
@@ -538,6 +539,7 @@ class PluginManager:
         self._plugins[plugin_id] = new_meta
         self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
+        self._register_config_provider_from_module(plugin_id, module)
         return new_meta
 
     def _build_plugin_meta(

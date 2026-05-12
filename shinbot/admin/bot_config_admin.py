@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from shinbot.core.application.config_sections import iter_adapter_instance_records
 from shinbot.persistence.records import BotConfigRecord, utc_now_iso
 
 
@@ -228,7 +229,7 @@ def serialize_bot_config(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def known_instance_ids(bot: Any, boot: Any) -> set[str]:
-    ids = {str(item.get("id")) for item in boot.config.get("instances", []) if item.get("id")}
+    ids = {str(item.get("id")) for item in iter_adapter_instance_records(boot.config) if item.get("id")}
     ids.update(adapter.instance_id for adapter in bot.adapter_manager.all_instances)
     return ids
 

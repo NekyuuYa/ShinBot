@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 from shinbot.admin.bot_config_admin import serialize_bot_config
+from shinbot.core.application.config_sections import (
+    adapter_instance_store,
+    append_adapter_instance_record,
+    iter_adapter_instance_records,
+    normalize_adapter_instance_record,
+    replace_adapter_instance_record,
+    set_adapter_instance_platform,
+    timestamp_now,
+)
 
 
 @dataclass(slots=True)
@@ -22,19 +30,22 @@ class InstanceAdminError(RuntimeError):
 
 
 def persist_instance_record(boot: Any, record: dict[str, Any]) -> None:
-    instances = boot.config.setdefault("instances", [])
+    _section, instances = adapter_instance_store(boot.config, create=True)
     for index, item in enumerate(instances):
         if item.get("id") == record["id"]:
-            instances[index] = record
+            replace_adapter_instance_record(boot.config, index, record)
             break
     else:
-        instances.append(record)
+        append_adapter_instance_record(boot.config, record)
 
 
 def find_instance_record(
     boot: Any, instance_id: str
 ) -> tuple[int, dict[str, Any]] | tuple[None, None]:
-    for index, item in enumerate(boot.config.get("instances", [])):
+    _section, instances = adapter_instance_store(boot.config)
+    for index, item in enumerate(instances):
+        if not isinstance(item, dict):
+            continue
         if item.get("id") == instance_id:
             return index, item
     return None, None
@@ -91,26 +102,27 @@ def serialize_instance_record(
     mgr: Any,
     bot_configs_by_instance_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    instance_id = item.get("id")
+    normalized = normalize_adapter_instance_record(item)
+    instance_id = normalized["id"]
     adapter = mgr.get_instance(instance_id) if instance_id else None
     status = (
         "running"
         if instance_id and adapter is not None and mgr.is_running(instance_id)
         else "stopped"
     )
-    config = item.get("config", {})
+    config = normalized["config"]
     if not config and adapter is not None:
         config = runtime_config(adapter)
 
     return {
         "id": instance_id,
-        "name": item.get("name", instance_id),
-        "adapterType": item.get("adapterType", getattr(adapter, "platform", "satori")),
+        "name": normalized["name"],
+        "adapter": normalized["adapter"],
         "status": status,
         "config": config,
         "botConfig": serialize_bot_config_summary(bot_configs_by_instance_id.get(str(instance_id))),
-        "createdAt": item.get("createdAt", 0),
-        "lastModified": item.get("lastModified", 0),
+        "createdAt": normalized["createdAt"],
+        "lastModified": normalized["lastModified"],
     }
 
 
@@ -122,7 +134,7 @@ def serialize_runtime_instance(
     return {
         "id": adapter.instance_id,
         "name": adapter.instance_id,
-        "adapterType": adapter.platform,
+        "adapter": adapter.platform,
         "status": "running" if mgr.is_running(adapter.instance_id) else "stopped",
         "config": runtime_config(adapter),
         "botConfig": serialize_bot_config_summary(
@@ -138,7 +150,7 @@ def list_instance_payloads(*, bot: Any, boot: Any) -> list[dict[str, Any]]:
     bot_configs = bot_config_by_instance_id(bot.database)
     records: list[dict[str, Any]] = []
 
-    for item in boot.config.get("instances", []):
+    for item in iter_adapter_instance_records(boot.config):
         records.append(serialize_instance_record(item, mgr, bot_configs))
 
     seen_ids = {item["id"] for item in records}
@@ -188,12 +200,11 @@ def build_instance_record(
     config: dict[str, Any],
     created_at: int | None = None,
 ) -> dict[str, Any]:
-    now = created_at if created_at is not None else int(time.time())
+    now = created_at if created_at is not None else timestamp_now()
     return {
         "id": instance_id,
         "name": name or instance_id,
-        "adapterType": platform,
-        "platform": platform,
+        "adapter": platform,
         "config": config,
         "createdAt": now,
         "lastModified": now,
@@ -218,24 +229,21 @@ def ensure_persisted_instance_record(
         config=runtime_config(adapter),
         created_at=0,
     )
-    boot.config.setdefault("instances", []).append(inst)
-    index = len(boot.config["instances"]) - 1
-    return index, inst
+    return append_adapter_instance_record(boot.config, inst)
 
 
 def apply_instance_patch(*, inst: dict[str, Any], body: Any) -> dict[str, Any]:
     if body.name is not None:
         inst["name"] = body.name
-    if body.adapterType is not None:
-        inst["adapterType"] = body.adapterType
-        inst["platform"] = body.adapterType
+    if body.adapter is not None:
+        set_adapter_instance_platform(inst, body.adapter)
 
     config_patch = resolve_instance_config(body)
     if config_patch:
         inst_config = inst.setdefault("config", {})
         inst_config.update(config_patch)
 
-    inst["lastModified"] = int(time.time())
+    inst["lastModified"] = timestamp_now()
     return config_patch
 
 
@@ -318,7 +326,7 @@ def update_instance_runtime(
     assert index is not None
 
     config_patch = apply_instance_patch(inst=inst, body=body)
-    boot.config["instances"][index] = inst
+    inst = replace_adapter_instance_record(boot.config, index, inst)
 
     if adapter is not None:
         apply_runtime_config_patch(adapter=adapter, config_patch=config_patch)
@@ -342,7 +350,8 @@ async def delete_instance_runtime(*, bot: Any, boot: Any, instance_id: str) -> N
         await mgr.delete_instance(instance_id)
 
     if index is not None:
-        del boot.config["instances"][index]
+        _section, instances = adapter_instance_store(boot.config)
+        del instances[index]
 
 
 async def control_instance_runtime(*, mgr: Any, instance_id: str, action: str) -> str:

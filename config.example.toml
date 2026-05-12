@@ -87,7 +87,7 @@ path = "/v1/events"
 # package.  Keep this file to plugin installation state and only tiny examples.
 
 [[plugins]]
-id = "search"
+id = "shinbot_plugin_search"
 module = "shinbot.builtin_plugins.shinbot_plugin_search"
 enabled = false
 

@@ -17,7 +17,7 @@ class _BootStub:
                 "jwt_secret": "test-secret-that-is-long-enough-for-hs256",
                 "jwt_expire_hours": 24,
             },
-            "instances": [],
+            "adapter_instances": [],
         }
         self.data_dir = data_dir
         self.dashboard_dist_dir = None

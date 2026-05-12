@@ -85,7 +85,7 @@ def test_plugins_enable_disable_routes(tmp_path: Path):
             disable_resp = client.post("/api/v1/plugins/demo-plugin/disable", headers=headers)
             assert disable_resp.status_code == 200
             assert disable_resp.json()["data"]["status"] == "disabled"
-            assert boot.config["plugin_states"]["demo-plugin"] == {"enabled": False}
+            assert boot.config["plugins"] == [{"id": "demo-plugin", "enabled": False, "config": {}}]
             assert boot.save_config_calls == 1
 
             list_resp = client.get("/api/v1/plugins", headers=headers)
@@ -96,7 +96,7 @@ def test_plugins_enable_disable_routes(tmp_path: Path):
             enable_resp = client.post("/api/v1/plugins/demo-plugin/enable", headers=headers)
             assert enable_resp.status_code == 200
             assert enable_resp.json()["data"]["status"] == "enabled"
-            assert boot.config["plugin_states"]["demo-plugin"] == {"enabled": True}
+            assert boot.config["plugins"] == [{"id": "demo-plugin", "enabled": True, "config": {}}]
             assert boot.save_config_calls == 2
     finally:
         sys.modules.pop(module_name, None)
@@ -252,10 +252,16 @@ def test_plugin_config_route_persists_config_instead_of_reloading(tmp_path: Path
                 "api_key": "secret",
                 "retry": {"timeout": 12},
             }
-            assert boot.config["plugin_configs"]["demo-config-plugin"] == {
-                "api_key": "secret",
-                "retry": {"timeout": 12},
-            }
+            assert boot.config["plugins"] == [
+                {
+                    "id": "demo-config-plugin",
+                    "enabled": True,
+                    "config": {
+                        "api_key": "secret",
+                        "retry": {"timeout": 12},
+                    },
+                }
+            ]
             assert boot.save_config_calls == 1
     finally:
         sys.modules.pop(module_name, None)

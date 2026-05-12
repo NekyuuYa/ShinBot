@@ -11,8 +11,8 @@ from pydantic import ValidationError
 
 from shinbot.core.plugins.config import (
     normalize_plugin_config,
+    plugin_config_entry,
     plugin_config_schema,
-    plugin_config_store,
     plugin_locales,
     plugin_module,
     plugin_saved_config,
@@ -152,8 +152,9 @@ def update_plugin_config_or_raise(
             message=exc.errors()[0].get("msg", "Invalid plugin configuration"),
         ) from exc
 
-    store = plugin_config_store(boot)
-    store[plugin_id] = normalized_config
+    plugin_entry = plugin_config_entry(boot.config, plugin_id, create=True)
+    assert plugin_entry is not None
+    plugin_entry["config"] = normalized_config
 
     if not boot.save_config():
         raise PluginAdminError(

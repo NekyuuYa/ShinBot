@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot import BootController
+from tests.conftest import MockAdapter
 
 
 def _write_config(path: Path, *, runtime: str = "") -> None:
@@ -20,6 +22,34 @@ def _write_config(path: Path, *, runtime: str = "") -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_setup_instances_reads_normalized_adapter_instances(tmp_path: Path):
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
+    boot.config = {
+        "adapter_instances": [
+            {
+                "id": "mock-main",
+                "adapter": "mock",
+                "enabled": True,
+                "config": {},
+            },
+            {
+                "id": "mock-disabled",
+                "adapter": "mock",
+                "enabled": False,
+                "config": {},
+            },
+        ]
+    }
+    bot = ShinBot(data_dir=tmp_path / "data")
+    bot.adapter_manager.register_adapter("mock", MockAdapter)
+    boot.bot = bot
+
+    boot._setup_instances()
+
+    assert bot.adapter_manager.get_instance("mock-main") is not None
+    assert bot.adapter_manager.get_instance("mock-disabled") is None
 
 
 @pytest.mark.asyncio
