@@ -10,11 +10,6 @@ import pytest
 
 from shinbot.agent.runtime import install_agent_runtime
 from shinbot.core.application.app import ShinBot
-from shinbot.core.application.bots_config import (
-    BotAgentConfig,
-    BotBindingConfig,
-    BotServiceConfig,
-)
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.dispatch.routing import RouteCondition
 from shinbot.core.message_routes.command import CommandDef
@@ -65,60 +60,6 @@ class TestShinBotInit:
         install_agent_runtime(bot)
         assert bot.model_runtime is model_runtime
         assert bot.agent_runtime.model_runtime is model_runtime
-
-    @pytest.mark.asyncio
-    async def test_agent_ingress_hook_respects_bot_agent_mode(self):
-        bot = ShinBot()
-        bot.adapter_manager.register_adapter("mock", MockAdapter)
-        adapter = bot.add_adapter("inst1", "mock")
-        calls: list[str] = []
-
-        class Runtime:
-            def handle_ingress_message(self, context):
-                calls.append(context.require_message_context().bot_id)
-
-        bot.configure_bot_service_configs(
-            (
-                BotServiceConfig(
-                    id="command-bot",
-                    display_name="Command Bot",
-                    agent=BotAgentConfig(mode="none"),
-                    bindings=(
-                        BotBindingConfig(
-                            id="command-bot-group",
-                            adapter_instance_id="inst1",
-                            session_patterns=("group:ch-1",),
-                        ),
-                    ),
-                ),
-            )
-        )
-        bot.mount_agent_runtime(Runtime())
-
-        await bot.on_event(make_message_event(content="hello", instance_id="inst1"), adapter)
-        await asyncio.sleep(0)
-        assert calls == []
-
-        bot.configure_bot_service_configs(
-            (
-                BotServiceConfig(
-                    id="full-agent",
-                    display_name="Full Agent",
-                    agent=BotAgentConfig(mode="full", config="agents/full-agent.toml"),
-                    bindings=(
-                        BotBindingConfig(
-                            id="full-agent-group",
-                            adapter_instance_id="inst1",
-                            session_patterns=("group:ch-1",),
-                        ),
-                    ),
-                ),
-            )
-        )
-
-        await bot.on_event(make_message_event(content="hello again", instance_id="inst1"), adapter)
-        await asyncio.sleep(0)
-        assert calls == ["full-agent"]
 
     def test_database_is_initialized_when_data_dir_is_provided(self, tmp_path):
         bot = ShinBot(data_dir=tmp_path)

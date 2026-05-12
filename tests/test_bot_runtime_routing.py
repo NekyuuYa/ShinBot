@@ -292,6 +292,39 @@ async def test_agent_entry_signal_includes_selected_bot_identity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_mode_controls_agent_entry_route_matching() -> None:
+    fallback_rule = make_agent_entry_fallback_route_rule()
+    table = RouteTable()
+    table.register(fallback_rule)
+    targets = RouteTargetRegistry()
+    calls: list[str] = []
+    targets.register(AGENT_ENTRY_TARGET, lambda _context, _rule: calls.append("agent"))
+    router = BotRuntimeRouter((make_bot(agent=BotAgentConfig(mode="none")),))
+    ingress = make_ingress(route_table=table, route_targets=targets, router=router)
+    adapter = MockAdapter()
+
+    none_result = await ingress.process_event(make_event("hello"), adapter)
+    await asyncio.sleep(0)
+
+    ingress.set_bot_router(
+        BotRuntimeRouter(
+            (
+                make_bot(
+                    agent=BotAgentConfig(mode="full", config="agents/full-agent.toml"),
+                ),
+            )
+        )
+    )
+    full_result = await ingress.process_event(make_event("hello again"), adapter)
+    await asyncio.sleep(0)
+
+    assert none_result.matched_rules == []
+    assert none_result.skipped_reason == ROUTING_SKIP_NO_ROUTE_MATCHED
+    assert full_result.matched_rules == [fallback_rule]
+    assert calls == ["agent"]
+
+
+@pytest.mark.asyncio
 async def test_command_permissions_use_selected_bot_global_scope() -> None:
     permission_engine = PermissionEngine()
     permission_engine.bind("qq-main:user-1", "admin")
