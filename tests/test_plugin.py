@@ -10,6 +10,7 @@ import pytest
 
 from shinbot.agent.services.tools import ToolRegistry
 from shinbot.core.application.boot import BootController
+from shinbot.core.config_provider import ConfigProviderRegistry
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteTable
@@ -36,6 +37,36 @@ def _make_plugin_module(
         mod.teardown = teardown_fn  # type: ignore
     sys.modules[name] = mod
     return mod
+
+
+def _write_metadata_plugin(
+    root: Path,
+    *,
+    plugin_id: str = "demo_plugin",
+    module_body: str = "def setup(plg):\n    pass\n",
+    schema_body: str | None = None,
+) -> Path:
+    plugins_dir = root / f"plugins_{plugin_id}"
+    plugin_dir = plugins_dir / plugin_id
+    plugin_dir.mkdir(parents=True)
+    (plugins_dir / "__init__.py").write_text("", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(module_body, encoding="utf-8")
+    (plugin_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": plugin_id,
+                "name": plugin_id,
+                "version": "1.0.0",
+                "entry": "__init__.py",
+                "role": "logic",
+            }
+        ),
+        encoding="utf-8",
+    )
+    if schema_body is not None:
+        (plugin_dir / "config.schema.toml").write_text(schema_body, encoding="utf-8")
+        (plugin_dir / "config.example.toml").write_text('api_key = ""\n', encoding="utf-8")
+    return plugins_dir
 
 
 class TestPlugin:
@@ -139,6 +170,44 @@ class TestPlugin:
         assert definition is not None
         assert definition.owner_id == "test-plugin"
         assert definition.permission == "tools.weather.query"
+
+
+def test_plugin_manager_registers_provider_schema_from_plugin_module(tmp_path: Path) -> None:
+    schema = """
+[provider]
+kind = "plugin"
+id = "demo_plugin"
+display_name = "Demo Plugin"
+
+[[fields]]
+path = "api_key"
+type = "string"
+default = ""
+secret = true
+""".strip()
+    plugins_dir = _write_metadata_plugin(tmp_path, schema_body=schema + "\n")
+    registry = ConfigProviderRegistry()
+    mgr = PluginManager(CommandRegistry(), EventBus(), data_dir=tmp_path, config_provider_registry=registry)
+
+    loaded = mgr.load_plugins_from_metadata_dir(plugins_dir)
+
+    assert [plugin.id for plugin in loaded] == ["demo_plugin"]
+    provider = registry.get("plugin", "demo_plugin")
+    assert provider is not None
+    assert provider.display_name == "Demo Plugin"
+    assert provider.example_toml == 'api_key = ""\n'
+    assert registry.default_config("plugin", "demo_plugin") == {"api_key": ""}
+
+
+def test_plugin_manager_ignores_plugins_without_provider_schema(tmp_path: Path) -> None:
+    plugins_dir = _write_metadata_plugin(tmp_path, plugin_id="no_schema_plugin")
+    registry = ConfigProviderRegistry()
+    mgr = PluginManager(CommandRegistry(), EventBus(), data_dir=tmp_path, config_provider_registry=registry)
+
+    loaded = mgr.load_plugins_from_metadata_dir(plugins_dir)
+
+    assert [plugin.id for plugin in loaded] == ["no_schema_plugin"]
+    assert registry.catalog() == []
 
 
 class TestPluginManager:

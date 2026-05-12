@@ -1,0 +1,49 @@
+[provider]
+kind = "plugin"
+id = "shinbot_plugin_search"
+display_name = "Search"
+description = "Web search plugin powered by Tavily."
+config_version = "1.0.0"
+
+[[fields]]
+path = "tavily_api_key"
+type = "string"
+default = ""
+secret = true
+env = "TAVILY_API_KEY"
+description = "Tavily API key."
+
+[[fields]]
+path = "timeout_seconds"
+type = "float"
+default = 15.0
+min = 1.0
+max = 60.0
+description = "HTTP timeout in seconds."
+
+[[fields]]
+path = "default_max_results"
+type = "integer"
+default = 5
+min = 1
+max = 10
+description = "Default number of search results."
+
+[[fields]]
+path = "default_search_depth"
+type = "enum"
+default = "basic"
+choices = ["basic", "advanced"]
+description = "Tavily search depth."
+
+[[fields]]
+path = "include_answer"
+type = "boolean"
+default = false
+description = "Include Tavily-generated answer in the tool output."
+
+[[fields]]
+path = "include_raw_content"
+type = "boolean"
+default = false
+description = "Include raw_content from each result when available."

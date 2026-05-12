@@ -11,6 +11,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shinbot.core.config_provider import (
+    ConfigProviderLoadError,
+    ConfigProviderRegistry,
+    load_provider_schema_from_module,
+)
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteTable
@@ -77,6 +82,7 @@ class PluginManager:
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
         database: Any | None = None,
+        config_provider_registry: ConfigProviderRegistry | None = None,
     ):
         self._command_registry = command_registry
         self._event_bus = event_bus
@@ -87,6 +93,7 @@ class PluginManager:
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
         self._database = database
+        self.config_provider_registry = config_provider_registry or ConfigProviderRegistry()
         self._plugins: dict[str, PluginMeta] = {}
         self._plugin_objects: dict[str, Plugin] = {}
         self._modules: dict[str, Any] = {}
@@ -184,6 +191,7 @@ class PluginManager:
         self._modules[plugin_id] = module
         if declared_metadata is not None:
             self._declared_metadata[plugin_id] = dict(declared_metadata)
+        self._register_config_provider_from_module(plugin_id, module)
 
         logger.info("Loaded plugin %s (async, data_dir=%s)", plugin_id, meta.data_dir)
         return meta
@@ -561,6 +569,20 @@ class PluginManager:
             routes=list(plg._registered_routes),
             data_dir=str(plg.data_dir),
         )
+
+    def _register_config_provider_from_module(self, plugin_id: str, module: Any) -> None:
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            return
+        schema_path = Path(module_file).resolve().parent / "config.schema.toml"
+        if not schema_path.exists():
+            return
+        try:
+            provider = load_provider_schema_from_module(module)
+        except ConfigProviderLoadError:
+            logger.exception("Invalid config provider schema for plugin %s", plugin_id)
+            return
+        self.config_provider_registry.upsert(provider)
 
     def _resolve_identity_fields(
         self,

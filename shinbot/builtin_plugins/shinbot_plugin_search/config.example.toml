@@ -1,0 +1,6 @@
+tavily_api_key = "${TAVILY_API_KEY}"
+timeout_seconds = 15.0
+default_max_results = 5
+default_search_depth = "basic"
+include_answer = false
+include_raw_content = false

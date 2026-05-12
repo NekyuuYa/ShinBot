@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.config_provider import ConfigProviderRegistry
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
@@ -81,6 +82,7 @@ class ShinBot:
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.permission_engine = PermissionEngine()
         self.adapter_manager = AdapterManager()
+        self.config_provider_registry = ConfigProviderRegistry()
         self.model_runtime_system: Any | None = None
         self.model_runtime: Any | None = None
         self.agent_runtime: Any | None = None
@@ -93,6 +95,7 @@ class ShinBot:
             adapter_manager=self.adapter_manager,
             data_dir=data_dir,
             database=self.database,
+            config_provider_registry=self.config_provider_registry,
         )
 
         self.text_command_dispatcher = TextCommandDispatcher(
