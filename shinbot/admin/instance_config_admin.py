@@ -1,4 +1,4 @@
-"""Administrative helpers for bot-config management flows."""
+"""Administrative helpers for instance-config management flows."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from typing import Any
 from uuid import uuid4
 
 from shinbot.core.application.config_sections import iter_adapter_instance_records
-from shinbot.persistence.records import BotConfigRecord, utc_now_iso
+from shinbot.persistence.records import InstanceConfigRecord, utc_now_iso
 
 
 @dataclass(slots=True)
-class BotConfigAdminError(RuntimeError):
+class InstanceConfigAdminError(RuntimeError):
     """Structured admin-layer error for API adapters."""
 
     status_code: int
@@ -23,7 +23,7 @@ class BotConfigAdminError(RuntimeError):
 
 
 @dataclass(slots=True)
-class NormalizedBotConfigInput:
+class NormalizedInstanceConfigInput:
     instance_id: str
     default_agent_uuid: str
     main_llm: str
@@ -49,10 +49,10 @@ def normalize_optional_int(value: Any, *, field_name: str) -> int | None:
     try:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=400,
             code="INVALID_ACTION",
-            message=f"BotConfig {field_name} must be an integer",
+            message=f"InstanceConfig {field_name} must be an integer",
         ) from exc
     return parsed
 
@@ -68,10 +68,10 @@ def normalize_optional_float(value: Any, *, field_name: str) -> float | None:
     try:
         parsed = float(value)
     except (TypeError, ValueError) as exc:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=400,
             code="INVALID_ACTION",
-            message=f"BotConfig {field_name} must be a number",
+            message=f"InstanceConfig {field_name} must be a number",
         ) from exc
     return parsed
 
@@ -91,10 +91,10 @@ def normalize_optional_bool(value: Any, *, field_name: str) -> bool | None:
             return True
         if normalized in {"0", "false", "no", "off", "disabled"}:
             return False
-    raise BotConfigAdminError(
+    raise InstanceConfigAdminError(
         status_code=400,
         code="INVALID_ACTION",
-        message=f"BotConfig {field_name} must be a boolean",
+        message=f"InstanceConfig {field_name} must be a boolean",
     )
 
 
@@ -204,7 +204,7 @@ def strip_explicit_context_fields(config: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def serialize_bot_config(payload: dict[str, Any]) -> dict[str, Any]:
+def serialize_instance_config(payload: dict[str, Any]) -> dict[str, Any]:
     config = dict(payload["config"])
     return {
         "uuid": payload["uuid"],
@@ -234,7 +234,7 @@ def known_instance_ids(bot: Any, boot: Any) -> set[str]:
     return ids
 
 
-def normalize_bot_config_input(
+def normalize_instance_config_input(
     *,
     instance_id: str,
     default_agent_uuid: str,
@@ -254,7 +254,7 @@ def normalize_bot_config_input(
     context_compression_max_chars: Any = None,
     config: dict[str, Any],
     tags: list[str],
-) -> NormalizedBotConfigInput:
+) -> NormalizedInstanceConfigInput:
     normalized_instance_id = instance_id.strip()
     normalized_default_agent_uuid = default_agent_uuid.strip()
     normalized_main_llm = main_llm.strip()
@@ -262,10 +262,10 @@ def normalize_bot_config_input(
     normalized_config = dict(config)
 
     if not normalized_instance_id:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=400,
             code="INVALID_ACTION",
-            message="BotConfig instanceId must not be empty",
+            message="InstanceConfig instanceId must not be empty",
         )
 
     normalized_config.pop("response_profile", None)
@@ -287,10 +287,10 @@ def normalize_bot_config_input(
         field_name="max_context_tokens",
     )
     if normalized_max_context_tokens is not None and normalized_max_context_tokens <= 0:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=400,
             code="INVALID_ACTION",
-            message="BotConfig max_context_tokens must be greater than 0",
+            message="InstanceConfig max_context_tokens must be greater than 0",
         )
 
     normalized_context_evict_ratio = normalize_optional_float(
@@ -298,10 +298,10 @@ def normalize_bot_config_input(
         field_name="context_evict_ratio",
     )
     if normalized_context_evict_ratio is not None and not 0 < normalized_context_evict_ratio <= 1:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=400,
             code="INVALID_ACTION",
-            message="BotConfig context_evict_ratio must be between 0 and 1",
+            message="InstanceConfig context_evict_ratio must be between 0 and 1",
         )
 
     normalized_context_compression_max_chars = normalize_optional_int(
@@ -312,10 +312,10 @@ def normalize_bot_config_input(
         normalized_context_compression_max_chars is not None
         and normalized_context_compression_max_chars <= 0
     ):
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=400,
             code="INVALID_ACTION",
-            message="BotConfig context_compression_max_chars must be greater than 0",
+            message="InstanceConfig context_compression_max_chars must be greater than 0",
         )
 
     normalized_explicit_prompt_cache_enabled = normalize_optional_bool(
@@ -377,7 +377,7 @@ def normalize_bot_config_input(
         seen_tags.add(tag)
         deduped_tags.append(tag)
 
-    return NormalizedBotConfigInput(
+    return NormalizedInstanceConfigInput(
         instance_id=normalized_instance_id,
         default_agent_uuid=normalized_default_agent_uuid,
         main_llm=normalized_main_llm,
@@ -386,7 +386,7 @@ def normalize_bot_config_input(
     )
 
 
-def validate_bot_config_references(
+def validate_instance_config_references(
     *,
     bot: Any,
     boot: Any,
@@ -396,13 +396,13 @@ def validate_bot_config_references(
     config: dict[str, Any] | None = None,
 ) -> None:
     if instance_id not in known_instance_ids(bot, boot):
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=404,
             code="INSTANCE_NOT_FOUND",
             message=f"Instance {instance_id!r} was not found",
         )
     if default_agent_uuid and bot.database.agents.get(default_agent_uuid) is None:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=404,
             code="AGENT_NOT_FOUND",
             message=f"Agent {default_agent_uuid!r} was not found",
@@ -434,53 +434,53 @@ def validate_model_runtime_target(database: Any, field_name: str, target: str) -
     ]
     if matching_litellm_models:
         model_ids = ", ".join(str(item["id"]) for item in matching_litellm_models[:3])
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=400,
             code="MODEL_TARGET_NOT_FOUND",
             message=(
-                f"BotConfig {field_name} must reference a Route ID or configured Model ID, "
+                f"InstanceConfig {field_name} must reference a Route ID or configured Model ID, "
                 f"not LiteLLM model {normalized!r}. Use one of: {model_ids}"
             ),
         )
 
-    raise BotConfigAdminError(
+    raise InstanceConfigAdminError(
         status_code=404,
         code="MODEL_TARGET_NOT_FOUND",
-        message=f"BotConfig {field_name} model target {normalized!r} was not found",
+        message=f"InstanceConfig {field_name} model target {normalized!r} was not found",
     )
 
 
-def get_bot_config_or_raise(database: Any, config_uuid: str) -> dict[str, Any]:
-    payload = database.bot_configs.get(config_uuid)
+def get_instance_config_or_raise(database: Any, config_uuid: str) -> dict[str, Any]:
+    payload = database.instance_configs.get(config_uuid)
     if payload is None:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=404,
-            code="BOT_CONFIG_NOT_FOUND",
-            message=f"BotConfig {config_uuid!r} was not found",
+            code="INSTANCE_CONFIG_NOT_FOUND",
+            message=f"InstanceConfig {config_uuid!r} was not found",
         )
     return payload
 
 
-def assert_bot_config_instance_available(
+def assert_instance_config_available(
     database: Any, instance_id: str, *, current_uuid: str | None
 ) -> None:
-    existing = database.bot_configs.get_by_instance_id(instance_id)
+    existing = database.instance_configs.get_by_instance_id(instance_id)
     if existing is not None and existing["uuid"] != current_uuid:
-        raise BotConfigAdminError(
+        raise InstanceConfigAdminError(
             status_code=409,
-            code="BOT_CONFIG_ALREADY_EXISTS",
-            message=f"BotConfig for instance {instance_id!r} already exists",
+            code="INSTANCE_CONFIG_ALREADY_EXISTS",
+            message=f"InstanceConfig for instance {instance_id!r} already exists",
         )
 
 
-def build_bot_config_record(
+def build_instance_config_record(
     *,
     config_uuid: str | None,
-    input_data: NormalizedBotConfigInput,
+    input_data: NormalizedInstanceConfigInput,
     created_at: str | None = None,
-) -> BotConfigRecord:
+) -> InstanceConfigRecord:
     now = utc_now_iso()
-    return BotConfigRecord(
+    return InstanceConfigRecord(
         uuid=config_uuid or str(uuid4()),
         instance_id=input_data.instance_id,
         default_agent_uuid=input_data.default_agent_uuid,

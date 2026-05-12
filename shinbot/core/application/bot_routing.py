@@ -86,7 +86,7 @@ class BotRuntimeRouter:
 
 
 def session_key_for_event(event: UnifiedEvent) -> str:
-    """Return the bot-config session key for an event, without adapter instance id."""
+    """Return the bot-scoped session key for an event, without adapter instance id."""
 
     if event.is_private:
         target = str(event.sender_id or event.channel_id or "").strip()
@@ -159,32 +159,32 @@ def permission_scope_for_event(
 def command_prefixes_for_context(message_context: Any, fallback_prefixes: list[str]) -> list[str]:
     """Return command prefixes for the selected bot, or session defaults."""
 
-    bot_config = selected_bot_config(message_context)
-    if bot_config is None:
+    bot_service_config = selected_bot_service_config(message_context)
+    if bot_service_config is None:
         return fallback_prefixes
-    return list(bot_config.commands.prefixes)
+    return list(bot_service_config.commands.prefixes)
 
 
 def bot_commands_enabled_for_context(message_context: Any) -> bool:
-    bot_config = selected_bot_config(message_context)
-    return bot_config is None or bot_config.commands.enabled
+    bot_service_config = selected_bot_service_config(message_context)
+    return bot_service_config is None or bot_service_config.commands.enabled
 
 
 def bot_plugin_enabled_for_context(message_context: Any, plugin_id: str | None) -> bool:
-    return bot_plugin_enabled(selected_bot_config(message_context), plugin_id)
+    return bot_plugin_enabled(selected_bot_service_config(message_context), plugin_id)
 
 
 def bot_plugin_enabled(
-    bot_config: BotServiceConfig | None,
+    bot_service_config: BotServiceConfig | None,
     plugin_id: str | None,
 ) -> bool:
     """Return whether a plugin-owned capability may run for a selected bot."""
 
     normalized_plugin_id = str(plugin_id or "").strip()
-    if bot_config is None or not normalized_plugin_id:
+    if bot_service_config is None or not normalized_plugin_id:
         return True
 
-    policy = bot_config.plugins
+    policy = bot_service_config.plugins
     if not policy.enabled:
         return False
 
@@ -197,20 +197,20 @@ def bot_plugin_enabled(
 
 
 def bot_agent_enabled_for_context(message_context: Any) -> bool:
-    bot_config = selected_bot_config(message_context)
-    return bot_config is None or bot_config.agent.mode != "none"
+    bot_service_config = selected_bot_service_config(message_context)
+    return bot_service_config is None or bot_service_config.agent.mode != "none"
 
 
 def bot_route_rule_enabled_for_context(rule: RouteRule, message_context: Any) -> bool:
     """Return whether a matched route rule may run for the selected bot."""
 
-    bot_config = selected_bot_config(message_context)
-    if bot_config is None:
+    bot_service_config = selected_bot_service_config(message_context)
+    if bot_service_config is None:
         return True
     if rule.target == AGENT_ENTRY_TARGET_NAME:
         return bot_agent_enabled_for_context(message_context)
-    return bot_plugin_enabled(bot_config, rule.owner)
+    return bot_plugin_enabled(bot_service_config, rule.owner)
 
 
-def selected_bot_config(message_context: Any) -> BotServiceConfig | None:
+def selected_bot_service_config(message_context: Any) -> BotServiceConfig | None:
     return getattr(message_context, "bot_service_config", None)

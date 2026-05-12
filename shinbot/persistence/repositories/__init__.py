@@ -2,8 +2,8 @@
 
 from .admin import (
     AgentRepository,
-    BotConfigRepository,
     ContextStrategyRepository,
+    InstanceConfigRepository,
     PersonaRepository,
     PromptDefinitionRepository,
 )
@@ -23,9 +23,9 @@ __all__ = [
     "AgentRepository",
     "AIInteractionRepository",
     "AuditRepository",
-    "BotConfigRepository",
     "ContextProvider",
     "ContextStrategyRepository",
+    "InstanceConfigRepository",
     "MediaAssetRepository",
     "MediaSemanticRepository",
     "MessageLogRepository",

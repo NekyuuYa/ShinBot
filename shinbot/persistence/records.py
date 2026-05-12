@@ -164,7 +164,7 @@ class PromptDefinitionRecord:
 
 
 @dataclass(slots=True)
-class BotConfigRecord:
+class InstanceConfigRecord:
     uuid: str
     instance_id: str
     default_agent_uuid: str = ""

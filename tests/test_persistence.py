@@ -12,9 +12,9 @@ from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
     AgentRecord,
     AIInteractionRecord,
-    BotConfigRecord,
     ContextStrategyRecord,
     DatabaseManager,
+    InstanceConfigRecord,
     MessageLogRecord,
     ModelDefinitionRecord,
     ModelExecutionRecord,
@@ -636,13 +636,13 @@ class TestDatabaseManager:
         assert len(items) == 1
         assert items[0]["uuid"] == "prompt-1"
 
-    def test_bot_config_repository_roundtrip(self, tmp_path):
+    def test_instance_config_repository_roundtrip(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
-        db.bot_configs.upsert(
-            BotConfigRecord(
-                uuid="bot-config-1",
+        db.instance_configs.upsert(
+            InstanceConfigRecord(
+                uuid="instance-config-1",
                 instance_id="inst-1",
                 default_agent_uuid="agent-uuid-1",
                 main_llm="openai-main/gpt-fast",
@@ -651,16 +651,16 @@ class TestDatabaseManager:
             )
         )
 
-        payload = db.bot_configs.get("bot-config-1")
+        payload = db.instance_configs.get("instance-config-1")
         assert payload is not None
         assert payload["instance_id"] == "inst-1"
         assert payload["main_llm"] == "openai-main/gpt-fast"
         assert payload["config"]["reply_mode"] == "group"
         assert payload["tags"] == ["prod", "default"]
 
-        items = db.bot_configs.list()
+        items = db.instance_configs.list()
         assert len(items) == 1
-        assert items[0]["uuid"] == "bot-config-1"
+        assert items[0]["uuid"] == "instance-config-1"
 
     def test_prompt_snapshot_repository_roundtrip(self, tmp_path):
         import time

@@ -14,7 +14,7 @@ from shinbot.agent.scheduler import ActiveChatState, AgentScheduler, AgentState
 from shinbot.agent.services.model_runtime import GenerateResult
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
-from shinbot.persistence.records import BotConfigRecord, MessageLogRecord
+from shinbot.persistence.records import InstanceConfigRecord, MessageLogRecord
 
 
 class FakeModelRuntime:
@@ -227,8 +227,8 @@ async def test_agent_runtime_resolves_response_profile_from_agent_boundary(
         workflow_dispatcher=dispatcher,
         response_profile_resolver=runtime._resolve_response_profile,
     )
-    bot.database.bot_configs.upsert(
-        BotConfigRecord(
+    bot.database.instance_configs.upsert(
+        InstanceConfigRecord(
             uuid="cfg-group-profile",
             instance_id="test-bot",
             config={

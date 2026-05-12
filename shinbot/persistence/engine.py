@@ -16,8 +16,8 @@ from .repositories import (
     AgentRepository,
     AIInteractionRepository,
     AuditRepository,
-    BotConfigRepository,
     ContextStrategyRepository,
+    InstanceConfigRepository,
     MediaAssetRepository,
     MediaSemanticRepository,
     MessageLogRepository,
@@ -40,7 +40,7 @@ class DatabaseManager:
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
         self.agents = AgentRepository(self)
-        self.bot_configs = BotConfigRepository(self)
+        self.instance_configs = InstanceConfigRepository(self)
         self.personas = PersonaRepository(self)
         self.prompt_definitions = PromptDefinitionRepository(self)
         self.context_strategies = ContextStrategyRepository(self)

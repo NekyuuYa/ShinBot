@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
-from shinbot.admin.bot_config_admin import serialize_bot_config
+from shinbot.admin.instance_config_admin import serialize_instance_config
 from shinbot.core.application.config_sections import (
     adapter_instance_store,
     append_adapter_instance_record,
@@ -68,10 +68,10 @@ def runtime_config(adapter: Any) -> dict[str, Any]:
     return {}
 
 
-def serialize_bot_config_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+def serialize_instance_config_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if payload is None:
         return None
-    serialized = serialize_bot_config(payload)
+    serialized = serialize_instance_config(payload)
     return {
         "uuid": serialized["uuid"],
         "defaultAgentUuid": serialized["defaultAgentUuid"],
@@ -93,14 +93,14 @@ def serialize_bot_config_summary(payload: dict[str, Any] | None) -> dict[str, An
     }
 
 
-def bot_config_by_instance_id(database: Any) -> dict[str, dict[str, Any]]:
-    return {item["instance_id"]: item for item in database.bot_configs.list()}
+def instance_config_by_instance_id(database: Any) -> dict[str, dict[str, Any]]:
+    return {item["instance_id"]: item for item in database.instance_configs.list()}
 
 
 def serialize_instance_record(
     item: dict[str, Any],
     mgr: Any,
-    bot_configs_by_instance_id: dict[str, dict[str, Any]],
+    instance_configs_by_instance_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     normalized = normalize_adapter_instance_record(item)
     instance_id = normalized["id"]
@@ -120,7 +120,9 @@ def serialize_instance_record(
         "adapter": normalized["adapter"],
         "status": status,
         "config": config,
-        "botConfig": serialize_bot_config_summary(bot_configs_by_instance_id.get(str(instance_id))),
+        "instanceConfig": serialize_instance_config_summary(
+            instance_configs_by_instance_id.get(str(instance_id))
+        ),
         "createdAt": normalized["createdAt"],
         "lastModified": normalized["lastModified"],
     }
@@ -129,7 +131,7 @@ def serialize_instance_record(
 def serialize_runtime_instance(
     adapter: Any,
     mgr: Any,
-    bot_configs_by_instance_id: dict[str, dict[str, Any]],
+    instance_configs_by_instance_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "id": adapter.instance_id,
@@ -137,8 +139,8 @@ def serialize_runtime_instance(
         "adapter": adapter.platform,
         "status": "running" if mgr.is_running(adapter.instance_id) else "stopped",
         "config": runtime_config(adapter),
-        "botConfig": serialize_bot_config_summary(
-            bot_configs_by_instance_id.get(adapter.instance_id)
+        "instanceConfig": serialize_instance_config_summary(
+            instance_configs_by_instance_id.get(adapter.instance_id)
         ),
         "createdAt": 0,
         "lastModified": 0,
@@ -147,17 +149,17 @@ def serialize_runtime_instance(
 
 def list_instance_payloads(*, bot: Any, boot: Any) -> list[dict[str, Any]]:
     mgr = bot.adapter_manager
-    bot_configs = bot_config_by_instance_id(bot.database)
+    instance_configs = instance_config_by_instance_id(bot.database)
     records: list[dict[str, Any]] = []
 
     for item in iter_adapter_instance_records(boot.config):
-        records.append(serialize_instance_record(item, mgr, bot_configs))
+        records.append(serialize_instance_record(item, mgr, instance_configs))
 
     seen_ids = {item["id"] for item in records}
     for adapter in mgr.all_instances:
         if adapter.instance_id in seen_ids:
             continue
-        records.append(serialize_runtime_instance(adapter, mgr, bot_configs))
+        records.append(serialize_runtime_instance(adapter, mgr, instance_configs))
 
     return records
 

@@ -48,8 +48,8 @@ class MediaService:
         self._database = database
 
     def resolve_inspection_config(self, instance_id: str) -> ResolvedMediaInspectionConfig:
-        bot_config = self._database.bot_configs.get_by_instance_id(instance_id)
-        return resolve_media_inspection_config(bot_config)
+        instance_config = self._database.instance_configs.get_by_instance_id(instance_id)
+        return resolve_media_inspection_config(instance_config)
 
     def ingest_message_media(
         self,

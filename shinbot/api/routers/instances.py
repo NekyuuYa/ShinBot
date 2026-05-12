@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 
 from shinbot.admin.instance_admin import (
     InstanceAdminError,
-    bot_config_by_instance_id,
     control_instance_runtime,
     create_instance_runtime,
     delete_instance_runtime,
+    instance_config_by_instance_id,
     list_instance_payloads,
     serialize_instance_record,
     update_instance_runtime,
@@ -93,7 +93,7 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
         serialize_instance_record(
             inst_entry,
             bot.adapter_manager,
-            bot_config_by_instance_id(bot.database),
+            instance_config_by_instance_id(bot.database),
         )
     )
 
@@ -119,7 +119,7 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
         serialize_instance_record(
             inst,
             bot.adapter_manager,
-            bot_config_by_instance_id(bot.database),
+            instance_config_by_instance_id(bot.database),
         )
     )
 

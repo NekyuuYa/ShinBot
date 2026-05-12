@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 from shinbot.api.app import create_api_app
 from shinbot.builtin_plugins.shinbot_adapter_satori.adapter import SatoriAdapter, SatoriConfig
 from shinbot.core.application.app import ShinBot
-from shinbot.persistence import AgentRecord, BotConfigRecord, PersonaRecord, PromptDefinitionRecord
+from shinbot.persistence import (
+    AgentRecord,
+    InstanceConfigRecord,
+    PersonaRecord,
+    PromptDefinitionRecord,
+)
 from tests.conftest import MockAdapter
 
 
@@ -102,7 +107,7 @@ def test_update_instance_route_returns_full_instance_payload(tmp_path: Path):
         "adapter": "mock",
         "status": "stopped",
         "config": {"token": "xyz"},
-        "botConfig": None,
+        "instanceConfig": None,
         "createdAt": 1,
         "lastModified": boot.config["adapter_instances"][0]["lastModified"],
     }
@@ -230,7 +235,7 @@ def test_update_instance_updates_dataclass_adapter_runtime_config(tmp_path: Path
     assert response.json()["data"]["config"]["token"] == "xyz"
 
 
-def test_list_instances_includes_bot_config_summary(tmp_path: Path):
+def test_list_instances_includes_instance_config_summary(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     bot.database.prompt_definitions.upsert(
         PromptDefinitionRecord(
@@ -255,9 +260,9 @@ def test_list_instances_includes_bot_config_summary(tmp_path: Path):
             persona_uuid="persona-1",
         )
     )
-    bot.database.bot_configs.upsert(
-        BotConfigRecord(
-            uuid="bot-config-1",
+    bot.database.instance_configs.upsert(
+        InstanceConfigRecord(
+            uuid="instance-config-1",
             instance_id="inst-1",
             default_agent_uuid="agent-uuid-1",
             main_llm="openai-main/gpt-fast",
@@ -293,8 +298,8 @@ def test_list_instances_includes_bot_config_summary(tmp_path: Path):
     assert response.status_code == 200
     payload = response.json()["data"][0]
     assert payload["id"] == "inst-1"
-    assert payload["botConfig"] == {
-        "uuid": "bot-config-1",
+    assert payload["instanceConfig"] == {
+        "uuid": "instance-config-1",
         "defaultAgentUuid": "agent-uuid-1",
         "mainLlm": "openai-main/gpt-fast",
         "explicitPromptCacheEnabled": False,

@@ -55,7 +55,7 @@ from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.workflows.chat_actions import register_chat_action_tools
-from shinbot.core.bot_config import select_response_profile
+from shinbot.core.instance_config import select_response_profile
 
 if TYPE_CHECKING:
     from shinbot.core.application.app import ShinBot
@@ -267,12 +267,14 @@ class AgentRuntime:
         )
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
-        bot_config = None
+        instance_config = None
         if self.database is not None:
-            bot_config = self.database.bot_configs.get_by_instance_id(signal.instance_id)
+            instance_config = self.database.instance_configs.get_by_instance_id(
+                signal.instance_id
+            )
 
         return select_response_profile(
-            bot_config,
+            instance_config,
             is_private=signal.is_private,
             is_mentioned=signal.is_mentioned,
             is_reply_to_bot=signal.is_reply_to_bot,

@@ -1,4 +1,4 @@
-"""Canonical runtime bot-config resolution helpers."""
+"""Canonical runtime instance-config resolution helpers."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ ATTENTION_DISABLED_PROFILE = "disabled"
 
 
 @dataclass(slots=True)
-class ResolvedBotRuntimeConfig:
-    """Normalized runtime-facing bot configuration for a single instance."""
+class ResolvedInstanceRuntimeConfig:
+    """Normalized runtime-facing configuration for a single adapter instance."""
 
     default_agent_uuid: str = ""
     main_llm: str = ""
@@ -44,11 +44,13 @@ def _normalize_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def resolve_bot_runtime_config(payload: dict[str, Any] | None) -> ResolvedBotRuntimeConfig:
-    """Normalize raw bot-config payloads into canonical runtime fields."""
+def resolve_instance_runtime_config(
+    payload: dict[str, Any] | None,
+) -> ResolvedInstanceRuntimeConfig:
+    """Normalize raw instance-config payloads into canonical runtime fields."""
 
     raw_config = dict((payload or {}).get("config") or {})
-    return ResolvedBotRuntimeConfig(
+    return ResolvedInstanceRuntimeConfig(
         default_agent_uuid=str((payload or {}).get("default_agent_uuid") or "").strip(),
         main_llm=str((payload or {}).get("main_llm") or "").strip(),
         explicit_prompt_cache_enabled=_normalize_bool(
@@ -82,7 +84,7 @@ def select_response_profile(
 ) -> str:
     """Select the canonical response profile for one incoming message."""
 
-    resolved = resolve_bot_runtime_config(payload)
+    resolved = resolve_instance_runtime_config(payload)
     if is_private:
         return resolved.response_profile_private
     if is_mentioned or is_reply_to_bot:

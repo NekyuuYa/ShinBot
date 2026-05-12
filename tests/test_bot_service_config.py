@@ -142,7 +142,7 @@ def test_validate_full_agent_config_must_stay_inside_data_dir(tmp_path: Path) ->
     assert issues[0].code == "path"
 
 
-def test_boot_phase1_rejects_invalid_bot_config(tmp_path: Path) -> None:
+def test_boot_phase1_rejects_invalid_bot_service_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join(

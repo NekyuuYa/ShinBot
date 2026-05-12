@@ -51,11 +51,11 @@ class ResolvedMediaInspectionConfig:
 
 
 def resolve_media_inspection_config(
-    bot_config: dict[str, Any] | None,
+    instance_config: dict[str, Any] | None,
 ) -> ResolvedMediaInspectionConfig:
     """Resolve inspection prompt/llm, using only the built-in internal agent wrapper."""
 
-    config = dict((bot_config or {}).get("config") or {})
+    config = dict((instance_config or {}).get("config") or {})
     llm_ref = str(config.get("media_inspection_llm") or "").strip()
     prompt_ref = str(
         config.get("media_inspection_prompt")

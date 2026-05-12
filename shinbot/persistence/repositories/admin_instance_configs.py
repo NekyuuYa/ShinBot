@@ -1,17 +1,20 @@
-"""Bot configuration metadata repository."""
+"""Instance configuration metadata repository."""
 
 from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any
 
-from shinbot.persistence.records import BotConfigRecord
+from shinbot.persistence.records import InstanceConfigRecord
 
 from .base import Repository
 
 
-class BotConfigRepository(Repository):
-    """Persistence adapter for per-instance bot configuration."""
+class InstanceConfigRepository(Repository):
+    """Persistence adapter for per-instance runtime configuration."""
+
+    # The SQLite table name is kept stable for existing local databases.  The
+    # public repository/API surface uses instance-config naming from here on.
 
     _JSON_FIELDS = {
         "config": ("config_json", {}),
@@ -56,7 +59,7 @@ class BotConfigRepository(Repository):
             ).fetchone()
         return self._row_to_payload(row) if row is not None else None
 
-    def upsert(self, record: BotConfigRecord) -> None:
+    def upsert(self, record: InstanceConfigRecord) -> None:
         payload = asdict(record)
         with self.connect() as conn:
             row = conn.execute(

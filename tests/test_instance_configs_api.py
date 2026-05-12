@@ -74,7 +74,7 @@ def _seed_models(bot: ShinBot) -> None:
     )
 
 
-def test_bot_config_crud_roundtrip(tmp_path: Path):
+def test_instance_config_crud_roundtrip(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     _seed_models(bot)
     bot.database.prompt_definitions.upsert(
@@ -105,7 +105,7 @@ def test_bot_config_crud_roundtrip(tmp_path: Path):
 
     with TestClient(app) as client:
         create_resp = client.post(
-            "/api/v1/bot-configs",
+            "/api/v1/instance-configs",
             headers=headers,
             json={
                 "instanceId": "inst-1",
@@ -136,7 +136,7 @@ def test_bot_config_crud_roundtrip(tmp_path: Path):
         config_uuid = created["uuid"]
 
         patch_resp = client.patch(
-            f"/api/v1/bot-configs/{config_uuid}",
+            f"/api/v1/instance-configs/{config_uuid}",
             headers=headers,
             json={
                 "mainLlm": "openai-main/gpt-backup",
@@ -157,23 +157,23 @@ def test_bot_config_crud_roundtrip(tmp_path: Path):
         assert patched["config"]["replyMode"] == "private"
         assert patched["tags"] == ["staging"]
 
-        list_resp = client.get("/api/v1/bot-configs", headers=headers)
+        list_resp = client.get("/api/v1/instance-configs", headers=headers)
         assert list_resp.status_code == 200
         assert len(list_resp.json()["data"]) == 1
 
-        delete_resp = client.delete(f"/api/v1/bot-configs/{config_uuid}", headers=headers)
+        delete_resp = client.delete(f"/api/v1/instance-configs/{config_uuid}", headers=headers)
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"]["deleted"] is True
 
 
-def test_bot_config_validates_instance_and_uniqueness(tmp_path: Path):
+def test_instance_config_validates_instance_and_uniqueness(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     app = create_api_app(bot, _BootStub(tmp_path))
     headers = _auth_headers(app)
 
     with TestClient(app) as client:
         missing_instance_resp = client.post(
-            "/api/v1/bot-configs",
+            "/api/v1/instance-configs",
             headers=headers,
             json={"instanceId": "missing-inst"},
         )
@@ -181,22 +181,22 @@ def test_bot_config_validates_instance_and_uniqueness(tmp_path: Path):
         assert missing_instance_resp.json()["error"]["code"] == "INSTANCE_NOT_FOUND"
 
         first_resp = client.post(
-            "/api/v1/bot-configs",
+            "/api/v1/instance-configs",
             headers=headers,
             json={"instanceId": "inst-1"},
         )
         assert first_resp.status_code == 201
 
         duplicate_resp = client.post(
-            "/api/v1/bot-configs",
+            "/api/v1/instance-configs",
             headers=headers,
             json={"instanceId": "inst-1"},
         )
         assert duplicate_resp.status_code == 409
-        assert duplicate_resp.json()["error"]["code"] == "BOT_CONFIG_ALREADY_EXISTS"
+        assert duplicate_resp.json()["error"]["code"] == "INSTANCE_CONFIG_ALREADY_EXISTS"
 
 
-def test_bot_config_rejects_litellm_model_target(tmp_path: Path):
+def test_instance_config_rejects_litellm_model_target(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     _seed_models(bot)
     app = create_api_app(bot, _BootStub(tmp_path))
@@ -204,7 +204,7 @@ def test_bot_config_rejects_litellm_model_target(tmp_path: Path):
 
     with TestClient(app) as client:
         response = client.post(
-            "/api/v1/bot-configs",
+            "/api/v1/instance-configs",
             headers=headers,
             json={
                 "instanceId": "inst-1",

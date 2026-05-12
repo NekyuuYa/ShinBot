@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from shinbot.core.bot_config import resolve_bot_runtime_config, select_response_profile
+from shinbot.core.instance_config import resolve_instance_runtime_config, select_response_profile
 
 
-def test_resolve_bot_runtime_config_normalizes_defaults() -> None:
-    resolved = resolve_bot_runtime_config(None)
+def test_resolve_instance_runtime_config_normalizes_defaults() -> None:
+    resolved = resolve_instance_runtime_config(None)
 
     assert resolved.default_agent_uuid == ""
     assert resolved.main_llm == ""
@@ -15,8 +15,8 @@ def test_resolve_bot_runtime_config_normalizes_defaults() -> None:
     assert resolved.response_profile_group == "balanced"
 
 
-def test_resolve_bot_runtime_config_reads_canonical_profiles() -> None:
-    resolved = resolve_bot_runtime_config(
+def test_resolve_instance_runtime_config_reads_canonical_profiles() -> None:
+    resolved = resolve_instance_runtime_config(
         {
             "default_agent_uuid": "agent-1",
             "main_llm": "route-main",

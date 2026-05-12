@@ -9,7 +9,7 @@
 
 - `shinbot.agent.context`
 - `shinbot.agent.workflow.conversation`
-- `shinbot.admin.bot_config_admin`
+- `shinbot.admin.instance_config_admin`
 
 ## 上下文块打包参数
 

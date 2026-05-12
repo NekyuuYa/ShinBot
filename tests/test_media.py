@@ -32,8 +32,8 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
-    BotConfigRecord,
     DatabaseManager,
+    InstanceConfigRecord,
     MediaSemanticRecord,
     MessageLogRecord,
     ModelDefinitionRecord,
@@ -172,9 +172,9 @@ def _seed_media_runtime(
                 )
             ],
         )
-    db.bot_configs.upsert(
-        BotConfigRecord(
-            uuid="bot-config-media",
+    db.instance_configs.upsert(
+        InstanceConfigRecord(
+            uuid="instance-config-media",
             instance_id=instance_id,
             main_llm=route_id,
             config=config,
@@ -228,9 +228,9 @@ def _seed_main_runtime(
             )
         ],
     )
-    db.bot_configs.upsert(
-        BotConfigRecord(
-            uuid="bot-config-main",
+    db.instance_configs.upsert(
+        InstanceConfigRecord(
+            uuid="instance-config-main",
             instance_id=instance_id,
             main_llm=route_id,
             config=config,

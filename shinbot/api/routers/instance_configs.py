@@ -1,4 +1,4 @@
-"""Bot config management router: /api/v1/bot-configs"""
+"""Instance config management router: /api/v1/instance-configs"""
 
 from __future__ import annotations
 
@@ -7,26 +7,26 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from shinbot.admin.bot_config_admin import (
-    BotConfigAdminError,
-    assert_bot_config_instance_available,
-    build_bot_config_record,
-    get_bot_config_or_raise,
-    normalize_bot_config_input,
-    serialize_bot_config,
-    validate_bot_config_references,
+from shinbot.admin.instance_config_admin import (
+    InstanceConfigAdminError,
+    assert_instance_config_available,
+    build_instance_config_record,
+    get_instance_config_or_raise,
+    normalize_instance_config_input,
+    serialize_instance_config,
+    validate_instance_config_references,
 )
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import ok
 
 router = APIRouter(
-    prefix="/bot-configs",
-    tags=["bot-configs"],
+    prefix="/instance-configs",
+    tags=["instance-configs"],
     dependencies=AuthRequired,
 )
 
 
-class BotConfigRequest(BaseModel):
+class InstanceConfigRequest(BaseModel):
     instanceId: str
     defaultAgentUuid: str = ""
     mainLlm: str = ""
@@ -47,7 +47,7 @@ class BotConfigRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-class BotConfigPatchRequest(BaseModel):
+class InstanceConfigPatchRequest(BaseModel):
     instanceId: str | None = None
     defaultAgentUuid: str | None = None
     mainLlm: str | None = None
@@ -68,28 +68,30 @@ class BotConfigPatchRequest(BaseModel):
     tags: list[str] | None = None
 
 
-def _raise_admin_http_error(exc: BotConfigAdminError) -> None:
+def _raise_admin_http_error(exc: InstanceConfigAdminError) -> None:
     raise HTTPException(
         status_code=exc.status_code,
         detail={"code": exc.code, "message": exc.message},
     ) from exc
 
 
-def _patch_value(body: BotConfigPatchRequest, field_name: str, current_value: Any) -> Any:
+def _patch_value(body: InstanceConfigPatchRequest, field_name: str, current_value: Any) -> Any:
     if field_name in body.model_fields_set:
         return getattr(body, field_name)
     return current_value
 
 
 @router.get("")
-def list_bot_configs(bot=BotDep):
-    return ok([serialize_bot_config(item) for item in bot.database.bot_configs.list()])
+def list_instance_configs(bot=BotDep):
+    return ok(
+        [serialize_instance_config(item) for item in bot.database.instance_configs.list()]
+    )
 
 
 @router.post("", status_code=201)
-def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
+def create_instance_config(body: InstanceConfigRequest, bot=BotDep, boot=BootDep):
     try:
-        normalized = normalize_bot_config_input(
+        normalized = normalize_instance_config_input(
             instance_id=body.instanceId,
             default_agent_uuid=body.defaultAgentUuid,
             main_llm=body.mainLlm,
@@ -109,12 +111,12 @@ def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
             config=body.config,
             tags=body.tags,
         )
-        assert_bot_config_instance_available(
+        assert_instance_config_available(
             bot.database,
             normalized.instance_id,
             current_uuid=None,
         )
-        validate_bot_config_references(
+        validate_instance_config_references(
             bot=bot,
             boot=boot,
             instance_id=normalized.instance_id,
@@ -122,31 +124,36 @@ def create_bot_config(body: BotConfigRequest, bot=BotDep, boot=BootDep):
             main_llm=normalized.main_llm,
             config=normalized.config,
         )
-    except BotConfigAdminError as exc:
+    except InstanceConfigAdminError as exc:
         _raise_admin_http_error(exc)
 
-    record = build_bot_config_record(config_uuid=None, input_data=normalized)
-    bot.database.bot_configs.upsert(record)
-    payload = bot.database.bot_configs.get(record.uuid)
+    record = build_instance_config_record(config_uuid=None, input_data=normalized)
+    bot.database.instance_configs.upsert(record)
+    payload = bot.database.instance_configs.get(record.uuid)
     assert payload is not None
-    return ok(serialize_bot_config(payload))
+    return ok(serialize_instance_config(payload))
 
 
 @router.get("/{config_uuid}")
-def get_bot_config(config_uuid: str, bot=BotDep):
+def get_instance_config(config_uuid: str, bot=BotDep):
     try:
-        payload = get_bot_config_or_raise(bot.database, config_uuid)
-    except BotConfigAdminError as exc:
+        payload = get_instance_config_or_raise(bot.database, config_uuid)
+    except InstanceConfigAdminError as exc:
         _raise_admin_http_error(exc)
-    return ok(serialize_bot_config(payload))
+    return ok(serialize_instance_config(payload))
 
 
 @router.patch("/{config_uuid}")
-def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, boot=BootDep):
+def patch_instance_config(
+    config_uuid: str,
+    body: InstanceConfigPatchRequest,
+    bot=BotDep,
+    boot=BootDep,
+):
     try:
-        current = get_bot_config_or_raise(bot.database, config_uuid)
+        current = get_instance_config_or_raise(bot.database, config_uuid)
         current_config = dict(current["config"])
-        normalized = normalize_bot_config_input(
+        normalized = normalize_instance_config_input(
             instance_id=str(_patch_value(body, "instanceId", current["instance_id"]) or ""),
             default_agent_uuid=str(
                 _patch_value(body, "defaultAgentUuid", current["default_agent_uuid"]) or ""
@@ -220,12 +227,12 @@ def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, 
             config=_patch_value(body, "config", current_config) or {},
             tags=_patch_value(body, "tags", list(current["tags"])) or [],
         )
-        assert_bot_config_instance_available(
+        assert_instance_config_available(
             bot.database,
             normalized.instance_id,
             current_uuid=config_uuid,
         )
-        validate_bot_config_references(
+        validate_instance_config_references(
             bot=bot,
             boot=boot,
             instance_id=normalized.instance_id,
@@ -233,26 +240,26 @@ def patch_bot_config(config_uuid: str, body: BotConfigPatchRequest, bot=BotDep, 
             main_llm=normalized.main_llm,
             config=normalized.config,
         )
-    except BotConfigAdminError as exc:
+    except InstanceConfigAdminError as exc:
         _raise_admin_http_error(exc)
 
-    bot.database.bot_configs.upsert(
-        build_bot_config_record(
+    bot.database.instance_configs.upsert(
+        build_instance_config_record(
             config_uuid=config_uuid,
             input_data=normalized,
             created_at=str(current["created_at"]),
         )
     )
-    payload = bot.database.bot_configs.get(config_uuid)
+    payload = bot.database.instance_configs.get(config_uuid)
     assert payload is not None
-    return ok(serialize_bot_config(payload))
+    return ok(serialize_instance_config(payload))
 
 
 @router.delete("/{config_uuid}")
-def delete_bot_config(config_uuid: str, bot=BotDep):
+def delete_instance_config(config_uuid: str, bot=BotDep):
     try:
-        get_bot_config_or_raise(bot.database, config_uuid)
-    except BotConfigAdminError as exc:
+        get_instance_config_or_raise(bot.database, config_uuid)
+    except InstanceConfigAdminError as exc:
         _raise_admin_http_error(exc)
-    bot.database.bot_configs.delete(config_uuid)
+    bot.database.instance_configs.delete(config_uuid)
     return ok({"deleted": True, "uuid": config_uuid})
