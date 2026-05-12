@@ -76,10 +76,13 @@ class ConfigProviderRegistry:
         config: dict[str, Any] | None,
         *,
         path_prefix: str = "",
+        strict: bool = False,
     ) -> list[ConfigValidationIssue]:
         provider = self._require(kind, provider_id)
         payload = config or {}
         issues: list[ConfigValidationIssue] = []
+        if strict:
+            issues.extend(_validate_unknown_fields(provider.fields, payload, path_prefix))
         for field in provider.fields:
             value = _get_path(payload, field.path)
             issue_path = f"{path_prefix}.{field.path}" if path_prefix else field.path
@@ -150,6 +153,51 @@ def _validate_field(
                     code="max",
                 )
             )
+    return issues
+
+
+def _validate_unknown_fields(
+    fields: tuple[ConfigFieldDefinition, ...],
+    payload: dict[str, Any],
+    path_prefix: str,
+) -> list[ConfigValidationIssue]:
+    allowed_paths = {tuple(field.path.split(".")): field for field in fields}
+    allowed_prefixes: set[tuple[str, ...]] = set()
+    for path in allowed_paths:
+        for index in range(1, len(path)):
+            allowed_prefixes.add(path[:index])
+    opaque_paths = {
+        path
+        for path, field in allowed_paths.items()
+        if field.type in (ConfigFieldType.OBJECT, ConfigFieldType.ARRAY_OBJECT)
+        and path not in allowed_prefixes
+    }
+
+    issues: list[ConfigValidationIssue] = []
+
+    def walk(value: Any, path: tuple[str, ...]) -> None:
+        if path in opaque_paths:
+            return
+        if not isinstance(value, dict):
+            return
+
+        for key, child_value in value.items():
+            child_path = (*path, str(key))
+            if child_path not in allowed_paths and child_path not in allowed_prefixes:
+                issue_path = ".".join(child_path)
+                issues.append(
+                    ConfigValidationIssue(
+                        path=f"{path_prefix}.{issue_path}" if path_prefix else issue_path,
+                        message="unknown field",
+                        code="unknown",
+                    )
+                )
+                continue
+            if child_path in allowed_paths and child_path not in allowed_prefixes:
+                continue
+            walk(child_value, child_path)
+
+    walk(payload, ())
     return issues
 
 

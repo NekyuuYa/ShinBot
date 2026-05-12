@@ -26,6 +26,11 @@ from shinbot.agent.services.message_formatter import (
 )
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptStage
 from shinbot.agent.workflows.active_chat.runner import ActiveChatFastRunnerConfig
+from shinbot.core.config_provider import (
+    ConfigProviderKind,
+    ConfigProviderRegistry,
+    ConfigValidationIssue,
+)
 
 
 class AgentRuntimeConfigError(ValueError):
@@ -85,6 +90,11 @@ def load_agent_runtime_config(
         raise AgentRuntimeConfigError(f"Failed to read agent config {config_path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise AgentRuntimeConfigError(f"Agent config {config_path} must be a TOML table")
+    issues = validate_agent_runtime_config_mapping(payload)
+    if issues:
+        raise AgentRuntimeConfigError(
+            _format_agent_config_issues(config_path, list(issues))
+        )
     return agent_runtime_config_from_mapping(
         payload,
         data_dir=Path(data_dir),
@@ -150,6 +160,29 @@ def agent_runtime_config_from_mapping(
             active_chat.get("conversation_message_limit"),
             80,
         ),
+    )
+
+
+def validate_agent_runtime_config_mapping(
+    payload: dict[str, Any],
+    *,
+    path_prefix: str = "",
+) -> list[ConfigValidationIssue]:
+    """Validate a raw Agent runtime config mapping against the provider schema."""
+
+    from shinbot.agent.runtime.config_provider import (
+        AGENT_RUNTIME_CONFIG_PROVIDER_ID,
+        load_agent_runtime_config_provider,
+    )
+
+    registry = ConfigProviderRegistry()
+    registry.register(load_agent_runtime_config_provider())
+    return registry.validate(
+        ConfigProviderKind.AGENT,
+        AGENT_RUNTIME_CONFIG_PROVIDER_ID,
+        payload,
+        path_prefix=path_prefix,
+        strict=True,
     )
 
 
@@ -491,10 +524,20 @@ def with_source_path(config: AgentRuntimeConfig, source_path: Path | str) -> Age
     return replace(config, source_path=str(source_path))
 
 
+def _format_agent_config_issues(
+    path: Path,
+    issues: list[ConfigValidationIssue],
+) -> str:
+    lines = [f"Agent config {path} is invalid:"]
+    lines.extend(f"- {issue.path}: {issue.message} ({issue.code})" for issue in issues)
+    return "\n".join(lines)
+
+
 __all__ = [
     "AgentRuntimeConfig",
     "AgentRuntimeConfigError",
     "agent_runtime_config_from_mapping",
     "load_agent_runtime_config",
+    "validate_agent_runtime_config_mapping",
     "with_source_path",
 ]

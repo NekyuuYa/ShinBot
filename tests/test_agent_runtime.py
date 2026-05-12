@@ -10,7 +10,11 @@ import pytest
 from shinbot.agent.coordinators.review.factory import ReviewRuntimeConfig, ReviewStageRuntimeConfig
 from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
 from shinbot.agent.runtime import install_agent_runtime
-from shinbot.agent.runtime.config import agent_runtime_config_from_mapping
+from shinbot.agent.runtime.config import (
+    agent_runtime_config_from_mapping,
+    load_agent_runtime_config,
+    validate_agent_runtime_config_mapping,
+)
 from shinbot.agent.scheduler import ActiveChatState, AgentScheduler, AgentState
 from shinbot.agent.services.message_formatter import ImageMode
 from shinbot.agent.services.model_runtime import GenerateResult
@@ -210,6 +214,34 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
         "temperature": 0.2,
         "top_p": 0.8,
     }
+
+
+def test_agent_runtime_config_schema_accepts_example(tmp_path: Path) -> None:
+    source = Path("agent.example.toml")
+    config_path = tmp_path / "full-agent.toml"
+    config_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    config = load_agent_runtime_config(config_path, data_dir=tmp_path)
+
+    assert config.agent_id == "full-agent"
+    assert config.active_chat_policy_config.initial_interest_value == 15
+
+
+def test_agent_runtime_config_schema_rejects_unknown_fields() -> None:
+    issues = validate_agent_runtime_config_mapping(
+        {
+            "agent": {
+                "id": "bad-agent",
+                "review": {"unknown": True},
+                "active_chat": {"interest_delta": {"not_real": 1}},
+            }
+        }
+    )
+
+    assert [(issue.path, issue.code) for issue in issues] == [
+        ("agent.review.unknown", "unknown"),
+        ("agent.active_chat.interest_delta.not_real", "unknown"),
+    ]
 
 
 def test_agent_runtime_wires_review_runner_config(tmp_path: Path) -> None:

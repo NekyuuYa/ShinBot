@@ -1,0 +1,1095 @@
+[provider]
+kind = "agent"
+id = "shinbot.agent.runtime"
+display_name = "ShinBot Agent Runtime"
+description = "Runtime config schema for data/agents/*.toml Agent profiles."
+config_version = "1.0.0"
+
+[[fields]]
+path = "agent.id"
+type = "string"
+required = true
+description = "Stable Agent profile id."
+
+[[fields]]
+path = "agent.mode"
+type = "enum"
+default = "full"
+choices = ["simple", "full"]
+description = "Agent runtime profile mode. Main bot routing still owns whether Agent entry is enabled."
+
+[[fields]]
+path = "agent.persona_id"
+type = "string"
+default = ""
+description = "Persona id selected by this Agent profile."
+
+[[fields]]
+path = "agent.prompt_files.locale"
+type = "string"
+default = "zh-CN"
+description = "Primary locale for file-backed Agent prompts."
+
+[[fields]]
+path = "agent.prompt_files.fallback_locales"
+type = "string_list"
+default = ["en-US"]
+description = "Fallback locales for file-backed Agent prompts."
+
+[[fields]]
+path = "agent.prompt_files.sync_to_data"
+type = "boolean"
+default = true
+description = "Copy built-in prompt files to data_dir before loading them."
+
+[[fields]]
+path = "agent.prompt_files.data_root"
+type = "path"
+default = "prompts"
+description = "Prompt data root resolved relative to data_dir."
+
+[[fields]]
+path = "agent.defaults.llm.route_id"
+type = "string"
+default = "chat.default"
+description = "Default model route id for Agent LLM stages."
+
+[[fields]]
+path = "agent.defaults.llm.model_id"
+type = "string"
+default = ""
+description = "Default model id for Agent LLM stages."
+
+[[fields]]
+path = "agent.defaults.llm.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Default caller label for model runtime calls."
+
+[[fields]]
+path = "agent.defaults.llm.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Default prompt profile id for Agent prompt assembly."
+
+[[fields]]
+path = "agent.defaults.llm.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Default retry count for retryable review model failures."
+
+[[fields]]
+path = "agent.defaults.llm.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Default model retry backoff in seconds."
+
+[[fields]]
+path = "agent.defaults.llm.params"
+type = "object"
+default = {}
+advanced = true
+description = "Default provider-specific model parameters merged into Agent stages."
+
+[[fields]]
+path = "agent.defaults.message_format.image_mode"
+type = "enum"
+default = "description"
+choices = ["original", "thumbnail", "description"]
+description = "How images are represented in formatted messages."
+
+[[fields]]
+path = "agent.defaults.message_format.emoji_mode"
+type = "enum"
+default = "semantic"
+choices = ["original", "thumbnail", "semantic"]
+description = "How custom emoji images are represented in formatted messages."
+
+[[fields]]
+path = "agent.defaults.message_format.pack_mode"
+type = "enum"
+default = "pack"
+choices = ["individual", "pack"]
+description = "How multiple messages are packed for model prompts."
+
+[[fields]]
+path = "agent.defaults.message_format.timestamp_mode"
+type = "string"
+default = "sparse"
+description = "Timestamp rendering mode for formatted messages."
+
+[[fields]]
+path = "agent.defaults.message_format.inject_sender"
+type = "boolean"
+default = true
+description = "Include sender labels in formatted messages."
+
+[[fields]]
+path = "agent.defaults.message_format.inject_record_id"
+type = "boolean"
+default = false
+description = "Include message log ids in formatted messages."
+
+[[fields]]
+path = "agent.defaults.message_format.self_platform_id"
+type = "string"
+default = ""
+advanced = true
+description = "Default self platform id used by message formatting."
+
+[[fields]]
+path = "agent.defaults.message_format.metadata"
+type = "object"
+default = {}
+advanced = true
+description = "Arbitrary metadata carried with message format config."
+
+[[fields]]
+path = "agent.defaults.message_format.use_thumbnail"
+type = "boolean"
+default = true
+deprecated = true
+description = "Legacy template alias for image_mode = thumbnail."
+
+[[fields]]
+path = "agent.defaults.message_format.include_sender"
+type = "boolean"
+default = true
+deprecated = true
+description = "Legacy template alias for inject_sender."
+
+[[fields]]
+path = "agent.defaults.message_format.include_time"
+type = "boolean"
+default = true
+deprecated = true
+description = "Legacy template alias for timestamp_mode."
+
+[[fields]]
+path = "agent.defaults.message_format.include_message_id"
+type = "boolean"
+default = true
+deprecated = true
+description = "Legacy template alias for inject_record_id."
+
+[[fields]]
+path = "agent.review.enabled"
+type = "boolean"
+default = true
+description = "Reserved top-level review toggle."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.review.scan_batch_size"
+type = "integer"
+default = 500
+min = 1
+description = "Maximum unread messages processed by one review scan batch."
+
+[[fields]]
+path = "agent.review.overflow_threshold_messages"
+type = "integer"
+default = 3000
+min = 1
+description = "Unread threshold before overflow compression is considered."
+
+[[fields]]
+path = "agent.review.overflow_compression_batch_size"
+type = "integer"
+default = 500
+min = 1
+description = "Unread batch size for overflow compression."
+
+[[fields]]
+path = "agent.review.reply_context_before_messages"
+type = "integer"
+default = 30
+min = 0
+description = "Messages included before a reply candidate."
+
+[[fields]]
+path = "agent.review.reply_context_after_messages"
+type = "integer"
+default = 10
+min = 0
+description = "Messages included after a reply candidate."
+
+[[fields]]
+path = "agent.review.tail_history_before_seconds"
+type = "float"
+default = 180.0
+min = 0.0
+description = "Seconds of recent tail history considered by review."
+
+[[fields]]
+path = "agent.review.tail_history_limit"
+type = "integer"
+default = 500
+min = 1
+description = "Maximum recent tail messages considered by review."
+
+[[fields]]
+path = "agent.review.active_chat_summary_max_age_seconds"
+type = "float"
+default = 1800.0
+min = 0.0
+description = "Maximum age of active chat summaries used by review."
+
+[[fields]]
+path = "agent.review.block_digest_concurrency"
+type = "integer"
+default = 4
+min = 1
+description = "Concurrent block digest runner count."
+
+[[fields]]
+path = "agent.review.bootstrap_timeout_seconds"
+type = "float"
+default = 20.0
+min = 0.0
+description = "Timeout for active chat bootstrap review."
+
+[[fields]]
+path = "agent.review.mention_wake_count"
+type = "integer"
+default = 1
+min = 1
+description = "Mention count needed to wake active reply."
+
+[[fields]]
+path = "agent.review.mention_wake_window_seconds"
+type = "float"
+default = 60.0
+min = 0.0
+description = "Mention wake rolling window in seconds."
+
+[[fields]]
+path = "agent.review.nearby_candidate_merge_gap"
+type = "integer"
+default = 10
+min = 0
+description = "Reserved review candidate merge gap."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.review.block_digest_retry_on_429"
+type = "boolean"
+default = true
+description = "Reserved retry toggle for block digest rate limits."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.review.overflow_compression.enabled"
+type = "boolean"
+default = true
+description = "Enable overflow compression stage."
+
+[[fields]]
+path = "agent.review.overflow_compression.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific caller label."
+
+[[fields]]
+path = "agent.review.overflow_compression.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific prompt profile id."
+
+[[fields]]
+path = "agent.review.overflow_compression.params"
+type = "object"
+default = {}
+advanced = true
+description = "Stage-specific model params."
+
+[[fields]]
+path = "agent.review.overflow_compression.llm.route_id"
+type = "string"
+default = ""
+description = "Model route id for overflow compression."
+
+[[fields]]
+path = "agent.review.overflow_compression.llm.model_id"
+type = "string"
+default = ""
+description = "Model id for overflow compression."
+
+[[fields]]
+path = "agent.review.overflow_compression.llm.caller"
+type = "string"
+default = ""
+advanced = true
+description = "LLM caller override for overflow compression."
+
+[[fields]]
+path = "agent.review.overflow_compression.llm.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Prompt profile override for overflow compression."
+
+[[fields]]
+path = "agent.review.overflow_compression.llm.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Model retry count for overflow compression."
+
+[[fields]]
+path = "agent.review.overflow_compression.llm.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Model retry backoff for overflow compression."
+
+[[fields]]
+path = "agent.review.overflow_compression.llm.params"
+type = "object"
+default = {}
+advanced = true
+description = "LLM params for overflow compression."
+
+[[fields]]
+path = "agent.review.overflow_compression.prompts"
+type = "object"
+default = {}
+description = "Prompt component ids for overflow compression."
+
+[[fields]]
+path = "agent.review.scan.enabled"
+type = "boolean"
+default = true
+description = "Enable review scan stage."
+
+[[fields]]
+path = "agent.review.scan.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific caller label."
+
+[[fields]]
+path = "agent.review.scan.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific prompt profile id."
+
+[[fields]]
+path = "agent.review.scan.params"
+type = "object"
+default = {}
+advanced = true
+description = "Stage-specific model params."
+
+[[fields]]
+path = "agent.review.scan.llm.route_id"
+type = "string"
+default = ""
+description = "Model route id for review scan."
+
+[[fields]]
+path = "agent.review.scan.llm.model_id"
+type = "string"
+default = ""
+description = "Model id for review scan."
+
+[[fields]]
+path = "agent.review.scan.llm.caller"
+type = "string"
+default = ""
+advanced = true
+description = "LLM caller override for review scan."
+
+[[fields]]
+path = "agent.review.scan.llm.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Prompt profile override for review scan."
+
+[[fields]]
+path = "agent.review.scan.llm.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Model retry count for review scan."
+
+[[fields]]
+path = "agent.review.scan.llm.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Model retry backoff for review scan."
+
+[[fields]]
+path = "agent.review.scan.llm.params"
+type = "object"
+default = {}
+advanced = true
+description = "LLM params for review scan."
+
+[[fields]]
+path = "agent.review.scan.prompts"
+type = "object"
+default = {}
+description = "Prompt component ids for review scan."
+
+[[fields]]
+path = "agent.review.block_digest.enabled"
+type = "boolean"
+default = true
+description = "Enable review block digest stage."
+
+[[fields]]
+path = "agent.review.block_digest.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific caller label."
+
+[[fields]]
+path = "agent.review.block_digest.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific prompt profile id."
+
+[[fields]]
+path = "agent.review.block_digest.params"
+type = "object"
+default = {}
+advanced = true
+description = "Stage-specific model params."
+
+[[fields]]
+path = "agent.review.block_digest.llm.route_id"
+type = "string"
+default = ""
+description = "Model route id for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.llm.model_id"
+type = "string"
+default = ""
+description = "Model id for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.llm.caller"
+type = "string"
+default = ""
+advanced = true
+description = "LLM caller override for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.llm.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Prompt profile override for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.llm.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Model retry count for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.llm.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Model retry backoff for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.llm.params"
+type = "object"
+default = {}
+advanced = true
+description = "LLM params for block digest."
+
+[[fields]]
+path = "agent.review.block_digest.prompts"
+type = "object"
+default = {}
+description = "Prompt component ids for block digest."
+
+[[fields]]
+path = "agent.review.reply_decision.enabled"
+type = "boolean"
+default = true
+description = "Enable reply decision stage."
+
+[[fields]]
+path = "agent.review.reply_decision.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific caller label."
+
+[[fields]]
+path = "agent.review.reply_decision.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific prompt profile id."
+
+[[fields]]
+path = "agent.review.reply_decision.params"
+type = "object"
+default = {}
+advanced = true
+description = "Stage-specific model params."
+
+[[fields]]
+path = "agent.review.reply_decision.llm.route_id"
+type = "string"
+default = ""
+description = "Model route id for reply decision."
+
+[[fields]]
+path = "agent.review.reply_decision.llm.model_id"
+type = "string"
+default = ""
+description = "Model id for reply decision."
+
+[[fields]]
+path = "agent.review.reply_decision.llm.caller"
+type = "string"
+default = ""
+advanced = true
+description = "LLM caller override for reply decision."
+
+[[fields]]
+path = "agent.review.reply_decision.llm.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Prompt profile override for reply decision."
+
+[[fields]]
+path = "agent.review.reply_decision.llm.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Model retry count for reply decision."
+
+[[fields]]
+path = "agent.review.reply_decision.llm.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Model retry backoff for reply decision."
+
+[[fields]]
+path = "agent.review.reply_decision.llm.params"
+type = "object"
+default = {}
+advanced = true
+description = "LLM params for reply decision."
+
+[[fields]]
+path = "agent.review.reply_decision.prompts"
+type = "object"
+default = {}
+description = "Prompt component ids for reply decision."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.enabled"
+type = "boolean"
+default = true
+description = "Enable active chat bootstrap stage."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.timeout_seconds"
+type = "float"
+default = 20.0
+min = 0.0
+description = "Reserved stage-local active chat bootstrap timeout."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific caller label."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific prompt profile id."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.params"
+type = "object"
+default = {}
+advanced = true
+description = "Stage-specific model params."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm.route_id"
+type = "string"
+default = ""
+description = "Model route id for active chat bootstrap."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm.model_id"
+type = "string"
+default = ""
+description = "Model id for active chat bootstrap."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm.caller"
+type = "string"
+default = ""
+advanced = true
+description = "LLM caller override for active chat bootstrap."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Prompt profile override for active chat bootstrap."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Model retry count for active chat bootstrap."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Model retry backoff for active chat bootstrap."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm.params"
+type = "object"
+default = {}
+advanced = true
+description = "LLM params for active chat bootstrap."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.prompts"
+type = "object"
+default = {}
+description = "Prompt component ids for active chat bootstrap."
+
+[[fields]]
+path = "agent.active_chat.enabled"
+type = "boolean"
+default = true
+description = "Reserved top-level active chat toggle."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.active_chat.initial_interest"
+type = "float"
+default = 15.0
+min = 0.0
+description = "Initial active chat interest value."
+
+[[fields]]
+path = "agent.active_chat.half_life_seconds"
+type = "float"
+default = 20.0
+min = 0.0
+description = "Active chat interest half-life in seconds."
+
+[[fields]]
+path = "agent.active_chat.tick_interval_seconds"
+type = "float"
+default = 5.0
+min = 0.1
+description = "Active chat interest timer tick interval."
+
+[[fields]]
+path = "agent.active_chat.idle_interest_threshold"
+type = "float"
+default = 5.0
+min = 0.0
+description = "Interest value at which active chat returns to idle."
+
+[[fields]]
+path = "agent.active_chat.max_interest"
+type = "float"
+default = 100.0
+min = 1.0
+description = "Maximum active chat interest value."
+
+[[fields]]
+path = "agent.active_chat.post_round_attention_multiplier"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Attention multiplier applied after one active chat round."
+
+[[fields]]
+path = "agent.active_chat.conversation_message_limit"
+type = "integer"
+default = 80
+min = 0
+description = "Maximum conversation trace messages retained for active chat."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.normal_message"
+type = "float"
+default = 1.0
+description = "Interest delta for normal messages during active chat."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.mention_self"
+type = "float"
+default = 8.0
+description = "Interest delta for mentions to this bot."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.reply_to_self"
+type = "float"
+default = 5.0
+description = "Interest delta for replies to this bot."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.poke"
+type = "float"
+default = 0.0
+description = "Interest delta for poke events."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.mention_other"
+type = "float"
+default = 0.0
+description = "Interest delta for mentions to other users."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.send_reply"
+type = "float"
+default = 10.0
+description = "Interest delta after an engaged active chat reply."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.send_reply_low"
+type = "float"
+default = 5.0
+description = "Interest delta after a light active chat reply."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.no_reply"
+type = "float"
+default = -5.0
+description = "Interest delta after a normal no-reply decision."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.no_reply_strong"
+type = "float"
+default = -10.0
+description = "Interest delta after a strong no-reply decision."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.send_poke"
+type = "float"
+default = 3.0
+description = "Interest delta after a poke action."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.request_think_mode"
+type = "float"
+default = 6.0
+description = "Interest delta after an active chat handoff request."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.retry_failed"
+type = "float"
+default = -3.0
+description = "Interest delta after an active chat retry failure."
+
+[[fields]]
+path = "agent.active_chat.interest_delta.exit_active"
+type = "float"
+default = -100.0
+description = "Reserved template value; exit_active forces active chat exit."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.active_chat.attention.base_contribution"
+type = "float"
+default = 1.0
+description = "Base attention contribution for active chat messages."
+
+[[fields]]
+path = "agent.active_chat.attention.mention_self_contribution"
+type = "float"
+default = 4.0
+description = "Attention contribution for mentions to this bot."
+
+[[fields]]
+path = "agent.active_chat.attention.mention_other_contribution"
+type = "float"
+default = 0.5
+description = "Attention contribution for mentions to other users."
+
+[[fields]]
+path = "agent.active_chat.attention.reply_to_self_contribution"
+type = "float"
+default = 3.0
+description = "Attention contribution for replies to this bot."
+
+[[fields]]
+path = "agent.active_chat.attention.poke_self_contribution"
+type = "float"
+default = 0.8
+description = "Attention contribution for pokes to this bot."
+
+[[fields]]
+path = "agent.active_chat.attention.poke_other_contribution"
+type = "float"
+default = 0.2
+description = "Attention contribution for pokes to other users."
+
+[[fields]]
+path = "agent.active_chat.attention.bot_self_contribution"
+type = "float"
+default = 0.0
+description = "Attention contribution for self messages."
+
+[[fields]]
+path = "agent.active_chat.attention.contribution_decay_k"
+type = "float"
+default = 0.003
+min = 0.0
+description = "Attention contribution decay factor."
+
+[[fields]]
+path = "agent.active_chat.attention.threshold"
+type = "float"
+default = 5.0
+min = 0.0
+description = "Base accumulated attention threshold."
+
+[[fields]]
+path = "agent.active_chat.attention.reference_interest"
+type = "float"
+default = 30.0
+min = 0.0
+description = "Interest reference point used for dynamic attention thresholding."
+
+[[fields]]
+path = "agent.active_chat.attention.threshold_min"
+type = "float"
+default = 2.0
+min = 0.0
+description = "Minimum dynamic attention threshold."
+
+[[fields]]
+path = "agent.active_chat.attention.threshold_max"
+type = "float"
+default = 15.0
+min = 0.0
+description = "Maximum dynamic attention threshold."
+
+[[fields]]
+path = "agent.active_chat.attention.semantic_wait_ms"
+type = "float"
+default = 800.0
+min = 0.0
+description = "Semantic wait before running an active chat fast round."
+
+[[fields]]
+path = "agent.active_chat.attention.post_round_accumulated_multiplier"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Post-round accumulated attention multiplier."
+
+[[fields]]
+path = "agent.active_chat.attention.post_round_multiplier"
+type = "float"
+default = 0.25
+deprecated = true
+description = "Legacy alias for post_round_accumulated_multiplier."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.enabled"
+type = "boolean"
+default = true
+description = "Reserved active chat fast mode toggle."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.active_chat.fast_mode.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Caller label for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Prompt profile id for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.route_id"
+type = "string"
+default = ""
+advanced = true
+description = "Direct route id override for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.model_id"
+type = "string"
+default = ""
+advanced = true
+description = "Direct model id override for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.params"
+type = "object"
+default = {}
+advanced = true
+description = "Model params for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.llm.route_id"
+type = "string"
+default = ""
+description = "Model route id for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.llm.model_id"
+type = "string"
+default = ""
+description = "Model id for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.llm.caller"
+type = "string"
+default = ""
+advanced = true
+description = "LLM caller override for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.llm.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Prompt profile override for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.llm.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Reserved retry count for active chat fast mode."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.active_chat.fast_mode.llm.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Reserved retry backoff for active chat fast mode."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.active_chat.fast_mode.llm.params"
+type = "object"
+default = {}
+advanced = true
+description = "LLM params for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.prompts"
+type = "object"
+default = {}
+description = "Prompt component ids for active chat fast mode."
+
+[[fields]]
+path = "agent.context.max_context_tokens"
+type = "integer"
+default = 32000
+min = 1
+description = "Reserved context token budget."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.context.evict_ratio"
+type = "float"
+default = 0.6
+min = 0.0
+max = 1.0
+description = "Reserved context eviction ratio."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.context.use_image_thumbnails"
+type = "boolean"
+default = true
+description = "Reserved context image thumbnail toggle."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.summaries.enabled"
+type = "boolean"
+default = true
+description = "Reserved summary service toggle."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.summaries.active_chat_summary_max_age_seconds"
+type = "float"
+default = 1800.0
+min = 0.0
+description = "Maximum age of active chat summaries used by review."
+
+[[fields]]
+path = "agent.summaries.review_block_digest_max_age_seconds"
+type = "float"
+default = 86400.0
+min = 0.0
+description = "Reserved block digest max age."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.media.inspection_route_id"
+type = "string"
+default = "chat.vision"
+description = "Reserved media inspection route id."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.media.sticker_summary_route_id"
+type = "string"
+default = "chat.vision"
+description = "Reserved sticker summary route id."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.media.reanalysis_route_id"
+type = "string"
+default = "chat.vision"
+description = "Reserved media reanalysis route id."
+runtime_status = "reserved"
+
+[[fields]]
+path = "agent.media.prompts"
+type = "object"
+default = {}
+description = "Reserved media prompt component ids."
+runtime_status = "reserved"

@@ -85,6 +85,7 @@ class ShinBot:
         self.permission_engine = PermissionEngine()
         self.adapter_manager = AdapterManager()
         self.config_provider_registry = ConfigProviderRegistry()
+        self._register_builtin_config_providers()
         self.bot_service_configs: tuple[BotServiceConfig, ...] = ()
         self.bot_runtime_router: BotRuntimeRouter | None = None
         self.model_runtime_system: Any | None = None
@@ -129,6 +130,11 @@ class ShinBot:
             audit_logger=self.audit_logger,
             database=self.database,
         )
+
+    def _register_builtin_config_providers(self) -> None:
+        from shinbot.agent.runtime.config_provider import register_builtin_agent_config_provider
+
+        register_builtin_agent_config_provider(self.config_provider_registry)
 
     def configure_bot_service_configs(self, configs: tuple[BotServiceConfig, ...]) -> None:
         """Install parsed bot service-unit configs into ingress routing."""

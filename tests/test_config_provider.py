@@ -153,6 +153,29 @@ required = true
     assert issues[0].code == "required"
 
 
+def test_provider_registry_strict_mode_reports_unknown_fields(tmp_path: Path) -> None:
+    provider = load_provider_schema(write_provider_files(tmp_path))
+    registry = ConfigProviderRegistry()
+    registry.register(provider)
+
+    issues = registry.validate(
+        "adapter",
+        "onebot_v11",
+        {
+            "mode": "reverse",
+            "reverse": {"port": 8082, "extra": True},
+            "unknown": "value",
+        },
+        path_prefix="adapter_instances[0].config",
+        strict=True,
+    )
+
+    assert [(issue.path, issue.code) for issue in issues] == [
+        ("adapter_instances[0].config.reverse.extra", "unknown"),
+        ("adapter_instances[0].config.unknown", "unknown"),
+    ]
+
+
 def test_provider_registry_rejects_duplicate_registration(tmp_path: Path) -> None:
     provider = load_provider_schema(write_provider_files(tmp_path))
     registry = ConfigProviderRegistry()

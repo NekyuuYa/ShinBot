@@ -67,6 +67,31 @@ def test_config_provider_catalog_and_details_api(tmp_path: Path):
     assert defaults.json()["data"]["app_secret"] == ""
 
 
+def test_builtin_agent_config_provider_is_registered(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+
+    with TestClient(app) as client:
+        catalog = client.get(
+            "/api/v1/config-providers?kind=agent",
+            headers=_auth_headers(app),
+        )
+        detail = client.get(
+            "/api/v1/config-providers/agent/shinbot.agent.runtime",
+            headers=_auth_headers(app),
+        )
+
+    assert catalog.status_code == 200
+    assert [item["id"] for item in catalog.json()["data"]] == ["shinbot.agent.runtime"]
+    assert detail.status_code == 200
+    payload = detail.json()["data"]
+    assert payload["kind"] == "agent"
+    assert "agent.active_chat.initial_interest" in {
+        field["path"] for field in payload["fields"]
+    }
+    assert payload["example_toml"].startswith("# ShinBot full agent configuration template")
+
+
 def test_config_provider_validate_api_reports_field_issues(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     bot.config_provider_registry.register(
