@@ -68,7 +68,6 @@ def test_runner_template_config_defaults() -> None:
     assert cfg.route_id is None
     assert cfg.model_id is None
     assert cfg.profile_id == ""
-    assert cfg.task_prompt == ""
     assert cfg.response_format is None
     assert cfg.component_ids_by_stage == {}
     assert cfg.params == {}
@@ -77,12 +76,10 @@ def test_runner_template_config_defaults() -> None:
 def test_runner_template_config_custom() -> None:
     cfg = RunnerTemplateConfig(
         caller="test.caller",
-        task_prompt="do something",
         response_format={"type": "object"},
         params={"temperature": 0.5},
     )
     assert cfg.caller == "test.caller"
-    assert cfg.task_prompt == "do something"
     assert cfg.response_format == {"type": "object"}
     assert cfg.params == {"temperature": 0.5}
 
@@ -98,7 +95,6 @@ async def test_structured_output_runner_returns_payload() -> None:
         text='{"candidate_message_ids": [1, 2], "reason": "test"}'
     )
     config = RunnerTemplateConfig(
-        task_prompt="scan",
         response_format={"type": "object"},
     )
     runner = StructuredOutputRunner(
@@ -115,7 +111,7 @@ async def test_structured_output_runner_returns_none_on_build_failure() -> None:
     registry = _mock_prompt_registry()
     registry.build_messages.side_effect = RuntimeError("build failed")
     model_runtime = AsyncMock()
-    config = RunnerTemplateConfig(task_prompt="scan")
+    config = RunnerTemplateConfig()
     runner = StructuredOutputRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -128,9 +124,8 @@ async def test_structured_output_runner_returns_none_on_build_failure() -> None:
 async def test_structured_output_runner_returns_none_on_llm_failure() -> None:
     registry = _mock_prompt_registry()
     model_runtime = AsyncMock()
-
+    config = RunnerTemplateConfig()
     model_runtime.generate.side_effect = ModelCallError("boom")
-    config = RunnerTemplateConfig(task_prompt="scan")
     runner = StructuredOutputRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -147,7 +142,6 @@ async def test_structured_output_runner_retries_rate_limit_once() -> None:
         _generate_result(text='{"ok": true}'),
     ]
     config = RunnerTemplateConfig(
-        task_prompt="scan",
         max_model_retries=1,
         retry_backoff_seconds=0,
     )
@@ -165,8 +159,8 @@ async def test_structured_output_runner_retries_rate_limit_once() -> None:
 async def test_structured_output_runner_returns_none_on_invalid_json() -> None:
     registry = _mock_prompt_registry()
     model_runtime = AsyncMock()
+    config = RunnerTemplateConfig()
     model_runtime.generate.return_value = _generate_result(text="not json")
-    config = RunnerTemplateConfig(task_prompt="scan")
     runner = StructuredOutputRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -180,7 +174,7 @@ async def test_structured_output_runner_passes_response_format() -> None:
     model_runtime = AsyncMock()
     model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
     fmt = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
-    config = RunnerTemplateConfig(task_prompt="test", response_format=fmt)
+    config = RunnerTemplateConfig(response_format=fmt)
     runner = StructuredOutputRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -194,7 +188,7 @@ async def test_structured_output_runner_passes_params() -> None:
     registry = _mock_prompt_registry()
     model_runtime = AsyncMock()
     model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
-    config = RunnerTemplateConfig(task_prompt="test", params={"temperature": 0.3})
+    config = RunnerTemplateConfig(params={"temperature": 0.3})
     runner = StructuredOutputRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -220,7 +214,7 @@ async def test_tool_call_plan_runner_returns_tool_calls() -> None:
     tool_manager.build_request_tools.return_value = [
         {"function": {"name": "send_reply", "parameters": {}}},
     ]
-    config = RunnerTemplateConfig(task_prompt="decide reply")
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
@@ -241,7 +235,7 @@ async def test_tool_call_plan_runner_toolless_returns_reason() -> None:
     model_runtime.generate.return_value = _generate_result(text="no tools here")
     tool_manager = MagicMock()
     tool_manager.build_request_tools.return_value = []
-    config = RunnerTemplateConfig(task_prompt="decide")
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
@@ -271,7 +265,7 @@ async def test_tool_call_plan_runner_repair_succeeds() -> None:
     tool_manager.build_request_tools.return_value = [
         {"function": {"name": "no_reply", "parameters": {}}},
     ]
-    config = RunnerTemplateConfig(task_prompt="decide")
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
@@ -294,7 +288,7 @@ async def test_tool_call_plan_runner_no_repair_without_prompt() -> None:
     tool_manager.build_request_tools.return_value = [
         {"function": {"name": "no_reply", "parameters": {}}},
     ]
-    config = RunnerTemplateConfig(task_prompt="decide")
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
@@ -319,7 +313,6 @@ async def test_tool_call_plan_runner_uses_response_format_without_tools() -> Non
     tool_manager.build_request_tools.return_value = []
     response_format = {"type": "json_schema", "json_schema": {"name": "reply"}}
     config = RunnerTemplateConfig(
-        task_prompt="decide",
         response_format=response_format,
     )
     runner = ToolCallPlanRunner(
@@ -346,7 +339,7 @@ async def test_tool_call_plan_runner_skips_repair_when_disabled() -> None:
     tool_manager.build_request_tools.return_value = [
         {"function": {"name": "no_reply", "parameters": {}}},
     ]
-    config = RunnerTemplateConfig(task_prompt="decide")
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
@@ -376,7 +369,7 @@ async def test_tool_call_plan_runner_build_tools_calls_transform() -> None:
         func = tool.get("function", {})
         return {**tool, "function": {**func, "description": func.get("description", "") + " extra"}}
 
-    config = RunnerTemplateConfig(task_prompt="decide")
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
@@ -397,10 +390,11 @@ async def test_tool_call_plan_runner_passes_tool_tags() -> None:
     model_runtime.generate.return_value = _generate_result(text="bare text")
     tool_manager = MagicMock()
     tool_manager.build_request_tools.return_value = []
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
-        config=RunnerTemplateConfig(task_prompt="decide"),
+        config=config,
         tool_manager=tool_manager,
         tool_names=["send_reply"],
         tool_tags={"chat_action"},
@@ -419,7 +413,7 @@ async def test_tool_call_plan_runner_llm_failure() -> None:
     model_runtime.generate.side_effect = ModelCallError("boom")
     tool_manager = MagicMock()
     tool_manager.build_request_tools.return_value = []
-    config = RunnerTemplateConfig(task_prompt="decide")
+    config = RunnerTemplateConfig()
     runner = ToolCallPlanRunner(
         model_runtime,
         prompt_registry=registry,
@@ -440,7 +434,7 @@ async def test_one_shot_text_runner_returns_text() -> None:
     registry = _mock_prompt_registry()
     model_runtime = AsyncMock()
     model_runtime.generate.return_value = _generate_result(text="Hello world")
-    config = RunnerTemplateConfig(task_prompt="say hi")
+    config = RunnerTemplateConfig()
     runner = OneShotTextRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -453,7 +447,7 @@ async def test_one_shot_text_runner_returns_none_on_empty() -> None:
     registry = _mock_prompt_registry()
     model_runtime = AsyncMock()
     model_runtime.generate.return_value = _generate_result(text="   ")
-    config = RunnerTemplateConfig(task_prompt="say hi")
+    config = RunnerTemplateConfig()
     runner = OneShotTextRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -467,7 +461,7 @@ async def test_one_shot_text_runner_returns_none_on_failure() -> None:
     model_runtime = AsyncMock()
 
     model_runtime.generate.side_effect = ModelCallError("boom")
-    config = RunnerTemplateConfig(task_prompt="say hi")
+    config = RunnerTemplateConfig()
     runner = OneShotTextRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -480,7 +474,7 @@ async def test_one_shot_text_runner_passes_no_response_format() -> None:
     registry = _mock_prompt_registry()
     model_runtime = AsyncMock()
     model_runtime.generate.return_value = _generate_result(text="ok")
-    config = RunnerTemplateConfig(task_prompt="test")
+    config = RunnerTemplateConfig()
     runner = OneShotTextRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -530,32 +524,11 @@ def test_parse_tool_call_payload_handles_invalid_arguments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_structured_output_runner_injects_system_prompt() -> None:
-    registry = _mock_prompt_registry()
-    model_runtime = AsyncMock()
-    model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
-    config = RunnerTemplateConfig(
-        task_prompt="test",
-        system_prompt="Custom system prompt",
-    )
-    runner = StructuredOutputRunner(
-        model_runtime, prompt_registry=registry, config=config,
-    )
-    await runner.run(_stage_input(purpose="my_stage"))
-    build_request = registry.build_messages.call_args[0][0]
-    injections = build_request.injections
-    system_injections = [i for i in injections if i.stage == PromptStage.SYSTEM_BASE]
-    assert len(system_injections) == 1
-    assert system_injections[0].text == "Custom system prompt"
-    assert system_injections[0].component_id == "review.my_stage.system"
-
-
-@pytest.mark.asyncio
 async def test_structured_output_runner_includes_instruction_content() -> None:
     registry = _mock_prompt_registry()
     model_runtime = AsyncMock()
     model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
-    config = RunnerTemplateConfig(task_prompt="Do the thing")
+    config = RunnerTemplateConfig()
     runner = StructuredOutputRunner(
         model_runtime, prompt_registry=registry, config=config,
     )
@@ -572,7 +545,7 @@ async def test_structured_output_runner_includes_instruction_content() -> None:
     ]
     assert len(instructions) == 1
     content_blocks = instructions[0].content_blocks
-    assert any("Do the thing" in b.get("text", "") for b in content_blocks)
+    assert any("test_stage" in b.get("text", "") for b in content_blocks)
     assert any("Source messages JSON" in b.get("text", "") for b in content_blocks)
 
 
@@ -583,7 +556,7 @@ async def test_structured_output_runner_uses_message_formatter() -> None:
     model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
     formatter = MagicMock()
     formatter.format_text.return_value = "Alice: hello"
-    config = RunnerTemplateConfig(task_prompt="Do the thing")
+    config = RunnerTemplateConfig()
     runner = StructuredOutputRunner(
         model_runtime,
         prompt_registry=registry,

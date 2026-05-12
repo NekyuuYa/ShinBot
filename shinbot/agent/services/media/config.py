@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from shinbot.agent.services.prompt_engine.files import load_prompt_component
 
 BUILTIN_MEDIA_INSPECTION_AGENT_REF = "builtin.media_inspection.agent"
 BUILTIN_MEDIA_INSPECTION_LLM_REF = "builtin.media_inspection.default"
@@ -11,27 +14,18 @@ BUILTIN_MEDIA_INSPECTION_PROMPT_ID = "builtin.prompt.media_inspection"
 BUILTIN_STICKER_SUMMARY_AGENT_REF = "builtin.media_inspection.sticker_agent"
 BUILTIN_STICKER_SUMMARY_LLM_REF = "builtin.media_inspection.sticker_default"
 BUILTIN_STICKER_SUMMARY_PROMPT_ID = "builtin.prompt.sticker_summary"
-BUILTIN_MEDIA_INSPECTION_PROMPT = """
-You are ShinBot's media inspection agent.
+BUILTIN_MEDIA_REANALYSIS_PROMPT_ID = "builtin.prompt.media_reanalysis"
+_PROMPT_LOCALE = "zh-CN"
+_PROMPT_ROOT = Path(__file__).resolve().parent / "prompts" / _PROMPT_LOCALE
 
-Determine whether the supplied media should be treated as:
-- generic_image
-- meme_image
-- emoji_native
 
-When the media is a meme or emoji-like image, produce a digest no longer than 50 Chinese characters.
-Prefer concise, dialogue-oriented descriptions that preserve the main attitude, visible text, and key subject.
-Return structured results only.
-""".strip()
+def _load_builtin_prompt_text(prompt_id: str) -> str:
+    return load_prompt_component(_PROMPT_ROOT / f"{prompt_id}.md").content
 
-BUILTIN_STICKER_SUMMARY_PROMPT = """
-You are ShinBot's sticker summary agent.
 
-Treat the supplied image as a user-custom sticker or emoji-like reaction.
-Focus on the emotional expression, attitude, pose, visible text, and likely chat intent.
-Prefer concise Chinese descriptions that sound natural in conversation.
-Return structured results only.
-""".strip()
+BUILTIN_MEDIA_INSPECTION_PROMPT = _load_builtin_prompt_text(BUILTIN_MEDIA_INSPECTION_PROMPT_ID)
+BUILTIN_STICKER_SUMMARY_PROMPT = _load_builtin_prompt_text(BUILTIN_STICKER_SUMMARY_PROMPT_ID)
+BUILTIN_MEDIA_REANALYSIS_PROMPT = _load_builtin_prompt_text(BUILTIN_MEDIA_REANALYSIS_PROMPT_ID)
 
 
 @dataclass(slots=True)

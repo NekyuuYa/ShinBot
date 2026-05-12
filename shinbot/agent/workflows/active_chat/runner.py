@@ -43,17 +43,6 @@ from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
 
 logger = logging.getLogger(__name__)
 
-_TOOLLESS_REPAIR_PROMPT = """
-上一轮 active_chat fast-mode 没有调用工具，但该阶段不会把裸文本发送给用户。
-请重新判断，并必须调用工具：
-- 需要回复时，按发送顺序调用一个或多个 send_reply。
-- 只想轻量互动时，可以单独调用 send_poke。
-- 不需要回应时调用 no_reply，可用 intensity=normal 或 strong。
-- 想结束 active chat 时调用 exit_active，并必须写明 reason。
-不要输出裸文本作为最终回复。
-""".strip()
-
-
 class ActiveChatMessageStore(Protocol):
     """Read message logs needed by active chat context building."""
 
@@ -274,18 +263,6 @@ class ActiveChatFastRunner:
         component_ids_by_stage: dict[PromptStage, list[str]],
     ) -> list[PromptInjection]:
         injections: list[PromptInjection] = []
-        if not component_ids_by_stage.get(PromptStage.SYSTEM_BASE):
-            injections.append(
-                PromptInjection(
-                    stage=PromptStage.SYSTEM_BASE,
-                    component_id="active_chat.fast_mode.system.fallback",
-                    text=(
-                        "You are ShinBot's internal active chat fast-mode stage. "
-                        "Use tools to decide the immediate action."
-                    ),
-                    priority=10,
-                )
-            )
         injections.append(
             PromptInjection(
                 stage=PromptStage.INSTRUCTIONS,
@@ -311,6 +288,10 @@ class ActiveChatFastRunner:
                 )
             )
         if batch.conversation_summary:
+            summary_component = self._prompt_registry.get_component(
+                "active_chat.fast_mode.conversation_summary"
+            )
+            summary_prefix = summary_component.content if summary_component else "Active chat compacted conversation trace summary:"
             injections.append(
                 PromptInjection(
                     stage=PromptStage.CONTEXT,
@@ -321,10 +302,7 @@ class ActiveChatFastRunner:
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": (
-                                        "Active chat compacted conversation trace summary:\n"
-                                        + batch.conversation_summary
-                                    ),
+                                    "text": summary_prefix + "\n" + batch.conversation_summary,
                                 }
                             ],
                         }
@@ -359,16 +337,16 @@ class ActiveChatFastRunner:
             {
                 "type": "text",
                 "text": (
-                    "Active chat fast-mode batch. Decide one immediate action via tools.\n"
-                    f"Session id: {batch.session_id}\n"
-                    f"Message log ids: {json.dumps(batch.message_log_ids, ensure_ascii=False)}\n"
-                    f"Current interest: {batch.active_chat_state.interest_value:.2f}"
+                    "主动聊天快速模式批次。通过工具决定一个即时动作。\n"
+                    f"会话 ID: {batch.session_id}\n"
+                    f"消息日志 ID 列表: {json.dumps(batch.message_log_ids, ensure_ascii=False)}\n"
+                    f"当前兴趣值: {batch.active_chat_state.interest_value:.2f}"
                 ),
             }
         ]
         if batch.review_result_summary is not None:
             content.extend(
-                _render_review_handoff(batch.review_result_summary)
+                self._render_review_handoff(batch.review_result_summary)
             )
         instruction_content = list(getattr(context, "instruction_content", []) or [])
         if instruction_content:
@@ -376,16 +354,72 @@ class ActiveChatFastRunner:
         else:
             formatted_text = self._format_source_messages(source_messages)
             if formatted_text:
-                content.append({"type": "text", "text": formatted_text})
+                content.append({"type": "text", "text": "原始消息文本：\n" + formatted_text})
                 return content
             content.append(
                 {
                     "type": "text",
-                    "text": "Source messages JSON:\n"
+                    "text": "原始消息 JSON:\n"
                     + json.dumps(source_messages, ensure_ascii=False),
                 }
             )
         return content
+
+    def _render_review_handoff(self, review_result_summary: Any) -> list[dict[str, Any]]:
+        """Render review handoff context as structured prompt sections."""
+        if not isinstance(review_result_summary, ReviewHandoffContext):
+            return [
+                {
+                    "type": "text",
+                    "text": "审查移交摘要 JSON:\n"
+                    + json.dumps(_jsonable(review_result_summary), ensure_ascii=False),
+                }
+            ]
+
+        sections: list[dict[str, Any]] = []
+        ctx = review_result_summary
+        if ctx.overflow_summaries:
+            prefix_comp = self._prompt_registry.get_component("active_chat.handoff.overflow")
+            prefix = prefix_comp.content if prefix_comp else "之前的溢出消息摘要（较旧）："
+            sections.append(
+                {
+                    "type": "text",
+                    "text": f"{prefix}\n"
+                    + "\n---\n".join(
+                        _render_summary_handoff_entry(entry)
+                        for entry in ctx.overflow_summaries
+                    ),
+                }
+            )
+        if ctx.block_digests:
+            prefix_comp = self._prompt_registry.get_component("active_chat.handoff.digest")
+            prefix = prefix_comp.content if prefix_comp else "之前的消息块局部摘要："
+            digest_text = "\n".join(
+                _render_summary_handoff_entry(entry) for entry in ctx.block_digests
+            )
+            sections.append(
+                {"type": "text", "text": f"{prefix}\n" + digest_text}
+            )
+        if ctx.recent_active_chat_summary:
+            prefix_comp = self._prompt_registry.get_component("active_chat.handoff.legacy")
+            prefix = prefix_comp.content if prefix_comp else "上一次主动聊天会话的总结："
+            sections.append(
+                {
+                    "type": "text",
+                    "text": f"{prefix}\n"
+                    + ctx.recent_active_chat_summary,
+                }
+            )
+        if not sections:
+            # Fallback: render explanation as JSON if no summaries available
+            sections.append(
+                {
+                    "type": "text",
+                    "text": "审查移交摘要 JSON:\n"
+                    + json.dumps(_jsonable(ctx.explanation), ensure_ascii=False),
+                }
+            )
+        return sections
 
     def _format_source_messages(self, source_messages: list[dict[str, Any]]) -> str:
         if self._message_formatter is None or not source_messages:
@@ -493,10 +527,14 @@ class ActiveChatFastRunner:
             repair_messages.append(
                 {"role": "assistant", "content": str(first_result.text or "").strip()}
             )
+        repair_component = self._prompt_registry.get_component("active_chat.fast_mode.repair")
+        repair_text = repair_component.content if repair_component else ""
+        if not repair_text.strip():
+            return repair_batch, None
         repair_messages.append(
             {
                 "role": "system",
-                "content": [{"type": "text", "text": _TOOLLESS_REPAIR_PROMPT}],
+                "content": [{"type": "text", "text": repair_text}],
             }
         )
         return repair_batch, await self._generate(
@@ -540,57 +578,6 @@ class _FallbackActiveChatContext:
     source_messages: list[dict[str, Any]]
     instruction_content: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-def _render_review_handoff(review_result_summary: Any) -> list[dict[str, Any]]:
-    """Render review handoff context as structured prompt sections."""
-    if not isinstance(review_result_summary, ReviewHandoffContext):
-        return [
-            {
-                "type": "text",
-                "text": "Review handoff summary JSON:\n"
-                + json.dumps(_jsonable(review_result_summary), ensure_ascii=False),
-            }
-        ]
-
-    sections: list[dict[str, Any]] = []
-    ctx = review_result_summary
-    if ctx.overflow_summaries:
-        sections.append(
-            {
-                "type": "text",
-                "text": "Overflow summaries:\n"
-                + "\n---\n".join(
-                    _render_summary_handoff_entry(entry)
-                    for entry in ctx.overflow_summaries
-                ),
-            }
-        )
-    if ctx.block_digests:
-        digest_text = "\n".join(
-            _render_summary_handoff_entry(entry) for entry in ctx.block_digests
-        )
-        sections.append(
-            {"type": "text", "text": "Block digests:\n" + digest_text}
-        )
-    if ctx.recent_active_chat_summary:
-        sections.append(
-            {
-                "type": "text",
-                "text": "Previous active chat summary:\n"
-                + ctx.recent_active_chat_summary,
-            }
-        )
-    if not sections:
-        # Fallback: render explanation as JSON if no summaries available
-        sections.append(
-            {
-                "type": "text",
-                "text": "Review handoff summary JSON:\n"
-                + json.dumps(_jsonable(ctx.explanation), ensure_ascii=False),
-            }
-        )
-    return sections
 
 
 def _render_summary_handoff_entry(entry: SummaryHandoffEntry | str) -> str:

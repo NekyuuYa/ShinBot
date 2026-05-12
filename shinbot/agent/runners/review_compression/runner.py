@@ -25,11 +25,6 @@ _COMPRESSION_RESPONSE_FORMAT = json_schema_response_format(
     ["summary", "candidate_message_ids", "reason"],
 )
 
-_COMPRESSION_TASK_PROMPT = (
-    "Compress the supplied older unread messages for later review. Keep only "
-    "useful context, notable unresolved topics, and message ids worth closer reply review."
-)
-
 
 class OverflowCompressionStageRunner(Protocol):
     """Compress old overflow unread messages before tail review_scan."""
@@ -67,8 +62,6 @@ class LLMOverflowCompressionStageRunner:
                 route_id=routing.route_id,
                 model_id=routing.model_id,
                 profile_id=routing.profile_id,
-                system_prompt=routing.system_prompt,
-                task_prompt=_COMPRESSION_TASK_PROMPT,
                 response_format=_COMPRESSION_RESPONSE_FORMAT,
                 component_ids_by_stage=routing.component_ids_by_stage,
                 builtin_component_ids=REVIEW_COMPRESSION_COMPONENT_IDS,

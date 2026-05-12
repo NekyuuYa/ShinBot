@@ -31,6 +31,7 @@ __all__ = [
     "PromptStage",
     "PromptStageAssembly",
     "PromptStageBlock",
+    "register_prompt_files",
 ]
 
 _EXPORT_MODULES = {
@@ -54,6 +55,7 @@ _EXPORT_MODULES = {
     "PromptStage": "shinbot.agent.services.prompt_engine.schema",
     "PromptStageAssembly": "shinbot.agent.services.prompt_engine.schema",
     "PromptStageBlock": "shinbot.agent.services.prompt_engine.schema",
+    "register_prompt_files": "shinbot.agent.services.prompt_engine.files",
 }
 
 

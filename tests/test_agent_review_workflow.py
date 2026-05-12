@@ -59,9 +59,19 @@ from shinbot.agent.services.prompt_engine import (
     PromptStage,
 )
 from shinbot.agent.utils.parsing import parse_json_object
+from shinbot.agent.workflows.active_chat.prompt_registration import (
+    register_active_chat_prompt_components,
+)
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
+
+
+def _make_prompt_registry() -> PromptRegistry:
+    registry = PromptRegistry()
+    register_review_prompt_components(registry)
+    register_active_chat_prompt_components(registry)
+    return registry
 
 
 class FixedReviewPolicy:
@@ -626,7 +636,7 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
         source_messages=[{"id": 1, "raw_text": "hello"}],
         metadata={"candidate_message_id": 3},
     )
-    prompt_registry = PromptRegistry()
+    prompt_registry = _make_prompt_registry()
 
     compression = await LLMOverflowCompressionStageRunner(
         model_runtime,
@@ -676,7 +686,7 @@ async def test_review_compression_runner_saves_summary() -> None:
     runner = LLMOverflowCompressionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         summary_service=summary_service,
     )
 
@@ -716,7 +726,7 @@ async def test_review_block_digest_runner_saves_block_digest() -> None:
     runner = LLMReviewBlockDigestStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         summary_service=summary_service,
     )
 
@@ -753,8 +763,8 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
     model_runtime = FakeModelRuntime(['{"candidate_message_ids": [7], "reason": "selected"}'])
     runner = LLMReviewScanStageRunner(
         model_runtime,
-        config=ReviewLLMRunnerConfig(system_prompt="review system"),
-        prompt_registry=PromptRegistry(),
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
     )
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
@@ -770,8 +780,8 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
     call = model_runtime.calls[0]
     system_text = " ".join(block["text"] for block in call.messages[0]["content"])
     user_text = " ".join(block["text"] for block in call.messages[-1]["content"])
-    assert "review system" in system_text
-    assert "Review the supplied unread messages" in user_text
+    assert "ShinBot Agent 审查流程的内部阶段" in system_text
+    assert "评估提供的未读消息" in user_text
     assert "rendered context" in user_text
     assert call.tools == []
     assert call.metadata["workflow_id"] == "review"
@@ -801,7 +811,7 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -867,7 +877,7 @@ async def test_reply_decision_runner_executes_multiple_replies_in_order() -> Non
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -936,7 +946,7 @@ async def test_reply_decision_runner_allows_poke_after_reply_only() -> None:
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -980,7 +990,7 @@ async def test_reply_decision_runner_ignores_standalone_poke() -> None:
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -1019,7 +1029,7 @@ async def test_reply_decision_runner_requires_quoted_reply_message() -> None:
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -1059,7 +1069,7 @@ async def test_reply_decision_runner_requires_first_quote_to_target_candidate() 
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -1100,7 +1110,7 @@ async def test_reply_decision_runner_repairs_toolless_text_response() -> None:
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -1137,7 +1147,7 @@ async def test_reply_decision_runner_fails_after_toolless_repair() -> None:
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
         config=ReviewLLMRunnerConfig(caller="test.review"),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
         tool_manager=tool_manager,
     )
 
@@ -1210,8 +1220,7 @@ async def test_review_llm_runner_uses_configured_prompt_components() -> None:
 
 @pytest.mark.asyncio
 async def test_review_llm_runner_uses_registered_builtin_review_prompts() -> None:
-    prompt_registry = PromptRegistry()
-    register_review_prompt_components(prompt_registry)
+    prompt_registry = _make_prompt_registry()
     model_runtime = FakeModelRuntime(
         [
             {
@@ -1229,7 +1238,7 @@ async def test_review_llm_runner_uses_registered_builtin_review_prompts() -> Non
     )
     runner = LLMReplyDecisionStageRunner(
         model_runtime,
-        config=ReviewLLMRunnerConfig(system_prompt=""),
+        config=ReviewLLMRunnerConfig(),
         prompt_registry=prompt_registry,
         tool_manager=FakeReviewToolManager(),
     )
@@ -1249,22 +1258,21 @@ async def test_review_llm_runner_uses_registered_builtin_review_prompts() -> Non
         for block in message["content"]
         if isinstance(block, dict) and "text" in block
     )
-    assert "The first send_reply MUST include quote_message_log_id" in message_text
-    assert "candidate_message_ids are the core messages under reply consideration" in message_text
-    assert "Bare assistant text is invalid" in message_text
-    assert "send_poke is optional" in message_text
+    assert "第一个 send_reply 必须包含 quote_message_log_id" in message_text
+    assert "candidate_message_ids 是回复考虑的核心消息" in message_text
+    assert "裸助手文本是无效的" in message_text
+    assert "send_poke 是可选" in message_text
 
 
 @pytest.mark.asyncio
-async def test_review_llm_runner_avoids_duplicate_inline_system_prompt() -> None:
-    prompt_registry = PromptRegistry()
-    register_review_prompt_components(prompt_registry)
+async def test_review_llm_runner_uses_registered_system_prompt() -> None:
+    prompt_registry = _make_prompt_registry()
     model_runtime = FakeModelRuntime(
         ['{"candidate_message_ids": [7], "reason": "selected"}']
     )
     runner = LLMReviewScanStageRunner(
         model_runtime,
-        config=ReviewLLMRunnerConfig(system_prompt="inline fallback system"),
+        config=ReviewLLMRunnerConfig(),
         prompt_registry=prompt_registry,
     )
 
@@ -1282,9 +1290,8 @@ async def test_review_llm_runner_avoids_duplicate_inline_system_prompt() -> None
         for block in message["content"]
         if isinstance(block, dict) and "text" in block
     )
-    assert "inline fallback system" not in message_text
-    assert "internal ShinBot Agent review workflow stage" in message_text
-    assert "Select message_log ids" in message_text
+    assert "ShinBot Agent 审查流程的内部阶段" in message_text
+    assert "message_log id" in message_text
 
 
 @pytest.mark.asyncio
@@ -1297,7 +1304,7 @@ async def test_review_runner_factory_uses_llm_stages_by_default() -> None:
     )
     factory = ReviewRunnerFactory(
         model_runtime,
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
     )
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
@@ -1332,7 +1339,7 @@ async def test_review_runner_factory_keeps_explicitly_disabled_stages_noop() -> 
             review_scan=ReviewStageRuntimeConfig(enabled=False),
             active_chat_bootstrap=ReviewStageRuntimeConfig(enabled=False),
         ),
-        prompt_registry=PromptRegistry(),
+        prompt_registry=_make_prompt_registry(),
     )
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
@@ -1351,7 +1358,7 @@ async def test_review_runner_factory_keeps_explicitly_disabled_stages_noop() -> 
 @pytest.mark.asyncio
 async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
     model_runtime = FakeModelRuntime(['{"candidate_message_ids": [9], "reason": "selected"}'])
-    prompt_registry = PromptRegistry()
+    prompt_registry = _make_prompt_registry()
     prompt_registry.register_component(
         PromptComponent(
             id="review.scan.contract",
@@ -1409,7 +1416,6 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
                     "constraints": "review.contract",
                     "unknown": ["ignored"],
                 },
-                "system_prompt": "Return JSON.",
                 "params": {"temperature": 0},
             },
             "reply_decision": "ignored",
@@ -1426,7 +1432,6 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
         PromptStage.SYSTEM_BASE: ["review.system"],
         PromptStage.CONSTRAINTS: ["review.contract"],
     }
-    assert config.review_scan.system_prompt == "Return JSON."
     assert config.review_scan.params == {"temperature": 0}
     assert config.reply_decision.enabled is True
     assert config.active_chat_bootstrap.enabled is False

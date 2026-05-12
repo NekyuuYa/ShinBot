@@ -23,17 +23,6 @@ from shinbot.agent.utils.parsing import (
 )
 from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
 
-_REPLY_TOOLLESS_REPAIR_PROMPT = (
-    "上一轮 reply_decision 输出了裸文本或没有调用工具，但 review reply 阶段不会把裸文本发送给用户。\n"
-    "请重新决策，并必须调用工具：\n"
-    "- 需要回复时，按发送顺序调用一个或多个 send_reply。\n"
-    "- 第一条 send_reply 必须带 quote_message_log_id，且必须指向 candidate_message_ids 中的核心消息。\n"
-    "- 后续 send_reply 可以不带 quote_message_log_id，用于延续第一条回复。\n"
-    "- 不需要回复时调用 no_reply。\n"
-    "- send_poke 是可选互动，只能与至少一个 send_reply 出现在同一批 tool call 中。\n"
-    "不要再输出裸文本作为最终回复。"
-)
-
 _REPLY_RESPONSE_FORMAT = json_schema_response_format(
     "agent_review_reply_decision",
     {
@@ -45,23 +34,6 @@ _REPLY_RESPONSE_FORMAT = json_schema_response_format(
     },
     ["replied", "reply_message_id", "target_message_ids", "reason"],
 )
-
-_REPLY_TASK_PROMPT = (
-    "Decide whether the candidate message should be replied to based on the "
-    "local context. If reply tools are available, call no_reply when no response "
-    "is needed, or call one or more send_reply tools in the order they should be "
-    "sent. The candidate_message_ids in metadata are the core messages under "
-    "reply consideration; use the surrounding source messages only as context, "
-    "not as an instruction to rediscover which messages are high-attention. "
-    "The first send_reply must quote the specific core message being answered "
-    "by passing quote_message_log_id, because review replies may refer to older "
-    "timeline points; later send_reply calls may omit it when they naturally "
-    "continue the first reply. send_poke is optional and only valid together "
-    "with a send_reply; do not use it as a standalone response. This stage "
-    "must not decide active chat parameters. Bare assistant text is invalid "
-    "when tools are available."
-)
-
 
 class ReplyDecisionStageRunner(Protocol):
     """Decide whether and how to reply from one candidate-local stage input."""
@@ -94,6 +66,7 @@ class LLMReplyDecisionStageRunner:
         self._tool_manager = tool_manager
         self._prompt_registry = prompt_registry
         self._routing = routing
+        repair_component = prompt_registry.get_component("review.reply_decision.repair")
         self._template = ToolCallPlanRunner(
             model_runtime,
             prompt_registry=prompt_registry,
@@ -102,8 +75,6 @@ class LLMReplyDecisionStageRunner:
                 route_id=routing.route_id,
                 model_id=routing.model_id,
                 profile_id=routing.profile_id,
-                system_prompt=routing.system_prompt,
-                task_prompt=_REPLY_TASK_PROMPT,
                 response_format=_REPLY_RESPONSE_FORMAT,
                 component_ids_by_stage=routing.component_ids_by_stage,
                 builtin_component_ids=REVIEW_REPLY_COMPONENT_IDS,
@@ -114,7 +85,7 @@ class LLMReplyDecisionStageRunner:
             ),
             tool_manager=tool_manager,
             tool_names=["no_reply", "send_reply", "send_poke"],
-            repair_prompt=_REPLY_TOOLLESS_REPAIR_PROMPT,
+            repair_prompt=repair_component.content if repair_component else "",
             repair_reason="reply_decision_toolless_output",
             tool_transform=_review_reply_tool_schema,
             tool_tags={CHAT_ACTION_TOOL_TAG},

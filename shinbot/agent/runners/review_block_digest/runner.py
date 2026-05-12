@@ -24,13 +24,6 @@ _BLOCK_DIGEST_RESPONSE_FORMAT = json_schema_response_format(
     ["summary", "reason"],
 )
 
-_BLOCK_DIGEST_TASK_PROMPT = (
-    "Summarize this review scan block as a local digest. Keep useful context "
-    "for later reply decisions and active chat, but do not select reply targets "
-    "or make active chat decisions."
-)
-
-
 class ReviewBlockDigestStageRunner(Protocol):
     """Summarize one review scan block."""
 
@@ -67,8 +60,6 @@ class LLMReviewBlockDigestStageRunner:
                 route_id=routing.route_id,
                 model_id=routing.model_id,
                 profile_id=routing.profile_id,
-                system_prompt=routing.system_prompt,
-                task_prompt=_BLOCK_DIGEST_TASK_PROMPT,
                 response_format=_BLOCK_DIGEST_RESPONSE_FORMAT,
                 component_ids_by_stage=routing.component_ids_by_stage,
                 builtin_component_ids=REVIEW_BLOCK_DIGEST_COMPONENT_IDS,

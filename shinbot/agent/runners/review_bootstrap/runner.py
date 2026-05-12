@@ -27,13 +27,6 @@ _BOOTSTRAP_RESPONSE_FORMAT = json_schema_response_format(
     ["disposition", "reason"],
 )
 
-_BOOTSTRAP_TASK_PROMPT = (
-    "Choose the active chat disposition after review and reply-decision stages. "
-    "Return only the semantic disposition; numeric interest and decay parameters "
-    "are controlled by ShinBot internals."
-)
-
-
 class ActiveChatBootstrapStageRunner(Protocol):
     """Decide initial active chat state from review tail-history input."""
 
@@ -68,8 +61,6 @@ class LLMActiveChatBootstrapStageRunner:
                 route_id=routing.route_id,
                 model_id=routing.model_id,
                 profile_id=routing.profile_id,
-                system_prompt=routing.system_prompt,
-                task_prompt=_BOOTSTRAP_TASK_PROMPT,
                 response_format=_BOOTSTRAP_RESPONSE_FORMAT,
                 component_ids_by_stage=routing.component_ids_by_stage,
                 builtin_component_ids=REVIEW_BOOTSTRAP_COMPONENT_IDS,

@@ -22,11 +22,6 @@ class RunnerTemplateConfig:
     route_id: str | None = None
     model_id: str | None = None
     profile_id: str = ""
-    system_prompt: str = (
-        "You are an internal ShinBot Agent review stage. Return only valid JSON "
-        "matching the requested schema. Do not send user-visible replies."
-    )
-    task_prompt: str = ""
     response_format: dict[str, Any] | None = None
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     builtin_component_ids: dict[PromptStage, list[str]] = field(default_factory=dict)

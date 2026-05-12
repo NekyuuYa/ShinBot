@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.services.prompt_engine.files import register_prompt_files
 from shinbot.agent.services.prompt_engine.schema import (
     PromptComponent,
     PromptComponentKind,
@@ -57,25 +58,10 @@ def register_identity_prompt_components(
             },
         )
     )
-    registry.register_component(
-        PromptComponent(
-            id=registry.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID,
-            stage=PromptStage.CONSTRAINTS,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content=(
-                "### 行为约束\n"
-                "- 严禁在输出中包含任何 【ID】 格式的字符串或原始数字 ID。\n"
-                "- 称呼他人时，必须使用上述参考表中的“昵称”或“别名”。\n"
-                "- 若用户 ID 未出现在上表中，请用类似于“那个人”的称呼。"
-            ),
-            priority=9000,
-            enabled=True,
-            metadata={
-                "builtin": True,
-                "display_name": "Identity Behavior Constraints",
-                "description": "Static constraints for identity-safe assistant replies.",
-            },
-        )
+    register_prompt_files(
+        registry,
+        package=__package__,
+        prompt_ids=[registry.BUILTIN_IDENTITY_CONSTRAINTS_COMPONENT_ID],
     )
     registry.register_resolver(
         registry.BUILTIN_IDENTITY_MAP_PROMPT_RESOLVER,

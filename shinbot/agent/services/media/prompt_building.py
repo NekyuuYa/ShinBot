@@ -6,30 +6,21 @@ import base64
 from typing import Any
 
 from shinbot.agent.services.media.config import (
-    BUILTIN_MEDIA_INSPECTION_PROMPT,
     BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
-    BUILTIN_STICKER_SUMMARY_PROMPT,
+    BUILTIN_MEDIA_REANALYSIS_PROMPT,
+    BUILTIN_MEDIA_REANALYSIS_PROMPT_ID,
     BUILTIN_STICKER_SUMMARY_PROMPT_ID,
 )
 from shinbot.agent.services.prompt_engine import (
     PromptBuildRequest,
-    PromptComponent,
-    PromptComponentKind,
     PromptContextPolicy,
     PromptInjection,
     PromptStage,
 )
 from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_component
 
-MEDIA_REANALYSIS_SYSTEM_PROMPT = """
-You are ShinBot's media reanalysis agent.
-
-Answer the user's question about the supplied image as a normal image understanding task.
-Describe only what is visibly supported by the image.
-If identity, source character, or text content is uncertain, say so explicitly.
-Prefer concise Chinese answers that are useful inside a chat workflow.
-""".strip()
-MEDIA_REANALYSIS_PROMPT_ID = "builtin.prompt.media_reanalysis"
+MEDIA_REANALYSIS_SYSTEM_PROMPT = BUILTIN_MEDIA_REANALYSIS_PROMPT
+MEDIA_REANALYSIS_PROMPT_ID = BUILTIN_MEDIA_REANALYSIS_PROMPT_ID
 
 
 def build_media_inspection_messages(
@@ -54,7 +45,6 @@ def build_media_inspection_messages(
         occurrence=occurrence,
     )
     return _build_media_prompt_messages(
-        builtin_prompt=BUILTIN_MEDIA_INSPECTION_PROMPT,
         builtin_prompt_id=BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
         caller="media.inspection_runner",
         trigger="media_inspection",
@@ -93,7 +83,6 @@ def build_sticker_summary_messages(
         occurrence=occurrence,
     )
     return _build_media_prompt_messages(
-        builtin_prompt=BUILTIN_STICKER_SUMMARY_PROMPT,
         builtin_prompt_id=BUILTIN_STICKER_SUMMARY_PROMPT_ID,
         caller="media.sticker_summary_runner",
         trigger="sticker_summary",
@@ -112,7 +101,6 @@ def build_sticker_summary_messages(
 
 def _build_media_prompt_messages(
     *,
-    builtin_prompt: str,
     builtin_prompt_id: str,
     caller: str,
     trigger: str,
@@ -136,7 +124,6 @@ def _build_media_prompt_messages(
     _ensure_media_prompt_component(
         prompt_registry=prompt_registry,
         component_id=builtin_prompt_id,
-        content=builtin_prompt,
     )
     image_block = {"type": "image_url", "image_url": {"url": build_media_data_url(asset)}}
     result = prompt_registry.build_messages(
@@ -183,21 +170,14 @@ def _ensure_media_prompt_component(
     *,
     prompt_registry: Any,
     component_id: str,
-    content: str,
 ) -> None:
     if prompt_registry.get_component(component_id) is not None:
         return
-    prompt_registry.upsert_component(
-        PromptComponent(
-            id=component_id,
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            priority=100,
-            enabled=True,
-            content=content,
-            metadata={"builtin": True},
-        )
-    )
+    from shinbot.agent.services.media.prompt_registration import register_media_prompt_components
+
+    register_media_prompt_components(prompt_registry)
+    if prompt_registry.get_component(component_id) is None:
+        raise KeyError(f"Built-in media prompt component {component_id!r} is not registered")
 
 
 def build_media_reanalysis_messages(
@@ -222,7 +202,6 @@ def build_media_reanalysis_messages(
         _ensure_media_prompt_component(
             prompt_registry=prompt_registry,
             component_id=MEDIA_REANALYSIS_PROMPT_ID,
-            content=MEDIA_REANALYSIS_SYSTEM_PROMPT,
         )
         result = prompt_registry.build_messages(
             PromptBuildRequest(

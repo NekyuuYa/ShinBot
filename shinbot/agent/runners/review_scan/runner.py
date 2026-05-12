@@ -21,13 +21,6 @@ _SCAN_RESPONSE_FORMAT = json_schema_response_format(
     ["candidate_message_ids", "reason"],
 )
 
-_SCAN_TASK_PROMPT = (
-    "Review the supplied unread messages and select message_log ids "
-    "that may deserve a reply or closer local-context decision. "
-    "Do not decide active chat state."
-)
-
-
 class ReviewScanStageRunner(Protocol):
     """Select candidate message ids from one review_scan stage input."""
 
@@ -62,8 +55,6 @@ class LLMReviewScanStageRunner:
                 route_id=routing.route_id,
                 model_id=routing.model_id,
                 profile_id=routing.profile_id,
-                system_prompt=routing.system_prompt,
-                task_prompt=_SCAN_TASK_PROMPT,
                 response_format=_SCAN_RESPONSE_FORMAT,
                 component_ids_by_stage=routing.component_ids_by_stage,
                 builtin_component_ids=REVIEW_SCAN_COMPONENT_IDS,

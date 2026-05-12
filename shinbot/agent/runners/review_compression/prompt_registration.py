@@ -2,60 +2,24 @@
 
 from __future__ import annotations
 
-from shinbot.agent.services.prompt_engine.schema import (
-    PromptComponent,
-    PromptComponentKind,
-    PromptStage,
-)
+from shinbot.agent.services.prompt_engine.files import register_prompt_files
+from shinbot.agent.services.prompt_engine.schema import PromptStage
 
 REVIEW_COMPRESSION_COMPONENT_IDS: dict[PromptStage, list[str]] = {
     PromptStage.SYSTEM_BASE: ["review.overflow_compression.system"],
     PromptStage.CONSTRAINTS: ["review.overflow_compression.constraints"],
+    PromptStage.INSTRUCTIONS: ["review.overflow_compression.task"],
 }
 
 
 def register_review_compression_prompt_components(registry) -> None:
     """Register review overflow compression prompt components."""
-    for component in _components():
-        registry.upsert_component(component)
-
-
-def _components() -> list[PromptComponent]:
-    return [
-        PromptComponent(
-            id="review.overflow_compression.system",
-            stage=PromptStage.SYSTEM_BASE,
-            kind=PromptComponentKind.STATIC_TEXT,
-            priority=100,
-            enabled=True,
-            content=(
-                "You are an internal ShinBot Agent review workflow stage. Follow the stage "
-                "contract exactly. Do not produce user-visible bare assistant text unless the "
-                "stage explicitly asks for structured JSON fallback."
-            ),
-            tags=["review", "workflow"],
-            metadata={
-                "builtin": True,
-                "display_name": "Review Overflow Compression System",
-                "description": "Built-in prompt component for Agent review workflow stages.",
-            },
-        ),
-        PromptComponent(
-            id="review.overflow_compression.constraints",
-            stage=PromptStage.CONSTRAINTS,
-            kind=PromptComponentKind.STATIC_TEXT,
-            priority=100,
-            enabled=True,
-            content=(
-                "Compress only older overflow messages. Preserve unresolved topics, "
-                "useful facts, and message ids that may deserve later reply review. "
-                "Return the requested JSON object."
-            ),
-            tags=["review", "workflow"],
-            metadata={
-                "builtin": True,
-                "display_name": "Review Overflow Compression Constraints",
-                "description": "Built-in prompt component for Agent review workflow stages.",
-            },
-        ),
-    ]
+    register_prompt_files(
+        registry,
+        package=__package__,
+        prompt_ids=[
+            "review.overflow_compression.system",
+            "review.overflow_compression.constraints",
+            "review.overflow_compression.task",
+        ],
+    )

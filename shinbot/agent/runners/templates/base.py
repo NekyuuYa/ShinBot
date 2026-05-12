@@ -78,17 +78,6 @@ class RunnerTemplateBase:
         component_ids_by_stage: dict[PromptStage, list[str]],
     ) -> list[PromptInjection]:
         injections: list[PromptInjection] = []
-        if self._config.system_prompt and not component_ids_by_stage.get(
-            PromptStage.SYSTEM_BASE
-        ):
-            injections.append(
-                PromptInjection(
-                    stage=PromptStage.SYSTEM_BASE,
-                    component_id=f"review.{stage_input.purpose}.system",
-                    text=self._config.system_prompt,
-                    priority=10,
-                )
-            )
         injections.append(
             PromptInjection(
                 stage=PromptStage.INSTRUCTIONS,
@@ -108,7 +97,6 @@ class RunnerTemplateBase:
             stage_input.metadata, ensure_ascii=False, sort_keys=True
         )
         instruction = (
-            f"{self._config.task_prompt}\n\n"
             f"Stage purpose: {stage_input.purpose}\n"
             f"Metadata JSON: {metadata_json}"
         )

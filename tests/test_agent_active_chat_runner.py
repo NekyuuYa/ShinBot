@@ -285,8 +285,8 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
         model_runtime.calls[0].messages,
         ensure_ascii=False,
     )
-    assert "current active_chat batch is the primary target" in rendered_prompt_text
-    assert "never output numeric interest" in rendered_prompt_text
+    assert "当前的主动聊天批次是主要目标" in rendered_prompt_text
+    assert "严禁输出数值形式的兴趣或衰减" in rendered_prompt_text
 
 
 @pytest.mark.asyncio
@@ -453,8 +453,8 @@ async def test_active_chat_fast_runner_orders_context_before_current_batch() -> 
     assert "compacted_messages" in str(messages[2]["content"])
     assert messages[3]["tool_calls"][0]["id"] == "call-send_reply"
     assert messages[4]["tool_call_id"] == "call-send_reply"
-    assert "Message log ids: [101]" in str(messages[-1]["content"])
-    assert "current active_chat batch is the primary target" in str(messages[-1]["content"])
+    assert "消息日志 ID 列表: [101]" in str(messages[-1]["content"])
+    assert "当前的主动聊天批次是主要目标" in str(messages[-1]["content"])
 
 
 @pytest.mark.asyncio
@@ -791,7 +791,7 @@ async def test_active_chat_fast_runner_accepts_dataclass_review_handoff_summary(
             if isinstance(message.get("content"), list)
             else []
         )
-        if "Review handoff summary JSON" in str(block.get("text", ""))
+        if "审查移交摘要 JSON" in str(block.get("text", ""))
     ]
     assert handoff_blocks
 
@@ -863,7 +863,7 @@ async def test_active_chat_fast_runner_renders_review_handoff_context_sections()
     assert "[Block 1; msgid 11-20; 10 messages] Discussion about Y." in all_text
     assert "Previously discussed Z." in all_text
     # Should NOT contain JSON dump fallback
-    assert "Review handoff summary JSON" not in all_text
+    assert "审查移交摘要 JSON" not in all_text
 
 
 @pytest.mark.asyncio
@@ -910,4 +910,4 @@ async def test_active_chat_fast_runner_handoff_context_fallback_when_empty() -> 
         )
     )
     # Empty handoff falls back to explanation JSON
-    assert "Review handoff summary JSON" in all_text
+    assert "审查移交摘要 JSON" in all_text

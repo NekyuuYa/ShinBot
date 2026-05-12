@@ -50,7 +50,6 @@ class ReviewStageRuntimeConfig:
     caller: str = "agent.review"
     profile_id: str = ""
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
-    system_prompt: str | None = None
     message_format_config: MessageFormatConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
     max_model_retries: int = 1
@@ -69,7 +68,6 @@ class ReviewStageRuntimeConfig:
             component_ids_by_stage=_component_ids_by_stage(
                 value.get("component_ids_by_stage")
             ),
-            system_prompt=_optional_str(value.get("system_prompt")),
             message_format_config=_message_format_config(
                 value.get("message_format_config")
             ),
@@ -93,10 +91,7 @@ class ReviewStageRuntimeConfig:
             "max_model_retries": self.max_model_retries,
             "retry_backoff_seconds": self.retry_backoff_seconds,
         }
-        if self.system_prompt is not None:
-            kwargs["system_prompt"] = self.system_prompt
         return ReviewLLMRunnerConfig(**kwargs)
-
 
 @dataclass(slots=True, frozen=True)
 class ReviewRuntimeConfig:
