@@ -132,7 +132,7 @@ mode = "none"
 [[bots.bindings]]
 id = "command-bot-admin-group"
 adapter_instance_id = "qq-main"
-session_pattern = "group:10001"
+session_patterns = ["group:10001"]
 enabled = true
 priority = 100
 
@@ -158,14 +158,14 @@ config = "agents/full-agent.toml" # Resolved relative to data/.
 [[bots.bindings]]
 id = "full-agent-main-group"
 adapter_instance_id = "qq-main"
-session_pattern = "group:20001"
+session_patterns = ["group:20001", "group:20002"]
 enabled = true
 priority = 10
 
 [[bots.bindings]]
 id = "full-agent-private"
 adapter_instance_id = "qq-main"
-session_pattern = "private:*"
+session_patterns = ["private:*"]
 enabled = true
 priority = 20
 
