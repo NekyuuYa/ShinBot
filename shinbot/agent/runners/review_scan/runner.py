@@ -62,6 +62,8 @@ class LLMReviewScanStageRunner:
                 params=routing.params,
                 max_model_retries=routing.max_model_retries,
                 retry_backoff_seconds=routing.retry_backoff_seconds,
+                instance_config_resolver=routing.instance_config_resolver,
+                model_target_resolver=routing.model_target_resolver,
             ),
             message_formatter=message_formatter,
         )

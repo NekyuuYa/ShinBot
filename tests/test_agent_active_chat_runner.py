@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from shinbot.agent.coordinators.review.models import ReviewWorkflowExplanation
+from shinbot.agent.runtime.instance_config import RuntimeModelTarget
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
 from shinbot.agent.services.message_formatter import MessageFormatterService
@@ -13,7 +14,7 @@ from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
 from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.agent.services.summaries import ReviewHandoffContext, SummaryHandoffEntry
 from shinbot.agent.services.tools.schema import ToolCallRequest, ToolCallResult
-from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
+from shinbot.agent.workflows.active_chat import ActiveChatFastRunner, ActiveChatFastRunnerConfig
 from shinbot.agent.workflows.active_chat.models import (
     ActiveChatActionKind,
     ActiveChatBatch,
@@ -23,6 +24,7 @@ from shinbot.agent.workflows.active_chat.models import (
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
+from shinbot.core.instance_config import resolve_instance_runtime_config
 
 
 class FakeModelRuntime:
@@ -287,6 +289,35 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
     )
     assert "当前的主动聊天批次是主要目标" in rendered_prompt_text
     assert "严禁输出数值形式的兴趣或衰减" in rendered_prompt_text
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_applies_instance_runtime_config() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [make_result(tool_calls=[make_tool_call("no_reply", {"internal_summary": "skip"})])]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        config=ActiveChatFastRunnerConfig(
+            instance_config_resolver=lambda _instance_id: resolve_instance_runtime_config(
+                {
+                    "main_llm": "route-main",
+                    "config": {"explicit_prompt_cache_enabled": True},
+                }
+            ),
+            model_target_resolver=lambda target: RuntimeModelTarget(route_id=target),
+        ),
+    )
+
+    await runner.run(make_batch())
+
+    assert model_runtime.calls[0].route_id == "route-main"
+    assert model_runtime.calls[0].metadata["explicit_prompt_cache_enabled"] is True
 
 
 @pytest.mark.asyncio

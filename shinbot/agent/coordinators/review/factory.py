@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,6 +36,10 @@ from shinbot.agent.runners.review_scan import (
     NoopReviewScanStageRunner,
     ReviewScanStageRunner,
     register_review_scan_prompt_components,
+)
+from shinbot.agent.runtime.instance_config import (
+    InstanceRuntimeConfigResolver,
+    RuntimeModelTarget,
 )
 from shinbot.agent.services.message_formatter import MessageFormatConfig
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptStage
@@ -79,7 +84,12 @@ class ReviewStageRuntimeConfig:
             ),
         )
 
-    def to_llm_config(self) -> ReviewLLMRunnerConfig:
+    def to_llm_config(
+        self,
+        *,
+        instance_config_resolver: InstanceRuntimeConfigResolver | None = None,
+        model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None,
+    ) -> ReviewLLMRunnerConfig:
         kwargs: dict[str, Any] = {
             "caller": self.caller,
             "route_id": self.route_id,
@@ -90,6 +100,8 @@ class ReviewStageRuntimeConfig:
             "params": dict(self.params),
             "max_model_retries": self.max_model_retries,
             "retry_backoff_seconds": self.retry_backoff_seconds,
+            "instance_config_resolver": instance_config_resolver,
+            "model_target_resolver": model_target_resolver,
         }
         return ReviewLLMRunnerConfig(**kwargs)
 
@@ -144,6 +156,8 @@ class ReviewRunnerFactory:
         tool_manager: Any | None = None,
         summary_service: Any | None = None,
         message_formatter: Any | None = None,
+        instance_config_resolver: InstanceRuntimeConfigResolver | None = None,
+        model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None,
     ) -> None:
         self._model_runtime = model_runtime
         self._config = config or ReviewRuntimeConfig()
@@ -151,13 +165,15 @@ class ReviewRunnerFactory:
         self._tool_manager = tool_manager
         self._summary_service = summary_service
         self._message_formatter = message_formatter
+        self._instance_config_resolver = instance_config_resolver
+        self._model_target_resolver = model_target_resolver
 
     def create_overflow_compression_runner(self) -> OverflowCompressionStageRunner:
         stage_config = self._config.overflow_compression
         if self._enabled(stage_config):
             return LLMOverflowCompressionStageRunner(
                 self._model_runtime,
-                config=stage_config.to_llm_config(),
+                config=self._llm_config(stage_config),
                 prompt_registry=self._prompt_registry,
                 summary_service=self._summary_service,
                 message_formatter=self._message_formatter,
@@ -169,7 +185,7 @@ class ReviewRunnerFactory:
         if self._enabled(stage_config):
             return LLMReviewScanStageRunner(
                 self._model_runtime,
-                config=stage_config.to_llm_config(),
+                config=self._llm_config(stage_config),
                 prompt_registry=self._prompt_registry,
                 message_formatter=self._message_formatter,
             )
@@ -180,7 +196,7 @@ class ReviewRunnerFactory:
         if self._enabled(stage_config):
             return LLMReplyDecisionStageRunner(
                 self._model_runtime,
-                config=stage_config.to_llm_config(),
+                config=self._llm_config(stage_config),
                 prompt_registry=self._prompt_registry,
                 tool_manager=self._tool_manager,
                 message_formatter=self._message_formatter,
@@ -192,7 +208,7 @@ class ReviewRunnerFactory:
         if self._enabled(stage_config):
             return LLMActiveChatBootstrapStageRunner(
                 self._model_runtime,
-                config=stage_config.to_llm_config(),
+                config=self._llm_config(stage_config),
                 prompt_registry=self._prompt_registry,
                 message_formatter=self._message_formatter,
             )
@@ -203,7 +219,7 @@ class ReviewRunnerFactory:
         if self._enabled(stage_config):
             return LLMReviewBlockDigestStageRunner(
                 self._model_runtime,
-                config=stage_config.to_llm_config(),
+                config=self._llm_config(stage_config),
                 prompt_registry=self._prompt_registry,
                 summary_service=self._summary_service,
                 message_formatter=self._message_formatter,
@@ -225,6 +241,12 @@ class ReviewRunnerFactory:
 
     def _enabled(self, stage_config: ReviewStageRuntimeConfig) -> bool:
         return bool(stage_config.enabled and self._model_runtime is not None)
+
+    def _llm_config(self, stage_config: ReviewStageRuntimeConfig) -> ReviewLLMRunnerConfig:
+        return stage_config.to_llm_config(
+            instance_config_resolver=self._instance_config_resolver,
+            model_target_resolver=self._model_target_resolver,
+        )
 
 
 def register_review_prompt_components(

@@ -11,6 +11,13 @@ from inspect import isawaitable
 from typing import Any, Protocol
 
 from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
+from shinbot.agent.runtime.instance_config import (
+    InstanceRuntimeConfigResolver,
+    RuntimeModelTarget,
+    apply_instance_runtime_config_to_call,
+    apply_instance_runtime_config_to_metadata,
+    resolve_runtime_model_target,
+)
 from shinbot.agent.services.context.active_chat_context import (
     ActiveChatContextBuilder,
     ActiveChatContextBuildOptions,
@@ -61,6 +68,8 @@ class ActiveChatFastRunnerConfig:
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     message_format_config: MessageFormatConfig | None = None
+    instance_config_resolver: InstanceRuntimeConfigResolver | None = None
+    model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None
 
 
 class ActiveChatFastRunner:
@@ -178,6 +187,8 @@ class ActiveChatFastRunner:
         source_messages = self._load_source_messages(batch)
         context = self._build_context(batch, source_messages)
         review_result_summary = _jsonable(batch.review_result_summary)
+        instance_id = instance_id_from_session(batch.session_id)
+        instance_config = self._resolve_instance_config(instance_id)
         metadata = {
             "active_chat_stage": self.stage_id,
             "message_log_ids": batch.message_log_ids,
@@ -186,6 +197,13 @@ class ActiveChatFastRunner:
             "review_result_summary": review_result_summary,
             **dict(getattr(context, "metadata", {}) or {}),
         }
+        metadata = apply_instance_runtime_config_to_metadata(metadata, instance_config)
+        runtime_target = resolve_runtime_model_target(
+            route_id=self._config.route_id,
+            model_id=self._config.model_id,
+            resolved=instance_config,
+            model_target_resolver=self._config.model_target_resolver,
+        )
         component_ids_by_stage = self._component_ids_by_stage()
         build_result = self._prompt_registry.build_messages(
             PromptBuildRequest(
@@ -193,7 +211,9 @@ class ActiveChatFastRunner:
                 workflow_id="active_chat",
                 stage_id=self.stage_id,
                 session_id=batch.session_id,
-                instance_id=instance_id_from_session(batch.session_id),
+                instance_id=instance_id,
+                route_id=(runtime_target.route_id or "") if runtime_target is not None else "",
+                model_id=(runtime_target.model_id or "") if runtime_target is not None else "",
                 profile_id=self._config.profile_id,
                 component_ids_by_stage=component_ids_by_stage,
                 injections=self._build_prompt_injections(
@@ -480,26 +500,42 @@ class ActiveChatFastRunner:
         repair_attempt: int,
     ) -> Any | None:
         try:
+            instance_id = instance_id_from_session(batch.session_id)
+            instance_config = self._resolve_instance_config(instance_id)
             return await self._model_runtime.generate(
-                ModelRuntimeCall(
-                    route_id=self._config.route_id,
-                    model_id=self._config.model_id,
-                    caller=self._config.caller,
-                    session_id=batch.session_id,
-                    instance_id=instance_id_from_session(batch.session_id),
-                    purpose="active_chat_fast",
-                    messages=messages,
-                    tools=tools,
-                    response_format=None,
-                    metadata={
-                        **dict(metadata),
-                        "repair_attempt": repair_attempt,
-                    },
-                    params=dict(self._config.params),
+                apply_instance_runtime_config_to_call(
+                    ModelRuntimeCall(
+                        route_id=self._config.route_id,
+                        model_id=self._config.model_id,
+                        caller=self._config.caller,
+                        session_id=batch.session_id,
+                        instance_id=instance_id,
+                        purpose="active_chat_fast",
+                        messages=messages,
+                        tools=tools,
+                        response_format=None,
+                        metadata={
+                            **dict(metadata),
+                            "repair_attempt": repair_attempt,
+                        },
+                        params=dict(self._config.params),
+                    ),
+                    instance_config,
+                    model_target_resolver=self._config.model_target_resolver,
                 )
             )
         except ModelCallError:
             logger.exception("Active chat fast-mode model call failed for %s", batch.session_id)
+            return None
+
+    def _resolve_instance_config(self, instance_id: str) -> Any | None:
+        resolver = self._config.instance_config_resolver
+        if resolver is None or not instance_id:
+            return None
+        try:
+            return resolver(instance_id)
+        except Exception:
+            logger.exception("Active chat instance runtime config resolution failed for %s", instance_id)
             return None
 
     async def _repair_toolless_round(

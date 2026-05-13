@@ -496,6 +496,14 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
     bot.mount_model_runtime(model_runtime)
     runtime = install_agent_runtime(bot)
     session_id = "test-bot:group:group:1"
+    bot.database.instance_configs.upsert(
+        InstanceConfigRecord(
+            uuid="cfg-active-chat-runtime",
+            instance_id="test-bot",
+            main_llm="route-main",
+            config={"explicit_prompt_cache_enabled": True},
+        )
+    )
     message_log_id = bot.database.message_logs.insert(
         MessageLogRecord(
             session_id=session_id,
@@ -536,7 +544,9 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
         assert len(model_runtime.calls) == 1
         call = model_runtime.calls[0]
         assert call.purpose == "active_chat_fast"
+        assert call.route_id == "route-main"
         assert call.metadata["message_log_ids"] == [message_log_id]
+        assert call.metadata["explicit_prompt_cache_enabled"] is True
         assert {
             tool["function"]["name"]
             for tool in call.tools

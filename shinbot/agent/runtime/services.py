@@ -26,6 +26,7 @@ from shinbot.agent.runtime.config import (
     AgentRuntimeConfig,
     agent_runtime_config_from_mapping,
 )
+from shinbot.agent.runtime.instance_config import RuntimeModelTarget
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.runtime.review_stores import (
     DatabaseReviewMessageStore,
@@ -63,7 +64,10 @@ from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.workflows.chat_actions import register_chat_action_tools
-from shinbot.core.instance_config import select_response_profile
+from shinbot.core.instance_config import (
+    resolve_instance_runtime_config,
+    select_response_profile,
+)
 
 if TYPE_CHECKING:
     from shinbot.core.application.app import ShinBot
@@ -125,7 +129,11 @@ class AgentRuntimeProfile:
                 self,
                 batch,
             ),
-            config=config.active_chat_fast_runner_config,
+            config=replace(
+                config.active_chat_fast_runner_config,
+                instance_config_resolver=owner._resolve_instance_runtime_config,
+                model_target_resolver=owner._resolve_model_target,
+            ),
         )
         self.active_chat_workflow.set_round_handler(
             lambda batch: owner._run_active_chat_fast_round(
@@ -201,6 +209,8 @@ class AgentRuntimeProfile:
             tool_manager=self._owner.tool_manager,
             summary_service=self._owner.summary_service,
             message_formatter=self._owner.message_formatter,
+            instance_config_resolver=self._owner._resolve_instance_runtime_config,
+            model_target_resolver=self._owner._resolve_model_target,
         )
         return ReviewCoordinator(
             self.review_workflow_config,
@@ -416,18 +426,36 @@ class AgentRuntime:
         await self.agent_profile_for_bot(signal.bot_id).agent_scheduler.accept_signal(signal)
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
-        instance_config = None
-        if self.database is not None:
-            instance_config = self.database.instance_configs.get_by_instance_id(
-                signal.instance_id
-            )
-
+        instance_config = self._instance_config_payload(signal.instance_id)
         return select_response_profile(
             instance_config,
             is_private=signal.is_private,
             is_mentioned=signal.is_mentioned,
             is_reply_to_bot=signal.is_reply_to_bot,
         )
+
+    def _resolve_instance_runtime_config(self, instance_id: str):
+        return resolve_instance_runtime_config(self._instance_config_payload(instance_id))
+
+    def _instance_config_payload(self, instance_id: str) -> dict[str, Any] | None:
+        if self.database is None:
+            return None
+        normalized = str(instance_id or "").strip()
+        if not normalized:
+            return None
+        return self.database.instance_configs.get_by_instance_id(normalized)
+
+    def _resolve_model_target(self, target: str) -> RuntimeModelTarget | None:
+        normalized = str(target or "").strip()
+        if not normalized:
+            return None
+        if self.database is not None:
+            registry = self.database.model_registry
+            if registry.get_route(normalized) is not None:
+                return RuntimeModelTarget(route_id=normalized)
+            if registry.get_model(normalized) is not None:
+                return RuntimeModelTarget(model_id=normalized)
+        return RuntimeModelTarget(route_id=normalized)
 
     def handle_ingress_message(self, context: Any) -> None:
         """Let Agent-owned media services observe accepted inbound messages."""

@@ -8,6 +8,11 @@ import logging
 from typing import Any
 
 from shinbot.agent.runners.templates.config import RunnerTemplateConfig
+from shinbot.agent.runtime.instance_config import (
+    apply_instance_runtime_config_to_call,
+    apply_instance_runtime_config_to_metadata,
+    resolve_runtime_model_target,
+)
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
@@ -51,6 +56,18 @@ class RunnerTemplateBase:
             "review_stage": stage_input.purpose,
             **dict(stage_input.metadata),
         }
+        instance_id = instance_id_from_session(stage_input.session_id)
+        instance_config = self._resolve_instance_config(instance_id)
+        fallback_metadata = apply_instance_runtime_config_to_metadata(
+            fallback_metadata,
+            instance_config,
+        )
+        runtime_target = resolve_runtime_model_target(
+            route_id=self._config.route_id,
+            model_id=self._config.model_id,
+            resolved=instance_config,
+            model_target_resolver=self._config.model_target_resolver,
+        )
         component_ids_by_stage = self._resolve_component_ids(stage_input)
         result = self._prompt_registry.build_messages(
             PromptBuildRequest(
@@ -58,7 +75,9 @@ class RunnerTemplateBase:
                 workflow_id="review",
                 stage_id=stage_input.purpose,
                 session_id=stage_input.session_id,
-                instance_id=instance_id_from_session(stage_input.session_id),
+                instance_id=instance_id,
+                route_id=(runtime_target.route_id or "") if runtime_target is not None else "",
+                model_id=(runtime_target.model_id or "") if runtime_target is not None else "",
                 profile_id=self._config.profile_id,
                 component_ids_by_stage=component_ids_by_stage,
                 injections=self._build_prompt_injections(
@@ -167,21 +186,27 @@ class RunnerTemplateBase:
         metadata: dict[str, Any],
     ) -> Any | None:
         attempts = max(1, int(self._config.max_model_retries) + 1)
+        instance_id = instance_id_from_session(stage_input.session_id)
+        instance_config = self._resolve_instance_config(instance_id)
         for attempt in range(attempts):
             try:
                 return await self._model_runtime.generate(
-                    ModelRuntimeCall(
-                        route_id=self._config.route_id,
-                        model_id=self._config.model_id,
-                        caller=self._config.caller,
-                        session_id=stage_input.session_id,
-                        instance_id=instance_id_from_session(stage_input.session_id),
-                        purpose=stage_input.purpose,
-                        messages=messages,
-                        tools=tools,
-                        response_format=response_format,
-                        metadata=metadata,
-                        params=dict(self._config.params),
+                    apply_instance_runtime_config_to_call(
+                        ModelRuntimeCall(
+                            route_id=self._config.route_id,
+                            model_id=self._config.model_id,
+                            caller=self._config.caller,
+                            session_id=stage_input.session_id,
+                            instance_id=instance_id,
+                            purpose=stage_input.purpose,
+                            messages=messages,
+                            tools=tools,
+                            response_format=response_format,
+                            metadata=metadata,
+                            params=dict(self._config.params),
+                        ),
+                        instance_config,
+                        model_target_resolver=self._config.model_target_resolver,
                     )
                 )
             except ModelCallError as exc:
@@ -198,6 +223,20 @@ class RunnerTemplateBase:
                 )
                 return None
         return None
+
+    def _resolve_instance_config(self, instance_id: str) -> Any | None:
+        resolver = self._config.instance_config_resolver
+        if resolver is None or not instance_id:
+            return None
+        try:
+            return resolver(instance_id)
+        except Exception:
+            logger.exception(
+                "%s instance runtime config resolution failed for %s",
+                self._log_name,
+                instance_id,
+            )
+            return None
 
 
 def _is_retryable_model_error(exc: ModelCallError) -> bool:

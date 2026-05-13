@@ -15,9 +15,11 @@ from shinbot.agent.runners.templates import (
     ToolCallPlanRunner,
     parse_tool_call_payload,
 )
+from shinbot.agent.runtime.instance_config import RuntimeModelTarget
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
 from shinbot.agent.services.prompt_engine import PromptStage
+from shinbot.core.instance_config import resolve_instance_runtime_config
 
 # -- helpers --
 
@@ -195,6 +197,60 @@ async def test_structured_output_runner_passes_params() -> None:
     await runner.run(_stage_input())
     call_args = model_runtime.generate.call_args[0][0]
     assert call_args.params == {"temperature": 0.3}
+
+
+@pytest.mark.asyncio
+async def test_structured_output_runner_applies_instance_runtime_config() -> None:
+    registry = _mock_prompt_registry()
+    model_runtime = AsyncMock()
+    model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
+    config = RunnerTemplateConfig(
+        instance_config_resolver=lambda _instance_id: resolve_instance_runtime_config(
+            {
+                "main_llm": "route-main",
+                "config": {"explicit_prompt_cache_enabled": True},
+            }
+        ),
+        model_target_resolver=lambda target: RuntimeModelTarget(route_id=target),
+    )
+    runner = StructuredOutputRunner(
+        model_runtime, prompt_registry=registry, config=config,
+    )
+
+    await runner.run(_stage_input())
+
+    prompt_request = registry.build_messages.call_args[0][0]
+    assert prompt_request.route_id == "route-main"
+    assert prompt_request.metadata["explicit_prompt_cache_enabled"] is True
+    call_args = model_runtime.generate.call_args[0][0]
+    assert call_args.route_id == "route-main"
+    assert call_args.metadata["explicit_prompt_cache_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_structured_output_runner_keeps_explicit_model_target() -> None:
+    registry = _mock_prompt_registry()
+    model_runtime = AsyncMock()
+    model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
+    config = RunnerTemplateConfig(
+        route_id="route-explicit",
+        instance_config_resolver=lambda _instance_id: resolve_instance_runtime_config(
+            {
+                "main_llm": "route-main",
+                "config": {"explicit_prompt_cache_enabled": True},
+            }
+        ),
+        model_target_resolver=lambda target: RuntimeModelTarget(route_id=target),
+    )
+    runner = StructuredOutputRunner(
+        model_runtime, prompt_registry=registry, config=config,
+    )
+
+    await runner.run(_stage_input())
+
+    call_args = model_runtime.generate.call_args[0][0]
+    assert call_args.route_id == "route-explicit"
+    assert call_args.model_id is None
 
 
 # -- ToolCallPlanRunner --
