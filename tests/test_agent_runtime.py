@@ -159,6 +159,10 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                 },
                 "summaries": {
                     "active_chat_summary_max_age_seconds": 999,
+                    "markdown": {
+                        "enabled": True,
+                        "dir": "summary-docs",
+                    },
                 },
                 "active_chat": {
                     "initial_interest": 42,
@@ -195,6 +199,8 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.default_message_format_config.inject_record_id is True
     assert config.review_workflow_config.review_scan_batch_size == 7
     assert config.review_workflow_config.active_chat_summary_max_age_seconds == 999
+    assert config.summary_markdown_config.enabled is True
+    assert config.summary_markdown_config.directory == tmp_path / "summary-docs"
     assert config.agent_scheduler_config.mention_wake_count == 3
     assert config.review_runtime_config.review_scan.llm == "[model]model-scan"
     assert config.review_runtime_config.review_scan.default_llm == "[route]route-default"

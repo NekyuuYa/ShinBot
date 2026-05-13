@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,8 +31,11 @@ from shinbot.agent.services.context.utils.token_utils import estimate_text_token
 if TYPE_CHECKING:
     from shinbot.agent.services.identity import IdentityStore
     from shinbot.agent.services.media import MediaService
+    from shinbot.agent.services.summaries import SummaryService
     from shinbot.persistence.records import MessageLogRecord
     from shinbot.persistence.repos import ContextProvider
+
+logger = logging.getLogger(__name__)
 
 
 def estimate_context_tokens(turns: list[dict[str, Any]], summary: str = "") -> int:
@@ -57,9 +61,11 @@ class ContextManager:
         max_pool_messages: int = 200,
         identity_store: IdentityStore | None = None,
         media_service: MediaService | None = None,
+        summary_service: SummaryService | None = None,
     ) -> None:
         self._identity_store = identity_store
         self._media_service = media_service
+        self._summary_service = summary_service
         self._pool_runtime = ContextPoolRuntime(
             provider=provider,
             preload_limit=preload_limit,
@@ -210,7 +216,52 @@ class ContextManager:
             now_ms=now_ms,
         )
         self._save_session_state(session_id)
+        self._persist_compressed_context_summary(
+            session_id=session_id,
+            result=result,
+            compressed_text=compressed_text,
+            now_ms=now_ms,
+        )
         return result
+
+    def _persist_compressed_context_summary(
+        self,
+        *,
+        session_id: str,
+        result: dict[str, Any],
+        compressed_text: str,
+        now_ms: int | None,
+    ) -> None:
+        if (
+            self._summary_service is None
+            or not result.get("compressed_added")
+            or not compressed_text.strip()
+        ):
+            return
+        created_at_ms = now_ms
+        if created_at_ms is None:
+            memories = self.get_session_state(session_id).compressed_memories
+            created_at_ms = memories[-1].created_at_ms if memories else 0
+        source_run_id = f"context:{session_id}:{created_at_ms or 'unknown'}"
+        try:
+            self._summary_service.save_compressed_context(
+                session_id=session_id,
+                source_run_id=source_run_id,
+                content=compressed_text.strip(),
+                metadata={
+                    "source_block_ids": list(result.get("source_block_ids") or []),
+                    "evicted_count": int(result.get("evicted_count", 0) or 0),
+                    "remaining_count": int(result.get("remaining_count", 0) or 0),
+                    "total_tokens": int(result.get("total_tokens", 0) or 0),
+                    "created_at_ms": int(created_at_ms or 0),
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist compressed context summary for %s",
+                session_id,
+                exc_info=True,
+            )
 
     def preview_usage_eviction(
         self,

@@ -24,6 +24,7 @@ from shinbot.agent.coordinators.review.factory import (
 from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
 from shinbot.agent.runtime.config import (
     AgentRuntimeConfig,
+    SummaryMarkdownConfig,
     agent_runtime_config_from_mapping,
 )
 from shinbot.agent.runtime.instance_config import RuntimeModelTarget, parse_tagged_llm_ref
@@ -56,7 +57,7 @@ from shinbot.agent.services.media import (
 )
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptRegistry
-from shinbot.agent.services.summaries import SummaryService
+from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat import models as active_chat_workflow_models
@@ -239,6 +240,10 @@ class AgentRuntime:
         agent_configs_by_bot_id: dict[str, AgentRuntimeConfig | dict[str, Any]] | None = None,
     ) -> None:
         runtime_data_dir = Path(data_dir)
+        default_config = _coerce_agent_runtime_config(
+            agent_config,
+            runtime_data_dir=runtime_data_dir,
+        )
         self.runtime_data_dir = runtime_data_dir
         self.database = database
         self.model_runtime = model_runtime
@@ -249,7 +254,14 @@ class AgentRuntime:
             media_service=self.media_service,
         )
         self.summary_service = (
-            SummaryService(database.agent_summaries) if database is not None else None
+            SummaryService(
+                database.agent_summaries,
+                markdown_store=_summary_markdown_store(
+                    default_config.summary_markdown_config
+                ),
+            )
+            if database is not None
+            else None
         )
         self.context_manager = (
             ContextManager(
@@ -257,6 +269,7 @@ class AgentRuntime:
                 data_dir=runtime_data_dir,
                 identity_store=self.identity_store,
                 media_service=self.media_service,
+                summary_service=self.summary_service,
             )
             if database is not None
             else None
@@ -269,10 +282,6 @@ class AgentRuntime:
         )
         register_identity_tools(self.tool_registry, self.identity_store, self.context_manager)
 
-        default_config = _coerce_agent_runtime_config(
-            agent_config,
-            runtime_data_dir=runtime_data_dir,
-        )
         if review_runtime_config is not None:
             default_config = replace(
                 default_config,
@@ -587,6 +596,14 @@ def _coerce_prompt_file_config(
 def _resolve_data_relative_path(value: Any, runtime_data_dir: Path) -> Path:
     path = Path(str(value))
     return path if path.is_absolute() else runtime_data_dir / path
+
+
+def _summary_markdown_store(
+    config: SummaryMarkdownConfig,
+) -> MarkdownSummaryStore | None:
+    if not config.enabled:
+        return None
+    return MarkdownSummaryStore(config.directory)
 
 
 def _workflow_active_chat_batch_from_coordinator(

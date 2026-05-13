@@ -39,6 +39,14 @@ class AgentRuntimeConfigError(ValueError):
 
 
 @dataclass(slots=True, frozen=True)
+class SummaryMarkdownConfig:
+    """Markdown mirror settings for agent summaries."""
+
+    enabled: bool = True
+    directory: Path = field(default_factory=lambda: Path("summary"))
+
+
+@dataclass(slots=True, frozen=True)
 class AgentRuntimeConfig:
     """Runtime knobs loaded from one ``data/agents/*.toml`` file."""
 
@@ -68,6 +76,9 @@ class AgentRuntimeConfig:
         default_factory=ActiveChatFastRunnerConfig
     )
     active_chat_conversation_message_limit: int = 80
+    summary_markdown_config: SummaryMarkdownConfig = field(
+        default_factory=SummaryMarkdownConfig
+    )
 
 
 def load_agent_runtime_config(
@@ -127,6 +138,10 @@ def agent_runtime_config_from_mapping(
         _mapping(_mapping(defaults.get("message_format")))
     )
     review_workflow_config = _review_workflow_config(review, active_chat, summaries)
+    summary_markdown_config = _summary_markdown_config(
+        _mapping(summaries.get("markdown")),
+        data_dir=root,
+    )
 
     scheduler_config = _agent_scheduler_config(review)
     priority_policy_config = scheduler_config.to_priority_policy_config()
@@ -161,6 +176,7 @@ def agent_runtime_config_from_mapping(
             active_chat.get("conversation_message_limit"),
             80,
         ),
+        summary_markdown_config=summary_markdown_config,
     )
 
 
@@ -268,6 +284,21 @@ def _review_workflow_config(
             review.get("bootstrap_timeout_seconds"),
             20.0,
         ),
+    )
+
+
+def _summary_markdown_config(
+    value: dict[str, Any],
+    *,
+    data_dir: Path,
+) -> SummaryMarkdownConfig:
+    raw_dir = str(value.get("dir") or value.get("directory") or "summary").strip()
+    directory = Path(raw_dir or "summary")
+    if not directory.is_absolute():
+        directory = data_dir / directory
+    return SummaryMarkdownConfig(
+        enabled=_bool(value.get("enabled"), True),
+        directory=directory,
     )
 
 

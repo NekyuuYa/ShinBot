@@ -12,6 +12,7 @@ class SummaryType(StrEnum):
     OVERFLOW_COMPRESSION = "overflow_compression"
     BLOCK_DIGEST = "block_digest"
     ACTIVE_CHAT = "active_chat"
+    COMPRESSED_CONTEXT = "compressed_context"
 
 
 @dataclass(slots=True, frozen=True)

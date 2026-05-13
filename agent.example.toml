@@ -178,3 +178,7 @@ handoff_legacy = "active_chat.handoff.legacy"
 
 [agent.summaries]
 active_chat_summary_max_age_seconds = 1800
+
+[agent.summaries.markdown]
+enabled = true
+dir = "summary"

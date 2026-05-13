@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from shinbot.agent.services.summaries import (
+    MarkdownSummaryStore,
     SummaryService,
     SummaryType,
     SummaryWriteRequest,
@@ -307,6 +308,52 @@ def test_save_active_chat_summary(svc: SummaryService) -> None:
     records = svc.list_by_session("s1", summary_type=SummaryType.ACTIVE_CHAT)
     assert len(records) == 1
     assert records[0].content == "active chat summary"
+
+
+def test_save_compressed_context(svc: SummaryService) -> None:
+    rid = svc.save_compressed_context(
+        session_id="s1",
+        source_run_id="context:s1:123",
+        content="compressed context summary",
+        metadata={"source_block_ids": ["ctx-1"]},
+    )
+    assert rid > 0
+    records = svc.list_by_session("s1", summary_type=SummaryType.COMPRESSED_CONTEXT)
+    assert len(records) == 1
+    assert records[0].content == "compressed context summary"
+
+
+def test_markdown_store_writes_timestamped_summary_document(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    markdown_root = tmp_path / "summaries"
+    svc = SummaryService(
+        db.agent_summaries,
+        markdown_store=MarkdownSummaryStore(markdown_root),
+    )
+
+    svc.save_block_digest(
+        session_id="bot:group:room",
+        source_run_id="run-1",
+        block_index=2,
+        content="digest of block 2",
+        msg_count=5,
+        metadata={"reason": "test"},
+    )
+
+    summary_dir = markdown_root / "sessions" / "bot_group_room" / "block_digest"
+    files = list(summary_dir.glob("*.md"))
+    assert len(files) == 1
+    assert files[0].name.endswith("Z.md")
+    assert files[0].name[:10].count("-") == 2
+    content = files[0].read_text(encoding="utf-8")
+    assert content.startswith("+++\n")
+    assert 'session_id = "bot:group:room"' in content
+    assert 'summary_type = "block_digest"' in content
+    assert "block_index = 2" in content
+    assert '"reason": "test"' in content
+    assert "# Block Digest" in content
+    assert "digest of block 2" in content
 
 
 # -- metadata --

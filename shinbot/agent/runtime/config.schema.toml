@@ -885,6 +885,18 @@ min = 0.0
 description = "Maximum age of active chat summaries used by review."
 
 [[fields]]
+path = "agent.summaries.markdown.enabled"
+type = "boolean"
+default = true
+description = "Whether agent summaries are mirrored as Markdown documents under the data directory."
+
+[[fields]]
+path = "agent.summaries.markdown.dir"
+type = "path"
+default = "summary"
+description = "Data-directory-relative summary directory for Markdown documents."
+
+[[fields]]
 path = "agent.summaries.review_block_digest_max_age_seconds"
 type = "float"
 default = 86400.0

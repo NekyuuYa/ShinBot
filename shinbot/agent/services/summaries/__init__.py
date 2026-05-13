@@ -4,19 +4,25 @@ Provides a single write/read surface for all summary types:
 - overflow compression (review Stage 1A)
 - block digest (review Stage 1B)
 - active_chat summary
+- compressed context summaries
 
 Callers should go through ``SummaryService`` rather than the repository directly.
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from .handoff import ReviewHandoffContext, SummaryHandoffEntry
+from .markdown import MarkdownSummaryStore
 from .models import SummaryRecord, SummaryType, SummaryWriteRequest
 
 if TYPE_CHECKING:
     from shinbot.persistence.repositories.agent_summaries import AgentSummaryRepository
+
+logger = logging.getLogger(__name__)
 
 
 class SummaryService:
@@ -26,14 +32,42 @@ class SummaryService:
     never touches database internals.
     """
 
-    def __init__(self, repository: Any) -> None:
+    def __init__(
+        self,
+        repository: Any,
+        *,
+        markdown_store: MarkdownSummaryStore | None = None,
+    ) -> None:
         self._repo: AgentSummaryRepository = repository
+        self._markdown_store = markdown_store
 
     # -- write --
 
     def save(self, request: SummaryWriteRequest) -> int:
         """Persist a summary record and return its id."""
-        return self._repo.save(request)
+        created_at = time.time()
+        record_id = self._repo.save(request, created_at=created_at)
+        self._save_markdown(record_id, request, created_at=created_at)
+        return record_id
+
+    def _save_markdown(
+        self,
+        record_id: int,
+        request: SummaryWriteRequest,
+        *,
+        created_at: float,
+    ) -> None:
+        if self._markdown_store is None:
+            return
+        try:
+            self._markdown_store.save(record_id, request, created_at=created_at)
+        except Exception:
+            logger.warning(
+                "Failed to persist summary markdown for session=%s type=%s",
+                request.session_id,
+                request.summary_type.value,
+                exc_info=True,
+            )
 
     # -- read: session timeline --
 
@@ -171,9 +205,27 @@ class SummaryService:
             metadata=metadata or {},
         ))
 
+    def save_compressed_context(
+        self,
+        session_id: str,
+        source_run_id: str,
+        content: str,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> int:
+        """Shorthand for writing a compressed context summary."""
+        return self.save(SummaryWriteRequest(
+            session_id=session_id,
+            summary_type=SummaryType.COMPRESSED_CONTEXT,
+            content=content,
+            source_run_id=source_run_id,
+            metadata=metadata or {},
+        ))
+
 
 __all__ = [
     "SummaryRecord",
+    "MarkdownSummaryStore",
     "ReviewHandoffContext",
     "SummaryService",
     "SummaryHandoffEntry",
