@@ -49,47 +49,41 @@ default = "prompts"
 description = "Prompt data root resolved relative to data_dir."
 
 [[fields]]
-path = "agent.defaults.llm.route_id"
+path = "agent.defaults.llm"
 type = "string"
-default = "chat.default"
-description = "Default model route id for Agent LLM stages."
+default = "[route]chat.default"
+description = "Default LLM reference for Agent stages. Prefix with [route] or [model] to force target type."
 
 [[fields]]
-path = "agent.defaults.llm.model_id"
-type = "string"
-default = ""
-description = "Default model id for Agent LLM stages."
-
-[[fields]]
-path = "agent.defaults.llm.caller"
+path = "agent.defaults.caller"
 type = "string"
 default = ""
 advanced = true
 description = "Default caller label for model runtime calls."
 
 [[fields]]
-path = "agent.defaults.llm.profile_id"
+path = "agent.defaults.profile_id"
 type = "string"
 default = ""
 advanced = true
 description = "Default prompt profile id for Agent prompt assembly."
 
 [[fields]]
-path = "agent.defaults.llm.max_model_retries"
+path = "agent.defaults.max_model_retries"
 type = "integer"
 default = 1
 min = 0
 description = "Default retry count for retryable review model failures."
 
 [[fields]]
-path = "agent.defaults.llm.retry_backoff_seconds"
+path = "agent.defaults.retry_backoff_seconds"
 type = "float"
 default = 0.25
 min = 0.0
 description = "Default model retry backoff in seconds."
 
 [[fields]]
-path = "agent.defaults.llm.params"
+path = "agent.defaults.params"
 type = "object"
 default = {}
 advanced = true
@@ -289,6 +283,12 @@ default = true
 description = "Enable overflow compression stage."
 
 [[fields]]
+path = "agent.review.overflow_compression.llm"
+type = "string"
+default = ""
+description = "LLM reference for overflow compression."
+
+[[fields]]
 path = "agent.review.overflow_compression.caller"
 type = "string"
 default = ""
@@ -310,51 +310,18 @@ advanced = true
 description = "Stage-specific model params."
 
 [[fields]]
-path = "agent.review.overflow_compression.llm.route_id"
-type = "string"
-default = ""
-description = "Model route id for overflow compression."
-
-[[fields]]
-path = "agent.review.overflow_compression.llm.model_id"
-type = "string"
-default = ""
-description = "Model id for overflow compression."
-
-[[fields]]
-path = "agent.review.overflow_compression.llm.caller"
-type = "string"
-default = ""
-advanced = true
-description = "LLM caller override for overflow compression."
-
-[[fields]]
-path = "agent.review.overflow_compression.llm.profile_id"
-type = "string"
-default = ""
-advanced = true
-description = "Prompt profile override for overflow compression."
-
-[[fields]]
-path = "agent.review.overflow_compression.llm.max_model_retries"
+path = "agent.review.overflow_compression.max_model_retries"
 type = "integer"
 default = 1
 min = 0
 description = "Model retry count for overflow compression."
 
 [[fields]]
-path = "agent.review.overflow_compression.llm.retry_backoff_seconds"
+path = "agent.review.overflow_compression.retry_backoff_seconds"
 type = "float"
 default = 0.25
 min = 0.0
 description = "Model retry backoff for overflow compression."
-
-[[fields]]
-path = "agent.review.overflow_compression.llm.params"
-type = "object"
-default = {}
-advanced = true
-description = "LLM params for overflow compression."
 
 [[fields]]
 path = "agent.review.overflow_compression.prompts"
@@ -367,6 +334,12 @@ path = "agent.review.scan.enabled"
 type = "boolean"
 default = true
 description = "Enable review scan stage."
+
+[[fields]]
+path = "agent.review.scan.llm"
+type = "string"
+default = ""
+description = "LLM reference for review scan."
 
 [[fields]]
 path = "agent.review.scan.caller"
@@ -390,51 +363,18 @@ advanced = true
 description = "Stage-specific model params."
 
 [[fields]]
-path = "agent.review.scan.llm.route_id"
-type = "string"
-default = ""
-description = "Model route id for review scan."
-
-[[fields]]
-path = "agent.review.scan.llm.model_id"
-type = "string"
-default = ""
-description = "Model id for review scan."
-
-[[fields]]
-path = "agent.review.scan.llm.caller"
-type = "string"
-default = ""
-advanced = true
-description = "LLM caller override for review scan."
-
-[[fields]]
-path = "agent.review.scan.llm.profile_id"
-type = "string"
-default = ""
-advanced = true
-description = "Prompt profile override for review scan."
-
-[[fields]]
-path = "agent.review.scan.llm.max_model_retries"
+path = "agent.review.scan.max_model_retries"
 type = "integer"
 default = 1
 min = 0
 description = "Model retry count for review scan."
 
 [[fields]]
-path = "agent.review.scan.llm.retry_backoff_seconds"
+path = "agent.review.scan.retry_backoff_seconds"
 type = "float"
 default = 0.25
 min = 0.0
 description = "Model retry backoff for review scan."
-
-[[fields]]
-path = "agent.review.scan.llm.params"
-type = "object"
-default = {}
-advanced = true
-description = "LLM params for review scan."
 
 [[fields]]
 path = "agent.review.scan.prompts"
@@ -447,6 +387,12 @@ path = "agent.review.block_digest.enabled"
 type = "boolean"
 default = true
 description = "Enable review block digest stage."
+
+[[fields]]
+path = "agent.review.block_digest.llm"
+type = "string"
+default = ""
+description = "LLM reference for block digest."
 
 [[fields]]
 path = "agent.review.block_digest.caller"
@@ -470,51 +416,18 @@ advanced = true
 description = "Stage-specific model params."
 
 [[fields]]
-path = "agent.review.block_digest.llm.route_id"
-type = "string"
-default = ""
-description = "Model route id for block digest."
-
-[[fields]]
-path = "agent.review.block_digest.llm.model_id"
-type = "string"
-default = ""
-description = "Model id for block digest."
-
-[[fields]]
-path = "agent.review.block_digest.llm.caller"
-type = "string"
-default = ""
-advanced = true
-description = "LLM caller override for block digest."
-
-[[fields]]
-path = "agent.review.block_digest.llm.profile_id"
-type = "string"
-default = ""
-advanced = true
-description = "Prompt profile override for block digest."
-
-[[fields]]
-path = "agent.review.block_digest.llm.max_model_retries"
+path = "agent.review.block_digest.max_model_retries"
 type = "integer"
 default = 1
 min = 0
 description = "Model retry count for block digest."
 
 [[fields]]
-path = "agent.review.block_digest.llm.retry_backoff_seconds"
+path = "agent.review.block_digest.retry_backoff_seconds"
 type = "float"
 default = 0.25
 min = 0.0
 description = "Model retry backoff for block digest."
-
-[[fields]]
-path = "agent.review.block_digest.llm.params"
-type = "object"
-default = {}
-advanced = true
-description = "LLM params for block digest."
 
 [[fields]]
 path = "agent.review.block_digest.prompts"
@@ -527,6 +440,12 @@ path = "agent.review.reply_decision.enabled"
 type = "boolean"
 default = true
 description = "Enable reply decision stage."
+
+[[fields]]
+path = "agent.review.reply_decision.llm"
+type = "string"
+default = ""
+description = "LLM reference for reply decision."
 
 [[fields]]
 path = "agent.review.reply_decision.caller"
@@ -550,51 +469,18 @@ advanced = true
 description = "Stage-specific model params."
 
 [[fields]]
-path = "agent.review.reply_decision.llm.route_id"
-type = "string"
-default = ""
-description = "Model route id for reply decision."
-
-[[fields]]
-path = "agent.review.reply_decision.llm.model_id"
-type = "string"
-default = ""
-description = "Model id for reply decision."
-
-[[fields]]
-path = "agent.review.reply_decision.llm.caller"
-type = "string"
-default = ""
-advanced = true
-description = "LLM caller override for reply decision."
-
-[[fields]]
-path = "agent.review.reply_decision.llm.profile_id"
-type = "string"
-default = ""
-advanced = true
-description = "Prompt profile override for reply decision."
-
-[[fields]]
-path = "agent.review.reply_decision.llm.max_model_retries"
+path = "agent.review.reply_decision.max_model_retries"
 type = "integer"
 default = 1
 min = 0
 description = "Model retry count for reply decision."
 
 [[fields]]
-path = "agent.review.reply_decision.llm.retry_backoff_seconds"
+path = "agent.review.reply_decision.retry_backoff_seconds"
 type = "float"
 default = 0.25
 min = 0.0
 description = "Model retry backoff for reply decision."
-
-[[fields]]
-path = "agent.review.reply_decision.llm.params"
-type = "object"
-default = {}
-advanced = true
-description = "LLM params for reply decision."
 
 [[fields]]
 path = "agent.review.reply_decision.prompts"
@@ -607,6 +493,12 @@ path = "agent.review.active_chat_bootstrap.enabled"
 type = "boolean"
 default = true
 description = "Enable active chat bootstrap stage."
+
+[[fields]]
+path = "agent.review.active_chat_bootstrap.llm"
+type = "string"
+default = ""
+description = "LLM reference for active chat bootstrap."
 
 [[fields]]
 path = "agent.review.active_chat_bootstrap.timeout_seconds"
@@ -638,51 +530,18 @@ advanced = true
 description = "Stage-specific model params."
 
 [[fields]]
-path = "agent.review.active_chat_bootstrap.llm.route_id"
-type = "string"
-default = ""
-description = "Model route id for active chat bootstrap."
-
-[[fields]]
-path = "agent.review.active_chat_bootstrap.llm.model_id"
-type = "string"
-default = ""
-description = "Model id for active chat bootstrap."
-
-[[fields]]
-path = "agent.review.active_chat_bootstrap.llm.caller"
-type = "string"
-default = ""
-advanced = true
-description = "LLM caller override for active chat bootstrap."
-
-[[fields]]
-path = "agent.review.active_chat_bootstrap.llm.profile_id"
-type = "string"
-default = ""
-advanced = true
-description = "Prompt profile override for active chat bootstrap."
-
-[[fields]]
-path = "agent.review.active_chat_bootstrap.llm.max_model_retries"
+path = "agent.review.active_chat_bootstrap.max_model_retries"
 type = "integer"
 default = 1
 min = 0
 description = "Model retry count for active chat bootstrap."
 
 [[fields]]
-path = "agent.review.active_chat_bootstrap.llm.retry_backoff_seconds"
+path = "agent.review.active_chat_bootstrap.retry_backoff_seconds"
 type = "float"
 default = 0.25
 min = 0.0
 description = "Model retry backoff for active chat bootstrap."
-
-[[fields]]
-path = "agent.review.active_chat_bootstrap.llm.params"
-type = "object"
-default = {}
-advanced = true
-description = "LLM params for active chat bootstrap."
 
 [[fields]]
 path = "agent.review.active_chat_bootstrap.prompts"
@@ -931,6 +790,12 @@ description = "Reserved active chat fast mode toggle."
 runtime_status = "reserved"
 
 [[fields]]
+path = "agent.active_chat.fast_mode.llm"
+type = "string"
+default = ""
+description = "LLM reference for active chat fast mode."
+
+[[fields]]
 path = "agent.active_chat.fast_mode.caller"
 type = "string"
 default = ""
@@ -945,74 +810,11 @@ advanced = true
 description = "Prompt profile id for active chat fast mode."
 
 [[fields]]
-path = "agent.active_chat.fast_mode.route_id"
-type = "string"
-default = ""
-advanced = true
-description = "Direct route id override for active chat fast mode."
-
-[[fields]]
-path = "agent.active_chat.fast_mode.model_id"
-type = "string"
-default = ""
-advanced = true
-description = "Direct model id override for active chat fast mode."
-
-[[fields]]
 path = "agent.active_chat.fast_mode.params"
 type = "object"
 default = {}
 advanced = true
 description = "Model params for active chat fast mode."
-
-[[fields]]
-path = "agent.active_chat.fast_mode.llm.route_id"
-type = "string"
-default = ""
-description = "Model route id for active chat fast mode."
-
-[[fields]]
-path = "agent.active_chat.fast_mode.llm.model_id"
-type = "string"
-default = ""
-description = "Model id for active chat fast mode."
-
-[[fields]]
-path = "agent.active_chat.fast_mode.llm.caller"
-type = "string"
-default = ""
-advanced = true
-description = "LLM caller override for active chat fast mode."
-
-[[fields]]
-path = "agent.active_chat.fast_mode.llm.profile_id"
-type = "string"
-default = ""
-advanced = true
-description = "Prompt profile override for active chat fast mode."
-
-[[fields]]
-path = "agent.active_chat.fast_mode.llm.max_model_retries"
-type = "integer"
-default = 1
-min = 0
-description = "Reserved retry count for active chat fast mode."
-runtime_status = "reserved"
-
-[[fields]]
-path = "agent.active_chat.fast_mode.llm.retry_backoff_seconds"
-type = "float"
-default = 0.25
-min = 0.0
-description = "Reserved retry backoff for active chat fast mode."
-runtime_status = "reserved"
-
-[[fields]]
-path = "agent.active_chat.fast_mode.llm.params"
-type = "object"
-default = {}
-advanced = true
-description = "LLM params for active chat fast mode."
 
 [[fields]]
 path = "agent.active_chat.fast_mode.prompts"

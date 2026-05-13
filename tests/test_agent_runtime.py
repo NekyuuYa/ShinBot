@@ -130,13 +130,10 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                     "data_root": "custom-prompts",
                 },
                 "defaults": {
-                    "llm": {
-                        "route_id": "route-default",
-                        "model_id": "model-default",
-                        "max_model_retries": 2,
-                        "retry_backoff_seconds": 0.5,
-                        "params": {"temperature": 0.2},
-                    },
+                    "llm": "[route]route-default",
+                    "max_model_retries": 2,
+                    "retry_backoff_seconds": 0.5,
+                    "params": {"temperature": 0.2},
                     "message_format": {
                         "image_mode": "thumbnail",
                         "include_sender": False,
@@ -147,10 +144,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                     "scan_batch_size": 7,
                     "mention_wake_count": 3,
                     "scan": {
-                        "llm": {
-                            "route_id": "route-scan",
-                            "model_id": "model-scan",
-                        },
+                        "llm": "[model]model-scan",
                         "prompts": {
                             "system": "review.custom.system",
                             "task": ["review.custom.task"],
@@ -174,7 +168,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                         "semantic_wait_ms": 123,
                     },
                     "fast_mode": {
-                        "llm": {"route_id": "route-fast"},
+                        "llm": "[route]route-fast",
                         "params": {"top_p": 0.8},
                     },
                 },
@@ -192,10 +186,11 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.review_workflow_config.review_scan_batch_size == 7
     assert config.review_workflow_config.active_chat_summary_max_age_seconds == 999
     assert config.agent_scheduler_config.mention_wake_count == 3
-    assert config.review_runtime_config.review_scan.route_id == "route-scan"
-    assert config.review_runtime_config.review_scan.model_id == "model-scan"
+    assert config.review_runtime_config.review_scan.llm == "[model]model-scan"
+    assert config.review_runtime_config.review_scan.default_llm == "[route]route-default"
     assert config.review_runtime_config.review_scan.max_model_retries == 2
-    assert config.review_runtime_config.reply_decision.route_id == "route-default"
+    assert config.review_runtime_config.reply_decision.llm == ""
+    assert config.review_runtime_config.reply_decision.default_llm == "[route]route-default"
     assert config.review_runtime_config.review_scan.component_ids_by_stage == {
         PromptStage.SYSTEM_BASE: ["review.custom.system"],
         PromptStage.INSTRUCTIONS: ["review.custom.task"],
@@ -208,8 +203,8 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.active_chat_attention_config.semantic_wait_ms == 123
     assert config.active_chat_interest_effect_config.send_reply_delta == 11
     assert config.active_chat_interest_effect_config.no_reply_delta == -6
-    assert config.active_chat_fast_runner_config.route_id == "route-fast"
-    assert config.active_chat_fast_runner_config.model_id == "model-default"
+    assert config.active_chat_fast_runner_config.llm == "[route]route-fast"
+    assert config.active_chat_fast_runner_config.default_llm == "[route]route-default"
     assert config.active_chat_fast_runner_config.params == {
         "temperature": 0.2,
         "top_p": 0.8,
@@ -233,7 +228,10 @@ def test_agent_runtime_config_schema_rejects_unknown_fields() -> None:
             "agent": {
                 "id": "bad-agent",
                 "review": {"unknown": True},
-                "active_chat": {"interest_delta": {"not_real": 1}},
+                "active_chat": {
+                    "interest_delta": {"not_real": 1},
+                    "fast_mode": {"route_id": "old-route"},
+                },
             }
         }
     )
@@ -241,6 +239,7 @@ def test_agent_runtime_config_schema_rejects_unknown_fields() -> None:
     assert [(issue.path, issue.code) for issue in issues] == [
         ("agent.review.unknown", "unknown"),
         ("agent.active_chat.interest_delta.not_real", "unknown"),
+        ("agent.active_chat.fast_mode.route_id", "unknown"),
     ]
 
 

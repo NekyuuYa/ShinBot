@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Any
 
+from shinbot.agent.runtime.instance_config import parse_tagged_llm_ref
 from shinbot.agent.services.media.parsing import (
     MEDIA_INSPECTION_RESPONSE_FORMAT,
     clip_media_digest,
@@ -324,6 +325,20 @@ class MediaInspectionRunner:
         return "", "", None, llm_ref
 
     def _resolve_target(self, target: str) -> tuple[str, str, int | None]:
+        tagged = parse_tagged_llm_ref(target)
+        if tagged is not None:
+            if tagged.route_id:
+                return self._resolve_route_target(tagged.route_id)
+            if tagged.model_id:
+                return self._resolve_model_id_target(tagged.model_id)
+            return "", "", None
+
+        route_id, model_id, window = self._resolve_route_target(target)
+        if route_id or model_id:
+            return route_id, model_id, window
+        return self._resolve_model_id_target(target)
+
+    def _resolve_route_target(self, target: str) -> tuple[str, str, int | None]:
         route = self._database.model_registry.get_route(target)
         if route is not None and route["enabled"]:
             members = self._database.model_registry.list_route_members(target)
@@ -337,6 +352,9 @@ class MediaInspectionRunner:
                     return target, "", model.get("context_window")
             return target, "", None
 
+        return "", "", None
+
+    def _resolve_model_id_target(self, target: str) -> tuple[str, str, int | None]:
         model = self._database.model_registry.get_model(target)
         if model is not None and model["enabled"]:
             return "", target, model.get("context_window")

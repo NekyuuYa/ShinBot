@@ -24,6 +24,8 @@ class RunnerTemplateConfig:
     """
 
     caller: str = "agent.review"
+    llm: str = ""
+    default_llm: str = ""
     route_id: str | None = None
     model_id: str | None = None
     profile_id: str = ""

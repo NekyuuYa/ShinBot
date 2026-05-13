@@ -50,6 +50,8 @@ class ReviewStageRuntimeConfig:
     """Runtime model settings for one review stage."""
 
     enabled: bool = True
+    llm: str = ""
+    default_llm: str = ""
     route_id: str | None = None
     model_id: str | None = None
     caller: str = "agent.review"
@@ -66,6 +68,8 @@ class ReviewStageRuntimeConfig:
             return cls()
         return cls(
             enabled=bool(value.get("enabled", True)),
+            llm=str(value.get("llm") or ""),
+            default_llm=str(value.get("default_llm") or ""),
             route_id=_optional_str(value.get("route_id")),
             model_id=_optional_str(value.get("model_id")),
             caller=str(value.get("caller") or "agent.review"),
@@ -92,6 +96,8 @@ class ReviewStageRuntimeConfig:
     ) -> ReviewLLMRunnerConfig:
         kwargs: dict[str, Any] = {
             "caller": self.caller,
+            "llm": self.llm,
+            "default_llm": self.default_llm,
             "route_id": self.route_id,
             "model_id": self.model_id,
             "profile_id": self.profile_id,

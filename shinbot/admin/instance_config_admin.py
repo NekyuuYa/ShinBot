@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from shinbot.agent.runtime.instance_config import parse_tagged_llm_ref
 from shinbot.core.application.config_sections import iter_adapter_instance_records
 from shinbot.persistence.records import InstanceConfigRecord, utc_now_iso
 
@@ -424,6 +425,36 @@ def validate_model_runtime_target(database: Any, field_name: str, target: str) -
         return
 
     registry = database.model_registry
+    tagged = parse_tagged_llm_ref(normalized)
+    if tagged is not None:
+        if tagged.route_id:
+            if registry.get_route(tagged.route_id) is not None:
+                return
+            raise InstanceConfigAdminError(
+                status_code=404,
+                code="MODEL_TARGET_NOT_FOUND",
+                message=(
+                    f"InstanceConfig {field_name} route target "
+                    f"{tagged.route_id!r} was not found"
+                ),
+            )
+        if tagged.model_id:
+            if registry.get_model(tagged.model_id) is not None:
+                return
+            raise InstanceConfigAdminError(
+                status_code=404,
+                code="MODEL_TARGET_NOT_FOUND",
+                message=(
+                    f"InstanceConfig {field_name} model target "
+                    f"{tagged.model_id!r} was not found"
+                ),
+            )
+        raise InstanceConfigAdminError(
+            status_code=400,
+            code="MODEL_TARGET_NOT_FOUND",
+            message=f"InstanceConfig {field_name} LLM target {normalized!r} is empty",
+        )
+
     if registry.get_route(normalized) is not None:
         return
     if registry.get_model(normalized) is not None:

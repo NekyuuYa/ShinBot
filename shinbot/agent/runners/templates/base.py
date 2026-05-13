@@ -63,6 +63,8 @@ class RunnerTemplateBase:
             instance_config,
         )
         runtime_target = resolve_runtime_model_target(
+            llm=self._config.llm,
+            default_llm=self._config.default_llm,
             route_id=self._config.route_id,
             model_id=self._config.model_id,
             resolved=instance_config,
@@ -206,6 +208,8 @@ class RunnerTemplateBase:
                             params=dict(self._config.params),
                         ),
                         instance_config,
+                        llm=self._config.llm,
+                        default_llm=self._config.default_llm,
                         model_target_resolver=self._config.model_target_resolver,
                     )
                 )

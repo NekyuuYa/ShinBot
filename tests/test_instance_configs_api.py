@@ -215,3 +215,23 @@ def test_instance_config_rejects_litellm_model_target(tmp_path: Path):
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "MODEL_TARGET_NOT_FOUND"
     assert "openai-main/gpt-fast" in response.json()["error"]["message"]
+
+
+def test_instance_config_accepts_tagged_model_target(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    _seed_models(bot)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/instance-configs",
+            headers=headers,
+            json={
+                "instanceId": "inst-1",
+                "mainLlm": "[model]openai-main/gpt-fast",
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["mainLlm"] == "[model]openai-main/gpt-fast"

@@ -62,6 +62,8 @@ class ActiveChatFastRunnerConfig:
     """Model routing and prompt configuration for active chat fast mode."""
 
     caller: str = "agent.active_chat"
+    llm: str = ""
+    default_llm: str = ""
     route_id: str | None = None
     model_id: str | None = None
     profile_id: str = ""
@@ -199,6 +201,8 @@ class ActiveChatFastRunner:
         }
         metadata = apply_instance_runtime_config_to_metadata(metadata, instance_config)
         runtime_target = resolve_runtime_model_target(
+            llm=self._config.llm,
+            default_llm=self._config.default_llm,
             route_id=self._config.route_id,
             model_id=self._config.model_id,
             resolved=instance_config,
@@ -521,6 +525,8 @@ class ActiveChatFastRunner:
                         params=dict(self._config.params),
                     ),
                     instance_config,
+                    llm=self._config.llm,
+                    default_llm=self._config.default_llm,
                     model_target_resolver=self._config.model_target_resolver,
                 )
             )

@@ -59,6 +59,8 @@ class LLMOverflowCompressionStageRunner:
             prompt_registry=prompt_registry,
             config=RunnerTemplateConfig(
                 caller=routing.caller,
+                llm=routing.llm,
+                default_llm=routing.default_llm,
                 route_id=routing.route_id,
                 model_id=routing.model_id,
                 profile_id=routing.profile_id,

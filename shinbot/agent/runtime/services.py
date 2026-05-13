@@ -26,7 +26,7 @@ from shinbot.agent.runtime.config import (
     AgentRuntimeConfig,
     agent_runtime_config_from_mapping,
 )
-from shinbot.agent.runtime.instance_config import RuntimeModelTarget
+from shinbot.agent.runtime.instance_config import RuntimeModelTarget, parse_tagged_llm_ref
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
 from shinbot.agent.runtime.review_stores import (
     DatabaseReviewMessageStore,
@@ -449,6 +449,9 @@ class AgentRuntime:
         normalized = str(target or "").strip()
         if not normalized:
             return None
+        tagged = parse_tagged_llm_ref(normalized)
+        if tagged is not None:
+            return tagged
         if self.database is not None:
             registry = self.database.model_registry
             if registry.get_route(normalized) is not None:

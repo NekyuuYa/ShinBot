@@ -114,7 +114,7 @@ def agent_runtime_config_from_mapping(
     config = payload or {}
     agent = _mapping(config.get("agent"))
     defaults = _mapping(agent.get("defaults"))
-    defaults_llm = _mapping(defaults.get("llm"))
+    defaults_llm = _llm_defaults_config(defaults)
     review = _mapping(agent.get("review"))
     active_chat = _mapping(agent.get("active_chat"))
     summaries = _mapping(agent.get("summaries"))
@@ -383,26 +383,24 @@ def _review_stage_config(
     message_format: MessageFormatConfig,
     defaults_llm: dict[str, Any],
 ) -> ReviewStageRuntimeConfig:
-    llm = _mapping(value.get("llm"))
     return ReviewStageRuntimeConfig(
         enabled=_bool(value.get("enabled"), True),
-        route_id=_optional_str(_first(llm, value, defaults_llm, key="route_id")),
-        model_id=_optional_str(_first(llm, value, defaults_llm, key="model_id")),
-        caller=str(_first(llm, value, defaults_llm, key="caller") or "agent.review"),
-        profile_id=str(_first(llm, value, defaults_llm, key="profile_id") or ""),
+        llm=_optional_str(value.get("llm")) or "",
+        default_llm=_optional_str(defaults_llm.get("llm")) or "",
+        caller=str(_first(value, defaults_llm, key="caller") or "agent.review"),
+        profile_id=str(_first(value, defaults_llm, key="profile_id") or ""),
         component_ids_by_stage=_prompt_components(_mapping(value.get("prompts"))),
         message_format_config=message_format,
         params={
             **dict(_mapping(defaults_llm.get("params"))),
-            **dict(_mapping(llm.get("params"))),
             **dict(_mapping(value.get("params"))),
         },
         max_model_retries=_int(
-            _first(llm, value, defaults_llm, key="max_model_retries"),
+            _first(value, defaults_llm, key="max_model_retries"),
             1,
         ),
         retry_backoff_seconds=_float(
-            _first(llm, value, defaults_llm, key="retry_backoff_seconds"),
+            _first(value, defaults_llm, key="retry_backoff_seconds"),
             0.25,
         ),
     )
@@ -413,20 +411,29 @@ def _active_chat_fast_runner_config(
     message_format: MessageFormatConfig,
     defaults_llm: dict[str, Any],
 ) -> ActiveChatFastRunnerConfig:
-    llm = _mapping(value.get("llm"))
     return ActiveChatFastRunnerConfig(
-        caller=str(_first(llm, value, defaults_llm, key="caller") or "agent.active_chat"),
-        route_id=_optional_str(_first(llm, value, defaults_llm, key="route_id")),
-        model_id=_optional_str(_first(llm, value, defaults_llm, key="model_id")),
-        profile_id=str(_first(llm, value, defaults_llm, key="profile_id") or ""),
+        caller=str(_first(value, defaults_llm, key="caller") or "agent.active_chat"),
+        llm=_optional_str(value.get("llm")) or "",
+        default_llm=_optional_str(defaults_llm.get("llm")) or "",
+        profile_id=str(_first(value, defaults_llm, key="profile_id") or ""),
         component_ids_by_stage=_prompt_components(_mapping(value.get("prompts"))),
         params={
             **dict(_mapping(defaults_llm.get("params"))),
-            **dict(_mapping(llm.get("params"))),
             **dict(_mapping(value.get("params"))),
         },
         message_format_config=message_format,
     )
+
+
+def _llm_defaults_config(defaults: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "llm": defaults.get("llm"),
+        "caller": defaults.get("caller"),
+        "profile_id": defaults.get("profile_id"),
+        "max_model_retries": defaults.get("max_model_retries"),
+        "retry_backoff_seconds": defaults.get("retry_backoff_seconds"),
+        "params": defaults.get("params"),
+    }
 
 
 def _prompt_components(prompts: dict[str, Any]) -> dict[PromptStage, list[str]]:

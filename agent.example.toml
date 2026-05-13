@@ -34,9 +34,8 @@ data_root = "prompts" # Resolved relative to data/.
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
-[agent.defaults.llm]
-route_id = "chat.default"
-model_id = ""
+[agent.defaults]
+llm = "[route]chat.default"
 max_model_retries = 1
 retry_backoff_seconds = 0.25
 
@@ -50,24 +49,18 @@ include_message_id = true
 # ─── Review Workflow ─────────────────────────────────────────────────────────
 
 [agent.review]
-enabled = true
 scan_batch_size = 500
 overflow_threshold_messages = 3000
 overflow_compression_batch_size = 500
 reply_context_before_messages = 30
 reply_context_after_messages = 10
-nearby_candidate_merge_gap = 10
 block_digest_concurrency = 4
-block_digest_retry_on_429 = true
 bootstrap_timeout_seconds = 20
 
 
 [agent.review.overflow_compression]
 enabled = true
-
-[agent.review.overflow_compression.llm]
-route_id = "chat.summary"
-model_id = ""
+llm = "[route]chat.summary"
 max_model_retries = 1
 retry_backoff_seconds = 0.25
 
@@ -79,10 +72,7 @@ constraints = "review.overflow_compression.constraints"
 
 [agent.review.scan]
 enabled = true
-
-[agent.review.scan.llm]
-route_id = "chat.reasoning"
-model_id = ""
+llm = "[route]chat.reasoning"
 max_model_retries = 1
 retry_backoff_seconds = 0.25
 
@@ -94,10 +84,7 @@ constraints = "review.review_scan.constraints"
 
 [agent.review.block_digest]
 enabled = true
-
-[agent.review.block_digest.llm]
-route_id = "chat.summary"
-model_id = ""
+llm = "[route]chat.summary"
 max_model_retries = 1
 retry_backoff_seconds = 0.25
 
@@ -109,10 +96,7 @@ constraints = "review.block_digest.constraints"
 
 [agent.review.reply_decision]
 enabled = true
-
-[agent.review.reply_decision.llm]
-route_id = "chat.default"
-model_id = ""
+llm = "[route]chat.default"
 max_model_retries = 1
 retry_backoff_seconds = 0.25
 
@@ -125,11 +109,7 @@ repair = "review.reply_decision.repair"
 
 [agent.review.active_chat_bootstrap]
 enabled = true
-timeout_seconds = 20
-
-[agent.review.active_chat_bootstrap.llm]
-route_id = "chat.reasoning"
-model_id = ""
+llm = "[route]chat.reasoning"
 max_model_retries = 1
 retry_backoff_seconds = 0.25
 
@@ -142,7 +122,6 @@ constraints = "review.active_chat_bootstrap.constraints"
 # ─── Active Chat Workflow ────────────────────────────────────────────────────
 
 [agent.active_chat]
-enabled = true
 initial_interest = 15
 half_life_seconds = 20
 tick_interval_seconds = 5
@@ -161,7 +140,6 @@ send_reply_low = 3
 no_reply = -5
 no_reply_strong = -10
 send_poke = 3
-exit_active = -100
 
 [agent.active_chat.attention]
 base_contribution = 1.0
@@ -174,13 +152,7 @@ threshold = 5.0
 
 
 [agent.active_chat.fast_mode]
-enabled = true
-
-[agent.active_chat.fast_mode.llm]
-route_id = "chat.fast"
-model_id = ""
-max_model_retries = 1
-retry_backoff_seconds = 0.25
+llm = "[route]chat.fast"
 
 [agent.active_chat.fast_mode.prompts]
 system = "active_chat.fast_mode.system"
@@ -192,24 +164,7 @@ handoff_digest = "active_chat.handoff.digest"
 handoff_legacy = "active_chat.handoff.legacy"
 
 
-# ─── Context / Summaries / Media ─────────────────────────────────────────────
-
-[agent.context]
-max_context_tokens = 32000
-evict_ratio = 0.6
-use_image_thumbnails = true
+# ─── Summaries ────────────────────────────────────────────────────────────────
 
 [agent.summaries]
-enabled = true
 active_chat_summary_max_age_seconds = 1800
-review_block_digest_max_age_seconds = 86400
-
-[agent.media]
-inspection_route_id = "chat.vision"
-sticker_summary_route_id = "chat.vision"
-reanalysis_route_id = "chat.vision"
-
-[agent.media.prompts]
-inspection = "builtin.prompt.media_inspection"
-sticker_summary = "builtin.prompt.sticker_summary"
-reanalysis = "builtin.prompt.media_reanalysis"

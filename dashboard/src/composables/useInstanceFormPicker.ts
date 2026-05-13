@@ -8,6 +8,9 @@ import type { GenericPickerSection } from '@/components/model-runtime/GenericPic
 import { useModelRuntimeStore } from '@/stores/modelRuntime'
 import { resolveProviderSource } from '@/utils/modelRuntimeSources'
 
+const ROUTE_LLM_PREFIX = '[route]'
+const MODEL_LLM_PREFIX = '[model]'
+
 const BOT_CONFIG_TARGET_FIELDS: BotConfigTargetField[] = [
   {
     key: 'mainLlm',
@@ -52,6 +55,21 @@ const routeTitle = (route: ModelRuntimeRoute) => {
   return route.purpose || route.id
 }
 
+const routeLlmRef = (id: string) => `${ROUTE_LLM_PREFIX}${id}`
+const modelLlmRef = (id: string) => `${MODEL_LLM_PREFIX}${id}`
+
+const parseTaggedLlmRef = (value: string) => {
+  const normalized = value.trim()
+  const lowered = normalized.toLowerCase()
+  if (lowered.startsWith(ROUTE_LLM_PREFIX)) {
+    return { kind: 'route' as const, id: normalized.slice(ROUTE_LLM_PREFIX.length).trim() }
+  }
+  if (lowered.startsWith(MODEL_LLM_PREFIX)) {
+    return { kind: 'model' as const, id: normalized.slice(MODEL_LLM_PREFIX.length).trim() }
+  }
+  return { kind: 'auto' as const, id: normalized }
+}
+
 export function useInstanceFormPicker(
   form: Ref<InstanceFormState>,
   promptCatalog: Readonly<Ref<PromptCatalogItem[]>>
@@ -89,9 +107,9 @@ export function useInstanceFormPicker(
             return a.id.localeCompare(b.id)
           })
           .map((route) => ({
-            value: route.id,
+            value: routeLlmRef(route.id),
             title: routeTitle(route),
-            subtitle: route.purpose ? `${route.id} · ${route.strategy}` : route.strategy,
+            subtitle: `${routeLlmRef(route.id)} · ${route.strategy}`,
             icon: 'mdi-transit-connection-variant',
             iconColor: route.enabled ? 'primary' : 'surface-variant',
             tag: route.enabled
@@ -107,12 +125,12 @@ export function useInstanceFormPicker(
         const items = (modelRuntimeStore.modelsByProvider[provider.id] || [])
           .filter((model) => model.id.trim())
           .map((model) => ({
-            value: model.id,
+            value: modelLlmRef(model.id),
             title: model.displayName || model.id,
             subtitle:
               model.litellmModel && model.litellmModel !== model.id
-                ? `${model.id} · ${model.litellmModel}`
-                : model.id,
+                ? `${modelLlmRef(model.id)} · ${model.litellmModel}`
+                : modelLlmRef(model.id),
             enabled: model.enabled,
           }))
 
@@ -211,22 +229,29 @@ export function useInstanceFormPicker(
       }
     }
 
-    const route = modelRuntimeStore.routes.find((item) => item.id === target)
+    const parsed = parseTaggedLlmRef(target)
+    const route = parsed.kind !== 'model'
+      ? modelRuntimeStore.routes.find((item) => item.id === parsed.id)
+      : undefined
     if (route) {
       return {
         title: routeTitle(route),
-        subtitle: route.purpose ? route.id : route.strategy,
+        subtitle: `${routeLlmRef(route.id)} · ${route.strategy}`,
         icon: 'mdi-transit-connection-variant',
         color: route.enabled ? 'primary' : 'surface-variant',
       }
     }
 
-    const model = modelRuntimeStore.models.find((item) => item.id === target)
+    const model = parsed.kind !== 'route'
+      ? modelRuntimeStore.models.find((item) => item.id === parsed.id)
+      : undefined
     if (model) {
       return {
         title: model.displayName || model.id,
         subtitle:
-          model.litellmModel && model.litellmModel !== model.id ? model.litellmModel : model.id,
+          model.litellmModel && model.litellmModel !== model.id
+            ? `${modelLlmRef(model.id)} · ${model.litellmModel}`
+            : modelLlmRef(model.id),
         icon: 'mdi-cube-outline',
         color: model.enabled ? 'secondary' : 'surface-variant',
       }
@@ -278,9 +303,30 @@ export function useInstanceFormPicker(
     form.value.botConfig[key] = value
   }
 
+  const pickerValueForTarget = (value: string) => {
+    const target = value.trim()
+    if (!target) {
+      return ''
+    }
+    const parsed = parseTaggedLlmRef(target)
+    if (parsed.kind === 'route') {
+      return routeLlmRef(parsed.id)
+    }
+    if (parsed.kind === 'model') {
+      return modelLlmRef(parsed.id)
+    }
+    if (modelRuntimeStore.routes.some((item) => item.id === parsed.id)) {
+      return routeLlmRef(parsed.id)
+    }
+    if (modelRuntimeStore.models.some((item) => item.id === parsed.id)) {
+      return modelLlmRef(parsed.id)
+    }
+    return target
+  }
+
   const selectedTarget = (key: BotConfigTargetKey) => {
     const value = getBotConfigTarget(key)
-    return value ? [value] : []
+    return value ? [pickerValueForTarget(value)] : []
   }
 
   const targetSummary = (key: BotConfigTargetKey) => {
