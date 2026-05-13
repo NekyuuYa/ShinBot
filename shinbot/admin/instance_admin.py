@@ -237,8 +237,11 @@ def ensure_persisted_instance_record(
 def apply_instance_patch(*, inst: dict[str, Any], body: Any) -> dict[str, Any]:
     if body.name is not None:
         inst["name"] = body.name
-    if body.adapter is not None:
-        set_adapter_instance_platform(inst, body.adapter)
+    adapter = body.adapter
+    if adapter is None:
+        adapter = getattr(body, "adapterType", None)
+    if adapter is not None:
+        set_adapter_instance_platform(inst, adapter)
 
     config_patch = resolve_instance_config(body)
     if config_patch:
