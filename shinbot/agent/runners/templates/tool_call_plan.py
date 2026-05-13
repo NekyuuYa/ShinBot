@@ -10,6 +10,10 @@ from typing import Any
 
 from shinbot.agent.runners.templates.base import RunnerTemplateBase
 from shinbot.agent.runners.templates.config import RunnerTemplateConfig
+from shinbot.agent.runtime.tool_config import (
+    build_configured_extra_tools,
+    merge_tool_schemas,
+)
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.prompt_engine import PromptRegistry
@@ -156,13 +160,22 @@ class ToolCallPlanRunner(RunnerTemplateBase):
     def _build_tools(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
         if self._tool_manager is None:
             return []
-        tools = self._tool_manager.build_request_tools(
+        instance_id = instance_id_from_session(stage_input.session_id)
+        builtin_tools = self._tool_manager.build_request_tools(
             self._tool_names,
             caller=self._config.caller,
-            instance_id=instance_id_from_session(stage_input.session_id),
+            instance_id=instance_id,
             session_id=stage_input.session_id,
             tags=self._tool_tags,
         )
+        extra_tools = build_configured_extra_tools(
+            self._tool_manager,
+            config=self._config.tool_config,
+            caller=self._config.caller,
+            instance_id=instance_id,
+            session_id=stage_input.session_id,
+        )
+        tools = merge_tool_schemas(builtin_tools, extra_tools)
         if self._tool_transform is not None:
             tools = [self._tool_transform(t) for t in tools]
         return tools

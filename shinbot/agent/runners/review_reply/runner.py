@@ -82,6 +82,7 @@ class LLMReplyDecisionStageRunner:
                 builtin_component_ids=REVIEW_REPLY_COMPONENT_IDS,
                 message_format_config=routing.message_format_config,
                 params=routing.params,
+                tool_config=routing.tool_config,
                 max_model_retries=routing.max_model_retries,
                 retry_backoff_seconds=routing.retry_backoff_seconds,
                 instance_config_resolver=routing.instance_config_resolver,

@@ -469,6 +469,18 @@ advanced = true
 description = "Stage-specific model params."
 
 [[fields]]
+path = "agent.review.reply_decision.tools.extra"
+type = "string_list"
+default = []
+description = "Additional tool names exposed to reply decision; built-in chat action tools are always kept."
+
+[[fields]]
+path = "agent.review.reply_decision.tools.tags"
+type = "string_list"
+default = []
+description = "Additional tool registry tags exposed to reply decision; built-in chat action tools are always kept."
+
+[[fields]]
 path = "agent.review.reply_decision.max_model_retries"
 type = "integer"
 default = 1
@@ -815,6 +827,18 @@ type = "object"
 default = {}
 advanced = true
 description = "Model params for active chat fast mode."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.tools.extra"
+type = "string_list"
+default = []
+description = "Additional tool names exposed to active chat fast mode; built-in chat action tools are always kept."
+
+[[fields]]
+path = "agent.active_chat.fast_mode.tools.tags"
+type = "string_list"
+default = []
+description = "Additional tool registry tags exposed to active chat fast mode; built-in chat action tools are always kept."
 
 [[fields]]
 path = "agent.active_chat.fast_mode.prompts"

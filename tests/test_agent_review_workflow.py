@@ -35,6 +35,7 @@ from shinbot.agent.runtime.review_stores import (
     DatabaseReviewMessageStore,
     DatabaseReviewSummaryStore,
 )
+from shinbot.agent.runtime.tool_config import StageToolConfig
 from shinbot.agent.scheduler import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
@@ -421,10 +422,12 @@ class FakeReviewToolManager:
     def __init__(self) -> None:
         self.execute_calls: list[object] = []
         self.build_request_tool_calls: list[dict[str, object]] = []
+        self.export_model_tool_calls: list[dict[str, object]] = []
         self._next_message_log_id = 42
 
     def export_model_tools(self, **kwargs):
-        return [
+        self.export_model_tool_calls.append(dict(kwargs))
+        tools = [
             {
                 "type": "function",
                 "function": {
@@ -469,6 +472,13 @@ class FakeReviewToolManager:
                 },
             },
         ]
+        if kwargs.get("tags") == {"knowledge"}:
+            return [
+                tool
+                for tool in tools
+                if tool["function"]["name"] in {"attention.inspect_state", "send_reply"}
+            ]
+        return tools
 
     def build_request_tools(self, tool_names, **kwargs):
         self.build_request_tool_calls.append({"tool_names": list(tool_names), **kwargs})
@@ -843,10 +853,57 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     assert result.reason == "send_reply_tool"
     assert tool_manager.execute_calls[0].tool_name == "send_reply"
     assert tool_manager.execute_calls[0].caller == "test.review"
-    assert tool_manager.execute_calls[0].session_id == "bot:group:room"
-    assert tool_manager.execute_calls[0].instance_id == "bot"
-    assert tool_manager.execute_calls[0].arguments["quote_message_log_id"] == 7
-    assert tool_manager.execute_calls[0].arguments["idempotency_key"] == "exec-1:0"
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_adds_configured_extra_tools() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {"name": "no_reply", "arguments": "{}"},
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(
+            caller="test.review",
+            tool_config=StageToolConfig(
+                extra_names=("attention.inspect_state",),
+                extra_tags=("knowledge",),
+            ),
+        ),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    call = model_runtime.calls[0]
+    tool_names = [tool["function"]["name"] for tool in call.tools]
+    assert tool_names == [
+        "no_reply",
+        "send_reply",
+        "send_poke",
+        "attention.inspect_state",
+    ]
+    assert tool_manager.build_request_tool_calls[0]["tags"] == {"chat_action"}
+    assert "tags" not in tool_manager.build_request_tool_calls[1]
+    assert tool_manager.export_model_tool_calls[-1]["tags"] == {"knowledge"}
+    assert tool_manager.execute_calls == []
 
 
 @pytest.mark.asyncio

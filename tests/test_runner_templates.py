@@ -16,6 +16,7 @@ from shinbot.agent.runners.templates import (
     parse_tool_call_payload,
 )
 from shinbot.agent.runtime.instance_config import RuntimeModelTarget
+from shinbot.agent.runtime.tool_config import StageToolConfig
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
 from shinbot.agent.services.prompt_engine import PromptStage
@@ -459,6 +460,53 @@ async def test_tool_call_plan_runner_passes_tool_tags() -> None:
     await runner.run(_stage_input())
 
     assert tool_manager.build_request_tools.call_args.kwargs["tags"] == {"chat_action"}
+
+
+@pytest.mark.asyncio
+async def test_tool_call_plan_runner_adds_configured_extra_tools() -> None:
+    registry = _mock_prompt_registry()
+    model_runtime = AsyncMock()
+    model_runtime.generate.return_value = _generate_result(text="bare text")
+    tool_manager = MagicMock()
+    tool_manager.build_request_tools.side_effect = [
+        [
+            {"function": {"name": "send_reply", "parameters": {}}},
+        ],
+        [
+            {"function": {"name": "search_memory", "parameters": {}}},
+        ],
+    ]
+    tool_manager.export_model_tools.return_value = [
+        {"function": {"name": "lookup_profile", "parameters": {}}},
+        {"function": {"name": "send_reply", "parameters": {}}},
+    ]
+    config = RunnerTemplateConfig(
+        tool_config=StageToolConfig(
+            extra_names=("search_memory",),
+            extra_tags=("knowledge",),
+        )
+    )
+    runner = ToolCallPlanRunner(
+        model_runtime,
+        prompt_registry=registry,
+        config=config,
+        tool_manager=tool_manager,
+        tool_names=["send_reply"],
+        tool_tags={"chat_action"},
+    )
+
+    tools = runner.build_tools(_stage_input())
+
+    assert [tool["function"]["name"] for tool in tools] == [
+        "send_reply",
+        "search_memory",
+        "lookup_profile",
+    ]
+    assert tool_manager.build_request_tools.call_args_list[0].kwargs["tags"] == {
+        "chat_action"
+    }
+    assert "tags" not in tool_manager.build_request_tools.call_args_list[1].kwargs
+    assert tool_manager.export_model_tools.call_args.kwargs["tags"] == {"knowledge"}
 
 
 @pytest.mark.asyncio

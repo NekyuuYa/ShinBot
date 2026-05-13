@@ -14,6 +14,7 @@ from shinbot.agent.coordinators.review.factory import (
     ReviewStageRuntimeConfig,
 )
 from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
+from shinbot.agent.runtime.tool_config import stage_tool_config_from_mapping
 from shinbot.agent.scheduler.active_chat_policy import ActiveChatPolicyConfig
 from shinbot.agent.scheduler.priority_policy import PriorityPolicyConfig
 from shinbot.agent.scheduler.review_policy import ReviewPolicyConfig
@@ -395,6 +396,7 @@ def _review_stage_config(
             **dict(_mapping(defaults_llm.get("params"))),
             **dict(_mapping(value.get("params"))),
         },
+        tool_config=stage_tool_config_from_mapping(_mapping(value.get("tools"))),
         max_model_retries=_int(
             _first(value, defaults_llm, key="max_model_retries"),
             1,
@@ -421,6 +423,7 @@ def _active_chat_fast_runner_config(
             **dict(_mapping(defaults_llm.get("params"))),
             **dict(_mapping(value.get("params"))),
         },
+        tool_config=stage_tool_config_from_mapping(_mapping(value.get("tools"))),
         message_format_config=message_format,
     )
 

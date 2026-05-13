@@ -41,6 +41,7 @@ from shinbot.agent.runtime.instance_config import (
     InstanceRuntimeConfigResolver,
     RuntimeModelTarget,
 )
+from shinbot.agent.runtime.tool_config import StageToolConfig, stage_tool_config_from_mapping
 from shinbot.agent.services.message_formatter import MessageFormatConfig
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptStage
 
@@ -59,6 +60,7 @@ class ReviewStageRuntimeConfig:
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     message_format_config: MessageFormatConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
+    tool_config: StageToolConfig = field(default_factory=StageToolConfig)
     max_model_retries: int = 1
     retry_backoff_seconds: float = 0.25
 
@@ -81,6 +83,7 @@ class ReviewStageRuntimeConfig:
                 value.get("message_format_config")
             ),
             params=dict(_mapping_or_empty(value.get("params"))),
+            tool_config=stage_tool_config_from_mapping(_mapping_or_none(value.get("tools"))),
             max_model_retries=_int_or_default(value.get("max_model_retries"), 1),
             retry_backoff_seconds=_float_or_default(
                 value.get("retry_backoff_seconds"),
@@ -104,6 +107,7 @@ class ReviewStageRuntimeConfig:
             "component_ids_by_stage": dict(self.component_ids_by_stage),
             "message_format_config": self.message_format_config,
             "params": dict(self.params),
+            "tool_config": self.tool_config,
             "max_model_retries": self.max_model_retries,
             "retry_backoff_seconds": self.retry_backoff_seconds,
             "instance_config_resolver": instance_config_resolver,

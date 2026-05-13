@@ -18,6 +18,11 @@ from shinbot.agent.runtime.instance_config import (
     apply_instance_runtime_config_to_metadata,
     resolve_runtime_model_target,
 )
+from shinbot.agent.runtime.tool_config import (
+    StageToolConfig,
+    build_configured_extra_tools,
+    merge_tool_schemas,
+)
 from shinbot.agent.services.context.active_chat_context import (
     ActiveChatContextBuilder,
     ActiveChatContextBuildOptions,
@@ -69,6 +74,7 @@ class ActiveChatFastRunnerConfig:
     profile_id: str = ""
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
+    tool_config: StageToolConfig = field(default_factory=StageToolConfig)
     message_format_config: MessageFormatConfig | None = None
     instance_config_resolver: InstanceRuntimeConfigResolver | None = None
     model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None
@@ -459,16 +465,24 @@ class ActiveChatFastRunner:
             return ""
 
     def _active_chat_tools(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
-        tools = self._tool_manager.build_request_tools(
+        instance_id = instance_id_from_session(batch.session_id)
+        builtin_tools = self._tool_manager.build_request_tools(
             ["send_reply", "no_reply", "send_poke"],
             caller=self._config.caller,
-            instance_id=instance_id_from_session(batch.session_id),
+            instance_id=instance_id,
             session_id=batch.session_id,
             tags={CHAT_ACTION_TOOL_TAG},
         )
-        active_tools = [_active_chat_tool_schema(tool) for tool in tools]
+        active_tools = [_active_chat_tool_schema(tool) for tool in builtin_tools]
         active_tools.extend(_virtual_tool_schemas())
-        return active_tools
+        extra_tools = build_configured_extra_tools(
+            self._tool_manager,
+            config=self._config.tool_config,
+            caller=self._config.caller,
+            instance_id=instance_id,
+            session_id=batch.session_id,
+        )
+        return merge_tool_schemas(active_tools, extra_tools)
 
     def _component_ids_by_stage(self) -> dict[PromptStage, list[str]]:
         result: dict[PromptStage, list[str]] = {

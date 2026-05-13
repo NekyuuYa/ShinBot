@@ -150,6 +150,12 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                             "task": ["review.custom.task"],
                         },
                     },
+                    "reply_decision": {
+                        "tools": {
+                            "extra": ["search_memory"],
+                            "tags": ["knowledge"],
+                        },
+                    },
                 },
                 "summaries": {
                     "active_chat_summary_max_age_seconds": 999,
@@ -170,6 +176,10 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                     "fast_mode": {
                         "llm": "[route]route-fast",
                         "params": {"top_p": 0.8},
+                        "tools": {
+                            "extra": ["lookup_user_profile"],
+                            "tags": ["utility"],
+                        },
                     },
                 },
             }
@@ -191,6 +201,10 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.review_runtime_config.review_scan.max_model_retries == 2
     assert config.review_runtime_config.reply_decision.llm == ""
     assert config.review_runtime_config.reply_decision.default_llm == "[route]route-default"
+    assert config.review_runtime_config.reply_decision.tool_config.extra_names == (
+        "search_memory",
+    )
+    assert config.review_runtime_config.reply_decision.tool_config.extra_tags == ("knowledge",)
     assert config.review_runtime_config.review_scan.component_ids_by_stage == {
         PromptStage.SYSTEM_BASE: ["review.custom.system"],
         PromptStage.INSTRUCTIONS: ["review.custom.task"],
@@ -209,6 +223,10 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
         "temperature": 0.2,
         "top_p": 0.8,
     }
+    assert config.active_chat_fast_runner_config.tool_config.extra_names == (
+        "lookup_user_profile",
+    )
+    assert config.active_chat_fast_runner_config.tool_config.extra_tags == ("utility",)
 
 
 def test_agent_runtime_config_schema_accepts_example(tmp_path: Path) -> None:

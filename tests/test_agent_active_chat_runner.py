@@ -7,6 +7,7 @@ import pytest
 
 from shinbot.agent.coordinators.review.models import ReviewWorkflowExplanation
 from shinbot.agent.runtime.instance_config import RuntimeModelTarget
+from shinbot.agent.runtime.tool_config import StageToolConfig
 from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
 from shinbot.agent.services.message_formatter import MessageFormatterService
@@ -60,8 +61,30 @@ class FailingRepairModelRuntime:
 class FakeToolManager:
     def __init__(self) -> None:
         self.calls: list[ToolCallRequest] = []
+        self.build_request_tool_calls: list[dict[str, Any]] = []
+        self.export_model_tool_calls: list[dict[str, Any]] = []
 
-    def export_model_tools(self, **_kwargs) -> list[dict[str, Any]]:
+    def build_request_tools(self, tool_names, **kwargs) -> list[dict[str, Any]]:
+        self.build_request_tool_calls.append({"tool_names": list(tool_names), **kwargs})
+        schemas = {
+            str(item["function"]["name"]): item
+            for item in self.export_model_tools()
+        }
+        return [schemas[name] for name in tool_names if name in schemas]
+
+    def export_model_tools(self, **kwargs) -> list[dict[str, Any]]:
+        self.export_model_tool_calls.append(dict(kwargs))
+        tools = self._all_tools()
+        tags = kwargs.get("tags")
+        if tags == {"knowledge"}:
+            return [
+                tool
+                for tool in tools
+                if tool["function"]["name"] in {"lookup_profile", "send_reply"}
+            ]
+        return tools
+
+    def _all_tools(self) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
@@ -87,14 +110,31 @@ class FakeToolManager:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_memory",
+                    "description": "Search memory",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_profile",
+                    "description": "Lookup profile",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"user_id": {"type": "string"}},
+                        "required": ["user_id"],
+                    },
+                },
+            },
         ]
-
-    def build_request_tools(self, tool_names, **_kwargs) -> list[dict[str, Any]]:
-        schemas = {
-            str(item["function"]["name"]): item
-            for item in self.export_model_tools()
-        }
-        return [schemas[name] for name in tool_names if name in schemas]
 
     async def execute(self, call: ToolCallRequest) -> ToolCallResult:
         self.calls.append(call)
@@ -283,6 +323,42 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
     assert result.conversation_messages_delta[0]["tool_calls"][0]["function"]["name"] == (
         "send_reply"
     )
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_adds_configured_extra_tools() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [make_result(tool_calls=[make_tool_call("no_reply", {"internal_summary": "skip"})])]
+    )
+    tool_manager = FakeToolManager()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=tool_manager,
+        message_store=FakeMessageStore(),
+        config=ActiveChatFastRunnerConfig(
+            tool_config=StageToolConfig(
+                extra_names=("search_memory",),
+                extra_tags=("knowledge",),
+            )
+        ),
+    )
+
+    await runner.run(make_batch())
+
+    tool_names = [tool["function"]["name"] for tool in model_runtime.calls[0].tools]
+    assert tool_names == [
+        "send_reply",
+        "no_reply",
+        "exit_active",
+        "search_memory",
+        "lookup_profile",
+    ]
+    assert tool_manager.build_request_tool_calls[0]["tags"] == {"chat_action"}
+    assert "tags" not in tool_manager.build_request_tool_calls[1]
+    assert tool_manager.export_model_tool_calls[-1]["tags"] == {"knowledge"}
     rendered_prompt_text = json.dumps(
         model_runtime.calls[0].messages,
         ensure_ascii=False,
