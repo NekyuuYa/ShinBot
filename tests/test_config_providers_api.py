@@ -89,6 +89,11 @@ def test_builtin_agent_config_provider_is_registered(tmp_path: Path):
     assert "agent.active_chat.initial_interest" in {
         field["path"] for field in payload["fields"]
     }
+    capabilities = payload["metadata"]["capabilities"]
+    assert "agent.active_chat.initial_interest" in capabilities["effective"]
+    assert "agent.context.max_context_tokens" in capabilities["reserved"]
+    assert "agent.defaults.message_format.use_thumbnail" in capabilities["deprecated"]
+    assert capabilities["status_by_path"]["agent.media.inspection_route_id"] == "reserved"
     assert payload["example_toml"].startswith("# ShinBot full agent configuration template")
 
 
@@ -115,3 +120,33 @@ def test_config_provider_validate_api_reports_field_issues(tmp_path: Path):
     issues = response.json()["data"]["issues"]
     assert [issue["code"] for issue in issues] == ["choices", "max"]
     assert issues[0]["path"] == "adapter_instances[0].config.mode"
+
+
+def test_config_provider_validate_api_supports_strict_unknown_fields(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    bot.config_provider_registry.register(
+        load_provider_schema(
+            _schema_path("shinbot/builtin_plugins/shinbot_adapter_onebot_v11/config.schema.toml")
+        )
+    )
+    app = create_api_app(bot, _BootStub(tmp_path))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/config-providers/adapter/onebot_v11/validate",
+            headers=_auth_headers(app),
+            json={
+                "config": {"mode": "reverse", "unexpected": True},
+                "pathPrefix": "adapter_instances[0].config",
+                "strict": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["issues"] == [
+        {
+            "path": "adapter_instances[0].config.unexpected",
+            "message": "unknown field",
+            "code": "unknown",
+        }
+    ]

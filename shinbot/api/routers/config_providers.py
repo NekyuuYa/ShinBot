@@ -21,6 +21,7 @@ router = APIRouter(
 class ValidateConfigRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     pathPrefix: str = ""
+    strict: bool = False
 
 
 def _coerce_kind_or_404(kind: str) -> ConfigProviderKind:
@@ -80,5 +81,6 @@ async def validate_config_provider(
         provider_id,
         body.config,
         path_prefix=body.pathPrefix,
+        strict=body.strict,
     )
     return ok({"issues": [issue.to_dict() for issue in issues]})
