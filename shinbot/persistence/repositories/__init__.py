@@ -1,7 +1,6 @@
 """Repository implementations grouped by persistence domain."""
 
 from .admin import (
-    AgentRepository,
     ContextStrategyRepository,
     InstanceConfigRepository,
     PersonaRepository,
@@ -20,7 +19,6 @@ from .model import ModelExecutionRepository, ModelRegistryRepository
 from .sessions import AuditRepository, SessionRepository
 
 __all__ = [
-    "AgentRepository",
     "AIInteractionRepository",
     "AuditRepository",
     "ContextProvider",

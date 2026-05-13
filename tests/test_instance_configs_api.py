@@ -7,11 +7,8 @@ from fastapi.testclient import TestClient
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import (
-    AgentRecord,
     ModelDefinitionRecord,
     ModelProviderRecord,
-    PersonaRecord,
-    PromptDefinitionRecord,
 )
 
 
@@ -77,29 +74,6 @@ def _seed_models(bot: ShinBot) -> None:
 def test_instance_config_crud_roundtrip(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     _seed_models(bot)
-    bot.database.prompt_definitions.upsert(
-        PromptDefinitionRecord(
-            uuid="prompt-persona-1",
-            prompt_id="persona.persona-1",
-            name="Persona Prompt",
-            source_type="persona",
-            source_id="persona-1",
-            stage="identity",
-            type="static_text",
-            content="You are helpful.",
-        )
-    )
-    bot.database.personas.upsert(
-        PersonaRecord(uuid="persona-1", name="Persona", prompt_definition_uuid="prompt-persona-1")
-    )
-    bot.database.agents.upsert(
-        AgentRecord(
-            uuid="agent-uuid-1",
-            agent_id="agent.default",
-            name="Default Agent",
-            persona_uuid="persona-1",
-        )
-    )
     app = create_api_app(bot, _BootStub(tmp_path))
     headers = _auth_headers(app)
 
@@ -109,7 +83,6 @@ def test_instance_config_crud_roundtrip(tmp_path: Path):
             headers=headers,
             json={
                 "instanceId": "inst-1",
-                "defaultAgentUuid": "agent-uuid-1",
                 "mainLlm": "openai-main/gpt-fast",
                 "explicitPromptCacheEnabled": True,
                 "responseProfile": "balanced",
@@ -123,7 +96,6 @@ def test_instance_config_crud_roundtrip(tmp_path: Path):
         assert create_resp.status_code == 201
         created = create_resp.json()["data"]
         assert created["instanceId"] == "inst-1"
-        assert created["defaultAgentUuid"] == "agent-uuid-1"
         assert created["mainLlm"] == "openai-main/gpt-fast"
         assert created["explicitPromptCacheEnabled"] is True
         assert created["responseProfile"] == "balanced"

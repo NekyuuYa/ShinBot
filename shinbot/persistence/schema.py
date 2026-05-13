@@ -218,22 +218,6 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS agents (
-        uuid TEXT PRIMARY KEY,
-        agent_id TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        persona_uuid TEXT NOT NULL,
-        prompts_json TEXT NOT NULL DEFAULT '[]',
-        tools_json TEXT NOT NULL DEFAULT '[]',
-        context_strategy_json TEXT NOT NULL DEFAULT '{}',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(persona_uuid) REFERENCES personas(uuid) ON DELETE RESTRICT
-    )
-    """,
-    """
     CREATE TABLE IF NOT EXISTS prompt_definitions (
         uuid TEXT PRIMARY KEY,
         prompt_id TEXT NOT NULL UNIQUE,
@@ -264,7 +248,6 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS bot_configs (
         uuid TEXT PRIMARY KEY,
         instance_id TEXT NOT NULL UNIQUE,
-        default_agent_uuid TEXT NOT NULL DEFAULT '',
         main_llm TEXT NOT NULL DEFAULT '',
         config_json TEXT NOT NULL DEFAULT '{}',
         tags_json TEXT NOT NULL DEFAULT '[]',
@@ -769,56 +752,8 @@ def _migrate_context_strategies_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-def _migrate_agents_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "agents")
-    if not columns:
-        return
-
-    if "prompts_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN prompts_json TEXT NOT NULL DEFAULT '[]'
-            """
-        )
-    if "context_strategy_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN context_strategy_json TEXT NOT NULL DEFAULT '{}'
-            """
-        )
-    if "context_strategy_ref" in columns:
-        conn.execute(
-            """
-            UPDATE agents
-            SET context_strategy_json = json_object(
-                'ref', context_strategy_ref,
-                'type',
-                CASE
-                    WHEN context_strategy_ref = 'builtin.context.sliding_window' THEN 'sliding_window'
-                    ELSE 'custom'
-                END,
-                'params', json('{}')
-            )
-            WHERE context_strategy_ref != ''
-              AND context_strategy_json = '{}'
-            """
-        )
-    if "config_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'
-            """
-        )
-    if "tags_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'
-            """
-        )
+def _drop_legacy_agents_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS agents")
 
 
 def _migrate_personas_schema(conn: sqlite3.Connection) -> None:
@@ -879,7 +814,6 @@ def _migrate_bot_configs_schema(conn: sqlite3.Connection) -> None:
         return
 
     column_defaults = {
-        "default_agent_uuid": "TEXT NOT NULL DEFAULT ''",
         "main_llm": "TEXT NOT NULL DEFAULT ''",
         "config_json": "TEXT NOT NULL DEFAULT '{}'",
         "tags_json": "TEXT NOT NULL DEFAULT '[]'",
@@ -1060,7 +994,7 @@ def apply_schema(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
     _migrate_provider_capability_type(conn)
     _migrate_context_strategies_schema(conn)
-    _migrate_agents_schema(conn)
+    _drop_legacy_agents_table(conn)
     _migrate_personas_schema(conn)
     _migrate_prompt_definitions_schema(conn)
     _migrate_bot_configs_schema(conn)

@@ -12,7 +12,6 @@ ATTENTION_DISABLED_PROFILE = "disabled"
 class ResolvedInstanceRuntimeConfig:
     """Normalized runtime-facing configuration for a single adapter instance."""
 
-    default_agent_uuid: str = ""
     main_llm: str = ""
     explicit_prompt_cache_enabled: bool = False
     response_profile: str = "balanced"
@@ -51,7 +50,6 @@ def resolve_instance_runtime_config(
 
     raw_config = dict((payload or {}).get("config") or {})
     return ResolvedInstanceRuntimeConfig(
-        default_agent_uuid=str((payload or {}).get("default_agent_uuid") or "").strip(),
         main_llm=str((payload or {}).get("main_llm") or "").strip(),
         explicit_prompt_cache_enabled=_normalize_bool(
             raw_config.get("explicit_prompt_cache_enabled"),

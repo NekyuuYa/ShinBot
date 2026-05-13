@@ -13,7 +13,6 @@ from shinbot.persistence.records import utc_now_iso
 from shinbot.persistence.schema import apply_schema
 
 from .repositories import (
-    AgentRepository,
     AIInteractionRepository,
     AuditRepository,
     ContextStrategyRepository,
@@ -39,7 +38,6 @@ class DatabaseManager:
         self.config = config
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
-        self.agents = AgentRepository(self)
         self.instance_configs = InstanceConfigRepository(self)
         self.personas = PersonaRepository(self)
         self.prompt_definitions = PromptDefinitionRepository(self)

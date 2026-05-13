@@ -28,7 +28,6 @@ router = APIRouter(
 
 class InstanceConfigRequest(BaseModel):
     instanceId: str
-    defaultAgentUuid: str = ""
     mainLlm: str = ""
     explicitPromptCacheEnabled: bool | None = None
     mediaInspectionLlm: str | None = None
@@ -49,7 +48,6 @@ class InstanceConfigRequest(BaseModel):
 
 class InstanceConfigPatchRequest(BaseModel):
     instanceId: str | None = None
-    defaultAgentUuid: str | None = None
     mainLlm: str | None = None
     explicitPromptCacheEnabled: bool | None = None
     mediaInspectionLlm: str | None = None
@@ -93,7 +91,6 @@ def create_instance_config(body: InstanceConfigRequest, bot=BotDep, boot=BootDep
     try:
         normalized = normalize_instance_config_input(
             instance_id=body.instanceId,
-            default_agent_uuid=body.defaultAgentUuid,
             main_llm=body.mainLlm,
             explicit_prompt_cache_enabled=body.explicitPromptCacheEnabled,
             media_inspection_llm=body.mediaInspectionLlm,
@@ -120,7 +117,6 @@ def create_instance_config(body: InstanceConfigRequest, bot=BotDep, boot=BootDep
             bot=bot,
             boot=boot,
             instance_id=normalized.instance_id,
-            default_agent_uuid=normalized.default_agent_uuid,
             main_llm=normalized.main_llm,
             config=normalized.config,
         )
@@ -155,9 +151,6 @@ def patch_instance_config(
         current_config = dict(current["config"])
         normalized = normalize_instance_config_input(
             instance_id=str(_patch_value(body, "instanceId", current["instance_id"]) or ""),
-            default_agent_uuid=str(
-                _patch_value(body, "defaultAgentUuid", current["default_agent_uuid"]) or ""
-            ),
             main_llm=str(_patch_value(body, "mainLlm", current["main_llm"]) or ""),
             explicit_prompt_cache_enabled=_patch_value(
                 body,
@@ -236,7 +229,6 @@ def patch_instance_config(
             bot=bot,
             boot=boot,
             instance_id=normalized.instance_id,
-            default_agent_uuid=normalized.default_agent_uuid,
             main_llm=normalized.main_llm,
             config=normalized.config,
         )

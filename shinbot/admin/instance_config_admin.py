@@ -26,7 +26,6 @@ class InstanceConfigAdminError(RuntimeError):
 @dataclass(slots=True)
 class NormalizedInstanceConfigInput:
     instance_id: str
-    default_agent_uuid: str
     main_llm: str
     config: dict[str, Any]
     tags: list[str]
@@ -210,7 +209,6 @@ def serialize_instance_config(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "uuid": payload["uuid"],
         "instanceId": payload["instance_id"],
-        "defaultAgentUuid": payload["default_agent_uuid"],
         "mainLlm": payload["main_llm"],
         "explicitPromptCacheEnabled": extract_explicit_prompt_cache_enabled(config),
         "mediaInspectionLlm": extract_media_inspection_llm(config),
@@ -238,7 +236,6 @@ def known_instance_ids(bot: Any, boot: Any) -> set[str]:
 def normalize_instance_config_input(
     *,
     instance_id: str,
-    default_agent_uuid: str,
     main_llm: str,
     explicit_prompt_cache_enabled: Any = None,
     response_profile: str | None,
@@ -257,7 +254,6 @@ def normalize_instance_config_input(
     tags: list[str],
 ) -> NormalizedInstanceConfigInput:
     normalized_instance_id = instance_id.strip()
-    normalized_default_agent_uuid = default_agent_uuid.strip()
     normalized_main_llm = main_llm.strip()
     normalized_tags = [tag.strip() for tag in tags if tag.strip()]
     normalized_config = dict(config)
@@ -380,7 +376,6 @@ def normalize_instance_config_input(
 
     return NormalizedInstanceConfigInput(
         instance_id=normalized_instance_id,
-        default_agent_uuid=normalized_default_agent_uuid,
         main_llm=normalized_main_llm,
         config=normalized_config,
         tags=deduped_tags,
@@ -392,7 +387,6 @@ def validate_instance_config_references(
     bot: Any,
     boot: Any,
     instance_id: str,
-    default_agent_uuid: str,
     main_llm: str = "",
     config: dict[str, Any] | None = None,
 ) -> None:
@@ -401,12 +395,6 @@ def validate_instance_config_references(
             status_code=404,
             code="INSTANCE_NOT_FOUND",
             message=f"Instance {instance_id!r} was not found",
-        )
-    if default_agent_uuid and bot.database.agents.get(default_agent_uuid) is None:
-        raise InstanceConfigAdminError(
-            status_code=404,
-            code="AGENT_NOT_FOUND",
-            message=f"Agent {default_agent_uuid!r} was not found",
         )
 
     runtime_config = config or {}
@@ -514,7 +502,6 @@ def build_instance_config_record(
     return InstanceConfigRecord(
         uuid=config_uuid or str(uuid4()),
         instance_id=input_data.instance_id,
-        default_agent_uuid=input_data.default_agent_uuid,
         main_llm=input_data.main_llm,
         config=input_data.config,
         tags=input_data.tags,

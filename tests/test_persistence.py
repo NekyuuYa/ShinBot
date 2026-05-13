@@ -10,7 +10,6 @@ from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
-    AgentRecord,
     AIInteractionRecord,
     ContextStrategyRecord,
     DatabaseManager,
@@ -71,6 +70,7 @@ class TestDatabaseManager:
         assert "message_logs" in tables
         assert "ai_interactions" in tables
         assert "prompt_snapshots" in tables
+        assert "agents" not in tables
 
         conn = sqlite3.connect(sqlite_path)
         try:
@@ -118,6 +118,44 @@ class TestDatabaseManager:
         assert row["routing_status"] == MessageRoutingStatus.PENDING.value
         assert row["routed_at"] is None
         assert row["routing_skip_reason"] is None
+
+    def test_initialize_drops_legacy_agents_table(self, tmp_path):
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE agents (
+                    uuid TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    persona_uuid TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "agents" not in tables
 
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -519,88 +557,6 @@ class TestDatabaseManager:
         searched = db.message_logs.search_context("s-1", "needle", limit=10)
         assert [item["raw_text"] for item in searched] == ["searchable needle"]
 
-    def test_agent_repository_roundtrip(self, tmp_path):
-        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
-        db.initialize()
-        db.prompt_definitions.upsert(
-            PromptDefinitionRecord(
-                uuid="prompt-persona-1",
-                prompt_id="persona.persona-1",
-                name="Assistant Default Persona Prompt",
-                source_type="persona",
-                source_id="persona-1",
-                stage="identity",
-                type="static_text",
-                content="You are a concise assistant.",
-            )
-        )
-        db.prompt_definitions.upsert(
-            PromptDefinitionRecord(
-                uuid="prompt-1",
-                prompt_id="prompt.identity.extra",
-                name="Identity Extra",
-                source_type="agent_plugin",
-                source_id="plugin.identity",
-                stage="identity",
-                type="static_text",
-                content="extra identity",
-            )
-        )
-        db.prompt_definitions.upsert(
-            PromptDefinitionRecord(
-                uuid="prompt-2",
-                prompt_id="prompt.instructions.chat",
-                name="Chat Instructions",
-                source_type="agent_plugin",
-                source_id="plugin.chat",
-                stage="instructions",
-                type="static_text",
-                content="chat instructions",
-            )
-        )
-        db.personas.upsert(
-            PersonaRecord(
-                uuid="persona-1",
-                name="Assistant Default",
-                prompt_definition_uuid="prompt-persona-1",
-            )
-        )
-
-        db.agents.upsert(
-            AgentRecord(
-                uuid="agent-uuid-1",
-                agent_id="agent.default",
-                name="Default Agent",
-                persona_uuid="persona-1",
-                prompts=["prompt-1", "prompt-2"],
-                tools=["tool.echo", "tool.search"],
-                context_strategy={
-                    "ref": "builtin.context.sliding_window",
-                    "type": "sliding_window",
-                    "params": {"triggerRatio": 0.5, "trimTurns": 2},
-                },
-                config={"model_id": "openai-main/gpt-fast"},
-                tags=["default", "chat"],
-            )
-        )
-
-        payload = db.agents.get("agent-uuid-1")
-        assert payload is not None
-        assert payload["agent_id"] == "agent.default"
-        assert payload["prompts"] == ["prompt-1", "prompt-2"]
-        assert payload["tools"] == ["tool.echo", "tool.search"]
-        assert payload["context_strategy"] == {
-            "ref": "builtin.context.sliding_window",
-            "type": "sliding_window",
-            "params": {"triggerRatio": 0.5, "trimTurns": 2},
-        }
-        assert payload["config"]["model_id"] == "openai-main/gpt-fast"
-        assert payload["tags"] == ["default", "chat"]
-
-        items = db.agents.list()
-        assert len(items) == 1
-        assert items[0]["uuid"] == "agent-uuid-1"
-
     def test_prompt_definition_repository_roundtrip(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
@@ -644,7 +600,6 @@ class TestDatabaseManager:
             InstanceConfigRecord(
                 uuid="instance-config-1",
                 instance_id="inst-1",
-                default_agent_uuid="agent-uuid-1",
                 main_llm="openai-main/gpt-fast",
                 config={"reply_mode": "group"},
                 tags=["prod", "default"],

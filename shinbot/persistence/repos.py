@@ -5,7 +5,6 @@ persistence domain.  This module remains for older imports.
 """
 
 from .repositories import (
-    AgentRepository,
     AIInteractionRepository,
     AuditRepository,
     ContextProvider,
@@ -25,7 +24,6 @@ from .repositories import (
 )
 
 __all__ = [
-    "AgentRepository",
     "AIInteractionRepository",
     "AuditRepository",
     "ContextProvider",

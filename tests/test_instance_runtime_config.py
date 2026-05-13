@@ -13,7 +13,6 @@ from shinbot.core.instance_config import resolve_instance_runtime_config, select
 def test_resolve_instance_runtime_config_normalizes_defaults() -> None:
     resolved = resolve_instance_runtime_config(None)
 
-    assert resolved.default_agent_uuid == ""
     assert resolved.main_llm == ""
     assert resolved.explicit_prompt_cache_enabled is False
     assert resolved.response_profile == "balanced"
@@ -25,7 +24,6 @@ def test_resolve_instance_runtime_config_normalizes_defaults() -> None:
 def test_resolve_instance_runtime_config_reads_canonical_profiles() -> None:
     resolved = resolve_instance_runtime_config(
         {
-            "default_agent_uuid": "agent-1",
             "main_llm": "route-main",
             "config": {
                 "explicit_prompt_cache_enabled": "true",
@@ -38,7 +36,6 @@ def test_resolve_instance_runtime_config_reads_canonical_profiles() -> None:
         }
     )
 
-    assert resolved.default_agent_uuid == "agent-1"
     assert resolved.main_llm == "route-main"
     assert resolved.explicit_prompt_cache_enabled is True
     assert resolved.response_profile == "passive"

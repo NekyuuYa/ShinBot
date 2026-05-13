@@ -306,12 +306,6 @@ class MediaInspectionRunner:
         except Exception:
             logger.exception("Unhandled media inspection failure for %s", raw_hash)
 
-    def _resolve_agent(self, agent_ref: str) -> dict[str, Any] | None:
-        payload = self._database.agents.get(agent_ref)
-        if payload is not None:
-            return payload
-        return self._database.agents.get_by_agent_id(agent_ref)
-
     def _resolve_model_target(
         self,
         *,

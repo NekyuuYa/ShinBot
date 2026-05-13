@@ -122,21 +122,6 @@ class ContextStrategyRecord:
 
 
 @dataclass(slots=True)
-class AgentRecord:
-    uuid: str
-    agent_id: str
-    name: str
-    persona_uuid: str
-    prompts: list[str] = field(default_factory=list)
-    tools: list[str] = field(default_factory=list)
-    context_strategy: dict[str, Any] = field(default_factory=dict)
-    config: dict[str, Any] = field(default_factory=dict)
-    tags: list[str] = field(default_factory=list)
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
 class PromptDefinitionRecord:
     uuid: str
     prompt_id: str
@@ -167,7 +152,6 @@ class PromptDefinitionRecord:
 class InstanceConfigRecord:
     uuid: str
     instance_id: str
-    default_agent_uuid: str = ""
     main_llm: str = ""
     config: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)

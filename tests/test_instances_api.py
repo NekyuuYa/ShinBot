@@ -9,10 +9,7 @@ from shinbot.api.app import create_api_app
 from shinbot.builtin_plugins.shinbot_adapter_satori.adapter import SatoriAdapter, SatoriConfig
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import (
-    AgentRecord,
     InstanceConfigRecord,
-    PersonaRecord,
-    PromptDefinitionRecord,
 )
 from tests.conftest import MockAdapter
 
@@ -237,34 +234,10 @@ def test_update_instance_updates_dataclass_adapter_runtime_config(tmp_path: Path
 
 def test_list_instances_includes_instance_config_summary(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
-    bot.database.prompt_definitions.upsert(
-        PromptDefinitionRecord(
-            uuid="prompt-persona-1",
-            prompt_id="persona.persona-1",
-            name="Persona Prompt",
-            source_type="persona",
-            source_id="persona-1",
-            stage="identity",
-            type="static_text",
-            content="You are helpful.",
-        )
-    )
-    bot.database.personas.upsert(
-        PersonaRecord(uuid="persona-1", name="Persona", prompt_definition_uuid="prompt-persona-1")
-    )
-    bot.database.agents.upsert(
-        AgentRecord(
-            uuid="agent-uuid-1",
-            agent_id="agent.default",
-            name="Default Agent",
-            persona_uuid="persona-1",
-        )
-    )
     bot.database.instance_configs.upsert(
         InstanceConfigRecord(
             uuid="instance-config-1",
             instance_id="inst-1",
-            default_agent_uuid="agent-uuid-1",
             main_llm="openai-main/gpt-fast",
             config={
                 "response_profile": "balanced",
@@ -300,7 +273,6 @@ def test_list_instances_includes_instance_config_summary(tmp_path: Path):
     assert payload["id"] == "inst-1"
     assert payload["instanceConfig"] == {
         "uuid": "instance-config-1",
-        "defaultAgentUuid": "agent-uuid-1",
         "mainLlm": "openai-main/gpt-fast",
         "explicitPromptCacheEnabled": False,
         "mediaInspectionLlm": "",

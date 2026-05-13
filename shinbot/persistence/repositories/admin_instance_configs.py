@@ -25,8 +25,8 @@ class InstanceConfigRepository(Repository):
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT uuid, instance_id, default_agent_uuid, main_llm, config_json,
-                       tags_json, created_at, updated_at
+                SELECT uuid, instance_id, main_llm, config_json, tags_json,
+                       created_at, updated_at
                 FROM bot_configs
                 ORDER BY instance_id ASC, uuid ASC
                 """
@@ -37,8 +37,8 @@ class InstanceConfigRepository(Repository):
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT uuid, instance_id, default_agent_uuid, main_llm, config_json,
-                       tags_json, created_at, updated_at
+                SELECT uuid, instance_id, main_llm, config_json, tags_json,
+                       created_at, updated_at
                 FROM bot_configs
                 WHERE uuid = ?
                 """,
@@ -50,8 +50,8 @@ class InstanceConfigRepository(Repository):
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT uuid, instance_id, default_agent_uuid, main_llm, config_json,
-                       tags_json, created_at, updated_at
+                SELECT uuid, instance_id, main_llm, config_json, tags_json,
+                       created_at, updated_at
                 FROM bot_configs
                 WHERE instance_id = ?
                 """,
@@ -70,12 +70,11 @@ class InstanceConfigRepository(Repository):
             conn.execute(
                 """
                 INSERT INTO bot_configs (
-                    uuid, instance_id, default_agent_uuid, main_llm, config_json,
-                    tags_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    uuid, instance_id, main_llm, config_json, tags_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uuid) DO UPDATE SET
                     instance_id = excluded.instance_id,
-                    default_agent_uuid = excluded.default_agent_uuid,
                     main_llm = excluded.main_llm,
                     config_json = excluded.config_json,
                     tags_json = excluded.tags_json,
@@ -84,7 +83,6 @@ class InstanceConfigRepository(Repository):
                 (
                     payload["uuid"],
                     payload["instance_id"],
-                    payload["default_agent_uuid"],
                     payload["main_llm"],
                     self.json_dumps(payload["config"]),
                     self.json_dumps(payload["tags"]),
