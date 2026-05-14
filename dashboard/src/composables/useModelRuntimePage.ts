@@ -1,7 +1,9 @@
-import { inject, onMounted, ref, watch, type InjectionKey } from 'vue'
+import { computed, inject, onMounted, ref, watch, type InjectionKey } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { getConfigPathValue } from '@/config/paths'
 import { useModelRuntimeStore } from '@/stores/modelRuntime'
+import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
 import { useSystemSettingsStore } from '@/stores/systemSettings'
 import type { ModelRuntimeTab } from '@/utils/modelRuntimeSources'
 import type { RuntimeSelectionKind } from './modelRuntime/types'
@@ -15,6 +17,7 @@ export function useModelRuntimePage() {
   const router = useRouter()
   const route = useRoute()
   const store = useModelRuntimeStore()
+  const configWorkspaceStore = useConfigWorkspaceStore()
   const systemSettingsStore = useSystemSettingsStore()
 
   const activeTab = ref<ModelRuntimeTab>('routes')
@@ -24,6 +27,37 @@ export function useModelRuntimePage() {
   const isCreatingRoute = ref(false)
 
   const tabs = useRuntimeTabs(activeTab)
+  const runtimeModelEnabledInConfig = computed(
+    () => getConfigPathValue(configWorkspaceStore.workspace?.config, 'runtime.model') === true
+  )
+  const runtimeModelMounted = computed(
+    () => configWorkspaceStore.workspace?.runtime.modelMounted ?? false
+  )
+  const runtimeStatusNotice = computed(() => {
+    if (!configWorkspaceStore.hasWorkspace) {
+      return null
+    }
+
+    if (runtimeModelMounted.value) {
+      return null
+    }
+
+    if (!runtimeModelEnabledInConfig.value) {
+      return {
+        type: 'warning' as const,
+        icon: 'mdi-power-plug-off-outline',
+        titleKey: 'pages.modelRuntime.labels.runtimeDisabledTitle',
+        messageKey: 'pages.modelRuntime.messages.runtimeDisabled',
+      }
+    }
+
+    return {
+      type: 'warning' as const,
+      icon: 'mdi-restart-alert',
+      titleKey: 'pages.modelRuntime.labels.runtimeRestartRequiredTitle',
+      messageKey: 'pages.modelRuntime.messages.runtimeRestartRequired',
+    }
+  })
 
   const selection = useRuntimeSelection({
     store,
@@ -120,7 +154,10 @@ export function useModelRuntimePage() {
   }
 
   const refreshPage = async () => {
-    await store.fetchAll()
+    await Promise.all([
+      store.fetchAll(),
+      configWorkspaceStore.loadWorkspace({ preserveDraft: true })
+    ])
     selection.ensureSelection()
   }
 
@@ -160,7 +197,10 @@ export function useModelRuntimePage() {
   )
 
   onMounted(async () => {
-    await store.fetchAll()
+    await Promise.all([
+      store.fetchAll(),
+      configWorkspaceStore.loadWorkspace({ preserveDraft: true })
+    ])
     if (activeTab.value === 'routes') {
       routeForm.resetRouteForm()
     } else {
@@ -172,6 +212,7 @@ export function useModelRuntimePage() {
 
   return {
     store,
+    runtimeStatusNotice,
     activeTab,
     runtimeTabs: tabs.runtimeTabs,
     isRouteMode: tabs.isRouteMode,
@@ -210,6 +251,8 @@ export function useModelRuntimePage() {
     hasStoredCredential: providerForm.hasStoredCredential,
     credentialWillBeCleared: providerForm.credentialWillBeCleared,
     toggleStoredCredentialClear: providerForm.toggleStoredCredentialClear,
+    defaultParamsJsonError: providerForm.defaultParamsJsonError,
+    defaultParamsPreviewJson: providerForm.defaultParamsPreviewJson,
     selectedProviderSource: providerForm.selectedProviderSource,
     sourceSupportsThinking: providerForm.sourceSupportsThinking,
     sourceSupportsFilters: providerForm.sourceSupportsFilters,

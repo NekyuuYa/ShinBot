@@ -27,6 +27,22 @@ interface ProviderFormOptions {
   ensureSelection: () => void
 }
 
+const MANAGED_DEFAULT_PARAM_KEYS = [
+  'apiVersion',
+  'filters',
+  'proxy',
+  'requestHeaders',
+  'thinking',
+]
+
+const stripManagedDefaultParams = (value: Record<string, unknown>) => {
+  const result = { ...value }
+  for (const key of MANAGED_DEFAULT_PARAM_KEYS) {
+    delete result[key]
+  }
+  return result
+}
+
 export function useProviderForm({
   store,
   activeTab,
@@ -50,6 +66,7 @@ export function useProviderForm({
     thinkingJson: '',
     filtersJson: '',
     apiVersion: '',
+    defaultParamsJson: '',
   })
 
   const providerHeaderRows = ref<KeyValueEntry[]>([])
@@ -74,6 +91,94 @@ export function useProviderForm({
     && (!showProviderTokenField.value || providerForm.value.clearAuthOnSave)
   )
 
+  const parseAdditionalDefaultParams = () =>
+    stripManagedDefaultParams(
+      safeJsonParse<Record<string, unknown>>(
+        providerForm.value.defaultParamsJson,
+        {},
+        t('pages.modelRuntime.messages.invalidDefaultParamsJson'),
+      ),
+    )
+
+  const setOptionalDefaultParam = (
+    target: Record<string, unknown>,
+    key: string,
+    value: unknown,
+  ) => {
+    if (
+      value === undefined ||
+      value === null ||
+      value === '' ||
+      (typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.keys(value).length === 0)
+    ) {
+      delete target[key]
+      return
+    }
+    target[key] = value
+  }
+
+  const buildProviderDefaultParams = () => {
+    const nextDefaults = parseAdditionalDefaultParams()
+    const requestHeaders = entriesToObject(providerHeaderRows.value)
+
+    setOptionalDefaultParam(nextDefaults, 'requestHeaders', requestHeaders)
+    setOptionalDefaultParam(
+      nextDefaults,
+      'proxy',
+      providerForm.value.proxyAddress.trim(),
+    )
+
+    if (showApiVersionField.value) {
+      setOptionalDefaultParam(
+        nextDefaults,
+        'apiVersion',
+        providerForm.value.apiVersion.trim(),
+      )
+    } else {
+      delete nextDefaults.apiVersion
+    }
+
+    if (sourceSupportsThinking.value) {
+      setOptionalDefaultParam(
+        nextDefaults,
+        'thinking',
+        safeJsonParse(providerForm.value.thinkingJson, null),
+      )
+    } else {
+      delete nextDefaults.thinking
+    }
+
+    if (sourceSupportsFilters.value) {
+      setOptionalDefaultParam(
+        nextDefaults,
+        'filters',
+        safeJsonParse(providerForm.value.filtersJson, null),
+      )
+    } else {
+      delete nextDefaults.filters
+    }
+
+    return nextDefaults
+  }
+
+  const defaultParamsJsonError = computed(() => {
+    try {
+      parseAdditionalDefaultParams()
+      return ''
+    } catch (errorDetail: unknown) {
+      return String((errorDetail as Error).message || errorDetail)
+    }
+  })
+  const defaultParamsPreviewJson = computed(() => {
+    try {
+      return prettyJson(buildProviderDefaultParams()) || '{}'
+    } catch {
+      return ''
+    }
+  })
+
   const providerSaveLabel = computed(() =>
     isCreatingProvider.value
       ? t('common.actions.action.create')
@@ -94,6 +199,7 @@ export function useProviderForm({
       thinkingJson: '',
       filtersJson: '',
       apiVersion: '',
+      defaultParamsJson: '',
     })
     providerHeaderRows.value = []
     lastProviderProbeResult.value = null
@@ -171,26 +277,7 @@ export function useProviderForm({
 
   const saveProvider = async () => {
     try {
-      const existingDefaults = selectedProvider.value?.defaultParams || {}
-      const nextDefaults: Record<string, unknown> = {
-        ...existingDefaults,
-        requestHeaders: entriesToObject(providerHeaderRows.value),
-        proxy: providerForm.value.proxyAddress || undefined,
-      }
-
-      if (showApiVersionField.value) {
-        nextDefaults.apiVersion = providerForm.value.apiVersion || undefined
-      } else {
-        delete nextDefaults.apiVersion
-      }
-
-      nextDefaults.thinking = sourceSupportsThinking.value
-        ? safeJsonParse(providerForm.value.thinkingJson, null)
-        : undefined
-
-      nextDefaults.filters = sourceSupportsFilters.value
-        ? safeJsonParse(providerForm.value.filtersJson, null)
-        : undefined
+      const nextDefaults = buildProviderDefaultParams()
 
       const payload: ProviderPayload = {
         id: providerForm.value.id.trim(),
@@ -283,6 +370,9 @@ export function useProviderForm({
         thinkingJson: prettyJson(selectedProvider.value.defaultParams.thinking),
         filtersJson: prettyJson(selectedProvider.value.defaultParams.filters),
         apiVersion: String(selectedProvider.value.defaultParams.apiVersion || ''),
+        defaultParamsJson: prettyJson(
+          stripManagedDefaultParams(selectedProvider.value.defaultParams),
+        ),
       })
       providerHeaderRows.value = objectToEntries(
         selectedProvider.value.defaultParams.requestHeaders as Record<string, unknown>
@@ -309,6 +399,8 @@ export function useProviderForm({
     providerCanManageModels,
     hasStoredCredential,
     credentialWillBeCleared,
+    defaultParamsJsonError,
+    defaultParamsPreviewJson,
     probingProviderId,
     lastProviderProbeResult,
     resetProviderForm,

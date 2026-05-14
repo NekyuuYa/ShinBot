@@ -20,6 +20,22 @@
       </template>
     </app-page-header>
 
+    <v-alert
+      v-if="runtimeStatusNotice"
+      :type="runtimeStatusNotice.type"
+      :icon="runtimeStatusNotice.icon"
+      variant="tonal"
+      density="comfortable"
+      class="mb-6"
+    >
+      <div class="font-weight-medium">
+        {{ $t(runtimeStatusNotice.titleKey) }}
+      </div>
+      <div class="text-body-2 mt-1">
+        {{ $t(runtimeStatusNotice.messageKey) }}
+      </div>
+    </v-alert>
+
     <div class="runtime-toolbar mb-6">
       <v-btn-toggle
         v-model="activeTab"
@@ -90,6 +106,7 @@ provide(modelRuntimePageKey, runtimePage);
 
 const {
   store,
+  runtimeStatusNotice,
   activeTab,
   runtimeTabs,
   isRouteMode,

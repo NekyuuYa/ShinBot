@@ -40,6 +40,7 @@ export interface ProviderFormState {
   thinkingJson: string
   filtersJson: string
   apiVersion: string
+  defaultParamsJson: string
 }
 
 export interface RouteFormState {
