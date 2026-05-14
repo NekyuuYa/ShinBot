@@ -21,8 +21,10 @@ from shinbot.agent.scheduler import ActiveChatState, AgentScheduler, AgentState
 from shinbot.agent.services.message_formatter import ImageMode
 from shinbot.agent.services.model_runtime import GenerateResult
 from shinbot.agent.services.prompt_engine import (
+    PromptBuildRequest,
     PromptComponent,
     PromptComponentKind,
+    PromptContextPolicy,
     PromptRegistry,
     PromptStage,
 )
@@ -36,6 +38,8 @@ from shinbot.persistence.records import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
+    PersonaRecord,
+    PromptDefinitionRecord,
 )
 
 
@@ -154,6 +158,37 @@ def seed_model_registry(db: DatabaseManager, *, route_id: str = "chat.default") 
             )
         ],
     )
+
+
+def seed_persona(
+    db: DatabaseManager,
+    *,
+    persona_id: str = "persona-test",
+    prompt_uuid: str = "prompt-persona-test",
+    prompt_id: str | None = None,
+    stage: str = "identity",
+    enabled: bool = True,
+) -> str:
+    db.prompt_definitions.upsert(
+        PromptDefinitionRecord(
+            uuid=prompt_uuid,
+            prompt_id=prompt_id or f"persona.{persona_id}",
+            name="Test Persona Prompt",
+            stage=stage,
+            type="static_text",
+            content="You are the configured test persona.",
+            enabled=enabled,
+        )
+    )
+    db.personas.upsert(
+        PersonaRecord(
+            uuid=persona_id,
+            name=f"Test Persona {persona_id}",
+            prompt_definition_uuid=prompt_uuid,
+            enabled=enabled,
+        )
+    )
+    return prompt_id or f"persona.{persona_id}"
 
 
 def make_prompt_registry(
@@ -382,6 +417,36 @@ def test_agent_runtime_config_reference_validation_rejects_unknown_prompt_slots(
     ]
 
 
+def test_agent_runtime_config_reference_validation_checks_persona(
+    tmp_path: Path,
+) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    seed_persona(db, persona_id="persona-good")
+    seed_persona(
+        db,
+        persona_id="persona-wrong-stage",
+        prompt_uuid="prompt-wrong-stage",
+        stage="system_base",
+    )
+
+    assert validate_agent_runtime_config_references(
+        {"agent": {"persona_id": "persona-good"}},
+        persona_repository=db.personas,
+        prompt_definition_repository=db.prompt_definitions,
+    ) == []
+
+    issues = validate_agent_runtime_config_references(
+        {"agent": {"persona_id": "persona-wrong-stage"}},
+        persona_repository=db.personas,
+        prompt_definition_repository=db.prompt_definitions,
+    )
+
+    assert [(issue.path, issue.code) for issue in issues] == [
+        ("agent.persona_id", "persona_prompt_stage"),
+    ]
+
+
 def test_agent_runtime_config_reference_validation_checks_llm_and_prompt_refs(
     tmp_path: Path,
 ) -> None:
@@ -481,6 +546,64 @@ def test_agent_runtime_rejects_missing_llm_reference(tmp_path: Path) -> None:
                     "agent": {
                         "id": "agent-a",
                         "defaults": {"llm": "[route]missing-route"},
+                    }
+                }
+            },
+        )
+
+
+def test_agent_runtime_injects_configured_persona_prompt(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    persona_component_id = seed_persona(bot.database, persona_id="persona-agent")
+
+    runtime = install_agent_runtime(
+        bot,
+        agent_configs_by_bot_id={
+            "bot-a": {
+                "agent": {
+                    "id": "agent-a",
+                    "persona_id": "persona-agent",
+                }
+            }
+        },
+    )
+    profile = runtime.agent_profile_for_bot("bot-a")
+
+    assert profile.prompt_registry.get_component(persona_component_id) is not None
+    assert profile.config.review_runtime_config.review_scan.component_ids_by_stage[
+        PromptStage.IDENTITY
+    ] == [persona_component_id]
+    assert profile.config.review_runtime_config.reply_decision.component_ids_by_stage[
+        PromptStage.IDENTITY
+    ] == [persona_component_id]
+    assert profile.config.active_chat_fast_runner_config.component_ids_by_stage[
+        PromptStage.IDENTITY
+    ] == [persona_component_id]
+    build_result = profile.prompt_registry.build_messages(
+        PromptBuildRequest(
+            caller="test.review",
+            workflow_id="review",
+            stage_id="review_scan",
+            component_ids_by_stage=(
+                profile.config.review_runtime_config.review_scan.component_ids_by_stage
+            ),
+            context_policy=PromptContextPolicy.DISABLED,
+        )
+    )
+    assert "configured test persona" in str(build_result.messages)
+
+
+def test_agent_runtime_rejects_missing_persona_reference(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+
+    with pytest.raises(AgentRuntimeConfigError, match="missing-persona"):
+        install_agent_runtime(
+            bot,
+            agent_configs_by_bot_id={
+                "bot-a": {
+                    "agent": {
+                        "id": "agent-a",
+                        "persona_id": "missing-persona",
                     }
                 }
             },

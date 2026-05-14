@@ -58,7 +58,8 @@ from shinbot.agent.services.media import (
     register_media_runtime,
 )
 from shinbot.agent.services.message_formatter import MessageFormatterService
-from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptRegistry
+from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptRegistry, PromptStage
+from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_component
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
@@ -99,10 +100,16 @@ class AgentRuntimeProfile:
         self.prompt_file_config = config.prompt_file_config or PromptFileLoadConfig.from_data_dir(
             owner.runtime_data_dir
         )
-        self.review_runtime_config = config.review_runtime_config
-        self.review_workflow_config = config.review_workflow_config
         self.prompt_registry = owner._create_prompt_registry(self.prompt_file_config)
         self._validate_config_references()
+        persona_component_id = self._sync_persona_prompt_component()
+        if persona_component_id:
+            self.config = _agent_config_with_persona_component(
+                self.config,
+                persona_component_id,
+            )
+        self.review_runtime_config = self.config.review_runtime_config
+        self.review_workflow_config = self.config.review_workflow_config
         self.active_chat_timer = ActiveChatTimerService()
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = self._create_active_chat_workflow()
@@ -126,7 +133,7 @@ class AgentRuntimeProfile:
             context_builder=ActiveChatContextBuilderAdapter(
                 owner.context_manager,
                 message_formatter=owner.message_formatter,
-                message_format_config=config.default_message_format_config,
+                message_format_config=self.config.default_message_format_config,
             ),
             message_formatter=owner.message_formatter,
             pending_message_provider=lambda batch: owner._drain_active_chat_pending_for_repair(
@@ -134,7 +141,7 @@ class AgentRuntimeProfile:
                 batch,
             ),
             config=replace(
-                config.active_chat_fast_runner_config,
+                self.config.active_chat_fast_runner_config,
                 instance_config_resolver=owner._resolve_instance_runtime_config,
                 model_target_resolver=owner._resolve_model_target,
             ),
@@ -225,14 +232,27 @@ class AgentRuntimeProfile:
         )
 
     def _validate_config_references(self) -> None:
+        payload = self.config.raw_mapping
+        if not payload and self.config.persona_id:
+            payload = {"agent": {"persona_id": self.config.persona_id}}
         issues = validate_agent_runtime_config_references(
-            self.config.raw_mapping,
+            payload,
             model_registry=(
                 self._owner.database.model_registry
                 if self._owner.database is not None
                 else None
             ),
             prompt_registry=self.prompt_registry,
+            persona_repository=(
+                self._owner.database.personas
+                if self._owner.database is not None
+                else None
+            ),
+            prompt_definition_repository=(
+                self._owner.database.prompt_definitions
+                if self._owner.database is not None
+                else None
+            ),
         )
         if issues:
             config_path = (
@@ -241,6 +261,20 @@ class AgentRuntimeProfile:
             raise AgentRuntimeConfigError(
                 _format_agent_config_reference_issues(config_path, list(issues))
             )
+
+    def _sync_persona_prompt_component(self) -> str:
+        if self._owner.database is None or not self.config.persona_id:
+            return ""
+        persona = self._owner.database.personas.get(self.config.persona_id)
+        if persona is None:
+            return ""
+        prompt_uuid = str(persona.get("prompt_definition_uuid") or "").strip()
+        if not prompt_uuid:
+            return ""
+        prompt_definition = self._owner.database.prompt_definitions.get(prompt_uuid)
+        if prompt_definition is None:
+            return ""
+        return sync_prompt_definition_component(self.prompt_registry, prompt_definition)
 
 
 class AgentRuntime:
@@ -574,6 +608,63 @@ def _coerce_agent_runtime_config(
     if isinstance(value, dict):
         return agent_runtime_config_from_mapping(value, data_dir=runtime_data_dir)
     return agent_runtime_config_from_mapping({}, data_dir=runtime_data_dir)
+
+
+def _agent_config_with_persona_component(
+    config: AgentRuntimeConfig,
+    component_id: str,
+) -> AgentRuntimeConfig:
+    return replace(
+        config,
+        review_runtime_config=_review_runtime_config_with_persona_component(
+            config.review_runtime_config,
+            component_id,
+        ),
+        active_chat_fast_runner_config=_stage_config_with_persona_component(
+            config.active_chat_fast_runner_config,
+            component_id,
+        ),
+    )
+
+
+def _review_runtime_config_with_persona_component(
+    config: ReviewRuntimeConfig,
+    component_id: str,
+) -> ReviewRuntimeConfig:
+    return replace(
+        config,
+        overflow_compression=_stage_config_with_persona_component(
+            config.overflow_compression,
+            component_id,
+        ),
+        review_scan=_stage_config_with_persona_component(
+            config.review_scan,
+            component_id,
+        ),
+        review_block_digest=_stage_config_with_persona_component(
+            config.review_block_digest,
+            component_id,
+        ),
+        reply_decision=_stage_config_with_persona_component(
+            config.reply_decision,
+            component_id,
+        ),
+        active_chat_bootstrap=_stage_config_with_persona_component(
+            config.active_chat_bootstrap,
+            component_id,
+        ),
+    )
+
+
+def _stage_config_with_persona_component(config: Any, component_id: str) -> Any:
+    component_ids_by_stage = {
+        stage: list(component_ids)
+        for stage, component_ids in config.component_ids_by_stage.items()
+    }
+    identity_ids = component_ids_by_stage.setdefault(PromptStage.IDENTITY, [])
+    if component_id not in identity_ids:
+        identity_ids.append(component_id)
+    return replace(config, component_ids_by_stage=component_ids_by_stage)
 
 
 def _coerce_review_runtime_config(

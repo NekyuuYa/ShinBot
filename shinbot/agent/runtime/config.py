@@ -252,11 +252,22 @@ def validate_agent_runtime_config_references(
     *,
     model_registry: Any | None = None,
     prompt_registry: Any | None = None,
+    persona_repository: Any | None = None,
+    prompt_definition_repository: Any | None = None,
     path_prefix: str = "",
 ) -> list[ConfigValidationIssue]:
     """Validate Agent runtime config references against live registries."""
 
     issues: list[ConfigValidationIssue] = []
+    if persona_repository is not None and prompt_definition_repository is not None:
+        issues.extend(
+            _validate_agent_persona_ref(
+                payload,
+                persona_repository=persona_repository,
+                prompt_definition_repository=prompt_definition_repository,
+                path_prefix=path_prefix,
+            )
+        )
     if model_registry is not None:
         for path, llm_ref in _iter_agent_llm_refs(payload):
             issues.extend(
@@ -612,6 +623,73 @@ def _iter_agent_llm_refs(payload: dict[str, Any]) -> list[tuple[str, str]]:
     fast_mode = _mapping(active_chat.get("fast_mode"))
     _append_optional_ref(result, "agent.active_chat.fast_mode.llm", fast_mode.get("llm"))
     return result
+
+
+def _validate_agent_persona_ref(
+    payload: dict[str, Any],
+    *,
+    persona_repository: Any,
+    prompt_definition_repository: Any,
+    path_prefix: str,
+) -> list[ConfigValidationIssue]:
+    persona_id = _agent_persona_id(payload)
+    if not persona_id:
+        return []
+    path = _join_issue_path(path_prefix, "agent.persona_id")
+    persona = persona_repository.get(persona_id)
+    if persona is None:
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message=f"Persona {persona_id!r} is not registered",
+                code="unknown_persona",
+            )
+        ]
+    if not persona.get("enabled", True):
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message=f"Persona {persona_id!r} is disabled",
+                code="disabled_ref",
+            )
+        ]
+    prompt_uuid = str(persona.get("prompt_definition_uuid") or "").strip()
+    prompt_definition = (
+        prompt_definition_repository.get(prompt_uuid) if prompt_uuid else None
+    )
+    if prompt_definition is None:
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message=f"Persona {persona_id!r} prompt definition is not registered",
+                code="unknown_persona_prompt",
+            )
+        ]
+    if not prompt_definition.get("enabled", True):
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message=f"Persona {persona_id!r} prompt definition is disabled",
+                code="disabled_ref",
+            )
+        ]
+    stage = str(prompt_definition.get("stage") or "").strip()
+    if stage != PromptStage.IDENTITY.value:
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message=(
+                    f"Persona {persona_id!r} prompt definition belongs to stage "
+                    f"{stage!r}, not {PromptStage.IDENTITY.value!r}"
+                ),
+                code="persona_prompt_stage",
+            )
+        ]
+    return []
+
+
+def _agent_persona_id(payload: dict[str, Any]) -> str:
+    return str(_mapping(payload.get("agent")).get("persona_id") or "").strip()
 
 
 def _iter_agent_prompt_component_refs(
