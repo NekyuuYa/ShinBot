@@ -29,7 +29,7 @@ from shinbot.core.plugins.config import normalize_plugin_enabled, plugin_saved_e
 from shinbot.core.plugins.types import PluginState
 from shinbot.utils.logger import get_logger, setup_logging
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="boot", color="cyan")
 
 
 class BootState(Enum):
@@ -111,8 +111,10 @@ class BootController:
             raise
         self.bot_service_configs = preflight.bot_service_configs
         self._ensure_admin_defaults()
-        cfg_level = self.config.get("logging", {}).get("level", self.log_level)
-        self._configure_logging(cfg_level)
+        logging_cfg = self.config.get("logging", {})
+        cfg_level = logging_cfg.get("level", self.log_level)
+        third_party_noise = logging_cfg.get("third_party_noise", "debug")
+        self._configure_logging(cfg_level, third_party_noise=third_party_noise)
         DataInitializer(self.data_dir).initialize()
 
     def _phase2_infrastructure(self) -> None:
@@ -417,8 +419,8 @@ class BootController:
             except ValueError as exc:
                 logger.warning("Permission binding error: %s", exc)
 
-    def _configure_logging(self, level_name: str = "INFO") -> None:
-        setup_logging(level_name)
+    def _configure_logging(self, level_name: str = "INFO", *, third_party_noise: str = "debug") -> None:
+        setup_logging(level_name, third_party_noise=third_party_noise)
 
     def _load_config(self, config_path: Path) -> dict[str, Any]:
         if not config_path.exists():

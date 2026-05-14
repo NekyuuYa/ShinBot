@@ -1,60 +1,103 @@
 from __future__ import annotations
 
+import io
 import logging
 
 from shinbot.utils import logger as logger_utils
 
 
-def test_configure_third_party_loggers_clamps_debug_to_info():
+def test_third_party_noise_policy_does_not_mutate_dependency_logger_levels():
     original_levels = {
         name: logging.getLogger(name).level for name in logger_utils._NOISY_THIRD_PARTY_LOGGERS
     }
     try:
-        logger_utils._configure_third_party_loggers(logging.DEBUG)
+        manager = logger_utils.RuntimeLogManager()
+        manager.set_third_party_noise_policy("off")
 
         for name in logger_utils._NOISY_THIRD_PARTY_LOGGERS:
-            assert logging.getLogger(name).level == logging.INFO
+            assert logging.getLogger(name).level == original_levels[name]
     finally:
         for name, level in original_levels.items():
             logging.getLogger(name).setLevel(level)
 
 
-def test_configure_third_party_loggers_preserves_higher_root_level():
-    original_levels = {
-        name: logging.getLogger(name).level for name in logger_utils._NOISY_THIRD_PARTY_LOGGERS
-    }
+def test_third_party_noise_debug_policy_emits_only_at_root_debug():
+    root = logging.getLogger()
+    original_level = root.level
     try:
-        logger_utils._configure_third_party_loggers(logging.ERROR)
+        manager = logger_utils.RuntimeLogManager()
+        manager.set_third_party_noise_policy("debug")
+        record = logging.LogRecord(
+            name="uvicorn.error",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="WebSocket connected",
+            args=(),
+            exc_info=None,
+        )
 
-        for name in logger_utils._NOISY_THIRD_PARTY_LOGGERS:
-            assert logging.getLogger(name).level == logging.ERROR
+        root.setLevel(logging.INFO)
+        assert manager.should_emit(record) is False
+
+        root.setLevel(logging.DEBUG)
+        assert manager.should_emit(record) is True
     finally:
-        for name, level in original_levels.items():
-            logging.getLogger(name).setLevel(level)
+        root.setLevel(original_level)
+
+
+def test_third_party_warning_is_not_treated_as_noise():
+    manager = logger_utils.RuntimeLogManager()
+    manager.set_third_party_noise_policy("off")
+    record = logging.LogRecord(
+        name="websockets.server",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=1,
+        msg="connection issue",
+        args=(),
+        exc_info=None,
+    )
+
+    assert manager.should_emit(record) is True
+
+
+def test_runtime_log_manager_snapshot_exposes_state_and_sources():
+    manager = logger_utils.RuntimeLogManager()
+    manager.register_source("tests.snapshot", "测试源", color="bright-blue")
+    manager.set_third_party_noise_policy("off")
+
+    snapshot = manager.snapshot()
+
+    assert snapshot["thirdPartyNoise"] == "off"
+    assert snapshot["sourceWidth"] == 20
+    assert "DEBUG" in snapshot["availableLevels"]
+    assert "debug" in snapshot["availableThirdPartyNoise"]
+    assert "bright_blue" in snapshot["availableColors"]
+    assert {
+        "loggerName": "tests.snapshot",
+        "source": "测试源",
+        "color": "bright_blue",
+    } in snapshot["sources"]
+
+
+def test_runtime_log_manager_apply_runtime_config_validates_values():
+    manager = logger_utils.RuntimeLogManager()
+    manager.apply_runtime_config(third_party_noise="on")
+    assert manager.third_party_noise_policy() == "on"
+
+    try:
+        manager.apply_runtime_config(third_party_noise="loud")
+    except ValueError as exc:
+        assert "Unsupported third-party noise policy" in str(exc)
+    else:
+        raise AssertionError("Expected invalid third-party noise policy to fail")
 
 
 def test_normalize_log_level_aliases_warning_and_critical():
     assert logger_utils.normalize_log_level("WARNING") == "WARN"
     assert logger_utils.normalize_log_level("CRITICAL") == "ERROR"
     assert logger_utils.normalize_log_level("info") == "INFO"
-
-
-def test_downgrade_noisy_log_record_marks_transport_noise_as_debug():
-    record = logging.LogRecord(
-        name="uvicorn.error",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="WebSocket connected",
-        args=(),
-        exc_info=None,
-    )
-
-    downgraded = logger_utils._downgrade_noisy_log_record(record)
-
-    assert downgraded.levelno == logging.DEBUG
-    assert downgraded.levelname == "DEBUG"
-    assert downgraded.__dict__["_shinbot_downgraded"] is True
 
 
 def test_display_log_level_preserves_app_info_logs():
@@ -80,6 +123,147 @@ def test_shorten_logger_name_strips_prefix_and_keeps_tail_parts():
         == "api.routers.model_runtime"
     )
     assert logger_utils.shorten_logger_name("uvicorn.access") == "uvicorn.access"
+
+
+def test_format_console_source_pads_and_truncates_to_fixed_width():
+    short = logger_utils.format_console_source("boot", width=12)
+    long = logger_utils.format_console_source("adapter:shinbot_adapter_onebot_v11", width=20)
+    chinese = logger_utils.format_console_source("核心启动", width=10)
+
+    assert short == "boot        "
+    assert len(short) == 12
+    assert long.startswith("...")
+    assert long.endswith("onebot_v11")
+    assert logger_utils._display_width(long) == 20
+    assert chinese == "核心启动  "
+    assert logger_utils._display_width(chinese) == 10
+
+
+def test_runtime_log_manager_uses_explicit_record_source():
+    manager = logger_utils.RuntimeLogManager()
+    record = logging.LogRecord(
+        name="shinbot.core.application.boot",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Boot",
+        args=(),
+        exc_info=None,
+    )
+    record.shinbot_source = "boot"
+
+    assert manager.record_source(record) == "boot"
+
+
+def test_runtime_log_manager_uses_registered_longest_prefix_source():
+    manager = logger_utils.RuntimeLogManager()
+    manager.register_source("shinbot.core", "core")
+    manager.register_source("shinbot.core.application", "boot")
+    record = logging.LogRecord(
+        name="shinbot.core.application.boot",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Boot",
+        args=(),
+        exc_info=None,
+    )
+
+    assert manager.record_source(record) == "boot"
+
+
+def test_get_logger_provider_can_declare_display_source():
+    log = logger_utils.get_logger("tests.logger.provider", source="provider", color="cyan")
+    record = logging.LogRecord(
+        name=f"{log.name}.child",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Provider log",
+        args=(),
+        exc_info=None,
+    )
+
+    assert logger_utils.log_record_source(record) == "provider"
+    assert logger_utils.runtime_log_manager.record_source_color(record) == "cyan"
+
+
+def test_console_handler_keeps_message_column_aligned():
+    stream = io.StringIO()
+    handler = logger_utils.build_console_handler(
+        logging.DEBUG,
+        stream=stream,
+        use_color=False,
+    )
+    logger = logging.getLogger("test.console-format")
+    previous_propagate = logger.propagate
+    previous_handlers = list(logger.handlers)
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.DEBUG)
+    try:
+        logger.info("short")
+        logger.warning("long")
+    finally:
+        logger.handlers = previous_handlers
+        logger.propagate = previous_propagate
+
+    lines = [line for line in stream.getvalue().splitlines() if line]
+    assert len(lines) == 2
+    assert [line.index("|") for line in lines] == [36, 36]
+    assert lines[0].endswith("| short")
+    assert lines[1].endswith("| long")
+
+
+def test_console_handler_aligns_multiline_messages():
+    stream = io.StringIO()
+    handler = logger_utils.build_console_handler(
+        logging.DEBUG,
+        stream=stream,
+        use_color=False,
+    )
+    logger = logging.getLogger("test.console-multiline")
+    previous_propagate = logger.propagate
+    previous_handlers = list(logger.handlers)
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.DEBUG)
+    try:
+        logger.info("first\nsecond\n第三行")
+    finally:
+        logger.handlers = previous_handlers
+        logger.propagate = previous_propagate
+
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 3
+    assert lines[0].endswith("| first")
+    assert lines[1] == (" " * 38) + "second"
+    assert lines[2] == (" " * 38) + "第三行"
+
+
+def test_console_handler_colors_registered_source_only_when_color_enabled():
+    stream = io.StringIO()
+    logger_utils.register_log_source("test.console-color", "彩色源", color="red")
+    handler = logger_utils.build_console_handler(
+        logging.DEBUG,
+        stream=stream,
+        use_color=True,
+    )
+    logger = logging.getLogger("test.console-color")
+    previous_propagate = logger.propagate
+    previous_handlers = list(logger.handlers)
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.DEBUG)
+    try:
+        logger.info("hello")
+    finally:
+        logger.handlers = previous_handlers
+        logger.propagate = previous_propagate
+
+    output = stream.getvalue()
+    assert "\033[31m彩色源" in output
+    assert output.endswith("| hello\n")
 
 
 def test_format_log_event_omits_empty_fields_and_serializes_collections():

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from shinbot.core.application.bots_config import BotBindingConfig, BotServiceConfig
     from shinbot.persistence.engine import DatabaseManager
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="dispatch", color="cyan")
 
 
 class WaitingInputRegistry:

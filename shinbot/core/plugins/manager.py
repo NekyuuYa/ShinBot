@@ -29,7 +29,7 @@ from shinbot.utils.logger import get_logger
 if TYPE_CHECKING:
     from shinbot.core.platform.adapter_manager import AdapterManager
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="plugins", color="yellow")
 
 _VALID_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
 _BUILTIN_PLUGINS_DIR = Path(__file__).resolve().parents[2] / "builtin_plugins"

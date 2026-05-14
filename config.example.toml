@@ -17,6 +17,7 @@
 
 [logging]
 level = "INFO" # DEBUG | INFO | WARNING | ERROR
+third_party_noise = "debug" # off | debug | on; "debug" shows low-level uvicorn/websockets logs only when level = "DEBUG"
 
 [database]
 url = "sqlite:///data/db/shinbot.sqlite3"

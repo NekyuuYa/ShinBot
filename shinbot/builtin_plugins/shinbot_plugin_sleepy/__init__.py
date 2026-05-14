@@ -28,7 +28,7 @@ from shinbot.core.plugins.config import plugin_config_block
 from shinbot.core.plugins.context import Plugin
 from shinbot.utils.logger import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="plugin:sleepy", color="bright_magenta")
 
 # ── Metadata keys written into session_attention_states.metadata_json ──
 _KEY_ORIGINAL_BASE = "sleepy_original_base_threshold"

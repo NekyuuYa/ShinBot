@@ -29,7 +29,7 @@ from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import MediaSemanticRecord
 from shinbot.utils.logger import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="media.inspect", color="bright_cyan")
 
 
 class MediaInspectionRunner:

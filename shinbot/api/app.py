@@ -9,7 +9,6 @@ Implements the communication contract defined in 16_api_communication_spec.md:
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -44,7 +43,7 @@ from shinbot.api.ws_manager import (
 )
 from shinbot.core.application.config_sections import iter_adapter_instance_records
 from shinbot.core.application.system_update import DashboardDistUpdateService, SystemUpdateService
-from shinbot.utils.logger import register_log_handler_installer
+from shinbot.utils.logger import get_logger, register_log_handler_installer
 
 # Push the WebSocket log handler installer into utils so that
 # setup_logging() can call it without importing shinbot.api.
@@ -56,7 +55,7 @@ if TYPE_CHECKING:
     from shinbot.core.application.boot import BootController
     from shinbot.core.application.runtime_control import RuntimeControl
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="api", color="blue")
 
 
 def create_api_app(
