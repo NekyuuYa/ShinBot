@@ -78,6 +78,17 @@
           </v-col>
           <v-col cols="12" md="6">
             <v-text-field
+              :model-value="providerCapabilityLabel"
+              :label="$t('pages.modelRuntime.fields.capabilityType')"
+              density="comfortable"
+              variant="outlined"
+              readonly
+              persistent-hint
+              :hint="$t('pages.modelRuntime.hints.capabilityType')"
+            />
+          </v-col>
+          <v-col cols="12" md="6">
+            <v-text-field
               v-model="providerForm.id"
               :label="$t('pages.modelRuntime.fields.id')"
               density="comfortable"
@@ -109,17 +120,35 @@
               density="comfortable"
               variant="outlined"
               type="password"
-              :hint="
-                selectedProvider?.hasAuth
-                  ? $t('pages.modelRuntime.hints.tokenConfigured')
-                  : $t('pages.modelRuntime.hints.token')
-              "
+              :hint="tokenHint"
               persistent-hint
             />
+            <div v-if="hasStoredCredential" class="credential-state-row mt-2">
+              <v-chip
+                size="small"
+                variant="tonal"
+                :color="credentialWillBeCleared ? 'warning' : 'success'"
+              >
+                {{ credentialStateLabel }}
+              </v-chip>
+              <v-btn
+                size="small"
+                variant="text"
+                :color="credentialWillBeCleared ? 'primary' : 'warning'"
+                @click="toggleStoredCredentialClear"
+              >
+                {{ credentialActionLabel }}
+              </v-btn>
+            </div>
+          </v-col>
+          <v-col v-else-if="credentialWillBeCleared" cols="12" md="8">
+            <v-alert type="warning" variant="tonal" density="comfortable">
+              {{ $t("pages.modelRuntime.hints.credentialWillBeCleared") }}
+            </v-alert>
           </v-col>
           <v-col
             cols="12"
-            :md="showProviderTokenField ? 4 : 6"
+            :md="showProviderTokenField || credentialWillBeCleared ? 4 : 6"
             class="d-flex align-center"
           >
             <v-switch
@@ -150,6 +179,20 @@
         </template>
       </v-card-item>
       <v-card-text class="d-flex flex-column ga-5">
+        <v-alert
+          v-if="lastProviderProbeResult"
+          :type="lastProviderProbeResult.success ? 'success' : 'warning'"
+          variant="tonal"
+          density="comfortable"
+        >
+          <div class="font-weight-medium">
+            {{ probeResultTitle }}
+          </div>
+          <div class="text-caption mt-1">
+            {{ probeResultSubtitle }}
+          </div>
+        </v-alert>
+
         <v-row>
           <v-col v-if="showApiVersionField" cols="12" md="6">
             <v-text-field
@@ -505,13 +548,18 @@ const {
   providerSaveLabel,
   providerForm,
   providerSourceOptions,
+  providerCapabilityType,
   onProviderSourceChange,
   showProviderTokenField,
+  hasStoredCredential,
+  credentialWillBeCleared,
+  toggleStoredCredentialClear,
   selectedProviderSource,
   sourceSupportsThinking,
   sourceSupportsFilters,
   showApiVersionField,
   probingProviderId,
+  lastProviderProbeResult,
   probeSelectedProvider,
   providerHeaderRows,
   fetchCatalogInline,
@@ -561,6 +609,65 @@ const currentProviderSourceSubtitle = computed(() => {
   );
 });
 
+const providerCapabilityLabel = computed(() =>
+  t(`pages.modelRuntime.labels.${providerCapabilityType.value}`),
+);
+
+const tokenHint = computed(() => {
+  if (credentialWillBeCleared.value) {
+    return t("pages.modelRuntime.hints.credentialClearOnSave");
+  }
+  if (selectedProvider.value?.hasAuth) {
+    return t("pages.modelRuntime.hints.tokenConfigured");
+  }
+  return t("pages.modelRuntime.hints.token");
+});
+
+const credentialStateLabel = computed(() =>
+  credentialWillBeCleared.value
+    ? t("pages.modelRuntime.labels.credentialClearPending")
+    : t("pages.modelRuntime.labels.credentialStored"),
+);
+
+const credentialActionLabel = computed(() =>
+  credentialWillBeCleared.value
+    ? t("pages.modelRuntime.actions.keepCredential")
+    : t("pages.modelRuntime.actions.clearCredential"),
+);
+
+const probeModeLabel = computed(() => {
+  const mode = lastProviderProbeResult.value?.mode;
+  return mode
+    ? t(`pages.modelRuntime.labels.probeModes.${mode}`, { mode })
+    : "";
+});
+
+const probeResultTitle = computed(() =>
+  t("pages.modelRuntime.labels.probeResult", {
+    mode: probeModeLabel.value,
+  }),
+);
+
+const probeResultSubtitle = computed(() => {
+  const result = lastProviderProbeResult.value;
+  if (!result) {
+    return "";
+  }
+  if (result.executionId) {
+    return t("pages.modelRuntime.labels.probeExecution", {
+      id: result.executionId,
+    });
+  }
+  if (result.catalogSize !== undefined) {
+    return t("pages.modelRuntime.labels.probeCatalogSize", {
+      count: result.catalogSize,
+    });
+  }
+  return t("pages.modelRuntime.labels.probeCheckedAt", {
+    time: result.checkedAt,
+  });
+});
+
 const priceHint = computed(() =>
   t("pages.modelRuntime.hints.pricePerUnit", {
     currency: pricingCurrency,
@@ -584,8 +691,8 @@ const providerSourcePickerSections = computed<GenericPickerSection[]>(() => [
   },
 ]);
 
-const applyProviderSourcePick = (values: string[]) => {
-  onProviderSourceChange(values[0] ?? null);
+const applyProviderSourcePick = async (values: string[]) => {
+  await onProviderSourceChange(values[0] ?? null);
 };
 </script>
 
@@ -660,6 +767,13 @@ const applyProviderSourcePick = (values: string[]) => {
 .selector-arrow {
   flex: 0 0 auto;
   color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+.credential-state-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .model-editor-card,

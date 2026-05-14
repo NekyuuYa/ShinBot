@@ -75,6 +75,8 @@
     "fetchCatalog": "获取模型列表",
     "importCatalog": "导入所选模型",
     "testConnection": "测试连接",
+    "clearCredential": "清除凭据",
+    "keepCredential": "保留凭据",
     "refresh": "刷新",
     "addEntry": "添加条目"
   },
@@ -85,11 +87,15 @@
     "routeMemberEditor": "路由成员配置",
     "catalog": "供应商模型目录",
     "modelIdPicker": "选择模型标识",
-    "providerSourcePicker": "选择供应商来源"
+    "providerSourcePicker": "选择供应商来源",
+    "confirmProviderSourceChange": "切换供应商来源"
   },
   "hints": {
     "token": "若留空，则保留当前已存储的凭据。",
     "tokenConfigured": "当前供应商已保存凭据。",
+    "credentialClearOnSave": "保存后将清除当前已存储的凭据。",
+    "credentialWillBeCleared": "当前来源不需要 Token，保存后会清除已存储的凭据。",
+    "capabilityType": "能力类型由当前模型接入标签决定，用于筛选模型和路由。",
     "idEditable": "新建时可直接设置稳定 ID。",
     "idLockedForExisting": "已有供应商的 ID 暂不在 WebUI 中改名。",
     "emptySelection": "从左侧选择一个供应商或路由开始配置。",
@@ -127,7 +133,19 @@
     "executionCount": "最近 {count} 次调用",
     "routeTargets": "路由",
     "catalog": "目录",
-    "configured": "已配置"
+    "configured": "已配置",
+    "credentialStored": "凭据已保存",
+    "credentialClearPending": "将清除凭据",
+    "probeResult": "连接测试：{mode}",
+    "probeExecution": "执行记录：{id}",
+    "probeCatalogSize": "目录返回 {count} 个模型",
+    "probeCheckedAt": "检查时间：{time}",
+    "probeModes": {
+      "catalog": "模型目录",
+      "completion": "对话生成",
+      "embedding": "嵌入",
+      "skipped": "已跳过"
+    }
   },
   "messages": {
     "loadFailed": "加载模型管理数据失败",
@@ -139,6 +157,7 @@
     "providerProbeSuccess": "连接测试成功",
     "providerProbeFailed": "连接测试失败",
     "confirmDeleteProvider": "确认删除供应商 {id} 吗？",
+    "confirmProviderSourceChange": "切换到 {source} 会重置不兼容的高级字段，确认继续吗？",
     "catalogFetchFailed": "获取模型列表失败",
     "modelCreated": "模型已添加",
     "modelUpdated": "模型已更新",

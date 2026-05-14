@@ -34,6 +34,7 @@ export interface ProviderFormState {
   sourceType: string
   baseUrl: string
   token: string
+  clearAuthOnSave: boolean
   enabled: boolean
   proxyAddress: string
   thinkingJson: string

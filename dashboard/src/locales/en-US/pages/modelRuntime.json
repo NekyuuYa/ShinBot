@@ -75,6 +75,8 @@
     "fetchCatalog": "Fetch Model List",
     "importCatalog": "Import Selected",
     "testConnection": "Test Connection",
+    "clearCredential": "Clear Credential",
+    "keepCredential": "Keep Credential",
     "refresh": "Refresh",
     "addEntry": "Add Entry"
   },
@@ -85,11 +87,15 @@
     "routeMemberEditor": "Route Member Settings",
     "catalog": "Provider Catalog",
     "modelIdPicker": "Select Model ID",
-    "providerSourcePicker": "Select Provider Source"
+    "providerSourcePicker": "Select Provider Source",
+    "confirmProviderSourceChange": "Change Provider Source"
   },
   "hints": {
     "token": "Leave empty to keep the stored credential unchanged.",
     "tokenConfigured": "A credential is already stored for this provider.",
+    "credentialClearOnSave": "The stored credential will be cleared when you save.",
+    "credentialWillBeCleared": "This source does not use a token. Saving will clear the stored credential.",
+    "capabilityType": "Capability type follows the active model-runtime tab and controls model / route filtering.",
     "idEditable": "Set the stable ID directly while creating a new provider.",
     "idLockedForExisting": "Renaming existing provider IDs is not available in WebUI yet.",
     "emptySelection": "Select a provider or route from the left sidebar to begin.",
@@ -127,7 +133,19 @@
     "executionCount": "Recent {count} calls",
     "routeTargets": "Routes",
     "catalog": "Catalog",
-    "configured": "Configured"
+    "configured": "Configured",
+    "credentialStored": "Credential Stored",
+    "credentialClearPending": "Credential Will Be Cleared",
+    "probeResult": "Connection Test: {mode}",
+    "probeExecution": "Execution record: {id}",
+    "probeCatalogSize": "Catalog returned {count} models",
+    "probeCheckedAt": "Checked at: {time}",
+    "probeModes": {
+      "catalog": "Catalog",
+      "completion": "Completion",
+      "embedding": "Embedding",
+      "skipped": "Skipped"
+    }
   },
   "messages": {
     "loadFailed": "Failed to load model runtime data",
@@ -139,6 +157,7 @@
     "providerProbeSuccess": "Connection test succeeded",
     "providerProbeFailed": "Connection test failed",
     "confirmDeleteProvider": "Delete provider {id}?",
+    "confirmProviderSourceChange": "Switching to {source} will reset incompatible advanced fields. Continue?",
     "catalogFetchFailed": "Failed to fetch provider catalog",
     "modelCreated": "Model added",
     "modelUpdated": "Model updated",
