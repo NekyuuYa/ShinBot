@@ -145,6 +145,10 @@ class BootController:
     def _mount_model_runtime(self) -> None:
         if self.bot is None:
             raise RuntimeError("Bot is not initialized")
+
+        if not self._should_mount_model_runtime():
+            logger.info("Model runtime not requested by current config")
+            return
         if not self._runtime_feature_enabled("model", default=True):
             logger.info("Model runtime disabled by [runtime].model=false")
             return
@@ -156,8 +160,15 @@ class BootController:
     def _mount_agent_runtime(self) -> None:
         if self.bot is None:
             raise RuntimeError("Bot is not initialized")
+
+        if not self._agent_runtime_requested_by_bots():
+            logger.info("Agent runtime not requested by any enabled bot")
+            return
         if not self._runtime_feature_enabled("agent", default=True):
             logger.info("Agent runtime disabled by [runtime].agent=false")
+            return
+        if not self._runtime_feature_enabled("model", default=True):
+            logger.info("Agent runtime disabled because [runtime].model=false")
             return
 
         if self.bot.model_runtime is None:
@@ -171,6 +182,19 @@ class BootController:
         install_agent_runtime(
             self.bot,
             agent_configs_by_bot_id=self._load_agent_runtime_configs_by_bot_id(),
+        )
+
+    def _should_mount_model_runtime(self) -> bool:
+        if self._runtime_feature_enabled("model", default=False):
+            return True
+        return self._agent_runtime_requested_by_bots() and self._runtime_feature_enabled(
+            "agent", default=True
+        )
+
+    def _agent_runtime_requested_by_bots(self) -> bool:
+        return any(
+            bot_config.enabled and bot_config.agent.mode != "none"
+            for bot_config in self.bot_service_configs
         )
 
     def _load_agent_runtime_configs_by_bot_id(self) -> dict[str, Any]:

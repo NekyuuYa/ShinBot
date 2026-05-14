@@ -239,6 +239,10 @@ class Plugin:
             )
         self._adapter_manager.register_adapter(name, factory)
 
+    @property
+    def has_model_runtime(self) -> bool:
+        return self._model_runtime is not None
+
     def register_model_runtime_observer(self, observer: ModelRuntimeObserver) -> None:
         if self._model_runtime is None:
             raise RuntimeError(

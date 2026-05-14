@@ -50,7 +50,8 @@ def run_boot_preflight(
         *_validate_agent_config_files(
             bots,
             data_dir=root_data_dir,
-            agent_runtime_enabled=_runtime_feature_enabled(config, "agent", default=True),
+            agent_runtime_enabled=_runtime_feature_enabled(config, "agent", default=True)
+            and _runtime_feature_enabled(config, "model", default=True),
         ),
     ]
 

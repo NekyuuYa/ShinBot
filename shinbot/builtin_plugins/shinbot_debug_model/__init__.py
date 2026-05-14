@@ -195,7 +195,10 @@ def setup(plg: Plugin) -> None:
                 payload.get("execution_id", ""),
             )
 
-    plg.register_model_runtime_observer(_on_model_runtime_event)
+    if plg.has_model_runtime:
+        plg.register_model_runtime_observer(_on_model_runtime_event)
+    else:
+        plg.logger.info("[debug_model] model runtime unavailable; observer skipped")
 
 
 async def on_disable(plg: Plugin) -> None:

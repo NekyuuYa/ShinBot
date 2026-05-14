@@ -23,6 +23,10 @@ third_party_noise = "debug" # off | debug | on; "debug" shows low-level uvicorn/
 url = "sqlite:///data/db/shinbot.sqlite3"
 snapshot_ttl = 10800
 
+# [runtime]
+# model = true # Optional: mount model runtime even when no bot agent requires it.
+# agent = true # Optional: set false to force-disable all bot agent runtimes.
+
 
 # ─── Admin / WebUI ───────────────────────────────────────────────────────────
 

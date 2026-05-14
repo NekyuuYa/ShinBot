@@ -8,6 +8,7 @@ from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot import BootController, BootState
 from shinbot.core.application.boot_preflight import BootPreflightError, run_boot_preflight
 from shinbot.core.application.data_initializer import DataInitializer
+from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.types import PluginState
 from tests.conftest import MockAdapter
 
@@ -134,18 +135,56 @@ def test_boot_preflight_skips_agent_file_check_when_agent_runtime_disabled(
     assert result.issues == ()
 
 
+def test_boot_preflight_skips_agent_file_check_when_model_runtime_disabled(
+    tmp_path: Path,
+) -> None:
+    config = {
+        "runtime": {"model": False},
+        "bots": [
+            {
+                "id": "full-agent",
+                "enabled": True,
+                "agent": {"mode": "full", "config": "agents/missing.toml"},
+            }
+        ],
+    }
+
+    result = run_boot_preflight(
+        config,
+        data_dir=tmp_path / "data",
+        raise_on_error=False,
+    )
+
+    assert result.issues == ()
+
+
 @pytest.mark.asyncio
-async def test_boot_mounts_model_and_agent_by_default(tmp_path: Path):
+async def test_boot_does_not_mount_model_or_agent_without_agent_bots(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     _write_config(config_path)
     boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
 
     try:
         bot = await boot.boot()
-        assert bot.model_runtime is not None
-        assert bot.agent_runtime is not None
-        assert bot.agent_runtime.model_runtime is bot.model_runtime
+        assert bot.model_runtime is None
+        assert bot.agent_runtime is None
         assert (tmp_path / "data" / "agents").is_dir()
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_api_creation_does_not_mount_model_runtime_without_runtime_config(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path)
+    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+
+    try:
+        bot = await boot.boot()
+        boot.create_api_app(RuntimeControl())
+
+        assert bot.model_runtime is None
+        assert bot.agent_runtime is None
     finally:
         await boot.shutdown()
 
@@ -236,7 +275,9 @@ async def test_boot_loads_agent_config_for_full_bot(tmp_path: Path):
 
     try:
         bot = await boot.boot()
+        assert bot.model_runtime is not None
         assert bot.agent_runtime is not None
+        assert bot.agent_runtime.model_runtime is bot.model_runtime
         profile = bot.agent_runtime.agent_profile_for_bot("full-agent")
         assert profile.profile_id == "full-agent-profile"
         assert profile.config.review_workflow_config.review_scan_batch_size == 9
@@ -279,9 +320,45 @@ async def test_boot_fails_when_full_bot_agent_config_is_missing(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_boot_skips_full_agent_when_agent_runtime_disabled(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[admin]",
+                'username = "admin"',
+                'password = "admin"',
+                "jwt_expire_hours = 24",
+                "",
+                "[runtime]",
+                "agent = false",
+                "",
+                "[[bots]]",
+                'id = "full-agent"',
+                "enabled = true",
+                "",
+                "[bots.agent]",
+                'mode = "full"',
+                'config = "agents/missing.toml"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    boot = BootController(config_path=config_path, data_dir=data_dir)
+
+    try:
+        bot = await boot.boot()
+        assert bot.model_runtime is None
+        assert bot.agent_runtime is None
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_boot_can_mount_model_without_agent(tmp_path: Path):
     config_path = tmp_path / "config.toml"
-    _write_config(config_path, extra_config="[runtime]\nagent = false")
+    _write_config(config_path, extra_config="[runtime]\nmodel = true\nagent = false")
     boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
 
     try:
@@ -308,9 +385,27 @@ async def test_boot_can_disable_model_when_agent_is_disabled(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_boot_shutdown_closes_agent_runtime(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    agent_config = data_dir / "agents" / "full-agent.toml"
+    agent_config.parent.mkdir(parents=True)
+    agent_config.write_text("[agent]\nid = \"full-agent-profile\"\n", encoding="utf-8")
+
     config_path = tmp_path / "config.toml"
-    _write_config(config_path)
-    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+    _write_config(
+        config_path,
+        extra_config="\n".join(
+            [
+                "[[bots]]",
+                'id = "full-agent"',
+                "enabled = true",
+                "",
+                "[bots.agent]",
+                'mode = "full"',
+                'config = "agents/full-agent.toml"',
+            ]
+        ),
+    )
+    boot = BootController(config_path=config_path, data_dir=data_dir)
     bot = await boot.boot()
     assert bot.agent_runtime is not None
 

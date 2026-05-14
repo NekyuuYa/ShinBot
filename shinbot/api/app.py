@@ -79,7 +79,7 @@ def create_api_app(
 
         runtime_control = RuntimeControl()
     bot.runtime_control = runtime_control
-    if getattr(bot, "model_runtime", None) is None:
+    if getattr(bot, "model_runtime", None) is None and _model_runtime_enabled_for_api(boot):
         from shinbot.core.runtime import install_model_runtime
 
         install_model_runtime(bot)
@@ -313,6 +313,16 @@ def create_api_app(
         logger.warning("Dashboard dist not available; only API/WS routes are active")
 
     return app
+
+
+def _model_runtime_enabled_for_api(boot: BootController) -> bool:
+    config = getattr(boot, "config", {})
+    if not isinstance(config, dict):
+        return False
+    runtime = config.get("runtime", {})
+    if not isinstance(runtime, dict):
+        return False
+    return runtime.get("model") is True
 
 
 # ── System status snapshot ────────────────────────────────────────────
