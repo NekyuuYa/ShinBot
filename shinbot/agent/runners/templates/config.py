@@ -33,6 +33,7 @@ class RunnerTemplateConfig:
     response_format: dict[str, Any] | None = None
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
     builtin_component_ids: dict[PromptStage, list[str]] = field(default_factory=dict)
+    special_prompt_ids: dict[str, str] = field(default_factory=dict)
     message_format_config: MessageFormatConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)

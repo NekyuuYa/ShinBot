@@ -73,6 +73,7 @@ class ActiveChatFastRunnerConfig:
     model_id: str | None = None
     profile_id: str = ""
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
+    special_prompt_ids: dict[str, str] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)
     message_format_config: MessageFormatConfig | None = None
@@ -319,7 +320,10 @@ class ActiveChatFastRunner:
             )
         if batch.conversation_summary:
             summary_component = self._prompt_registry.get_component(
-                "active_chat.fast_mode.conversation_summary"
+                self._special_prompt_id(
+                    "conversation_summary",
+                    "active_chat.fast_mode.conversation_summary",
+                )
             )
             summary_prefix = summary_component.content if summary_component else "Active chat compacted conversation trace summary:"
             injections.append(
@@ -409,7 +413,9 @@ class ActiveChatFastRunner:
         sections: list[dict[str, Any]] = []
         ctx = review_result_summary
         if ctx.overflow_summaries:
-            prefix_comp = self._prompt_registry.get_component("active_chat.handoff.overflow")
+            prefix_comp = self._prompt_registry.get_component(
+                self._special_prompt_id("handoff_overflow", "active_chat.handoff.overflow")
+            )
             prefix = prefix_comp.content if prefix_comp else "之前的溢出消息摘要（较旧）："
             sections.append(
                 {
@@ -422,7 +428,9 @@ class ActiveChatFastRunner:
                 }
             )
         if ctx.block_digests:
-            prefix_comp = self._prompt_registry.get_component("active_chat.handoff.digest")
+            prefix_comp = self._prompt_registry.get_component(
+                self._special_prompt_id("handoff_digest", "active_chat.handoff.digest")
+            )
             prefix = prefix_comp.content if prefix_comp else "之前的消息块局部摘要："
             digest_text = "\n".join(
                 _render_summary_handoff_entry(entry) for entry in ctx.block_digests
@@ -431,7 +439,9 @@ class ActiveChatFastRunner:
                 {"type": "text", "text": f"{prefix}\n" + digest_text}
             )
         if ctx.recent_active_chat_summary:
-            prefix_comp = self._prompt_registry.get_component("active_chat.handoff.legacy")
+            prefix_comp = self._prompt_registry.get_component(
+                self._special_prompt_id("handoff_legacy", "active_chat.handoff.legacy")
+            )
             prefix = prefix_comp.content if prefix_comp else "上一次主动聊天会话的总结："
             sections.append(
                 {
@@ -583,7 +593,9 @@ class ActiveChatFastRunner:
             repair_messages.append(
                 {"role": "assistant", "content": str(first_result.text or "").strip()}
             )
-        repair_component = self._prompt_registry.get_component("active_chat.fast_mode.repair")
+        repair_component = self._prompt_registry.get_component(
+            self._special_prompt_id("repair", "active_chat.fast_mode.repair")
+        )
         repair_text = repair_component.content if repair_component else ""
         if not repair_text.strip():
             return repair_batch, None
@@ -600,6 +612,9 @@ class ActiveChatFastRunner:
             metadata=metadata,
             repair_attempt=1,
         )
+
+    def _special_prompt_id(self, key: str, default: str) -> str:
+        return self._config.special_prompt_ids.get(key) or default
 
     async def _batch_for_repair(self, batch: ActiveChatBatch) -> ActiveChatBatch:
         if self._pending_message_provider is None:

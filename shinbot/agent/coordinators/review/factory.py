@@ -58,6 +58,7 @@ class ReviewStageRuntimeConfig:
     caller: str = "agent.review"
     profile_id: str = ""
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
+    special_prompt_ids: dict[str, str] = field(default_factory=dict)
     message_format_config: MessageFormatConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)
@@ -79,6 +80,11 @@ class ReviewStageRuntimeConfig:
             component_ids_by_stage=_component_ids_by_stage(
                 value.get("component_ids_by_stage")
             ),
+            special_prompt_ids={
+                str(key): str(raw).strip()
+                for key, raw in _mapping_or_empty(value.get("special_prompt_ids")).items()
+                if str(raw).strip()
+            },
             message_format_config=_message_format_config(
                 value.get("message_format_config")
             ),
@@ -105,6 +111,7 @@ class ReviewStageRuntimeConfig:
             "model_id": self.model_id,
             "profile_id": self.profile_id,
             "component_ids_by_stage": dict(self.component_ids_by_stage),
+            "special_prompt_ids": dict(self.special_prompt_ids),
             "message_format_config": self.message_format_config,
             "params": dict(self.params),
             "tool_config": self.tool_config,

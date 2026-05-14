@@ -12,7 +12,12 @@ from shinbot.agent.scheduler import ActiveChatDisposition, ActiveChatState
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
-from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.prompt_engine import (
+    PromptComponent,
+    PromptComponentKind,
+    PromptRegistry,
+    PromptStage,
+)
 from shinbot.agent.services.summaries import ReviewHandoffContext, SummaryHandoffEntry
 from shinbot.agent.services.tools.schema import ToolCallRequest, ToolCallResult
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner, ActiveChatFastRunnerConfig
@@ -597,6 +602,79 @@ async def test_active_chat_fast_runner_injects_compacted_conversation_summary() 
     assert "Active chat compacted conversation trace summary" in rendered_prompt_text
     assert "compacted_messages" in rendered_prompt_text
     assert "send_reply" in rendered_prompt_text
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_uses_configured_special_prompts() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    for component_id, content in {
+        "custom.active_chat.summary": "Custom summary prefix:",
+        "custom.active_chat.handoff.overflow": "Custom overflow prefix:",
+        "custom.active_chat.handoff.digest": "Custom digest prefix:",
+        "custom.active_chat.handoff.legacy": "Custom legacy prefix:",
+    }.items():
+        prompt_registry.register_component(
+            PromptComponent(
+                id=component_id,
+                stage=PromptStage.CONTEXT,
+                kind=PromptComponentKind.STATIC_TEXT,
+                content=content,
+            )
+        )
+    prompt_registry.register_component(
+        PromptComponent(
+            id="custom.active_chat.repair",
+            stage=PromptStage.INSTRUCTIONS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="Custom repair prompt.",
+        )
+    )
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(text="raw text"),
+            make_result(tool_calls=[make_tool_call("no_reply", {"internal_summary": "fixed"})]),
+        ]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+        config=ActiveChatFastRunnerConfig(
+            special_prompt_ids={
+                "conversation_summary": "custom.active_chat.summary",
+                "repair": "custom.active_chat.repair",
+                "handoff_overflow": "custom.active_chat.handoff.overflow",
+                "handoff_digest": "custom.active_chat.handoff.digest",
+                "handoff_legacy": "custom.active_chat.handoff.legacy",
+            },
+        ),
+    )
+    handoff = ReviewHandoffContext(
+        review_run_id="test_run",
+        explanation=ReviewWorkflowExplanation(
+            review_run_id="test_run",
+            review_started_at=123.0,
+        ),
+        overflow_summaries=[SummaryHandoffEntry(content="Old topic.")],
+        block_digests=[SummaryHandoffEntry(content="Block topic.")],
+        recent_active_chat_summary="Recent topic.",
+    )
+
+    await runner.run(
+        make_batch(
+            review_result_summary=handoff,
+            conversation_summary='{"compacted_messages": 4}',
+        )
+    )
+
+    first_call_text = json.dumps(model_runtime.calls[0].messages, ensure_ascii=False)
+    assert "Custom summary prefix:" in first_call_text
+    assert "Custom overflow prefix:" in first_call_text
+    assert "Custom digest prefix:" in first_call_text
+    assert "Custom legacy prefix:" in first_call_text
+    assert model_runtime.calls[1].messages[-1]["content"][0]["text"] == "Custom repair prompt."
 
 
 @pytest.mark.asyncio

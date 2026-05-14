@@ -1198,6 +1198,57 @@ async def test_reply_decision_runner_repairs_toolless_text_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reply_decision_runner_uses_configured_repair_prompt() -> None:
+    prompt_registry = _make_prompt_registry()
+    prompt_registry.register_component(
+        PromptComponent(
+            id="custom.reply.repair",
+            stage=PromptStage.INSTRUCTIONS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="Custom reply repair prompt.",
+        )
+    )
+    model_runtime = FakeModelRuntime(
+        [
+            "raw text",
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "no_reply",
+                            "arguments": '{"internal_summary": "fixed"}',
+                        },
+                    }
+                ]
+            },
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(
+            caller="test.review",
+            special_prompt_ids={"repair": "custom.reply.repair"},
+        ),
+        prompt_registry=prompt_registry,
+        tool_manager=FakeReviewToolManager(),
+    )
+
+    await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert model_runtime.calls[1].messages[-1]["content"][0]["text"] == (
+        "Custom reply repair prompt."
+    )
+
+
+@pytest.mark.asyncio
 async def test_reply_decision_runner_fails_after_toolless_repair() -> None:
     tool_manager = FakeReviewToolManager()
     model_runtime = FakeModelRuntime(["raw text", "still raw"])
@@ -1475,7 +1526,9 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
                 },
                 "params": {"temperature": 0},
             },
-            "reply_decision": "ignored",
+            "reply_decision": {
+                "special_prompt_ids": {"repair": "custom.reply.repair"},
+            },
             "active_chat_bootstrap": {"enabled": False, "params": "ignored"},
         }
     )
@@ -1491,6 +1544,7 @@ def test_review_runtime_config_loads_plain_mapping() -> None:
     }
     assert config.review_scan.params == {"temperature": 0}
     assert config.reply_decision.enabled is True
+    assert config.reply_decision.special_prompt_ids == {"repair": "custom.reply.repair"}
     assert config.active_chat_bootstrap.enabled is False
     assert config.active_chat_bootstrap.params == {}
 

@@ -24,8 +24,10 @@ from shinbot.agent.coordinators.review.factory import (
 from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
 from shinbot.agent.runtime.config import (
     AgentRuntimeConfig,
+    AgentRuntimeConfigError,
     SummaryMarkdownConfig,
     agent_runtime_config_from_mapping,
+    validate_agent_runtime_config_references,
 )
 from shinbot.agent.runtime.instance_config import RuntimeModelTarget, parse_tagged_llm_ref
 from shinbot.agent.runtime.prompt_registration import register_runtime_prompt_components
@@ -100,6 +102,7 @@ class AgentRuntimeProfile:
         self.review_runtime_config = config.review_runtime_config
         self.review_workflow_config = config.review_workflow_config
         self.prompt_registry = owner._create_prompt_registry(self.prompt_file_config)
+        self._validate_config_references()
         self.active_chat_timer = ActiveChatTimerService()
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = self._create_active_chat_workflow()
@@ -220,6 +223,24 @@ class AgentRuntimeProfile:
             context_builder=ReviewContextBuilderAdapter(),
             **runner_factory.create_workflow_runner_kwargs(),
         )
+
+    def _validate_config_references(self) -> None:
+        issues = validate_agent_runtime_config_references(
+            self.config.raw_mapping,
+            model_registry=(
+                self._owner.database.model_registry
+                if self._owner.database is not None
+                else None
+            ),
+            prompt_registry=self.prompt_registry,
+        )
+        if issues:
+            config_path = (
+                Path(self.config.source_path) if self.config.source_path else Path(self.profile_id)
+            )
+            raise AgentRuntimeConfigError(
+                _format_agent_config_reference_issues(config_path, list(issues))
+            )
 
 
 class AgentRuntime:
@@ -604,6 +625,15 @@ def _summary_markdown_store(
     if not config.enabled:
         return None
     return MarkdownSummaryStore(config.directory)
+
+
+def _format_agent_config_reference_issues(
+    path: Path,
+    issues: list[Any],
+) -> str:
+    lines = [f"Agent config {path} has invalid references:"]
+    lines.extend(f"- {issue.path}: {issue.message} ({issue.code})" for issue in issues)
+    return "\n".join(lines)
 
 
 def _workflow_active_chat_batch_from_coordinator(

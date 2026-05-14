@@ -66,7 +66,9 @@ class LLMReplyDecisionStageRunner:
         self._tool_manager = tool_manager
         self._prompt_registry = prompt_registry
         self._routing = routing
-        repair_component = prompt_registry.get_component("review.reply_decision.repair")
+        repair_component = prompt_registry.get_component(
+            routing.special_prompt_ids.get("repair") or "review.reply_decision.repair"
+        )
         self._template = ToolCallPlanRunner(
             model_runtime,
             prompt_registry=prompt_registry,
@@ -80,6 +82,7 @@ class LLMReplyDecisionStageRunner:
                 response_format=_REPLY_RESPONSE_FORMAT,
                 component_ids_by_stage=routing.component_ids_by_stage,
                 builtin_component_ids=REVIEW_REPLY_COMPONENT_IDS,
+                special_prompt_ids=dict(routing.special_prompt_ids),
                 message_format_config=routing.message_format_config,
                 params=routing.params,
                 tool_config=routing.tool_config,

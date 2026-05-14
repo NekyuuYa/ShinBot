@@ -26,6 +26,7 @@ class ReviewLLMRunnerConfig:
     model_id: str | None = None
     profile_id: str = ""
     component_ids_by_stage: dict[PromptStage, list[str]] = field(default_factory=dict)
+    special_prompt_ids: dict[str, str] = field(default_factory=dict)
     message_format_config: MessageFormatConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)

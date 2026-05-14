@@ -11,17 +11,32 @@ from shinbot.agent.coordinators.review.factory import ReviewRuntimeConfig, Revie
 from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
 from shinbot.agent.runtime import install_agent_runtime
 from shinbot.agent.runtime.config import (
+    AgentRuntimeConfigError,
     agent_runtime_config_from_mapping,
     load_agent_runtime_config,
     validate_agent_runtime_config_mapping,
+    validate_agent_runtime_config_references,
 )
 from shinbot.agent.scheduler import ActiveChatState, AgentScheduler, AgentState
 from shinbot.agent.services.message_formatter import ImageMode
 from shinbot.agent.services.model_runtime import GenerateResult
-from shinbot.agent.services.prompt_engine import PromptStage
+from shinbot.agent.services.prompt_engine import (
+    PromptComponent,
+    PromptComponentKind,
+    PromptRegistry,
+    PromptStage,
+)
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
-from shinbot.persistence.records import InstanceConfigRecord, MessageLogRecord
+from shinbot.persistence import DatabaseManager
+from shinbot.persistence.records import (
+    InstanceConfigRecord,
+    MessageLogRecord,
+    ModelDefinitionRecord,
+    ModelProviderRecord,
+    ModelRouteMemberRecord,
+    ModelRouteRecord,
+)
 
 
 class FakeModelRuntime:
@@ -111,6 +126,53 @@ def make_generate_result(
     )
 
 
+def seed_model_registry(db: DatabaseManager, *, route_id: str = "chat.default") -> None:
+    db.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id="test-provider",
+            type="openai",
+            display_name="Test Provider",
+            auth={"api_key": "secret-key"},
+        )
+    )
+    db.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id="test-provider/gpt-fast",
+            provider_id="test-provider",
+            litellm_model="openai/gpt-4.1-mini",
+            display_name="GPT Fast",
+            capabilities=["chat"],
+        )
+    )
+    db.model_registry.upsert_route(
+        ModelRouteRecord(id=route_id, purpose="chat", strategy="priority"),
+        members=[
+            ModelRouteMemberRecord(
+                route_id=route_id,
+                model_id="test-provider/gpt-fast",
+                priority=10,
+            )
+        ],
+    )
+
+
+def make_prompt_registry(
+    *component_ids: str,
+    stage: PromptStage = PromptStage.SYSTEM_BASE,
+) -> PromptRegistry:
+    registry = PromptRegistry()
+    for component_id in component_ids:
+        registry.register_component(
+            PromptComponent(
+                id=component_id,
+                stage=stage,
+                kind=PromptComponentKind.STATIC_TEXT,
+                content=f"{component_id} content",
+            )
+        )
+    return registry
+
+
 class RecordingScheduler:
     def __init__(self) -> None:
         self.calls: list[AgentEntrySignal] = []
@@ -151,6 +213,9 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                         },
                     },
                     "reply_decision": {
+                        "prompts": {
+                            "repair": "review.reply_decision.repair",
+                        },
                         "tools": {
                             "extra": ["search_memory"],
                             "tags": ["knowledge"],
@@ -211,6 +276,9 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
         "search_memory",
     )
     assert config.review_runtime_config.reply_decision.tool_config.extra_tags == ("knowledge",)
+    assert config.review_runtime_config.reply_decision.special_prompt_ids == {
+        "repair": "review.reply_decision.repair",
+    }
     assert config.review_runtime_config.review_scan.component_ids_by_stage == {
         PromptStage.SYSTEM_BASE: ["review.custom.system"],
         PromptStage.INSTRUCTIONS: ["review.custom.task"],
@@ -225,6 +293,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.active_chat_interest_effect_config.no_reply_delta == -6
     assert config.active_chat_fast_runner_config.llm == "[route]route-fast"
     assert config.active_chat_fast_runner_config.default_llm == "[route]route-default"
+    assert config.active_chat_fast_runner_config.special_prompt_ids == {}
     assert config.active_chat_fast_runner_config.params == {
         "temperature": 0.2,
         "top_p": 0.8,
@@ -244,6 +313,16 @@ def test_agent_runtime_config_schema_accepts_example(tmp_path: Path) -> None:
 
     assert config.agent_id == "full-agent"
     assert config.active_chat_policy_config.initial_interest_value == 15
+    assert config.review_runtime_config.reply_decision.special_prompt_ids == {
+        "repair": "review.reply_decision.repair",
+    }
+    assert config.active_chat_fast_runner_config.special_prompt_ids == {
+        "repair": "active_chat.fast_mode.repair",
+        "conversation_summary": "active_chat.fast_mode.conversation_summary",
+        "handoff_overflow": "active_chat.handoff.overflow",
+        "handoff_digest": "active_chat.handoff.digest",
+        "handoff_legacy": "active_chat.handoff.legacy",
+    }
 
 
 def test_agent_runtime_config_schema_rejects_unknown_fields() -> None:
@@ -265,6 +344,147 @@ def test_agent_runtime_config_schema_rejects_unknown_fields() -> None:
         ("agent.active_chat.interest_delta.not_real", "unknown"),
         ("agent.active_chat.fast_mode.route_id", "unknown"),
     ]
+
+
+def test_agent_runtime_config_reference_validation_rejects_unknown_prompt_slots() -> None:
+    issues = validate_agent_runtime_config_references(
+        {
+            "agent": {
+                "review": {
+                    "scan": {
+                        "prompts": {
+                            "repair": "review.reply_decision.repair",
+                            "typo": "review.scan.system",
+                        },
+                    },
+                    "reply_decision": {
+                        "prompts": {
+                            "repair": "review.reply_decision.repair",
+                        }
+                    },
+                },
+                "active_chat": {
+                    "fast_mode": {
+                        "prompts": {
+                            "handoff_digest": "active_chat.handoff.digest",
+                            "typo": "active_chat.fast_mode.system",
+                        }
+                    }
+                },
+            }
+        }
+    )
+
+    assert [(issue.path, issue.code) for issue in issues] == [
+        ("agent.review.scan.prompts.repair", "unknown_prompt_slot"),
+        ("agent.review.scan.prompts.typo", "unknown_prompt_slot"),
+        ("agent.active_chat.fast_mode.prompts.typo", "unknown_prompt_slot"),
+    ]
+
+
+def test_agent_runtime_config_reference_validation_checks_llm_and_prompt_refs(
+    tmp_path: Path,
+) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    seed_model_registry(db, route_id="chat.default")
+    registry = PromptRegistry()
+    registry.register_component(
+        PromptComponent(
+            id="review.custom.system",
+            stage=PromptStage.SYSTEM_BASE,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="system content",
+        )
+    )
+    registry.register_component(
+        PromptComponent(
+            id="active_chat.wrong.stage",
+            stage=PromptStage.INSTRUCTIONS,
+            kind=PromptComponentKind.STATIC_TEXT,
+            content="wrong stage content",
+        )
+    )
+
+    issues = validate_agent_runtime_config_references(
+        {
+            "agent": {
+                "defaults": {"llm": "[route]chat.default"},
+                "review": {
+                    "scan": {
+                        "llm": "[model]missing-model",
+                        "prompts": {
+                            "system": "review.custom.system",
+                            "task": "review.missing.task",
+                        },
+                    }
+                },
+                "active_chat": {
+                    "fast_mode": {
+                        "llm": "missing-untagged",
+                        "prompts": {
+                            "system": [
+                                "review.custom.system",
+                                "active_chat.missing.system",
+                                "active_chat.wrong.stage",
+                            ],
+                        },
+                    }
+                },
+            }
+        },
+        model_registry=db.model_registry,
+        prompt_registry=registry,
+    )
+
+    assert [(issue.path, issue.code) for issue in issues] == [
+        ("agent.review.scan.llm", "unknown_model"),
+        ("agent.active_chat.fast_mode.llm", "unknown_llm_ref"),
+        ("agent.review.scan.prompts.task", "unknown_prompt_component"),
+        ("agent.active_chat.fast_mode.prompts.system.1", "unknown_prompt_component"),
+        ("agent.active_chat.fast_mode.prompts.system.2", "prompt_stage"),
+    ]
+
+
+def test_agent_runtime_rejects_invalid_agent_config_references(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    seed_model_registry(bot.database, route_id="chat.default")
+
+    with pytest.raises(AgentRuntimeConfigError, match="review\\.missing\\.system"):
+        install_agent_runtime(
+            bot,
+            agent_configs_by_bot_id={
+                "bot-a": {
+                    "agent": {
+                        "id": "agent-a",
+                        "defaults": {"llm": "[route]chat.default"},
+                        "review": {
+                            "scan": {
+                                "prompts": {"system": "review.missing.system"},
+                            }
+                        },
+                    }
+                }
+            },
+        )
+
+
+def test_agent_runtime_rejects_missing_llm_reference(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    seed_model_registry(bot.database, route_id="chat.default")
+
+    with pytest.raises(AgentRuntimeConfigError, match="missing-route"):
+        install_agent_runtime(
+            bot,
+            agent_configs_by_bot_id={
+                "bot-a": {
+                    "agent": {
+                        "id": "agent-a",
+                        "defaults": {"llm": "[route]missing-route"},
+                    }
+                }
+            },
+        )
 
 
 def test_agent_runtime_wires_review_runner_config(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from shinbot.agent.coordinators.review.factory import (
     ReviewStageRuntimeConfig,
 )
 from shinbot.agent.coordinators.review.models import ReviewWorkflowConfig
+from shinbot.agent.runtime.instance_config import parse_tagged_llm_ref
 from shinbot.agent.runtime.tool_config import stage_tool_config_from_mapping
 from shinbot.agent.scheduler.active_chat_policy import ActiveChatPolicyConfig
 from shinbot.agent.scheduler.priority_policy import PriorityPolicyConfig
@@ -36,6 +38,46 @@ from shinbot.core.config_provider import (
 
 class AgentRuntimeConfigError(ValueError):
     """Raised when an agent config file cannot be loaded."""
+
+
+_PROMPT_STAGE_KEYS: dict[str, PromptStage] = {
+    "system": PromptStage.SYSTEM_BASE,
+    "task": PromptStage.INSTRUCTIONS,
+    "instructions": PromptStage.INSTRUCTIONS,
+    "constraints": PromptStage.CONSTRAINTS,
+    "context": PromptStage.CONTEXT,
+    "abilities": PromptStage.ABILITIES,
+    "compatibility": PromptStage.COMPATIBILITY,
+}
+
+_REVIEW_SPECIAL_PROMPT_KEYS = frozenset({"repair"})
+_REVIEW_SPECIAL_PROMPT_STAGES: dict[str, PromptStage] = {
+    "repair": PromptStage.INSTRUCTIONS,
+}
+_ACTIVE_CHAT_SPECIAL_PROMPT_KEYS = frozenset(
+    {
+        "repair",
+        "conversation_summary",
+        "handoff_overflow",
+        "handoff_digest",
+        "handoff_legacy",
+    }
+)
+_ACTIVE_CHAT_SPECIAL_PROMPT_STAGES: dict[str, PromptStage] = {
+    "repair": PromptStage.INSTRUCTIONS,
+    "conversation_summary": PromptStage.CONTEXT,
+    "handoff_overflow": PromptStage.CONTEXT,
+    "handoff_digest": PromptStage.CONTEXT,
+    "handoff_legacy": PromptStage.CONTEXT,
+}
+
+_REVIEW_STAGE_NAMES = (
+    "overflow_compression",
+    "scan",
+    "block_digest",
+    "reply_decision",
+    "active_chat_bootstrap",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -79,6 +121,7 @@ class AgentRuntimeConfig:
     summary_markdown_config: SummaryMarkdownConfig = field(
         default_factory=SummaryMarkdownConfig
     )
+    raw_mapping: dict[str, Any] = field(default_factory=dict)
 
 
 def load_agent_runtime_config(
@@ -177,6 +220,7 @@ def agent_runtime_config_from_mapping(
             80,
         ),
         summary_markdown_config=summary_markdown_config,
+        raw_mapping=deepcopy(config),
     )
 
 
@@ -201,6 +245,52 @@ def validate_agent_runtime_config_mapping(
         path_prefix=path_prefix,
         strict=True,
     )
+
+
+def validate_agent_runtime_config_references(
+    payload: dict[str, Any],
+    *,
+    model_registry: Any | None = None,
+    prompt_registry: Any | None = None,
+    path_prefix: str = "",
+) -> list[ConfigValidationIssue]:
+    """Validate Agent runtime config references against live registries."""
+
+    issues: list[ConfigValidationIssue] = []
+    if model_registry is not None:
+        for path, llm_ref in _iter_agent_llm_refs(payload):
+            issues.extend(
+                _validate_agent_llm_ref(
+                    llm_ref,
+                    model_registry=model_registry,
+                    path=_join_issue_path(path_prefix, path),
+                )
+            )
+    if prompt_registry is not None:
+        for path, component_id, expected_stage in _iter_agent_prompt_component_refs(payload):
+            component = prompt_registry.get_component(component_id)
+            if component is None:
+                issues.append(
+                    ConfigValidationIssue(
+                        path=_join_issue_path(path_prefix, path),
+                        message=f"Prompt component {component_id!r} is not registered",
+                        code="unknown_prompt_component",
+                    )
+                )
+                continue
+            if component.stage != expected_stage:
+                issues.append(
+                    ConfigValidationIssue(
+                        path=_join_issue_path(path_prefix, path),
+                        message=(
+                            f"Prompt component {component_id!r} belongs to stage "
+                            f"{component.stage.value!r}, not {expected_stage.value!r}"
+                        ),
+                        code="prompt_stage",
+                    )
+                )
+    issues.extend(_validate_agent_prompt_slots(payload, path_prefix=path_prefix))
+    return issues
 
 
 def _prompt_file_config(
@@ -386,26 +476,31 @@ def _review_runtime_config(
             _mapping(review.get("overflow_compression")),
             message_format,
             defaults_llm,
+            special_prompt_keys=frozenset(),
         ),
         review_scan=_review_stage_config(
             _mapping(review.get("scan")),
             message_format,
             defaults_llm,
+            special_prompt_keys=frozenset(),
         ),
         review_block_digest=_review_stage_config(
             _mapping(review.get("block_digest")),
             message_format,
             defaults_llm,
+            special_prompt_keys=frozenset(),
         ),
         reply_decision=_review_stage_config(
             _mapping(review.get("reply_decision")),
             message_format,
             defaults_llm,
+            special_prompt_keys=_REVIEW_SPECIAL_PROMPT_KEYS,
         ),
         active_chat_bootstrap=_review_stage_config(
             _mapping(review.get("active_chat_bootstrap")),
             message_format,
             defaults_llm,
+            special_prompt_keys=frozenset(),
         ),
     )
 
@@ -414,6 +509,8 @@ def _review_stage_config(
     value: dict[str, Any],
     message_format: MessageFormatConfig,
     defaults_llm: dict[str, Any],
+    *,
+    special_prompt_keys: frozenset[str],
 ) -> ReviewStageRuntimeConfig:
     return ReviewStageRuntimeConfig(
         enabled=_bool(value.get("enabled"), True),
@@ -422,6 +519,10 @@ def _review_stage_config(
         caller=str(_first(value, defaults_llm, key="caller") or "agent.review"),
         profile_id=str(_first(value, defaults_llm, key="profile_id") or ""),
         component_ids_by_stage=_prompt_components(_mapping(value.get("prompts"))),
+        special_prompt_ids=_special_prompt_ids(
+            _mapping(value.get("prompts")),
+            allowed_keys=special_prompt_keys,
+        ),
         message_format_config=message_format,
         params={
             **dict(_mapping(defaults_llm.get("params"))),
@@ -450,6 +551,10 @@ def _active_chat_fast_runner_config(
         default_llm=_optional_str(defaults_llm.get("llm")) or "",
         profile_id=str(_first(value, defaults_llm, key="profile_id") or ""),
         component_ids_by_stage=_prompt_components(_mapping(value.get("prompts"))),
+        special_prompt_ids=_special_prompt_ids(
+            _mapping(value.get("prompts")),
+            allowed_keys=_ACTIVE_CHAT_SPECIAL_PROMPT_KEYS,
+        ),
         params={
             **dict(_mapping(defaults_llm.get("params"))),
             **dict(_mapping(value.get("params"))),
@@ -471,23 +576,312 @@ def _llm_defaults_config(defaults: dict[str, Any]) -> dict[str, Any]:
 
 
 def _prompt_components(prompts: dict[str, Any]) -> dict[PromptStage, list[str]]:
-    stage_keys = {
-        "system": PromptStage.SYSTEM_BASE,
-        "task": PromptStage.INSTRUCTIONS,
-        "instructions": PromptStage.INSTRUCTIONS,
-        "constraints": PromptStage.CONSTRAINTS,
-        "context": PromptStage.CONTEXT,
-        "abilities": PromptStage.ABILITIES,
-        "compatibility": PromptStage.COMPATIBILITY,
-    }
     result: dict[PromptStage, list[str]] = {}
-    for key, stage in stage_keys.items():
+    for key, stage in _PROMPT_STAGE_KEYS.items():
         value = prompts.get(key)
         ids = [item for item in _string_tuple(value, default=()) if item]
         if ids:
             result.setdefault(stage, [])
             result[stage].extend(item for item in ids if item not in result[stage])
     return result
+
+
+def _special_prompt_ids(
+    prompts: dict[str, Any],
+    *,
+    allowed_keys: frozenset[str],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key in allowed_keys:
+        value = prompts.get(key)
+        if isinstance(value, str) and value.strip():
+            result[key] = value.strip()
+    return result
+
+
+def _iter_agent_llm_refs(payload: dict[str, Any]) -> list[tuple[str, str]]:
+    agent = _mapping(payload.get("agent"))
+    defaults = _mapping(agent.get("defaults"))
+    result: list[tuple[str, str]] = []
+    _append_optional_ref(result, "agent.defaults.llm", defaults.get("llm"))
+    review = _mapping(agent.get("review"))
+    for stage_name in _REVIEW_STAGE_NAMES:
+        stage = _mapping(review.get(stage_name))
+        _append_optional_ref(result, f"agent.review.{stage_name}.llm", stage.get("llm"))
+    active_chat = _mapping(agent.get("active_chat"))
+    fast_mode = _mapping(active_chat.get("fast_mode"))
+    _append_optional_ref(result, "agent.active_chat.fast_mode.llm", fast_mode.get("llm"))
+    return result
+
+
+def _iter_agent_prompt_component_refs(
+    payload: dict[str, Any],
+) -> list[tuple[str, str, PromptStage]]:
+    agent = _mapping(payload.get("agent"))
+    result: list[tuple[str, str, PromptStage]] = []
+    review = _mapping(agent.get("review"))
+    for stage_name in _REVIEW_STAGE_NAMES:
+        prompts = _mapping(_mapping(review.get(stage_name)).get("prompts"))
+        special_prompt_stages = (
+            _REVIEW_SPECIAL_PROMPT_STAGES
+            if stage_name == "reply_decision"
+            else {}
+        )
+        result.extend(
+            _iter_prompt_component_refs(
+                prompts,
+                prefix=f"agent.review.{stage_name}.prompts",
+                special_prompt_stages=special_prompt_stages,
+            )
+        )
+    active_chat = _mapping(agent.get("active_chat"))
+    fast_mode_prompts = _mapping(_mapping(active_chat.get("fast_mode")).get("prompts"))
+    result.extend(
+        _iter_prompt_component_refs(
+            fast_mode_prompts,
+            prefix="agent.active_chat.fast_mode.prompts",
+            special_prompt_stages=_ACTIVE_CHAT_SPECIAL_PROMPT_STAGES,
+        )
+    )
+    return result
+
+
+def _validate_agent_prompt_slots(
+    payload: dict[str, Any],
+    *,
+    path_prefix: str,
+) -> list[ConfigValidationIssue]:
+    agent = _mapping(payload.get("agent"))
+    issues: list[ConfigValidationIssue] = []
+    review = _mapping(agent.get("review"))
+    for stage_name in _REVIEW_STAGE_NAMES:
+        prompts = _mapping(_mapping(review.get(stage_name)).get("prompts"))
+        allowed_special_keys = (
+            _REVIEW_SPECIAL_PROMPT_KEYS
+            if stage_name == "reply_decision"
+            else frozenset()
+        )
+        issues.extend(
+            _validate_prompt_slot_keys(
+                prompts,
+                prefix=f"agent.review.{stage_name}.prompts",
+                allowed_special_keys=allowed_special_keys,
+                path_prefix=path_prefix,
+            )
+        )
+    active_chat = _mapping(agent.get("active_chat"))
+    fast_mode_prompts = _mapping(_mapping(active_chat.get("fast_mode")).get("prompts"))
+    issues.extend(
+        _validate_prompt_slot_keys(
+            fast_mode_prompts,
+            prefix="agent.active_chat.fast_mode.prompts",
+            allowed_special_keys=_ACTIVE_CHAT_SPECIAL_PROMPT_KEYS,
+            path_prefix=path_prefix,
+        )
+    )
+    return issues
+
+
+def _validate_prompt_slot_keys(
+    prompts: dict[str, Any],
+    *,
+    prefix: str,
+    allowed_special_keys: frozenset[str],
+    path_prefix: str,
+) -> list[ConfigValidationIssue]:
+    allowed_keys = set(_PROMPT_STAGE_KEYS) | set(allowed_special_keys)
+    issues: list[ConfigValidationIssue] = []
+    for key, value in prompts.items():
+        if key in allowed_keys:
+            issues.extend(
+                _validate_prompt_slot_value(
+                    value,
+                    path=_join_issue_path(path_prefix, f"{prefix}.{key}"),
+                    is_special=key in allowed_special_keys,
+                )
+            )
+            continue
+        issues.append(
+            ConfigValidationIssue(
+                path=_join_issue_path(path_prefix, f"{prefix}.{key}"),
+                message=f"Unknown prompt slot {key!r}",
+                code="unknown_prompt_slot",
+            )
+        )
+    return issues
+
+
+def _validate_prompt_slot_value(
+    value: Any,
+    *,
+    path: str,
+    is_special: bool,
+) -> list[ConfigValidationIssue]:
+    if isinstance(value, str):
+        return []
+    if is_special:
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message="expected string",
+                code="type",
+            )
+        ]
+    if isinstance(value, list):
+        return [
+            ConfigValidationIssue(
+                path=f"{path}.{index}",
+                message="expected string",
+                code="type",
+            )
+            for index, item in enumerate(value)
+            if not isinstance(item, str)
+        ]
+    return [
+        ConfigValidationIssue(
+            path=path,
+            message="expected string or string_list",
+            code="type",
+        )
+    ]
+
+
+def _iter_prompt_component_refs(
+    prompts: dict[str, Any],
+    *,
+    prefix: str,
+    special_prompt_stages: dict[str, PromptStage],
+) -> list[tuple[str, str, PromptStage]]:
+    refs: list[tuple[str, str, PromptStage]] = []
+    for key, value in prompts.items():
+        expected_stage = _PROMPT_STAGE_KEYS.get(key) or special_prompt_stages.get(key)
+        if expected_stage is None:
+            continue
+        path = f"{prefix}.{key}"
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                refs.append((path, text, expected_stage))
+            continue
+        if key in _PROMPT_STAGE_KEYS and isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, str) and item.strip():
+                    text = item.strip()
+                    refs.append((f"{path}.{index}", text, expected_stage))
+    return refs
+
+
+def _append_optional_ref(
+    result: list[tuple[str, str]],
+    path: str,
+    value: Any,
+) -> None:
+    text = _optional_str(value)
+    if text:
+        result.append((path, text))
+
+
+def _validate_agent_llm_ref(
+    llm_ref: str,
+    *,
+    model_registry: Any,
+    path: str,
+) -> list[ConfigValidationIssue]:
+    tagged = parse_tagged_llm_ref(llm_ref)
+    if tagged is not None:
+        if tagged.route_id is not None:
+            return _validate_agent_route_ref(
+                tagged.route_id,
+                model_registry=model_registry,
+                path=path,
+            )
+        if tagged.model_id is not None:
+            return _validate_agent_model_ref(
+                tagged.model_id,
+                model_registry=model_registry,
+                path=path,
+            )
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message="LLM reference must include a route or model id",
+                code="empty_llm_ref",
+            )
+        ]
+
+    route = model_registry.get_route(llm_ref)
+    if route is not None:
+        return _disabled_ref_issue(
+            path=path,
+            message=f"Route {llm_ref!r} is disabled",
+        ) if not route.get("enabled", True) else []
+    model = model_registry.get_model(llm_ref)
+    if model is not None:
+        return _disabled_ref_issue(
+            path=path,
+            message=f"Model {llm_ref!r} is disabled",
+        ) if not model.get("enabled", True) else []
+    return [
+        ConfigValidationIssue(
+            path=path,
+            message=f"LLM reference {llm_ref!r} does not match a model route or model",
+            code="unknown_llm_ref",
+        )
+    ]
+
+
+def _validate_agent_route_ref(
+    route_id: str,
+    *,
+    model_registry: Any,
+    path: str,
+) -> list[ConfigValidationIssue]:
+    route = model_registry.get_route(route_id)
+    if route is None:
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message=f"Route {route_id!r} is not registered",
+                code="unknown_route",
+            )
+        ]
+    if not route.get("enabled", True):
+        return _disabled_ref_issue(
+            path=path,
+            message=f"Route {route_id!r} is disabled",
+        )
+    return []
+
+
+def _validate_agent_model_ref(
+    model_id: str,
+    *,
+    model_registry: Any,
+    path: str,
+) -> list[ConfigValidationIssue]:
+    model = model_registry.get_model(model_id)
+    if model is None:
+        return [
+            ConfigValidationIssue(
+                path=path,
+                message=f"Model {model_id!r} is not registered",
+                code="unknown_model",
+            )
+        ]
+    if not model.get("enabled", True):
+        return _disabled_ref_issue(
+            path=path,
+            message=f"Model {model_id!r} is disabled",
+        )
+    return []
+
+
+def _disabled_ref_issue(*, path: str, message: str) -> list[ConfigValidationIssue]:
+    return [ConfigValidationIssue(path=path, message=message, code="disabled_ref")]
+
+
+def _join_issue_path(path_prefix: str, path: str) -> str:
+    return f"{path_prefix}.{path}" if path_prefix else path
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -580,5 +974,6 @@ __all__ = [
     "agent_runtime_config_from_mapping",
     "load_agent_runtime_config",
     "validate_agent_runtime_config_mapping",
+    "validate_agent_runtime_config_references",
     "with_source_path",
 ]
