@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from shinbot.api.auth import AuthConfig
 from shinbot.api.models import EC, Envelope, ErrorBody
 from shinbot.api.routers import auth as auth_router
+from shinbot.api.routers import config as config_router
 from shinbot.api.routers import config_providers as config_providers_router
 from shinbot.api.routers import context_strategies as context_strategies_router
 from shinbot.api.routers import instance_configs as instance_configs_router
@@ -162,17 +163,22 @@ def create_api_app(
     @app.exception_handler(HTTPException)
     async def _http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse:
         detail = exc.detail
+        data = None
         if isinstance(detail, dict) and "code" in detail:
             error = ErrorBody(code=detail["code"], message=detail.get("message", ""))
+            data = {key: value for key, value in detail.items() if key not in {"code", "message"}}
+            if not data:
+                data = None
         else:
             error = ErrorBody(code="HTTP_ERROR", message=str(detail))
-        body = Envelope(success=False, error=error, timestamp=int(time.time()))
+        body = Envelope(success=False, data=data, error=error, timestamp=int(time.time()))
         return JSONResponse(status_code=exc.status_code, content=body.model_dump())
 
     # ── API routers ───────────────────────────────────────────────────
 
     api_prefix = "/api/v1"
     app.include_router(auth_router.router, prefix=api_prefix)
+    app.include_router(config_router.router, prefix=api_prefix)
     app.include_router(config_providers_router.router, prefix=api_prefix)
     app.include_router(context_strategies_router.router, prefix=api_prefix)
     app.include_router(instance_configs_router.router, prefix=api_prefix)
