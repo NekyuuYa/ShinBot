@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import sys
 
 import uvicorn
@@ -12,8 +11,9 @@ import uvicorn
 from shinbot.core.application.boot import BootController
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.cli import serve_with_operator_cli
+from shinbot.utils.logger import get_logger
 
-logger = logging.getLogger("shinbot.main")
+logger = get_logger("shinbot.main", source="main", color="bright_cyan")
 
 
 async def _run(
@@ -21,7 +21,7 @@ async def _run(
     log_level: str,
     api_host: str,
     api_port: int,
-    operator_cli: bool,
+    operator_cli: bool | None,
 ) -> int:
     runtime_control = RuntimeControl()
     controller = BootController(
@@ -56,8 +56,14 @@ async def _run(
 
     logger.info("Management API starting on http://%s:%d", api_host, api_port)
 
+    attach_operator_cli = (
+        operator_cli
+        if operator_cli is not None
+        else sys.stdin.isatty() and sys.stdout.isatty()
+    )
+
     try:
-        if operator_cli:
+        if attach_operator_cli:
             await serve_with_operator_cli(
                 boot=controller,
                 api_host=api_host,
@@ -105,10 +111,19 @@ def main() -> None:
         metavar="PORT",
         help="Management API listen port (default: 3945)",
     )
-    parser.add_argument(
+    cli_group = parser.add_mutually_exclusive_group()
+    cli_group.add_argument(
         "--operator-cli",
         action="store_true",
-        help="Attach an interactive operator CLI for live runtime control",
+        dest="operator_cli",
+        default=None,
+        help="Attach the interactive operator shell",
+    )
+    cli_group.add_argument(
+        "--no-operator-cli",
+        action="store_false",
+        dest="operator_cli",
+        help="Run only the API server without the operator shell",
     )
     args = parser.parse_args()
 
