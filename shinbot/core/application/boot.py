@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import secrets
-import shutil
 import tomllib
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from shinbot.core.application.app import ShinBot
-from shinbot.core.application.bots_config import BotServiceConfig, load_bot_service_configs
+from shinbot.core.application.boot_preflight import (
+    BootPreflightError,
+    run_boot_preflight,
+)
+from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.application.config_sections import (
     iter_adapter_instance_records,
     normalize_adapter_instance_record,
 )
+from shinbot.core.application.data_initializer import DataInitializer
 from shinbot.core.application.provider_config_validation import (
     ProviderConfigValidationError,
     validate_adapter_instance_configs,
@@ -100,22 +104,16 @@ class BootController:
         logger.info("Boot Phase 1/5: environment")
 
         self.config = self._load_config(self.config_path)
+        try:
+            preflight = run_boot_preflight(self.config, data_dir=self.data_dir)
+        except BootPreflightError:
+            self.state = BootState.DEGRADED
+            raise
+        self.bot_service_configs = preflight.bot_service_configs
         self._ensure_admin_defaults()
-        self.bot_service_configs = load_bot_service_configs(self.config, data_dir=self.data_dir)
         cfg_level = self.config.get("logging", {}).get("level", self.log_level)
         self._configure_logging(cfg_level)
-        self._cleanup_temp_directory()
-
-        required_dirs = [
-            self.data_dir,
-            self.data_dir / "db",
-            self.data_dir / "plugins",
-            self.data_dir / "plugin_data",
-            self.data_dir / "sessions",
-            self.data_dir / "audit",
-        ]
-        for path in required_dirs:
-            self._ensure_rw(path)
+        DataInitializer(self.data_dir).initialize()
 
     def _phase2_infrastructure(self) -> None:
         logger.info("Boot Phase 2/5: infrastructure")
@@ -429,21 +427,6 @@ class BootController:
         with config_path.open("rb") as file_obj:
             return tomllib.load(file_obj)
 
-    def _cleanup_temp_directory(self) -> None:
-        temp_dir = self.data_dir / "temp"
-        if not temp_dir.exists():
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            return
-
-        for child in temp_dir.iterdir():
-            try:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
-            except Exception:
-                logger.exception("Failed to clean temp entry %s", child)
-
     def _ensure_admin_defaults(self) -> None:
         """Ensure [admin] config always exists with secure credentials.
 
@@ -491,16 +474,6 @@ class BootController:
                     "Admin defaults were applied in memory but could not be persisted to %s",
                     self.config_path,
                 )
-
-    def _ensure_rw(self, directory: Path) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
-        probe = directory / ".rw_probe"
-        try:
-            probe.write_text("ok", encoding="utf-8")
-            _ = probe.read_text(encoding="utf-8")
-        finally:
-            if probe.exists():
-                probe.unlink()
 
     # ── API integration ──────────────────────────────────────────────
     # ADR-001: This method is the sole core→api integration point.

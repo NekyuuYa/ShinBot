@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from shinbot.core.application.boot import BootController
+from shinbot.core.application.boot_preflight import BootPreflightError
 from shinbot.core.application.bots_config import (
-    BotServiceConfigError,
     load_bot_service_configs,
     validate_bot_service_configs,
 )
@@ -171,5 +171,5 @@ def test_boot_phase1_rejects_invalid_bot_service_config(tmp_path: Path) -> None:
     )
     boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
 
-    with pytest.raises(BotServiceConfigError):
+    with pytest.raises(BootPreflightError):
         boot._phase1_environment()

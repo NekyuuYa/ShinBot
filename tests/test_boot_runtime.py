@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from shinbot.agent.runtime.config import AgentRuntimeConfigError
 from shinbot.core.application.app import ShinBot
-from shinbot.core.application.boot import BootController
+from shinbot.core.application.boot import BootController, BootState
+from shinbot.core.application.boot_preflight import BootPreflightError, run_boot_preflight
+from shinbot.core.application.data_initializer import DataInitializer
 from tests.conftest import MockAdapter
 
 
@@ -53,6 +54,85 @@ def test_setup_instances_reads_normalized_adapter_instances(tmp_path: Path):
     assert bot.adapter_manager.get_instance("mock-disabled") is None
 
 
+def test_data_initializer_creates_required_dirs_and_cleans_temp(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    stale_dir = data_dir / "temp" / "context_state"
+    stale_dir.mkdir(parents=True)
+    stale_file = stale_dir / "old.json"
+    stale_file.write_text("{}", encoding="utf-8")
+
+    result = DataInitializer(data_dir).initialize()
+
+    assert (data_dir / "db").is_dir()
+    assert (data_dir / "plugins").is_dir()
+    assert (data_dir / "plugin_data").is_dir()
+    assert (data_dir / "sessions").is_dir()
+    assert (data_dir / "audit").is_dir()
+    assert (data_dir / "agents").is_dir()
+    assert (data_dir / "temp").is_dir()
+    assert not stale_dir.exists()
+    assert result.cleaned_temp_entries == (stale_dir,)
+
+
+def test_boot_preflight_reports_static_config_issues(tmp_path: Path) -> None:
+    config = {
+        "runtime": {"model": "yes"},
+        "database": {"url": "postgresql://example/db"},
+        "adapter_instances": [{"id": "main"}],
+    }
+
+    result = run_boot_preflight(
+        config,
+        data_dir=tmp_path / "data",
+        raise_on_error=False,
+    )
+
+    assert {(issue.path, issue.code) for issue in result.issues} == {
+        ("runtime.model", "type"),
+        ("database.url", "database_url"),
+        ("adapter_instances[0].adapter", "required"),
+    }
+
+
+def test_boot_phase1_rejects_invalid_admin_section_before_defaults(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('admin = "bad"\n', encoding="utf-8")
+    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+
+    with pytest.raises(BootPreflightError) as exc_info:
+        boot._phase1_environment()
+
+    assert [(issue.path, issue.code) for issue in exc_info.value.issues] == [
+        ("admin", "type"),
+    ]
+    assert boot.state == BootState.DEGRADED
+
+
+def test_boot_preflight_skips_agent_file_check_when_agent_runtime_disabled(
+    tmp_path: Path,
+) -> None:
+    config = {
+        "runtime": {"agent": False},
+        "bots": [
+            {
+                "id": "full-agent",
+                "enabled": True,
+                "agent": {"mode": "full", "config": "agents/missing.toml"},
+            }
+        ],
+    }
+
+    result = run_boot_preflight(
+        config,
+        data_dir=tmp_path / "data",
+        raise_on_error=False,
+    )
+
+    assert result.issues == ()
+
+
 @pytest.mark.asyncio
 async def test_boot_mounts_model_and_agent_by_default(tmp_path: Path):
     config_path = tmp_path / "config.toml"
@@ -64,6 +144,7 @@ async def test_boot_mounts_model_and_agent_by_default(tmp_path: Path):
         assert bot.model_runtime is not None
         assert bot.agent_runtime is not None
         assert bot.agent_runtime.model_runtime is bot.model_runtime
+        assert (tmp_path / "data" / "agents").is_dir()
     finally:
         await boot.shutdown()
 
@@ -146,8 +227,12 @@ async def test_boot_fails_when_full_bot_agent_config_is_missing(tmp_path: Path):
     )
     boot = BootController(config_path=config_path, data_dir=data_dir)
 
-    with pytest.raises(AgentRuntimeConfigError, match="full-agent"):
+    with pytest.raises(BootPreflightError) as exc_info:
         await boot.boot()
+    assert [(issue.path, issue.code) for issue in exc_info.value.issues] == [
+        ("bots[0].agent.config", "not_found"),
+    ]
+    assert boot.state == BootState.DEGRADED
 
 
 @pytest.mark.asyncio
