@@ -662,6 +662,55 @@ async def test_load_all_async_includes_builtin_plugins(
 
 
 @pytest.mark.asyncio
+async def test_load_all_async_disables_builtin_default_disabled_plugins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    builtin_root = tmp_path / "builtin_plugins"
+    builtin_plugin_dir = builtin_root / "shinbot_debug_builtin_demo"
+    builtin_plugin_dir.mkdir(parents=True)
+    (builtin_plugin_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": "shinbot_debug_builtin_demo",
+                "name": "builtin-debug-demo",
+                "version": "1.0.0",
+                "author": "test",
+                "description": "",
+                "entry": "__init__.py",
+                "role": "logic",
+                "default_enabled": False,
+                "permissions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (builtin_plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    module_name = "shinbot.builtin_plugins.shinbot_debug_builtin_demo"
+    mod = types.ModuleType(module_name)
+
+    def setup(plg: Plugin) -> None:
+        @plg.on_command("debug_demo")
+        async def debug_demo(ctx, args):
+            return None
+
+    mod.setup = setup  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module_name, mod)
+    monkeypatch.setattr("shinbot.core.plugins.manager._BUILTIN_PLUGINS_DIR", builtin_root)
+
+    cmd_reg = CommandRegistry()
+    event_bus = EventBus()
+    mgr = PluginManager(cmd_reg, event_bus, data_dir=tmp_path)
+
+    loaded = await mgr.load_all_async(tmp_path / "user_plugins")
+
+    assert [item.id for item in loaded] == ["shinbot_debug_builtin_demo"]
+    assert loaded[0].state == PluginState.DISABLED
+    assert mgr.get_plugin("shinbot_debug_builtin_demo").state == PluginState.DISABLED
+    assert cmd_reg.get("debug_demo") is None
+
+
+@pytest.mark.asyncio
 async def test_metadata_identity_overrides_module_identity_fields(tmp_path: Path):
     plugin_id = "demo_meta_identity"
     plugin_dir = tmp_path / plugin_id

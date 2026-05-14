@@ -8,10 +8,11 @@ from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot import BootController, BootState
 from shinbot.core.application.boot_preflight import BootPreflightError, run_boot_preflight
 from shinbot.core.application.data_initializer import DataInitializer
+from shinbot.core.plugins.types import PluginState
 from tests.conftest import MockAdapter
 
 
-def _write_config(path: Path, *, runtime: str = "") -> None:
+def _write_config(path: Path, *, extra_config: str = "") -> None:
     path.write_text(
         "\n".join(
             [
@@ -19,7 +20,7 @@ def _write_config(path: Path, *, runtime: str = "") -> None:
                 'username = "admin"',
                 'password = "admin"',
                 "jwt_expire_hours = 24",
-                runtime,
+                extra_config,
             ]
         ),
         encoding="utf-8",
@@ -150,6 +151,48 @@ async def test_boot_mounts_model_and_agent_by_default(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_clean_boot_keeps_debug_plugins_disabled_by_default(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    _write_config(config_path)
+    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+
+    try:
+        bot = await boot.boot()
+        states = {meta.id: meta.state for meta in bot.plugin_manager.all_plugins}
+
+        assert states["shinbot_debug_message"] == PluginState.DISABLED
+        assert states["shinbot_debug_model"] == PluginState.DISABLED
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_clean_boot_can_enable_debug_plugin_from_config(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    _write_config(
+        config_path,
+        extra_config="\n".join(
+            [
+                "[[plugins]]",
+                'id = "shinbot_debug_model"',
+                'module = "shinbot.builtin_plugins.shinbot_debug_model"',
+                "enabled = true",
+            ]
+        ),
+    )
+    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+
+    try:
+        bot = await boot.boot()
+        states = {meta.id: meta.state for meta in bot.plugin_manager.all_plugins}
+
+        assert states["shinbot_debug_model"] == PluginState.ACTIVE
+        assert states["shinbot_debug_message"] == PluginState.DISABLED
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_boot_loads_agent_config_for_full_bot(tmp_path: Path):
     data_dir = tmp_path / "data"
     agent_config = data_dir / "agents" / "full-agent.toml"
@@ -238,7 +281,7 @@ async def test_boot_fails_when_full_bot_agent_config_is_missing(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_boot_can_mount_model_without_agent(tmp_path: Path):
     config_path = tmp_path / "config.toml"
-    _write_config(config_path, runtime="[runtime]\nagent = false")
+    _write_config(config_path, extra_config="[runtime]\nagent = false")
     boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
 
     try:
@@ -252,7 +295,7 @@ async def test_boot_can_mount_model_without_agent(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_boot_can_disable_model_when_agent_is_disabled(tmp_path: Path):
     config_path = tmp_path / "config.toml"
-    _write_config(config_path, runtime="[runtime]\nmodel = false\nagent = false")
+    _write_config(config_path, extra_config="[runtime]\nmodel = false\nagent = false")
     boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
 
     try:

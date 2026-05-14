@@ -25,7 +25,7 @@ def _base_config() -> dict:
         ],
         "plugins": [
             {
-                "id": "debug-message",
+                "id": "shinbot_debug_message",
                 "module": "shinbot.builtin_plugins.shinbot_debug_message",
                 "enabled": False,
             }
@@ -38,7 +38,7 @@ def _base_config() -> dict:
                 "commands": {"enabled": True, "prefixes": ["/", "!"]},
                 "plugins": {
                     "enabled": True,
-                    "enabled_plugins": ["debug-message"],
+                    "enabled_plugins": ["shinbot_debug_message"],
                     "disabled_plugins": [],
                 },
                 "agent": {"mode": "none"},
@@ -64,7 +64,7 @@ def test_load_bot_service_configs_accepts_session_patterns_array(tmp_path: Path)
     assert len(bots) == 1
     assert bots[0].id == "command-bot"
     assert bots[0].commands.prefixes == ("/", "!")
-    assert bots[0].plugins.enabled_plugins == ("debug-message",)
+    assert bots[0].plugins.enabled_plugins == ("shinbot_debug_message",)
     assert bots[0].bindings[0].session_patterns == ("group:10001", "private:*")
     assert bots[0].bindings[0].priority == 100
 

@@ -448,6 +448,8 @@ class PluginManager:
                     declared_metadata=metadata,
                 )
                 self._validate_permissions(plugin_id, permissions, meta)
+                if metadata.get("default_enabled") is False:
+                    meta = await self.disable_plugin_async(plugin_id)
                 loaded.append(meta)
                 logger.info(
                     "Loaded %s plugin %s (module=%s)",
@@ -720,6 +722,11 @@ class PluginManager:
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
             raise ValueError("metadata.dependencies must be a list of plugin ID strings")
         metadata["dependencies"] = deps
+
+        default_enabled = metadata.get("default_enabled", True)
+        if not isinstance(default_enabled, bool):
+            raise ValueError("metadata.default_enabled must be a boolean")
+        metadata["default_enabled"] = default_enabled
 
         for field in ("name", "version", "author", "description"):
             value = metadata.get(field)

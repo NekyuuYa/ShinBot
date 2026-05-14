@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import sys
 import tomllib
 from enum import Enum
 from pathlib import Path
@@ -25,7 +26,7 @@ from shinbot.core.application.provider_config_validation import (
     validate_plugin_configs,
 )
 from shinbot.core.application.runtime_control import RuntimeControl
-from shinbot.core.plugins.config import normalize_plugin_enabled, plugin_saved_enabled
+from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
 from shinbot.utils.logger import get_logger, setup_logging
 
@@ -101,6 +102,7 @@ class BootController:
         self.state = BootState.UNINITIALIZED
 
     def _phase1_environment(self) -> None:
+        self._configure_logging(self.log_level)
         logger.info("Boot Phase 1/5: environment")
 
         self.config = self._load_config(self.config_path)
@@ -109,12 +111,12 @@ class BootController:
         except BootPreflightError:
             self.state = BootState.DEGRADED
             raise
-        self.bot_service_configs = preflight.bot_service_configs
-        self._ensure_admin_defaults()
         logging_cfg = self.config.get("logging", {})
         cfg_level = logging_cfg.get("level", self.log_level)
         third_party_noise = logging_cfg.get("third_party_noise", "debug")
         self._configure_logging(cfg_level, third_party_noise=third_party_noise)
+        self.bot_service_configs = preflight.bot_service_configs
+        self._ensure_admin_defaults()
         DataInitializer(self.data_dir).initialize()
 
     def _phase2_infrastructure(self) -> None:
@@ -338,20 +340,7 @@ class BootController:
         return False
 
     def _configured_plugin_enabled(self, plugin_id: str) -> bool | None:
-        persisted = plugin_saved_enabled(self, plugin_id)
-        if persisted is not None:
-            return persisted
-
-        plugins = self.config.get("plugins", [])
-        if not isinstance(plugins, list):
-            return None
-
-        for plugin_cfg in plugins:
-            if not isinstance(plugin_cfg, dict) or plugin_cfg.get("id") != plugin_id:
-                continue
-            if "enabled" in plugin_cfg:
-                return normalize_plugin_enabled(plugin_cfg.get("enabled"))
-        return None
+        return plugin_saved_enabled(self, plugin_id)
 
     async def _phase5_adapter_activation(self) -> None:
         logger.info("Boot Phase 5/5: adapter activation")
@@ -451,18 +440,18 @@ class BootController:
             admin_cfg["password"] = generated
             changed = True
             # Print the generated password prominently so the operator can
-            # copy it.  Use print() to guarantee it reaches stdout even if
-            # the logging subsystem is not yet initialised.
+            # copy it. Use stderr so the credential block preserves ordering
+            # with boot logs and still appears if stdout is redirected.
             border = "─" * 54
-            print(f"\n┌{border}┐")
-            print(f"│{'ShinBot — First-Run Credentials':^54}│")
-            print(f"├{border}┤")
-            print(f"│  Username : {'admin':<42}│")
-            print(f"│  Password : {generated:<42}│")
-            print(f"├{border}┤")
-            print("│  Log in and change these credentials before       │")
-            print("│  exposing this server to a network.               │")
-            print(f"└{border}┘\n")
+            print(f"\n┌{border}┐", file=sys.stderr, flush=True)
+            print(f"│{'ShinBot — First-Run Credentials':^54}│", file=sys.stderr, flush=True)
+            print(f"├{border}┤", file=sys.stderr, flush=True)
+            print(f"│  Username : {'admin':<42}│", file=sys.stderr, flush=True)
+            print(f"│  Password : {generated:<42}│", file=sys.stderr, flush=True)
+            print(f"├{border}┤", file=sys.stderr, flush=True)
+            print("│  Log in and change these credentials before       │", file=sys.stderr, flush=True)
+            print("│  exposing this server to a network.               │", file=sys.stderr, flush=True)
+            print(f"└{border}┘\n", file=sys.stderr, flush=True)
         if "jwt_expire_hours" not in admin_cfg:
             admin_cfg["jwt_expire_hours"] = 24
             changed = True

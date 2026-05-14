@@ -93,13 +93,13 @@ module = "shinbot.builtin_plugins.shinbot_plugin_search"
 enabled = false
 
 [[plugins]]
-id = "debug-message"
+id = "shinbot_debug_message"
 module = "shinbot.builtin_plugins.shinbot_debug_message"
 enabled = false
 
 
 [[plugins]]
-id = "debug-model"
+id = "shinbot_debug_model"
 module = "shinbot.builtin_plugins.shinbot_debug_model"
 enabled = false
 
@@ -125,7 +125,7 @@ prefixes = ["/", "!"]
 
 [bots.plugins]
 enabled = true
-enabled_plugins = ["debug-message"]
+enabled_plugins = ["shinbot_debug_message"]
 
 [bots.agent]
 mode = "none"
@@ -150,7 +150,7 @@ prefixes = ["/"]
 [bots.plugins]
 enabled = true
 enabled_plugins = ["*"]
-disabled_plugins = ["debug-message"]
+disabled_plugins = ["shinbot_debug_message"]
 
 [bots.agent]
 mode = "full"
