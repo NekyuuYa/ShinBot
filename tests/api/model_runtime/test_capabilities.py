@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [pytest.mark.api, pytest.mark.slow]
 
 
 def test_provider_and_route_path_ids_support_nested_segments(

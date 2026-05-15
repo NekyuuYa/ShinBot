@@ -11,7 +11,7 @@ from shinbot.api.routers.model_runtime import get_cost_analysis
 from shinbot.core.application.app import ShinBot
 from shinbot.persistence import ModelDefinitionRecord, ModelExecutionRecord, ModelProviderRecord
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [pytest.mark.api, pytest.mark.slow]
 
 
 def test_model_execution_list_endpoint(tmp_path: Path, make_boot_stub, make_auth_headers):
