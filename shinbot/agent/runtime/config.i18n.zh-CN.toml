@@ -1,0 +1,547 @@
+[provider]
+display_name = "ShinBot Agent 运行配置"
+description = "用于 data/agents/*.toml 的 Agent 运行配置结构。"
+
+[fields."agent.id"]
+label = "Agent ID"
+description = "稳定的 Agent 标识，会用于实例配置引用。"
+
+[fields."agent.mode"]
+label = "运行模式"
+description = "Agent 的运行模式；是否启用 Agent 入口仍由消息路由配置决定。"
+choices = { simple = "简单模式", full = "完整模式" }
+
+[fields."agent.persona_id"]
+label = "人格 ID"
+description = "此 Agent 使用的人格配置 ID。"
+
+[fields."agent.prompt_files.locale"]
+label = "主提示词语言"
+description = "从文件加载 Agent 提示词时优先使用的语言。"
+
+[fields."agent.prompt_files.fallback_locales"]
+label = "备用提示词语言"
+description = "主语言缺失时依次尝试的提示词语言列表。"
+
+[fields."agent.prompt_files.sync_to_data"]
+label = "同步内置提示词"
+description = "加载前将内置提示词文件复制到 data 目录，便于本地覆盖和编辑。"
+
+[fields."agent.prompt_files.data_root"]
+label = "提示词数据目录"
+description = "相对于 data 目录解析的提示词文件根目录。"
+
+[fields."agent.defaults.llm"]
+label = "默认模型引用"
+description = "Agent 各阶段默认使用的模型引用；可用 [route] 或 [model] 前缀指定引用类型。"
+
+[fields."agent.defaults.caller"]
+label = "默认调用方标识"
+description = "模型运行记录中使用的默认 caller 标识。"
+
+[fields."agent.defaults.profile_id"]
+label = "默认提示词 Profile"
+description = "Agent 组装提示词时默认使用的 prompt profile ID。"
+
+[fields."agent.defaults.max_model_retries"]
+label = "默认模型重试次数"
+description = "可重试模型失败的默认重试次数。"
+
+[fields."agent.defaults.retry_backoff_seconds"]
+label = "默认重试退避秒数"
+description = "模型重试之间的默认等待时间。"
+
+[fields."agent.defaults.params"]
+label = "默认模型参数"
+description = "合并到各 Agent 阶段的 provider 专属模型参数。"
+
+[fields."agent.defaults.message_format.image_mode"]
+label = "图片呈现方式"
+description = "格式化消息时图片内容进入模型提示词的方式。"
+choices = { original = "原始内容", thumbnail = "缩略图", description = "文字描述" }
+
+[fields."agent.defaults.message_format.emoji_mode"]
+label = "表情呈现方式"
+description = "格式化消息时自定义表情进入模型提示词的方式。"
+choices = { original = "原始内容", thumbnail = "缩略图", semantic = "语义描述" }
+
+[fields."agent.defaults.message_format.pack_mode"]
+label = "消息打包方式"
+description = "多条消息写入模型提示词时的组织方式。"
+choices = { individual = "逐条消息", pack = "合并打包" }
+
+[fields."agent.defaults.message_format.timestamp_mode"]
+label = "时间戳模式"
+description = "格式化消息中时间戳的渲染策略。"
+
+[fields."agent.defaults.message_format.inject_sender"]
+label = "注入发送者"
+description = "格式化消息时包含发送者标签。"
+
+[fields."agent.defaults.message_format.inject_record_id"]
+label = "注入消息记录 ID"
+description = "格式化消息时包含消息日志记录 ID。"
+
+[fields."agent.defaults.message_format.self_platform_id"]
+label = "自身平台 ID"
+description = "消息格式化时用于识别 bot 自身的平台 ID。"
+
+[fields."agent.defaults.message_format.metadata"]
+label = "消息格式化元数据"
+description = "随消息格式化配置传递的附加元数据。"
+
+[fields."agent.review.enabled"]
+label = "启用审阅"
+description = "预留的顶层审阅开关。"
+
+[fields."agent.review.scan_batch_size"]
+label = "扫描批量大小"
+description = "单次审阅扫描最多处理的未读消息数。"
+
+[fields."agent.review.overflow_threshold_messages"]
+label = "溢出压缩阈值"
+description = "未读消息达到该数量后考虑执行溢出压缩。"
+
+[fields."agent.review.overflow_compression_batch_size"]
+label = "溢出压缩批量大小"
+description = "溢出压缩阶段每批处理的未读消息数。"
+
+[fields."agent.review.reply_context_before_messages"]
+label = "回复前文消息数"
+description = "围绕回复候选消息向前纳入的上下文消息数量。"
+
+[fields."agent.review.reply_context_after_messages"]
+label = "回复后文消息数"
+description = "围绕回复候选消息向后纳入的上下文消息数量。"
+
+[fields."agent.review.tail_history_before_seconds"]
+label = "尾部历史秒数"
+description = "审阅时考虑最近尾部消息历史的时间范围。"
+
+[fields."agent.review.tail_history_limit"]
+label = "尾部历史上限"
+description = "审阅时最多纳入的最近尾部消息数量。"
+
+[fields."agent.review.active_chat_summary_max_age_seconds"]
+label = "主动聊天摘要最大年龄"
+description = "审阅阶段允许使用的主动聊天摘要最大年龄。"
+
+[fields."agent.review.block_digest_concurrency"]
+label = "区块摘要并发数"
+description = "区块摘要阶段允许并发运行的任务数量。"
+
+[fields."agent.review.bootstrap_timeout_seconds"]
+label = "启动审阅超时"
+description = "主动聊天启动审阅的超时时间。"
+
+[fields."agent.review.mention_wake_count"]
+label = "唤醒所需提及次数"
+description = "触发主动回复唤醒所需的提及次数。"
+
+[fields."agent.review.mention_wake_window_seconds"]
+label = "提及唤醒窗口"
+description = "统计提及唤醒次数的滚动时间窗口。"
+
+[fields."agent.review.nearby_candidate_merge_gap"]
+label = "邻近候选合并间隔"
+description = "预留的审阅候选合并间隔。"
+
+[fields."agent.review.block_digest_retry_on_429"]
+label = "区块摘要限流重试"
+description = "预留的区块摘要 429 限流重试开关。"
+
+[fields."agent.review.overflow_compression.enabled"]
+label = "启用溢出压缩"
+description = "开启溢出压缩阶段。"
+
+[fields."agent.review.overflow_compression.llm"]
+label = "溢出压缩模型"
+description = "溢出压缩阶段使用的模型引用。"
+
+[fields."agent.review.overflow_compression.caller"]
+label = "溢出压缩调用方"
+description = "溢出压缩阶段使用的 caller 标识。"
+
+[fields."agent.review.overflow_compression.profile_id"]
+label = "溢出压缩提示词 Profile"
+description = "溢出压缩阶段使用的 prompt profile ID。"
+
+[fields."agent.review.overflow_compression.params"]
+label = "溢出压缩模型参数"
+description = "溢出压缩阶段的模型参数覆盖。"
+
+[fields."agent.review.overflow_compression.max_model_retries"]
+label = "溢出压缩重试次数"
+description = "溢出压缩阶段的模型重试次数。"
+
+[fields."agent.review.overflow_compression.retry_backoff_seconds"]
+label = "溢出压缩重试退避"
+description = "溢出压缩阶段模型重试之间的等待时间。"
+
+[fields."agent.review.overflow_compression.prompts"]
+label = "溢出压缩提示词组件"
+description = "溢出压缩阶段使用的提示词组件 ID 映射。"
+
+[fields."agent.review.scan.enabled"]
+label = "启用审阅扫描"
+description = "开启审阅扫描阶段。"
+
+[fields."agent.review.scan.llm"]
+label = "审阅扫描模型"
+description = "审阅扫描阶段使用的模型引用。"
+
+[fields."agent.review.scan.caller"]
+label = "审阅扫描调用方"
+description = "审阅扫描阶段使用的 caller 标识。"
+
+[fields."agent.review.scan.profile_id"]
+label = "审阅扫描提示词 Profile"
+description = "审阅扫描阶段使用的 prompt profile ID。"
+
+[fields."agent.review.scan.params"]
+label = "审阅扫描模型参数"
+description = "审阅扫描阶段的模型参数覆盖。"
+
+[fields."agent.review.scan.max_model_retries"]
+label = "审阅扫描重试次数"
+description = "审阅扫描阶段的模型重试次数。"
+
+[fields."agent.review.scan.retry_backoff_seconds"]
+label = "审阅扫描重试退避"
+description = "审阅扫描阶段模型重试之间的等待时间。"
+
+[fields."agent.review.scan.prompts"]
+label = "审阅扫描提示词组件"
+description = "审阅扫描阶段使用的提示词组件 ID 映射。"
+
+[fields."agent.review.block_digest.enabled"]
+label = "启用区块摘要"
+description = "开启审阅区块摘要阶段。"
+
+[fields."agent.review.block_digest.llm"]
+label = "区块摘要模型"
+description = "区块摘要阶段使用的模型引用。"
+
+[fields."agent.review.block_digest.caller"]
+label = "区块摘要调用方"
+description = "区块摘要阶段使用的 caller 标识。"
+
+[fields."agent.review.block_digest.profile_id"]
+label = "区块摘要提示词 Profile"
+description = "区块摘要阶段使用的 prompt profile ID。"
+
+[fields."agent.review.block_digest.params"]
+label = "区块摘要模型参数"
+description = "区块摘要阶段的模型参数覆盖。"
+
+[fields."agent.review.block_digest.max_model_retries"]
+label = "区块摘要重试次数"
+description = "区块摘要阶段的模型重试次数。"
+
+[fields."agent.review.block_digest.retry_backoff_seconds"]
+label = "区块摘要重试退避"
+description = "区块摘要阶段模型重试之间的等待时间。"
+
+[fields."agent.review.block_digest.prompts"]
+label = "区块摘要提示词组件"
+description = "区块摘要阶段使用的提示词组件 ID 映射。"
+
+[fields."agent.review.reply_decision.enabled"]
+label = "启用回复决策"
+description = "开启回复决策阶段。"
+
+[fields."agent.review.reply_decision.llm"]
+label = "回复决策模型"
+description = "回复决策阶段使用的模型引用。"
+
+[fields."agent.review.reply_decision.caller"]
+label = "回复决策调用方"
+description = "回复决策阶段使用的 caller 标识。"
+
+[fields."agent.review.reply_decision.profile_id"]
+label = "回复决策提示词 Profile"
+description = "回复决策阶段使用的 prompt profile ID。"
+
+[fields."agent.review.reply_decision.params"]
+label = "回复决策模型参数"
+description = "回复决策阶段的模型参数覆盖。"
+
+[fields."agent.review.reply_decision.tools.extra"]
+label = "回复决策额外工具"
+description = "暴露给回复决策阶段的额外工具名称；内置聊天动作工具始终保留。"
+
+[fields."agent.review.reply_decision.tools.tags"]
+label = "回复决策工具标签"
+description = "暴露给回复决策阶段的额外工具注册标签；内置聊天动作工具始终保留。"
+
+[fields."agent.review.reply_decision.max_model_retries"]
+label = "回复决策重试次数"
+description = "回复决策阶段的模型重试次数。"
+
+[fields."agent.review.reply_decision.retry_backoff_seconds"]
+label = "回复决策重试退避"
+description = "回复决策阶段模型重试之间的等待时间。"
+
+[fields."agent.review.reply_decision.prompts"]
+label = "回复决策提示词组件"
+description = "回复决策阶段使用的提示词组件 ID 映射。"
+
+[fields."agent.review.active_chat_bootstrap.enabled"]
+label = "启用主动聊天启动"
+description = "开启主动聊天启动审阅阶段。"
+
+[fields."agent.review.active_chat_bootstrap.llm"]
+label = "主动聊天启动模型"
+description = "主动聊天启动审阅阶段使用的模型引用。"
+
+[fields."agent.review.active_chat_bootstrap.timeout_seconds"]
+label = "主动聊天启动超时"
+description = "预留的主动聊天启动阶段本地超时。"
+
+[fields."agent.review.active_chat_bootstrap.caller"]
+label = "主动聊天启动调用方"
+description = "主动聊天启动审阅阶段使用的 caller 标识。"
+
+[fields."agent.review.active_chat_bootstrap.profile_id"]
+label = "主动聊天启动提示词 Profile"
+description = "主动聊天启动审阅阶段使用的 prompt profile ID。"
+
+[fields."agent.review.active_chat_bootstrap.params"]
+label = "主动聊天启动模型参数"
+description = "主动聊天启动审阅阶段的模型参数覆盖。"
+
+[fields."agent.review.active_chat_bootstrap.max_model_retries"]
+label = "主动聊天启动重试次数"
+description = "主动聊天启动审阅阶段的模型重试次数。"
+
+[fields."agent.review.active_chat_bootstrap.retry_backoff_seconds"]
+label = "主动聊天启动重试退避"
+description = "主动聊天启动审阅阶段模型重试之间的等待时间。"
+
+[fields."agent.review.active_chat_bootstrap.prompts"]
+label = "主动聊天启动提示词组件"
+description = "主动聊天启动审阅阶段使用的提示词组件 ID 映射。"
+
+[fields."agent.active_chat.enabled"]
+label = "启用主动聊天"
+description = "预留的顶层主动聊天开关。"
+
+[fields."agent.active_chat.initial_interest"]
+label = "初始兴趣值"
+description = "主动聊天进入时的初始兴趣值。"
+
+[fields."agent.active_chat.half_life_seconds"]
+label = "兴趣半衰期"
+description = "主动聊天兴趣值衰减到一半所需的秒数。"
+
+[fields."agent.active_chat.tick_interval_seconds"]
+label = "兴趣计时间隔"
+description = "主动聊天兴趣计时器的运行间隔。"
+
+[fields."agent.active_chat.idle_interest_threshold"]
+label = "空闲兴趣阈值"
+description = "兴趣值低于该阈值时主动聊天回到空闲状态。"
+
+[fields."agent.active_chat.max_interest"]
+label = "最大兴趣值"
+description = "主动聊天兴趣值允许达到的上限。"
+
+[fields."agent.active_chat.post_round_attention_multiplier"]
+label = "回合后注意力倍率"
+description = "一次主动聊天回合结束后应用的注意力倍率。"
+
+[fields."agent.active_chat.conversation_message_limit"]
+label = "会话消息保留上限"
+description = "主动聊天保留的会话轨迹消息数量上限。"
+
+[fields."agent.active_chat.interest_delta.normal_message"]
+label = "普通消息兴趣变化"
+description = "主动聊天中普通消息带来的兴趣增量。"
+
+[fields."agent.active_chat.interest_delta.mention_self"]
+label = "提及自身兴趣变化"
+description = "消息提及当前 bot 时带来的兴趣增量。"
+
+[fields."agent.active_chat.interest_delta.reply_to_self"]
+label = "回复自身兴趣变化"
+description = "消息回复当前 bot 时带来的兴趣增量。"
+
+[fields."agent.active_chat.interest_delta.poke"]
+label = "戳一戳兴趣变化"
+description = "戳一戳事件带来的兴趣增量。"
+
+[fields."agent.active_chat.interest_delta.mention_other"]
+label = "提及他人兴趣变化"
+description = "消息提及其他用户时带来的兴趣增量。"
+
+[fields."agent.active_chat.interest_delta.send_reply"]
+label = "发送回复兴趣变化"
+description = "发送高参与度主动聊天回复后的兴趣变化。"
+
+[fields."agent.active_chat.interest_delta.send_reply_low"]
+label = "轻量回复兴趣变化"
+description = "发送轻量主动聊天回复后的兴趣变化。"
+
+[fields."agent.active_chat.interest_delta.no_reply"]
+label = "不回复兴趣变化"
+description = "普通不回复决策后的兴趣变化。"
+
+[fields."agent.active_chat.interest_delta.no_reply_strong"]
+label = "强不回复兴趣变化"
+description = "强不回复决策后的兴趣变化。"
+
+[fields."agent.active_chat.interest_delta.send_poke"]
+label = "发送戳一戳兴趣变化"
+description = "发送戳一戳动作后的兴趣变化。"
+
+[fields."agent.active_chat.interest_delta.request_think_mode"]
+label = "请求思考模式兴趣变化"
+description = "主动聊天请求切换到思考模式后的兴趣变化。"
+
+[fields."agent.active_chat.interest_delta.retry_failed"]
+label = "重试失败兴趣变化"
+description = "主动聊天重试失败后的兴趣变化。"
+
+[fields."agent.active_chat.interest_delta.exit_active"]
+label = "退出主动状态兴趣变化"
+description = "预留模板值；exit_active 会强制退出主动聊天。"
+
+[fields."agent.active_chat.attention.base_contribution"]
+label = "基础注意力贡献"
+description = "主动聊天消息的基础注意力贡献值。"
+
+[fields."agent.active_chat.attention.mention_self_contribution"]
+label = "提及自身注意力贡献"
+description = "提及当前 bot 时增加的注意力贡献。"
+
+[fields."agent.active_chat.attention.mention_other_contribution"]
+label = "提及他人注意力贡献"
+description = "提及其他用户时增加的注意力贡献。"
+
+[fields."agent.active_chat.attention.reply_to_self_contribution"]
+label = "回复自身注意力贡献"
+description = "回复当前 bot 时增加的注意力贡献。"
+
+[fields."agent.active_chat.attention.poke_self_contribution"]
+label = "戳自身注意力贡献"
+description = "戳当前 bot 时增加的注意力贡献。"
+
+[fields."agent.active_chat.attention.poke_other_contribution"]
+label = "戳他人注意力贡献"
+description = "戳其他用户时增加的注意力贡献。"
+
+[fields."agent.active_chat.attention.bot_self_contribution"]
+label = "自身消息注意力贡献"
+description = "bot 自身消息带来的注意力贡献。"
+
+[fields."agent.active_chat.attention.contribution_decay_k"]
+label = "注意力贡献衰减系数"
+description = "注意力贡献随时间衰减的系数。"
+
+[fields."agent.active_chat.attention.threshold"]
+label = "基础注意力阈值"
+description = "累计注意力触发主动聊天快速回合的基础阈值。"
+
+[fields."agent.active_chat.attention.reference_interest"]
+label = "参考兴趣值"
+description = "动态注意力阈值计算使用的参考兴趣点。"
+
+[fields."agent.active_chat.attention.threshold_min"]
+label = "最小注意力阈值"
+description = "动态注意力阈值的下限。"
+
+[fields."agent.active_chat.attention.threshold_max"]
+label = "最大注意力阈值"
+description = "动态注意力阈值的上限。"
+
+[fields."agent.active_chat.attention.semantic_wait_ms"]
+label = "语义等待毫秒"
+description = "运行主动聊天快速回合前等待语义聚合的时间。"
+
+[fields."agent.active_chat.attention.post_round_accumulated_multiplier"]
+label = "回合后累计注意力倍率"
+description = "主动聊天回合结束后应用到累计注意力的倍率。"
+
+[fields."agent.active_chat.attention.post_round_multiplier"]
+label = "回合后倍率"
+description = "旧版字段，等价于回合后累计注意力倍率。"
+
+[fields."agent.active_chat.fast_mode.enabled"]
+label = "启用快速模式"
+description = "预留的主动聊天快速模式开关。"
+
+[fields."agent.active_chat.fast_mode.llm"]
+label = "快速模式模型"
+description = "主动聊天快速模式使用的模型引用。"
+
+[fields."agent.active_chat.fast_mode.caller"]
+label = "快速模式调用方"
+description = "主动聊天快速模式使用的 caller 标识。"
+
+[fields."agent.active_chat.fast_mode.profile_id"]
+label = "快速模式提示词 Profile"
+description = "主动聊天快速模式使用的 prompt profile ID。"
+
+[fields."agent.active_chat.fast_mode.params"]
+label = "快速模式模型参数"
+description = "主动聊天快速模式的模型参数覆盖。"
+
+[fields."agent.active_chat.fast_mode.tools.extra"]
+label = "快速模式额外工具"
+description = "暴露给主动聊天快速模式的额外工具名称；内置聊天动作工具始终保留。"
+
+[fields."agent.active_chat.fast_mode.tools.tags"]
+label = "快速模式工具标签"
+description = "暴露给主动聊天快速模式的额外工具注册标签；内置聊天动作工具始终保留。"
+
+[fields."agent.active_chat.fast_mode.prompts"]
+label = "快速模式提示词组件"
+description = "主动聊天快速模式使用的提示词组件 ID 映射。"
+
+[fields."agent.context.max_context_tokens"]
+label = "最大上下文 Token"
+description = "预留的上下文 token 预算。"
+
+[fields."agent.context.evict_ratio"]
+label = "上下文淘汰比例"
+description = "预留的上下文淘汰比例。"
+
+[fields."agent.context.use_image_thumbnails"]
+label = "上下文使用图片缩略图"
+description = "预留的上下文图片缩略图开关。"
+
+[fields."agent.summaries.enabled"]
+label = "启用摘要服务"
+description = "预留的摘要服务开关。"
+
+[fields."agent.summaries.active_chat_summary_max_age_seconds"]
+label = "主动聊天摘要最大年龄"
+description = "审阅可使用的主动聊天摘要最大年龄。"
+
+[fields."agent.summaries.markdown.enabled"]
+label = "启用 Markdown 摘要镜像"
+description = "是否将 Agent 摘要镜像为 data 目录下的 Markdown 文档。"
+
+[fields."agent.summaries.markdown.dir"]
+label = "Markdown 摘要目录"
+description = "相对于 data 目录的 Markdown 摘要输出目录。"
+
+[fields."agent.summaries.review_block_digest_max_age_seconds"]
+label = "区块摘要最大年龄"
+description = "预留的审阅区块摘要最大年龄。"
+
+[fields."agent.media.inspection_route_id"]
+label = "媒体检查路由 ID"
+description = "预留的媒体检查模型路由 ID。"
+
+[fields."agent.media.sticker_summary_route_id"]
+label = "表情摘要路由 ID"
+description = "预留的表情摘要模型路由 ID。"
+
+[fields."agent.media.reanalysis_route_id"]
+label = "媒体重分析路由 ID"
+description = "预留的媒体重分析模型路由 ID。"
+
+[fields."agent.media.prompts"]
+label = "媒体提示词组件"
+description = "预留的媒体提示词组件 ID 映射。"

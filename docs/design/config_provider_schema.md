@@ -108,6 +108,7 @@ A provider schema should expose:
 - Validation hints.
 - Secret-field markers.
 - WebUI presentation hints.
+- Localized provider and field copy in adjacent language files.
 - Optional TOML example.
 
 Provider kinds:
@@ -182,6 +183,37 @@ default = 5
 min = 1
 max = 20
 ```
+
+
+## Provider I18n Files
+
+Provider-localized copy lives next to the schema as
+`config.i18n.<locale>.toml`. English schema text remains the canonical fallback;
+localized files provide UI-facing copy for a specific language.
+
+Example `config.i18n.zh-CN.toml`:
+
+```toml
+[provider]
+display_name = "OneBot v11"
+description = "OneBot v11 WebSocket 消息平台适配器。"
+
+[[fields]]
+path = "mode"
+label = "连接模式"
+description = "OneBot WebSocket 连接方式。"
+choices = { forward = "正向连接", reverse = "反向监听" }
+
+[[fields]]
+path = "reverse_port"
+label = "反向监听端口"
+description = "反向连接模式下 ShinBot 监听的端口。"
+```
+
+The loader merges language files into provider metadata as `i18n.<locale>`.
+The WebUI resolves provider `display_name`/`description`, field
+`label`/`description`/`placeholder`, and enum `choices` from that metadata,
+falling back to the canonical schema text when a locale is missing.
 
 
 ## Field Types

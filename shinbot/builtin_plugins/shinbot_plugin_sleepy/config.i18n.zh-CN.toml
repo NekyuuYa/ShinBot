@@ -1,0 +1,13 @@
+[provider]
+display_name = "睡眠调度器"
+description = "按时间段调整 Agent 注意力阈值的调度插件。"
+
+[[fields]]
+path = "enabled"
+label = "启用调度"
+description = "启用后，插件会按时间段调整 Agent 的注意力阈值。"
+
+[[fields]]
+path = "schedules"
+label = "调度规则"
+description = "调度规则列表。每项包含名称、开始时间、结束时间、阈值增量和启用状态。"

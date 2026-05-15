@@ -1,0 +1,78 @@
+[provider]
+display_name = "QQ 官方机器人"
+description = "QQ 官方机器人网关和 OpenAPI 消息平台适配器。"
+
+[[fields]]
+path = "app_id"
+label = "AppID"
+description = "QQ 官方机器人应用的 AppID。"
+
+[[fields]]
+path = "app_secret"
+label = "AppSecret"
+description = "QQ 官方机器人应用的 AppSecret。请妥善保管。"
+
+[[fields]]
+path = "intents"
+label = "网关 Intents"
+description = "QQ 网关事件订阅位掩码。一般保持默认值即可。"
+
+[[fields]]
+path = "sandbox"
+label = "使用沙箱环境"
+description = "使用 QQ 沙箱 API 域名。调试沙箱机器人时开启。"
+
+[[fields]]
+path = "api_base"
+label = "OpenAPI 地址"
+description = "覆盖 QQ OpenAPI 基础地址。留空时使用官方默认地址。"
+
+[[fields]]
+path = "token_base"
+label = "Token 服务地址"
+description = "获取访问 Token 的服务基础地址。"
+
+[[fields]]
+path = "ws_url"
+label = "网关 WebSocket 地址"
+description = "覆盖网关 WebSocket 地址。留空时自动发现。"
+
+[[fields]]
+path = "request_timeout"
+label = "请求超时秒数"
+description = "调用 QQ OpenAPI 时等待响应的最长时间。"
+
+[[fields]]
+path = "heartbeat_jitter"
+label = "心跳抖动比例"
+description = "网关心跳的随机抖动比例，用于避免固定周期请求。"
+
+[[fields]]
+path = "auto_download_media"
+label = "自动缓存图片和视频"
+description = "消息进入系统前，自动下载并缓存图片、视频资源，便于后续模型或插件读取。"
+
+[[fields]]
+path = "download_file_resources"
+label = "自动缓存文件附件"
+description = "消息进入系统前，自动下载文件附件。开启后可能带来额外网络和存储开销。"
+
+[[fields]]
+path = "max_resource_bytes"
+label = "单个资源大小上限"
+description = "允许缓存的单个媒体或文件资源最大字节数。"
+
+[[fields]]
+path = "resource_cache_dir"
+label = "资源缓存目录"
+description = "下载资源保存到本地的目录。相对路径会按运行目录解析。"
+
+[[fields]]
+path = "reconnect_delay"
+label = "重连间隔秒数"
+description = "网关连接断开后等待多久再尝试重连。"
+
+[[fields]]
+path = "max_reconnects"
+label = "最大重连次数"
+description = "网关最大重连次数。设为 -1 表示持续重连。"
