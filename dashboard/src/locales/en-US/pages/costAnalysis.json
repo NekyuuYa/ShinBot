@@ -10,19 +10,44 @@
   "windowOption": "{days}d",
   "summary": {
     "totalCost": "Total Cost",
+    "totalCalls": "Total Calls",
     "totalTokens": "Total Tokens",
     "successRate": "Success Rate",
     "cacheHitRate": "Cache Hit Rate",
     "avgLatency": "Avg Latency",
+    "costPerCall": "Avg {value}/call",
+    "successFailed": "{rate} success / {failed} failed",
+    "tokensPerCall": "Avg {value}/call",
+    "cacheReadWrite": "Read {read} / write {write}",
     "callsSuffix": "calls",
     "failedCalls": "{count} failed",
     "ttft": "TTFT {value}"
   },
   "sections": {
+    "overview": {
+      "kicker": "Overview",
+      "title": "Cost Operating Summary",
+      "subtitle": "Start with spend, call quality, cache behavior, and latency before drilling into models and providers."
+    },
     "timeline": {
       "kicker": "Timeline",
-      "title": "Cost and Load",
-      "subtitle": "The daily view tracks spend over the selected window, while the hourly view shows the latest 24-hour load."
+      "title": "Daily Cost Trend",
+      "subtitle": "Aggregate daily spend in the selected window to spot cost spikes and call volatility."
+    },
+    "leaderboard": {
+      "kicker": "Ranking",
+      "title": "High-Cost Models",
+      "subtitle": "Rank the main spend drivers by cost share so routing and pricing checks start in the right place."
+    },
+    "hourly": {
+      "kicker": "Load",
+      "title": "Last 24 Hours",
+      "subtitle": "Review hourly tokens, calls, and cache writes to catch short-term load spikes."
+    },
+    "providers": {
+      "kicker": "Providers",
+      "title": "Provider Cost Mix",
+      "subtitle": "Roll model spend up to provider level to see concentration and cache behavior."
     },
     "focus": {
       "kicker": "Focus Models",
@@ -65,7 +90,14 @@
     "dailySince": "Window start {value}",
     "hourlySince": "Hourly window {value}",
     "focusModels": "{count} focus models",
-    "modelCount": "{count} models"
+    "modelCount": "{count} models",
+    "activeModels": "Active Models",
+    "providerCount": "Providers",
+    "topProvider": "Top {name} - {value}",
+    "peakCostDay": "Peak Cost Day",
+    "modelRankMeta": "{calls} calls - {tokens} tokens - {share} cost share",
+    "providerMeta": "{models} models - {calls} calls",
+    "noData": "No data"
   },
   "emptyState": {
     "title": "No model usage data yet",

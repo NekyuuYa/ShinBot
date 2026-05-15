@@ -9,7 +9,8 @@
     "totalPlugins": "插件总数",
     "enabledPlugins": "已启用插件",
     "statusOnline": "状态：{value}",
-    "memoryUsageMb": "内存：{value} MB"
+    "memoryUsageMb": "内存：{value} MB",
+    "processMemory": "进程内存：{value}"
   },
   "tokenStats": {
     "kicker": "最近 {days} 天",
