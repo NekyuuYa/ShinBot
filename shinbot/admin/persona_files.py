@@ -1,0 +1,432 @@
+"""File-backed persona management helpers."""
+
+from __future__ import annotations
+
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from uuid import uuid4
+
+from shinbot.agent.services.prompt_engine.files import (
+    PromptFileError,
+    parse_prompt_markdown,
+)
+from shinbot.agent.services.prompt_engine.schema import (
+    PromptComponent,
+    PromptComponentKind,
+    PromptStage,
+)
+from shinbot.persistence.records import utc_now_iso
+
+PERSONA_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+DEFAULT_PERSONA_ID = "default"
+
+
+@dataclass(slots=True)
+class PersonaFileError(RuntimeError):
+    """Structured admin-layer error for file-backed persona flows."""
+
+    status_code: int
+    code: str
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
+
+
+@dataclass(slots=True, frozen=True)
+class PersonaFileRecord:
+    """A persona loaded from ``data/personas/*.md``."""
+
+    uuid: str
+    name: str
+    prompt_text: str
+    tags: list[str]
+    enabled: bool
+    created_at: str
+    updated_at: str
+    path: Path
+    version: str = "1.0.0"
+    description: str = ""
+
+    @property
+    def prompt_definition_uuid(self) -> str:
+        return persona_component_id(self.uuid)
+
+
+class PersonaFileRepository:
+    """Repository for user-editable persona Markdown files."""
+
+    def __init__(self, root: Path | str) -> None:
+        self.root = Path(root)
+
+    @classmethod
+    def from_data_dir(cls, data_dir: Path | str) -> PersonaFileRepository:
+        return cls(Path(data_dir) / "personas")
+
+    def ensure_default_persona(self) -> Path:
+        """Copy the packaged default persona if the user has not created one."""
+
+        target = self.root / f"{DEFAULT_PERSONA_ID}.md"
+        if target.exists():
+            return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_default_persona_source_path(), target)
+        return target
+
+    def list(self) -> list[dict[str, object]]:
+        if not self.root.is_dir():
+            return []
+        records = [self._load_file(path) for path in sorted(self.root.glob("*.md"))]
+        return [serialize_persona_record(record) for record in sorted(records, key=_sort_key)]
+
+    def get(self, persona_id: str) -> dict[str, object] | None:
+        normalized = normalize_persona_id(persona_id)
+        path = self.root / f"{normalized}.md"
+        if not path.is_file():
+            return None
+        return serialize_persona_record(self._load_file(path))
+
+    def get_by_name(self, name: str) -> dict[str, object] | None:
+        normalized = name.strip()
+        if not normalized:
+            return None
+        for payload in self.list():
+            if payload["name"] == normalized:
+                return payload
+        return None
+
+    def create(
+        self,
+        *,
+        persona_id: str | None,
+        name: str,
+        prompt_text: str,
+        tags: list[str],
+        enabled: bool,
+    ) -> dict[str, object]:
+        normalized_name, normalized_prompt = normalize_persona_input(name, prompt_text)
+        normalized_tags = normalize_persona_tags(tags)
+        normalized_id = normalize_persona_id(persona_id or _derive_persona_id(normalized_name))
+        path = self.root / f"{normalized_id}.md"
+        if path.exists():
+            raise PersonaFileError(
+                status_code=409,
+                code="PERSONA_ALREADY_EXISTS",
+                message=f"Persona {normalized_id!r} already exists",
+            )
+        if self.get_by_name(normalized_name) is not None:
+            raise PersonaFileError(
+                status_code=409,
+                code="PERSONA_ALREADY_EXISTS",
+                message=f"Persona {normalized_name!r} already exists",
+            )
+        now = utc_now_iso()
+        self._write_file(
+            path,
+            persona_id=normalized_id,
+            name=normalized_name,
+            prompt_text=normalized_prompt,
+            tags=normalized_tags,
+            enabled=enabled,
+            created_at=now,
+            updated_at=now,
+        )
+        payload = self.get(normalized_id)
+        assert payload is not None
+        return payload
+
+    def update(
+        self,
+        persona_id: str,
+        *,
+        name: str,
+        prompt_text: str,
+        tags: list[str],
+        enabled: bool,
+    ) -> dict[str, object]:
+        normalized_id = normalize_persona_id(persona_id)
+        current = self.get(normalized_id)
+        if current is None:
+            raise PersonaFileError(
+                status_code=404,
+                code="PERSONA_NOT_FOUND",
+                message=f"Persona {normalized_id!r} was not found",
+            )
+        normalized_name, normalized_prompt = normalize_persona_input(name, prompt_text)
+        normalized_tags = normalize_persona_tags(tags)
+        existing = self.get_by_name(normalized_name)
+        if existing is not None and existing["uuid"] != normalized_id:
+            raise PersonaFileError(
+                status_code=409,
+                code="PERSONA_ALREADY_EXISTS",
+                message=f"Persona {normalized_name!r} already exists",
+            )
+        self._write_file(
+            self.root / f"{normalized_id}.md",
+            persona_id=normalized_id,
+            name=normalized_name,
+            prompt_text=normalized_prompt,
+            tags=normalized_tags,
+            enabled=enabled,
+            created_at=str(current["created_at"]),
+            updated_at=utc_now_iso(),
+            version=str(current.get("version") or "1.0.0"),
+            description=str(current.get("description") or ""),
+        )
+        payload = self.get(normalized_id)
+        assert payload is not None
+        return payload
+
+    def delete(self, persona_id: str) -> None:
+        normalized = normalize_persona_id(persona_id)
+        path = self.root / f"{normalized}.md"
+        if not path.is_file():
+            raise PersonaFileError(
+                status_code=404,
+                code="PERSONA_NOT_FOUND",
+                message=f"Persona {normalized!r} was not found",
+            )
+        path.unlink()
+
+    def _load_file(self, path: Path) -> PersonaFileRecord:
+        try:
+            front_matter, body = parse_prompt_markdown(
+                path.read_text(encoding="utf-8"),
+                path=path,
+            )
+        except PromptFileError as exc:
+            raise PersonaFileError(
+                status_code=500,
+                code="INVALID_PERSONA_FILE",
+                message=str(exc),
+            ) from exc
+
+        persona_id = normalize_persona_id(str(front_matter.get("id") or path.stem))
+        expected_path = self.root / f"{persona_id}.md"
+        if path.name != expected_path.name:
+            raise PersonaFileError(
+                status_code=500,
+                code="INVALID_PERSONA_FILE",
+                message=f"Persona file {path} id must match file name",
+            )
+        name = str(front_matter.get("name") or persona_id).strip()
+        prompt_text = body.strip()
+        if not prompt_text:
+            raise PersonaFileError(
+                status_code=500,
+                code="INVALID_PERSONA_FILE",
+                message=f"Persona file {path} body must not be empty",
+            )
+        return PersonaFileRecord(
+            uuid=persona_id,
+            name=name,
+            prompt_text=prompt_text,
+            tags=normalize_persona_tags(_list(front_matter.get("tags"))),
+            enabled=bool(front_matter.get("enabled", True)),
+            created_at=str(front_matter.get("created_at") or ""),
+            updated_at=str(front_matter.get("updated_at") or path.stat().st_mtime),
+            path=path,
+            version=str(front_matter.get("version") or "1.0.0"),
+            description=str(front_matter.get("description") or ""),
+        )
+
+    def _write_file(
+        self,
+        path: Path,
+        *,
+        persona_id: str,
+        name: str,
+        prompt_text: str,
+        tags: list[str],
+        enabled: bool,
+        created_at: str,
+        updated_at: str,
+        version: str = "1.0.0",
+        description: str = "",
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = render_persona_markdown(
+            persona_id=persona_id,
+            name=name,
+            prompt_text=prompt_text,
+            tags=tags,
+            enabled=enabled,
+            created_at=created_at,
+            updated_at=updated_at,
+            version=version,
+            description=description,
+        )
+        path.write_text(text, encoding="utf-8")
+
+
+def serialize_persona_record(record: PersonaFileRecord) -> dict[str, object]:
+    return {
+        "uuid": record.uuid,
+        "name": record.name,
+        "prompt_definition_uuid": record.prompt_definition_uuid,
+        "prompt_text": record.prompt_text,
+        "tags": record.tags,
+        "enabled": record.enabled,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+        "path": str(record.path),
+        "version": record.version,
+        "description": record.description,
+    }
+
+
+def serialize_persona(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "uuid": payload["uuid"],
+        "name": payload["name"],
+        "promptDefinitionUuid": payload["prompt_definition_uuid"],
+        "promptText": payload["prompt_text"],
+        "tags": payload["tags"],
+        "enabled": payload["enabled"],
+        "createdAt": payload["created_at"],
+        "lastModified": payload["updated_at"],
+    }
+
+
+def persona_component_id(persona_id: str) -> str:
+    return f"persona.{normalize_persona_id(persona_id)}"
+
+
+def persona_prompt_component(payload: dict[str, object]) -> PromptComponent:
+    persona_id = normalize_persona_id(str(payload["uuid"]))
+    return PromptComponent(
+        id=persona_component_id(persona_id),
+        stage=PromptStage.IDENTITY,
+        kind=PromptComponentKind.STATIC_TEXT,
+        version=str(payload.get("version") or "1.0.0"),
+        priority=100,
+        enabled=bool(payload.get("enabled", True)),
+        content=str(payload.get("prompt_text") or "").strip(),
+        tags=[str(item) for item in _list(payload.get("tags"))],
+        metadata={
+            "display_name": str(payload.get("name") or persona_id),
+            "description": str(payload.get("description") or ""),
+            "source_type": "persona",
+            "source_id": persona_id,
+            "persona_file": str(payload.get("path") or ""),
+        },
+    )
+
+
+def normalize_persona_id(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or not PERSONA_ID_RE.fullmatch(normalized):
+        raise PersonaFileError(
+            status_code=422,
+            code="INVALID_ACTION",
+            message="Persona id must be a safe file name stem",
+        )
+    return normalized
+
+
+def normalize_persona_input(name: str, prompt_text: str) -> tuple[str, str]:
+    normalized_name = name.strip()
+    normalized_prompt = prompt_text.strip()
+    if not normalized_name:
+        raise PersonaFileError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="Persona name must not be empty",
+        )
+    if not normalized_prompt:
+        raise PersonaFileError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="Persona promptText must not be empty",
+        )
+    return normalized_name, normalized_prompt
+
+
+def normalize_persona_tags(tags: list[str]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for tag in tags:
+        value = str(tag).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def render_persona_markdown(
+    *,
+    persona_id: str,
+    name: str,
+    prompt_text: str,
+    tags: list[str],
+    enabled: bool,
+    created_at: str,
+    updated_at: str,
+    version: str = "1.0.0",
+    description: str = "",
+) -> str:
+    lines = [
+        "---",
+        f"id: {_yaml_string(persona_id)}",
+        f"name: {_yaml_string(name)}",
+        f"version: {_yaml_string(version)}",
+        f"enabled: {_yaml_bool(enabled)}",
+    ]
+    if description:
+        lines.append(f"description: {_yaml_string(description)}")
+    lines.extend(
+        [
+            "tags:",
+            *[f"  - {_yaml_string(tag)}" for tag in tags],
+            f"created_at: {_yaml_string(created_at)}",
+            f"updated_at: {_yaml_string(updated_at)}",
+            "---",
+            "",
+            prompt_text.strip(),
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _derive_persona_id(name: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", name.strip()).strip(".-")
+    return stem if stem else f"persona-{uuid4().hex[:8]}"
+
+
+def _default_persona_source_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "agent" / "personas" / "default.md"
+
+
+def _sort_key(record: PersonaFileRecord) -> tuple[int, str, str]:
+    return (0 if record.uuid == DEFAULT_PERSONA_ID else 1, record.name, record.uuid)
+
+
+def _list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list | tuple) else []
+
+
+def _yaml_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _yaml_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+__all__ = [
+    "DEFAULT_PERSONA_ID",
+    "PersonaFileError",
+    "PersonaFileRepository",
+    "normalize_persona_id",
+    "normalize_persona_input",
+    "normalize_persona_tags",
+    "persona_component_id",
+    "persona_prompt_component",
+    "render_persona_markdown",
+    "serialize_persona",
+]

@@ -259,12 +259,11 @@ def validate_agent_runtime_config_references(
     """Validate Agent runtime config references against live registries."""
 
     issues: list[ConfigValidationIssue] = []
-    if persona_repository is not None and prompt_definition_repository is not None:
+    if persona_repository is not None:
         issues.extend(
             _validate_agent_persona_ref(
                 payload,
                 persona_repository=persona_repository,
-                prompt_definition_repository=prompt_definition_repository,
                 path_prefix=path_prefix,
             )
         )
@@ -629,7 +628,6 @@ def _validate_agent_persona_ref(
     payload: dict[str, Any],
     *,
     persona_repository: Any,
-    prompt_definition_repository: Any,
     path_prefix: str,
 ) -> list[ConfigValidationIssue]:
     persona_id = _agent_persona_id(payload)
@@ -653,36 +651,13 @@ def _validate_agent_persona_ref(
                 code="disabled_ref",
             )
         ]
-    prompt_uuid = str(persona.get("prompt_definition_uuid") or "").strip()
-    prompt_definition = (
-        prompt_definition_repository.get(prompt_uuid) if prompt_uuid else None
-    )
-    if prompt_definition is None:
+    prompt_text = str(persona.get("prompt_text") or "").strip()
+    if not prompt_text:
         return [
             ConfigValidationIssue(
                 path=path,
-                message=f"Persona {persona_id!r} prompt definition is not registered",
-                code="unknown_persona_prompt",
-            )
-        ]
-    if not prompt_definition.get("enabled", True):
-        return [
-            ConfigValidationIssue(
-                path=path,
-                message=f"Persona {persona_id!r} prompt definition is disabled",
-                code="disabled_ref",
-            )
-        ]
-    stage = str(prompt_definition.get("stage") or "").strip()
-    if stage != PromptStage.IDENTITY.value:
-        return [
-            ConfigValidationIssue(
-                path=path,
-                message=(
-                    f"Persona {persona_id!r} prompt definition belongs to stage "
-                    f"{stage!r}, not {PromptStage.IDENTITY.value!r}"
-                ),
-                code="persona_prompt_stage",
+                message=f"Persona {persona_id!r} prompt body is empty",
+                code="empty_persona_prompt",
             )
         ]
     return []

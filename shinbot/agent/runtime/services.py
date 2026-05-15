@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from shinbot.admin.persona_files import PersonaFileRepository, persona_prompt_component
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
 from shinbot.agent.coordinators.active_chat import models as active_chat_coordinator_models
 from shinbot.agent.coordinators.active_chat.attention import ActiveChatAttention
@@ -59,7 +60,6 @@ from shinbot.agent.services.media import (
 )
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptRegistry, PromptStage
-from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_component
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
@@ -243,16 +243,7 @@ class AgentRuntimeProfile:
                 else None
             ),
             prompt_registry=self.prompt_registry,
-            persona_repository=(
-                self._owner.database.personas
-                if self._owner.database is not None
-                else None
-            ),
-            prompt_definition_repository=(
-                self._owner.database.prompt_definitions
-                if self._owner.database is not None
-                else None
-            ),
+            persona_repository=self._owner.personas,
         )
         if issues:
             config_path = (
@@ -263,18 +254,14 @@ class AgentRuntimeProfile:
             )
 
     def _sync_persona_prompt_component(self) -> str:
-        if self._owner.database is None or not self.config.persona_id:
+        if not self.config.persona_id:
             return ""
-        persona = self._owner.database.personas.get(self.config.persona_id)
+        persona = self._owner.personas.get(self.config.persona_id)
         if persona is None:
             return ""
-        prompt_uuid = str(persona.get("prompt_definition_uuid") or "").strip()
-        if not prompt_uuid:
-            return ""
-        prompt_definition = self._owner.database.prompt_definitions.get(prompt_uuid)
-        if prompt_definition is None:
-            return ""
-        return sync_prompt_definition_component(self.prompt_registry, prompt_definition)
+        component = persona_prompt_component(persona)
+        self.prompt_registry.upsert_component(component)
+        return component.id
 
 
 class AgentRuntime:
@@ -289,6 +276,7 @@ class AgentRuntime:
         audit_logger: AuditLogger,
         adapter_manager: AdapterManager,
         model_runtime: Any,
+        tool_registry: ToolRegistry | None = None,
         review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
         prompt_file_config: PromptFileLoadConfig | dict[str, Any] | None = None,
         agent_config: AgentRuntimeConfig | dict[str, Any] | None = None,
@@ -301,6 +289,8 @@ class AgentRuntime:
         )
         self.runtime_data_dir = runtime_data_dir
         self.database = database
+        self.personas = PersonaFileRepository.from_data_dir(runtime_data_dir)
+        self.personas.ensure_default_persona()
         self.model_runtime = model_runtime
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
@@ -329,7 +319,7 @@ class AgentRuntime:
             if database is not None
             else None
         )
-        self.tool_registry = ToolRegistry()
+        self.tool_registry = tool_registry or ToolRegistry()
         self.tool_manager = ToolManager(
             self.tool_registry,
             permission_engine=permission_engine,
@@ -589,6 +579,7 @@ def install_agent_runtime(
         audit_logger=bot.audit_logger,
         adapter_manager=bot.adapter_manager,
         model_runtime=model_runtime,
+        tool_registry=bot.tool_registry,
         review_runtime_config=review_runtime_config,
         prompt_file_config=prompt_file_config,
         agent_config=agent_config,

@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from shinbot.api.auth import AuthConfig
 from shinbot.api.models import EC, Envelope, ErrorBody
+from shinbot.api.routers import agent_configs as agent_configs_router
 from shinbot.api.routers import auth as auth_router
 from shinbot.api.routers import config as config_router
 from shinbot.api.routers import config_providers as config_providers_router
@@ -57,6 +58,8 @@ if TYPE_CHECKING:
     from shinbot.core.application.runtime_control import RuntimeControl
 
 logger = get_logger(__name__, source="api", color="blue")
+_STATUS_PROCESS: Any | None = None
+_STATUS_PROCESS_PID: int | None = None
 
 
 def create_api_app(
@@ -177,6 +180,7 @@ def create_api_app(
     # ── API routers ───────────────────────────────────────────────────
 
     api_prefix = "/api/v1"
+    app.include_router(agent_configs_router.router, prefix=api_prefix)
     app.include_router(auth_router.router, prefix=api_prefix)
     app.include_router(config_router.router, prefix=api_prefix)
     app.include_router(config_providers_router.router, prefix=api_prefix)
@@ -334,20 +338,62 @@ def _model_runtime_enabled_for_api(boot: BootController) -> bool:
 # ── System status snapshot ────────────────────────────────────────────
 
 
-def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> dict[str, Any]:
-    cpu = 0.0
-    mem_mb = 0.0
+def _mb(value: float | int) -> float:
+    return round(float(value) / (1024 * 1024), 2)
+
+
+def _status_process(psutil: Any) -> Any:
+    global _STATUS_PROCESS, _STATUS_PROCESS_PID
+
+    pid = os.getpid()
+    if _STATUS_PROCESS is None or _STATUS_PROCESS_PID != pid or not _STATUS_PROCESS.is_running():
+        _STATUS_PROCESS = psutil.Process(pid)
+        _STATUS_PROCESS_PID = pid
+        _STATUS_PROCESS.cpu_percent(interval=None)
+    return _STATUS_PROCESS
+
+
+def _collect_resource_metrics() -> dict[str, float]:
+    metrics = {
+        "system_cpu_usage": 0.0,
+        "process_cpu_usage": 0.0,
+        "system_memory_usage": 0.0,
+        "system_memory_used_mb": 0.0,
+        "system_memory_total_mb": 0.0,
+        "system_memory_available_mb": 0.0,
+        "process_memory_mb": 0.0,
+    }
     try:
         import psutil
 
-        # 使用当前进程的内存快照
-        process = psutil.Process(os.getpid())
-        cpu = process.cpu_percent(interval=None)
-        # 转换为 MB 并保留两位小数
-        mem_mb = round(process.memory_info().rss / (1024 * 1024), 2)
+        process = _status_process(psutil)
+        memory = psutil.virtual_memory()
+        system_memory_used = max(float(memory.total) - float(memory.available), 0.0)
+
+        metrics.update(
+            {
+                "system_cpu_usage": round(float(psutil.cpu_percent(interval=None)), 2),
+                "process_cpu_usage": round(float(process.cpu_percent(interval=None)), 2),
+                "system_memory_usage": round(float(memory.percent), 2),
+                "system_memory_used_mb": _mb(system_memory_used),
+                "system_memory_total_mb": _mb(memory.total),
+                "system_memory_available_mb": _mb(memory.available),
+                "process_memory_mb": _mb(process.memory_info().rss),
+            }
+        )
     except Exception:
         pass
 
+    return metrics
+
+
+def _plugin_enabled(plugin: Any) -> bool:
+    state = getattr(getattr(plugin, "state", None), "value", None)
+    return state in {"active", "loaded", "running"}
+
+
+def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> dict[str, Any]:
+    metrics = _collect_resource_metrics()
     mgr = bot.adapter_manager
     configured_instances = iter_adapter_instance_records(boot.config) if boot is not None else []
     instances: list[dict[str, Any]] = []
@@ -382,14 +428,23 @@ def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> di
     if runtime_control is not None and hasattr(runtime_control, "snapshot"):
         restart_request = runtime_control.snapshot()
 
+    plugins = bot.plugin_manager.all_plugins
+
     return {
         "totalInstances": total_instances,
         "runningInstances": running_instances,
         "stoppedInstances": total_instances - running_instances,
-        "totalPlugins": len(bot.plugin_manager.all_plugins),
-        "enabledPlugins": len(bot.plugin_manager.all_plugins),
-        "cpuUsage": cpu,
-        "memoryUsage": mem_mb,  # 现在是 MB 单位
+        "totalPlugins": len(plugins),
+        "enabledPlugins": sum(1 for plugin in plugins if _plugin_enabled(plugin)),
+        "cpuUsage": metrics["system_cpu_usage"],
+        "memoryUsage": metrics["process_memory_mb"],
+        "systemCpuUsage": metrics["system_cpu_usage"],
+        "processCpuUsage": metrics["process_cpu_usage"],
+        "systemMemoryUsage": metrics["system_memory_usage"],
+        "systemMemoryUsedMb": metrics["system_memory_used_mb"],
+        "systemMemoryTotalMb": metrics["system_memory_total_mb"],
+        "systemMemoryAvailableMb": metrics["system_memory_available_mb"],
+        "processMemoryMb": metrics["process_memory_mb"],
         "online": True,
         "restartRequested": restart_request is not None,
         "restartRequest": restart_request,

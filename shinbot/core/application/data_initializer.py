@@ -14,6 +14,7 @@ REQUIRED_DATA_DIRS: tuple[str, ...] = (
     "sessions",
     "audit",
     "agents",
+    "personas",
     "temp",
 )
 
@@ -43,6 +44,7 @@ class DataInitializer:
             path = self.data_dir / relative if relative else self.data_dir
             self.ensure_read_write(path)
             ensured_dirs.append(path)
+        self.ensure_default_persona()
         return DataInitializationResult(
             ensured_dirs=tuple(ensured_dirs),
             cleaned_temp_entries=tuple(cleaned_temp_entries),
@@ -77,6 +79,13 @@ class DataInitializer:
         finally:
             if probe.exists():
                 probe.unlink()
+
+    def ensure_default_persona(self) -> Path:
+        """Install the default editable persona markdown if it is missing."""
+
+        from shinbot.admin.persona_files import PersonaFileRepository
+
+        return PersonaFileRepository.from_data_dir(self.data_dir).ensure_default_persona()
 
 
 __all__ = [

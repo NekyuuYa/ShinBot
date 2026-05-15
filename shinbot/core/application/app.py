@@ -40,6 +40,7 @@ from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
+from shinbot.core.tools import ToolRegistry
 from shinbot.persistence import DatabaseManager
 from shinbot.schema.events import UnifiedEvent
 
@@ -83,6 +84,7 @@ class ShinBot:
         self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.permission_engine = PermissionEngine()
+        self.tool_registry = ToolRegistry()
         self.adapter_manager = AdapterManager()
         self.config_provider_registry = ConfigProviderRegistry()
         self._register_builtin_config_providers()
@@ -98,6 +100,7 @@ class ShinBot:
             route_targets=self.route_targets,
             event_bus=self.event_bus,
             adapter_manager=self.adapter_manager,
+            tool_registry=self.tool_registry,
             data_dir=data_dir,
             database=self.database,
             config_provider_registry=self.config_provider_registry,
@@ -186,7 +189,7 @@ class ShinBot:
 
         self.agent_runtime = runtime
         self.plugin_manager.attach_runtime_services(
-            tool_registry=getattr(runtime, "tool_registry", None),
+            tool_registry=self.tool_registry,
             model_runtime=self.model_runtime,
         )
         ingress_handler = getattr(runtime, "handle_ingress_message", None)
