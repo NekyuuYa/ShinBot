@@ -32,10 +32,12 @@
 
 // --- Card Hover Feedback ---
 @mixin hover-lift($show-shadow: true) {
-  transition: transform $transition-fast, box-shadow $transition-fast, border-color $transition-fast;
+  transition:
+    box-shadow $transition-fast,
+    border-color $transition-fast,
+    background-color $transition-fast;
   
   &:hover {
-    transform: translateY(-4px);
     border-color: $border-color-primary;
     @if $show-shadow {
       box-shadow: $shadow-hover;

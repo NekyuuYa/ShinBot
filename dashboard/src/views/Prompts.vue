@@ -25,7 +25,7 @@
     <dual-pane-list-view
       :items="filteredItems"
       :loading="store.isLoading"
-      :show-skeleton="store.isLoading && store.items.length === 0"
+      :show-skeleton="showInitialSkeleton"
       :empty-config="{
         icon: 'mdi-text-box-search-outline',
         title: $t('pages.prompts.empty.title'),
@@ -310,12 +310,18 @@ import SidebarListCard from '@/components/SidebarListCard.vue'
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { useCrudDialog } from '@/composables/useCrudDialog'
+import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { translate } from '@/plugins/i18n'
 import { usePromptDefinitionsStore } from '@/stores/promptDefinitions'
 import { normalizeStringList, safeJsonParse, prettyJson } from '@/utils/format'
 
 const store = usePromptDefinitionsStore()
 const { confirm } = useConfirmDialog()
+
+const initialSkeletonRequested = computed(
+  () => store.isLoading && store.items.length === 0
+)
+const showInitialSkeleton = useDelayedFlag(initialSkeletonRequested)
 
 const form = reactive({
   promptId: '',

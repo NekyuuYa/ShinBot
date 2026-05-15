@@ -25,7 +25,7 @@
     <dual-pane-list-view
       :items="filteredPersonas"
       :loading="personasStore.isLoading"
-      :show-skeleton="personasStore.isLoading && personasStore.personas.length === 0"
+      :show-skeleton="showInitialSkeleton"
       :empty-config="{
         icon: 'mdi-account-search-outline',
         title: $t('pages.personas.empty.title'),
@@ -180,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import type { Persona, PersonaPayload } from '@/api/personas'
 import AppPageHeader from '@/components/AppPageHeader.vue'
@@ -188,6 +188,7 @@ import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useCrudDialog } from '@/composables/useCrudDialog'
+import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { useTagSidebar } from '@/composables/useTagSidebar'
 import { translate } from '@/plugins/i18n'
 import { usePersonasStore } from '@/stores/personas'
@@ -195,6 +196,7 @@ import { normalizeStringList } from '@/utils/format'
 
 const personasStore = usePersonasStore()
 const { confirm } = useConfirmDialog()
+const hasLoadedPersonas = ref(false)
 
 const form = reactive({
   name: '',
@@ -301,8 +303,24 @@ const previewPrompt = (promptText: string) => {
 
 const getPersonaKey = (persona: Persona) => persona.uuid
 
+const initialSkeletonRequested = computed(
+  () =>
+    personasStore.isLoading &&
+    !hasLoadedPersonas.value &&
+    personasStore.personas.length === 0
+)
+const showInitialSkeleton = useDelayedFlag(initialSkeletonRequested)
+
+async function loadInitialPersonas() {
+  try {
+    await personasStore.fetchPersonas()
+  } finally {
+    hasLoadedPersonas.value = true
+  }
+}
+
 onMounted(() => {
-  void personasStore.fetchPersonas()
+  void loadInitialPersonas()
 })
 </script>
 

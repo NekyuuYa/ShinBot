@@ -94,13 +94,13 @@
       </v-card-text>
     </v-card>
 
-    <v-row v-if="toolsStore.isLoading && toolsStore.tools.length === 0" class="mx-0">
+    <v-row v-if="showInitialSkeleton" class="mx-0">
       <v-col cols="12" class="pa-0">
         <v-skeleton-loader type="list-item-two-line, list-item-two-line, list-item-two-line" />
       </v-col>
     </v-row>
 
-    <v-row v-else-if="filteredTools.length === 0" justify="center" class="mx-0 py-12">
+    <v-row v-else-if="hasLoadedTools && filteredTools.length === 0" justify="center" class="mx-0 py-12">
       <v-col cols="12" md="6" class="text-center pa-0">
         <v-icon size="120" color="grey-lighten-1" icon="mdi-tools" />
         <h3 class="text-h6 my-4">{{ $t('pages.tools.empty.title') }}</h3>
@@ -139,6 +139,7 @@ import AppPageHeader from '@/components/AppPageHeader.vue'
 import LayoutModeButton from '@/components/LayoutModeButton.vue'
 import ToolCard from '@/components/tools/ToolCard.vue'
 import ToolListRow from '@/components/tools/ToolListRow.vue'
+import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { useToolsStore } from '@/stores/tools'
 import { translate } from '@/plugins/i18n'
 import type { ToolLayoutMode } from '@/stores/tools'
@@ -148,6 +149,12 @@ const toolsStore = useToolsStore()
 const searchQuery = ref('')
 const ownerTypeFilter = ref('all')
 const visibilityFilter = ref('all')
+const hasLoadedTools = ref(false)
+
+const initialSkeletonRequested = computed(
+  () => toolsStore.isLoading && toolsStore.tools.length === 0
+)
+const showInitialSkeleton = useDelayedFlag(initialSkeletonRequested)
 
 const ownerTypeItems = computed(() => [
   { title: translate('pages.tools.filters.all'), value: 'all' },
@@ -193,12 +200,20 @@ const filteredTools = computed(() => {
   })
 })
 
+async function loadTools(force = false) {
+  try {
+    await toolsStore.fetchTools({ force })
+  } finally {
+    hasLoadedTools.value = true
+  }
+}
+
 onMounted(() => {
-  void toolsStore.fetchTools()
+  void loadTools()
 })
 
 const handleRefresh = () => {
-  void toolsStore.fetchTools({ force: true })
+  void loadTools(true)
 }
 
 const handleLayoutChange = (mode: ToolLayoutMode) => {
