@@ -1,7 +1,7 @@
 {
   "kicker": "编排中心",
   "title": "Agent 管理",
-  "subtitle": "按标签管理 Agent，并通过弹出层新增或编辑 Agent 配置。",
+  "subtitle": "管理 data/agents 下的 Agent 运行配置，并按配置分区编辑每个 Agent。",
   "actions": {
     "refresh": "刷新",
     "addAgent": "添加 Agent"
@@ -14,9 +14,18 @@
     "untagged": "未打标签",
     "empty": "当前没有可用标签"
   },
+  "tabs": {
+    "identity": "基础信息",
+    "defaults": "默认与提示词",
+    "review": "审阅流程",
+    "active": "主动聊天",
+    "advanced": "扩展配置"
+  },
   "fields": {
+    "fileName": "配置文件名",
     "agentId": "Agent ID",
     "name": "名称",
+    "mode": "模式",
     "personaUuid": "Persona",
     "persona": "Persona",
     "personaPlaceholder": "请选择 Persona",
@@ -38,14 +47,28 @@
   },
   "empty": {
     "title": "暂无 Agent",
-    "subtitle": "当前标签下没有可展示的 Agent，点击右上角按钮创建一个。"
+    "subtitle": "还没有 data/agents/*.toml 配置文件，点击右上角创建一个。",
+    "noFields": "此分区暂无可配置字段。"
   },
   "hints": {
+    "fileName": "可留空；保存时会根据 Agent ID 自动生成安全的 .toml 文件名。",
     "contextStrategyParams": "可留空；若填写需为对象 JSON。",
     "config": "可留空；若填写需为对象 JSON。"
   },
+  "labels": {
+    "profileCount": "{count} 个配置",
+    "issueCount": "{count} 个问题",
+    "valid": "有效",
+    "updated": "更新时间",
+    "noValue": "未设置",
+    "advancedFields": "高级字段"
+  },
+  "validation": {
+    "title": "配置校验问题"
+  },
   "messages": {
     "loadFailed": "加载 Agent 列表失败",
+    "saveFailed": "保存 Agent 配置失败",
     "loadContextStrategiesFailed": "加载上下文策略失败",
     "created": "Agent 已创建",
     "updated": "Agent 已更新",

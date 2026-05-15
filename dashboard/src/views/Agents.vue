@@ -1,5 +1,5 @@
 <template>
-  <v-container fluid class="pa-0">
+  <v-container fluid class="pa-0 agents-page">
     <app-page-header
       :title="$t('pages.agents.title')"
       :subtitle="$t('pages.agents.subtitle')"
@@ -10,480 +10,756 @@
           color="secondary"
           variant="tonal"
           prepend-icon="mdi-refresh"
-          :loading="agentsStore.isLoading || isLoadingResources"
-          class="me-2"
-          @click="refreshAgents"
+          :loading="isLoading"
+          rounded="lg"
+          @click="refreshPage"
         >
-          {{ $t('pages.agents.actions.refresh') }}
+          {{ $t("pages.agents.actions.refresh") }}
         </v-btn>
-        <v-btn color="primary" prepend-icon="mdi-account-plus" @click="openCreate">
-          {{ $t('pages.agents.actions.addAgent') }}
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-account-plus"
+          rounded="lg"
+          @click="openCreate"
+        >
+          {{ $t("pages.agents.actions.addAgent") }}
         </v-btn>
       </template>
     </app-page-header>
 
-    <dual-pane-list-view
-      :items="filteredAgents"
-      :loading="agentsStore.isLoading"
-      :show-skeleton="agentsStore.isLoading && agentsStore.agents.length === 0"
-      :empty-config="{
-        icon: 'mdi-account-search-outline',
-        title: $t('pages.agents.empty.title'),
-        subtitle: $t('pages.agents.empty.subtitle'),
-      }"
-      :get-item-key="getAgentKey"
+    <v-alert
+      v-if="error || configStore.error"
+      type="error"
+      variant="tonal"
+      density="comfortable"
+      class="mb-6"
     >
-      <template #sidebar>
-        <sidebar-list-card
-          :title="$t('pages.agents.tags.title')"
-          :empty-text="$t('pages.agents.tags.empty')"
-          :items="tagSidebarItems"
-          :active-id="activeTag"
-          :show-add-button="false"
-          @select="selectTag"
-        />
-      </template>
+      {{ error || configStore.error }}
+    </v-alert>
 
-      <template #card="{ item: agent }">
+    <div class="agents-toolbar mb-6">
+      <v-text-field
+        v-model="searchQuery"
+        :label="$t('common.actions.action.search')"
+        prepend-inner-icon="mdi-magnify"
+        single-line
+        hide-details
+        density="comfortable"
+        variant="outlined"
+        bg-color="surface"
+        class="agents-search"
+      />
+      <v-spacer />
+      <v-chip color="primary" variant="tonal" size="small">
+        {{ $t("pages.agents.labels.profileCount", { count: profiles.length }) }}
+      </v-chip>
+    </div>
+
+    <v-row v-if="showInitialSkeleton">
+      <v-col cols="12">
+        <v-skeleton-loader type="card" :count="3" />
+      </v-col>
+    </v-row>
+
+    <v-row
+      v-else-if="!initialSkeletonRequested && filteredProfiles.length === 0"
+      justify="center"
+      class="py-12"
+    >
+      <v-col cols="12" sm="8" md="6" class="text-center">
+        <v-icon
+          size="112"
+          color="grey-lighten-1"
+          icon="mdi-account-search-outline"
+        />
+        <h3 class="text-h6 my-4">{{ $t("pages.agents.empty.title") }}</h3>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          {{ $t("pages.agents.empty.subtitle") }}
+        </p>
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-account-plus"
+          @click="openCreate"
+        >
+          {{ $t("pages.agents.actions.addAgent") }}
+        </v-btn>
+      </v-col>
+    </v-row>
+
+    <v-row v-else>
+      <v-col
+        v-for="profile in filteredProfiles"
+        :key="profile.fileName"
+        cols="12"
+        sm="6"
+        lg="4"
+      >
         <v-card class="agent-card h-100 d-flex flex-column" elevation="0">
           <v-card-item>
             <template #prepend>
-              <v-avatar color="primary" variant="tonal" icon="mdi-account-cog-outline" />
+              <v-avatar
+                color="primary"
+                variant="tonal"
+                icon="mdi-account-cog-outline"
+              />
             </template>
             <v-card-title class="text-break">
-              {{ agent.name }}
+              {{ profile.agentId || profile.fileName }}
             </v-card-title>
-            <v-card-subtitle>{{ agent.agentId }}</v-card-subtitle>
+            <v-card-subtitle>{{ profile.path }}</v-card-subtitle>
+            <template #append>
+              <v-chip
+                :color="profile.issues.length > 0 ? 'warning' : 'success'"
+                size="small"
+                variant="tonal"
+              >
+                {{
+                  profile.issues.length > 0
+                    ? $t("pages.agents.labels.issueCount", {
+                        count: profile.issues.length,
+                      })
+                    : $t("pages.agents.labels.valid")
+                }}
+              </v-chip>
+            </template>
           </v-card-item>
 
           <v-card-text class="pt-1 flex-grow-1">
-            <div class="text-caption text-medium-emphasis mb-2">
-              {{ $t('pages.agents.fields.personaUuid') }}: {{ agent.personaUuid }}
+            <div class="agent-meta-row">
+              <span>{{ $t("pages.agents.fields.mode") }}</span>
+              <strong>{{
+                profile.mode || $t("pages.agents.labels.noValue")
+              }}</strong>
             </div>
-
-            <div class="d-flex flex-wrap ga-2">
-              <v-chip
-                v-for="tag in agent.tags"
-                :key="`${agent.uuid}-${tag}`"
-                size="small"
-                color="secondary"
-                variant="tonal"
-              >
-                {{ tag }}
-              </v-chip>
-              <v-chip
-                v-if="agent.tags.length === 0"
-                size="small"
-                color="grey"
-                variant="tonal"
-              >
-                {{ $t('pages.agents.tags.untagged') }}
-              </v-chip>
+            <div class="agent-meta-row">
+              <span>{{ $t("pages.agents.fields.persona") }}</span>
+              <strong>{{
+                profile.personaId || $t("pages.agents.labels.noValue")
+              }}</strong>
+            </div>
+            <div class="agent-meta-row">
+              <span>{{ $t("pages.agents.labels.updated") }}</span>
+              <strong>{{ formatTimestamp(profile.lastModified) }}</strong>
             </div>
           </v-card-text>
 
           <v-card-actions>
-            <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(agent)">
-              {{ $t('common.actions.action.edit') }}
+            <v-btn
+              variant="text"
+              prepend-icon="mdi-pencil"
+              @click="openEdit(profile)"
+            >
+              {{ $t("common.actions.action.edit") }}
             </v-btn>
             <v-spacer />
             <v-btn
               color="error"
               variant="text"
               prepend-icon="mdi-delete-outline"
-              @click="removeAgent(agent.uuid, agent.name)"
+              @click="removeProfile(profile)"
             >
-              {{ $t('common.actions.action.delete') }}
+              {{ $t("common.actions.action.delete") }}
             </v-btn>
           </v-card-actions>
         </v-card>
-      </template>
-    </dual-pane-list-view>
+      </v-col>
+    </v-row>
 
-    <v-alert v-if="agentsStore.error || resourceError" type="error" class="mt-4">
-      {{ agentsStore.error || resourceError }}
-    </v-alert>
-
-    <v-dialog v-model="dialogVisible" max-width="860">
-      <v-card>
-        <v-card-title>
-          {{ editingId ? $t('pages.agents.overlay.editTitle') : $t('pages.agents.overlay.createTitle') }}
+    <v-dialog v-model="dialogVisible" max-width="1100" scrollable>
+      <v-card class="agent-dialog">
+        <v-card-title class="agent-dialog__title">
+          {{
+            editingFileName
+              ? $t("pages.agents.overlay.editTitle")
+              : $t("pages.agents.overlay.createTitle")
+          }}
         </v-card-title>
-        <v-card-text>
-          <v-row>
-            <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.agentId"
-                :label="$t('pages.agents.fields.agentId')"
-                variant="outlined"
-                density="comfortable"
-              />
-            </v-col>
-            <v-col cols="12" md="6">
-              <v-text-field
-                v-model="form.name"
-                :label="$t('pages.agents.fields.name')"
-                variant="outlined"
-                density="comfortable"
-              />
-            </v-col>
-            <v-col cols="12">
-              <v-select
-                v-model="form.personaUuid"
-                :label="$t('pages.agents.fields.persona')"
-                :items="personaOptions"
-                item-title="title"
-                item-value="value"
-                variant="outlined"
-                density="comfortable"
-                clearable
-                :placeholder="$t('pages.agents.fields.personaPlaceholder')"
-                :no-data-text="$t('pages.agents.fields.personaEmpty')"
-              />
-            </v-col>
 
-            <v-col cols="12" md="4">
-              <v-combobox
-                v-model="form.tags"
-                multiple
-                chips
-                closable-chips
-                hide-selected
-                clearable
-                :label="$t('pages.agents.fields.tags')"
-                :items="tagOptions"
-                variant="outlined"
-                density="comfortable"
-              />
-            </v-col>
-            <v-col cols="12" md="4">
-              <v-text-field
-                :model-value="promptSummary"
-                :label="$t('pages.agents.fields.prompts')"
-                :placeholder="$t('pages.agents.fields.promptsEmpty')"
-                :loading="isLoadingResources"
-                :clearable="form.prompts.length > 0"
-                readonly
-                variant="outlined"
-                density="comfortable"
-                append-inner-icon="mdi-menu-open"
-                @click="showPromptPicker = true"
-                @click:append-inner="showPromptPicker = true"
-                @click:clear.stop="form.prompts = []"
-              />
-            </v-col>
-            <v-col cols="12" md="4">
-              <v-text-field
-                :model-value="toolSummary"
-                :label="$t('pages.agents.fields.tools')"
-                :placeholder="$t('pages.agents.fields.toolsEmpty')"
-                :loading="isLoadingResources"
-                :clearable="form.tools.length > 0"
-                readonly
-                variant="outlined"
-                density="comfortable"
-                append-inner-icon="mdi-menu-open"
-                @click="showToolPicker = true"
-                @click:append-inner="showToolPicker = true"
-                @click:clear.stop="form.tools = []"
-              />
-            </v-col>
+        <v-card-text class="agent-dialog__body">
+          <div class="agent-dialog__file-row">
+            <v-text-field
+              v-model="form.fileName"
+              :label="$t('pages.agents.fields.fileName')"
+              :hint="$t('pages.agents.hints.fileName')"
+              :disabled="Boolean(editingFileName)"
+              persistent-hint
+              variant="outlined"
+              density="comfortable"
+            />
+          </div>
 
-            <v-col cols="12" md="12">
-              <v-select
-                :model-value="form.contextStrategyRef"
-                :label="$t('pages.agents.fields.contextStrategyRef')"
-                :items="contextStrategyOptionItems"
-                item-title="title"
-                item-value="value"
-                variant="outlined"
-                density="comfortable"
-                clearable
-                :loading="isLoadingResources"
-                :placeholder="$t('pages.agents.fields.contextStrategyPlaceholder')"
-                :no-data-text="$t('pages.agents.fields.contextStrategyEmpty')"
-                @update:model-value="handleContextStrategyChange"
-              />
-            </v-col>
-            <v-col cols="12">
-              <v-textarea
-                v-model="form.contextStrategyParamsJson"
-                :label="$t('pages.agents.fields.contextStrategyParams')"
-                :hint="$t('pages.agents.hints.contextStrategyParams')"
-                persistent-hint
-                rows="3"
-                variant="outlined"
-              />
-            </v-col>
+          <v-tabs
+            v-model="activeAgentTab"
+            class="agent-tabs"
+            density="comfortable"
+            height="56"
+            show-arrows
+          >
+            <v-tab v-for="tab in agentTabs" :key="tab.value" :value="tab.value">
+              <v-icon :icon="tab.icon" size="18" class="me-2" />
+              <span>{{ tab.label }}</span>
+            </v-tab>
+          </v-tabs>
 
-            <v-col cols="12">
-              <v-textarea
-                v-model="form.configJson"
-                :label="$t('pages.agents.fields.config')"
-                :hint="$t('pages.agents.hints.config')"
-                persistent-hint
-                rows="4"
-                variant="outlined"
+          <v-window v-model="activeAgentTab" class="agent-tab-window">
+            <v-window-item value="identity">
+              <provider-schema-form
+                v-model="form.config"
+                :provider="agentProvider"
+                :issues="profileIssues"
+                :field-prefixes="['agent.id', 'agent.mode', 'agent.persona_id']"
+                :advanced-label="$t('pages.agents.labels.advancedFields')"
+                :empty-text="$t('pages.agents.empty.noFields')"
+                :json-error-text="$t('pages.agents.messages.invalidJson')"
               />
-            </v-col>
-          </v-row>
+            </v-window-item>
 
-          <v-alert v-if="localError || agentsStore.error" type="error" class="mt-2">
-            {{ localError || agentsStore.error }}
+            <v-window-item value="defaults">
+              <provider-schema-form
+                v-model="form.config"
+                :provider="agentProvider"
+                :issues="profileIssues"
+                :field-prefixes="['agent.prompt_files', 'agent.defaults']"
+                :advanced-label="$t('pages.agents.labels.advancedFields')"
+                :empty-text="$t('pages.agents.empty.noFields')"
+                :json-error-text="$t('pages.agents.messages.invalidJson')"
+              />
+            </v-window-item>
+
+            <v-window-item value="review">
+              <provider-schema-form
+                v-model="form.config"
+                :provider="agentProvider"
+                :issues="profileIssues"
+                :field-prefixes="['agent.review']"
+                :advanced-label="$t('pages.agents.labels.advancedFields')"
+                :empty-text="$t('pages.agents.empty.noFields')"
+                :json-error-text="$t('pages.agents.messages.invalidJson')"
+              />
+            </v-window-item>
+
+            <v-window-item value="active">
+              <provider-schema-form
+                v-model="form.config"
+                :provider="agentProvider"
+                :issues="profileIssues"
+                :field-prefixes="['agent.active_chat']"
+                :advanced-label="$t('pages.agents.labels.advancedFields')"
+                :empty-text="$t('pages.agents.empty.noFields')"
+                :json-error-text="$t('pages.agents.messages.invalidJson')"
+              />
+            </v-window-item>
+
+            <v-window-item value="advanced">
+              <provider-schema-form
+                v-model="form.config"
+                :provider="agentProvider"
+                :issues="profileIssues"
+                :field-prefixes="[
+                  'agent.context',
+                  'agent.summaries',
+                  'agent.media',
+                ]"
+                :advanced-label="$t('pages.agents.labels.advancedFields')"
+                :empty-text="$t('pages.agents.empty.noFields')"
+                :json-error-text="$t('pages.agents.messages.invalidJson')"
+              />
+            </v-window-item>
+          </v-window>
+
+          <v-alert
+            v-if="profileIssues.length > 0"
+            type="warning"
+            variant="tonal"
+            class="mx-6 mb-4"
+          >
+            <div class="font-weight-medium mb-2">
+              {{ $t("pages.agents.validation.title") }}
+            </div>
+            <div
+              v-for="issue in profileIssues.slice(0, 6)"
+              :key="`${issue.path}:${issue.code}:${issue.message}`"
+              class="text-body-2 validation-issue-line"
+            >
+              <span class="font-weight-medium">{{ issue.path || "-" }}</span>
+              <span>{{ issue.message }}</span>
+            </div>
+          </v-alert>
+
+          <v-alert
+            v-if="dialogError"
+            type="error"
+            variant="tonal"
+            class="mx-6 mb-6"
+          >
+            {{ dialogError }}
           </v-alert>
         </v-card-text>
 
-        <v-card-actions>
+        <v-card-actions class="agent-dialog__actions">
           <v-spacer />
           <v-btn variant="text" @click="dialogVisible = false">
-            {{ $t('common.actions.action.cancel') }}
+            {{ $t("common.actions.action.cancel") }}
           </v-btn>
-          <v-btn color="primary" :loading="isSaving" @click="submit">
-            {{ editingId ? $t('common.actions.action.save') : $t('common.actions.action.create') }}
+          <v-btn color="primary" :loading="isSaving" @click="saveProfile">
+            {{
+              editingFileName
+                ? $t("common.actions.action.save")
+                : $t("common.actions.action.create")
+            }}
           </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
-
-    <generic-picker-dialog
-      v-model="showPromptPicker"
-      :title="$t('pages.agents.fields.prompts')"
-      :sections="promptPickerSections"
-      :selected="form.prompts"
-      :empty-text="$t('pages.agents.fields.promptsEmpty')"
-      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
-      multiple
-      @update:selected="(vals) => { form.prompts = vals }"
-    />
-
-    <generic-picker-dialog
-      v-model="showToolPicker"
-      :title="$t('pages.agents.fields.tools')"
-      :sections="toolPickerSections"
-      :selected="form.tools"
-      :empty-text="$t('pages.agents.fields.toolsEmpty')"
-      :no-results-text="$t('pages.modelRuntime.hints.modelIdPickerNoMatches')"
-      multiple
-      @update:selected="(vals) => { form.tools = vals }"
-    />
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useI18n } from 'vue-i18n'
+import { computed, onMounted, reactive, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
-import type { Agent, AgentPayload } from '@/api/agents'
-import AppPageHeader from '@/components/AppPageHeader.vue'
-import DualPaneListView from '@/components/DualPaneListView.vue'
-import SidebarListCard from '@/components/SidebarListCard.vue'
-import GenericPickerDialog, {
-  type GenericPickerSection,
-} from '@/components/model-runtime/GenericPickerDialog.vue'
-import { useConfirmDialog } from '@/composables/useConfirmDialog'
-import { useAgentResources } from '@/composables/useAgentResources'
-import { useCrudDialog } from '@/composables/useCrudDialog'
-import { useTagSidebar } from '@/composables/useTagSidebar'
-import { translate } from '@/plugins/i18n'
-import { useAgentsStore } from '@/stores/agents'
-import { usePersonasStore } from '@/stores/personas'
-import { normalizeStringList, safeJsonParse, prettyJson } from '@/utils/format'
+import { agentConfigsApi, type AgentConfigProfile } from "@/api/agentConfigs";
+import { apiClient } from "@/api/client";
+import {
+  extractConfigValidationIssues,
+  type ConfigRecord,
+  type ConfigWorkspaceProvider,
+} from "@/api/config";
+import AppPageHeader from "@/components/AppPageHeader.vue";
+import ProviderSchemaForm from "@/components/config/ProviderSchemaForm.vue";
+import { useConfirmDialog } from "@/composables/useConfirmDialog";
+import { useDelayedFlag } from "@/composables/useDelayedFlag";
+import { translate } from "@/plugins/i18n";
+import { useConfigWorkspaceStore } from "@/stores/configWorkspace";
+import { useUiStore } from "@/stores/ui";
+import { getErrorMessage } from "@/utils/error";
 
-const { t } = useI18n()
-const agentsStore = useAgentsStore()
-const { confirm } = useConfirmDialog()
-const personasStore = usePersonasStore()
+type AgentFormTab = "identity" | "defaults" | "review" | "active" | "advanced";
 
-// Resources and Logic Extraction
-const {
-  isLoadingResources,
-  resourceError,
-  fetchAllResources,
-  contextStrategyOptions,
-  promptOptions,
-  toolOptions,
-} = useAgentResources()
+const AGENT_RUNTIME_PROVIDER_ID = "shinbot.agent.runtime";
+
+const { t, locale } = useI18n();
+const configStore = useConfigWorkspaceStore();
+const uiStore = useUiStore();
+const { confirm } = useConfirmDialog();
+
+const profiles = ref<AgentConfigProfile[]>([]);
+const isLoading = ref(false);
+const hasLoadedProfiles = ref(false);
+const isSaving = ref(false);
+const error = ref("");
+const dialogError = ref("");
+const dialogVisible = ref(false);
+const editingFileName = ref("");
+const searchQuery = ref("");
+const activeAgentTab = ref<AgentFormTab>("identity");
+const profileIssues = ref<AgentConfigProfile["issues"]>([]);
 
 const form = reactive({
-  agentId: '',
-  name: '',
-  personaUuid: '',
-  tags: [] as string[],
-  prompts: [] as string[],
-  tools: [] as string[],
-  contextStrategyRef: '',
-  contextStrategyParamsJson: '',
-  configJson: '',
-})
+  fileName: "",
+  config: {} as ConfigRecord,
+});
 
-const contextStrategyType = ref('')
-const showPromptPicker = ref(false)
-const showToolPicker = ref(false)
+const agentTabs = computed(() => [
+  {
+    value: "identity" as const,
+    label: t("pages.agents.tabs.identity"),
+    icon: "mdi-card-account-details-outline",
+  },
+  {
+    value: "defaults" as const,
+    label: t("pages.agents.tabs.defaults"),
+    icon: "mdi-tune-variant",
+  },
+  {
+    value: "review" as const,
+    label: t("pages.agents.tabs.review"),
+    icon: "mdi-message-processing-outline",
+  },
+  {
+    value: "active" as const,
+    label: t("pages.agents.tabs.active"),
+    icon: "mdi-chat-processing-outline",
+  },
+  {
+    value: "advanced" as const,
+    label: t("pages.agents.tabs.advanced"),
+    icon: "mdi-code-json",
+  },
+]);
 
-const {
-  visible: dialogVisible,
-  editingId,
-  localError,
-  isSaving,
-  openCreate,
-  openEdit,
-  submit,
-} = useCrudDialog<Agent, AgentPayload>({
-  resetForm: () => {
-    Object.assign(form, {
-      agentId: '',
-      name: '',
-      personaUuid: '',
-      tags: [],
-      prompts: [],
-      tools: [],
-      contextStrategyRef: '',
-      contextStrategyParamsJson: '',
-      configJson: '',
-    })
-    contextStrategyType.value = ''
-  },
-  populateForm: (agent) => {
-    Object.assign(form, {
-      agentId: agent.agentId,
-      name: agent.name,
-      personaUuid: agent.personaUuid,
-      tags: [...agent.tags],
-      prompts: [...agent.prompts],
-      tools: [...agent.tools],
-      contextStrategyRef: agent.contextStrategy?.ref || '',
-      contextStrategyParamsJson: prettyJson(agent.contextStrategy?.params),
-      configJson: prettyJson(agent.config),
-    })
-    contextStrategyType.value = agent.contextStrategy?.type || ''
-  },
-  buildPayload: () => {
-    if (!form.agentId.trim() || !form.name.trim() || !form.personaUuid.trim()) {
-      throw new Error(translate('pages.agents.messages.requiredFields'))
-    }
-    return {
-      agentId: form.agentId.trim(),
-      name: form.name.trim(),
-      personaUuid: form.personaUuid.trim(),
-      prompts: normalizeStringList(form.prompts),
-      tools: normalizeStringList(form.tools),
-      contextStrategy: {
-        ref: form.contextStrategyRef.trim(),
-        type: contextStrategyType.value.trim(),
-        params: safeJsonParse(form.contextStrategyParamsJson),
+const agentProvider = computed<ConfigWorkspaceProvider | null>(
+  () => configStore.agentProvidersById[AGENT_RUNTIME_PROVIDER_ID] ?? null,
+);
+
+const initialSkeletonRequested = computed(
+  () =>
+    isLoading.value && !hasLoadedProfiles.value && profiles.value.length === 0,
+);
+const showInitialSkeleton = useDelayedFlag(initialSkeletonRequested);
+
+const filteredProfiles = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (!query) {
+    return profiles.value;
+  }
+  return profiles.value.filter((profile) => {
+    const haystack = [
+      profile.fileName,
+      profile.path,
+      profile.agentId,
+      profile.mode,
+      profile.personaId,
+    ]
+      .join("\n")
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+});
+
+function cloneConfig<T extends ConfigRecord>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function defaultAgentConfig() {
+  return cloneConfig(
+    agentProvider.value?.defaults ?? {
+      agent: {
+        id: "",
+        mode: "full",
+        persona_id: "",
       },
-      config: safeJsonParse(form.configJson),
-      tags: normalizeStringList(form.tags),
+    },
+  );
+}
+
+function formatTimestamp(value: number) {
+  if (!value) {
+    return t("pages.agents.labels.noValue");
+  }
+  return new Intl.DateTimeFormat(locale.value, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+async function loadProfiles() {
+  const data = await apiClient.unwrap(
+    agentConfigsApi.list({ suppressErrorNotify: true }),
+  );
+  profiles.value = data;
+  return data;
+}
+
+async function refreshPage() {
+  isLoading.value = true;
+  error.value = "";
+  try {
+    await Promise.all([
+      configStore.loadWorkspace({ preserveDraft: true }),
+      loadProfiles(),
+    ]);
+  } catch (errorDetail: unknown) {
+    error.value = getErrorMessage(
+      errorDetail,
+      translate("pages.agents.messages.loadFailed"),
+    );
+  } finally {
+    hasLoadedProfiles.value = true;
+    isLoading.value = false;
+  }
+}
+
+function openCreate() {
+  editingFileName.value = "";
+  activeAgentTab.value = "identity";
+  dialogError.value = "";
+  profileIssues.value = [];
+  form.fileName = "";
+  form.config = defaultAgentConfig();
+  dialogVisible.value = true;
+}
+
+function openEdit(profile: AgentConfigProfile) {
+  editingFileName.value = profile.fileName;
+  activeAgentTab.value = "identity";
+  dialogError.value = "";
+  profileIssues.value = profile.issues;
+  form.fileName = profile.fileName;
+  form.config = cloneConfig(profile.config);
+  dialogVisible.value = true;
+}
+
+function applySavedProfile(profile: AgentConfigProfile) {
+  const index = profiles.value.findIndex(
+    (item) => item.fileName === profile.fileName,
+  );
+  if (index >= 0) {
+    profiles.value.splice(index, 1, profile);
+  } else {
+    profiles.value.push(profile);
+    profiles.value.sort((a, b) => a.fileName.localeCompare(b.fileName));
+  }
+}
+
+async function saveProfile() {
+  isSaving.value = true;
+  dialogError.value = "";
+  profileIssues.value = [];
+  try {
+    const payload = {
+      fileName: form.fileName.trim(),
+      config: cloneConfig(form.config),
+      validateBeforeSave: true,
+    };
+    const saved = editingFileName.value
+      ? await apiClient.unwrap(
+          agentConfigsApi.update(editingFileName.value, payload),
+        )
+      : await apiClient.unwrap(agentConfigsApi.create(payload));
+    applySavedProfile(saved);
+    dialogVisible.value = false;
+    uiStore.showSnackbar(
+      translate("common.actions.message.operationSuccess"),
+      "success",
+    );
+  } catch (errorDetail: unknown) {
+    const issues = extractConfigValidationIssues(errorDetail);
+    if (issues.length > 0) {
+      profileIssues.value = issues;
     }
-  },
-  save: async (payload, id) => {
-    const res = id ? await agentsStore.updateAgent(id, payload) : await agentsStore.createAgent(payload)
-    return Boolean(res)
-  },
-})
-
-const {
-  activeTag,
-  allTags: tagOptions,
-  sidebarItems: tagSidebarItems,
-  filteredItems: filteredAgents,
-  selectTag,
-} = useTagSidebar(
-  () => agentsStore.agents,
-  {
-    getTags: (agent) => agent.tags,
-    allTitle: translate('pages.agents.tags.all'),
-    allSubtitle: translate('pages.agents.tags.showAll'),
-    tagSubtitle: translate('pages.agents.tags.filterByTag'),
+    dialogError.value = getErrorMessage(
+      errorDetail,
+      translate("pages.agents.messages.saveFailed"),
+    );
+  } finally {
+    isSaving.value = false;
   }
-)
-
-const personaOptions = computed(() =>
-  personasStore.personas.map((p) => ({ title: `${p.name} (${p.uuid})`, value: p.uuid }))
-)
-
-const getAgentKey = (agent: Agent) => agent.uuid
-
-const contextStrategyOptionItems = computed(() =>
-  contextStrategyOptions(form.contextStrategyRef, contextStrategyType.value)
-)
-
-const promptOptionItems = computed(() => promptOptions(form.prompts))
-
-const toolOptionItems = computed(() => toolOptions(form.tools))
-
-const promptPickerSections = computed<GenericPickerSection[]>(() => [
-  {
-    id: 'prompts',
-    label: t('pages.agents.fields.prompts'),
-    items: promptOptionItems.value.map((o) => ({
-      value: o.value, title: o.title, icon: 'mdi-text-box-outline', iconColor: 'primary',
-    })),
-  },
-])
-
-const toolPickerSections = computed<GenericPickerSection[]>(() => [
-  {
-    id: 'tools',
-    label: t('pages.agents.fields.tools'),
-    items: toolOptionItems.value.map((o) => ({
-      value: o.value, title: o.title, icon: 'mdi-tools', iconColor: 'secondary',
-    })),
-  },
-])
-
-const promptSummary = computed(() => {
-  if (form.prompts.length === 0) return ''
-  const first = promptOptionItems.value.find((o) => o.value === form.prompts[0])?.title ?? form.prompts[0]
-  return form.prompts.length === 1 ? first : `${first} (+${form.prompts.length - 1})`
-})
-
-const toolSummary = computed(() => {
-  if (form.tools.length === 0) return ''
-  const first = toolOptionItems.value.find((o) => o.value === form.tools[0])?.title ?? form.tools[0]
-  return form.tools.length === 1 ? first : `${first} (+${form.tools.length - 1})`
-})
-
-const handleContextStrategyChange = (value: string | null) => {
-  const refVal = (value ?? '').trim()
-  form.contextStrategyRef = refVal
-  const selected = contextStrategyOptionItems.value.find(o => o.value === refVal)
-  contextStrategyType.value = selected?.type || ''
 }
 
-const removeAgent = async (uuid: string, name: string) => {
+async function removeProfile(profile: AgentConfigProfile) {
   if (
-    await confirm({
-      title: translate('common.actions.action.delete'),
-      message: translate('pages.agents.messages.confirmDelete', { name }),
-      confirmText: translate('common.actions.action.delete'),
-      confirmColor: 'error',
-      icon: 'mdi-alert-outline',
-      iconColor: 'error',
-    })
+    !(await confirm({
+      title: translate("common.actions.action.delete"),
+      message: translate("pages.agents.messages.confirmDelete", {
+        name: profile.agentId || profile.fileName,
+      }),
+      confirmText: translate("common.actions.action.delete"),
+      confirmColor: "error",
+      icon: "mdi-alert-outline",
+      iconColor: "error",
+    }))
   ) {
-    await agentsStore.deleteAgent(uuid)
+    return;
+  }
+
+  try {
+    await apiClient.unwrap(agentConfigsApi.delete(profile.fileName));
+    profiles.value = profiles.value.filter(
+      (item) => item.fileName !== profile.fileName,
+    );
+    uiStore.showSnackbar(
+      translate("common.actions.message.operationSuccess"),
+      "success",
+    );
+  } catch (errorDetail: unknown) {
+    error.value = getErrorMessage(
+      errorDetail,
+      translate("pages.agents.messages.deleteFailed"),
+    );
   }
 }
-
-const refreshAgents = () => Promise.all([
-  agentsStore.fetchAgents({ force: true }),
-  personasStore.fetchPersonas({ force: true }),
-  fetchAllResources({ force: true }),
-])
 
 onMounted(() => {
-  void agentsStore.fetchAgents()
-  void personasStore.fetchPersonas()
-  void fetchAllResources()
-})
+  void refreshPage();
+});
 </script>
 
 <style scoped lang="scss">
-@use '@/styles/mixins' as *;
+@use "@/styles/mixins" as *;
+
+.agents-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  @include surface-card;
+}
+
+.agents-search {
+  max-width: 420px;
+}
 
 .agent-card {
   @include surface-card;
   @include hover-lift;
+}
+
+.agent-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid $border-color-soft;
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  span {
+    color: rgba(var(--v-theme-on-surface), 0.58);
+    font-size: $font-size-xs;
+  }
+
+  strong {
+    min-width: 0;
+    overflow: hidden;
+    color: rgba(var(--v-theme-on-surface), 0.88);
+    font-size: $font-size-xs;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.agent-dialog {
+  overflow: hidden;
+  border-radius: $radius-base;
+}
+
+.agent-dialog__title {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid $border-color-soft;
+  color: rgba(var(--v-theme-on-surface), 0.94);
+  font-size: $font-size-lg;
+  font-weight: 800;
+}
+
+.agent-dialog__body {
+  padding: 0;
+}
+
+.agent-dialog__file-row {
+  padding: 20px 24px 8px;
+}
+
+.agent-tabs {
+  min-height: 64px;
+  padding: 10px 18px 0;
+  border-bottom: 1px solid $border-color-soft;
+  background: rgba(var(--v-theme-on-surface), 0.018);
+  overflow: visible;
+}
+
+.agent-tabs :deep(.v-slide-group__container),
+.agent-tabs :deep(.v-slide-group__content) {
+  min-height: 56px;
+}
+
+.agent-tabs :deep(.v-slide-group__content) {
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.agent-tabs :deep(.v-tab) {
+  position: relative;
+  min-width: 0;
+  min-height: 48px;
+  padding-inline: 18px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0 !important;
+  background: rgba(var(--v-theme-on-surface), 0.025);
+  color: rgba(var(--v-theme-on-surface), 0.68);
+  font-weight: 700;
+  text-transform: none;
+  transition:
+    background-color $transition-fast,
+    border-color $transition-fast,
+    color $transition-fast,
+    box-shadow $transition-fast;
+}
+
+.agent-tabs :deep(.v-tab:hover) {
+  background: rgba(var(--v-theme-primary), 0.08);
+  color: rgba(var(--v-theme-on-surface), 0.88);
+}
+
+.agent-tabs :deep(.v-tab.v-tab--selected) {
+  z-index: 2;
+  border-color: $border-color-soft;
+  background: rgb(var(--v-theme-surface));
+  color: rgb(var(--v-theme-primary));
+  box-shadow: 0 -6px 16px rgba(var(--v-theme-on-surface), 0.05);
+}
+
+.agent-tabs :deep(.v-tab.v-tab--selected::after) {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: rgb(var(--v-theme-surface));
+  content: "";
+}
+
+.agent-tabs :deep(.v-btn__overlay),
+.agent-tabs :deep(.v-btn__underlay) {
+  border-radius: inherit;
+}
+
+.agent-tabs :deep(.v-tab__slider) {
+  display: none;
+}
+
+.agent-tab-window {
+  min-height: 430px;
+  padding-top: 10px;
+  background: rgb(var(--v-theme-surface));
+}
+
+.agent-tab-window :deep(.provider-schema-form) {
+  padding: 24px;
+}
+
+.agent-tab-window :deep(.v-field) {
+  border-radius: $radius-base;
+}
+
+.agent-dialog__actions {
+  padding: 14px 24px 20px;
+  border-top: 1px solid $border-color-soft;
+}
+
+.validation-issue-line {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@include respond-to("mobile") {
+  .agents-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .agents-search {
+    max-width: none;
+  }
+
+  .agent-dialog__title {
+    padding: 18px 18px 14px;
+  }
+
+  .agent-dialog__file-row,
+  .agent-tab-window :deep(.provider-schema-form) {
+    padding: 18px;
+  }
+
+  .agent-dialog__actions {
+    padding: 12px 18px 18px;
+  }
 }
 </style>

@@ -1,7 +1,7 @@
 {
   "kicker": "Orchestration",
   "title": "Agent Management",
-  "subtitle": "Manage agents by tag and configure agent details through an overlay form.",
+  "subtitle": "Manage Agent runtime profiles under data/agents and edit each profile by configuration section.",
   "actions": {
     "refresh": "Refresh",
     "addAgent": "Add Agent"
@@ -14,9 +14,18 @@
     "untagged": "Untagged",
     "empty": "No tags are available yet"
   },
+  "tabs": {
+    "identity": "Identity",
+    "defaults": "Defaults & Prompts",
+    "review": "Review Flow",
+    "active": "Active Chat",
+    "advanced": "Advanced"
+  },
   "fields": {
+    "fileName": "Config File Name",
     "agentId": "Agent ID",
     "name": "Name",
+    "mode": "Mode",
     "personaUuid": "Persona",
     "persona": "Persona",
     "personaPlaceholder": "Select a persona",
@@ -38,14 +47,28 @@
   },
   "empty": {
     "title": "No Agents",
-    "subtitle": "No agents match the current tag. Create one from the top-right action."
+    "subtitle": "No data/agents/*.toml profiles exist yet. Create one from the top-right action.",
+    "noFields": "No configurable fields in this section."
   },
   "hints": {
+    "fileName": "Optional. A safe .toml file name will be generated from Agent ID when left empty.",
     "contextStrategyParams": "Optional. Must be a JSON object when provided.",
     "config": "Optional. Must be a JSON object when provided."
   },
+  "labels": {
+    "profileCount": "{count} profiles",
+    "issueCount": "{count} issues",
+    "valid": "Valid",
+    "updated": "Updated",
+    "noValue": "Unset",
+    "advancedFields": "Advanced Fields"
+  },
+  "validation": {
+    "title": "Configuration Issues"
+  },
   "messages": {
     "loadFailed": "Failed to load agents",
+    "saveFailed": "Failed to save agent config",
     "loadContextStrategiesFailed": "Failed to load context strategies",
     "created": "Agent created",
     "updated": "Agent updated",
