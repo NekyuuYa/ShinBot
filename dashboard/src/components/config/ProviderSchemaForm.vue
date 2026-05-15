@@ -1,6 +1,11 @@
 <template>
   <div class="provider-schema-form d-flex flex-column ga-4">
-    <v-alert v-if="!provider" type="warning" variant="tonal" density="comfortable">
+    <v-alert
+      v-if="!provider"
+      type="warning"
+      variant="tonal"
+      density="comfortable"
+    >
       {{ emptyText }}
     </v-alert>
 
@@ -54,7 +59,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type {
   ConfigProviderDefinition,
@@ -62,7 +68,7 @@ import type {
   ConfigValidationIssue,
   ConfigValue,
   ConfigWorkspaceProvider,
-} from '@/api/config'
+} from "@/api/config";
 import {
   buildProviderFormFields,
   createProviderConfigDraft,
@@ -70,80 +76,105 @@ import {
   isProviderFieldVisible,
   setProviderFieldValue,
   type ConfigFormField,
-} from '@/config'
-import ProviderFieldControl from './ProviderFieldControl.vue'
+} from "@/config";
+import ProviderFieldControl from "./ProviderFieldControl.vue";
 
-type FieldDensity = 'default' | 'comfortable' | 'compact'
+type FieldDensity = "default" | "comfortable" | "compact";
 
 interface Props {
-  provider: ConfigProviderDefinition | ConfigWorkspaceProvider | null
-  modelValue: ConfigRecord
-  issues?: ConfigValidationIssue[]
-  pathPrefix?: string
-  includeDeprecated?: boolean
-  disabled?: boolean
-  density?: FieldDensity
-  advancedLabel?: string
-  emptyText?: string
-  jsonErrorText?: string
+  provider: ConfigProviderDefinition | ConfigWorkspaceProvider | null;
+  modelValue: ConfigRecord;
+  issues?: ConfigValidationIssue[];
+  pathPrefix?: string;
+  includeDeprecated?: boolean;
+  fieldPrefixes?: string[];
+  disabled?: boolean;
+  density?: FieldDensity;
+  advancedLabel?: string;
+  emptyText?: string;
+  jsonErrorText?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   issues: () => [],
-  pathPrefix: '',
+  pathPrefix: "",
   includeDeprecated: false,
+  fieldPrefixes: () => [],
   disabled: false,
-  density: 'comfortable',
-  advancedLabel: 'Advanced',
-  emptyText: 'No configurable fields.',
-  jsonErrorText: 'Invalid JSON.',
-})
+  density: "comfortable",
+  advancedLabel: "Advanced",
+  emptyText: "No configurable fields.",
+  jsonErrorText: "Invalid JSON.",
+});
 
 const emit = defineEmits<{
-  'update:modelValue': [value: ConfigRecord]
-}>()
+  "update:modelValue": [value: ConfigRecord];
+}>();
+
+const { locale } = useI18n();
 
 const fields = computed<ConfigFormField[]>(() => {
   if (!props.provider) {
-    return []
+    return [];
   }
   return buildProviderFormFields(props.provider, {
     issues: props.issues,
     pathPrefix: props.pathPrefix,
     includeDeprecated: props.includeDeprecated,
-  })
-})
+    locale: locale.value,
+  });
+});
 
 const formValues = computed<ConfigRecord>(() => {
   if (!props.provider) {
-    return props.modelValue
+    return props.modelValue;
   }
-  return createProviderConfigDraft(props.provider, props.modelValue)
-})
+  return createProviderConfigDraft(props.provider, props.modelValue);
+});
+
+const matchesFieldPrefixes = (field: ConfigFormField) => {
+  if (props.fieldPrefixes.length === 0) {
+    return true;
+  }
+  return props.fieldPrefixes.some(
+    (prefix) => field.path === prefix || field.path.startsWith(`${prefix}.`),
+  );
+};
 
 const visibleFields = computed(() =>
-  fields.value.filter((field) => isProviderFieldVisible(field, formValues.value))
-)
-const basicFields = computed(() => visibleFields.value.filter((field) => !field.advanced))
-const advancedFields = computed(() => visibleFields.value.filter((field) => field.advanced))
+  fields.value.filter(
+    (field) =>
+      matchesFieldPrefixes(field) &&
+      isProviderFieldVisible(field, formValues.value),
+  ),
+);
+const basicFields = computed(() =>
+  visibleFields.value.filter((field) => !field.advanced),
+);
+const advancedFields = computed(() =>
+  visibleFields.value.filter((field) => field.advanced),
+);
 
 function fieldColumnSpan(field: ConfigFormField) {
   if (
-    field.component === 'json'
-    || field.component === 'array-object'
-    || field.component === 'string-list'
-    || field.component === 'integer-list'
+    field.component === "json" ||
+    field.component === "array-object" ||
+    field.component === "string-list" ||
+    field.component === "integer-list"
   ) {
-    return 12
+    return 12;
   }
-  return 6
+  return 6;
 }
 
 function fieldValue(field: ConfigFormField) {
-  return getProviderFieldValue(formValues.value, field)
+  return getProviderFieldValue(formValues.value, field);
 }
 
 function updateField(field: ConfigFormField, value: ConfigValue) {
-  emit('update:modelValue', setProviderFieldValue(props.modelValue, field, value))
+  emit(
+    "update:modelValue",
+    setProviderFieldValue(props.modelValue, field, value),
+  );
 }
 </script>

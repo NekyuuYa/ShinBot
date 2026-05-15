@@ -59,6 +59,7 @@ export interface BuildProviderFormFieldsOptions {
   issues?: ConfigValidationIssue[]
   pathPrefix?: string
   includeDeprecated?: boolean
+  locale?: string
 }
 
 export interface ProviderConfigFormModel {
@@ -93,6 +94,73 @@ function metadataString(field: ConfigFieldDefinition, key: string): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function localizedKeys(locale = ''): string[] {
+  const normalized = locale.trim().replace('_', '-')
+  const fallback = normalized.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US'
+  const language = normalized.split('-')[0]
+  return Array.from(new Set([
+    normalized,
+    normalized.toLowerCase(),
+    language,
+    fallback,
+    fallback.toLowerCase(),
+    fallback.split('-')[0],
+  ].filter(Boolean)))
+}
+
+function localizedMetadata(metadata: Record<string, ConfigValue>, locale = ''): ConfigRecord | null {
+  const i18n = metadata.i18n
+  if (!isRecord(i18n)) {
+    return null
+  }
+
+  for (const key of localizedKeys(locale)) {
+    const value = i18n[key]
+    if (isRecord(value)) {
+      return value
+    }
+  }
+  return null
+}
+
+function localizedMetadataString(
+  metadata: Record<string, ConfigValue>,
+  key: string,
+  locale = ''
+): string {
+  const localized = localizedMetadata(metadata, locale)
+  const value = localized?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function isChineseLocale(locale = ''): boolean {
+  return locale.trim().toLowerCase().replace('_', '-').startsWith('zh')
+}
+
+function localizedProviderText(
+  provider: ConfigProviderDefinition | ConfigWorkspaceProvider,
+  key: 'display_name' | 'description',
+  locale = ''
+): string {
+  return localizedMetadataString(provider.metadata, key, locale)
+}
+
+export function providerDisplayName(
+  provider: ConfigProviderDefinition | ConfigWorkspaceProvider,
+  locale = ''
+): string {
+  return localizedProviderText(provider, 'display_name', locale)
+    || provider.display_name
+    || provider.id
+}
+
+export function providerDescription(
+  provider: ConfigProviderDefinition | ConfigWorkspaceProvider,
+  locale = ''
+): string {
+  return localizedProviderText(provider, 'description', locale) || provider.description
+}
+
 function prettyFieldLabel(path: string): string {
   const segment = path.split('.').pop() || path
   return segment
@@ -102,7 +170,15 @@ function prettyFieldLabel(path: string): string {
     .replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
-function choiceTitle(field: ConfigFieldDefinition, value: ConfigValue): string {
+function choiceTitle(field: ConfigFieldDefinition, value: ConfigValue, locale = ''): string {
+  const localizedChoices = localizedMetadata(field.metadata, locale)?.choices
+  if (isRecord(localizedChoices)) {
+    const label = localizedChoices[String(value)]
+    if (typeof label === 'string' && label.trim()) {
+      return label.trim()
+    }
+  }
+
   const labels = field.metadata.choice_labels
   if (isRecord(labels)) {
     const label = labels[String(value)]
@@ -111,6 +187,46 @@ function choiceTitle(field: ConfigFieldDefinition, value: ConfigValue): string {
     }
   }
   return String(value)
+}
+
+export function localizedConfigIssueMessage(
+  issue: ConfigValidationIssue,
+  locale = '',
+  field?: ConfigFieldDefinition
+): string {
+  if (!isChineseLocale(locale)) {
+    return issue.message
+  }
+
+  if (issue.code === 'required') {
+    return '此字段为必填项'
+  }
+  if (issue.code === 'type') {
+    return field ? `类型不正确，应为 ${field.type}` : '类型不正确'
+  }
+  if (issue.code === 'choices') {
+    const choices = field?.choices.map((value) => choiceTitle(field, value, locale)).join('、')
+    return choices ? `必须是以下选项之一：${choices}` : '不在允许的选项中'
+  }
+  if (issue.code === 'min') {
+    return field?.min !== undefined ? `必须大于或等于 ${field.min}` : '小于允许的最小值'
+  }
+  if (issue.code === 'max') {
+    return field?.max !== undefined ? `必须小于或等于 ${field.max}` : '超过允许的最大值'
+  }
+  if (issue.code === 'unknown') {
+    return '未知配置项'
+  }
+  if (issue.code === 'unknown_ref') {
+    return '引用的配置不存在'
+  }
+  if (issue.code === 'database_url') {
+    return '当前只支持 SQLite 数据库地址'
+  }
+  if (issue.code === 'not_found') {
+    return '文件不存在'
+  }
+  return issue.message
 }
 
 function normalizeIssuePath(issue: ConfigValidationIssue, pathPrefix?: string): string {
@@ -183,6 +299,7 @@ export function buildProviderFormFields(
   options: BuildProviderFormFieldsOptions = {}
 ): ConfigFormField[] {
   const issuesByPath = groupConfigIssuesByPath(options.issues, options.pathPrefix)
+  const locale = options.locale ?? ''
 
   return provider.fields
     .filter((field) => options.includeDeprecated || !field.deprecated)
@@ -191,8 +308,12 @@ export function buildProviderFormFields(
       path: field.path,
       providerKind: provider.kind,
       providerId: provider.id,
-      label: metadataString(field, 'label') || metadataString(field, 'title') || prettyFieldLabel(field.path),
-      description: field.description,
+      label: localizedMetadataString(field.metadata, 'label', locale)
+        || metadataString(field, 'label')
+        || metadataString(field, 'title')
+        || prettyFieldLabel(field.path),
+      description: localizedMetadataString(field.metadata, 'description', locale)
+        || field.description,
       component: fieldComponentByType[field.type],
       valueType: field.type,
       inputType: field.secret ? 'password' : field.type === 'integer' || field.type === 'float' || field.type === 'duration' ? 'number' : 'text',
@@ -200,14 +321,18 @@ export function buildProviderFormFields(
       secret: field.secret,
       advanced: field.advanced,
       deprecated: field.deprecated,
-      placeholder: field.placeholder,
+      placeholder: localizedMetadataString(field.metadata, 'placeholder', locale)
+        || field.placeholder,
       visibleWhen: field.visible_when,
       metadata: field.metadata,
       options: field.choices.map((value) => ({
-        title: choiceTitle(field, value),
+        title: choiceTitle(field, value, locale),
         value,
       })),
-      issues: issuesByPath[field.path] ?? [],
+      issues: (issuesByPath[field.path] ?? []).map((issue) => ({
+        ...issue,
+        message: localizedConfigIssueMessage(issue, locale, field),
+      })),
       defaultValue: 'default' in field ? field.default : undefined,
       min: field.min,
       max: field.max,
