@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 
 import { apiClient } from '@/api/client'
+import { setConfigPathValue } from '@/config/paths'
 import {
   configApi,
   extractConfigValidationIssues,
@@ -142,6 +143,10 @@ export const useConfigWorkspaceStore = defineStore('configWorkspace', () => {
     })
   }
 
+  const setDraftPath = (path: string, value: ConfigValue) => {
+    draft.value = setConfigPathValue(cloneConfig(draft.value), path, cloneConfig(value))
+  }
+
   const validateDraft = async () => {
     isValidating.value = true
     error.value = ''
@@ -230,6 +235,7 @@ export const useConfigWorkspaceStore = defineStore('configWorkspace', () => {
     setDraftConfig,
     updateDraftConfig,
     setDraftSection,
+    setDraftPath,
     validateDraft,
     saveDraft,
   }

@@ -1,0 +1,55 @@
+{
+  "kicker": "消息接入",
+  "title": "消息平台",
+  "subtitle": "管理所有消息平台实例，以及每个平台自己的适配器参数。",
+  "create": "创建消息平台",
+  "noData": "暂无消息平台",
+  "unknownAdapter": "未知适配器",
+  "never": "从未",
+  "configFieldCount": "{count} 项",
+  "deleteConfirm": "确定删除「{name}」吗？这会从当前配置草稿中移除该消息平台。",
+  "actions": {
+    "configure": "配置",
+    "validate": "校验"
+  },
+  "views": {
+    "card": "卡片视图",
+    "list": "列表视图"
+  },
+  "status": {
+    "saved": "已同步",
+    "unsaved": "有改动"
+  },
+  "table": {
+    "name": "名称",
+    "adapter": "适配器",
+    "status": "状态",
+    "config": "配置项",
+    "updated": "更新时间",
+    "actions": "操作"
+  },
+  "form": {
+    "name": "名称",
+    "id": "平台 ID",
+    "adapter": "适配器",
+    "enabled": "启用平台",
+    "config": "平台参数",
+    "advancedConfig": "高级参数",
+    "noSchema": "当前适配器没有可配置参数。",
+    "noProvider": "请选择一个已注册的适配器。"
+  },
+  "dialog": {
+    "createTitle": "创建消息平台",
+    "editTitle": "编辑消息平台"
+  },
+  "validation": {
+    "title": "当前配置存在校验问题",
+    "more": "还有 {count} 个问题未显示",
+    "requiredId": "请填写平台 ID。",
+    "requiredAdapter": "请选择适配器。",
+    "duplicateId": "平台 ID 已存在。",
+    "unknownAdapter": "该适配器没有注册配置模板。",
+    "idFormat": "平台 ID 只能包含字母、数字、下划线、短横线和点，并且必须以字母或数字开头。",
+    "invalidJson": "JSON 格式不正确。"
+  }
+}

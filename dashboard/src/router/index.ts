@@ -22,6 +22,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Dashboard.vue'),
       },
       {
+        path: 'message-platforms',
+        name: 'MessagePlatforms',
+        component: () => import('@/views/MessagePlatforms.vue'),
+      },
+      {
         path: 'instances',
         name: 'Instances',
         component: () => import('@/views/Instances.vue'),
