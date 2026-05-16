@@ -1,15 +1,9 @@
 import { ref } from 'vue'
-import { contextStrategiesApi, type ContextStrategy } from '@/api/contextStrategies'
 import { promptsApi, type PromptCatalogItem } from '@/api/prompts'
 import { toolsApi, type ToolDefinition } from '@/api/tools'
 import { createCachedRequest, type CachedRequestOptions } from '@/utils/requestCache'
 
 const AGENT_RESOURCES_STALE_TIME_MS = 30_000
-
-const loadContextStrategies = createCachedRequest(async () => {
-  const response = await contextStrategiesApi.list()
-  return response.data.success ? response.data.data || [] : []
-}, AGENT_RESOURCES_STALE_TIME_MS)
 
 const loadPromptCatalog = createCachedRequest(async () => {
   const response = await promptsApi.list()
@@ -22,7 +16,6 @@ const loadToolCatalog = createCachedRequest(async () => {
 }, AGENT_RESOURCES_STALE_TIME_MS)
 
 export function useAgentResources() {
-  const contextStrategies = ref<ContextStrategy[]>([])
   const promptCatalog = ref<PromptCatalogItem[]>([])
   const toolCatalog = ref<ToolDefinition[]>([])
 
@@ -33,12 +26,10 @@ export function useAgentResources() {
     isLoadingResources.value = true
     resourceError.value = ''
     try {
-      const [strategies, prompts, tools] = await Promise.all([
-        loadContextStrategies(options),
+      const [prompts, tools] = await Promise.all([
         loadPromptCatalog(options),
         loadToolCatalog(options),
       ])
-      contextStrategies.value = strategies
       promptCatalog.value = prompts
       toolCatalog.value = tools
     } catch (err: unknown) {
@@ -46,17 +37,6 @@ export function useAgentResources() {
     } finally {
       isLoadingResources.value = false
     }
-  }
-
-  const contextStrategyOptions = (currentRef: string, currentType: string) => {
-    const options = contextStrategies.value
-      .map((s) => ({ title: `${s.name} (${s.type})`, value: s.uuid, type: s.type }))
-      .sort((a, b) => a.title.localeCompare(b.title))
-
-    if (currentRef && !options.some((o) => o.value === currentRef)) {
-      options.push({ title: currentRef, value: currentRef, type: currentType })
-    }
-    return options
   }
 
   const promptOptions = (selectedIds: string[]) => {
@@ -82,13 +62,11 @@ export function useAgentResources() {
   }
 
   return {
-    contextStrategies,
     promptCatalog,
     toolCatalog,
     isLoadingResources,
     resourceError,
     fetchAllResources,
-    contextStrategyOptions,
     promptOptions,
     toolOptions,
   }

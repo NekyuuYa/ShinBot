@@ -6,12 +6,10 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import (
     AIInteractionRecord,
-    ContextStrategyRecord,
     DatabaseManager,
     InstanceConfigRecord,
     MessageLogRecord,
@@ -71,6 +69,7 @@ class TestDatabaseManager:
         assert "ai_interactions" in tables
         assert "prompt_snapshots" in tables
         assert "agents" not in tables
+        assert "context_strategies" not in tables
 
         conn = sqlite3.connect(sqlite_path)
         try:
@@ -156,6 +155,52 @@ class TestDatabaseManager:
             conn.close()
 
         assert "agents" not in tables
+
+    def test_initialize_drops_legacy_context_strategies_table(self, tmp_path):
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE context_strategies (
+                    uuid TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    resolver_ref TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO context_strategies (
+                    uuid, name, resolver_ref, created_at, updated_at
+                ) VALUES (
+                    'ctx-1', 'Legacy Context', 'context.legacy', '2025-01-01', '2025-01-01'
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "context_strategies" not in tables
 
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -346,24 +391,6 @@ class TestDatabaseManager:
         assert analysis["models"][0]["model_display_name"] == "GPT Fast"
         assert analysis["models"][0]["estimated_cost"] > 0
 
-    def test_initialize_seeds_builtin_context_strategy(self, tmp_path):
-        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
-        db.initialize()
-
-        payload = db.context_strategies.get(
-            PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID
-        )
-        assert payload is not None
-        assert payload["type"] == "sliding_window"
-        assert payload["resolver_ref"] == PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER
-        assert payload["config"]["builtin"] is True
-        assert payload["config"]["default"] is True
-        assert payload["config"]["budget"]["truncate_policy"] == "sliding_window"
-        assert payload["config"]["budget"]["trigger_ratio"] == 1.0
-        assert payload["config"]["budget"]["max_context_tokens"] == 15000
-        assert payload["config"]["budget"]["target_context_tokens"] == 6000
-        assert payload["config"]["budget"]["trim_turns"] == 2
-
     def test_initialize_migrates_model_registry_to_provider_uuid(self, tmp_path):
         sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
@@ -493,34 +520,6 @@ class TestDatabaseManager:
         items = db.personas.list()
         assert len(items) == 1
         assert items[0]["uuid"] == "persona-1"
-
-    def test_context_strategy_repository_roundtrip(self, tmp_path):
-        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
-        db.initialize()
-
-        db.context_strategies.upsert(
-            ContextStrategyRecord(
-                uuid="ctx-1",
-                name="Recent History",
-                type="recent_history",
-                resolver_ref="context.recent_history",
-                description="Use the latest conversation turns.",
-                config={"window": 12},
-            )
-        )
-
-        payload = db.context_strategies.get("ctx-1")
-        assert payload is not None
-        assert payload["type"] == "recent_history"
-        assert payload["resolver_ref"] == "context.recent_history"
-        assert payload["config"]["window"] == 12
-
-        items = db.context_strategies.list()
-        assert len(items) == 2
-        assert {item["uuid"] for item in items} == {
-            "ctx-1",
-            PromptRegistry.BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
-        }
 
     def test_message_log_repository_supports_standard_context_queries(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

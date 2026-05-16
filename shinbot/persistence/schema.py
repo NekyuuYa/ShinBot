@@ -205,19 +205,6 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS context_strategies (
-        uuid TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        type TEXT NOT NULL DEFAULT 'custom',
-        resolver_ref TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT '',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
-    """
     CREATE TABLE IF NOT EXISTS prompt_definitions (
         uuid TEXT PRIMARY KEY,
         prompt_id TEXT NOT NULL UNIQUE,
@@ -724,36 +711,12 @@ def _migrate_model_registry_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA foreign_keys = {'ON' if had_foreign_keys else 'OFF'}")
 
 
-def _migrate_context_strategies_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "context_strategies")
-    if not columns:
-        return
-
-    if "type" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE context_strategies
-            ADD COLUMN type TEXT NOT NULL DEFAULT 'custom'
-            """
-        )
-    if "trigger_ratio" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE context_strategies
-            ADD COLUMN trigger_ratio REAL NOT NULL DEFAULT 0.5
-            """
-        )
-    if "trim_turns" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE context_strategies
-            ADD COLUMN trim_turns INTEGER NOT NULL DEFAULT 2
-            """
-        )
-
-
 def _drop_legacy_agents_table(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS agents")
+
+
+def _drop_legacy_context_strategies_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS context_strategies")
 
 
 def _migrate_personas_schema(conn: sqlite3.Connection) -> None:
@@ -993,8 +956,8 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
     _migrate_provider_capability_type(conn)
-    _migrate_context_strategies_schema(conn)
     _drop_legacy_agents_table(conn)
+    _drop_legacy_context_strategies_table(conn)
     _migrate_personas_schema(conn)
     _migrate_prompt_definitions_schema(conn)
     _migrate_bot_configs_schema(conn)

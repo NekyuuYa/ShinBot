@@ -8,14 +8,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from shinbot.persistence.config import DatabaseConfig
-from shinbot.persistence.defaults import builtin_sliding_window_context_strategy
-from shinbot.persistence.records import utc_now_iso
 from shinbot.persistence.schema import apply_schema
 
 from .repositories import (
     AIInteractionRepository,
     AuditRepository,
-    ContextStrategyRepository,
     InstanceConfigRepository,
     MediaAssetRepository,
     MediaSemanticRepository,
@@ -41,7 +38,6 @@ class DatabaseManager:
         self.instance_configs = InstanceConfigRepository(self)
         self.personas = PersonaRepository(self)
         self.prompt_definitions = PromptDefinitionRepository(self)
-        self.context_strategies = ContextStrategyRepository(self)
         self.model_registry = ModelRegistryRepository(self)
         self.model_executions = ModelExecutionRepository(self, model_registry=self.model_registry)
         self.message_logs = MessageLogRepository(self)
@@ -93,8 +89,3 @@ class DatabaseManager:
         """Create the database file and ensure the known schema exists."""
         with self.connect() as conn:
             apply_schema(conn)
-        self._ensure_builtin_context_strategies()
-
-    def _ensure_builtin_context_strategies(self) -> None:
-        now = utc_now_iso()
-        self.context_strategies.upsert(builtin_sliding_window_context_strategy(now))

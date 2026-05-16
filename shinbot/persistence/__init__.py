@@ -4,7 +4,6 @@ from shinbot.persistence.config import DatabaseConfig, default_database_path, de
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import (
     AIInteractionRecord,
-    ContextStrategyRecord,
     InstanceConfigRecord,
     MediaAssetRecord,
     MediaSemanticRecord,
@@ -26,7 +25,6 @@ __all__ = [
     "AIInteractionRecord",
     "DatabaseConfig",
     "DatabaseManager",
-    "ContextStrategyRecord",
     "ContextProvider",
     "InstanceConfigRecord",
     "MediaAssetRecord",

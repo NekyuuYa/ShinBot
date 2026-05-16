@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from shinbot.agent.services.prompt_engine.context_strategies import normalize_history_turns
+from shinbot.agent.services.prompt_engine.context_inputs import normalize_history_turns
 from shinbot.agent.services.prompt_engine.schema import (
     PromptAssemblyRequest,
     PromptComponent,

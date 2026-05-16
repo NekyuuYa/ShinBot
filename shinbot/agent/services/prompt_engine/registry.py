@@ -44,12 +44,6 @@ from shinbot.agent.services.prompt_engine.snapshots import (
     create_prompt_build_snapshot,
     create_prompt_snapshot,
 )
-from shinbot.schema.context_strategies import (
-    BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER as _BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER,
-)
-from shinbot.schema.context_strategies import (
-    BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID as _BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID,
-)
 
 if TYPE_CHECKING:
     from shinbot.agent.services.context import ContextManager
@@ -71,8 +65,6 @@ class PromptRegistry:
     BUILTIN_CONTEXT_PACKED_HISTORY_COMPONENT_ID = "builtin.context.packed_history"
     BUILTIN_INSTRUCTION_UNREAD_COMPONENT_ID = "builtin.instructions.unread_messages"
     BUILTIN_CONSTRAINT_ACTIVE_ALIAS_COMPONENT_ID = "builtin.constraints.active_aliases"
-    BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID = _BUILTIN_SLIDING_WINDOW_CONTEXT_STRATEGY_ID
-    BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER = _BUILTIN_SLIDING_WINDOW_CONTEXT_RESOLVER
     BUILTIN_MESSAGE_TEXT_PROMPT_COMPONENT_ID = "builtin.instructions.message_text"
     BUILTIN_MESSAGE_TEXT_PROMPT_RESOLVER = "builtin.runtime.message_text"
     BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID = "builtin.constraints.current_time"

@@ -1,7 +1,6 @@
 """Repository implementations grouped by persistence domain."""
 
 from .admin import (
-    ContextStrategyRepository,
     InstanceConfigRepository,
     PersonaRepository,
     PromptDefinitionRepository,
@@ -22,7 +21,6 @@ __all__ = [
     "AIInteractionRepository",
     "AuditRepository",
     "ContextProvider",
-    "ContextStrategyRepository",
     "InstanceConfigRepository",
     "MediaAssetRepository",
     "MediaSemanticRepository",

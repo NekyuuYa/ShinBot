@@ -50,4 +50,3 @@ def normalize_history_turns(context_inputs: dict[str, Any]) -> list[dict[str, An
         turns.append(turn)
     return turns
 
-

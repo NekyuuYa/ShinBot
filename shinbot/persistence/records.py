@@ -109,19 +109,6 @@ class PersonaRecord:
 
 
 @dataclass(slots=True)
-class ContextStrategyRecord:
-    uuid: str
-    name: str
-    type: str
-    resolver_ref: str
-    description: str = ""
-    config: dict[str, Any] = field(default_factory=dict)
-    enabled: bool = True
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
 class PromptDefinitionRecord:
     uuid: str
     prompt_id: str

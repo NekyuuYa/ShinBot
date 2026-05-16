@@ -35,10 +35,6 @@
     "promptsEmpty": "No prompt components are available",
     "tools": "Tool IDs",
     "toolsEmpty": "No tools are available",
-    "contextStrategyRef": "Context Strategy Ref",
-    "contextStrategyPlaceholder": "Select a context strategy",
-    "contextStrategyEmpty": "No context strategies are available",
-    "contextStrategyParams": "Context Strategy Params (JSON)",
     "config": "Agent Config (JSON)"
   },
   "overlay": {
@@ -52,7 +48,6 @@
   },
   "hints": {
     "fileName": "Optional. A safe .toml file name will be generated from Agent ID when left empty.",
-    "contextStrategyParams": "Optional. Must be a JSON object when provided.",
     "config": "Optional. Must be a JSON object when provided."
   },
   "labels": {
@@ -69,7 +64,6 @@
   "messages": {
     "loadFailed": "Failed to load agents",
     "saveFailed": "Failed to save agent config",
-    "loadContextStrategiesFailed": "Failed to load context strategies",
     "created": "Agent created",
     "updated": "Agent updated",
     "deleted": "Agent deleted",
@@ -77,7 +71,6 @@
     "updateFailed": "Failed to update agent",
     "deleteFailed": "Failed to delete agent",
     "requiredFields": "Agent ID, Name, and Persona UUID are required",
-    "invalidContextStrategy": "Context strategy ref and type must be provided together",
     "invalidJson": "Invalid JSON format",
     "confirmDelete": "Delete agent {name}?"
   }
