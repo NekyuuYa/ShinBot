@@ -467,42 +467,64 @@ Agent 仅允许：
 
 ## 11. 配置结构建议
 
-首版可先采用配置文件或管理面持久化，逻辑结构应等价于：
+当前模型接入配置由管理 API 读写，并统一保存在 `data/models.json`。逻辑结构等价于：
 
-```toml
-[[model_providers]]
-id = "openai-official"
-type = "openai"
-display_name = "OpenAI"
-base_url = "https://api.openai.com/v1"
-enabled = true
-
-[model_providers.auth]
-api_key = "${OPENAI_API_KEY}"
-
-[[models]]
-id = "gpt-4.1-mini"
-provider_id = "openai-official"
-litellm_model = "gpt-4.1-mini"
-display_name = "GPT-4.1 mini"
-capabilities = ["chat", "tool_calling", "json_mode"]
-context_window = 128000
-enabled = true
-
-[[model_routes]]
-id = "agent.default_chat"
-purpose = "general_chat"
-strategy = "priority_failover"
-enabled = true
-
-[[model_routes.members]]
-model_id = "gpt-4.1-mini"
-priority = 100
+```json
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "openai-official",
+      "type": "openai",
+      "display_name": "OpenAI",
+      "capability_type": "completion",
+      "base_url": "https://api.openai.com/v1",
+      "auth": {
+        "api_key": "${OPENAI_API_KEY}"
+      },
+      "default_params": {},
+      "enabled": true
+    }
+  ],
+  "models": [
+    {
+      "id": "gpt-4.1-mini",
+      "provider_id": "openai-official",
+      "litellm_model": "gpt-4.1-mini",
+      "display_name": "GPT-4.1 mini",
+      "capabilities": ["chat", "tool_calling", "json_mode"],
+      "context_window": 128000,
+      "default_params": {},
+      "cost_metadata": {},
+      "enabled": true
+    }
+  ],
+  "routes": [
+    {
+      "id": "agent.default_chat",
+      "purpose": "general_chat",
+      "strategy": "priority",
+      "enabled": true,
+      "sticky_sessions": false,
+      "metadata": {},
+      "members": [
+        {
+          "model_id": "gpt-4.1-mini",
+          "priority": 100,
+          "weight": 1.0,
+          "conditions": {},
+          "timeout_override": null,
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}
 ```
 
 要求：
 
-- Provider、Model、Route 必须分别持久化，不要把它们揉成一层配置。
+- Provider、Model、Route 必须在同一文件中分区保存，不要把它们揉成一层配置。
 - `members` 必须引用已有 `model_id`，不得内联完整模型配置。
 
 ---
