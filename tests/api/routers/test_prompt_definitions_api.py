@@ -146,3 +146,18 @@ def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(tmp_path: Path
         )
         assert invalid_resp.status_code == 400
         assert invalid_resp.json()["error"]["code"] == "INVALID_ACTION"
+
+        persona_source_resp = client.post(
+            "/api/v1/prompt-definitions",
+            headers=headers,
+            json={
+                "promptId": "persona.legacy",
+                "name": "Legacy Persona Prompt",
+                "sourceType": "persona",
+                "stage": "identity",
+                "type": "static_text",
+                "content": "Use data/personas instead.",
+            },
+        )
+        assert persona_source_resp.status_code == 400
+        assert persona_source_resp.json()["error"]["code"] == "INVALID_ACTION"

@@ -19,19 +19,12 @@ def build_runtime_component_ids(
     database: DatabaseManager,
     prompt_registry: PromptRegistry,
     *,
-    persona: dict[str, object] | None,
     agent: dict[str, object] | None,
 ) -> tuple[list[str], list[str]]:
-    """Resolve persona/agent prompt refs into registered component ids."""
+    """Resolve agent prompt refs into registered component ids."""
 
     component_ids: list[str] = []
     unresolved_refs: list[str] = []
-
-    persona_prompt_uuid = str((persona or {}).get("prompt_definition_uuid") or "").strip()
-    if persona_prompt_uuid:
-        payload = database.prompt_definitions.get(persona_prompt_uuid)
-        if payload is not None:
-            component_ids.append(sync_prompt_definition_component(prompt_registry, payload))
 
     for prompt_ref in (agent or {}).get("prompts", []):
         normalized = str(prompt_ref).strip()

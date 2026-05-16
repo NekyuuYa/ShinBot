@@ -18,7 +18,6 @@ from shinbot.persistence import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
-    PersonaRecord,
     PromptDefinitionRecord,
     PromptSnapshotRecord,
 )
@@ -70,6 +69,7 @@ class TestDatabaseManager:
         assert "prompt_snapshots" in tables
         assert "agents" not in tables
         assert "context_strategies" not in tables
+        assert "personas" not in tables
 
         conn = sqlite3.connect(sqlite_path)
         try:
@@ -201,6 +201,89 @@ class TestDatabaseManager:
             conn.close()
 
         assert "context_strategies" not in tables
+
+    def test_initialize_drops_legacy_personas_table(self, tmp_path):
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE personas (
+                    uuid TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    prompt_definition_uuid TEXT NOT NULL,
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO personas (
+                    uuid, name, prompt_definition_uuid, created_at, updated_at
+                ) VALUES (
+                    'persona-1', 'Legacy Persona', 'prompt-persona-1',
+                    '2025-01-01', '2025-01-01'
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "personas" not in tables
+
+    def test_initialize_drops_legacy_persona_prompt_definitions(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        db.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid="prompt-persona-1",
+                prompt_id="persona.persona-1",
+                name="Legacy Persona Prompt",
+                source_type="persona",
+                source_id="persona-1",
+                stage="identity",
+                type="static_text",
+                content="Old persona text.",
+            )
+        )
+        db.prompt_definitions.upsert(
+            PromptDefinitionRecord(
+                uuid="prompt-custom-1",
+                prompt_id="prompt.identity.extra",
+                name="Custom Identity Prompt",
+                source_type="agent_plugin",
+                source_id="plugin.identity",
+                stage="identity",
+                type="static_text",
+                content="Keep this prompt.",
+            )
+        )
+
+        db.initialize()
+
+        assert db.prompt_definitions.get("prompt-persona-1") is None
+        assert db.prompt_definitions.get("prompt-custom-1") is not None
 
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -486,40 +569,6 @@ class TestDatabaseManager:
         assert providers[0]["provider_uuid"]
         assert len(models) == 1
         assert models[0]["provider_id"] == "openai-main"
-
-    def test_persona_repository_roundtrip(self, tmp_path):
-        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
-        db.initialize()
-        db.prompt_definitions.upsert(
-            PromptDefinitionRecord(
-                uuid="prompt-persona-1",
-                prompt_id="persona.persona-1",
-                name="Assistant Default Persona Prompt",
-                source_type="persona",
-                source_id="persona-1",
-                stage="identity",
-                type="static_text",
-                content="You are a concise assistant.",
-            )
-        )
-
-        db.personas.upsert(
-            PersonaRecord(
-                uuid="persona-1",
-                name="Assistant Default",
-                prompt_definition_uuid="prompt-persona-1",
-            )
-        )
-
-        payload = db.personas.get("persona-1")
-        assert payload is not None
-        assert payload["name"] == "Assistant Default"
-        assert payload["prompt_definition_uuid"] == "prompt-persona-1"
-        assert payload["prompt_text"] == "You are a concise assistant."
-
-        items = db.personas.list()
-        assert len(items) == 1
-        assert items[0]["uuid"] == "persona-1"
 
     def test_message_log_repository_supports_standard_context_queries(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

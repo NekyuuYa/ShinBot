@@ -193,18 +193,6 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ON audit_logs(session_id)
     """,
     """
-    CREATE TABLE IF NOT EXISTS personas (
-        uuid TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        prompt_definition_uuid TEXT NOT NULL,
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(prompt_definition_uuid) REFERENCES prompt_definitions(uuid) ON DELETE RESTRICT
-    )
-    """,
-    """
     CREATE TABLE IF NOT EXISTS prompt_definitions (
         uuid TEXT PRIMARY KEY,
         prompt_id TEXT NOT NULL UNIQUE,
@@ -719,24 +707,15 @@ def _drop_legacy_context_strategies_table(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS context_strategies")
 
 
-def _migrate_personas_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "personas")
-    if not columns:
+def _drop_legacy_personas_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS personas")
+
+
+def _drop_legacy_persona_prompt_definitions(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "prompt_definitions")
+    if "source_type" not in columns:
         return
-    if "prompt_definition_uuid" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE personas
-            ADD COLUMN prompt_definition_uuid TEXT NOT NULL DEFAULT ''
-            """
-        )
-    if "tags_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE personas
-            ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'
-            """
-        )
+    conn.execute("DELETE FROM prompt_definitions WHERE source_type = 'persona'")
 
 
 def _migrate_prompt_definitions_schema(conn: sqlite3.Connection) -> None:
@@ -958,8 +937,9 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_provider_capability_type(conn)
     _drop_legacy_agents_table(conn)
     _drop_legacy_context_strategies_table(conn)
-    _migrate_personas_schema(conn)
+    _drop_legacy_personas_table(conn)
     _migrate_prompt_definitions_schema(conn)
+    _drop_legacy_persona_prompt_definitions(conn)
     _migrate_bot_configs_schema(conn)
     _migrate_model_execution_records_schema(conn)
     _migrate_ai_interactions_schema(conn)

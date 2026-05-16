@@ -98,17 +98,6 @@ class ModelExecutionRecord:
 
 
 @dataclass(slots=True)
-class PersonaRecord:
-    uuid: str
-    name: str
-    prompt_definition_uuid: str
-    tags: list[str] = field(default_factory=list)
-    enabled: bool = True
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
 class PromptDefinitionRecord:
     uuid: str
     prompt_id: str

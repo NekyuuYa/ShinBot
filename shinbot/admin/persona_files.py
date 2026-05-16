@@ -50,10 +50,6 @@ class PersonaFileRecord:
     version: str = "1.0.0"
     description: str = ""
 
-    @property
-    def prompt_definition_uuid(self) -> str:
-        return persona_component_id(self.uuid)
-
 
 class PersonaFileRepository:
     """Repository for user-editable persona Markdown files."""
@@ -265,7 +261,6 @@ def serialize_persona_record(record: PersonaFileRecord) -> dict[str, object]:
     return {
         "uuid": record.uuid,
         "name": record.name,
-        "prompt_definition_uuid": record.prompt_definition_uuid,
         "prompt_text": record.prompt_text,
         "tags": record.tags,
         "enabled": record.enabled,
@@ -281,7 +276,6 @@ def serialize_persona(payload: dict[str, object]) -> dict[str, object]:
     return {
         "uuid": payload["uuid"],
         "name": payload["name"],
-        "promptDefinitionUuid": payload["prompt_definition_uuid"],
         "promptText": payload["prompt_text"],
         "tags": payload["tags"],
         "enabled": payload["enabled"],

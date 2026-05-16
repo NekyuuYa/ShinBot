@@ -48,7 +48,7 @@ def test_persona_crud_roundtrip(tmp_path: Path):
         created = create_resp.json()["data"]
         assert created["uuid"]
         assert created["name"] == "Default Assistant"
-        assert created["promptDefinitionUuid"]
+        assert "promptDefinitionUuid" not in created
         assert created["promptText"] == "You are a precise assistant."
         assert created["tags"] == ["default", "support"]
 
@@ -72,7 +72,7 @@ def test_persona_crud_roundtrip(tmp_path: Path):
         assert patch_resp.status_code == 200
         patched = patch_resp.json()["data"]
         assert patched["name"] == "Default Assistant v2"
-        assert patched["promptDefinitionUuid"] == created["promptDefinitionUuid"]
+        assert "promptDefinitionUuid" not in patched
         assert patched["tags"] == ["support", "v2"]
         assert patched["enabled"] is False
 

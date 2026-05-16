@@ -137,6 +137,12 @@ def normalize_prompt_definition_input(
             code="INVALID_ACTION",
             message="Prompt name must not be empty",
         )
+    if normalized_source_type == "persona":
+        raise PromptDefinitionAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="Persona prompts are stored in data/personas/*.md",
+        )
 
     deduped_tags: list[str] = []
     seen_tags: set[str] = set()

@@ -2,7 +2,6 @@
 
 from .admin import (
     InstanceConfigRepository,
-    PersonaRepository,
     PromptDefinitionRepository,
 )
 from .ai import AIInteractionRepository, PromptSnapshotRepository
@@ -28,7 +27,6 @@ __all__ = [
     "MessageMediaLinkRepository",
     "ModelExecutionRepository",
     "ModelRegistryRepository",
-    "PersonaRepository",
     "PromptDefinitionRepository",
     "PromptSnapshotRepository",
     "Repository",

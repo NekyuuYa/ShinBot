@@ -358,12 +358,10 @@ class MediaInspectionRunner:
     def _build_component_ids(
         self,
         agent: dict[str, Any],
-        persona: dict[str, Any],
     ) -> list[str]:
         component_ids, unresolved_refs = build_runtime_component_ids(
             self._database,
             self._prompt_registry,
-            persona=persona,
             agent=agent,
         )
         for prompt_ref in unresolved_refs:
