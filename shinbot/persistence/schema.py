@@ -193,33 +193,6 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ON audit_logs(session_id)
     """,
     """
-    CREATE TABLE IF NOT EXISTS prompt_definitions (
-        uuid TEXT PRIMARY KEY,
-        prompt_id TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        source_type TEXT NOT NULL DEFAULT 'unknown_source',
-        source_id TEXT NOT NULL DEFAULT '',
-        owner_plugin_id TEXT NOT NULL DEFAULT '',
-        owner_module TEXT NOT NULL DEFAULT '',
-        module_path TEXT NOT NULL DEFAULT '',
-        stage TEXT NOT NULL,
-        type TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 100,
-        version TEXT NOT NULL DEFAULT '1.0.0',
-        description TEXT NOT NULL DEFAULT '',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        content TEXT NOT NULL DEFAULT '',
-        template_vars_json TEXT NOT NULL DEFAULT '[]',
-        resolver_ref TEXT NOT NULL DEFAULT '',
-        bundle_refs_json TEXT NOT NULL DEFAULT '[]',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        metadata_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
-    """
     CREATE TABLE IF NOT EXISTS bot_configs (
         uuid TEXT PRIMARY KEY,
         instance_id TEXT NOT NULL UNIQUE,
@@ -711,43 +684,8 @@ def _drop_legacy_personas_table(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS personas")
 
 
-def _drop_legacy_persona_prompt_definitions(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "prompt_definitions")
-    if "source_type" not in columns:
-        return
-    conn.execute("DELETE FROM prompt_definitions WHERE source_type = 'persona'")
-
-
-def _migrate_prompt_definitions_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "prompt_definitions")
-    if not columns:
-        return
-
-    column_defaults = {
-        "source_type": "TEXT NOT NULL DEFAULT 'unknown_source'",
-        "source_id": "TEXT NOT NULL DEFAULT ''",
-        "owner_plugin_id": "TEXT NOT NULL DEFAULT ''",
-        "owner_module": "TEXT NOT NULL DEFAULT ''",
-        "module_path": "TEXT NOT NULL DEFAULT ''",
-        "type": "TEXT NOT NULL DEFAULT 'static_text'",
-        "description": "TEXT NOT NULL DEFAULT ''",
-        "content": "TEXT NOT NULL DEFAULT ''",
-        "template_vars_json": "TEXT NOT NULL DEFAULT '[]'",
-        "resolver_ref": "TEXT NOT NULL DEFAULT ''",
-        "bundle_refs_json": "TEXT NOT NULL DEFAULT '[]'",
-        "config_json": "TEXT NOT NULL DEFAULT '{}'",
-        "tags_json": "TEXT NOT NULL DEFAULT '[]'",
-        "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
-    }
-    for column_name, column_spec in column_defaults.items():
-        if column_name in columns:
-            continue
-        conn.execute(
-            f"""
-            ALTER TABLE prompt_definitions
-            ADD COLUMN {column_name} {column_spec}
-            """
-        )
+def _drop_legacy_prompt_definitions_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS prompt_definitions")
 
 
 def _migrate_bot_configs_schema(conn: sqlite3.Connection) -> None:
@@ -938,8 +876,7 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _drop_legacy_agents_table(conn)
     _drop_legacy_context_strategies_table(conn)
     _drop_legacy_personas_table(conn)
-    _migrate_prompt_definitions_schema(conn)
-    _drop_legacy_persona_prompt_definitions(conn)
+    _drop_legacy_prompt_definitions_table(conn)
     _migrate_bot_configs_schema(conn)
     _migrate_model_execution_records_schema(conn)
     _migrate_ai_interactions_schema(conn)

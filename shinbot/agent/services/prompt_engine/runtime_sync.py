@@ -1,4 +1,4 @@
-"""Runtime syncing helpers for DB-backed prompt artifacts."""
+"""Runtime syncing helpers for file-backed prompt artifacts."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from shinbot.agent.services.prompt_engine.schema import (
 )
 
 if TYPE_CHECKING:
+    from shinbot.admin.prompt_definition_admin import PromptDefinitionFileRepository
     from shinbot.agent.services.prompt_engine import PromptRegistry
-    from shinbot.persistence.engine import DatabaseManager
 
 
 def build_runtime_component_ids(
-    database: DatabaseManager,
+    prompt_definitions: PromptDefinitionFileRepository,
     prompt_registry: PromptRegistry,
     *,
     agent: dict[str, object] | None,
@@ -30,15 +30,13 @@ def build_runtime_component_ids(
         normalized = str(prompt_ref).strip()
         if not normalized:
             continue
-        payload = database.prompt_definitions.get(normalized)
-        if payload is None:
-            payload = database.prompt_definitions.get_by_prompt_id(normalized)
-        if payload is not None:
-            component_ids.append(sync_prompt_definition_component(prompt_registry, payload))
-            continue
         component = prompt_registry.get_component(normalized)
         if component is not None:
             component_ids.append(component.id)
+            continue
+        payload = prompt_definitions.get_by_prompt_id(normalized)
+        if payload is not None:
+            component_ids.append(sync_prompt_definition_component(prompt_registry, payload))
             continue
         unresolved_refs.append(normalized)
 
@@ -55,12 +53,12 @@ def sync_prompt_definition_component(
     prompt_registry: PromptRegistry,
     payload: dict[str, object],
 ) -> str:
-    """Upsert one DB-backed prompt_definition into the registry."""
+    """Upsert one file-backed prompt definition into the registry."""
 
     metadata = dict(payload.get("metadata") or {})
     metadata.setdefault("display_name", str(payload.get("name", "")).strip())
     metadata.setdefault("description", str(payload.get("description", "")).strip())
-    for key in ("owner_plugin_id", "owner_module", "module_path"):
+    for key in ("source_type", "source_id", "owner_plugin_id", "owner_module", "module_path"):
         value = str(payload.get(key, "") or "").strip()
         if value:
             metadata.setdefault(key, value)
@@ -81,3 +79,15 @@ def sync_prompt_definition_component(
     )
     prompt_registry.upsert_component(component)
     return component.id
+
+
+def sync_prompt_definition_components(
+    prompt_registry: PromptRegistry,
+    prompt_definitions: PromptDefinitionFileRepository,
+) -> list[str]:
+    """Upsert all file-backed prompt definitions into the registry."""
+
+    return [
+        sync_prompt_definition_component(prompt_registry, payload)
+        for payload in prompt_definitions.list()
+    ]

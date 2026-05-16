@@ -20,7 +20,6 @@ from .repositories import (
     MessageMediaLinkRepository,
     ModelExecutionRepository,
     ModelRegistryRepository,
-    PromptDefinitionRepository,
     PromptSnapshotRepository,
     SessionMediaOccurrenceRepository,
     SessionRepository,
@@ -35,7 +34,6 @@ class DatabaseManager:
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
         self.instance_configs = InstanceConfigRepository(self)
-        self.prompt_definitions = PromptDefinitionRepository(self)
         self.model_registry = ModelRegistryRepository(self)
         self.model_executions = ModelExecutionRepository(self, model_registry=self.model_registry)
         self.message_logs = MessageLogRepository(self)

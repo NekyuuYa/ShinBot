@@ -6,7 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from shinbot.api.deps import AuthRequired, BotDep
+from shinbot.admin.prompt_definition_admin import PromptDefinitionFileRepository
+from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import ok
 
 router = APIRouter(
@@ -66,7 +67,7 @@ def _prompt_definition_dict(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_prompts(bot=BotDep):
+async def list_prompts(bot=BotDep, boot=BootDep):
     """List all registered prompt components for dashboard selection."""
     agent_runtime = getattr(bot, "agent_runtime", None)
     prompt_registry = getattr(agent_runtime, "prompt_registry", None)
@@ -79,10 +80,9 @@ async def list_prompts(bot=BotDep):
             }
         )
 
-    if bot.database is not None:
-        for payload in bot.database.prompt_definitions.list():
-            item = _prompt_definition_dict(payload)
-            items_by_id.setdefault(item["id"], item)
+    for payload in PromptDefinitionFileRepository.from_data_dir(boot.data_dir).list():
+        item = _prompt_definition_dict(payload)
+        items_by_id[item["id"]] = item
 
     items = sorted(
         items_by_id.values(),

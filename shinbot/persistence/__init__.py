@@ -14,7 +14,6 @@ from shinbot.persistence.records import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
-    PromptDefinitionRecord,
     PromptSnapshotRecord,
     SessionMediaOccurrenceRecord,
 )
@@ -35,7 +34,6 @@ __all__ = [
     "ModelProviderRecord",
     "ModelRouteMemberRecord",
     "ModelRouteRecord",
-    "PromptDefinitionRecord",
     "PromptSnapshotRecord",
     "SessionMediaOccurrenceRecord",
     "default_database_path",

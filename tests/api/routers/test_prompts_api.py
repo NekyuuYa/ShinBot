@@ -4,11 +4,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from shinbot.admin.prompt_definition_admin import (
+    PromptDefinitionFileRepository,
+    normalize_prompt_definition_input,
+)
 from shinbot.agent.runtime import install_agent_runtime
 from shinbot.agent.services.prompt_engine import PromptComponent, PromptComponentKind, PromptStage
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
-from shinbot.persistence.records import PromptDefinitionRecord, utc_now_iso
 
 
 class _BootStub:
@@ -92,26 +95,30 @@ def test_prompts_list_route_returns_registered_prompt_components(tmp_path: Path)
     }
 
 
-def test_prompts_list_route_includes_database_prompt_definitions(tmp_path: Path):
+def test_prompts_list_route_includes_file_prompt_definitions(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
-    now = utc_now_iso()
-    bot.database.prompt_definitions.upsert(
-        PromptDefinitionRecord(
-            uuid="prompt-db-1",
+    PromptDefinitionFileRepository.from_data_dir(tmp_path).create(
+        normalize_prompt_definition_input(
             prompt_id="prompt.user.custom",
             name="User Custom Prompt",
             stage="instructions",
             type="static_text",
             source_type="unknown_source",
             source_id="",
+            owner_plugin_id="",
+            owner_module="",
+            module_path="",
             priority=55,
             version="1.0.0",
-            description="Custom prompt from database",
+            description="Custom prompt from file",
             enabled=True,
             content="custom prompt text",
+            template_vars=[],
+            resolver_ref="",
+            bundle_refs=[],
+            config={},
+            tags=[],
             metadata={"display_name": "User Custom Prompt"},
-            created_at=now,
-            updated_at=now,
         )
     )
     app = create_api_app(bot, _BootStub(tmp_path))
@@ -127,7 +134,7 @@ def test_prompts_list_route_includes_database_prompt_definitions(tmp_path: Path)
     assert payload_by_id["prompt.user.custom"] == {
         "id": "prompt.user.custom",
         "displayName": "User Custom Prompt",
-        "description": "Custom prompt from database",
+        "description": "Custom prompt from file",
         "stage": "instructions",
         "type": "static_text",
         "version": "1.0.0",
@@ -142,5 +149,5 @@ def test_prompts_list_route_includes_database_prompt_definitions(tmp_path: Path)
         "ownerPluginId": "",
         "ownerModule": "",
         "modulePath": "",
-        "metadata": {"display_name": "User Custom Prompt"},
+        "metadata": {},
     }

@@ -15,6 +15,8 @@ REQUIRED_DATA_DIRS: tuple[str, ...] = (
     "audit",
     "agents",
     "personas",
+    "prompts",
+    "prompts/custom",
     "temp",
 )
 

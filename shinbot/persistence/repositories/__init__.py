@@ -1,9 +1,6 @@
 """Repository implementations grouped by persistence domain."""
 
-from .admin import (
-    InstanceConfigRepository,
-    PromptDefinitionRepository,
-)
+from .admin import InstanceConfigRepository
 from .ai import AIInteractionRepository, PromptSnapshotRepository
 from .base import ContextProvider, Repository
 from .media import (
@@ -27,7 +24,6 @@ __all__ = [
     "MessageMediaLinkRepository",
     "ModelExecutionRepository",
     "ModelRegistryRepository",
-    "PromptDefinitionRepository",
     "PromptSnapshotRepository",
     "Repository",
     "SessionMediaOccurrenceRepository",

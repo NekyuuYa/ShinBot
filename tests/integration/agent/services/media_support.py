@@ -8,6 +8,10 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from shinbot.admin.prompt_definition_admin import (
+    PromptDefinitionFileRepository,
+    normalize_prompt_definition_input,
+)
 from shinbot.agent.services.context.builders.message_parts import parse_message_parts
 from shinbot.agent.services.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
@@ -40,7 +44,6 @@ from shinbot.persistence import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
-    PromptDefinitionRecord,
 )
 from shinbot.persistence.records import utc_now_iso
 from shinbot.schema.elements import Message, MessageElement
@@ -242,22 +245,29 @@ def _seed_main_runtime(
 
 
 def _seed_custom_media_prompt(db: DatabaseManager, *, prompt_ref: str) -> None:
-    now = utc_now_iso()
-    prompt_uuid = "prompt-media-custom"
-    db.prompt_definitions.upsert(
-        PromptDefinitionRecord(
-            uuid=prompt_uuid,
+    data_dir = db.config.sqlite_path.parent.parent
+    PromptDefinitionFileRepository.from_data_dir(data_dir).create(
+        normalize_prompt_definition_input(
             prompt_id=prompt_ref,
             name="Custom Media Inspector",
             source_type="user_defined",
             source_id="tests",
+            owner_plugin_id="",
+            owner_module="",
+            module_path="",
             stage="system_base",
             type="static_text",
             priority=100,
+            version="1.0.0",
+            description="",
             enabled=True,
             content="You are a custom media inspector.",
-            created_at=now,
-            updated_at=now,
+            template_vars=[],
+            resolver_ref="",
+            bundle_refs=[],
+            config={},
+            tags=[],
+            metadata={},
         )
     )
 
@@ -348,7 +358,6 @@ __all__ = [
     "ModelRouteRecord",
     "Path",
     "PermissionEngine",
-    "PromptDefinitionRecord",
     "PromptRegistry",
     "RouteTable",
     "SessionManager",

@@ -28,7 +28,7 @@ def build_media_inspection_messages(
     resolved_prompt_ref: str,
     resolved_llm_ref: str,
     prompt_registry: Any,
-    database: Any,
+    prompt_definitions: Any,
     instance_id: str,
     session_id: str,
     raw_hash: str,
@@ -52,7 +52,7 @@ def build_media_inspection_messages(
         resolved_prompt_ref=resolved_prompt_ref,
         resolved_llm_ref=resolved_llm_ref,
         prompt_registry=prompt_registry,
-        database=database,
+        prompt_definitions=prompt_definitions,
         instance_id=instance_id,
         session_id=session_id,
         raw_hash=raw_hash,
@@ -66,7 +66,7 @@ def build_sticker_summary_messages(
     resolved_prompt_ref: str,
     resolved_llm_ref: str,
     prompt_registry: Any,
-    database: Any,
+    prompt_definitions: Any,
     instance_id: str,
     session_id: str,
     raw_hash: str,
@@ -90,7 +90,7 @@ def build_sticker_summary_messages(
         resolved_prompt_ref=resolved_prompt_ref,
         resolved_llm_ref=resolved_llm_ref,
         prompt_registry=prompt_registry,
-        database=database,
+        prompt_definitions=prompt_definitions,
         instance_id=instance_id,
         session_id=session_id,
         raw_hash=raw_hash,
@@ -108,7 +108,7 @@ def _build_media_prompt_messages(
     resolved_prompt_ref: str,
     resolved_llm_ref: str,
     prompt_registry: Any,
-    database: Any,
+    prompt_definitions: Any,
     instance_id: str,
     session_id: str,
     raw_hash: str,
@@ -117,7 +117,7 @@ def _build_media_prompt_messages(
 ) -> list[dict[str, Any]]:
     component_ids = _resolve_prompt_component_ids(
         prompt_registry=prompt_registry,
-        database=database,
+        prompt_definitions=prompt_definitions,
         prompt_refs=[resolved_prompt_ref],
         fallback_component_id=builtin_prompt_id,
     )
@@ -348,7 +348,7 @@ def _build_multimodal_user_messages(
 def _resolve_prompt_component_ids(
     *,
     prompt_registry: Any,
-    database: Any,
+    prompt_definitions: Any,
     prompt_refs: list[str],
     fallback_component_id: str,
 ) -> list[str]:
@@ -363,9 +363,7 @@ def _resolve_prompt_component_ids(
             component_ids.append(component.id)
             continue
 
-        payload = database.prompt_definitions.get(normalized)
-        if payload is None:
-            payload = database.prompt_definitions.get_by_prompt_id(normalized)
+        payload = prompt_definitions.get_by_prompt_id(normalized)
         if payload is None:
             continue
         component_ids.append(sync_prompt_definition_component(prompt_registry, payload))

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shinbot.admin.persona_files import PersonaFileRepository, persona_prompt_component
+from shinbot.admin.prompt_definition_admin import PromptDefinitionFileRepository
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
 from shinbot.agent.coordinators.active_chat import models as active_chat_coordinator_models
 from shinbot.agent.coordinators.active_chat.attention import ActiveChatAttention
@@ -60,6 +61,7 @@ from shinbot.agent.services.media import (
 )
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptRegistry, PromptStage
+from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_components
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
@@ -180,6 +182,10 @@ class AgentRuntimeProfile:
             self.prompt_registry,
             prompt_file_config=self.prompt_file_config,
         )
+        sync_prompt_definition_components(
+            self.prompt_registry,
+            self._owner.prompt_definitions,
+        )
 
     async def shutdown(self) -> None:
         """Shut down profile-owned background tasks."""
@@ -291,6 +297,7 @@ class AgentRuntime:
         self.database = database
         self.personas = PersonaFileRepository.from_data_dir(runtime_data_dir)
         self.personas.ensure_default_persona()
+        self.prompt_definitions = PromptDefinitionFileRepository.from_data_dir(runtime_data_dir)
         self.model_runtime = model_runtime
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
@@ -365,6 +372,7 @@ class AgentRuntime:
                 self.prompt_registry,
                 self.model_runtime,
                 self.media_service,
+                self.prompt_definitions,
             )
             if database is not None and self.media_service is not None
             else None
@@ -467,6 +475,7 @@ class AgentRuntime:
             registry,
             prompt_file_config=prompt_file_config,
         )
+        sync_prompt_definition_components(registry, self.prompt_definitions)
         return registry
 
     def reload_prompt_files(self) -> None:

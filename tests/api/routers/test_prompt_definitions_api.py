@@ -61,6 +61,7 @@ def test_prompt_definition_crud_roundtrip(tmp_path: Path):
         assert created["source"]["sourceId"] == "plugin.identity"
         assert created["tags"] == ["identity", "agent"]
         assert created["metadata"] == {}
+        assert (tmp_path / "prompts" / "custom" / "prompt.identity.extra.md").is_file()
 
         prompt_uuid = created["uuid"]
 
@@ -85,17 +86,23 @@ def test_prompt_definition_crud_roundtrip(tmp_path: Path):
         assert patch_resp.status_code == 200
         patched = patch_resp.json()["data"]
         assert patched["promptId"] == "prompt.instructions.chat"
+        assert patched["uuid"] == "prompt.instructions.chat"
         assert patched["source"]["sourceType"] == "builtin_system"
         assert patched["source"]["sourceId"] == "builtin.chat"
         assert patched["type"] == "template"
         assert patched["templateVars"] == ["task"]
+        assert not (tmp_path / "prompts" / "custom" / "prompt.identity.extra.md").exists()
+        assert (tmp_path / "prompts" / "custom" / "prompt.instructions.chat.md").is_file()
 
         list_resp = client.get("/api/v1/prompt-definitions", headers=headers)
         assert list_resp.status_code == 200
         assert len(list_resp.json()["data"]) == 1
-        assert list_resp.json()["data"][0]["uuid"] == prompt_uuid
+        assert list_resp.json()["data"][0]["uuid"] == "prompt.instructions.chat"
 
-        delete_resp = client.delete(f"/api/v1/prompt-definitions/{prompt_uuid}", headers=headers)
+        delete_resp = client.delete(
+            "/api/v1/prompt-definitions/prompt.instructions.chat",
+            headers=headers,
+        )
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"]["deleted"] is True
 

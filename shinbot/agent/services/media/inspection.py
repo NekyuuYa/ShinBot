@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Any
 
+from shinbot.admin.prompt_definition_admin import PromptDefinitionFileRepository
 from shinbot.agent.runtime.instance_config import parse_tagged_llm_ref
 from shinbot.agent.services.media.parsing import (
     MEDIA_INSPECTION_RESPONSE_FORMAT,
@@ -41,11 +42,16 @@ class MediaInspectionRunner:
         prompt_registry: PromptRegistry,
         model_runtime: ModelRuntime,
         media_service: MediaService,
+        prompt_definition_repository: PromptDefinitionFileRepository | None = None,
     ) -> None:
         self._database = database
         self._prompt_registry = prompt_registry
         self._model_runtime = model_runtime
         self._media_service = media_service
+        self._prompt_definitions = (
+            prompt_definition_repository
+            or PromptDefinitionFileRepository.from_data_dir(database.config.sqlite_path.parent.parent)
+        )
         self._inflight: dict[str, asyncio.Task[None]] = {}
 
     def schedule_items(
@@ -117,7 +123,7 @@ class MediaInspectionRunner:
                     resolved_prompt_ref=selected_prompt_ref,
                     resolved_llm_ref=resolved_llm_ref,
                     prompt_registry=self._prompt_registry,
-                    database=self._database,
+                    prompt_definitions=self._prompt_definitions,
                     instance_id=instance_id,
                     session_id=session_id,
                     raw_hash=raw_hash,
@@ -130,7 +136,7 @@ class MediaInspectionRunner:
                     resolved_prompt_ref=selected_prompt_ref,
                     resolved_llm_ref=resolved_llm_ref,
                     prompt_registry=self._prompt_registry,
-                    database=self._database,
+                    prompt_definitions=self._prompt_definitions,
                     instance_id=instance_id,
                     session_id=session_id,
                     raw_hash=raw_hash,
@@ -360,7 +366,7 @@ class MediaInspectionRunner:
         agent: dict[str, Any],
     ) -> list[str]:
         component_ids, unresolved_refs = build_runtime_component_ids(
-            self._database,
+            self._prompt_definitions,
             self._prompt_registry,
             agent=agent,
         )

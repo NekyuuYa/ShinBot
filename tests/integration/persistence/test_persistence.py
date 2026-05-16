@@ -18,7 +18,6 @@ from shinbot.persistence import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
-    PromptDefinitionRecord,
     PromptSnapshotRecord,
 )
 from shinbot.persistence.repositories.model_definitions import ModelDefinitionRepositoryMixin
@@ -70,6 +69,7 @@ class TestDatabaseManager:
         assert "agents" not in tables
         assert "context_strategies" not in tables
         assert "personas" not in tables
+        assert "prompt_definitions" not in tables
 
         conn = sqlite3.connect(sqlite_path)
         try:
@@ -251,39 +251,55 @@ class TestDatabaseManager:
 
         assert "personas" not in tables
 
-    def test_initialize_drops_legacy_persona_prompt_definitions(self, tmp_path):
+    def test_initialize_drops_legacy_prompt_definitions_table(self, tmp_path):
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE prompt_definitions (
+                    uuid TEXT PRIMARY KEY,
+                    prompt_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    content TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO prompt_definitions (
+                    uuid, prompt_id, name, stage, type, created_at, updated_at
+                ) VALUES (
+                    'prompt-1', 'prompt.identity.extra', 'Legacy Prompt',
+                    'identity', 'static_text', '2025-01-01', '2025-01-01'
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
-        db.prompt_definitions.upsert(
-            PromptDefinitionRecord(
-                uuid="prompt-persona-1",
-                prompt_id="persona.persona-1",
-                name="Legacy Persona Prompt",
-                source_type="persona",
-                source_id="persona-1",
-                stage="identity",
-                type="static_text",
-                content="Old persona text.",
-            )
-        )
-        db.prompt_definitions.upsert(
-            PromptDefinitionRecord(
-                uuid="prompt-custom-1",
-                prompt_id="prompt.identity.extra",
-                name="Custom Identity Prompt",
-                source_type="agent_plugin",
-                source_id="plugin.identity",
-                stage="identity",
-                type="static_text",
-                content="Keep this prompt.",
-            )
-        )
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
 
-        db.initialize()
-
-        assert db.prompt_definitions.get("prompt-persona-1") is None
-        assert db.prompt_definitions.get("prompt-custom-1") is not None
+        assert "prompt_definitions" not in tables
 
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -604,41 +620,6 @@ class TestDatabaseManager:
 
         searched = db.message_logs.search_context("s-1", "needle", limit=10)
         assert [item["raw_text"] for item in searched] == ["searchable needle"]
-
-    def test_prompt_definition_repository_roundtrip(self, tmp_path):
-        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
-        db.initialize()
-
-        db.prompt_definitions.upsert(
-            PromptDefinitionRecord(
-                uuid="prompt-1",
-                prompt_id="prompt.identity.extra",
-                name="Identity Extra",
-                source_type="agent_plugin",
-                source_id="plugin.identity",
-                owner_plugin_id="plugin.identity",
-                owner_module="shinbot.plugins.identity",
-                stage="identity",
-                type="static_text",
-                priority=20,
-                description="Additional identity prompt",
-                content="You are calm and concise.",
-                tags=["identity", "agent"],
-                metadata={"display_name": "Identity Extra"},
-            )
-        )
-
-        payload = db.prompt_definitions.get("prompt-1")
-        assert payload is not None
-        assert payload["prompt_id"] == "prompt.identity.extra"
-        assert payload["source_type"] == "agent_plugin"
-        assert payload["source_id"] == "plugin.identity"
-        assert payload["content"] == "You are calm and concise."
-        assert payload["tags"] == ["identity", "agent"]
-
-        items = db.prompt_definitions.list()
-        assert len(items) == 1
-        assert items[0]["uuid"] == "prompt-1"
 
     def test_instance_config_repository_roundtrip(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

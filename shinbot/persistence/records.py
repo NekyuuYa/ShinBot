@@ -98,33 +98,6 @@ class ModelExecutionRecord:
 
 
 @dataclass(slots=True)
-class PromptDefinitionRecord:
-    uuid: str
-    prompt_id: str
-    name: str
-    stage: str
-    type: str
-    source_type: str = "unknown_source"
-    source_id: str = ""
-    owner_plugin_id: str = ""
-    owner_module: str = ""
-    module_path: str = ""
-    priority: int = 100
-    version: str = "1.0.0"
-    description: str = ""
-    enabled: bool = True
-    content: str = ""
-    template_vars: list[str] = field(default_factory=list)
-    resolver_ref: str = ""
-    bundle_refs: list[str] = field(default_factory=list)
-    config: dict[str, Any] = field(default_factory=dict)
-    tags: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
 class InstanceConfigRecord:
     uuid: str
     instance_id: str
