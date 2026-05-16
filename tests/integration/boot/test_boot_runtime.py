@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,17 @@ def _write_config(path: Path, *, extra_config: str = "") -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _sqlite_tables(path: Path) -> set[str]:
+    conn = sqlite3.connect(path)
+    try:
+        return {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+    finally:
+        conn.close()
 
 
 def test_setup_instances_reads_normalized_adapter_instances(tmp_path: Path):
@@ -173,6 +186,50 @@ async def test_boot_does_not_mount_model_or_agent_without_agent_bots(tmp_path: P
         assert bot.model_runtime is None
         assert bot.agent_runtime is None
         assert (tmp_path / "data" / "agents").is_dir()
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_clean_boot_initializes_file_configs_without_config_tables(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    data_dir = tmp_path / "data"
+    _write_config(config_path)
+    boot = BootController(config_path=config_path, data_dir=data_dir)
+
+    try:
+        bot = await boot.boot()
+
+        assert boot.state == BootState.RUNNING
+        assert bot.database is not None
+        assert (data_dir / "models.json").is_file()
+        assert (data_dir / "instance-configs.json").is_file()
+        assert (data_dir / "personas" / "default.md").is_file()
+        assert (data_dir / "prompts" / "custom").is_dir()
+        assert json.loads((data_dir / "models.json").read_text(encoding="utf-8")) == {
+            "version": 1,
+            "providers": [],
+            "models": [],
+            "routes": [],
+        }
+        assert json.loads((data_dir / "instance-configs.json").read_text(encoding="utf-8")) == {
+            "version": 1,
+            "configs": [],
+        }
+
+        tables = _sqlite_tables(data_dir / "db" / "shinbot.sqlite3")
+        assert {
+            "model_providers",
+            "model_definitions",
+            "model_routes",
+            "model_route_members",
+            "bot_configs",
+            "agents",
+            "context_strategies",
+            "personas",
+            "prompt_definitions",
+        }.isdisjoint(tables)
+        assert {"sessions", "message_logs", "model_execution_records", "audit_logs"} <= tables
     finally:
         await boot.shutdown()
 
