@@ -126,17 +126,6 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_audit_logs_session_id
     ON audit_logs(session_id)
     """,
-    """
-    CREATE TABLE IF NOT EXISTS bot_configs (
-        uuid TEXT PRIMARY KEY,
-        instance_id TEXT NOT NULL UNIQUE,
-        main_llm TEXT NOT NULL DEFAULT '',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
     # ── Message logs & AI interactions ───────────────────────────────
     """
     CREATE TABLE IF NOT EXISTS message_logs (
@@ -514,25 +503,8 @@ def _drop_legacy_prompt_definitions_table(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS prompt_definitions")
 
 
-def _migrate_bot_configs_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "bot_configs")
-    if not columns:
-        return
-
-    column_defaults = {
-        "main_llm": "TEXT NOT NULL DEFAULT ''",
-        "config_json": "TEXT NOT NULL DEFAULT '{}'",
-        "tags_json": "TEXT NOT NULL DEFAULT '[]'",
-    }
-    for column_name, column_spec in column_defaults.items():
-        if column_name in columns:
-            continue
-        conn.execute(
-            f"""
-            ALTER TABLE bot_configs
-            ADD COLUMN {column_name} {column_spec}
-            """
-        )
+def _drop_legacy_bot_configs_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS bot_configs")
 
 
 def _migrate_model_execution_records_schema(conn: sqlite3.Connection) -> None:
@@ -665,7 +637,7 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _drop_legacy_context_strategies_table(conn)
     _drop_legacy_personas_table(conn)
     _drop_legacy_prompt_definitions_table(conn)
-    _migrate_bot_configs_schema(conn)
+    _drop_legacy_bot_configs_table(conn)
     _migrate_model_execution_records_schema(conn)
     _migrate_ai_interactions_schema(conn)
     _migrate_message_logs_schema(conn)

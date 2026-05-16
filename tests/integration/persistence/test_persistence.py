@@ -63,6 +63,7 @@ class TestDatabaseManager:
         assert "model_definitions" not in tables
         assert "model_routes" not in tables
         assert "model_route_members" not in tables
+        assert "bot_configs" not in tables
         assert "message_logs" in tables
         assert "ai_interactions" in tables
         assert "prompt_snapshots" in tables
@@ -71,6 +72,7 @@ class TestDatabaseManager:
         assert "personas" not in tables
         assert "prompt_definitions" not in tables
         assert (tmp_path / "models.json").is_file()
+        assert (tmp_path / "instance-configs.json").is_file()
 
         conn = sqlite3.connect(sqlite_path)
         try:
@@ -301,6 +303,56 @@ class TestDatabaseManager:
             conn.close()
 
         assert "prompt_definitions" not in tables
+
+    def test_initialize_drops_legacy_bot_configs_table(self, tmp_path):
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE bot_configs (
+                    uuid TEXT PRIMARY KEY,
+                    instance_id TEXT NOT NULL UNIQUE,
+                    main_llm TEXT NOT NULL DEFAULT '',
+                    config_json TEXT NOT NULL DEFAULT '{}',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO bot_configs (
+                    uuid, instance_id, main_llm, created_at, updated_at
+                ) VALUES (
+                    'instance-config-1', 'inst-1', 'openai-main/gpt-fast',
+                    '2025-01-01', '2025-01-01'
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        db.initialize()
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "bot_configs" not in tables
+        assert db.instance_configs.list() == []
 
     def test_model_execution_repository_persists_metrics(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -673,6 +725,7 @@ class TestDatabaseManager:
         assert payload["main_llm"] == "openai-main/gpt-fast"
         assert payload["config"]["reply_mode"] == "group"
         assert payload["tags"] == ["prod", "default"]
+        assert (tmp_path / "instance-configs.json").is_file()
 
         items = db.instance_configs.list()
         assert len(items) == 1

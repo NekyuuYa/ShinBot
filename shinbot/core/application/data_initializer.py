@@ -48,6 +48,7 @@ class DataInitializer:
             ensured_dirs.append(path)
         self.ensure_default_persona()
         self.ensure_model_registry_file()
+        self.ensure_instance_configs_file()
         return DataInitializationResult(
             ensured_dirs=tuple(ensured_dirs),
             cleaned_temp_entries=tuple(cleaned_temp_entries),
@@ -96,6 +97,13 @@ class DataInitializer:
         from shinbot.persistence.repositories.model_registry import ModelRegistryRepository
 
         return ModelRegistryRepository.from_data_dir(self.data_dir).ensure_file()
+
+    def ensure_instance_configs_file(self) -> Path:
+        """Create the editable instance configs file if it is missing."""
+
+        from shinbot.persistence.repositories.admin_instance_configs import InstanceConfigRepository
+
+        return InstanceConfigRepository.from_data_dir(self.data_dir).ensure_file()
 
 
 __all__ = [

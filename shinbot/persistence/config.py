@@ -24,6 +24,11 @@ def default_model_registry_path(data_dir: Path | str) -> Path:
     return Path(data_dir) / "models.json"
 
 
+def default_instance_configs_path(data_dir: Path | str) -> Path:
+    """Return the default instance configs file path under the runtime data directory."""
+    return Path(data_dir) / "instance-configs.json"
+
+
 def resolve_sqlite_path(url: str) -> Path:
     """Resolve a SQLite database URL into a filesystem path."""
     prefix = "sqlite:///"

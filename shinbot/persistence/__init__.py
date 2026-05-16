@@ -4,6 +4,7 @@ from shinbot.persistence.config import (
     DatabaseConfig,
     default_database_path,
     default_database_url,
+    default_instance_configs_path,
     default_model_registry_path,
 )
 from shinbot.persistence.engine import DatabaseManager
@@ -43,5 +44,6 @@ __all__ = [
     "SessionMediaOccurrenceRecord",
     "default_database_path",
     "default_database_url",
+    "default_instance_configs_path",
     "default_model_registry_path",
 ]
