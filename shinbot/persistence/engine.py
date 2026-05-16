@@ -34,7 +34,7 @@ class DatabaseManager:
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
         self.instance_configs = InstanceConfigRepository(self)
-        self.model_registry = ModelRegistryRepository(self)
+        self.model_registry = ModelRegistryRepository.from_data_dir(config.data_dir)
         self.model_executions = ModelExecutionRepository(self, model_registry=self.model_registry)
         self.message_logs = MessageLogRepository(self)
         self.ai_interactions = AIInteractionRepository(self)
@@ -85,3 +85,4 @@ class DatabaseManager:
         """Create the database file and ensure the known schema exists."""
         with self.connect() as conn:
             apply_schema(conn)
+        self.model_registry.ensure_file()

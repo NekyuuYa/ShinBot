@@ -1,6 +1,11 @@
 """Runtime persistence primitives for ShinBot."""
 
-from shinbot.persistence.config import DatabaseConfig, default_database_path, default_database_url
+from shinbot.persistence.config import (
+    DatabaseConfig,
+    default_database_path,
+    default_database_url,
+    default_model_registry_path,
+)
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import (
     AIInteractionRecord,
@@ -38,4 +43,5 @@ __all__ = [
     "SessionMediaOccurrenceRecord",
     "default_database_path",
     "default_database_url",
+    "default_model_registry_path",
 ]

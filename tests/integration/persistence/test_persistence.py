@@ -20,10 +20,7 @@ from shinbot.persistence import (
     ModelRouteRecord,
     PromptSnapshotRecord,
 )
-from shinbot.persistence.repositories.model_definitions import ModelDefinitionRepositoryMixin
-from shinbot.persistence.repositories.model_providers import ModelProviderRepositoryMixin
 from shinbot.persistence.repositories.model_registry import ModelRegistryRepository
-from shinbot.persistence.repositories.model_routes import ModelRouteRepositoryMixin
 from shinbot.persistence.repositories.model_usage_hourly import ModelUsageHourlyRepositoryMixin
 from shinbot.schema.events import UnifiedEvent
 from shinbot.schema.resources import Channel, User
@@ -62,7 +59,10 @@ class TestDatabaseManager:
         assert "audit_logs" in tables
         assert "model_execution_records" in tables
         assert "model_usage_hourly" in tables
-        assert "model_providers" in tables
+        assert "model_providers" not in tables
+        assert "model_definitions" not in tables
+        assert "model_routes" not in tables
+        assert "model_route_members" not in tables
         assert "message_logs" in tables
         assert "ai_interactions" in tables
         assert "prompt_snapshots" in tables
@@ -70,6 +70,7 @@ class TestDatabaseManager:
         assert "context_strategies" not in tables
         assert "personas" not in tables
         assert "prompt_definitions" not in tables
+        assert (tmp_path / "models.json").is_file()
 
         conn = sqlite3.connect(sqlite_path)
         try:
@@ -402,31 +403,29 @@ class TestDatabaseManager:
         assert usage_row["input_tokens"] == 17
         assert usage_row["output_tokens"] == 23
 
-    def test_model_repository_mixins_can_be_instantiated_directly(self, tmp_path):
+    def test_model_registry_repository_roundtrip_uses_single_file(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
-        providers = ModelProviderRepositoryMixin(db)
-        models = ModelDefinitionRepositoryMixin(db)
-        routes = ModelRouteRepositoryMixin(db)
-
-        providers.upsert_provider(
+        registry = db.model_registry
+        registry.upsert_provider(
             ModelProviderRecord(
                 id="openai-main",
                 type="openai",
                 display_name="OpenAI Main",
             )
         )
-        models.upsert_model(
+        registry.upsert_model(
             ModelDefinitionRecord(
                 id="openai-main/gpt-fast",
                 provider_id="openai-main",
                 litellm_model="gpt-4.1-mini",
                 display_name="GPT Fast",
                 capabilities=["chat"],
+                cost_metadata={"cacheReadPerMillionTokens": None},
             )
         )
-        routes.upsert_route(
+        registry.upsert_route(
             ModelRouteRecord(id="agent.default_chat", purpose="chat"),
             members=[
                 ModelRouteMemberRecord(
@@ -436,11 +435,15 @@ class TestDatabaseManager:
             ],
         )
 
-        assert providers.list_providers()[0]["id"] == "openai-main"
-        assert models.get_model("openai-main/gpt-fast")["capabilities"] == ["chat"]
-        assert routes.list_route_members("agent.default_chat")[0]["model_id"] == (
+        assert registry.list_providers()[0]["id"] == "openai-main"
+        assert registry.get_model("openai-main/gpt-fast")["capabilities"] == ["chat"]
+        assert registry.get_model("openai-main/gpt-fast")["cost_metadata"][
+            "cacheReadPerMillionTokens"
+        ] is None
+        assert registry.list_route_members("agent.default_chat")[0]["model_id"] == (
             "openai-main/gpt-fast"
         )
+        assert (tmp_path / "models.json").is_file()
 
     def test_model_usage_mixin_uses_explicit_registry_dependency(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -490,7 +493,7 @@ class TestDatabaseManager:
         assert analysis["models"][0]["model_display_name"] == "GPT Fast"
         assert analysis["models"][0]["estimated_cost"] > 0
 
-    def test_initialize_migrates_model_registry_to_provider_uuid(self, tmp_path):
+    def test_initialize_drops_legacy_model_registry_tables(self, tmp_path):
         sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -526,6 +529,22 @@ class TestDatabaseManager:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(provider_id) REFERENCES model_providers(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE model_routes (
+                    id TEXT PRIMARY KEY
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE model_route_members (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    route_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL
                 )
                 """
             )
@@ -570,6 +589,11 @@ class TestDatabaseManager:
                     "2025-01-01T00:00:00+00:00",
                 ),
             )
+            conn.execute("INSERT INTO model_routes (id) VALUES (?)", ("agent.default_chat",))
+            conn.execute(
+                "INSERT INTO model_route_members (route_id, model_id) VALUES (?, ?)",
+                ("agent.default_chat", "openai-main/gpt-fast"),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -577,14 +601,22 @@ class TestDatabaseManager:
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
         db.initialize()
 
-        providers = db.model_registry.list_providers()
-        models = db.model_registry.list_models(provider_id="openai-main")
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
 
-        assert len(providers) == 1
-        assert providers[0]["id"] == "openai-main"
-        assert providers[0]["provider_uuid"]
-        assert len(models) == 1
-        assert models[0]["provider_id"] == "openai-main"
+        assert "model_providers" not in tables
+        assert "model_definitions" not in tables
+        assert "model_routes" not in tables
+        assert "model_route_members" not in tables
+        assert db.model_registry.list_providers() == []
 
     def test_message_log_repository_supports_standard_context_queries(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

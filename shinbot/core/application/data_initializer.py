@@ -47,6 +47,7 @@ class DataInitializer:
             self.ensure_read_write(path)
             ensured_dirs.append(path)
         self.ensure_default_persona()
+        self.ensure_model_registry_file()
         return DataInitializationResult(
             ensured_dirs=tuple(ensured_dirs),
             cleaned_temp_entries=tuple(cleaned_temp_entries),
@@ -88,6 +89,13 @@ class DataInitializer:
         from shinbot.admin.persona_files import PersonaFileRepository
 
         return PersonaFileRepository.from_data_dir(self.data_dir).ensure_default_persona()
+
+    def ensure_model_registry_file(self) -> Path:
+        """Create the editable model registry file if it is missing."""
+
+        from shinbot.persistence.repositories.model_registry import ModelRegistryRepository
+
+        return ModelRegistryRepository.from_data_dir(self.data_dir).ensure_file()
 
 
 __all__ = [

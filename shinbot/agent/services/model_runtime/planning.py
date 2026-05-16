@@ -18,7 +18,7 @@ def resolve_runtime_targets(
     """Resolve a runtime call into one or more provider/model attempts."""
 
     if database is None:
-        raise ModelCallError("Database-backed model registry is not initialized")
+        raise ModelCallError("Model registry is not initialized")
 
     registry = database.model_registry
     if call.model_id:
