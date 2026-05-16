@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from shinbot.agent.services.model_runtime.extraction import sanitize_messages_for_audit
 from shinbot.persistence.records import PromptSnapshotRecord
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ def persist_prompt_snapshot(
             model_id=snapshot.model_id,
             prompt_signature=snapshot.prompt_signature,
             cache_key=snapshot.cache_key,
-            messages=snapshot.full_messages,
+            messages=sanitize_messages_for_audit(snapshot.full_messages),
             tools=[],
             compatibility_used=snapshot.compatibility_used,
             created_at=snapshot.timestamp,

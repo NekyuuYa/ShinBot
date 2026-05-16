@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
+
 import pytest
 
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
@@ -270,6 +274,58 @@ async def test_generate_merges_provider_model_and_call_params(monkeypatch, tmp_p
     assert records[0]["cache_read_tokens"] == 3
     assert records[0]["cache_write_tokens"] == 4
     assert records[0]["metadata"]["trace_id"] == "trace-1"
+
+
+@pytest.mark.asyncio
+async def test_generate_persists_sanitized_image_context(monkeypatch, tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db)
+    captured: dict[str, object] = {}
+    raw = b"image bytes that should not be stored in ai_interactions"
+    encoded = base64.b64encode(raw).decode("ascii")
+    digest = hashlib.sha256(raw).hexdigest()
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {
+            "model": kwargs["model"],
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+        }
+
+    monkeypatch.setattr("shinbot.agent.services.model_runtime.litellm_adapter.completion", fake_completion)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="media.inspection_runner",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this image"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                        },
+                    ],
+                }
+            ],
+        )
+    )
+
+    sent_content = captured["messages"][0]["content"]
+    assert sent_content[1]["image_url"]["url"] == f"data:image/png;base64,{encoded}"
+
+    interaction = db.ai_interactions.get_by_execution(result.execution_id)
+    assert interaction is not None
+    assert encoded not in interaction["injected_context_json"]
+    persisted_content = json.loads(interaction["injected_context_json"])
+    assert persisted_content[1]["image_url"]["url"] == f"media:sha256:{digest}"
+    assert persisted_content[1]["image_url"]["raw_hash"] == digest
+    assert persisted_content[1]["image_url"]["redacted"] is True
 
 
 @pytest.mark.asyncio

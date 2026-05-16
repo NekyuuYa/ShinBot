@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any
+
+DATA_URL_PREFIX = "data:"
+MEDIA_SHA256_REF_PREFIX = "media:sha256:"
 
 
 def provider_type_for_litellm(provider_type: str) -> str | None:
@@ -218,7 +224,14 @@ def extract_tool_calls_list(response: Any) -> list[dict[str, Any]]:
 
 
 def extract_injected_context(messages: list[dict[str, Any]]) -> str:
-    """Return the content array of the last user message as a JSON string."""
+    """Return a durable audit summary for the last user message content.
+
+    Model calls may legitimately include ``data:image/...;base64,...`` blocks.
+    Those payloads are required at provider-call time, but must not be copied
+    into long-lived audit rows.  For persisted interaction records, data URLs
+    are replaced with a stable media hash reference and lightweight size/type
+    metadata.
+    """
 
     for msg in reversed(messages):
         if isinstance(msg, dict) and msg.get("role") == "user":
@@ -227,5 +240,119 @@ def extract_injected_context(messages: list[dict[str, Any]]) -> str:
                 content = []
             elif isinstance(content, str):
                 content = [{"type": "text", "text": content}]
-            return json.dumps(content, ensure_ascii=False)
+            return json.dumps(_sanitize_content_blocks(content), ensure_ascii=False)
     return "[]"
+
+
+def sanitize_messages_for_audit(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return messages with inline data URLs replaced by durable references."""
+
+    sanitized_messages: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        sanitized = dict(message)
+        content = sanitized.get("content")
+        if isinstance(content, list):
+            sanitized["content"] = _sanitize_content_blocks(content)
+        sanitized_messages.append(sanitized)
+    return sanitized_messages
+
+
+def _sanitize_content_blocks(content: Any) -> list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return []
+
+    sanitized: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "image_url":
+            sanitized.append(_sanitize_image_url_block(block))
+            continue
+        sanitized.append(dict(block))
+    return sanitized
+
+
+def _sanitize_image_url_block(block: dict[str, Any]) -> dict[str, Any]:
+    image_url = block.get("image_url")
+    if not isinstance(image_url, dict):
+        return dict(block)
+
+    url = str(image_url.get("url") or "")
+    if not url.startswith(DATA_URL_PREFIX):
+        return dict(block)
+
+    reference = _data_url_reference(url)
+    sanitized = {key: value for key, value in block.items() if key != "image_url"}
+    sanitized["type"] = "image_url"
+    sanitized_image_url: dict[str, Any] = {
+        key: value for key, value in image_url.items() if key != "url"
+    }
+    sanitized_image_url.update(reference)
+    sanitized["image_url"] = sanitized_image_url
+    return sanitized
+
+
+def _data_url_reference(url: str) -> dict[str, Any]:
+    header, separator, payload = url.partition(",")
+    media_type = header[len(DATA_URL_PREFIX) :].split(";", 1)[0] or "application/octet-stream"
+    encoded_chars = len(payload)
+    if not separator:
+        return {
+            "url": "data-url:redacted",
+            "source": "data_url",
+            "mime_type": media_type,
+            "encoded_chars": 0,
+            "byte_size": 0,
+            "redacted": True,
+            "decode_error": "missing_payload",
+        }
+
+    if ";base64" not in header.lower():
+        raw = payload.encode("utf-8", errors="replace")
+        digest = hashlib.sha256(raw).hexdigest()
+        return {
+            "url": f"{MEDIA_SHA256_REF_PREFIX}{digest}",
+            "source": "data_url",
+            "mime_type": media_type,
+            "raw_hash": digest,
+            "byte_size": len(raw),
+            "encoded_chars": encoded_chars,
+            "redacted": True,
+            "encoding": "plain",
+        }
+
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        return {
+            "url": "data-url:redacted",
+            "source": "data_url",
+            "mime_type": media_type,
+            "encoded_chars": encoded_chars,
+            "byte_size": _estimate_base64_size(payload),
+            "redacted": True,
+            "encoding": "base64",
+            "decode_error": "invalid_base64",
+        }
+
+    digest = hashlib.sha256(raw).hexdigest()
+    return {
+        "url": f"{MEDIA_SHA256_REF_PREFIX}{digest}",
+        "source": "data_url",
+        "mime_type": media_type,
+        "raw_hash": digest,
+        "byte_size": len(raw),
+        "encoded_chars": encoded_chars,
+        "redacted": True,
+        "encoding": "base64",
+    }
+
+
+def _estimate_base64_size(payload: str) -> int:
+    compact = "".join(payload.split())
+    if not compact:
+        return 0
+    padding = len(compact) - len(compact.rstrip("="))
+    return max(0, (len(compact) * 3) // 4 - padding)
