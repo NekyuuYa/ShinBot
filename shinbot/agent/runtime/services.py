@@ -99,6 +99,7 @@ class AgentRuntimeProfile:
         self._owner = owner
         self.profile_id = profile_id
         self.config = config
+        self._base_active_chat_attention_config = replace(config.active_chat_attention_config)
         self.prompt_file_config = config.prompt_file_config or PromptFileLoadConfig.from_data_dir(
             owner.runtime_data_dir
         )
@@ -201,6 +202,25 @@ class AgentRuntimeProfile:
             attention=ActiveChatAttention(self.config.active_chat_attention_config),
             conversation_message_limit=self.config.active_chat_conversation_message_limit,
             interest_effect_config=self.config.active_chat_interest_effect_config,
+        )
+
+    def set_active_chat_threshold_delta(self, delta: float, *, source: str = "") -> None:
+        """Apply a runtime-only active chat threshold delta for this profile."""
+
+        target_threshold = max(0.0, self._base_active_chat_attention_config.base_threshold + delta)
+        next_config = replace(
+            self._base_active_chat_attention_config,
+            base_threshold=target_threshold,
+        )
+        self.config = replace(self.config, active_chat_attention_config=next_config)
+        self.active_chat_workflow.update_attention_config(next_config)
+        logger.debug(
+            "Agent active chat threshold updated profile=%s source=%s base=%.3f delta=%.3f target=%.3f",
+            self.profile_id,
+            source,
+            self._base_active_chat_attention_config.base_threshold,
+            delta,
+            target_threshold,
         )
 
     def _create_agent_scheduler(self, workflow_dispatcher) -> AgentScheduler:
@@ -444,6 +464,12 @@ class AgentRuntime:
         """Return the profile selected for a bot id, falling back to default."""
 
         return self._profiles_by_bot_id.get(str(bot_id or "").strip(), self._default_profile)
+
+    def set_active_chat_threshold_delta(self, delta: float, *, source: str = "") -> None:
+        """Apply a runtime-only base threshold delta to all Agent profiles."""
+
+        for profile in self._unique_profiles():
+            profile.set_active_chat_threshold_delta(delta, source=source)
 
     def _create_prompt_registry(
         self,

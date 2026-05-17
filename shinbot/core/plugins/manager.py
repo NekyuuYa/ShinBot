@@ -81,6 +81,7 @@ class PluginManager:
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
+        agent_runtime: Any | None = None,
         database: Any | None = None,
         config_provider_registry: ConfigProviderRegistry | None = None,
     ):
@@ -92,6 +93,7 @@ class PluginManager:
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
+        self._agent_runtime = agent_runtime
         self._database = database
         self.config_provider_registry = config_provider_registry or ConfigProviderRegistry()
         self._plugins: dict[str, PluginMeta] = {}
@@ -108,10 +110,15 @@ class PluginManager:
         *,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
+        agent_runtime: Any | None = None,
     ) -> None:
         """Attach optional runtime capabilities for subsequently built Plugin objects."""
-        self._tool_registry = tool_registry
-        self._model_runtime = model_runtime
+        if tool_registry is not None:
+            self._tool_registry = tool_registry
+        if model_runtime is not None:
+            self._model_runtime = model_runtime
+        if agent_runtime is not None:
+            self._agent_runtime = agent_runtime
 
     def _build_plg(self, plugin_id: str) -> Plugin:
         return Plugin(
@@ -125,6 +132,7 @@ class PluginManager:
             adapter_manager=self._adapter_manager,
             tool_registry=self._tool_registry,
             model_runtime=self._model_runtime,
+            agent_runtime=self._agent_runtime,
             database=self._database,
         )
 

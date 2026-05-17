@@ -191,6 +191,7 @@ class ShinBot:
         self.plugin_manager.attach_runtime_services(
             tool_registry=self.tool_registry,
             model_runtime=self.model_runtime,
+            agent_runtime=self.agent_runtime,
         )
         ingress_handler = getattr(runtime, "handle_ingress_message", None)
         if ingress_handler is not None:

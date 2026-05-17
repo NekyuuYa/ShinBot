@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from inspect import isawaitable
 from typing import Any
 
@@ -111,6 +112,10 @@ class ActiveChatCoordinator:
     def attention_config(self) -> ActiveChatAttentionConfig:
         """Return the active chat attention config."""
         return self._attention.config
+
+    def update_attention_config(self, config: ActiveChatAttentionConfig) -> None:
+        """Replace tunable active chat attention parameters at runtime."""
+        self._attention.config = replace(config)
 
     async def notify_message(
         self,
