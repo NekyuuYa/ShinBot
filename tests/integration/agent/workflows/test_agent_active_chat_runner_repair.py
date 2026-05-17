@@ -17,6 +17,8 @@ from active_chat_runner_support import (
     FakeToolManager,
     MessageFormatterService,
     PromptRegistry,
+    ToolCallRequest,
+    ToolCallResult,
     json,
     make_batch,
     make_result,
@@ -58,6 +60,70 @@ async def test_active_chat_fast_runner_repairs_toolless_output_once() -> None:
     assert len(model_runtime.calls) == 2
     assert model_runtime.calls[1].metadata["repair_attempt"] == 1
     assert model_runtime.calls[1].messages[-1]["role"] == "system"
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_repairs_failed_terminal_tool_once() -> None:
+    class FailingThenSuccessfulToolManager(FakeToolManager):
+        async def execute(self, call: ToolCallRequest) -> ToolCallResult:
+            self.calls.append(call)
+            if len(self.calls) == 1:
+                return ToolCallResult(
+                    tool_name=call.tool_name,
+                    success=False,
+                    error_code="invalid_quote",
+                    error_message="quote_message_log_id was not found",
+                )
+            return ToolCallResult(
+                tool_name=call.tool_name,
+                success=True,
+                output={
+                    "action": "send_reply",
+                    "sent": True,
+                    "message_log_id": 9002,
+                },
+            )
+
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call(
+                        "send_reply",
+                        {"text": "hello", "quote_message_log_id": "missing"},
+                    )
+                ]
+            ),
+            make_result(tool_calls=[make_tool_call("send_reply", {"text": "hello"})]),
+        ]
+    )
+    tool_manager = FailingThenSuccessfulToolManager()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=tool_manager,
+        message_store=FakeMessageStore(),
+    )
+
+    result = await runner.run(make_batch())
+
+    assert result.success is True
+    assert result.action == ActiveChatActionKind.SEND_REPLY
+    assert len(model_runtime.calls) == 2
+    assert model_runtime.calls[1].metadata["repair_attempt"] == 1
+    repair_messages = model_runtime.calls[1].messages
+    assert repair_messages[-3]["role"] == "assistant"
+    assert repair_messages[-2]["role"] == "tool"
+    assert "quote_message_log_id was not found" in repair_messages[-2]["content"]
+    assert repair_messages[-1]["role"] == "system"
+    assert len(tool_manager.calls) == 2
+    assert tool_manager.calls[0].arguments["quote_message_log_id"] == "missing"
+    assert "quote_message_log_id" not in tool_manager.calls[1].arguments
+    assert len(result.conversation_messages_delta) == 4
+    assert result.conversation_messages_delta[1]["role"] == "tool"
+    assert result.conversation_messages_delta[3]["role"] == "tool"
 
 
 @pytest.mark.asyncio

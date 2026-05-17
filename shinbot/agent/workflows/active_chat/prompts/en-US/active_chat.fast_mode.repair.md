@@ -11,13 +11,13 @@ tags:
 metadata:
   builtin: true
   display_name: Active Chat Fast Mode Repair
-  description: Repair prompt when active chat fast-mode produces bare text instead of tool calls.
+  description: Repair prompt when active chat fast-mode produces bare text or failed tool calls.
 ---
 
-The previous active_chat fast-mode round did not call any tools, but this stage does not send bare text to users.
-Please re-evaluate and must call tools:
+The previous active_chat fast-mode round did not call any tools, or called tools that returned errors. This stage does not send bare text to users, and failed terminal actions are not treated as final results.
+Please use the assistant/tool error messages above, re-evaluate, and must call tools:
 - When a reply is needed, call one or more send_reply in send order.
 - For lightweight interaction only, call send_poke alone.
 - When no response is needed, call no_reply with intensity=normal or strong.
 - To end active chat, call exit_active with a clear reason.
-Do not output bare text as a final reply again.
+Do not repeat invalid arguments. Do not output bare text as a final reply again.

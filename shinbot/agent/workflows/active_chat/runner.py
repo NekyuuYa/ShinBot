@@ -50,7 +50,10 @@ from shinbot.agent.workflows.active_chat.models import (
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE,
 )
-from shinbot.agent.workflows.active_chat.tool_loop import ActiveChatToolLoop
+from shinbot.agent.workflows.active_chat.tool_loop import (
+    ActiveChatToolLoop,
+    ActiveChatToolLoopResult,
+)
 from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
 
 logger = logging.getLogger(__name__)
@@ -142,14 +145,47 @@ class ActiveChatFastRunner:
                 reason="active_chat_model_call_failed",
             )
         if result.tool_calls:
+            tool_loop_result = await self._execute_tool_loop(batch, result)
+            if _should_repair_tool_loop_result(tool_loop_result):
+                repair_batch, repaired = await self._repair_failed_tool_round(
+                    batch,
+                    messages=messages,
+                    tools=tools,
+                    metadata=metadata,
+                    first_result=result,
+                    tool_loop_result=tool_loop_result,
+                )
+                if repaired is None:
+                    return ActiveChatRoundResult(
+                        success=False,
+                        action=ActiveChatActionKind.RETRY_FAILED,
+                        reason="active_chat_tool_failure_repair_failed",
+                        restored_messages=list(repair_batch.messages),
+                    )
+                if repaired.tool_calls:
+                    repaired_tool_loop = await self._execute_tool_loop(repair_batch, repaired)
+                    return _round_result_from_tool_loop(
+                        repaired_tool_loop,
+                        message_log_ids=repair_batch.message_log_ids,
+                        assistant_text=str(repaired.text or ""),
+                        tool_calls=repaired.tool_calls,
+                        conversation_prefix=_tool_loop_conversation_delta(
+                            result,
+                            tool_loop_result,
+                        ),
+                    )
+                return ActiveChatRoundResult(
+                    success=True,
+                    action=ActiveChatActionKind.RETRY_FAILED,
+                    reason="active_chat_tool_failure_after_repair",
+                    consumed_message_log_ids=repair_batch.message_log_ids,
+                    conversation_messages_delta=_tool_loop_conversation_delta(
+                        result,
+                        tool_loop_result,
+                    ),
+                )
             return _round_result_from_tool_loop(
-                await self._tool_loop.execute(
-                    result.tool_calls,
-                    tool_manager=self._tool_manager,
-                    instance_id=instance_id_from_session(batch.session_id),
-                    session_id=batch.session_id,
-                    run_id=str(result.execution_id or ""),
-                ),
+                tool_loop_result,
                 message_log_ids=batch.message_log_ids,
                 assistant_text=str(result.text or ""),
                 tool_calls=result.tool_calls,
@@ -177,13 +213,7 @@ class ActiveChatFastRunner:
                 consumed_message_log_ids=repair_batch.message_log_ids,
             )
         return _round_result_from_tool_loop(
-            await self._tool_loop.execute(
-                repaired.tool_calls,
-                tool_manager=self._tool_manager,
-                instance_id=instance_id_from_session(batch.session_id),
-                session_id=batch.session_id,
-                run_id=str(repaired.execution_id or ""),
-            ),
+            await self._execute_tool_loop(repair_batch, repaired),
             message_log_ids=repair_batch.message_log_ids,
             assistant_text=str(repaired.text or ""),
             tool_calls=repaired.tool_calls,
@@ -558,6 +588,19 @@ class ActiveChatFastRunner:
             logger.exception("Active chat fast-mode model call failed for %s", batch.session_id)
             return None
 
+    async def _execute_tool_loop(
+        self,
+        batch: ActiveChatBatch,
+        result: Any,
+    ) -> ActiveChatToolLoopResult:
+        return await self._tool_loop.execute(
+            result.tool_calls,
+            tool_manager=self._tool_manager,
+            instance_id=instance_id_from_session(batch.session_id),
+            session_id=batch.session_id,
+            run_id=str(result.execution_id or ""),
+        )
+
     def _resolve_instance_config(self, instance_id: str) -> Any | None:
         resolver = self._config.instance_config_resolver
         if resolver is None or not instance_id:
@@ -593,6 +636,55 @@ class ActiveChatFastRunner:
             repair_messages.append(
                 {"role": "assistant", "content": str(first_result.text or "").strip()}
             )
+        repair_component = self._prompt_registry.get_component(
+            self._special_prompt_id("repair", "active_chat.fast_mode.repair")
+        )
+        repair_text = repair_component.content if repair_component else ""
+        if not repair_text.strip():
+            return repair_batch, None
+        repair_messages.append(
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": repair_text}],
+            }
+        )
+        return repair_batch, await self._generate(
+            repair_batch,
+            messages=repair_messages,
+            tools=tools,
+            metadata=metadata,
+            repair_attempt=1,
+        )
+
+    async def _repair_failed_tool_round(
+        self,
+        batch: ActiveChatBatch,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        metadata: dict[str, Any],
+        first_result: Any,
+        tool_loop_result: ActiveChatToolLoopResult,
+    ) -> tuple[ActiveChatBatch, Any | None]:
+        repair_batch = await self._batch_for_repair(batch)
+        if repair_batch.message_log_ids != batch.message_log_ids:
+            try:
+                repair_messages, metadata = self._build_model_call_parts(repair_batch)
+            except Exception:
+                logger.exception(
+                    "Active chat tool-failure repair prompt rebuild failed for session %s",
+                    batch.session_id,
+                )
+                return repair_batch, None
+        else:
+            repair_messages = list(messages)
+
+        repair_messages.extend(
+            _tool_loop_conversation_delta(
+                first_result,
+                tool_loop_result,
+            )
+        )
         repair_component = self._prompt_registry.get_component(
             self._special_prompt_id("repair", "active_chat.fast_mode.repair")
         )
@@ -770,11 +862,13 @@ def _round_result_from_tool_loop(
     message_log_ids: list[int],
     assistant_text: str,
     tool_calls: list[dict[str, Any]],
+    conversation_prefix: list[dict[str, Any]] | None = None,
 ) -> ActiveChatRoundResult:
     return replace(
         tool_loop_result.round_result,
         consumed_message_log_ids=list(message_log_ids),
         conversation_messages_delta=[
+            *(conversation_prefix or []),
             _assistant_tool_call_message(
                 assistant_text=assistant_text,
                 tool_calls=tool_calls,
@@ -795,6 +889,26 @@ def _assistant_tool_call_message(
         "tool_calls": list(tool_calls),
     }
     return message
+
+
+def _tool_loop_conversation_delta(
+    result: Any,
+    tool_loop_result: ActiveChatToolLoopResult,
+) -> list[dict[str, Any]]:
+    return [
+        _assistant_tool_call_message(
+            assistant_text=str(result.text or ""),
+            tool_calls=list(result.tool_calls or []),
+        ),
+        *tool_loop_result.tool_messages,
+    ]
+
+
+def _should_repair_tool_loop_result(tool_loop_result: ActiveChatToolLoopResult) -> bool:
+    return (
+        tool_loop_result.round_result.action == ActiveChatActionKind.RETRY_FAILED
+        and bool(tool_loop_result.tool_messages)
+    )
 
 
 __all__ = [
