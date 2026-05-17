@@ -116,6 +116,7 @@ def build_litellm_kwargs(
     kwargs.update(provider.get("default_params") or {})
     kwargs.update(model.get("default_params") or {})
     kwargs.update(call.params)
+    _normalize_openai_compatible_params(kwargs)
     _drop_empty_runtime_params(kwargs)
     kwargs["model"] = model["litellm_model"]
 
@@ -127,14 +128,45 @@ def build_litellm_kwargs(
             call.messages,
             custom_llm_provider=custom_llm_provider,
         )
+        allowed_openai_params = _normalize_allowed_openai_params(kwargs)
         if call.tools:
             kwargs["tools"] = call.tools
+            _allow_openai_param(allowed_openai_params, "tools")
+            _allow_openai_param(allowed_openai_params, "tool_choice")
         if call.response_format is not None:
             kwargs["response_format"] = call.response_format
+            _allow_openai_param(allowed_openai_params, "response_format")
+        if allowed_openai_params:
+            kwargs["allowed_openai_params"] = allowed_openai_params
     elif mode in ("embedding", "speech"):
         kwargs["input"] = call.input_data if call.input_data is not None else ""
 
     return kwargs
+
+
+def _normalize_openai_compatible_params(kwargs: dict[str, Any]) -> None:
+    """Translate admin-facing OpenAI-compatible params into LiteLLM kwargs."""
+
+    request_headers = kwargs.pop("requestHeaders", None)
+    if isinstance(request_headers, dict):
+        extra_headers = kwargs.get("extra_headers")
+        if not isinstance(extra_headers, dict):
+            extra_headers = {}
+        kwargs["extra_headers"] = {**extra_headers, **request_headers}
+
+
+def _normalize_allowed_openai_params(kwargs: dict[str, Any]) -> list[str]:
+    value = kwargs.get("allowed_openai_params", [])
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, tuple):
+        return [str(item) for item in value]
+    return []
+
+
+def _allow_openai_param(params: list[str], value: str) -> None:
+    if value not in params:
+        params.append(value)
 
 
 def _drop_empty_runtime_params(kwargs: dict[str, Any]) -> None:

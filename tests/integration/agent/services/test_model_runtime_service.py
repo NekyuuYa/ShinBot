@@ -221,6 +221,67 @@ def test_build_litellm_kwargs_preserves_dashscope_cached_system_blocks():
     assert kwargs["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_build_litellm_kwargs_maps_request_headers_to_extra_headers():
+    kwargs = build_litellm_kwargs(
+        provider={
+            "type": "custom_openai",
+            "base_url": "https://example.test/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {
+                "requestHeaders": {"X-Provider": "provider"},
+                "extra_headers": {"X-Existing": "yes"},
+            },
+        },
+        model={
+            "litellm_model": "openai/custom",
+            "default_params": {"requestHeaders": {"X-Model": "model"}},
+        },
+        call=ModelRuntimeCall(
+            model_id="custom/model",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "Hello"}],
+            params={"requestHeaders": {"X-Call": "call"}},
+        ),
+        timeout_override=None,
+    )
+
+    assert "requestHeaders" not in kwargs
+    assert kwargs["extra_headers"] == {
+        "X-Existing": "yes",
+        "X-Call": "call",
+    }
+
+
+def test_build_litellm_kwargs_allows_tools_and_response_format_for_strict_litellm():
+    kwargs = build_litellm_kwargs(
+        provider={
+            "type": "xiaomi_mimo",
+            "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {"allowed_openai_params": ("temperature",)},
+        },
+        model={
+            "litellm_model": "xiaomi_mimo/mimo-v2.5",
+            "default_params": {},
+        },
+        call=ModelRuntimeCall(
+            model_id="mimo/mimo-v2.5",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "Hello"}],
+            tools=[{"type": "function", "function": {"name": "send_reply"}}],
+            response_format={"type": "json_object"},
+        ),
+        timeout_override=None,
+    )
+
+    assert kwargs["allowed_openai_params"] == [
+        "temperature",
+        "tools",
+        "tool_choice",
+        "response_format",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_generate_merges_provider_model_and_call_params(monkeypatch, tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
