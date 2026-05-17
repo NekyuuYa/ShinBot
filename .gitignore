@@ -36,4 +36,3 @@ config.toml
 
 # test
 .test/
-shinbot/utils/astrbot_import.py
