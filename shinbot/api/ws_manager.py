@@ -9,9 +9,14 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
-from shinbot.utils.logger import display_log_level, shorten_logger_name
+from shinbot.utils.logger import (
+    display_log_level,
+    get_logger,
+    log_record_source,
+    should_emit_log_record,
+)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="api.ws", color="bright_blue")
 
 
 class ConnectionManager:
@@ -58,14 +63,8 @@ class _AsyncLogHandler(logging.Handler):
         self.formatter = logging.Formatter("%(message)s")
 
     def emit(self, record: logging.LogRecord) -> None:
-        # Keep downgraded transport noise visible in the dashboard, but still
-        # avoid forwarding raw low-level transport debug chatter.
-        if record.name.startswith(("uvicorn", "websockets")):
-            if record.levelno < logging.INFO and not record.__dict__.get(
-                "_shinbot_downgraded", False
-            ):
-                return
-
+        if not should_emit_log_record(record):
+            return
         try:
             msg = self.format(record).strip()
             payload = {
@@ -73,7 +72,7 @@ class _AsyncLogHandler(logging.Handler):
                 "timestamp": int(record.created * 1000),
                 "level": display_log_level(record),
                 "logger": record.name,
-                "source": shorten_logger_name(record.name),
+                "source": log_record_source(record),
                 "message": msg,
             }
             try:

@@ -10,19 +10,44 @@
   "windowOption": "{days} 天",
   "summary": {
     "totalCost": "总成本",
+    "totalCalls": "总调用",
     "totalTokens": "总 Tokens",
     "successRate": "成功率",
     "cacheHitRate": "缓存命中率",
     "avgLatency": "平均延迟",
+    "costPerCall": "平均 {value}/次",
+    "successFailed": "成功率 {rate} / 失败 {failed}",
+    "tokensPerCall": "平均 {value}/次",
+    "cacheReadWrite": "读 {read} / 写 {write}",
     "callsSuffix": "次调用",
     "failedCalls": "{count} 次失败",
     "ttft": "首 token {value}"
   },
   "sections": {
+    "overview": {
+      "kicker": "总览",
+      "title": "成本运行概览",
+      "subtitle": "先看预算消耗、调用质量、缓存和延迟，再下钻到模型与供应商分布。"
+    },
     "timeline": {
       "kicker": "趋势",
-      "title": "成本与负载走势",
-      "subtitle": "上半部分看近几日成本波动，下半部分看最近 24 小时的用量密度。"
+      "title": "分日成本走势",
+      "subtitle": "按当前窗口聚合每日成本，快速定位成本峰值和调用波动。"
+    },
+    "leaderboard": {
+      "kicker": "排行",
+      "title": "高成本模型",
+      "subtitle": "按成本占比展示主要消耗来源，方便优先检查模型路由和价格。"
+    },
+    "hourly": {
+      "kicker": "负载",
+      "title": "最近 24 小时负载",
+      "subtitle": "按小时查看 tokens、调用次数与缓存写入，确认短时峰值。"
+    },
+    "providers": {
+      "kicker": "供应商",
+      "title": "供应商成本分布",
+      "subtitle": "把模型成本汇总到供应商维度，观察成本集中度与缓存表现。"
     },
     "focus": {
       "kicker": "重点模型",
@@ -65,7 +90,14 @@
     "dailySince": "统计起点 {value}",
     "hourlySince": "小时窗口 {value}",
     "focusModels": "{count} 个重点模型",
-    "modelCount": "{count} 个模型"
+    "modelCount": "{count} 个模型",
+    "activeModels": "活跃模型",
+    "providerCount": "供应商",
+    "topProvider": "最高 {name} · {value}",
+    "peakCostDay": "成本峰值日",
+    "modelRankMeta": "{calls} 次调用 · {tokens} tokens · {share} 成本占比",
+    "providerMeta": "{models} 个模型 · {calls} 次调用",
+    "noData": "暂无数据"
   },
   "emptyState": {
     "title": "还没有可分析的模型调用数据",

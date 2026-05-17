@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from shinbot.agent.model_runtime.admin import (
+from shinbot.agent.services.model_runtime.admin import (
     ModelRuntimeAdminError,
     fetch_provider_catalog,
     get_model_or_raise,

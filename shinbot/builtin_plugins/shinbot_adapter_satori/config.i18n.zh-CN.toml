@@ -1,0 +1,58 @@
+[provider]
+display_name = "Satori"
+description = "Satori WebSocket 消息平台适配器。"
+
+[[fields]]
+path = "host"
+label = "网关地址"
+description = "Satori 网关主机和端口，例如 localhost:5140。"
+
+[[fields]]
+path = "token"
+label = "鉴权令牌"
+description = "连接 Satori 网关使用的 Authorization Token。"
+
+[[fields]]
+path = "path"
+label = "事件路径"
+description = "Satori WebSocket 事件接口路径。"
+
+[[fields]]
+path = "auto_download_media"
+label = "自动缓存图片和视频"
+description = "消息进入系统前，自动下载并缓存图片、视频资源，便于后续模型或插件读取。"
+
+[[fields]]
+path = "download_file_resources"
+label = "自动缓存文件附件"
+description = "消息进入系统前，自动下载文件附件。开启后可能带来额外网络和存储开销。"
+
+[[fields]]
+path = "max_resource_bytes"
+label = "单个资源大小上限"
+description = "允许缓存的单个媒体或文件资源最大字节数。"
+
+[[fields]]
+path = "resource_cache_dir"
+label = "资源缓存目录"
+description = "下载资源保存到本地的目录。相对路径会按运行目录解析。"
+
+[[fields]]
+path = "reconnect_delay"
+label = "重连间隔秒数"
+description = "WebSocket 断开后等待多久再尝试重连。"
+
+[[fields]]
+path = "max_reconnects"
+label = "最大重连次数"
+description = "WebSocket 最大重连次数。设为 -1 表示持续重连。"
+
+[[fields]]
+path = "silent_reconnect"
+label = "静默重连日志"
+description = "减少频繁重连时产生的警告日志。"
+
+[[fields]]
+path = "reconnect_log_interval"
+label = "重连日志间隔"
+description = "连续重连时，两次警告日志之间的最小秒数。"

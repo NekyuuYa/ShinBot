@@ -15,7 +15,8 @@ class _BootStub:
                 "password": "admin",
                 "jwt_secret": "test-secret-that-is-long-enough-for-hs256",
                 "jwt_expire_hours": 24,
-            }
+            },
+            "runtime": {"model": True},
         }
         self.data_dir = data_dir
         self.dashboard_dist_dir = None

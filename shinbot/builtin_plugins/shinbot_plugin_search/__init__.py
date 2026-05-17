@@ -12,7 +12,8 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from shinbot.agent.tools import ToolVisibility
+from shinbot.agent.services.tools import ToolVisibility
+from shinbot.core.plugins.config import plugin_config_block
 from shinbot.core.plugins.context import Plugin
 
 _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -76,11 +77,7 @@ def _load_plugin_config(
         if path.exists():
             with path.open("rb") as file_obj:
                 payload = tomllib.load(file_obj)
-            plugin_configs = payload.get("plugin_configs", {})
-            if isinstance(plugin_configs, dict):
-                plugin_block = plugin_configs.get(plugin_id, {})
-                if isinstance(plugin_block, dict):
-                    raw = plugin_block
+            raw = plugin_config_block(payload, plugin_id)
     except Exception:
         raw = {}
 

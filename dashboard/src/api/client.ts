@@ -141,6 +141,10 @@ class ApiClient {
     return this.instance.patch<ApiResponse<T>>(url, data, config)
   }
 
+  put<T = unknown>(url: string, data?: unknown, config?: ApiRequestConfig) {
+    return this.instance.put<ApiResponse<T>>(url, data, config)
+  }
+
   delete<T = unknown>(url: string, config?: ApiRequestConfig) {
     return this.instance.delete<ApiResponse<T>>(url, config)
   }

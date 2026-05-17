@@ -11,8 +11,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from shinbot.core.dispatch.command import CommandRegistry
+from shinbot.core.config_provider import (
+    ConfigProviderLoadError,
+    ConfigProviderRegistry,
+    load_provider_schema_from_module,
+)
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.dispatch.ingress import RouteTargetRegistry
+from shinbot.core.dispatch.routing import RouteTable
+from shinbot.core.message_routes import CommandRegistry, KeywordRegistry
 from shinbot.core.model_runtime import ModelRuntimeObserverRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
@@ -22,7 +29,7 @@ from shinbot.utils.logger import get_logger
 if TYPE_CHECKING:
     from shinbot.core.platform.adapter_manager import AdapterManager
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="plugins", color="yellow")
 
 _VALID_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
 _BUILTIN_PLUGINS_DIR = Path(__file__).resolve().parents[2] / "builtin_plugins"
@@ -68,17 +75,25 @@ class PluginManager:
         event_bus: EventBus,
         data_dir: Path | str | None = None,
         *,
+        keyword_registry: KeywordRegistry | None = None,
+        route_table: RouteTable | None = None,
+        route_targets: RouteTargetRegistry | None = None,
         adapter_manager: AdapterManager | None = None,
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
         database: Any | None = None,
+        config_provider_registry: ConfigProviderRegistry | None = None,
     ):
         self._command_registry = command_registry
         self._event_bus = event_bus
+        self._keyword_registry = keyword_registry or KeywordRegistry()
+        self._route_table = route_table
+        self._route_targets = route_targets
         self._adapter_manager = adapter_manager
         self._tool_registry = tool_registry
         self._model_runtime = model_runtime
         self._database = database
+        self.config_provider_registry = config_provider_registry or ConfigProviderRegistry()
         self._plugins: dict[str, PluginMeta] = {}
         self._plugin_objects: dict[str, Plugin] = {}
         self._modules: dict[str, Any] = {}
@@ -88,12 +103,25 @@ class PluginManager:
         self._plugin_data_root = self._root_data_dir / "plugin_data"
         self._plugin_data_root.mkdir(parents=True, exist_ok=True)
 
+    def attach_runtime_services(
+        self,
+        *,
+        tool_registry: ToolRegistry | None = None,
+        model_runtime: ModelRuntimeObserverRegistry | None = None,
+    ) -> None:
+        """Attach optional runtime capabilities for subsequently built Plugin objects."""
+        self._tool_registry = tool_registry
+        self._model_runtime = model_runtime
+
     def _build_plg(self, plugin_id: str) -> Plugin:
         return Plugin(
             plugin_id,
             self._command_registry,
             self._event_bus,
             data_dir=self._build_plugin_data_dir(plugin_id),
+            keyword_registry=self._keyword_registry,
+            route_table=self._route_table,
+            route_targets=self._route_targets,
             adapter_manager=self._adapter_manager,
             tool_registry=self._tool_registry,
             model_runtime=self._model_runtime,
@@ -135,6 +163,7 @@ class PluginManager:
         if not hasattr(module, "setup"):
             raise AttributeError(f"Plugin module {module_path!r} must expose a setup(plg) function")
 
+        self._register_config_provider_from_module(plugin_id, module)
         plg = self._build_plg(plugin_id)
 
         try:
@@ -144,6 +173,8 @@ class PluginManager:
             logger.exception("Error loading plugin %s", plugin_id)
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
+            self._keyword_registry.unregister_by_owner(plugin_id)
+            self._unregister_routes_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -243,6 +274,7 @@ class PluginManager:
         if not hasattr(module, "setup"):
             raise AttributeError(f"Plugin module {module_path!r} must expose a setup(plg) function")
 
+        self._register_config_provider_from_module(plugin_id, module)
         plg = self._build_plg(plugin_id)
         try:
             await self._invoke(module.setup, plg)
@@ -253,6 +285,8 @@ class PluginManager:
             logger.exception("Error enabling plugin %s; reverting handler registrations", plugin_id)
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
+            self._keyword_registry.unregister_by_owner(plugin_id)
+            self._unregister_routes_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -270,6 +304,8 @@ class PluginManager:
         meta.state = PluginState.ACTIVE
         meta.commands = list(plg._registered_commands)
         meta.event_types = list(plg._registered_events)
+        meta.keywords = list(plg._registered_keywords)
+        meta.routes = list(plg._registered_routes)
         meta.data_dir = str(plg.data_dir)
         self._plugin_objects[plugin_id] = plg
         self._modules[plugin_id] = module
@@ -412,6 +448,8 @@ class PluginManager:
                     declared_metadata=metadata,
                 )
                 self._validate_permissions(plugin_id, permissions, meta)
+                if metadata.get("default_enabled") is False:
+                    meta = await self.disable_plugin_async(plugin_id)
                 loaded.append(meta)
                 logger.info(
                     "Loaded %s plugin %s (module=%s)",
@@ -476,6 +514,7 @@ class PluginManager:
             module = importlib.import_module(module_path)
 
         logger.info("Reloading plugin %s", plugin_id)
+        self._register_config_provider_from_module(plugin_id, module)
 
         plg = self._build_plg(plugin_id)
         try:
@@ -487,6 +526,8 @@ class PluginManager:
             )
             self._command_registry.unregister_by_owner(plugin_id)
             self._event_bus.off_all(plugin_id)
+            self._keyword_registry.unregister_by_owner(plugin_id)
+            self._unregister_routes_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -528,8 +569,24 @@ class PluginManager:
             module_path=module_path,
             commands=list(plg._registered_commands),
             event_types=list(plg._registered_events),
+            keywords=list(plg._registered_keywords),
+            routes=list(plg._registered_routes),
             data_dir=str(plg.data_dir),
         )
+
+    def _register_config_provider_from_module(self, plugin_id: str, module: Any) -> None:
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            return
+        schema_path = Path(module_file).resolve().parent / "config.schema.toml"
+        if not schema_path.exists():
+            return
+        try:
+            provider = load_provider_schema_from_module(module)
+        except ConfigProviderLoadError:
+            logger.exception("Invalid config provider schema for plugin %s", plugin_id)
+            return
+        self.config_provider_registry.upsert(provider)
 
     def _resolve_identity_fields(
         self,
@@ -579,6 +636,8 @@ class PluginManager:
 
         cmd_count = self._command_registry.unregister_by_owner(plugin_id)
         evt_count = self._event_bus.off_all(plugin_id)
+        self._keyword_registry.unregister_by_owner(plugin_id)
+        self._unregister_routes_by_owner(plugin_id)
         if self._tool_registry is not None:
             self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
         if plg is not None and self._model_runtime is not None:
@@ -598,6 +657,12 @@ class PluginManager:
             del sys.modules[meta.module_path]
 
         return cmd_count, evt_count
+
+    def _unregister_routes_by_owner(self, plugin_id: str) -> None:
+        if self._route_table is not None:
+            self._route_table.unregister_by_owner(plugin_id)
+        if self._route_targets is not None:
+            self._route_targets.unregister_by_owner(plugin_id)
 
     def _build_plugin_data_dir(self, plugin_id: str) -> Path:
         candidate = (self._plugin_data_root / plugin_id).resolve()
@@ -657,6 +722,11 @@ class PluginManager:
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
             raise ValueError("metadata.dependencies must be a list of plugin ID strings")
         metadata["dependencies"] = deps
+
+        default_enabled = metadata.get("default_enabled", True)
+        if not isinstance(default_enabled, bool):
+            raise ValueError("metadata.default_enabled must be a boolean")
+        metadata["default_enabled"] = default_enabled
 
         for field in ("name", "version", "author", "description"):
             value = metadata.get(field)

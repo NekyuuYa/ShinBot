@@ -1,0 +1,118 @@
+[provider]
+kind = "adapter"
+id = "qqofficial"
+display_name = "QQ Official"
+description = "QQ Official Bot gateway and OpenAPI adapter."
+config_version = "1.0.0"
+
+[[fields]]
+path = "app_id"
+type = "string"
+required = true
+default = ""
+description = "QQ bot AppID."
+
+[[fields]]
+path = "app_secret"
+type = "string"
+required = true
+default = ""
+secret = true
+description = "QQ bot AppSecret."
+
+[[fields]]
+path = "intents"
+type = "integer"
+default = 1107300864
+min = 0
+advanced = true
+description = "Gateway intent bitmask."
+
+[[fields]]
+path = "sandbox"
+type = "boolean"
+default = false
+advanced = true
+description = "Use QQ sandbox API domain."
+
+[[fields]]
+path = "api_base"
+type = "string"
+default = ""
+advanced = true
+description = "Override OpenAPI base URL, empty for official default."
+
+[[fields]]
+path = "token_base"
+type = "string"
+default = "https://bots.qq.com"
+advanced = true
+description = "Token service base URL."
+
+[[fields]]
+path = "ws_url"
+type = "string"
+default = ""
+advanced = true
+description = "Override gateway WebSocket URL, empty for auto-discovery."
+
+[[fields]]
+path = "request_timeout"
+type = "float"
+default = 20.0
+min = 0.1
+advanced = true
+description = "HTTP request timeout in seconds."
+
+[[fields]]
+path = "heartbeat_jitter"
+type = "float"
+default = 0.05
+min = 0.0
+max = 1.0
+advanced = true
+description = "Randomized heartbeat jitter ratio."
+
+[[fields]]
+path = "auto_download_media"
+type = "boolean"
+default = true
+advanced = true
+description = "Cache image and video resources before message ingress."
+
+[[fields]]
+path = "download_file_resources"
+type = "boolean"
+default = false
+advanced = true
+description = "Download file attachments before message ingress."
+
+[[fields]]
+path = "max_resource_bytes"
+type = "integer"
+default = 15728640
+min = 1
+advanced = true
+description = "Maximum bytes allowed for one cached resource."
+
+[[fields]]
+path = "resource_cache_dir"
+type = "path"
+default = "data/temp/resources"
+advanced = true
+description = "Local cache directory for downloaded resources."
+
+[[fields]]
+path = "reconnect_delay"
+type = "float"
+default = 5.0
+min = 0.0
+advanced = true
+description = "Reconnect delay in seconds."
+
+[[fields]]
+path = "max_reconnects"
+type = "integer"
+default = -1
+advanced = true
+description = "Maximum reconnect attempts, -1 for infinite."

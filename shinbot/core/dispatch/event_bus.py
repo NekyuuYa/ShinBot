@@ -1,7 +1,7 @@
 """Async event bus for internal event dispatch.
 
-Provides a lightweight pub/sub mechanism for decoupled communication
-between the core pipeline, plugins, and adapters.
+Provides a lightweight pub/sub mechanism for decoupled non-message signals.
+External message events are routed by RouteTable instead.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class _CircuitState:
 class EventBus:
     """Async event bus with priority-ordered handlers.
 
-    Handlers are registered for event types (strings like "message-created").
+    Handlers are registered for event types (strings like "guild-member-added").
     When an event is emitted, all matching handlers are called in priority
     order (lower number = higher priority).
     """
@@ -89,7 +89,7 @@ class EventBus:
         """Register a handler for an event type.
 
         Args:
-            event_type: Event type string (e.g. "message-created", "*" for all).
+            event_type: Event type string (e.g. "guild-member-added", "*" for all).
             handler: Async callable to invoke.
             priority: Lower = earlier execution. Default 100.
             owner: Optional owner ID (plugin ID) for cleanup on unload.
@@ -178,6 +178,12 @@ class EventBus:
         if event_type is not None:
             return len(self._handlers.get(event_type, []))
         return sum(len(h) for h in self._handlers.values())
+
+    def has_handlers(self, event_type: str, *, include_wildcard: bool = True) -> bool:
+        """Return whether emitting event_type would call at least one handler."""
+        if self._handlers.get(event_type):
+            return True
+        return include_wildcard and event_type != "*" and bool(self._handlers.get("*"))
 
 
 class StopPropagation(Exception):

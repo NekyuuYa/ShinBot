@@ -35,13 +35,13 @@
       </v-col>
     </v-row>
 
-    <v-row v-if="pluginsStore.isLoading && pluginsStore.plugins.length === 0" class="mx-0">
+    <v-row v-if="showInitialSkeleton" class="mx-0">
       <v-col cols="12" class="pa-0">
         <v-skeleton-loader type="card" :count="3" />
       </v-col>
     </v-row>
 
-    <v-row v-else-if="filteredPlugins.length === 0" justify="center" class="py-12 mx-0">
+    <v-row v-else-if="!initialSkeletonRequested && filteredPlugins.length === 0" justify="center" class="py-12 mx-0">
       <v-col cols="12" sm="8" md="6" class="text-center pa-0">
         <v-icon size="120" color="grey-lighten-1" icon="mdi-puzzle-outline" />
         <h3 class="text-h6 my-4">{{ $t('pages.plugins.noData') }}</h3>
@@ -95,6 +95,7 @@ import PluginCard from '@/components/PluginCard.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import type { Plugin, PluginConfigSchema } from '@/api/plugins'
+import { useDelayedFlag } from '@/composables/useDelayedFlag'
 
 const pluginsStore = usePluginsStore()
 const searchQuery = ref('')
@@ -102,6 +103,11 @@ const dialogVisible = ref(false)
 const activePlugin = ref<Plugin | null>(null)
 const activeSchema = ref<PluginConfigSchema | null>(null)
 const schemaForm = ref<Record<string, unknown>>({})
+
+const initialSkeletonRequested = computed(
+  () => pluginsStore.isLoading && pluginsStore.plugins.length === 0
+)
+const showInitialSkeleton = useDelayedFlag(initialSkeletonRequested)
 
 const filteredPlugins = computed(() =>
   pluginsStore.plugins.filter((plugin) =>

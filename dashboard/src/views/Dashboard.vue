@@ -46,7 +46,7 @@
                 </div>
                 <div class="text-h4 font-weight-black my-1">{{ runningInstances }}</div>
                 <div class="text-caption text-medium-emphasis">
-                  {{ $t('pages.dashboard.cards.memoryUsageMb', { value: monitoringStore.status.memoryUsage }) }}
+                  {{ $t('pages.dashboard.cards.processMemory', { value: processMemoryText }) }}
                 </div>
               </div>
             </v-col>
@@ -276,6 +276,18 @@ const formatCompactNumber = (value: number) =>
     maximumFractionDigits: 1,
     notation: 'compact',
   }).format(value)
+
+const formatMemorySize = (value: number) => {
+  const mb = Number(value || 0)
+  if (mb >= 1024) {
+    return `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB`
+  }
+  return `${mb.toFixed(1)} MB`
+}
+
+const processMemoryText = computed(() =>
+  formatMemorySize(monitoringStore.status.processMemoryMb)
+)
 
 const fetchTokenSummary = async () => {
   tokenSummary.value = await fetchDashboardTokenSummary()

@@ -3,74 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-import uuid
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
-    """
-    CREATE TABLE IF NOT EXISTS model_providers (
-        provider_uuid TEXT PRIMARY KEY,
-        id TEXT NOT NULL UNIQUE,
-        type TEXT NOT NULL,
-        display_name TEXT NOT NULL,
-        capability_type TEXT NOT NULL DEFAULT 'completion',
-        base_url TEXT NOT NULL DEFAULT '',
-        auth_json TEXT NOT NULL DEFAULT '{}',
-        default_params_json TEXT NOT NULL DEFAULT '{}',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS model_definitions (
-        id TEXT PRIMARY KEY,
-        provider_uuid TEXT NOT NULL,
-        litellm_model TEXT NOT NULL,
-        display_name TEXT NOT NULL,
-        capabilities_json TEXT NOT NULL DEFAULT '[]',
-        context_window INTEGER,
-        default_params_json TEXT NOT NULL DEFAULT '{}',
-        cost_metadata_json TEXT NOT NULL DEFAULT '{}',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(provider_uuid) REFERENCES model_providers(provider_uuid) ON DELETE CASCADE
-    )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_model_definitions_provider_id
-    ON model_definitions(provider_uuid)
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS model_routes (
-        id TEXT PRIMARY KEY,
-        purpose TEXT NOT NULL DEFAULT '',
-        strategy TEXT NOT NULL DEFAULT 'priority',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        sticky_sessions INTEGER NOT NULL DEFAULT 0,
-        metadata_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS model_route_members (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        route_id TEXT NOT NULL,
-        model_id TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 0,
-        weight REAL NOT NULL DEFAULT 1.0,
-        conditions_json TEXT NOT NULL DEFAULT '{}',
-        timeout_override REAL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        FOREIGN KEY(route_id) REFERENCES model_routes(id) ON DELETE CASCADE,
-        FOREIGN KEY(model_id) REFERENCES model_definitions(id) ON DELETE CASCADE
-    )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_model_route_members_route_id
-    ON model_route_members(route_id)
-    """,
     """
     CREATE TABLE IF NOT EXISTS model_execution_records (
         id TEXT PRIMARY KEY,
@@ -192,86 +126,6 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_audit_logs_session_id
     ON audit_logs(session_id)
     """,
-    """
-    CREATE TABLE IF NOT EXISTS personas (
-        uuid TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        prompt_definition_uuid TEXT NOT NULL,
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(prompt_definition_uuid) REFERENCES prompt_definitions(uuid) ON DELETE RESTRICT
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS context_strategies (
-        uuid TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        type TEXT NOT NULL DEFAULT 'custom',
-        resolver_ref TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT '',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS agents (
-        uuid TEXT PRIMARY KEY,
-        agent_id TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        persona_uuid TEXT NOT NULL,
-        prompts_json TEXT NOT NULL DEFAULT '[]',
-        tools_json TEXT NOT NULL DEFAULT '[]',
-        context_strategy_json TEXT NOT NULL DEFAULT '{}',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(persona_uuid) REFERENCES personas(uuid) ON DELETE RESTRICT
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS prompt_definitions (
-        uuid TEXT PRIMARY KEY,
-        prompt_id TEXT NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        source_type TEXT NOT NULL DEFAULT 'unknown_source',
-        source_id TEXT NOT NULL DEFAULT '',
-        owner_plugin_id TEXT NOT NULL DEFAULT '',
-        owner_module TEXT NOT NULL DEFAULT '',
-        module_path TEXT NOT NULL DEFAULT '',
-        stage TEXT NOT NULL,
-        type TEXT NOT NULL,
-        priority INTEGER NOT NULL DEFAULT 100,
-        version TEXT NOT NULL DEFAULT '1.0.0',
-        description TEXT NOT NULL DEFAULT '',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        content TEXT NOT NULL DEFAULT '',
-        template_vars_json TEXT NOT NULL DEFAULT '[]',
-        resolver_ref TEXT NOT NULL DEFAULT '',
-        bundle_refs_json TEXT NOT NULL DEFAULT '[]',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        metadata_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS bot_configs (
-        uuid TEXT PRIMARY KEY,
-        instance_id TEXT NOT NULL UNIQUE,
-        default_agent_uuid TEXT NOT NULL DEFAULT '',
-        main_llm TEXT NOT NULL DEFAULT '',
-        config_json TEXT NOT NULL DEFAULT '{}',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    )
-    """,
     # ── Message logs & AI interactions ───────────────────────────────
     """
     CREATE TABLE IF NOT EXISTS message_logs (
@@ -285,7 +139,10 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         role TEXT NOT NULL,
         is_read INTEGER NOT NULL DEFAULT 0,
         is_mentioned INTEGER NOT NULL DEFAULT 0,
-        created_at REAL NOT NULL
+        created_at REAL NOT NULL,
+        routing_status TEXT NOT NULL DEFAULT 'pending',
+        routed_at REAL,
+        routing_skip_reason TEXT
     )
     """,
     """
@@ -299,6 +156,127 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_message_logs_sender_id
     ON message_logs(sender_id)
+    """,
+    # ── Agent scheduler state ───────────────────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS agent_scheduler_states (
+        session_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL DEFAULT 'idle',
+        next_review_at REAL,
+        review_reason TEXT NOT NULL DEFAULT '',
+        mention_sensitivity TEXT NOT NULL DEFAULT 'normal',
+        active_reply_threshold_json TEXT NOT NULL DEFAULT '{}',
+        active_chat_state_json TEXT NOT NULL DEFAULT '{}',
+        updated_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_unread_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        message_log_id INTEGER NOT NULL,
+        sender_id TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        review_consumed INTEGER NOT NULL DEFAULT 0,
+        chat_consumed INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(session_id, message_log_id),
+        FOREIGN KEY(message_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_unread_messages_session
+    ON agent_unread_messages(session_id, review_consumed, created_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_unread_ranges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        start_msg_log_id INTEGER NOT NULL,
+        end_msg_log_id INTEGER NOT NULL,
+        start_at REAL NOT NULL,
+        end_at REAL NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        review_consumed INTEGER NOT NULL DEFAULT 0,
+        chat_consumed INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(start_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE,
+        FOREIGN KEY(end_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_unread_ranges_session
+    ON agent_unread_ranges(session_id, review_consumed, start_at, start_msg_log_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_review_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        start_msg_log_id INTEGER NOT NULL,
+        end_msg_log_id INTEGER NOT NULL,
+        start_at REAL NOT NULL,
+        end_at REAL NOT NULL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT NOT NULL DEFAULT '',
+        candidate_message_ids_json TEXT NOT NULL DEFAULT '[]',
+        reason TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        FOREIGN KEY(start_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE,
+        FOREIGN KEY(end_msg_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_review_summaries_session
+    ON agent_review_summaries(session_id, start_at, start_msg_log_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_high_priority_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        message_log_id INTEGER NOT NULL,
+        sender_id TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        handled INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(message_log_id) REFERENCES message_logs(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_high_priority_events_session
+    ON agent_high_priority_events(session_id, handled, created_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_recent_mentions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        timestamp REAL NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_recent_mentions_session
+    ON agent_recent_mentions(session_id, timestamp)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        summary_type TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        source_run_id TEXT NOT NULL DEFAULT '',
+        msg_log_start INTEGER,
+        msg_log_end INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at REAL NOT NULL,
+        FOREIGN KEY(msg_log_start) REFERENCES message_logs(id) ON DELETE SET NULL,
+        FOREIGN KEY(msg_log_end) REFERENCES message_logs(id) ON DELETE SET NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_summaries_session
+    ON agent_summaries(session_id, created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_summaries_run
+    ON agent_summaries(source_run_id, created_at)
     """,
     """
     CREATE TABLE IF NOT EXISTS ai_interactions (
@@ -502,273 +480,31 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
-def _migrate_model_registry_schema(conn: sqlite3.Connection) -> None:
-    provider_columns = _table_columns(conn, "model_providers")
-    model_columns = _table_columns(conn, "model_definitions")
-
-    if not provider_columns or not model_columns:
-        return
-    if "provider_uuid" in provider_columns and "provider_uuid" in model_columns:
-        return
-
-    provider_rows = conn.execute("SELECT * FROM model_providers").fetchall()
-    provider_uuid_by_id = {str(row["id"]): str(uuid.uuid4()) for row in provider_rows}
-    model_rows = conn.execute("SELECT * FROM model_definitions").fetchall()
-
-    foreign_keys_before = conn.execute("PRAGMA foreign_keys").fetchone()
-    had_foreign_keys = bool(foreign_keys_before[0]) if foreign_keys_before else True
-    conn.execute("PRAGMA foreign_keys = OFF")
-    try:
-        conn.execute(
-            """
-            CREATE TABLE model_providers__new (
-                provider_uuid TEXT PRIMARY KEY,
-                id TEXT NOT NULL UNIQUE,
-                type TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                base_url TEXT NOT NULL DEFAULT '',
-                auth_json TEXT NOT NULL DEFAULT '{}',
-                default_params_json TEXT NOT NULL DEFAULT '{}',
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE model_definitions__new (
-                id TEXT PRIMARY KEY,
-                provider_uuid TEXT NOT NULL,
-                litellm_model TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                capabilities_json TEXT NOT NULL DEFAULT '[]',
-                context_window INTEGER,
-                default_params_json TEXT NOT NULL DEFAULT '{}',
-                cost_metadata_json TEXT NOT NULL DEFAULT '{}',
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(provider_uuid) REFERENCES model_providers__new(provider_uuid) ON DELETE CASCADE
-            )
-            """
-        )
-
-        for row in provider_rows:
-            conn.execute(
-                """
-                INSERT INTO model_providers__new (
-                    provider_uuid, id, type, display_name, base_url, auth_json,
-                    default_params_json, enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    provider_uuid_by_id[str(row["id"])],
-                    row["id"],
-                    row["type"],
-                    row["display_name"],
-                    row["base_url"],
-                    row["auth_json"],
-                    row["default_params_json"],
-                    row["enabled"],
-                    row["created_at"],
-                    row["updated_at"],
-                ),
-            )
-
-        for row in model_rows:
-            provider_uuid = provider_uuid_by_id.get(str(row["provider_id"]))
-            if provider_uuid is None:
-                continue
-            conn.execute(
-                """
-                INSERT INTO model_definitions__new (
-                    id, provider_uuid, litellm_model, display_name, capabilities_json,
-                    context_window, default_params_json, cost_metadata_json,
-                    enabled, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["id"],
-                    provider_uuid,
-                    row["litellm_model"],
-                    row["display_name"],
-                    row["capabilities_json"],
-                    row["context_window"],
-                    row["default_params_json"],
-                    row["cost_metadata_json"],
-                    row["enabled"],
-                    row["created_at"],
-                    row["updated_at"],
-                ),
-            )
-
-        conn.execute("DROP TABLE model_definitions")
-        conn.execute("DROP TABLE model_providers")
-        conn.execute("ALTER TABLE model_providers__new RENAME TO model_providers")
-        conn.execute("ALTER TABLE model_definitions__new RENAME TO model_definitions")
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_model_definitions_provider_id
-            ON model_definitions(provider_uuid)
-            """
-        )
-    finally:
-        conn.execute(f"PRAGMA foreign_keys = {'ON' if had_foreign_keys else 'OFF'}")
+def _drop_legacy_model_registry_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS model_route_members")
+    conn.execute("DROP TABLE IF EXISTS model_definitions")
+    conn.execute("DROP TABLE IF EXISTS model_routes")
+    conn.execute("DROP TABLE IF EXISTS model_providers")
 
 
-def _migrate_context_strategies_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "context_strategies")
-    if not columns:
-        return
-
-    if "type" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE context_strategies
-            ADD COLUMN type TEXT NOT NULL DEFAULT 'custom'
-            """
-        )
-    if "trigger_ratio" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE context_strategies
-            ADD COLUMN trigger_ratio REAL NOT NULL DEFAULT 0.5
-            """
-        )
-    if "trim_turns" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE context_strategies
-            ADD COLUMN trim_turns INTEGER NOT NULL DEFAULT 2
-            """
-        )
+def _drop_legacy_agents_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS agents")
 
 
-def _migrate_agents_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "agents")
-    if not columns:
-        return
-
-    if "prompts_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN prompts_json TEXT NOT NULL DEFAULT '[]'
-            """
-        )
-    if "context_strategy_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN context_strategy_json TEXT NOT NULL DEFAULT '{}'
-            """
-        )
-    if "context_strategy_ref" in columns:
-        conn.execute(
-            """
-            UPDATE agents
-            SET context_strategy_json = json_object(
-                'ref', context_strategy_ref,
-                'type',
-                CASE
-                    WHEN context_strategy_ref = 'builtin.context.sliding_window' THEN 'sliding_window'
-                    ELSE 'custom'
-                END,
-                'params', json('{}')
-            )
-            WHERE context_strategy_ref != ''
-              AND context_strategy_json = '{}'
-            """
-        )
-    if "config_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'
-            """
-        )
-    if "tags_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE agents
-            ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'
-            """
-        )
+def _drop_legacy_context_strategies_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS context_strategies")
 
 
-def _migrate_personas_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "personas")
-    if not columns:
-        return
-    if "prompt_definition_uuid" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE personas
-            ADD COLUMN prompt_definition_uuid TEXT NOT NULL DEFAULT ''
-            """
-        )
-    if "tags_json" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE personas
-            ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'
-            """
-        )
+def _drop_legacy_personas_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS personas")
 
 
-def _migrate_prompt_definitions_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "prompt_definitions")
-    if not columns:
-        return
-
-    column_defaults = {
-        "source_type": "TEXT NOT NULL DEFAULT 'unknown_source'",
-        "source_id": "TEXT NOT NULL DEFAULT ''",
-        "owner_plugin_id": "TEXT NOT NULL DEFAULT ''",
-        "owner_module": "TEXT NOT NULL DEFAULT ''",
-        "module_path": "TEXT NOT NULL DEFAULT ''",
-        "type": "TEXT NOT NULL DEFAULT 'static_text'",
-        "description": "TEXT NOT NULL DEFAULT ''",
-        "content": "TEXT NOT NULL DEFAULT ''",
-        "template_vars_json": "TEXT NOT NULL DEFAULT '[]'",
-        "resolver_ref": "TEXT NOT NULL DEFAULT ''",
-        "bundle_refs_json": "TEXT NOT NULL DEFAULT '[]'",
-        "config_json": "TEXT NOT NULL DEFAULT '{}'",
-        "tags_json": "TEXT NOT NULL DEFAULT '[]'",
-        "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
-    }
-    for column_name, column_spec in column_defaults.items():
-        if column_name in columns:
-            continue
-        conn.execute(
-            f"""
-            ALTER TABLE prompt_definitions
-            ADD COLUMN {column_name} {column_spec}
-            """
-        )
+def _drop_legacy_prompt_definitions_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS prompt_definitions")
 
 
-def _migrate_bot_configs_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "bot_configs")
-    if not columns:
-        return
-
-    column_defaults = {
-        "default_agent_uuid": "TEXT NOT NULL DEFAULT ''",
-        "main_llm": "TEXT NOT NULL DEFAULT ''",
-        "config_json": "TEXT NOT NULL DEFAULT '{}'",
-        "tags_json": "TEXT NOT NULL DEFAULT '[]'",
-    }
-    for column_name, column_spec in column_defaults.items():
-        if column_name in columns:
-            continue
-        conn.execute(
-            f"""
-            ALTER TABLE bot_configs
-            ADD COLUMN {column_name} {column_spec}
-            """
-        )
+def _drop_legacy_bot_configs_table(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS bot_configs")
 
 
 def _migrate_model_execution_records_schema(conn: sqlite3.Connection) -> None:
@@ -803,6 +539,75 @@ def _migrate_ai_interactions_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE ai_interactions ADD COLUMN {col} {spec}")
 
 
+def _migrate_message_logs_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "message_logs")
+    if not columns:
+        return
+    new_columns = {
+        "routing_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "routed_at": "REAL",
+        "routing_skip_reason": "TEXT",
+    }
+    for col, spec in new_columns.items():
+        if col not in columns:
+            conn.execute(f"ALTER TABLE message_logs ADD COLUMN {col} {spec}")
+
+
+def _migrate_agent_scheduler_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "agent_scheduler_states")
+    if not columns:
+        return
+    new_columns = {
+        "next_review_at": "REAL",
+        "review_reason": "TEXT NOT NULL DEFAULT ''",
+        "mention_sensitivity": "TEXT NOT NULL DEFAULT 'normal'",
+        "active_reply_threshold_json": "TEXT NOT NULL DEFAULT '{}'",
+        "active_chat_state_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for col, spec in new_columns.items():
+        if col not in columns:
+            conn.execute(f"ALTER TABLE agent_scheduler_states ADD COLUMN {col} {spec}")
+
+
+def _migrate_agent_unread_ranges(conn: sqlite3.Connection) -> None:
+    range_columns = _table_columns(conn, "agent_unread_ranges")
+    message_columns = _table_columns(conn, "agent_unread_messages")
+    if not range_columns or not message_columns:
+        return
+    existing = conn.execute("SELECT COUNT(*) AS cnt FROM agent_unread_ranges").fetchone()
+    if existing is not None and int(existing["cnt"] or 0) > 0:
+        return
+    rows = conn.execute(
+        """
+        SELECT session_id, message_log_id, created_at, review_consumed, chat_consumed
+        FROM agent_unread_messages
+        ORDER BY session_id ASC, created_at ASC, message_log_id ASC
+        """
+    ).fetchall()
+    if not rows:
+        return
+    conn.executemany(
+        """
+        INSERT INTO agent_unread_ranges (
+            session_id, start_msg_log_id, end_msg_log_id, start_at, end_at,
+            message_count, review_consumed, chat_consumed
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        [
+            (
+                row["session_id"],
+                row["message_log_id"],
+                row["message_log_id"],
+                row["created_at"],
+                row["created_at"],
+                row["review_consumed"],
+                row["chat_consumed"],
+            )
+            for row in rows
+        ],
+    )
+
+
 def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "workflow_runs")
     if not columns:
@@ -823,54 +628,19 @@ def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-def _migrate_provider_capability_type(conn: sqlite3.Connection) -> None:
-    """Add capability_type column and migrate data from defaultParams._tab."""
-    import json
-
-    columns = _table_columns(conn, "model_providers")
-    if not columns:
-        return
-
-    if "capability_type" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE model_providers
-            ADD COLUMN capability_type TEXT NOT NULL DEFAULT 'completion'
-            """
-        )
-
-    # Migrate _tab from default_params_json → capability_type, then clean up _tab.
-    _TAB_TO_CAPABILITY = {"chat": "completion", "embedding": "embedding", "other": "rerank"}
-    rows = conn.execute(
-        "SELECT provider_uuid, default_params_json, capability_type FROM model_providers"
-    ).fetchall()
-    for row in rows:
-        try:
-            params = json.loads(row["default_params_json"] or "{}")
-        except Exception:
-            params = {}
-        tab = params.get("_tab")
-        if not tab:
-            continue
-        capability_type = _TAB_TO_CAPABILITY.get(str(tab), "completion")
-        params.pop("_tab", None)
-        conn.execute(
-            "UPDATE model_providers SET capability_type = ?, default_params_json = ? WHERE provider_uuid = ?",
-            (capability_type, json.dumps(params), row["provider_uuid"]),
-        )
-
-
 def apply_schema(conn: sqlite3.Connection) -> None:
     """Create all persistence tables if they do not exist yet."""
-    _migrate_model_registry_schema(conn)
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
-    _migrate_provider_capability_type(conn)
-    _migrate_context_strategies_schema(conn)
-    _migrate_agents_schema(conn)
-    _migrate_personas_schema(conn)
-    _migrate_prompt_definitions_schema(conn)
-    _migrate_bot_configs_schema(conn)
+    _drop_legacy_model_registry_tables(conn)
+    _drop_legacy_agents_table(conn)
+    _drop_legacy_context_strategies_table(conn)
+    _drop_legacy_personas_table(conn)
+    _drop_legacy_prompt_definitions_table(conn)
+    _drop_legacy_bot_configs_table(conn)
     _migrate_model_execution_records_schema(conn)
     _migrate_ai_interactions_schema(conn)
+    _migrate_message_logs_schema(conn)
+    _migrate_agent_scheduler_schema(conn)
+    _migrate_agent_unread_ranges(conn)
     _migrate_workflow_runs_schema(conn)

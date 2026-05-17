@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from shinbot.schema.routing import MessageRoutingStatus
+
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -96,76 +98,9 @@ class ModelExecutionRecord:
 
 
 @dataclass(slots=True)
-class PersonaRecord:
-    uuid: str
-    name: str
-    prompt_definition_uuid: str
-    tags: list[str] = field(default_factory=list)
-    enabled: bool = True
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
-class ContextStrategyRecord:
-    uuid: str
-    name: str
-    type: str
-    resolver_ref: str
-    description: str = ""
-    config: dict[str, Any] = field(default_factory=dict)
-    enabled: bool = True
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
-class AgentRecord:
-    uuid: str
-    agent_id: str
-    name: str
-    persona_uuid: str
-    prompts: list[str] = field(default_factory=list)
-    tools: list[str] = field(default_factory=list)
-    context_strategy: dict[str, Any] = field(default_factory=dict)
-    config: dict[str, Any] = field(default_factory=dict)
-    tags: list[str] = field(default_factory=list)
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
-class PromptDefinitionRecord:
-    uuid: str
-    prompt_id: str
-    name: str
-    stage: str
-    type: str
-    source_type: str = "unknown_source"
-    source_id: str = ""
-    owner_plugin_id: str = ""
-    owner_module: str = ""
-    module_path: str = ""
-    priority: int = 100
-    version: str = "1.0.0"
-    description: str = ""
-    enabled: bool = True
-    content: str = ""
-    template_vars: list[str] = field(default_factory=list)
-    resolver_ref: str = ""
-    bundle_refs: list[str] = field(default_factory=list)
-    config: dict[str, Any] = field(default_factory=dict)
-    tags: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(default_factory=utc_now_iso)
-    updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
-class BotConfigRecord:
+class InstanceConfigRecord:
     uuid: str
     instance_id: str
-    default_agent_uuid: str = ""
     main_llm: str = ""
     config: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
@@ -178,7 +113,7 @@ class MessageLogRecord:
     """A single message in the full communication log."""
 
     session_id: str
-    role: str  # "user" or "assistant"
+    role: str  # "user", "assistant", or "system" for notice/system events
     created_at: float  # millisecond-precision epoch timestamp
     platform_msg_id: str = ""
     sender_id: str = ""
@@ -187,6 +122,9 @@ class MessageLogRecord:
     raw_text: str = ""
     is_read: bool = False
     is_mentioned: bool = False
+    routing_status: str = MessageRoutingStatus.PENDING.value
+    routed_at: float | None = None
+    routing_skip_reason: str | None = None
     id: int | None = None  # set after INSERT
 
 

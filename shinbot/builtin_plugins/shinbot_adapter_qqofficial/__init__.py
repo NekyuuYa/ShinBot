@@ -139,12 +139,9 @@ def setup(plg: Plugin) -> None:
         )
         return QQOfficialAdapter(instance_id=instance_id, platform=platform, config=cfg)
 
-    # Register both spellings to make migration easier from existing configs.
     plg.register_adapter_factory("qqofficial", _qqofficial_factory)
-    plg.register_adapter_factory("qq_official", _qqofficial_factory)
 
 
 async def on_disable(plg: Plugin) -> None:
     if plg._adapter_manager is not None:
         plg._adapter_manager.unregister_adapter("qqofficial")
-        plg._adapter_manager.unregister_adapter("qq_official")

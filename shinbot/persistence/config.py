@@ -19,6 +19,16 @@ def default_database_url(data_dir: Path | str) -> str:
     return f"sqlite:///{default_database_path(data_dir).resolve().as_posix()}"
 
 
+def default_model_registry_path(data_dir: Path | str) -> Path:
+    """Return the default model registry file path under the runtime data directory."""
+    return Path(data_dir) / "models.json"
+
+
+def default_instance_configs_path(data_dir: Path | str) -> Path:
+    """Return the default instance configs file path under the runtime data directory."""
+    return Path(data_dir) / "instance-configs.json"
+
+
 def resolve_sqlite_path(url: str) -> Path:
     """Resolve a SQLite database URL into a filesystem path."""
     prefix = "sqlite:///"
@@ -37,6 +47,7 @@ class DatabaseConfig:
 
     url: str
     sqlite_path: Path
+    data_dir: Path = Path("data")
     snapshot_ttl: int = 10800  # Default 3 hours
 
     @classmethod
@@ -53,5 +64,6 @@ class DatabaseConfig:
         return cls(
             url=resolved_url,
             sqlite_path=resolve_sqlite_path(resolved_url),
+            data_dir=Path(data_dir),
             snapshot_ttl=snapshot_ttl if snapshot_ttl is not None else 10800,
         )

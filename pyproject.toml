@@ -25,6 +25,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["shinbot*"]
+exclude = ["shinbot.agent._archive*"]
+
+[tool.setuptools.package-data]
+"shinbot.agent" = ["personas/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -33,6 +37,7 @@ addopts = "-q --strict-markers --maxfail=1"
 asyncio_mode = "auto"
 markers = [
     "unit: fast unit-level tests with isolated dependencies",
+    "api: tests for HTTP API routes and API-facing contracts",
     "integration: tests that cover cross-module interactions or external boundaries",
     "slow: tests expected to have noticeably longer execution time",
     "e2e: end-to-end scenario tests",

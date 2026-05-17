@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from shinbot.persistence.records import MessageLogRecord
+from shinbot.schema.routing import (
+    MessageRoutingSkipReason,
+    MessageRoutingStatus,
+    routing_skip_reason_value,
+    routing_status_value,
+)
 
 from .base import ContextProvider, Repository
 
@@ -19,8 +26,9 @@ class MessageLogRepository(Repository, ContextProvider):
                 """
                 INSERT INTO message_logs (
                     session_id, platform_msg_id, sender_id, sender_name,
-                    content_json, raw_text, role, is_read, is_mentioned, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    content_json, raw_text, role, is_read, is_mentioned, created_at,
+                    routing_status, routed_at, routing_skip_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.session_id,
@@ -33,6 +41,9 @@ class MessageLogRepository(Repository, ContextProvider):
                     1 if record.is_read else 0,
                     1 if record.is_mentioned else 0,
                     record.created_at,
+                    routing_status_value(record.routing_status),
+                    record.routed_at,
+                    record.routing_skip_reason,
                 ),
             )
             return cursor.lastrowid  # type: ignore[return-value]
@@ -40,6 +51,49 @@ class MessageLogRepository(Repository, ContextProvider):
     def mark_read(self, msg_id: int) -> None:
         with self.connect() as conn:
             conn.execute("UPDATE message_logs SET is_read = 1 WHERE id = ?", (msg_id,))
+
+    def mark_routing_dispatched(self, msg_id: int, routed_at: float | None = None) -> None:
+        """Mark a message as routed to at least one dispatcher target.
+
+        `routed_at` uses millisecond epoch time to match message_logs.created_at.
+        """
+        timestamp = routed_at if routed_at is not None else time.time() * 1000
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE message_logs
+                SET routing_status = ?,
+                    routed_at = ?,
+                    routing_skip_reason = NULL
+                WHERE id = ?
+                """,
+                (MessageRoutingStatus.DISPATCHED.value, timestamp, msg_id),
+            )
+
+    def mark_routing_skipped(
+        self,
+        msg_id: int,
+        reason: MessageRoutingSkipReason | str,
+        routed_at: float | None = None,
+    ) -> None:
+        """Mark a message as routed but intentionally not dispatched."""
+        timestamp = routed_at if routed_at is not None else time.time() * 1000
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE message_logs
+                SET routing_status = ?,
+                    routed_at = ?,
+                    routing_skip_reason = ?
+                WHERE id = ?
+                """,
+                (
+                    MessageRoutingStatus.SKIPPED.value,
+                    timestamp,
+                    routing_skip_reason_value(reason),
+                    msg_id,
+                ),
+            )
 
     def get(self, msg_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -161,4 +215,7 @@ class MessageLogRepository(Repository, ContextProvider):
             "is_read": bool(row["is_read"]),
             "is_mentioned": bool(row["is_mentioned"]),
             "created_at": row["created_at"],
+            "routing_status": row["routing_status"],
+            "routed_at": row["routed_at"],
+            "routing_skip_reason": row["routing_skip_reason"],
         }

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [pytest.mark.api, pytest.mark.slow]
 
 
 def test_provider_probe_endpoint_uses_runtime(
@@ -109,7 +109,7 @@ def test_provider_probe_endpoint_surfaces_runtime_errors_without_unhandled_500(
         assert model_resp.status_code == 201
 
         async def fake_generate(call):
-            from shinbot.agent.model_runtime import ModelCallError
+            from shinbot.agent.services.model_runtime import ModelCallError
 
             raise ModelCallError("unsupported params")
 
@@ -174,7 +174,7 @@ def test_provider_probe_custom_openai_uses_openai_provider_hint(
             }
 
         monkeypatch.setattr(
-            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
+            "shinbot.agent.services.model_runtime.litellm_adapter.completion", fake_completion
         )
 
         response = client.post(
@@ -238,7 +238,7 @@ def test_provider_probe_dashscope_uses_dashscope_provider_hint(
             }
 
         monkeypatch.setattr(
-            "shinbot.agent.model_runtime.litellm_adapter.completion", fake_completion
+            "shinbot.agent.services.model_runtime.litellm_adapter.completion", fake_completion
         )
 
         response = client.post(

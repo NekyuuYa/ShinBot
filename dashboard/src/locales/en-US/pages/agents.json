@@ -1,7 +1,7 @@
 {
   "kicker": "Orchestration",
   "title": "Agent Management",
-  "subtitle": "Manage agents by tag and configure agent details through an overlay form.",
+  "subtitle": "Manage Agent runtime profiles under data/agents and edit each profile by configuration section.",
   "actions": {
     "refresh": "Refresh",
     "addAgent": "Add Agent"
@@ -14,9 +14,18 @@
     "untagged": "Untagged",
     "empty": "No tags are available yet"
   },
+  "tabs": {
+    "identity": "Identity",
+    "defaults": "Defaults & Prompts",
+    "review": "Review Flow",
+    "active": "Active Chat",
+    "advanced": "Advanced"
+  },
   "fields": {
+    "fileName": "Config File Name",
     "agentId": "Agent ID",
     "name": "Name",
+    "mode": "Mode",
     "personaUuid": "Persona",
     "persona": "Persona",
     "personaPlaceholder": "Select a persona",
@@ -26,10 +35,6 @@
     "promptsEmpty": "No prompt components are available",
     "tools": "Tool IDs",
     "toolsEmpty": "No tools are available",
-    "contextStrategyRef": "Context Strategy Ref",
-    "contextStrategyPlaceholder": "Select a context strategy",
-    "contextStrategyEmpty": "No context strategies are available",
-    "contextStrategyParams": "Context Strategy Params (JSON)",
     "config": "Agent Config (JSON)"
   },
   "overlay": {
@@ -38,15 +43,27 @@
   },
   "empty": {
     "title": "No Agents",
-    "subtitle": "No agents match the current tag. Create one from the top-right action."
+    "subtitle": "No data/agents/*.toml profiles exist yet. Create one from the top-right action.",
+    "noFields": "No configurable fields in this section."
   },
   "hints": {
-    "contextStrategyParams": "Optional. Must be a JSON object when provided.",
+    "fileName": "Optional. A safe .toml file name will be generated from Agent ID when left empty.",
     "config": "Optional. Must be a JSON object when provided."
+  },
+  "labels": {
+    "profileCount": "{count} profiles",
+    "issueCount": "{count} issues",
+    "valid": "Valid",
+    "updated": "Updated",
+    "noValue": "Unset",
+    "advancedFields": "Advanced Fields"
+  },
+  "validation": {
+    "title": "Configuration Issues"
   },
   "messages": {
     "loadFailed": "Failed to load agents",
-    "loadContextStrategiesFailed": "Failed to load context strategies",
+    "saveFailed": "Failed to save agent config",
     "created": "Agent created",
     "updated": "Agent updated",
     "deleted": "Agent deleted",
@@ -54,7 +71,6 @@
     "updateFailed": "Failed to update agent",
     "deleteFailed": "Failed to delete agent",
     "requiredFields": "Agent ID, Name, and Persona UUID are required",
-    "invalidContextStrategy": "Context strategy ref and type must be provided together",
     "invalidJson": "Invalid JSON format",
     "confirmDelete": "Delete agent {name}?"
   }

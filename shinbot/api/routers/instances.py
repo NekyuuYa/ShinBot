@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 
 from shinbot.admin.instance_admin import (
     InstanceAdminError,
-    bot_config_by_instance_id,
     control_instance_runtime,
     create_instance_runtime,
     delete_instance_runtime,
+    instance_config_by_instance_id,
     list_instance_payloads,
     serialize_instance_record,
     update_instance_runtime,
@@ -35,16 +35,17 @@ router = APIRouter(
 
 class CreateInstanceRequest(BaseModel):
     name: str | None = None
+    adapter: str | None = None
     adapterType: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     id: str | None = None
-    platform: str | None = None
 
     model_config = {"extra": "allow"}
 
 
 class PatchInstanceRequest(BaseModel):
     name: str | None = None
+    adapter: str | None = None
     adapterType: str | None = None
     config: dict[str, Any] | None = None
 
@@ -72,14 +73,14 @@ async def list_instances(bot=BotDep, boot=BootDep):
 
 @router.post("", status_code=201)
 async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep):
-    instance_id = body.id or body.name or body.adapterType
-    platform = body.adapterType or body.platform or "satori"
+    adapter = body.adapter or body.adapterType or ""
+    instance_id = body.id or body.name or adapter
     try:
         inst_entry = create_instance_runtime(
             bot=bot,
             boot=boot,
             instance_id=instance_id or "",
-            platform=platform,
+            platform=adapter,
             name=body.name or (instance_id or ""),
             config=dict(body.config),
         )
@@ -94,7 +95,7 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
         serialize_instance_record(
             inst_entry,
             bot.adapter_manager,
-            bot_config_by_instance_id(bot.database),
+            instance_config_by_instance_id(bot.database),
         )
     )
 
@@ -120,7 +121,7 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
         serialize_instance_record(
             inst,
             bot.adapter_manager,
-            bot_config_by_instance_id(bot.database),
+            instance_config_by_instance_id(bot.database),
         )
     )
 

@@ -19,7 +19,15 @@ from shinbot.admin.plugin_admin import (
     plugin_dict,
     rescan_plugins,
 )
-from shinbot.utils.logger import set_root_log_level
+from shinbot.core.application.runtime_control import RestartReason
+from shinbot.utils.logger import (
+    apply_logging_runtime_config,
+    get_logger,
+    logging_runtime_snapshot,
+    set_root_log_level,
+)
+
+logger = get_logger(__name__, source="operator", color="magenta")
 
 
 @dataclass(slots=True)
@@ -39,7 +47,7 @@ class OperatorCommandRouter:
 
     @property
     def command_words(self) -> list[str]:
-        return [
+        words = [
             "help",
             "status",
             "instances",
@@ -49,14 +57,21 @@ class OperatorCommandRouter:
             "plugin enable",
             "plugin disable",
             "plugin rescan",
+            "log",
+            "log level",
+            "log third-party",
+            "log sources",
             "loglevel",
+            "restart",
             "clear",
             "quit",
             "exit",
+            "?",
         ]
+        return [*words, *(f"/{word}" for word in words)]
 
     async def execute(self, raw_line: str) -> CommandOutcome:
-        line = raw_line.strip()
+        line = _normalize_operator_line(raw_line)
         if not line:
             return CommandOutcome()
 
@@ -68,11 +83,18 @@ class OperatorCommandRouter:
         if not parts:
             return CommandOutcome()
 
+        try:
+            return await self._execute_parts(parts)
+        except Exception as exc:
+            logger.exception("Operator command failed: %s", raw_line)
+            return CommandOutcome(f"Command failed: {exc}")
+
+    async def _execute_parts(self, parts: list[str]) -> CommandOutcome:
         head = parts[0].lower()
 
-        if head in {"exit", "quit"}:
-            return CommandOutcome("Stopping ShinBot operator console.", exit_requested=True)
-        if head == "help":
+        if head in {"exit", "quit", "q"}:
+            return CommandOutcome("Stopping ShinBot.", exit_requested=True)
+        if head in {"help", "?"}:
             return CommandOutcome(self._help_text())
         if head == "clear":
             return CommandOutcome(clear_screen=True)
@@ -82,8 +104,12 @@ class OperatorCommandRouter:
             return CommandOutcome(self._instances_text())
         if head == "plugins":
             return CommandOutcome(self._plugins_text())
+        if head == "log":
+            return CommandOutcome(self._handle_log(parts[1:]))
         if head == "loglevel":
             return CommandOutcome(self._set_loglevel(parts[1:]))
+        if head == "restart":
+            return self._restart(parts[1:])
         if head == "instance":
             return await self._handle_instance(parts[1:])
         if head == "plugin":
@@ -109,9 +135,16 @@ class OperatorCommandRouter:
                 "  plugin enable <id>       Enable a disabled plugin",
                 "  plugin disable <id>      Disable a loaded plugin",
                 "  plugin rescan            Rescan data/plugins and load new plugins",
-                "  loglevel [LEVEL]         Show or change root log level",
+                "  log                      Show logging runtime state",
+                "  log level [LEVEL]        Show or change root log level",
+                "  log third-party [POLICY] Show or change third-party noise policy",
+                "  log sources              List registered display sources",
+                "  loglevel [LEVEL]         Alias for log level [LEVEL]",
+                "  restart [note]           Request a process restart",
                 "  clear                    Clear the terminal screen",
                 "  exit                     Stop ShinBot and leave the console",
+                "",
+                "Tip: slash-prefixed forms also work, e.g. /status or /plugins.",
             ]
         )
 
@@ -129,9 +162,13 @@ class OperatorCommandRouter:
                 f"boot_state      {self._boot.state.value}",
                 f"api_endpoint    http://{self._api_host}:{self._api_port}",
                 f"log_level       {logging.getLevelName(logging.getLogger().level)}",
+                f"bots            {len(getattr(bot, 'bot_service_configs', ()))} configured",
+                f"model_runtime   {_yes_no(bot.model_runtime is not None)}",
+                f"agent_runtime   {_yes_no(bot.agent_runtime is not None)}",
                 f"instances       {len(adapter_manager.all_instances)} total / {running_instances} running",
                 f"plugins         {len(plugins)} loaded",
                 f"commands        {len(bot.command_registry.all_commands)} registered",
+                f"database        {_database_path(bot)}",
                 f"data_dir        {self._boot.data_dir}",
                 f"config_path     {self._boot.config_path}",
             ]
@@ -144,7 +181,7 @@ class OperatorCommandRouter:
             rows.append(
                 [
                     item["id"] or "-",
-                    item["adapterType"] or "-",
+                    item["adapter"] or "-",
                     item["status"],
                     item["name"] or "-",
                 ]
@@ -174,6 +211,70 @@ class OperatorCommandRouter:
         except ValueError as exc:
             return str(exc)
         return f"Root log level set to {normalized}"
+
+    def _handle_log(self, args: list[str]) -> str:
+        if not args:
+            return self._logging_status_text()
+
+        action = args[0].lower()
+        if action == "level":
+            return self._set_loglevel(args[1:])
+        if action in {"third-party", "third_party", "noise"}:
+            return self._set_third_party_noise(args[1:])
+        if action == "sources":
+            return self._logging_sources_text()
+        return "Usage: log [level [LEVEL] | third-party [off|debug|on] | sources]"
+
+    def _set_third_party_noise(self, args: list[str]) -> str:
+        if not args:
+            state = logging_runtime_snapshot()
+            return f"Current third-party noise policy: {state['thirdPartyNoise']}"
+        try:
+            state = apply_logging_runtime_config(third_party_noise=args[0])
+        except ValueError as exc:
+            return str(exc)
+        return f"Third-party noise policy set to {state['thirdPartyNoise']}"
+
+    def _logging_status_text(self) -> str:
+        state = logging_runtime_snapshot()
+        console_handlers = sum(1 for handler in state["handlers"] if handler["console"])
+        return "\n".join(
+            [
+                f"level                  {state['level']}",
+                f"effective_level        {state['effectiveLevel']}",
+                f"third_party_noise      {state['thirdPartyNoise']}",
+                f"source_width           {state['sourceWidth']}",
+                f"sources                {len(state['sources'])} registered",
+                f"handlers               {len(state['handlers'])} total / {console_handlers} console",
+            ]
+        )
+
+    def _logging_sources_text(self) -> str:
+        rows = [
+            [
+                item["source"],
+                item["color"] or "-",
+                item["loggerName"],
+            ]
+            for item in logging_runtime_snapshot()["sources"]
+        ]
+        return self._render_table(["SOURCE", "COLOR", "LOGGER"], rows)
+
+    def _restart(self, args: list[str]) -> CommandOutcome:
+        runtime_control = getattr(self._bot(), "runtime_control", None)
+        if runtime_control is None:
+            return CommandOutcome("Runtime control is not attached; restart is unavailable.")
+        note = " ".join(args).strip()
+        try:
+            request = runtime_control.request_restart(
+                reason=RestartReason.MANUAL,
+                requested_by="operator-cli",
+                source="operator-cli.restart",
+            )
+        except RuntimeError as exc:
+            return CommandOutcome(str(exc))
+        suffix = f" ({note})" if note else ""
+        return CommandOutcome(f"Restart requested at {request.requested_at}{suffix}.")
 
     async def _handle_instance(self, args: list[str]) -> CommandOutcome:
         if len(args) != 2 or args[0].lower() not in {"start", "stop"}:
@@ -238,3 +339,23 @@ class OperatorCommandRouter:
         lines = [render_row(headers), divider]
         lines.extend(render_row(row) for row in rows)
         return "\n".join(lines)
+
+
+def _normalize_operator_line(raw_line: str) -> str:
+    line = raw_line.strip()
+    if line.startswith("/"):
+        line = line[1:].lstrip()
+    return line
+
+
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _database_path(bot: Any) -> str:
+    database = getattr(bot, "database", None)
+    if database is None:
+        return "-"
+    config = getattr(database, "config", None)
+    path = getattr(config, "sqlite_path", None)
+    return str(path) if path is not None else "-"

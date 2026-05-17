@@ -1,0 +1,134 @@
+[provider]
+kind = "adapter"
+id = "onebot_v11"
+display_name = "OneBot v11"
+description = "OneBot v11 WebSocket adapter."
+config_version = "1.0.0"
+
+[[fields]]
+path = "mode"
+type = "enum"
+required = true
+default = "reverse"
+choices = ["forward", "reverse"]
+description = "Connection mode."
+
+[[fields]]
+path = "url"
+type = "string"
+default = "ws://127.0.0.1:3001"
+visible_when = "mode == 'forward'"
+description = "Forward WebSocket URL."
+
+[[fields]]
+path = "reverse_host"
+type = "string"
+default = "0.0.0.0"
+visible_when = "mode == 'reverse'"
+description = "Reverse WebSocket listener host."
+
+[[fields]]
+path = "reverse_port"
+type = "integer"
+default = 8082
+min = 1
+max = 65535
+visible_when = "mode == 'reverse'"
+description = "Reverse WebSocket listener port."
+
+[[fields]]
+path = "reverse_path"
+type = "string"
+default = "/onebot/v11"
+visible_when = "mode == 'reverse'"
+advanced = true
+description = "Reverse WebSocket path."
+
+[[fields]]
+path = "self_id"
+type = "string"
+default = ""
+advanced = true
+description = "Expected X-Self-ID for reverse connection validation."
+
+[[fields]]
+path = "access_token"
+type = "string"
+default = ""
+secret = true
+description = "Access token for WebSocket authentication."
+
+[[fields]]
+path = "request_timeout"
+type = "float"
+default = 20.0
+min = 0.1
+advanced = true
+description = "API request timeout in seconds."
+
+[[fields]]
+path = "forward_max_depth"
+type = "integer"
+default = 3
+min = 0
+advanced = true
+description = "Maximum nested forward-message expansion depth."
+
+[[fields]]
+path = "auto_download_media"
+type = "boolean"
+default = true
+advanced = true
+description = "Cache image and video resources before message ingress."
+
+[[fields]]
+path = "download_file_resources"
+type = "boolean"
+default = false
+advanced = true
+description = "Download file attachments before message ingress."
+
+[[fields]]
+path = "max_resource_bytes"
+type = "integer"
+default = 15728640
+min = 1
+advanced = true
+description = "Maximum bytes allowed for one cached resource."
+
+[[fields]]
+path = "resource_cache_dir"
+type = "path"
+default = "data/temp/resources"
+advanced = true
+description = "Local cache directory for downloaded resources."
+
+[[fields]]
+path = "reconnect_delay"
+type = "float"
+default = 5.0
+min = 0.0
+advanced = true
+description = "Reconnect delay in seconds."
+
+[[fields]]
+path = "max_reconnects"
+type = "integer"
+default = -1
+advanced = true
+description = "Maximum reconnect attempts, -1 for infinite."
+
+[[fields]]
+path = "silent_reconnect"
+type = "boolean"
+default = true
+advanced = true
+description = "Suppress frequent reconnect warnings."
+
+[[fields]]
+path = "reconnect_log_interval"
+type = "float"
+default = 30.0
+min = 1.0
+advanced = true
+description = "Minimum seconds between reconnect warning logs."

@@ -1,0 +1,4 @@
+mode = "reverse"
+reverse_port = 8082
+reverse_path = "/onebot/v11"
+access_token = ""

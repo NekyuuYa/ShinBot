@@ -6,5 +6,6 @@
   "description": "Logs model runtime requests and responses with usage/cache metrics for debugging.",
   "entry": "__init__.py",
   "role": "logic",
+  "default_enabled": false,
   "permissions": []
 }

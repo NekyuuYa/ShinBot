@@ -1,12 +1,12 @@
 """Permission system — RBAC with session-scoped and global-scoped bindings.
 
-Implements the permission specification (05_permission_system.md).
+Implements the permission specification (permission_system.md).
 
 Permission model:
   - Permissions are dot-separated tree paths: "tools.weather", "sys.reboot"
   - Wildcard "*" matches all permissions at or below a level
   - Negative permissions "-tools.weather" explicitly deny access
-  - Final set = Global | Session-local | Session-base
+  - Final set = Identity-global | Session-local | Session-base
   - Explicit deny takes precedence over any grant
 """
 
@@ -125,8 +125,8 @@ class PermissionBinding(BaseModel):
     """Maps a binding key to a permission group ID.
 
     Binding key formats:
-      - Session-scoped: "{session_id}.{user_id}"
-      - Global-scoped:  "{instance_id}:{user_id}"
+      - Session-scoped: "{identity_id}:{session_key}.{user_id}"
+      - Global-scoped:  "{identity_id}:{user_id}"
     """
 
     key: str
@@ -137,8 +137,8 @@ class PermissionEngine:
     """Manages permission groups, bindings, and resolution.
 
     Resolves a user's effective permissions by merging:
-    1. Global binding: {instance_id}:{user_id}
-    2. Session-local binding: {session_id}.{user_id}
+    1. Global binding: {identity_id}:{user_id}
+    2. Session-local binding: {identity_session_id}.{user_id}
     3. Session-base: the session's default permission group
     """
 
@@ -199,6 +199,9 @@ class PermissionEngine:
         1. Global: {instance_id}:{user_id}
         2. Session-local: {session_id}.{user_id}
         3. Session-base: the session's default permission group
+
+        The parameter is still named ``instance_id`` for API compatibility, but
+        callers may pass a bot id as the permission identity.
         """
         layers: list[set[str]] = []
 

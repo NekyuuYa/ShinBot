@@ -9,7 +9,6 @@ Implements the communication contract defined in 16_api_communication_spec.md:
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -24,10 +23,11 @@ from fastapi.staticfiles import StaticFiles
 
 from shinbot.api.auth import AuthConfig
 from shinbot.api.models import EC, Envelope, ErrorBody
-from shinbot.api.routers import agents as agents_router
+from shinbot.api.routers import agent_configs as agent_configs_router
 from shinbot.api.routers import auth as auth_router
-from shinbot.api.routers import bot_configs as bot_configs_router
-from shinbot.api.routers import context_strategies as context_strategies_router
+from shinbot.api.routers import config as config_router
+from shinbot.api.routers import config_providers as config_providers_router
+from shinbot.api.routers import instance_configs as instance_configs_router
 from shinbot.api.routers import instances as instances_router
 from shinbot.api.routers import model_runtime as model_runtime_router
 from shinbot.api.routers import personas as personas_router
@@ -42,8 +42,9 @@ from shinbot.api.ws_manager import (
     log_manager,
     status_manager,
 )
+from shinbot.core.application.config_sections import iter_adapter_instance_records
 from shinbot.core.application.system_update import DashboardDistUpdateService, SystemUpdateService
-from shinbot.utils.logger import register_log_handler_installer
+from shinbot.utils.logger import get_logger, register_log_handler_installer
 
 # Push the WebSocket log handler installer into utils so that
 # setup_logging() can call it without importing shinbot.api.
@@ -55,7 +56,9 @@ if TYPE_CHECKING:
     from shinbot.core.application.boot import BootController
     from shinbot.core.application.runtime_control import RuntimeControl
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="api", color="blue")
+_STATUS_PROCESS: Any | None = None
+_STATUS_PROCESS_PID: int | None = None
 
 
 def create_api_app(
@@ -79,6 +82,10 @@ def create_api_app(
 
         runtime_control = RuntimeControl()
     bot.runtime_control = runtime_control
+    if getattr(bot, "model_runtime", None) is None and _model_runtime_enabled_for_api(boot):
+        from shinbot.core.runtime import install_model_runtime
+
+        install_model_runtime(bot)
 
     # ── Lifespan (startup / shutdown hooks) ──────────────────────────
 
@@ -158,20 +165,25 @@ def create_api_app(
     @app.exception_handler(HTTPException)
     async def _http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse:
         detail = exc.detail
+        data = None
         if isinstance(detail, dict) and "code" in detail:
             error = ErrorBody(code=detail["code"], message=detail.get("message", ""))
+            data = {key: value for key, value in detail.items() if key not in {"code", "message"}}
+            if not data:
+                data = None
         else:
             error = ErrorBody(code="HTTP_ERROR", message=str(detail))
-        body = Envelope(success=False, error=error, timestamp=int(time.time()))
+        body = Envelope(success=False, data=data, error=error, timestamp=int(time.time()))
         return JSONResponse(status_code=exc.status_code, content=body.model_dump())
 
     # ── API routers ───────────────────────────────────────────────────
 
     api_prefix = "/api/v1"
+    app.include_router(agent_configs_router.router, prefix=api_prefix)
     app.include_router(auth_router.router, prefix=api_prefix)
-    app.include_router(agents_router.router, prefix=api_prefix)
-    app.include_router(bot_configs_router.router, prefix=api_prefix)
-    app.include_router(context_strategies_router.router, prefix=api_prefix)
+    app.include_router(config_router.router, prefix=api_prefix)
+    app.include_router(config_providers_router.router, prefix=api_prefix)
+    app.include_router(instance_configs_router.router, prefix=api_prefix)
     app.include_router(instances_router.router, prefix=api_prefix)
     app.include_router(model_runtime_router.router, prefix=api_prefix)
     app.include_router(personas_router.router, prefix=api_prefix)
@@ -311,25 +323,77 @@ def create_api_app(
     return app
 
 
+def _model_runtime_enabled_for_api(boot: BootController) -> bool:
+    config = getattr(boot, "config", {})
+    if not isinstance(config, dict):
+        return False
+    runtime = config.get("runtime", {})
+    if not isinstance(runtime, dict):
+        return False
+    return runtime.get("model") is True
+
+
 # ── System status snapshot ────────────────────────────────────────────
 
 
-def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> dict[str, Any]:
-    cpu = 0.0
-    mem_mb = 0.0
+def _mb(value: float | int) -> float:
+    return round(float(value) / (1024 * 1024), 2)
+
+
+def _status_process(psutil: Any) -> Any:
+    global _STATUS_PROCESS, _STATUS_PROCESS_PID
+
+    pid = os.getpid()
+    if _STATUS_PROCESS is None or _STATUS_PROCESS_PID != pid or not _STATUS_PROCESS.is_running():
+        _STATUS_PROCESS = psutil.Process(pid)
+        _STATUS_PROCESS_PID = pid
+        _STATUS_PROCESS.cpu_percent(interval=None)
+    return _STATUS_PROCESS
+
+
+def _collect_resource_metrics() -> dict[str, float]:
+    metrics = {
+        "system_cpu_usage": 0.0,
+        "process_cpu_usage": 0.0,
+        "system_memory_usage": 0.0,
+        "system_memory_used_mb": 0.0,
+        "system_memory_total_mb": 0.0,
+        "system_memory_available_mb": 0.0,
+        "process_memory_mb": 0.0,
+    }
     try:
         import psutil
 
-        # 使用当前进程的内存快照
-        process = psutil.Process(os.getpid())
-        cpu = process.cpu_percent(interval=None)
-        # 转换为 MB 并保留两位小数
-        mem_mb = round(process.memory_info().rss / (1024 * 1024), 2)
+        process = _status_process(psutil)
+        memory = psutil.virtual_memory()
+        system_memory_used = max(float(memory.total) - float(memory.available), 0.0)
+
+        metrics.update(
+            {
+                "system_cpu_usage": round(float(psutil.cpu_percent(interval=None)), 2),
+                "process_cpu_usage": round(float(process.cpu_percent(interval=None)), 2),
+                "system_memory_usage": round(float(memory.percent), 2),
+                "system_memory_used_mb": _mb(system_memory_used),
+                "system_memory_total_mb": _mb(memory.total),
+                "system_memory_available_mb": _mb(memory.available),
+                "process_memory_mb": _mb(process.memory_info().rss),
+            }
+        )
     except Exception:
         pass
 
+    return metrics
+
+
+def _plugin_enabled(plugin: Any) -> bool:
+    state = getattr(getattr(plugin, "state", None), "value", None)
+    return state in {"active", "loaded", "running"}
+
+
+def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> dict[str, Any]:
+    metrics = _collect_resource_metrics()
     mgr = bot.adapter_manager
-    configured_instances = boot.config.get("instances", []) if boot is not None else []
+    configured_instances = iter_adapter_instance_records(boot.config) if boot is not None else []
     instances: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
@@ -362,14 +426,23 @@ def _build_system_status(bot: ShinBot, boot: BootController | None = None) -> di
     if runtime_control is not None and hasattr(runtime_control, "snapshot"):
         restart_request = runtime_control.snapshot()
 
+    plugins = bot.plugin_manager.all_plugins
+
     return {
         "totalInstances": total_instances,
         "runningInstances": running_instances,
         "stoppedInstances": total_instances - running_instances,
-        "totalPlugins": len(bot.plugin_manager.all_plugins),
-        "enabledPlugins": len(bot.plugin_manager.all_plugins),
-        "cpuUsage": cpu,
-        "memoryUsage": mem_mb,  # 现在是 MB 单位
+        "totalPlugins": len(plugins),
+        "enabledPlugins": sum(1 for plugin in plugins if _plugin_enabled(plugin)),
+        "cpuUsage": metrics["system_cpu_usage"],
+        "memoryUsage": metrics["process_memory_mb"],
+        "systemCpuUsage": metrics["system_cpu_usage"],
+        "processCpuUsage": metrics["process_cpu_usage"],
+        "systemMemoryUsage": metrics["system_memory_usage"],
+        "systemMemoryUsedMb": metrics["system_memory_used_mb"],
+        "systemMemoryTotalMb": metrics["system_memory_total_mb"],
+        "systemMemoryAvailableMb": metrics["system_memory_available_mb"],
+        "processMemoryMb": metrics["process_memory_mb"],
         "online": True,
         "restartRequested": restart_request is not None,
         "restartRequest": restart_request,

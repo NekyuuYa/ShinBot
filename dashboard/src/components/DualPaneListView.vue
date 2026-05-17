@@ -42,6 +42,7 @@
 
 <script setup lang="ts" generic="T">
 import { computed, useSlots } from 'vue'
+import { useDelayedFlag } from '@/composables/useDelayedFlag'
 
 export interface DualPaneEmptyConfig {
   icon: string
@@ -80,10 +81,18 @@ const layoutStyle = computed(() => ({
   '--dual-pane-sidebar-width': props.sidebarWidth,
 }))
 
-const showLoadingState = computed(() => props.showSkeleton ?? (props.loading && props.items.length === 0))
+const requestedLoadingState = computed(
+  () => props.showSkeleton ?? (props.loading && props.items.length === 0)
+)
+const showLoadingState = useDelayedFlag(requestedLoadingState)
 
 const showEmptyState = computed(
-  () => !hasContentSlot.value && !showLoadingState.value && props.items.length === 0 && Boolean(props.emptyConfig)
+  () =>
+    !hasContentSlot.value &&
+    !props.loading &&
+    !showLoadingState.value &&
+    props.items.length === 0 &&
+    Boolean(props.emptyConfig)
 )
 
 const getKey = (item: T, index: number) => props.getItemKey?.(item, index) ?? index

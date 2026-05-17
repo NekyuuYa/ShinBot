@@ -9,13 +9,13 @@ from pydantic import BaseModel, Field
 
 from shinbot.admin.prompt_definition_admin import (
     PromptDefinitionAdminError,
+    PromptDefinitionFileRepository,
     assert_prompt_id_available,
-    build_prompt_definition_record,
     get_prompt_definition_or_raise,
     normalize_prompt_definition_input,
     serialize_prompt_definition,
 )
-from shinbot.api.deps import AuthRequired, BotDep
+from shinbot.api.deps import AuthRequired, BootDep
 from shinbot.api.models import ok
 
 router = APIRouter(
@@ -78,16 +78,22 @@ def _raise_admin_http_error(exc: PromptDefinitionAdminError) -> None:
     ) from exc
 
 
+def _prompt_repository(boot) -> PromptDefinitionFileRepository:
+    return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
+
+
 @router.get("")
-def list_prompt_definitions(bot=BotDep):
-    return ok(
-        [serialize_prompt_definition(item) for item in bot.database.prompt_definitions.list()]
-    )
+def list_prompt_definitions(boot=BootDep):
+    try:
+        return ok([serialize_prompt_definition(item) for item in _prompt_repository(boot).list()])
+    except PromptDefinitionAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
 @router.post("", status_code=201)
-def create_prompt_definition(body: PromptDefinitionRequest, bot=BotDep):
+def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
     try:
+        repository = _prompt_repository(boot)
         normalized = normalize_prompt_definition_input(
             prompt_id=body.promptId,
             name=body.name,
@@ -110,30 +116,28 @@ def create_prompt_definition(body: PromptDefinitionRequest, bot=BotDep):
             tags=body.tags,
             metadata=body.metadata,
         )
-        assert_prompt_id_available(bot.database, normalized.prompt_id, current_uuid=None)
-        record = build_prompt_definition_record(prompt_uuid=None, normalized=normalized)
+        assert_prompt_id_available(repository, normalized.prompt_id, current_uuid=None)
+        payload = repository.create(normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
 
-    bot.database.prompt_definitions.upsert(record)
-    payload = bot.database.prompt_definitions.get(record.uuid)
-    assert payload is not None
     return ok(serialize_prompt_definition(payload))
 
 
 @router.get("/{prompt_uuid}")
-def get_prompt_definition(prompt_uuid: str, bot=BotDep):
+def get_prompt_definition(prompt_uuid: str, boot=BootDep):
     try:
-        payload = get_prompt_definition_or_raise(bot.database, prompt_uuid)
+        payload = get_prompt_definition_or_raise(_prompt_repository(boot), prompt_uuid)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
     return ok(serialize_prompt_definition(payload))
 
 
 @router.patch("/{prompt_uuid}")
-def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest, bot=BotDep):
+def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest, boot=BootDep):
     try:
-        current = get_prompt_definition_or_raise(bot.database, prompt_uuid)
+        repository = _prompt_repository(boot)
+        current = get_prompt_definition_or_raise(repository, prompt_uuid)
         normalized = normalize_prompt_definition_input(
             prompt_id=body.promptId if body.promptId is not None else str(current["prompt_id"]),
             name=body.name if body.name is not None else str(current["name"]),
@@ -176,26 +180,18 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
             tags=body.tags if body.tags is not None else list(current["tags"]),
             metadata=body.metadata if body.metadata is not None else dict(current["metadata"]),
         )
-        assert_prompt_id_available(bot.database, normalized.prompt_id, current_uuid=prompt_uuid)
-        record = build_prompt_definition_record(
-            prompt_uuid=prompt_uuid,
-            normalized=normalized,
-            created_at=str(current["created_at"]),
-        )
+        assert_prompt_id_available(repository, normalized.prompt_id, current_uuid=prompt_uuid)
+        payload = repository.update(prompt_uuid, normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
 
-    bot.database.prompt_definitions.upsert(record)
-    payload = bot.database.prompt_definitions.get(prompt_uuid)
-    assert payload is not None
     return ok(serialize_prompt_definition(payload))
 
 
 @router.delete("/{prompt_uuid}")
-def delete_prompt_definition(prompt_uuid: str, bot=BotDep):
+def delete_prompt_definition(prompt_uuid: str, boot=BootDep):
     try:
-        get_prompt_definition_or_raise(bot.database, prompt_uuid)
+        _prompt_repository(boot).delete(prompt_uuid)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
-    bot.database.prompt_definitions.delete(prompt_uuid)
     return ok({"deleted": True, "uuid": prompt_uuid})

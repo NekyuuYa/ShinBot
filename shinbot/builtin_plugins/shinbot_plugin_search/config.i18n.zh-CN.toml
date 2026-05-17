@@ -1,0 +1,34 @@
+[provider]
+display_name = "网页搜索"
+description = "由 Tavily 驱动的网页搜索插件。"
+
+[[fields]]
+path = "tavily_api_key"
+label = "Tavily API Key"
+description = "Tavily 搜索服务的 API Key。也可以通过 TAVILY_API_KEY 环境变量提供。"
+
+[[fields]]
+path = "timeout_seconds"
+label = "请求超时秒数"
+description = "调用 Tavily API 时等待响应的最长时间。"
+
+[[fields]]
+path = "default_max_results"
+label = "默认结果数量"
+description = "默认返回的搜索结果条数。"
+
+[[fields]]
+path = "default_search_depth"
+label = "默认搜索深度"
+description = "Tavily 搜索深度。高级搜索会更深入，但通常更慢。"
+choices = { basic = "基础", advanced = "高级" }
+
+[[fields]]
+path = "include_answer"
+label = "包含 Tavily 摘要答案"
+description = "在工具输出中包含 Tavily 生成的摘要答案。"
+
+[[fields]]
+path = "include_raw_content"
+label = "包含原始网页内容"
+description = "当搜索结果提供 raw_content 时，将其一起包含在工具输出中。"

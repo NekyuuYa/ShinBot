@@ -8,24 +8,18 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from shinbot.persistence.config import DatabaseConfig
-from shinbot.persistence.defaults import builtin_sliding_window_context_strategy
-from shinbot.persistence.records import utc_now_iso
 from shinbot.persistence.schema import apply_schema
 
 from .repositories import (
-    AgentRepository,
     AIInteractionRepository,
     AuditRepository,
-    BotConfigRepository,
-    ContextStrategyRepository,
+    InstanceConfigRepository,
     MediaAssetRepository,
     MediaSemanticRepository,
     MessageLogRepository,
     MessageMediaLinkRepository,
     ModelExecutionRepository,
     ModelRegistryRepository,
-    PersonaRepository,
-    PromptDefinitionRepository,
     PromptSnapshotRepository,
     SessionMediaOccurrenceRepository,
     SessionRepository,
@@ -39,12 +33,8 @@ class DatabaseManager:
         self.config = config
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
-        self.agents = AgentRepository(self)
-        self.bot_configs = BotConfigRepository(self)
-        self.personas = PersonaRepository(self)
-        self.prompt_definitions = PromptDefinitionRepository(self)
-        self.context_strategies = ContextStrategyRepository(self)
-        self.model_registry = ModelRegistryRepository(self)
+        self.instance_configs = InstanceConfigRepository.from_data_dir(config.data_dir)
+        self.model_registry = ModelRegistryRepository.from_data_dir(config.data_dir)
         self.model_executions = ModelExecutionRepository(self, model_registry=self.model_registry)
         self.message_logs = MessageLogRepository(self)
         self.ai_interactions = AIInteractionRepository(self)
@@ -54,11 +44,12 @@ class DatabaseManager:
         self.session_media_occurrences = SessionMediaOccurrenceRepository(self)
         self.media_semantics = MediaSemanticRepository(self)
 
-        # Lazy-imported to avoid circular dependency (attention -> model_runtime -> persistence)
-        from shinbot.agent.attention.repository import AttentionRepository, WorkflowRunRepository
+        # Lazy-imported to avoid circular dependency
+        from shinbot.agent.scheduler.repository import AgentSchedulerRepository
+        from shinbot.persistence.repositories.agent_summaries import AgentSummaryRepository
 
-        self.attention = AttentionRepository(self)
-        self.workflow_runs = WorkflowRunRepository(self)
+        self.agent_scheduler = AgentSchedulerRepository(self)
+        self.agent_summaries = AgentSummaryRepository(self)
 
     @classmethod
     def from_bootstrap(
@@ -94,8 +85,5 @@ class DatabaseManager:
         """Create the database file and ensure the known schema exists."""
         with self.connect() as conn:
             apply_schema(conn)
-        self._ensure_builtin_context_strategies()
-
-    def _ensure_builtin_context_strategies(self) -> None:
-        now = utc_now_iso()
-        self.context_strategies.upsert(builtin_sliding_window_context_strategy(now))
+        self.instance_configs.ensure_file()
+        self.model_registry.ensure_file()

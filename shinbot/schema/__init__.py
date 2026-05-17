@@ -12,6 +12,7 @@ from shinbot.schema.resources import (
     Member,
     User,
 )
+from shinbot.schema.routing import MessageRoutingSkipReason, MessageRoutingStatus
 
 __all__ = [
     "MessageElement",
@@ -23,4 +24,6 @@ __all__ = [
     "Member",
     "Login",
     "MessagePayload",
+    "MessageRoutingSkipReason",
+    "MessageRoutingStatus",
 ]

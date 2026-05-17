@@ -10,38 +10,37 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from shinbot.agent.attention import (
-    AttentionConfig,
-    AttentionEngine,
-    AttentionScheduler,
-    AttentionSchedulerConfig,
-    register_attention_runtime,
+from shinbot.core.application.bot_routing import BotRuntimeRouter
+from shinbot.core.application.bots_config import BotServiceConfig
+from shinbot.core.config_provider import ConfigProviderRegistry
+from shinbot.core.dispatch.dispatchers import (
+    AGENT_ENTRY_TARGET,
+    NOTICE_DISPATCHER_TARGET,
+    AgentEntryDispatcher,
+    AgentEntryHandler,
+    NoticeDispatcher,
+    make_agent_entry_fallback_route_rule,
+    make_notice_route_rule,
 )
-from shinbot.agent.context import ContextManager
-from shinbot.agent.identity import (
-    IdentityStore,
-    register_identity_prompt_components,
-    register_identity_tools,
-)
-from shinbot.agent.media import (
-    MediaInspectionRunner,
-    MediaService,
-    register_media_prompt_components,
-    register_media_runtime,
-)
-from shinbot.agent.model_runtime import ModelRuntime
-from shinbot.agent.prompt_manager import PromptRegistry
-from shinbot.agent.runtime import register_runtime_prompt_components
-from shinbot.agent.tools import ToolManager, ToolRegistry
-from shinbot.agent.workflow import WorkflowRunner
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
-from shinbot.core.dispatch.pipeline import MessagePipeline
+from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
+from shinbot.core.dispatch.routing import RouteTable
+from shinbot.core.message_routes import (
+    KEYWORD_DISPATCHER_TARGET,
+    TEXT_COMMAND_DISPATCHER_TARGET,
+    CommandRegistry,
+    KeywordDispatcher,
+    KeywordRegistry,
+    TextCommandDispatcher,
+    make_keyword_route_rule,
+    make_text_command_route_rule,
+)
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
 from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
+from shinbot.core.tools import ToolRegistry
 from shinbot.persistence import DatabaseManager
 from shinbot.schema.events import UnifiedEvent
 
@@ -60,19 +59,16 @@ class ShinBot:
         *,
         database_url: str | None = None,
         database_snapshot_ttl: int | None = None,
-        attention_config: AttentionConfig | None = None,
-        attention_scheduler_config: AttentionSchedulerConfig | None = None,
-        attention_debug: bool = False,
     ) -> None:
         # Core subsystems
         self.database: DatabaseManager | None = None
         self.runtime_control: Any | None = None
-        runtime_data_dir = Path(data_dir) if data_dir is not None else Path("data")
+        self.data_dir = Path(data_dir) if data_dir is not None else Path("data")
         session_repo = None
         audit_repo = None
         if data_dir is not None or database_url is not None:
             self.database = DatabaseManager.from_bootstrap(
-                data_dir=runtime_data_dir,
+                data_dir=self.data_dir,
                 url=database_url,
                 snapshot_ttl=database_snapshot_ttl,
             )
@@ -82,126 +78,75 @@ class ShinBot:
 
         self.event_bus = EventBus()
         self.command_registry = CommandRegistry()
+        self.keyword_registry = KeywordRegistry()
+        self.route_table = RouteTable()
+        self.route_targets = RouteTargetRegistry()
         self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
-        self.model_runtime = ModelRuntime(self.database)
-        self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
-        self.media_service = MediaService(self.database) if self.database is not None else None
-        self.context_manager = (
-            ContextManager(
-                self.database.message_logs,
-                data_dir=runtime_data_dir,
-                identity_store=self.identity_store,
-                media_service=self.media_service,
-            )
-            if self.database is not None
-            else None
-        )
-        self.prompt_registry = PromptRegistry(
-            context_manager=self.context_manager,
-            identity_store=self.identity_store,
-        )
-        register_identity_prompt_components(
-            self.prompt_registry,
-            identity_store=self.identity_store,
-        )
-        register_runtime_prompt_components(
-            self.prompt_registry,
-            message_text_resolver=self.prompt_registry.resolve_builtin_message_text_prompt,
-            current_time_resolver=self.prompt_registry.resolve_builtin_current_time_prompt,
-        )
-        register_media_prompt_components(self.prompt_registry)
-        self.media_inspection_runner = (
-            MediaInspectionRunner(
-                self.database,
-                self.prompt_registry,
-                self.model_runtime,
-                self.media_service,
-            )
-            if self.database is not None and self.media_service is not None
-            else None
-        )
         self.permission_engine = PermissionEngine()
         self.tool_registry = ToolRegistry()
-        self.tool_manager = ToolManager(
-            self.tool_registry,
-            permission_engine=self.permission_engine,
-            audit_logger=self.audit_logger,
-        )
-        register_identity_tools(self.tool_registry, self.identity_store, self.context_manager)
         self.adapter_manager = AdapterManager()
+        self.config_provider_registry = ConfigProviderRegistry()
+        self._register_builtin_config_providers()
+        self.bot_service_configs: tuple[BotServiceConfig, ...] = ()
+        self.bot_runtime_router: BotRuntimeRouter | None = None
+        self.model_runtime_system: Any | None = None
+        self.model_runtime: Any | None = None
+        self.agent_runtime: Any | None = None
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,
+            keyword_registry=self.keyword_registry,
+            route_table=self.route_table,
+            route_targets=self.route_targets,
             event_bus=self.event_bus,
             adapter_manager=self.adapter_manager,
             tool_registry=self.tool_registry,
-            model_runtime=self.model_runtime,
             data_dir=data_dir,
             database=self.database,
+            config_provider_registry=self.config_provider_registry,
         )
 
-        # ── Attention-driven conversation workflow ──────────────────
-        self.attention_config = attention_config or AttentionConfig()
-        if attention_debug:
-            self.attention_config.debug = True
-        self.attention_scheduler_config = (
-            attention_scheduler_config
-            or AttentionSchedulerConfig.from_engine_config(self.attention_config)
+        self.text_command_dispatcher = TextCommandDispatcher(
+            self.command_registry,
+            audit_logger=self.audit_logger,
+            session_manager=self.session_manager,
         )
-        self.attention_engine: AttentionEngine | None = None
-        self.attention_scheduler: AttentionScheduler | None = None
-        self.workflow_runner: WorkflowRunner | None = None
-
-        if self.database is not None:
-            self.attention_engine = AttentionEngine(
-                self.attention_config,
-                self.database.attention,
-            )
-            self.attention_scheduler = AttentionScheduler(
-                self.attention_engine,
-                self.attention_scheduler_config,
-                context_manager=self.context_manager,
-            )
-            self.workflow_runner = WorkflowRunner(
-                self.database,
-                self.prompt_registry,
-                self.model_runtime,
-                self.tool_manager,
-                self.attention_engine,
-                self.adapter_manager,
-                self.media_service,
-                self.context_manager,
-            )
-            # Wire workflow dispatcher into the scheduler
-            self.attention_scheduler.set_workflow_dispatcher(
-                self._dispatch_attention_workflow,
-            )
-            register_attention_runtime(
-                self.tool_registry,
-                engine=self.attention_engine,
-                adapter_manager=self.adapter_manager,
-                database=self.database,
-                context_manager=self.context_manager,
-            )
-            register_media_runtime(
-                self.tool_registry,
-                media_service=self.media_service,
-                inspection_runner=self.media_inspection_runner,
-            )
-
-        self.pipeline = MessagePipeline(
-            adapter_manager=self.adapter_manager,
+        self.keyword_dispatcher = KeywordDispatcher(
+            self.keyword_registry,
+            session_manager=self.session_manager,
+        )
+        self.notice_dispatcher = NoticeDispatcher(self.event_bus)
+        self.agent_entry_dispatcher = AgentEntryDispatcher()
+        self.route_targets.register(TEXT_COMMAND_DISPATCHER_TARGET, self.text_command_dispatcher)
+        self.route_targets.register(KEYWORD_DISPATCHER_TARGET, self.keyword_dispatcher)
+        self.route_targets.register(NOTICE_DISPATCHER_TARGET, self.notice_dispatcher)
+        self.route_targets.register(AGENT_ENTRY_TARGET, self.agent_entry_dispatcher)
+        self.route_table.register(make_text_command_route_rule(self.text_command_dispatcher))
+        self.route_table.register(make_keyword_route_rule(self.keyword_dispatcher))
+        self.route_table.register(make_notice_route_rule(self.notice_dispatcher))
+        self.route_table.register(make_agent_entry_fallback_route_rule())
+        self.message_ingress = MessageIngress(
             session_manager=self.session_manager,
             permission_engine=self.permission_engine,
-            command_registry=self.command_registry,
-            event_bus=self.event_bus,
+            route_table=self.route_table,
+            route_targets=self.route_targets,
             audit_logger=self.audit_logger,
             database=self.database,
-            context_manager=self.context_manager,
-            attention_scheduler=self.attention_scheduler,
-            media_service=self.media_service,
-            media_inspection_runner=self.media_inspection_runner,
         )
+
+    def _register_builtin_config_providers(self) -> None:
+        from shinbot.agent.runtime.config_provider import register_builtin_agent_config_provider
+
+        register_builtin_agent_config_provider(self.config_provider_registry)
+
+    def configure_bot_service_configs(self, configs: tuple[BotServiceConfig, ...]) -> None:
+        """Install parsed bot service-unit configs into ingress routing."""
+
+        self.bot_service_configs = tuple(configs)
+        self.bot_runtime_router = (
+            BotRuntimeRouter(self.bot_service_configs) if self.bot_service_configs else None
+        )
+        self.message_ingress.set_bot_router(self.bot_runtime_router)
 
     # ── Event ingress callback ───────────────────────────────────────
 
@@ -212,37 +157,47 @@ class ShinBot:
         via adapter.set_event_callback().
         """
         try:
-            await self.pipeline.process_event(event, adapter)
+            await self.message_ingress.process_event(event, adapter)
         except Exception:
             logger.exception("Unhandled error processing event: %s", event.type)
 
-    # ── Attention workflow dispatcher ────────────────────────────────
+    def set_agent_entry_handler(self, handler: AgentEntryHandler | None) -> None:
+        """Attach the Agent-side handler for unmatched user-message signals."""
+        self.agent_entry_dispatcher.set_handler(handler)
 
-    async def _dispatch_attention_workflow(
-        self,
-        session_id: str,
-        batch: list[dict[str, Any]],
-        attention_state: Any,
-        response_profile: str,
-    ) -> None:
-        """Callback for the attention scheduler to dispatch a workflow run."""
-        if self.workflow_runner is None:
-            return
+    def mount_model_runtime(self, runtime: Any) -> None:
+        """Mount the model runtime as a standalone framework capability."""
+        model_runtime = getattr(runtime, "model_runtime", runtime)
+        if self.model_runtime is not None and self.model_runtime is not model_runtime:
+            raise RuntimeError("Model runtime is already mounted")
 
-        # Resolve instance_id from session_id (format: {instance_id}:group:...)
-        parts = session_id.split(":", 2)
-        instance_id = parts[0] if parts else ""
+        self.model_runtime_system = runtime
+        self.model_runtime = model_runtime
+        self.plugin_manager.attach_runtime_services(model_runtime=self.model_runtime)
 
-        try:
-            await self.workflow_runner.run(
-                session_id,
-                batch,
-                attention_state,
-                instance_id=instance_id,
-                response_profile=response_profile,
-            )
-        except Exception:
-            logger.exception("Attention workflow failed for session %s", session_id)
+    def mount_agent_runtime(self, runtime: Any) -> None:
+        """Mount an Agent-like runtime system onto the core application."""
+        if self.agent_runtime is not None:
+            raise RuntimeError("Agent runtime is already mounted")
+
+        runtime_model = getattr(runtime, "model_runtime", None)
+        if runtime_model is not None:
+            if self.model_runtime is None:
+                self.mount_model_runtime(runtime_model)
+            elif self.model_runtime is not runtime_model:
+                raise RuntimeError("Agent runtime uses a different model runtime")
+
+        self.agent_runtime = runtime
+        self.plugin_manager.attach_runtime_services(
+            tool_registry=self.tool_registry,
+            model_runtime=self.model_runtime,
+        )
+        ingress_handler = getattr(runtime, "handle_ingress_message", None)
+        if ingress_handler is not None:
+            self.message_ingress.add_pre_route_hook(ingress_handler)
+        handler = getattr(runtime, "handle_agent_entry", None)
+        if handler is not None:
+            self.set_agent_entry_handler(handler)
 
     # ── Adapter management shortcuts ─────────────────────────────────
 
@@ -258,7 +213,7 @@ class ShinBot:
             platform=platform,
             **kwargs,
         )
-        # Wire up the event callback so the adapter feeds events into the pipeline
+        # Wire up the event callback so the adapter feeds events into ingress.
         adapter.set_event_callback(lambda event: self.on_event(event, adapter))
         return adapter
 
@@ -281,9 +236,9 @@ class ShinBot:
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems."""
         logger.info("ShinBot shutting down...")
-        if self.attention_scheduler is not None:
-            await self.attention_scheduler.shutdown()
-        if self.media_inspection_runner is not None:
-            await self.media_inspection_runner.shutdown()
+        if self.agent_runtime is not None:
+            shutdown = getattr(self.agent_runtime, "shutdown", None)
+            if shutdown is not None:
+                await shutdown()
         await self.adapter_manager.shutdown_all()
         logger.info("ShinBot shut down complete")

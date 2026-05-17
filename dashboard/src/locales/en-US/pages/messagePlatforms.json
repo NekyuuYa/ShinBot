@@ -1,0 +1,55 @@
+{
+  "kicker": "Message Ingress",
+  "title": "Message Platforms",
+  "subtitle": "Manage message platform instances and adapter-specific settings.",
+  "create": "Create Platform",
+  "noData": "No message platforms",
+  "unknownAdapter": "Unknown adapter",
+  "never": "Never",
+  "configFieldCount": "{count} items",
+  "deleteConfirm": "Delete \"{name}\" from the current config draft?",
+  "actions": {
+    "configure": "Configure",
+    "validate": "Validate"
+  },
+  "views": {
+    "card": "Card View",
+    "list": "List View"
+  },
+  "status": {
+    "saved": "Synced",
+    "unsaved": "Unsaved"
+  },
+  "table": {
+    "name": "Name",
+    "adapter": "Adapter",
+    "status": "Status",
+    "config": "Config",
+    "updated": "Updated",
+    "actions": "Actions"
+  },
+  "form": {
+    "name": "Name",
+    "id": "Platform ID",
+    "adapter": "Adapter",
+    "enabled": "Enable Platform",
+    "config": "Platform Settings",
+    "advancedConfig": "Advanced Settings",
+    "noSchema": "This adapter has no configurable fields.",
+    "noProvider": "Select a registered adapter."
+  },
+  "dialog": {
+    "createTitle": "Create Message Platform",
+    "editTitle": "Edit Message Platform"
+  },
+  "validation": {
+    "title": "The current config has validation issues",
+    "more": "{count} more issues not shown",
+    "requiredId": "Platform ID is required.",
+    "requiredAdapter": "Adapter is required.",
+    "duplicateId": "Platform ID already exists.",
+    "unknownAdapter": "This adapter has no registered config template.",
+    "idFormat": "Platform ID can only contain letters, numbers, underscores, hyphens, and dots, and must start with a letter or number.",
+    "invalidJson": "Invalid JSON."
+  }
+}

@@ -1,13 +1,17 @@
-"""Administrative helpers for prompt-definition management flows."""
+"""File-backed prompt-definition management helpers."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-from shinbot.agent.prompt_manager import PromptComponent, PromptComponentKind, PromptStage
-from shinbot.persistence.records import PromptDefinitionRecord, utc_now_iso
+from shinbot.agent.services.prompt_engine import PromptComponent, PromptComponentKind, PromptStage
+from shinbot.agent.services.prompt_engine.files import PromptFileError, parse_prompt_markdown
+from shinbot.persistence.records import utc_now_iso
+
+PROMPT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 
 
 @dataclass(slots=True)
@@ -20,6 +24,226 @@ class PromptDefinitionAdminError(RuntimeError):
 
     def __str__(self) -> str:
         return self.message
+
+
+@dataclass(slots=True)
+class PromptDefinitionDraft:
+    uuid: str
+    prompt_id: str
+    name: str
+    stage: str
+    type: str
+    source_type: str = "unknown_source"
+    source_id: str = ""
+    owner_plugin_id: str = ""
+    owner_module: str = ""
+    module_path: str = ""
+    priority: int = 100
+    version: str = "1.0.0"
+    description: str = ""
+    enabled: bool = True
+    content: str = ""
+    template_vars: list[str] | None = None
+    resolver_ref: str = ""
+    bundle_refs: list[str] | None = None
+    config: dict[str, Any] | None = None
+    tags: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+    def to_payload(self, *, path: Path | None = None) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["template_vars"] = list(self.template_vars or [])
+        payload["bundle_refs"] = list(self.bundle_refs or [])
+        payload["config"] = dict(self.config or {})
+        payload["tags"] = list(self.tags or [])
+        payload["metadata"] = dict(self.metadata or {})
+        if path is not None:
+            payload["path"] = str(path)
+        return payload
+
+
+class PromptDefinitionFileRepository:
+    """Repository for user-editable prompt definitions under ``data/prompts/custom``."""
+
+    def __init__(self, root: Path | str) -> None:
+        self.root = Path(root)
+
+    @classmethod
+    def from_data_dir(cls, data_dir: Path | str) -> PromptDefinitionFileRepository:
+        return cls(Path(data_dir) / "prompts" / "custom")
+
+    def list(self) -> list[dict[str, Any]]:
+        if not self.root.is_dir():
+            return []
+        payloads = [self._load_file(path) for path in sorted(self.root.glob("*.md"))]
+        return sorted(payloads, key=lambda item: (str(item["stage"]), int(item["priority"]), str(item["prompt_id"])))
+
+    def get(self, prompt_uuid: str) -> dict[str, Any] | None:
+        return self.get_by_prompt_id(prompt_uuid)
+
+    def get_by_prompt_id(self, prompt_id: str) -> dict[str, Any] | None:
+        normalized = normalize_prompt_id(prompt_id)
+        path = self._path_for_prompt_id(normalized)
+        if not path.is_file():
+            return None
+        return self._load_file(path)
+
+    def create(self, draft: PromptDefinitionDraft) -> dict[str, Any]:
+        prompt_id = normalize_prompt_id(draft.prompt_id)
+        if self.get_by_prompt_id(prompt_id) is not None:
+            raise PromptDefinitionAdminError(
+                status_code=409,
+                code="PROMPT_ALREADY_EXISTS",
+                message=f"Prompt {prompt_id!r} already exists",
+            )
+        now = utc_now_iso()
+        record = replace(
+            draft,
+            uuid=prompt_id,
+            prompt_id=prompt_id,
+            created_at=now,
+            updated_at=now,
+        )
+        path = self._path_for_prompt_id(prompt_id)
+        self._write_file(path, record)
+        payload = self.get_by_prompt_id(prompt_id)
+        assert payload is not None
+        return payload
+
+    def update(self, prompt_uuid: str, draft: PromptDefinitionDraft) -> dict[str, Any]:
+        current_id = normalize_prompt_id(prompt_uuid)
+        current = self.get_by_prompt_id(current_id)
+        if current is None:
+            raise PromptDefinitionAdminError(
+                status_code=404,
+                code="PROMPT_NOT_FOUND",
+                message=f"Prompt {prompt_uuid!r} was not found",
+            )
+
+        next_id = normalize_prompt_id(draft.prompt_id)
+        if next_id != current_id and self.get_by_prompt_id(next_id) is not None:
+            raise PromptDefinitionAdminError(
+                status_code=409,
+                code="PROMPT_ALREADY_EXISTS",
+                message=f"Prompt {next_id!r} already exists",
+            )
+        record = replace(
+            draft,
+            uuid=next_id,
+            prompt_id=next_id,
+            created_at=str(current["created_at"]),
+            updated_at=utc_now_iso(),
+        )
+        old_path = self._path_for_prompt_id(current_id)
+        new_path = self._path_for_prompt_id(next_id)
+        self._write_file(new_path, record)
+        if new_path != old_path and old_path.exists():
+            old_path.unlink()
+        payload = self.get_by_prompt_id(next_id)
+        assert payload is not None
+        return payload
+
+    def delete(self, prompt_uuid: str) -> None:
+        prompt_id = normalize_prompt_id(prompt_uuid)
+        path = self._path_for_prompt_id(prompt_id)
+        if not path.is_file():
+            raise PromptDefinitionAdminError(
+                status_code=404,
+                code="PROMPT_NOT_FOUND",
+                message=f"Prompt {prompt_uuid!r} was not found",
+            )
+        path.unlink()
+
+    def _path_for_prompt_id(self, prompt_id: str) -> Path:
+        return self.root / f"{prompt_id}.md"
+
+    def _load_file(self, path: Path) -> dict[str, Any]:
+        try:
+            front_matter, body = parse_prompt_markdown(path.read_text(encoding="utf-8"), path=path)
+        except PromptFileError as exc:
+            raise PromptDefinitionAdminError(
+                status_code=500,
+                code="INVALID_PROMPT_FILE",
+                message=str(exc),
+            ) from exc
+
+        try:
+            prompt_id = normalize_prompt_id(str(front_matter["id"]))
+            if path.name != f"{prompt_id}.md":
+                raise PromptDefinitionAdminError(
+                    status_code=500,
+                    code="INVALID_PROMPT_FILE",
+                    message=f"Prompt file {path} id must match file name",
+                )
+            source = _mapping(front_matter.get("source"))
+            metadata = normalize_prompt_metadata(_mapping(front_matter.get("metadata")))
+            description = str(front_matter.get("description") or metadata.get("description") or "")
+            name = str(
+                front_matter.get("name")
+                or metadata.get("display_name")
+                or metadata.get("displayName")
+                or prompt_id
+            ).strip()
+            draft = normalize_prompt_definition_input(
+                prompt_id=prompt_id,
+                name=name,
+                source_type=str(
+                    source.get("source_type")
+                    or source.get("type")
+                    or front_matter.get("source_type")
+                    or "unknown_source"
+                ),
+                source_id=str(source.get("source_id") or front_matter.get("source_id") or ""),
+                owner_plugin_id=str(
+                    source.get("owner_plugin_id") or front_matter.get("owner_plugin_id") or ""
+                ),
+                owner_module=str(
+                    source.get("owner_module") or front_matter.get("owner_module") or ""
+                ),
+                module_path=str(source.get("module_path") or front_matter.get("module_path") or ""),
+                stage=str(front_matter["stage"]),
+                type=str(front_matter.get("kind") or front_matter.get("type") or ""),
+                priority=int(front_matter.get("priority", 100)),
+                version=str(front_matter.get("version") or "1.0.0"),
+                description=description,
+                enabled=bool(front_matter.get("enabled", True)),
+                content=body.strip(),
+                template_vars=[str(item) for item in _list(front_matter.get("template_vars"))],
+                resolver_ref=str(front_matter.get("resolver_ref") or ""),
+                bundle_refs=[str(item) for item in _list(front_matter.get("bundle_refs"))],
+                config=_mapping(front_matter.get("config")),
+                tags=[str(item) for item in _list(front_matter.get("tags"))],
+                metadata=metadata,
+            )
+        except PromptDefinitionAdminError:
+            raise
+        except KeyError as exc:
+            raise PromptDefinitionAdminError(
+                status_code=500,
+                code="INVALID_PROMPT_FILE",
+                message=f"Prompt file {path} missing required field {exc.args[0]!r}",
+            ) from exc
+        except Exception as exc:
+            raise PromptDefinitionAdminError(
+                status_code=500,
+                code="INVALID_PROMPT_FILE",
+                message=f"Prompt file {path} is invalid: {exc}",
+            ) from exc
+
+        created_at = str(front_matter.get("created_at") or "")
+        updated_at = str(front_matter.get("updated_at") or path.stat().st_mtime)
+        return replace(
+            draft,
+            uuid=prompt_id,
+            created_at=created_at,
+            updated_at=updated_at,
+        ).to_payload(path=path)
+
+    def _write_file(self, path: Path, draft: PromptDefinitionDraft) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_prompt_definition_markdown(draft), encoding="utf-8")
 
 
 def serialize_prompt_definition(payload: dict[str, Any]) -> dict[str, Any]:
@@ -52,6 +276,17 @@ def serialize_prompt_definition(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_prompt_id(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or not PROMPT_ID_RE.fullmatch(normalized):
+        raise PromptDefinitionAdminError(
+            status_code=422,
+            code="INVALID_ACTION",
+            message="Prompt id must be a safe file name stem",
+        )
+    return normalized
+
+
 def normalize_prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     reserved_keys = {
         "prompt_id",
@@ -69,6 +304,7 @@ def normalize_prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "module_path",
         "modulePath",
         "stage",
+        "kind",
         "type",
         "priority",
         "version",
@@ -83,6 +319,11 @@ def normalize_prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "bundleRefs",
         "config",
         "tags",
+        "created_at",
+        "createdAt",
+        "updated_at",
+        "updatedAt",
+        "lastModified",
         "display_name",
         "displayName",
     }
@@ -111,8 +352,8 @@ def normalize_prompt_definition_input(
     config: dict[str, Any],
     tags: list[str],
     metadata: dict[str, Any],
-) -> PromptDefinitionRecord:
-    normalized_prompt_id = prompt_id.strip()
+) -> PromptDefinitionDraft:
+    normalized_prompt_id = normalize_prompt_id(prompt_id)
     normalized_name = name.strip()
     normalized_source_type = source_type.strip() or "unknown_source"
     normalized_source_id = source_id.strip()
@@ -125,17 +366,17 @@ def normalize_prompt_definition_input(
     normalized_bundle_refs = [item.strip() for item in bundle_refs if item.strip()]
     normalized_tags = [item.strip() for item in tags if item.strip()]
 
-    if not normalized_prompt_id:
-        raise PromptDefinitionAdminError(
-            status_code=400,
-            code="INVALID_ACTION",
-            message="Prompt promptId must not be empty",
-        )
     if not normalized_name:
         raise PromptDefinitionAdminError(
             status_code=400,
             code="INVALID_ACTION",
             message="Prompt name must not be empty",
+        )
+    if normalized_source_type == "persona":
+        raise PromptDefinitionAdminError(
+            status_code=400,
+            code="INVALID_ACTION",
+            message="Persona prompts are stored in data/personas/*.md",
         )
 
     deduped_tags: list[str] = []
@@ -170,8 +411,8 @@ def normalize_prompt_definition_input(
             message=str(exc),
         ) from exc
 
-    return PromptDefinitionRecord(
-        uuid="",
+    return PromptDefinitionDraft(
+        uuid=component.id,
         prompt_id=component.id,
         name=normalized_name,
         source_type=normalized_source_type,
@@ -195,8 +436,11 @@ def normalize_prompt_definition_input(
     )
 
 
-def get_prompt_definition_or_raise(database: Any, prompt_uuid: str) -> dict[str, Any]:
-    payload = database.prompt_definitions.get(prompt_uuid)
+def get_prompt_definition_or_raise(
+    repository: PromptDefinitionFileRepository,
+    prompt_uuid: str,
+) -> dict[str, Any]:
+    payload = repository.get(prompt_uuid)
     if payload is None:
         raise PromptDefinitionAdminError(
             status_code=404,
@@ -206,8 +450,13 @@ def get_prompt_definition_or_raise(database: Any, prompt_uuid: str) -> dict[str,
     return payload
 
 
-def assert_prompt_id_available(database: Any, prompt_id: str, *, current_uuid: str | None) -> None:
-    existing = database.prompt_definitions.get_by_prompt_id(prompt_id)
+def assert_prompt_id_available(
+    repository: PromptDefinitionFileRepository,
+    prompt_id: str,
+    *,
+    current_uuid: str | None,
+) -> None:
+    existing = repository.get_by_prompt_id(prompt_id)
     if existing is not None and existing["uuid"] != current_uuid:
         raise PromptDefinitionAdminError(
             status_code=409,
@@ -216,14 +465,70 @@ def assert_prompt_id_available(database: Any, prompt_id: str, *, current_uuid: s
         )
 
 
-def build_prompt_definition_record(
-    *,
-    prompt_uuid: str | None,
-    normalized: PromptDefinitionRecord,
-    created_at: str | None = None,
-) -> PromptDefinitionRecord:
-    now = utc_now_iso()
-    normalized.uuid = prompt_uuid or str(uuid4())
-    normalized.created_at = created_at or now
-    normalized.updated_at = now
-    return normalized
+def render_prompt_definition_markdown(draft: PromptDefinitionDraft) -> str:
+    import yaml
+
+    front_matter: dict[str, Any] = {
+        "id": draft.prompt_id,
+        "name": draft.name,
+        "stage": draft.stage,
+        "kind": draft.type,
+        "priority": draft.priority,
+        "version": draft.version,
+        "enabled": draft.enabled,
+    }
+    if draft.description:
+        front_matter["description"] = draft.description
+    source = {
+        "source_type": draft.source_type,
+        "source_id": draft.source_id,
+        "owner_plugin_id": draft.owner_plugin_id,
+        "owner_module": draft.owner_module,
+        "module_path": draft.module_path,
+    }
+    front_matter["source"] = {key: value for key, value in source.items() if value}
+    if draft.template_vars:
+        front_matter["template_vars"] = list(draft.template_vars)
+    if draft.resolver_ref:
+        front_matter["resolver_ref"] = draft.resolver_ref
+    if draft.bundle_refs:
+        front_matter["bundle_refs"] = list(draft.bundle_refs)
+    if draft.config:
+        front_matter["config"] = dict(draft.config)
+    if draft.tags:
+        front_matter["tags"] = list(draft.tags)
+    if draft.metadata:
+        front_matter["metadata"] = dict(draft.metadata)
+    if draft.created_at:
+        front_matter["created_at"] = draft.created_at
+    if draft.updated_at:
+        front_matter["updated_at"] = draft.updated_at
+
+    yaml_text = yaml.safe_dump(
+        front_matter,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    ).strip()
+    return f"---\n{yaml_text}\n---\n\n{draft.content.strip()}\n"
+
+
+def _list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list | tuple) else []
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+__all__ = [
+    "PromptDefinitionAdminError",
+    "PromptDefinitionDraft",
+    "PromptDefinitionFileRepository",
+    "assert_prompt_id_available",
+    "get_prompt_definition_or_raise",
+    "normalize_prompt_definition_input",
+    "normalize_prompt_metadata",
+    "render_prompt_definition_markdown",
+    "serialize_prompt_definition",
+]

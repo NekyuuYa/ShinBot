@@ -1,12 +1,16 @@
 """Runtime persistence primitives for ShinBot."""
 
-from shinbot.persistence.config import DatabaseConfig, default_database_path, default_database_url
+from shinbot.persistence.config import (
+    DatabaseConfig,
+    default_database_path,
+    default_database_url,
+    default_instance_configs_path,
+    default_model_registry_path,
+)
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import (
-    AgentRecord,
     AIInteractionRecord,
-    BotConfigRecord,
-    ContextStrategyRecord,
+    InstanceConfigRecord,
     MediaAssetRecord,
     MediaSemanticRecord,
     MessageLogRecord,
@@ -16,8 +20,6 @@ from shinbot.persistence.records import (
     ModelProviderRecord,
     ModelRouteMemberRecord,
     ModelRouteRecord,
-    PersonaRecord,
-    PromptDefinitionRecord,
     PromptSnapshotRecord,
     SessionMediaOccurrenceRecord,
 )
@@ -27,10 +29,8 @@ __all__ = [
     "AIInteractionRecord",
     "DatabaseConfig",
     "DatabaseManager",
-    "AgentRecord",
-    "BotConfigRecord",
-    "ContextStrategyRecord",
     "ContextProvider",
+    "InstanceConfigRecord",
     "MediaAssetRecord",
     "MediaSemanticRecord",
     "MessageLogRecord",
@@ -40,10 +40,10 @@ __all__ = [
     "ModelProviderRecord",
     "ModelRouteMemberRecord",
     "ModelRouteRecord",
-    "PersonaRecord",
-    "PromptDefinitionRecord",
     "PromptSnapshotRecord",
     "SessionMediaOccurrenceRecord",
     "default_database_path",
     "default_database_url",
+    "default_instance_configs_path",
+    "default_model_registry_path",
 ]

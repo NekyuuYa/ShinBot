@@ -9,7 +9,8 @@
     "totalPlugins": "Total Plugins",
     "enabledPlugins": "Enabled Plugins",
     "statusOnline": "Status: {value}",
-    "memoryUsageMb": "Memory: {value} MB"
+    "memoryUsageMb": "Memory: {value} MB",
+    "processMemory": "Process memory: {value}"
   },
   "tokenStats": {
     "kicker": "Last {days} days",

@@ -1,0 +1,85 @@
+[provider]
+kind = "adapter"
+id = "satori"
+display_name = "Satori"
+description = "Satori WebSocket adapter."
+config_version = "1.0.0"
+
+[[fields]]
+path = "host"
+type = "string"
+required = true
+default = "localhost:5140"
+description = "Satori gateway host."
+
+[[fields]]
+path = "token"
+type = "string"
+default = ""
+secret = true
+description = "Authorization token."
+
+[[fields]]
+path = "path"
+type = "string"
+default = "/v1/events"
+description = "WebSocket events path."
+
+[[fields]]
+path = "auto_download_media"
+type = "boolean"
+default = true
+advanced = true
+description = "Cache image and video resources before message ingress."
+
+[[fields]]
+path = "download_file_resources"
+type = "boolean"
+default = false
+advanced = true
+description = "Download file attachments before message ingress."
+
+[[fields]]
+path = "max_resource_bytes"
+type = "integer"
+default = 15728640
+min = 1
+advanced = true
+description = "Maximum bytes allowed for one cached resource."
+
+[[fields]]
+path = "resource_cache_dir"
+type = "path"
+default = "data/temp/resources"
+advanced = true
+description = "Local cache directory for downloaded resources."
+
+[[fields]]
+path = "reconnect_delay"
+type = "float"
+default = 5.0
+min = 0.0
+advanced = true
+description = "Reconnect delay in seconds."
+
+[[fields]]
+path = "max_reconnects"
+type = "integer"
+default = -1
+advanced = true
+description = "Maximum reconnect attempts, -1 for infinite."
+
+[[fields]]
+path = "silent_reconnect"
+type = "boolean"
+default = true
+advanced = true
+description = "Suppress frequent reconnect warnings."
+
+[[fields]]
+path = "reconnect_log_interval"
+type = "float"
+default = 30.0
+min = 1.0
+advanced = true
+description = "Minimum seconds between reconnect warning logs."

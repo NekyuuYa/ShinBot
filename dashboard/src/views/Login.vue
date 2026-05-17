@@ -9,12 +9,14 @@
             <v-icon icon="mdi-shield-lock" size="36" color="white" />
           </v-avatar>
           <h1 class="text-h4 font-weight-black mb-1">ShinBot</h1>
-          <p class="text-subtitle-1 text-medium-emphasis">{{ $t('pages.auth.loginSubtitle') || 'Control Center' }}</p>
+          <p class="text-subtitle-1 text-medium-emphasis">
+            {{ $t("pages.auth.loginSubtitle") || "Control Center" }}
+          </p>
         </div>
 
         <v-card class="pa-8 login-card" elevation="0">
           <v-card-title class="text-h5 font-weight-bold px-0 mb-6">
-            {{ $t('pages.auth.loginTitle') }}
+            {{ $t("pages.auth.loginTitle") }}
           </v-card-title>
 
           <v-form @submit.prevent="handleLogin">
@@ -47,7 +49,13 @@
               class="mb-6"
             />
 
-            <v-alert v-if="authStore.error" type="error" variant="tonal" class="mb-6" rounded="lg">
+            <v-alert
+              v-if="authStore.error"
+              type="error"
+              variant="tonal"
+              class="mb-6"
+              rounded="lg"
+            >
               {{ authStore.error }}
             </v-alert>
 
@@ -61,7 +69,7 @@
               class="font-weight-bold"
               :loading="authStore.isLoading"
             >
-              {{ $t('pages.auth.login') }}
+              {{ $t("pages.auth.login") }}
             </v-btn>
           </v-form>
         </v-card>
@@ -75,37 +83,37 @@
 </template>
 
 <script setup lang="ts">
-import { reactive } from 'vue'
-import { useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { reactive } from "vue";
+import { useRouter } from "vue-router";
+import { useAuthStore } from "@/stores/auth";
 
-const router = useRouter()
-const authStore = useAuthStore()
+const router = useRouter();
+const authStore = useAuthStore();
 
 const form = reactive({
-  username: '',
-  password: '',
+  username: "",
+  password: "",
   rememberMe: false,
-})
+});
 
 const handleLogin = async () => {
   if (!form.username || !form.password) {
-    return
+    return;
   }
 
   const success = await authStore.login({
     username: form.username,
     password: form.password,
-  })
+  });
 
   if (success) {
-    router.push('/dashboard')
+    router.push("/dashboard");
   }
-}
+};
 </script>
 
 <style scoped lang="scss">
-@use '@/styles/mixins' as *;
+@use "@/styles/mixins" as *;
 
 .login-page {
   position: relative;
@@ -119,13 +127,21 @@ const handleLogin = async () => {
   right: -5%;
   width: 60%;
   height: 60%;
-  background: radial-gradient(circle, rgba(var(--v-theme-primary), 0.08) 0%, transparent 70%);
+  background: radial-gradient(
+    circle,
+    rgba(var(--v-theme-primary), 0.08) 0%,
+    transparent 70%
+  );
   filter: blur(60px);
   z-index: 0;
 }
 
 .login-card {
-  @include surface-card(rgba(var(--v-theme-primary), 0.08), 32px, 0 20px 50px rgba(0,0,0,0.1));
+  @include surface-card(
+    rgba(var(--v-theme-primary), 0.08),
+    32px,
+    0 20px 50px rgba(var(--v-theme-on-surface), 0.12)
+  );
   backdrop-filter: blur(10px);
 }
 </style>

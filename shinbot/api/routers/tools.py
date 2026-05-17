@@ -40,4 +40,10 @@ def _tool_dict(definition: Any) -> dict[str, Any]:
 @router.get("")
 async def list_tools(bot=BotDep):
     """List all registered tools for dashboard management."""
-    return ok([_tool_dict(item) for item in bot.tool_registry.list_tools()])
+    tool_registry = getattr(bot, "tool_registry", None)
+    if tool_registry is None:
+        agent_runtime = getattr(bot, "agent_runtime", None)
+        tool_registry = getattr(agent_runtime, "tool_registry", None)
+    if tool_registry is None:
+        return ok([])
+    return ok([_tool_dict(item) for item in tool_registry.list_tools()])

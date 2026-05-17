@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from shinbot.core.dispatch.command import CommandRegistry
 from shinbot.core.dispatch.event_bus import EventBus
+from shinbot.core.message_routes.command import CommandRegistry
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
 from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.permission import PermissionEngine
@@ -15,6 +16,55 @@ from shinbot.core.state.session import SessionManager
 from shinbot.schema.elements import MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, User
+
+LAYER_MARKERS = {"unit", "api", "integration", "e2e"}
+
+
+def classify_test_layer(path: Path) -> str:
+    """Infer a default test layer from the current suite layout."""
+
+    normalized = path.as_posix()
+    name = path.name
+    parts = set(path.parts)
+
+    if "unit" in parts:
+        return "unit"
+    if "api" in parts:
+        return "api"
+    if "integration" in parts:
+        return "integration"
+    if "e2e" in parts:
+        return "e2e"
+    if name.endswith("_api.py") or "_api_" in name:
+        return "api"
+    if any(
+        token in normalized
+        for token in (
+            "runtime",
+            "boot",
+            "plugin",
+            "adapter",
+            "ingress",
+            "routing",
+            "workflow",
+            "media",
+            "persistence",
+            "operator_cli",
+            "system_update",
+        )
+    ):
+        return "integration"
+    return "unit"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Apply default layer markers so marker-based test runs stay useful."""
+
+    for item in items:
+        existing = {marker.name for marker in item.iter_markers()}
+        if existing & LAYER_MARKERS:
+            continue
+        item.add_marker(getattr(pytest.mark, classify_test_layer(Path(str(item.path)))))
 
 # ── Mock adapter ─────────────────────────────────────────────────────────────
 

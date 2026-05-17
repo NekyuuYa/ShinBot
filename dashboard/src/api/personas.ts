@@ -3,7 +3,6 @@ import { apiClient } from './client'
 export interface Persona {
   uuid: string
   name: string
-  promptDefinitionUuid: string
   promptText: string
   tags: string[]
   enabled: boolean

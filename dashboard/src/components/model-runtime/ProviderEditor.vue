@@ -14,6 +14,63 @@
   </div>
 
   <div v-else class="d-flex flex-column ga-4">
+    <v-card class="editor-card setup-flow-card">
+      <v-card-text>
+        <div class="setup-flow-header mb-4">
+          <div>
+            <div class="section-label">
+              {{ $t("pages.modelRuntime.cards.providerSetup") }}
+            </div>
+            <div class="text-caption text-medium-emphasis mt-1">
+              {{ providerSetupSummary }}
+            </div>
+          </div>
+          <v-chip
+            size="small"
+            variant="tonal"
+            :color="providerSetupComplete ? 'success' : 'primary'"
+          >
+            {{
+              providerSetupComplete
+                ? $t("pages.modelRuntime.labels.setupComplete")
+                : $t("pages.modelRuntime.labels.setupInProgress")
+            }}
+          </v-chip>
+        </div>
+
+        <div class="setup-flow-steps">
+          <div
+            v-for="step in providerSetupSteps"
+            :key="step.key"
+            class="setup-flow-step"
+            :class="`setup-flow-step--${step.state}`"
+          >
+            <div class="setup-step-marker">
+              <v-icon :icon="step.icon" size="18" />
+            </div>
+            <div class="setup-step-copy">
+              <div class="setup-step-title">{{ step.title }}</div>
+              <div class="setup-step-detail">{{ step.detail }}</div>
+            </div>
+            <v-chip size="x-small" variant="tonal" :color="step.color">
+              {{ step.statusLabel }}
+            </v-chip>
+            <v-btn
+              v-if="step.action"
+              size="small"
+              variant="text"
+              :color="step.color"
+              :disabled="step.actionDisabled"
+              :loading="step.loading"
+              @click="runProviderSetupAction(step.action)"
+            >
+              {{ step.actionLabel }}
+            </v-btn>
+          </div>
+        </div>
+      </v-card-text>
+    </v-card>
+
     <v-card class="editor-card">
       <v-card-item>
         <v-card-title>{{
@@ -78,6 +135,17 @@
           </v-col>
           <v-col cols="12" md="6">
             <v-text-field
+              :model-value="providerCapabilityLabel"
+              :label="$t('pages.modelRuntime.fields.capabilityType')"
+              density="comfortable"
+              variant="outlined"
+              readonly
+              persistent-hint
+              :hint="$t('pages.modelRuntime.hints.capabilityType')"
+            />
+          </v-col>
+          <v-col cols="12" md="6">
+            <v-text-field
               v-model="providerForm.id"
               :label="$t('pages.modelRuntime.fields.id')"
               density="comfortable"
@@ -109,17 +177,35 @@
               density="comfortable"
               variant="outlined"
               type="password"
-              :hint="
-                selectedProvider?.hasAuth
-                  ? $t('pages.modelRuntime.hints.tokenConfigured')
-                  : $t('pages.modelRuntime.hints.token')
-              "
+              :hint="tokenHint"
               persistent-hint
             />
+            <div v-if="hasStoredCredential" class="credential-state-row mt-2">
+              <v-chip
+                size="small"
+                variant="tonal"
+                :color="credentialWillBeCleared ? 'warning' : 'success'"
+              >
+                {{ credentialStateLabel }}
+              </v-chip>
+              <v-btn
+                size="small"
+                variant="text"
+                :color="credentialWillBeCleared ? 'primary' : 'warning'"
+                @click="toggleStoredCredentialClear"
+              >
+                {{ credentialActionLabel }}
+              </v-btn>
+            </div>
+          </v-col>
+          <v-col v-else-if="credentialWillBeCleared" cols="12" md="8">
+            <v-alert type="warning" variant="tonal" density="comfortable">
+              {{ $t("pages.modelRuntime.hints.credentialWillBeCleared") }}
+            </v-alert>
           </v-col>
           <v-col
             cols="12"
-            :md="showProviderTokenField ? 4 : 6"
+            :md="showProviderTokenField || credentialWillBeCleared ? 4 : 6"
             class="d-flex align-center"
           >
             <v-switch
@@ -150,6 +236,20 @@
         </template>
       </v-card-item>
       <v-card-text class="d-flex flex-column ga-5">
+        <v-alert
+          v-if="lastProviderProbeResult"
+          :type="lastProviderProbeResult.success ? 'success' : 'warning'"
+          variant="tonal"
+          density="comfortable"
+        >
+          <div class="font-weight-medium">
+            {{ probeResultTitle }}
+          </div>
+          <div class="text-caption mt-1">
+            {{ probeResultSubtitle }}
+          </div>
+        </v-alert>
+
         <v-row>
           <v-col v-if="showApiVersionField" cols="12" md="6">
             <v-text-field
@@ -195,6 +295,37 @@
           rows="4"
           variant="outlined"
         />
+
+        <v-row>
+          <v-col cols="12" md="6">
+            <v-textarea
+              v-model="providerForm.defaultParamsJson"
+              :label="$t('pages.modelRuntime.fields.defaultParamsJson')"
+              :hint="$t('pages.modelRuntime.hints.defaultParamsJson')"
+              :error-messages="
+                defaultParamsJsonError ? [defaultParamsJsonError] : []
+              "
+              persistent-hint
+              auto-grow
+              rows="7"
+              variant="outlined"
+              class="json-editor-field"
+            />
+          </v-col>
+          <v-col cols="12" md="6">
+            <v-textarea
+              :model-value="defaultParamsPreviewJson"
+              :label="$t('pages.modelRuntime.fields.defaultParamsPreview')"
+              :hint="$t('pages.modelRuntime.hints.defaultParamsPreview')"
+              persistent-hint
+              readonly
+              auto-grow
+              rows="7"
+              variant="outlined"
+              class="json-editor-field"
+            />
+          </v-col>
+        </v-row>
       </v-card-text>
     </v-card>
 
@@ -363,12 +494,171 @@
         </v-card>
 
         <div>
-          <div class="section-label mb-3">
-            {{ $t("pages.modelRuntime.cards.configuredModels") }}
+          <div class="configured-model-header mb-3">
+            <div>
+              <div class="section-label">
+                {{ $t("pages.modelRuntime.cards.configuredModels") }}
+              </div>
+              <div class="text-caption text-medium-emphasis mt-1">
+                {{
+                  $t("pages.modelRuntime.labels.providerCount", {
+                    count: filteredSelectedProviderModels.length,
+                  })
+                }}
+              </div>
+            </div>
+
+            <div v-if="selectedProviderModels.length > 0" class="configured-model-tools">
+              <v-text-field
+                v-model="configuredModelSearch"
+                :placeholder="$t('common.actions.action.search')"
+                prepend-inner-icon="mdi-magnify"
+                variant="outlined"
+                density="compact"
+                clearable
+                hide-details
+                class="configured-model-search"
+              />
+              <v-btn-toggle
+                v-model="configuredModelsView"
+                mandatory
+                density="compact"
+                class="model-view-toggle"
+              >
+                <v-btn
+                  value="table"
+                  icon="mdi-table"
+                  :title="$t('pages.modelRuntime.labels.tableView')"
+                  :aria-label="$t('pages.modelRuntime.labels.tableView')"
+                />
+                <v-btn
+                  value="card"
+                  icon="mdi-view-grid-outline"
+                  :title="$t('pages.modelRuntime.labels.cardView')"
+                  :aria-label="$t('pages.modelRuntime.labels.cardView')"
+                />
+              </v-btn-toggle>
+            </div>
           </div>
-          <v-row v-if="selectedProviderModels.length > 0">
+
+          <v-table
+            v-if="
+              configuredModelsView === 'table' &&
+              filteredSelectedProviderModels.length > 0
+            "
+            density="compact"
+            class="configured-model-table"
+          >
+            <thead>
+              <tr>
+                <th>{{ $t("pages.modelRuntime.fields.model") }}</th>
+                <th>{{ $t("pages.modelRuntime.fields.litellmModel") }}</th>
+                <th>{{ $t("pages.modelRuntime.fields.capabilities") }}</th>
+                <th>{{ $t("pages.modelRuntime.fields.details") }}</th>
+                <th>{{ $t("pages.modelRuntime.fields.enabled") }}</th>
+                <th class="text-right">
+                  {{ $t("pages.modelRuntime.fields.actions") }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="model in filteredSelectedProviderModels" :key="model.id">
+                <td class="model-name-cell">
+                  <div class="text-body-2 font-weight-medium table-text-clip">
+                    {{ model.displayName || model.id }}
+                  </div>
+                  <div class="text-caption text-medium-emphasis table-text-clip">
+                    {{ model.id }}
+                  </div>
+                </td>
+                <td class="litellm-cell">
+                  <code>{{ model.litellmModel }}</code>
+                </td>
+                <td>
+                  <div class="model-capability-chips">
+                    <v-chip
+                      v-for="capability in model.capabilities"
+                      :key="capability"
+                      size="x-small"
+                      variant="tonal"
+                      color="primary"
+                    >
+                      {{ capability }}
+                    </v-chip>
+                    <span
+                      v-if="model.capabilities.length === 0"
+                      class="text-caption text-medium-emphasis"
+                    >
+                      -
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  <div class="model-meta-lines">
+                    <div v-for="line in providerModelMeta(model)" :key="line">
+                      {{ line }}
+                    </div>
+                  </div>
+                </td>
+                <td class="model-enabled-cell">
+                  <v-switch
+                    :model-value="model.enabled"
+                    color="primary"
+                    density="compact"
+                    hide-details
+                    inset
+                    @update:model-value="toggleModel(model.id, Boolean($event))"
+                  />
+                </td>
+                <td class="model-table-actions">
+                  <v-tooltip location="top">
+                    <template #activator="{ props }">
+                      <v-btn
+                        v-bind="props"
+                        icon="mdi-pencil-outline"
+                        variant="text"
+                        size="small"
+                        color="primary"
+                        @click="openInlineModelEditor(model.id)"
+                      />
+                    </template>
+                    <span>{{ $t("common.actions.action.edit") }}</span>
+                  </v-tooltip>
+                  <v-tooltip location="top">
+                    <template #activator="{ props }">
+                      <v-btn
+                        v-bind="props"
+                        icon="mdi-connection"
+                        variant="text"
+                        size="small"
+                        color="info"
+                        :loading="probingProviderId === selectedProvider?.id"
+                        @click="probeSelectedProvider(model.id)"
+                      />
+                    </template>
+                    <span>{{ $t("pages.modelRuntime.actions.testConnection") }}</span>
+                  </v-tooltip>
+                  <v-tooltip location="top">
+                    <template #activator="{ props }">
+                      <v-btn
+                        v-bind="props"
+                        icon="mdi-delete-outline"
+                        variant="text"
+                        size="small"
+                        color="error"
+                        @click="removeModel(model.id)"
+                      />
+                    </template>
+                    <span>{{ $t("common.actions.action.delete") }}</span>
+                  </v-tooltip>
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+
+          <v-row v-else-if="filteredSelectedProviderModels.length > 0">
             <v-col
-              v-for="model in selectedProviderModels"
+              v-for="model in filteredSelectedProviderModels"
               :key="model.id"
               cols="12"
               lg="6"
@@ -392,7 +682,11 @@
             rounded="xl"
             class="empty-state-panel text-body-2 text-medium-emphasis py-6 px-5"
           >
-            {{ $t("pages.modelRuntime.hints.noConfiguredModels") }}
+            {{
+              selectedProviderModels.length > 0
+                ? $t("pages.modelRuntime.hints.noModelMatches")
+                : $t("pages.modelRuntime.hints.noConfiguredModels")
+            }}
           </v-sheet>
         </div>
 
@@ -495,8 +789,29 @@ import KeyValueEditor from "./KeyValueEditor.vue";
 import ModelIdPickerDialog from "./ModelIdPickerDialog.vue";
 import ModelMemberCard from "./ModelMemberCard.vue";
 
+type ProviderSetupAction = "source" | "save" | "probe" | "catalog";
+type ProviderSetupState = "complete" | "active" | "pending" | "skipped";
+
+interface ProviderSetupStep {
+  key: string;
+  icon: string;
+  title: string;
+  detail: string;
+  complete: boolean;
+  skipped?: boolean;
+  action?: ProviderSetupAction;
+  actionLabel?: string;
+  actionDisabled?: boolean;
+  loading?: boolean;
+  state: ProviderSetupState;
+  color: string;
+  statusLabel: string;
+}
+
 const { t } = useI18n();
 const showProviderSourcePicker = ref(false);
+const configuredModelSearch = ref("");
+const configuredModelsView = ref<"table" | "card">("table");
 
 const {
   store,
@@ -505,13 +820,20 @@ const {
   providerSaveLabel,
   providerForm,
   providerSourceOptions,
+  providerCapabilityType,
   onProviderSourceChange,
   showProviderTokenField,
+  hasStoredCredential,
+  credentialWillBeCleared,
+  toggleStoredCredentialClear,
+  defaultParamsJsonError,
+  defaultParamsPreviewJson,
   selectedProviderSource,
   sourceSupportsThinking,
   sourceSupportsFilters,
   showApiVersionField,
   probingProviderId,
+  lastProviderProbeResult,
   probeSelectedProvider,
   providerHeaderRows,
   fetchCatalogInline,
@@ -561,12 +883,290 @@ const currentProviderSourceSubtitle = computed(() => {
   );
 });
 
+const providerCapabilityLabel = computed(() =>
+  t(`pages.modelRuntime.labels.${providerCapabilityType.value}`),
+);
+
+const tokenHint = computed(() => {
+  if (credentialWillBeCleared.value) {
+    return t("pages.modelRuntime.hints.credentialClearOnSave");
+  }
+  if (selectedProvider.value?.hasAuth) {
+    return t("pages.modelRuntime.hints.tokenConfigured");
+  }
+  return t("pages.modelRuntime.hints.token");
+});
+
+const credentialStateLabel = computed(() =>
+  credentialWillBeCleared.value
+    ? t("pages.modelRuntime.labels.credentialClearPending")
+    : t("pages.modelRuntime.labels.credentialStored"),
+);
+
+const credentialActionLabel = computed(() =>
+  credentialWillBeCleared.value
+    ? t("pages.modelRuntime.actions.keepCredential")
+    : t("pages.modelRuntime.actions.clearCredential"),
+);
+
+const probeModeLabel = computed(() => {
+  const mode = lastProviderProbeResult.value?.mode;
+  return mode
+    ? t(`pages.modelRuntime.labels.probeModes.${mode}`, { mode })
+    : "";
+});
+
+const probeResultTitle = computed(() =>
+  t("pages.modelRuntime.labels.probeResult", {
+    mode: probeModeLabel.value,
+  }),
+);
+
+const probeResultSubtitle = computed(() => {
+  const result = lastProviderProbeResult.value;
+  if (!result) {
+    return "";
+  }
+  if (result.executionId) {
+    return t("pages.modelRuntime.labels.probeExecution", {
+      id: result.executionId,
+    });
+  }
+  if (result.catalogSize !== undefined) {
+    return t("pages.modelRuntime.labels.probeCatalogSize", {
+      count: result.catalogSize,
+    });
+  }
+  return t("pages.modelRuntime.labels.probeCheckedAt", {
+    time: result.checkedAt,
+  });
+});
+
 const priceHint = computed(() =>
   t("pages.modelRuntime.hints.pricePerUnit", {
     currency: pricingCurrency,
     unit: t(`pages.settings.pricing.units.${pricingTokenUnit}`),
   }),
 );
+
+const filteredSelectedProviderModels = computed(() => {
+  const keyword = configuredModelSearch.value.trim().toLowerCase();
+  if (!keyword) {
+    return selectedProviderModels.value;
+  }
+  return selectedProviderModels.value.filter((model) =>
+    [
+      model.id,
+      model.displayName,
+      model.litellmModel,
+      ...model.capabilities,
+      ...providerModelMeta(model),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(keyword),
+  );
+});
+
+const providerSourceReady = computed(() => Boolean(providerForm.value.sourceType));
+
+const providerCredentialReady = computed(() => {
+  if (!showProviderTokenField.value) {
+    return true;
+  }
+  if (providerForm.value.token.trim()) {
+    return true;
+  }
+  return hasStoredCredential.value && !credentialWillBeCleared.value;
+});
+
+const providerSaved = computed(
+  () => Boolean(selectedProvider.value) && !isCreatingProvider.value,
+);
+
+const providerProbePassed = computed(
+  () => lastProviderProbeResult.value?.success === true,
+);
+
+const providerCatalogSupported = computed(
+  () => selectedProviderSource.value?.supportsCatalog ?? false,
+);
+
+const selectedProviderCatalogItems = computed(() => {
+  const providerId = selectedProvider.value?.id;
+  return providerId ? store.catalogItems[providerId] || [] : [];
+});
+
+const providerCatalogFetched = computed(() => {
+  const providerId = selectedProvider.value?.id;
+  return providerId
+    ? Object.prototype.hasOwnProperty.call(store.catalogItems, providerId)
+    : false;
+});
+
+const providerCatalogReady = computed(
+  () =>
+    !providerCatalogSupported.value ||
+    providerCatalogFetched.value ||
+    selectedProviderModels.value.length > 0,
+);
+
+const providerSetupComplete = computed(
+  () =>
+    providerSourceReady.value &&
+    providerCredentialReady.value &&
+    providerSaved.value &&
+    providerProbePassed.value &&
+    providerCatalogReady.value,
+);
+
+const providerSetupSummary = computed(() => {
+  if (providerSetupComplete.value) {
+    return t("pages.modelRuntime.labels.setupSummaryReady");
+  }
+  if (!providerSourceReady.value) {
+    return t("pages.modelRuntime.labels.setupSummarySource");
+  }
+  if (!providerCredentialReady.value) {
+    return t("pages.modelRuntime.labels.setupSummaryCredential");
+  }
+  if (!providerSaved.value) {
+    return t("pages.modelRuntime.labels.setupSummarySave");
+  }
+  if (!providerProbePassed.value) {
+    return t("pages.modelRuntime.labels.setupSummaryProbe");
+  }
+  return t("pages.modelRuntime.labels.setupSummaryCatalog");
+});
+
+const statusLabelForSetupStep = (state: ProviderSetupState) => {
+  if (state === "complete") {
+    return t("pages.modelRuntime.labels.setupDone");
+  }
+  if (state === "active") {
+    return t("pages.modelRuntime.labels.setupCurrent");
+  }
+  if (state === "skipped") {
+    return t("pages.modelRuntime.labels.setupSkipped");
+  }
+  return t("pages.modelRuntime.labels.setupPending");
+};
+
+const colorForSetupStep = (state: ProviderSetupState) => {
+  if (state === "complete") {
+    return "success";
+  }
+  if (state === "active") {
+    return "primary";
+  }
+  if (state === "skipped") {
+    return "default";
+  }
+  return "default";
+};
+
+const providerSetupSteps = computed<ProviderSetupStep[]>(() => {
+  const catalogCount = selectedProviderCatalogItems.value.length;
+  const baseSteps = [
+    {
+      key: "source",
+      icon: "mdi-source-branch",
+      title: t("pages.modelRuntime.labels.setupStepSource"),
+      detail: currentProviderSourceTitle.value,
+      complete: providerSourceReady.value,
+      action: "source" as const,
+      actionLabel: t("pages.modelRuntime.actions.selectSource"),
+    },
+    {
+      key: "credential",
+      icon: "mdi-key-outline",
+      title: t("pages.modelRuntime.labels.setupStepCredential"),
+      detail: !showProviderTokenField.value
+        ? t("pages.modelRuntime.labels.credentialNotRequired")
+        : providerCredentialReady.value
+          ? t("pages.modelRuntime.labels.credentialReady")
+          : t("pages.modelRuntime.labels.credentialRequired"),
+      complete: providerCredentialReady.value,
+    },
+    {
+      key: "save",
+      icon: "mdi-content-save-outline",
+      title: t("pages.modelRuntime.labels.setupStepSave"),
+      detail: providerSaved.value
+        ? t("pages.modelRuntime.labels.providerSaved")
+        : t("pages.modelRuntime.labels.providerDraft"),
+      complete: providerSaved.value,
+      action: "save" as const,
+      actionLabel: providerSaveLabel.value,
+      actionDisabled: !providerSourceReady.value || !providerForm.value.id.trim(),
+      loading: store.isSaving,
+    },
+    {
+      key: "probe",
+      icon: "mdi-connection",
+      title: t("pages.modelRuntime.labels.setupStepProbe"),
+      detail: providerProbePassed.value
+        ? t("pages.modelRuntime.labels.probePassed")
+        : t("pages.modelRuntime.labels.probePending"),
+      complete: providerProbePassed.value,
+      action: "probe" as const,
+      actionLabel: t("pages.modelRuntime.actions.testConnection"),
+      actionDisabled: !providerSaved.value,
+      loading: probingProviderId.value === selectedProvider.value?.id,
+    },
+    {
+      key: "catalog",
+      icon: "mdi-database-search-outline",
+      title: t("pages.modelRuntime.labels.setupStepCatalog"),
+      detail: !providerCatalogSupported.value
+        ? t("pages.modelRuntime.labels.catalogUnsupported")
+        : providerCatalogFetched.value
+          ? t("pages.modelRuntime.labels.catalogFetched", { count: catalogCount })
+          : t("pages.modelRuntime.labels.catalogPending"),
+      complete: providerCatalogReady.value,
+      skipped: !providerCatalogSupported.value,
+      action: providerCatalogSupported.value ? ("catalog" as const) : undefined,
+      actionLabel: t("pages.modelRuntime.actions.fetchCatalog"),
+      actionDisabled: !providerSaved.value,
+      loading: catalogLoading.value,
+    },
+  ];
+
+  const activeIndex = baseSteps.findIndex((step) => !step.complete && !step.skipped);
+  return baseSteps.map((step, index) => {
+    const state: ProviderSetupState = step.skipped
+      ? "skipped"
+      : step.complete
+        ? "complete"
+        : index === activeIndex
+          ? "active"
+          : "pending";
+    return {
+      ...step,
+      state,
+      color: colorForSetupStep(state),
+      statusLabel: statusLabelForSetupStep(state),
+    };
+  });
+});
+
+const runProviderSetupAction = async (action?: ProviderSetupAction) => {
+  if (action === "source") {
+    showProviderSourcePicker.value = true;
+    return;
+  }
+  if (action === "save") {
+    await saveProvider();
+    return;
+  }
+  if (action === "probe") {
+    await probeSelectedProvider();
+    return;
+  }
+  if (action === "catalog") {
+    await fetchCatalogInline();
+  }
+};
 
 const providerSourcePickerSections = computed<GenericPickerSection[]>(() => [
   {
@@ -584,8 +1184,8 @@ const providerSourcePickerSections = computed<GenericPickerSection[]>(() => [
   },
 ]);
 
-const applyProviderSourcePick = (values: string[]) => {
-  onProviderSourceChange(values[0] ?? null);
+const applyProviderSourcePick = async (values: string[]) => {
+  await onProviderSourceChange(values[0] ?? null);
 };
 </script>
 
@@ -602,6 +1202,112 @@ const applyProviderSourcePick = (values: string[]) => {
 
 .editor-card :deep(.v-card-item) {
   padding: 24px 24px 16px;
+}
+
+.setup-flow-card :deep(.v-card-text) {
+  padding: 20px 24px 24px;
+}
+
+.setup-flow-header,
+.setup-flow-steps,
+.setup-flow-step {
+  display: flex;
+  align-items: center;
+}
+
+.setup-flow-header {
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.setup-flow-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+
+  @include respond-to("tablet") {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @include respond-to("mobile") {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.setup-flow-step {
+  min-height: 98px;
+  align-items: flex-start;
+  align-content: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px;
+  border: 1px solid $border-color-soft;
+  border-radius: $radius-base;
+  background: rgba(var(--v-theme-surface), 0.78);
+}
+
+.setup-flow-step--active {
+  border-color: $border-color-primary;
+  background: rgba(var(--v-theme-primary), 0.05);
+}
+
+.setup-flow-step--complete {
+  border-color: rgba(var(--v-theme-success), 0.28);
+}
+
+.setup-flow-step--skipped,
+.setup-flow-step--pending {
+  opacity: 0.78;
+}
+
+.setup-step-marker {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(var(--v-theme-primary), 0.1);
+  color: rgb(var(--v-theme-primary));
+}
+
+.setup-flow-step--complete .setup-step-marker {
+  background: rgba(var(--v-theme-success), 0.12);
+  color: rgb(var(--v-theme-success));
+}
+
+.setup-flow-step--skipped .setup-step-marker,
+.setup-flow-step--pending .setup-step-marker {
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.56);
+}
+
+.setup-step-copy {
+  min-width: 0;
+  flex: 1 1 calc(100% - 38px);
+}
+
+.setup-step-title {
+  color: rgba(var(--v-theme-on-surface), 0.9);
+  font-size: $font-size-sm;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.setup-step-detail {
+  margin-top: 2px;
+  overflow: hidden;
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  font-size: $font-size-xs;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setup-flow-step :deep(.v-btn) {
+  align-self: flex-end;
+  margin-left: auto;
 }
 
 .provider-source-picker-tile {
@@ -660,6 +1366,119 @@ const applyProviderSourcePick = (values: string[]) => {
 .selector-arrow {
   flex: 0 0 auto;
   color: rgba(var(--v-theme-on-surface), 0.4);
+}
+
+.credential-state-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.configured-model-header,
+.configured-model-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.configured-model-header {
+  justify-content: space-between;
+}
+
+.configured-model-tools {
+  justify-content: flex-end;
+}
+
+.configured-model-search {
+  width: min(280px, 100vw - 64px);
+}
+
+.model-view-toggle {
+  border: 1px solid $border-color-soft;
+  background: rgba(var(--v-theme-surface), 0.78);
+}
+
+.model-view-toggle :deep(.v-btn) {
+  min-width: 40px;
+}
+
+.configured-model-table {
+  overflow: hidden;
+  border: 1px solid $border-color-soft;
+  border-radius: $radius-lg;
+  background: rgba(var(--v-theme-surface), 0.72);
+}
+
+.configured-model-table :deep(th) {
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: $font-size-xs;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.configured-model-table :deep(td) {
+  vertical-align: middle;
+}
+
+.model-name-cell {
+  min-width: 180px;
+}
+
+.litellm-cell {
+  max-width: 220px;
+}
+
+.litellm-cell code {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+  font-size: $font-size-xs;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-text-clip {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-capability-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.model-meta-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: $font-size-xs;
+  line-height: 1.35;
+}
+
+.model-enabled-cell {
+  width: 80px;
+}
+
+.model-table-actions {
+  width: 132px;
+  white-space: nowrap;
+}
+
+.json-editor-field {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+}
+
+.json-editor-field :deep(textarea) {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: $font-size-sm;
+  line-height: 1.5;
 }
 
 .model-editor-card,

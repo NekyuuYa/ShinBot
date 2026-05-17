@@ -1,116 +1,191 @@
-# ShinBot Configuration
-# Copy this file to config.toml and adjust the values.
+# ShinBot main configuration template
+#
+# Copy this file to:
+#   data/config.toml
+#
+# This main config describes application-level wiring:
+# - core services
+# - adapter connections
+# - globally installed plugins
+# - bot service units
+#
+# Agent internals live in separate files under data/agents/*.toml.  The main
+# config only references those files from each bot.
+
+
+# ─── Core ────────────────────────────────────────────────────────────────────
 
 [logging]
-level = "INFO"  # DEBUG | INFO | WARNING | ERROR
+level = "INFO" # DEBUG | INFO | WARNING | ERROR
+third_party_noise = "debug" # off | debug | on; "debug" shows low-level uvicorn/websockets logs only when level = "DEBUG"
 
 [database]
 url = "sqlite:///data/db/shinbot.sqlite3"
-snapshot_ttl = 10800  # Full prompt snapshot TTL in seconds (default 3 hours)
+snapshot_ttl = 10800
 
-[attention]
-# Exponential decay rate per second for session attention.
-# Half-life ~= ln(2) / decay_k, so 0.005 means about 139s half-life.
-decay_k = 0.005
-# Do not decay immediately; start decay only after this many seconds of silence.
-decay_idle_grace_seconds = 60.0
+# [runtime]
+# model = true # Optional: mount model runtime even when no bot agent requires it.
+# agent = true # Optional: set false to force-disable all bot agent runtimes.
 
 
-# ─── Bot Instances ────────────────────────────────────────────────────────────
-# Each [[instances]] block represents a single bot account / connection.
-# ShinBot supports multiple concurrent instances.
-
-[[instances]]
-id = "satori-main"   # Unique identifier
-platform = "satori"  # Adapter type
-
-[instances.config]
-host = "localhost:5140"
-token = ""
-path = "/v1/events"
-reconnect_delay = 5.0
-max_reconnects = -1
-auto_download_media = true
-download_file_resources = false
-max_resource_bytes = 15728640
-resource_cache_dir = "data/temp/resources"
-silent_reconnect = true
-reconnect_log_interval = 30.0
-
-[[instances]]
-id = "ob11-main"
-platform = "onebot_v11"
-
-[instances.config]
-mode = "reverse"                    # forward | reverse
-url = "ws://127.0.0.1:3001"         # forward mode only
-reverse_host = "0.0.0.0"            # reverse mode only (adapter listener bind host)
-reverse_port = 8082                  # reverse mode only (adapter standalone listener port)
-reverse_path = "/onebot/v11"        # reverse mode only
-self_id = ""                        # optional reverse validation
-access_token = ""
-reconnect_delay = 5.0
-max_reconnects = -1
-request_timeout = 20.0
-forward_max_depth = 3
-auto_download_media = true
-download_file_resources = false
-max_resource_bytes = 15728640
-resource_cache_dir = "data/temp/resources"
-silent_reconnect = true
-reconnect_log_interval = 30.0
-
-
-# ─── Plugins ─────────────────────────────────────────────────────────────────
-# List Python modules to load as plugins on startup.
-# Each module must expose a setup(plg: Plugin) function.
-
-# [[plugins]]
-# id     = "hello"
-# module = "plugins.hello"
-
-# Debug plugin can be enabled to inspect raw ingress events.
-# [[plugins]]
-# id     = "shinbot_debug_message"
-# module = "shinbot.builtin_plugins.shinbot_debug_message"
-
-# Runtime enable/disable state written by the management API/CLI.
-# [plugin_states.shinbot_debug_message]
-# enabled = false
-
-
-# ─── Management API ───────────────────────────────────────────────────────────
-# The management control plane is served at http://host:3945/api/v1
-# All /api/v1/* routes require JWT authentication (except /auth/login).
+# ─── Admin / WebUI ───────────────────────────────────────────────────────────
 
 [admin]
 username = "admin"
-password = "admin"                # Change before deploying
+password = "admin" # Change before deploying.
 jwt_expire_hours = 24
 
-# jwt_secret = ""                 # Leave empty to auto-generate and persist to data/admin_secret.key
-# cors_origins = ["http://localhost:5173"]  # Use explicit origins when the dashboard is served cross-origin
-# cors_allow_credentials = true     # Required for cross-origin cookie auth; invalid with wildcard origins
+# jwt_secret = "" # Empty means auto-generate data/admin_secret.key.
+# dashboard_dist = "dashboard/dist"
+# cors_origins = ["http://localhost:5173"]
+# cors_allow_credentials = true
 # auth_cookie_name = "shinbot_session"
-# auth_cookie_samesite = "strict"  # CSRF mitigation for browser-based dashboard sessions
-# auth_cookie_secure = true         # Recommended behind HTTPS; defaults to auto by request scheme
-# update_repo = "."               # Optional fixed repo path for safe WebUI update + restart
+# auth_cookie_samesite = "strict"
+# auth_cookie_secure = true
+# update_repo = "."
 # update_allowed_branches = ["main", "master"]
-# dashboard_dist_update_zip = "https://shinbot.nekyu.top/dist/webui-dist.zip"  # Optional prebuilt WebUI dist zip
-# dashboard_dist_update_zip_sha256 = ""                       # Optional static integrity pin for the zip
+# dashboard_dist_update_zip = "https://shinbot.nekyu.top/dist/webui-dist.zip"
+# dashboard_dist_update_zip_sha256 = ""
 # dashboard_dist_update_zip_sha256_url = "https://shinbot.nekyu.top/dist/webui-dist.zip.sha256"
 # dashboard_dist_update_package_max_bytes = 104857600
 
-# Bind users or sessions to permission groups.
-# Groups: "default" (basic cmds), "admin" (tools.*), "owner" (all)
+
+# ─── Adapter Instances ───────────────────────────────────────────────────────
+#
+# Adapter instances are platform connections only.  They do not define persona,
+# plugin policy, or agent behavior.  Bots bind to these instances below.
+#
+# Each adapter provider should expose its own config schema/template for WebUI
+# and documentation.  Keep this file to small examples instead of duplicating
+# every adapter-specific option here.
+
+[[adapter_instances]]
+id = "qq-main"
+adapter = "onebot_v11"
+enabled = true
+
+[adapter_instances.config]
+mode = "reverse"
+reverse_port = 8082
+reverse_path = "/onebot/v11"
+access_token = ""
+
+
+[[adapter_instances]]
+id = "satori-main"
+adapter = "satori"
+enabled = false
+
+[adapter_instances.config]
+host = "localhost:5140"
+token = ""
+path = "/v1/events"
+
+
+# ─── Plugins ────────────────────────────────────────────────────────────────
+#
+# This section declares globally available plugins.  A bot can enable a subset
+# with bots.plugins.enabled_plugins.  Use ["*"] to enable every globally enabled
+# plugin for that bot.
+#
+# Plugin-specific config schema/template should be provided by each plugin
+# package.  Keep this file to plugin installation state and only tiny examples.
+
+[[plugins]]
+id = "shinbot_plugin_search"
+module = "shinbot.builtin_plugins.shinbot_plugin_search"
+enabled = false
+
+[[plugins]]
+id = "shinbot_debug_message"
+module = "shinbot.builtin_plugins.shinbot_debug_message"
+enabled = false
+
+
+[[plugins]]
+id = "shinbot_debug_model"
+module = "shinbot.builtin_plugins.shinbot_debug_model"
+enabled = false
+
+
+# ─── Bots ───────────────────────────────────────────────────────────────────
+#
+# A bot is the service unit users interact with.  A bot may bind to one or more
+# adapter instances or sessions.
+#
+# agent.mode:
+# - "none": command/plugin bot only.
+# - "simple": reserved for lightweight agent behavior.
+# - "full": full scheduler + review + active_chat agent.
+
+[[bots]]
+id = "command-bot"
+display_name = "Command Bot"
+enabled = true
+
+[bots.commands]
+enabled = true
+prefixes = ["/", "!"]
+
+[bots.plugins]
+enabled = true
+enabled_plugins = ["shinbot_debug_message"]
+
+[bots.agent]
+mode = "none"
+
+[[bots.bindings]]
+id = "command-bot-admin-group"
+adapter_instance_id = "qq-main"
+session_patterns = ["group:10001"]
+enabled = true
+priority = 100
+
+
+[[bots]]
+id = "full-agent"
+display_name = "Full Agent Bot"
+enabled = true
+
+[bots.commands]
+enabled = true
+prefixes = ["/"]
+
+[bots.plugins]
+enabled = true
+enabled_plugins = ["*"]
+disabled_plugins = ["shinbot_debug_message"]
+
+[bots.agent]
+mode = "full"
+config = "agents/full-agent.toml" # Resolved relative to data/.
+
+[[bots.bindings]]
+id = "full-agent-main-group"
+adapter_instance_id = "qq-main"
+session_patterns = ["group:20001", "group:20002"]
+enabled = true
+priority = 10
+
+[[bots.bindings]]
+id = "full-agent-private"
+adapter_instance_id = "qq-main"
+session_patterns = ["private:*"]
+enabled = true
+priority = 20
+
+
+# ─── Permissions ────────────────────────────────────────────────────────────
 
 [permissions]
-# Global binding: {instance_id}:{user_id} → group
+
+# Global binding: {bot_id}:{platform_user_id} -> group
+# Groups: "default", "admin", "owner"
 # [[permissions.bindings]]
-# key   = "main-bot:123456789"
+# key = "full-agent:123456789"
 # group = "owner"
 
-# Session-local binding: {session_id}.{user_id} → group
+# Session-local binding: {bot_id}:{session_id}.{platform_user_id} -> group
 # [[permissions.bindings]]
-# key   = "main-bot:group:696879614.123456789"
+# key = "full-agent:group:20001.123456789"
 # group = "admin"

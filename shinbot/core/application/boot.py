@@ -3,20 +3,34 @@
 from __future__ import annotations
 
 import secrets
-import shutil
+import sys
 import tomllib
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from shinbot.agent.attention import AttentionConfig
 from shinbot.core.application.app import ShinBot
+from shinbot.core.application.boot_preflight import (
+    BootPreflightError,
+    run_boot_preflight,
+)
+from shinbot.core.application.bots_config import BotServiceConfig
+from shinbot.core.application.config_sections import (
+    iter_adapter_instance_records,
+    normalize_adapter_instance_record,
+)
+from shinbot.core.application.data_initializer import DataInitializer
+from shinbot.core.application.provider_config_validation import (
+    ProviderConfigValidationError,
+    validate_adapter_instance_configs,
+    validate_plugin_configs,
+)
 from shinbot.core.application.runtime_control import RuntimeControl
-from shinbot.core.plugins.config import normalize_plugin_enabled, plugin_saved_enabled
+from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
 from shinbot.utils.logger import get_logger, setup_logging
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="boot", color="cyan")
 
 
 class BootState(Enum):
@@ -36,14 +50,13 @@ class BootController:
         config_path: Path | str,
         data_dir: Path | str = "data",
         log_level: str = "INFO",
-        attention_debug: bool = False,
     ) -> None:
         self.config_path = Path(config_path)
         self.data_dir = Path(data_dir)
         self.log_level = log_level
-        self.attention_debug = attention_debug
         self.state = BootState.UNINITIALIZED
         self.config: dict[str, Any] = {}
+        self.bot_service_configs: tuple[BotServiceConfig, ...] = ()
         self.bot: ShinBot | None = None
         self.dashboard_dist_dir: Path | None = None
         self.dashboard_index_file: Path | None = None
@@ -72,106 +85,161 @@ class BootController:
         # 1) Stop adapters first to stop incoming traffic.
         await self.bot.adapter_manager.shutdown_all()
 
-        # 2) Notify plugins and free plugin resources.
+        # 2) Shut down Agent-owned timers and background tasks.
+        if self.bot.agent_runtime is not None:
+            shutdown = getattr(self.bot.agent_runtime, "shutdown", None)
+            if shutdown is not None:
+                await shutdown()
+
+        # 3) Notify plugins and free plugin resources.
         await self.bot.plugin_manager.unload_all_plugins_async()
 
-        # 3) Persist session state.
+        # 4) Persist session state.
         for session in self.bot.session_manager.all_sessions:
             self.bot.session_manager.update(session)
 
-        # 4) Infrastructure teardown placeholder (DB pool not present yet).
+        # 5) Infrastructure teardown placeholder (DB pool not present yet).
         self.state = BootState.UNINITIALIZED
 
     def _phase1_environment(self) -> None:
+        self._configure_logging(self.log_level)
         logger.info("Boot Phase 1/5: environment")
 
         self.config = self._load_config(self.config_path)
+        try:
+            preflight = run_boot_preflight(self.config, data_dir=self.data_dir)
+        except BootPreflightError:
+            self.state = BootState.DEGRADED
+            raise
+        logging_cfg = self.config.get("logging", {})
+        cfg_level = logging_cfg.get("level", self.log_level)
+        third_party_noise = logging_cfg.get("third_party_noise", "debug")
+        self._configure_logging(cfg_level, third_party_noise=third_party_noise)
+        self.bot_service_configs = preflight.bot_service_configs
         self._ensure_admin_defaults()
-        cfg_level = self.config.get("logging", {}).get("level", self.log_level)
-        self._configure_logging(cfg_level)
-        self._cleanup_temp_directory()
-
-        required_dirs = [
-            self.data_dir,
-            self.data_dir / "db",
-            self.data_dir / "plugins",
-            self.data_dir / "plugin_data",
-            self.data_dir / "sessions",
-            self.data_dir / "audit",
-        ]
-        for path in required_dirs:
-            self._ensure_rw(path)
+        DataInitializer(self.data_dir).initialize()
 
     def _phase2_infrastructure(self) -> None:
         logger.info("Boot Phase 2/5: infrastructure")
         self._init_dashboard_static_config()
         try:
-            db_cfg = self.config.get("database", {})
-            database_url = db_cfg.get("url")
-            snapshot_ttl = db_cfg.get("snapshot_ttl")
-            attention_config = self._resolve_attention_config()
-            self.bot = ShinBot(
-                data_dir=self.data_dir,
-                database_url=database_url,
-                database_snapshot_ttl=snapshot_ttl,
-                attention_config=attention_config,
-                attention_debug=self.attention_debug,
-            )
+            self.bot = self._create_core_application()
+            self._mount_model_runtime()
+            self._mount_agent_runtime()
         except Exception:
             self.state = BootState.DEGRADED
             raise
 
-    def _resolve_attention_config(self) -> AttentionConfig:
-        """Build AttentionConfig from defaults and optional [attention] overrides."""
-        config = AttentionConfig(debug=self.attention_debug)
-        section = self.config.get("attention", {})
+    def _create_core_application(self) -> ShinBot:
+        db_cfg = self.config.get("database", {})
+        database_url = db_cfg.get("url")
+        snapshot_ttl = db_cfg.get("snapshot_ttl")
+        bot = ShinBot(
+            data_dir=self.data_dir,
+            database_url=database_url,
+            database_snapshot_ttl=snapshot_ttl,
+        )
+        bot.configure_bot_service_configs(self.bot_service_configs)
+        return bot
 
+    def _mount_model_runtime(self) -> None:
+        if self.bot is None:
+            raise RuntimeError("Bot is not initialized")
+
+        if not self._should_mount_model_runtime():
+            logger.info("Model runtime not requested by current config")
+            return
+        if not self._runtime_feature_enabled("model", default=True):
+            logger.info("Model runtime disabled by [runtime].model=false")
+            return
+
+        from shinbot.core.runtime import install_model_runtime
+
+        install_model_runtime(self.bot)
+
+    def _mount_agent_runtime(self) -> None:
+        if self.bot is None:
+            raise RuntimeError("Bot is not initialized")
+
+        if not self._agent_runtime_requested_by_bots():
+            logger.info("Agent runtime not requested by any enabled bot")
+            return
+        if not self._runtime_feature_enabled("agent", default=True):
+            logger.info("Agent runtime disabled by [runtime].agent=false")
+            return
+        if not self._runtime_feature_enabled("model", default=True):
+            logger.info("Agent runtime disabled because [runtime].model=false")
+            return
+
+        if self.bot.model_runtime is None:
+            logger.info("Mounting model runtime because Agent runtime depends on it")
+            from shinbot.core.runtime import install_model_runtime
+
+            install_model_runtime(self.bot)
+
+        from shinbot.agent.runtime import install_agent_runtime
+
+        install_agent_runtime(
+            self.bot,
+            agent_configs_by_bot_id=self._load_agent_runtime_configs_by_bot_id(),
+        )
+
+    def _should_mount_model_runtime(self) -> bool:
+        if self._runtime_feature_enabled("model", default=False):
+            return True
+        return self._agent_runtime_requested_by_bots() and self._runtime_feature_enabled(
+            "agent", default=True
+        )
+
+    def _agent_runtime_requested_by_bots(self) -> bool:
+        return any(
+            bot_config.enabled and bot_config.agent.mode != "none"
+            for bot_config in self.bot_service_configs
+        )
+
+    def _load_agent_runtime_configs_by_bot_id(self) -> dict[str, Any]:
+        from shinbot.agent.runtime.config import (
+            AgentRuntimeConfigError,
+            load_agent_runtime_config,
+        )
+
+        configs: dict[str, Any] = {}
+        for bot_config in self.bot_service_configs:
+            if not bot_config.enabled:
+                continue
+            if bot_config.agent.mode == "none" or not bot_config.agent.config:
+                continue
+
+            config_path = self.data_dir / bot_config.agent.config
+            try:
+                configs[bot_config.id] = load_agent_runtime_config(
+                    config_path,
+                    data_dir=self.data_dir,
+                )
+            except AgentRuntimeConfigError as exc:
+                raise AgentRuntimeConfigError(
+                    f"Invalid agent config for bot {bot_config.id!r}: {exc}"
+                ) from exc
+        return configs
+
+    def _runtime_feature_enabled(self, name: str, *, default: bool) -> bool:
+        section = self.config.get("runtime", {})
+        if section is None:
+            return default
         if not isinstance(section, dict):
-            logger.warning("[attention] must be a table; got %s", type(section).__name__)
-            return config
+            logger.warning("[runtime] must be a table; got %s", type(section).__name__)
+            return default
 
-        decay_k = section.get("decay_k")
-        if decay_k is not None:
-            try:
-                parsed = float(decay_k)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid attention.decay_k=%r; fallback to default %.4f",
-                    decay_k,
-                    config.decay_k,
-                )
-            else:
-                if parsed > 0:
-                    config.decay_k = parsed
-                else:
-                    logger.warning(
-                        "attention.decay_k must be > 0; got %r (using default %.4f)",
-                        decay_k,
-                        config.decay_k,
-                    )
-
-        idle_grace = section.get("decay_idle_grace_seconds")
-        if idle_grace is not None:
-            try:
-                parsed = float(idle_grace)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid attention.decay_idle_grace_seconds=%r; fallback to default %.1f",
-                    idle_grace,
-                    config.decay_idle_grace_seconds,
-                )
-            else:
-                if parsed >= 0:
-                    config.decay_idle_grace_seconds = parsed
-                else:
-                    logger.warning(
-                        "attention.decay_idle_grace_seconds must be >= 0; got %r "
-                        "(using default %.1f)",
-                        idle_grace,
-                        config.decay_idle_grace_seconds,
-                    )
-
-        return config
+        value = section.get(name, default)
+        if isinstance(value, bool):
+            return value
+        logger.warning(
+            "runtime.%s must be a boolean; got %r (using default %s)",
+            name,
+            value,
+            default,
+        )
+        return default
 
     def _init_dashboard_static_config(self) -> None:
         """Resolve and cache dashboard dist/index paths during infrastructure phase."""
@@ -222,8 +290,11 @@ class BootController:
             raise RuntimeError("Bot is not initialized")
 
         required = [
-            self.bot.pipeline,
+            self.bot.message_ingress,
+            self.bot.route_table,
+            self.bot.route_targets,
             self.bot.command_registry,
+            self.bot.keyword_registry,
             self.bot.permission_engine,
             self.bot.session_manager,
         ]
@@ -242,17 +313,29 @@ class BootController:
         except Exception:
             logger.exception("Failed loading plugins")
 
-        for plugin_cfg in self.config.get("plugins", []):
+        configured_plugins = self.config.get("plugins", [])
+        if configured_plugins is None:
+            configured_plugins = []
+        if not isinstance(configured_plugins, list):
+            configured_plugins = []
+
+        for plugin_cfg in configured_plugins:
+            if not isinstance(plugin_cfg, dict):
+                logger.warning("Invalid plugin config entry: %s", plugin_cfg)
+                continue
             plugin_id = plugin_cfg.get("id")
             module_path = plugin_cfg.get("module")
             if not plugin_id or not module_path:
                 logger.warning("Invalid plugin config entry: %s", plugin_cfg)
+                continue
+            if self._configured_plugin_is_already_loaded(str(plugin_id), str(module_path)):
                 continue
             try:
                 await self.bot.load_plugin_async(plugin_id, module_path)
             except Exception:
                 logger.exception("Failed to load plugin %s from %s", plugin_id, module_path)
 
+        self._validate_plugin_provider_configs()
         await self._apply_plugin_state_overrides()
 
     async def _apply_plugin_state_overrides(self) -> None:
@@ -272,21 +355,16 @@ class BootController:
             except Exception:
                 logger.exception("Failed to apply persisted state for plugin %s", meta.id)
 
+    def _configured_plugin_is_already_loaded(self, plugin_id: str, module_path: str) -> bool:
+        if self.bot is None:
+            return False
+        for meta in self.bot.plugin_manager.all_plugins:
+            if meta.id == plugin_id or meta.module_path == module_path:
+                return True
+        return False
+
     def _configured_plugin_enabled(self, plugin_id: str) -> bool | None:
-        persisted = plugin_saved_enabled(self, plugin_id)
-        if persisted is not None:
-            return persisted
-
-        plugins = self.config.get("plugins", [])
-        if not isinstance(plugins, list):
-            return None
-
-        for plugin_cfg in plugins:
-            if not isinstance(plugin_cfg, dict) or plugin_cfg.get("id") != plugin_id:
-                continue
-            if "enabled" in plugin_cfg:
-                return normalize_plugin_enabled(plugin_cfg.get("enabled"))
-        return None
+        return plugin_saved_enabled(self, plugin_id)
 
     async def _phase5_adapter_activation(self) -> None:
         logger.info("Boot Phase 5/5: adapter activation")
@@ -299,17 +377,21 @@ class BootController:
 
     def _setup_instances(self) -> None:
         assert self.bot is not None
-        instances = self.config.get("instances", [])
+        self._validate_adapter_provider_configs()
+        instances = iter_adapter_instance_records(self.config)
         if not instances:
             logger.warning("No instances configured - bot will start with no connections")
             return
 
         for inst_cfg in instances:
-            instance_id = inst_cfg["id"]
-            platform = inst_cfg.get("platform", "satori")
-            config_kwargs = inst_cfg.get("config", {})
-            if not isinstance(config_kwargs, dict):
-                config_kwargs = {}
+            normalized = normalize_adapter_instance_record(inst_cfg)
+            if not normalized["enabled"]:
+                logger.info("Skipping disabled adapter instance %r", normalized["id"])
+                continue
+
+            instance_id = normalized["id"]
+            platform = normalized["adapter"]
+            config_kwargs = normalized["config"]
 
             try:
                 self.bot.add_adapter(
@@ -326,6 +408,18 @@ class BootController:
                 continue
             logger.info("Configured instance %r (platform=%s)", instance_id, platform)
 
+    def _validate_plugin_provider_configs(self) -> None:
+        assert self.bot is not None
+        issues = validate_plugin_configs(self.config, self.bot.config_provider_registry)
+        if issues:
+            raise ProviderConfigValidationError(issues)
+
+    def _validate_adapter_provider_configs(self) -> None:
+        assert self.bot is not None
+        issues = validate_adapter_instance_configs(self.config, self.bot.config_provider_registry)
+        if issues:
+            raise ProviderConfigValidationError(issues)
+
     def _setup_permissions(self) -> None:
         assert self.bot is not None
         perms = self.config.get("permissions", {})
@@ -338,8 +432,8 @@ class BootController:
             except ValueError as exc:
                 logger.warning("Permission binding error: %s", exc)
 
-    def _configure_logging(self, level_name: str = "INFO") -> None:
-        setup_logging(level_name)
+    def _configure_logging(self, level_name: str = "INFO", *, third_party_noise: str = "debug") -> None:
+        setup_logging(level_name, third_party_noise=third_party_noise)
 
     def _load_config(self, config_path: Path) -> dict[str, Any]:
         if not config_path.exists():
@@ -347,21 +441,6 @@ class BootController:
             return {}
         with config_path.open("rb") as file_obj:
             return tomllib.load(file_obj)
-
-    def _cleanup_temp_directory(self) -> None:
-        temp_dir = self.data_dir / "temp"
-        if not temp_dir.exists():
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            return
-
-        for child in temp_dir.iterdir():
-            try:
-                if child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
-            except Exception:
-                logger.exception("Failed to clean temp entry %s", child)
 
     def _ensure_admin_defaults(self) -> None:
         """Ensure [admin] config always exists with secure credentials.
@@ -385,18 +464,18 @@ class BootController:
             admin_cfg["password"] = generated
             changed = True
             # Print the generated password prominently so the operator can
-            # copy it.  Use print() to guarantee it reaches stdout even if
-            # the logging subsystem is not yet initialised.
+            # copy it. Use stderr so the credential block preserves ordering
+            # with boot logs and still appears if stdout is redirected.
             border = "─" * 54
-            print(f"\n┌{border}┐")
-            print(f"│{'ShinBot — First-Run Credentials':^54}│")
-            print(f"├{border}┤")
-            print(f"│  Username : {'admin':<42}│")
-            print(f"│  Password : {generated:<42}│")
-            print(f"├{border}┤")
-            print("│  Log in and change these credentials before       │")
-            print("│  exposing this server to a network.               │")
-            print(f"└{border}┘\n")
+            print(f"\n┌{border}┐", file=sys.stderr, flush=True)
+            print(f"│{'ShinBot — First-Run Credentials':^54}│", file=sys.stderr, flush=True)
+            print(f"├{border}┤", file=sys.stderr, flush=True)
+            print(f"│  Username : {'admin':<42}│", file=sys.stderr, flush=True)
+            print(f"│  Password : {generated:<42}│", file=sys.stderr, flush=True)
+            print(f"├{border}┤", file=sys.stderr, flush=True)
+            print("│  Log in and change these credentials before       │", file=sys.stderr, flush=True)
+            print("│  exposing this server to a network.               │", file=sys.stderr, flush=True)
+            print(f"└{border}┘\n", file=sys.stderr, flush=True)
         if "jwt_expire_hours" not in admin_cfg:
             admin_cfg["jwt_expire_hours"] = 24
             changed = True
@@ -410,16 +489,6 @@ class BootController:
                     "Admin defaults were applied in memory but could not be persisted to %s",
                     self.config_path,
                 )
-
-    def _ensure_rw(self, directory: Path) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
-        probe = directory / ".rw_probe"
-        try:
-            probe.write_text("ok", encoding="utf-8")
-            _ = probe.read_text(encoding="utf-8")
-        finally:
-            if probe.exists():
-                probe.unlink()
 
     # ── API integration ──────────────────────────────────────────────
     # ADR-001: This method is the sole core→api integration point.

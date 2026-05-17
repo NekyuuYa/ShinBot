@@ -1,0 +1,89 @@
+[provider]
+display_name = "OneBot v11"
+description = "OneBot v11 WebSocket 消息平台适配器。"
+
+[[fields]]
+path = "mode"
+label = "连接模式"
+description = "OneBot WebSocket 连接方式。反向模式由 ShinBot 监听连接；正向模式由 ShinBot 主动连接到 OneBot 服务。"
+choices = { forward = "正向连接", reverse = "反向监听" }
+
+[[fields]]
+path = "url"
+label = "正向 WebSocket 地址"
+description = "正向连接模式下的 OneBot WebSocket 服务地址。"
+
+[[fields]]
+path = "reverse_host"
+label = "反向监听地址"
+description = "反向连接模式下 ShinBot 监听的主机地址。"
+
+[[fields]]
+path = "reverse_port"
+label = "反向监听端口"
+description = "反向连接模式下 ShinBot 监听的端口。"
+
+[[fields]]
+path = "reverse_path"
+label = "反向监听路径"
+description = "反向连接模式下 OneBot 客户端连接到 ShinBot 时使用的 WebSocket 路径。"
+
+[[fields]]
+path = "self_id"
+label = "机器人账号 ID"
+description = "可选。反向连接时用于校验 X-Self-ID 的机器人账号。留空则不校验。"
+
+[[fields]]
+path = "access_token"
+label = "访问令牌"
+description = "OneBot WebSocket 鉴权令牌。需要与 OneBot 端配置保持一致。"
+
+[[fields]]
+path = "request_timeout"
+label = "请求超时秒数"
+description = "调用 OneBot API 时等待响应的最长时间。"
+
+[[fields]]
+path = "forward_max_depth"
+label = "转发消息展开深度"
+description = "嵌套转发消息最多展开的层级。设为 0 表示不展开。"
+
+[[fields]]
+path = "auto_download_media"
+label = "自动缓存图片和视频"
+description = "消息进入系统前，自动下载并缓存图片、视频资源，便于后续模型或插件读取。"
+
+[[fields]]
+path = "download_file_resources"
+label = "自动缓存文件附件"
+description = "消息进入系统前，自动下载文件附件。开启后可能带来额外网络和存储开销。"
+
+[[fields]]
+path = "max_resource_bytes"
+label = "单个资源大小上限"
+description = "允许缓存的单个媒体或文件资源最大字节数。"
+
+[[fields]]
+path = "resource_cache_dir"
+label = "资源缓存目录"
+description = "下载资源保存到本地的目录。相对路径会按运行目录解析。"
+
+[[fields]]
+path = "reconnect_delay"
+label = "重连间隔秒数"
+description = "WebSocket 断开后等待多久再尝试重连。"
+
+[[fields]]
+path = "max_reconnects"
+label = "最大重连次数"
+description = "WebSocket 最大重连次数。设为 -1 表示持续重连。"
+
+[[fields]]
+path = "silent_reconnect"
+label = "静默重连日志"
+description = "减少频繁重连时产生的警告日志。"
+
+[[fields]]
+path = "reconnect_log_interval"
+label = "重连日志间隔"
+description = "连续重连时，两次警告日志之间的最小秒数。"

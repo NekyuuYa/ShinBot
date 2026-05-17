@@ -1,51 +1,37 @@
-"""Interactive operator console for live ShinBot runtime control."""
+"""Interactive operator shell for live ShinBot runtime control."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import io
+from pathlib import Path
 from typing import Any
 
-from prompt_toolkit import Application
+from prompt_toolkit import HTML, PromptSession, print_formatted_text
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.document import Document
-from prompt_toolkit.formatted_text import ANSI
-from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.layout.dimension import D
-from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.history import FileHistory, InMemoryHistory
+from prompt_toolkit.patch_stdout import StdoutProxy
+from prompt_toolkit.shortcuts import clear
+from prompt_toolkit.styles import Style
 
 from shinbot.core.cli.commands import CommandOutcome, OperatorCommandRouter
 from shinbot.utils.logger import replace_console_handler
 
-
-class _UiLogStream(io.TextIOBase):
-    """File-like stream that appends logging output into the log pane."""
-
-    def __init__(self, session: OperatorCliSession) -> None:
-        self._session = session
-
-    @property
-    def encoding(self) -> str:
-        return "utf-8"
-
-    def writable(self) -> bool:
-        return True
-
-    def write(self, text: str) -> int:
-        self._session.append_log(text)
-        return len(text)
-
-    def flush(self) -> None:
-        return None
+_STYLE = Style.from_dict(
+    {
+        "banner": "ansicyan bold",
+        "muted": "ansibrightblack",
+        "prompt": "ansigreen bold",
+        "toolbar": "ansibrightblack",
+        "result": "ansiwhite",
+        "warning": "ansiyellow",
+    }
+)
 
 
 class OperatorCliSession:
-    """Run an interactive terminal session alongside the API server."""
+    """Line-oriented operator shell that runs beside the API server."""
 
     def __init__(
         self,
@@ -62,144 +48,78 @@ class OperatorCliSession:
             api_host=api_host,
             api_port=api_port,
         )
-        self._history = InMemoryHistory()
-        self._completer = WordCompleter(
-            self._router.command_words,
-            ignore_case=True,
-            sentence=True,
-        )
-        self._log_lines: list[str] = []
-        self._max_log_lines = 2000
-        self._command_lock = asyncio.Lock()
-        self._log_stream = _UiLogStream(self)
-        self._log_control = FormattedTextControl(self._formatted_log_text, focusable=False)
-        self._log_view = Window(
-            content=self._log_control,
-            wrap_lines=True,
-            always_hide_cursor=True,
-            right_margins=[],
-        )
-        self._input = TextArea(
-            prompt="shinbot> ",
-            multiline=True,
-            wrap_lines=True,
-            height=D(min=1, max=4),
-            history=self._history,
-            completer=self._completer,
-            auto_suggest=AutoSuggestFromHistory(),
-        )
-        self._status_bar = Window(
-            content=FormattedTextControl(self._status_fragments),
-            height=1,
-        )
-        self._separator = Window(char="─", height=1)
-        self._layout = Layout(
-            HSplit(
-                [
-                    self._log_view,
-                    self._separator,
-                    self._status_bar,
-                    self._input,
-                ]
+        self._session: PromptSession[str] = PromptSession(
+            history=_history_for_boot(boot),
+            completer=WordCompleter(
+                self._router.command_words,
+                ignore_case=True,
+                sentence=True,
             ),
-            focused_element=self._input,
-        )
-        self._app = Application(
-            layout=self._layout,
-            key_bindings=self._build_key_bindings(),
-            full_screen=True,
+            auto_suggest=AutoSuggestFromHistory(),
+            bottom_toolbar=self._bottom_toolbar,
+            complete_while_typing=True,
+            style=_STYLE,
         )
 
     async def run(self) -> None:
-        replace_console_handler(stream=self._log_stream, use_color=True)
-        self.append_log("Operator CLI attached. Type 'help' for commands.")
-        await self._app.run_async()
+        """Run the shell until the operator exits or the server stops."""
 
-    def append_log(self, text: str) -> None:
-        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-        parts = normalized.split("\n")
+        with StdoutProxy(raw=True) as log_stream:
+            replace_console_handler(stream=log_stream, use_color=True)
+            self._print_banner()
+            try:
+                await self._read_loop()
+            finally:
+                replace_console_handler(use_color=True)
 
-        if normalized.endswith("\n"):
-            trailing_blank = True
-            parts = parts[:-1]
-        else:
-            trailing_blank = False
-
-        for part in parts:
-            if part:
-                self._log_lines.append(part)
-        if trailing_blank:
-            self._log_lines.append("")
-
-        if len(self._log_lines) > self._max_log_lines:
-            self._log_lines = self._log_lines[-self._max_log_lines :]
-
-        if self._app.is_running:
-            self._log_view.vertical_scroll = max(0, len(self._log_lines) - 1)
-            self._app.invalidate()
-
-    def _formatted_log_text(self) -> ANSI:
-        return ANSI("\n".join(self._log_lines))
-
-    def _build_key_bindings(self) -> KeyBindings:
-        bindings = KeyBindings()
-
-        @bindings.add("enter")
-        def _submit(event: Any) -> None:
-            if event.app.current_buffer is not self._input.buffer:
-                return
-            event.app.create_background_task(self._on_submit())
-
-        @bindings.add("c-c")
-        def _interrupt(_event: Any) -> None:
-            self.append_log("Use 'exit' to stop ShinBot.")
-
-        @bindings.add("c-l")
-        def _clear(_event: Any) -> None:
-            self._clear_logs()
-
-        return bindings
-
-    async def _on_submit(self) -> None:
-        if self._command_lock.locked():
-            return
-
-        async with self._command_lock:
-            line = self._input.buffer.text
-            if not line.strip():
-                self._input.buffer.document = Document("", 0)
+    async def _read_loop(self) -> None:
+        while not self._server.should_exit:
+            try:
+                line = await self._session.prompt_async(
+                    [("class:prompt", "shinbot"), ("class:muted", "> ")],
+                )
+            except KeyboardInterrupt:
+                print_formatted_text(
+                    HTML("<warning>Use 'exit' or Ctrl-D to stop ShinBot.</warning>"),
+                    style=_STYLE,
+                )
+                continue
+            except EOFError:
+                print_formatted_text("Stopping ShinBot.")
+                self._server.should_exit = True
                 return
 
-            self._history.append_string(line)
-            self._input.buffer.document = Document("", 0)
             outcome = await self._router.execute(line)
             self._apply_outcome(outcome)
 
     def _apply_outcome(self, outcome: CommandOutcome) -> None:
         if outcome.clear_screen:
-            self._clear_logs()
+            clear()
 
         if outcome.message:
-            self.append_log(outcome.message)
+            print_formatted_text(outcome.message, style=_STYLE)
 
         if outcome.exit_requested:
             self._server.should_exit = True
-            self._app.exit()
 
-    def _clear_logs(self) -> None:
-        self._log_lines.clear()
-        self._log_view.vertical_scroll = 0
-        if self._app.is_running:
-            self._app.invalidate()
+    def _print_banner(self) -> None:
+        print_formatted_text(
+            HTML(
+                "\n"
+                "<banner>ShinBot Operator</banner>\n"
+                "<muted>Type 'help' for commands. Logs stay live while you work.</muted>\n"
+            ),
+            style=_STYLE,
+        )
 
-    def _status_fragments(self) -> list[tuple[str, str]]:
-        return [
-            ("class:status", " Logs above | Commands below | Ctrl-L clear | Ctrl-C hint "),
-        ]
+    def _bottom_toolbar(self) -> HTML:
+        return HTML(
+            "<toolbar>status | instances | plugins | restart | loglevel | exit</toolbar>"
+        )
 
 
 async def run_operator_cli(*, boot: Any, api_host: str, api_port: int, server: Any) -> None:
-    """Run the operator console until the user requests shutdown."""
+    """Run the operator shell until the user requests shutdown."""
     session = OperatorCliSession(
         boot=boot,
         api_host=api_host,
@@ -210,7 +130,7 @@ async def run_operator_cli(*, boot: Any, api_host: str, api_port: int, server: A
 
 
 async def serve_with_operator_cli(*, boot: Any, api_host: str, api_port: int, server: Any) -> None:
-    """Run uvicorn and the operator console concurrently."""
+    """Run uvicorn and the operator shell concurrently."""
     server_task = asyncio.create_task(server.serve())
     cli_task = asyncio.create_task(
         run_operator_cli(
@@ -241,3 +161,15 @@ async def serve_with_operator_cli(*, boot: Any, api_host: str, api_port: int, se
 
     for task in done:
         await task
+
+
+def _history_for_boot(boot: Any):
+    data_dir = getattr(boot, "data_dir", None)
+    if data_dir is None:
+        return InMemoryHistory()
+    history_path = Path(data_dir) / "operator_history"
+    try:
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return InMemoryHistory()
+    return FileHistory(str(history_path))

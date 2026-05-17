@@ -1,0 +1,3 @@
+host = "localhost:5140"
+token = ""
+path = "/v1/events"

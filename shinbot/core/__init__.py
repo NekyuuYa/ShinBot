@@ -1,7 +1,7 @@
 """ShinBot core engine exports.
 
 Keep this package lightweight: importing a leaf module such as
-``shinbot.core.dispatch.command`` must not eagerly import the full application
+``shinbot.core.message_routes.command`` must not eagerly import the full application
 runtime.  Public package attributes are resolved lazily below.
 """
 
@@ -26,6 +26,13 @@ __all__ = [
     "CommandMode",
     "CommandPriority",
     "CommandRegistry",
+    "ConfigFieldDefinition",
+    "ConfigFieldType",
+    "ConfigProviderDefinition",
+    "ConfigProviderKind",
+    "ConfigProviderLoadError",
+    "ConfigProviderRegistry",
+    "ConfigValidationIssue",
     "EventBus",
     "StopPropagation",
     "PermissionEngine",
@@ -33,7 +40,6 @@ __all__ = [
     "check_permission",
     "merge_permissions",
     "MessageContext",
-    "MessagePipeline",
     "Plugin",
     "PluginManager",
     "PluginMeta",
@@ -53,19 +59,25 @@ _EXPORT_MODULES = {
     "AdapterManager": "shinbot.core.platform.adapter_manager",
     "BaseAdapter": "shinbot.core.platform.adapter_manager",
     "MessageHandle": "shinbot.core.platform.adapter_manager",
-    "CommandDef": "shinbot.core.dispatch.command",
-    "CommandMatch": "shinbot.core.dispatch.command",
-    "CommandMode": "shinbot.core.dispatch.command",
-    "CommandPriority": "shinbot.core.dispatch.command",
-    "CommandRegistry": "shinbot.core.dispatch.command",
+    "CommandDef": "shinbot.core.message_routes.command",
+    "CommandMatch": "shinbot.core.message_routes.command",
+    "CommandMode": "shinbot.core.message_routes.command",
+    "CommandPriority": "shinbot.core.message_routes.command",
+    "CommandRegistry": "shinbot.core.message_routes.command",
+    "ConfigFieldDefinition": "shinbot.core.config_provider",
+    "ConfigFieldType": "shinbot.core.config_provider",
+    "ConfigProviderDefinition": "shinbot.core.config_provider",
+    "ConfigProviderKind": "shinbot.core.config_provider",
+    "ConfigProviderLoadError": "shinbot.core.config_provider",
+    "ConfigProviderRegistry": "shinbot.core.config_provider",
+    "ConfigValidationIssue": "shinbot.core.config_provider",
     "EventBus": "shinbot.core.dispatch.event_bus",
     "StopPropagation": "shinbot.core.dispatch.event_bus",
     "PermissionEngine": "shinbot.core.security.permission",
     "PermissionGroup": "shinbot.core.security.permission",
     "check_permission": "shinbot.core.security.permission",
     "merge_permissions": "shinbot.core.security.permission",
-    "MessageContext": "shinbot.core.dispatch.pipeline",
-    "MessagePipeline": "shinbot.core.dispatch.pipeline",
+    "MessageContext": "shinbot.core.dispatch.message_context",
     "Plugin": "shinbot.core.plugins.context",
     "PluginManager": "shinbot.core.plugins.manager",
     "PluginMeta": "shinbot.core.plugins.types",

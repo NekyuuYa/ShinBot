@@ -34,7 +34,7 @@ from shinbot.utils.logger import get_logger
 from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES, download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, source="adapter:onebot-v11", color="green")
 
 
 class OneBotV11Config(BaseModel):

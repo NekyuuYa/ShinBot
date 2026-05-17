@@ -3,8 +3,9 @@
   "nav": {
     "welcome": "欢迎",
     "dashboard": "仪表板",
-    "instances": "机器人",
-    "instancesManage": "机器人管理",
+    "instances": "机器人实例",
+    "instancesManage": "机器人实例",
+    "messagePlatforms": "消息平台",
     "plugins": "插件",
     "pluginsManage": "插件管理",
     "toolsManage": "工具管理",

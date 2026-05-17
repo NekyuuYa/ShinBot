@@ -72,14 +72,14 @@ export interface UpdateBotConfigRequest {
 
 export const botConfigsApi = {
   list() {
-    return apiClient.get<BotConfig[]>('/bot-configs')
+    return apiClient.get<BotConfig[]>('/instance-configs')
   },
 
   create(data: CreateBotConfigRequest) {
-    return apiClient.post<BotConfig>('/bot-configs', data)
+    return apiClient.post<BotConfig>('/instance-configs', data)
   },
 
   update(id: string, data: UpdateBotConfigRequest) {
-    return apiClient.patch<BotConfig>(`/bot-configs/${id}`, data)
+    return apiClient.patch<BotConfig>(`/instance-configs/${id}`, data)
   },
 }

@@ -1,11 +1,5 @@
 import { apiClient } from './client'
 
-export interface AgentContextStrategy {
-  ref: string
-  type: string
-  params: Record<string, unknown>
-}
-
 export interface Agent {
   uuid: string
   agentId: string
@@ -13,7 +7,6 @@ export interface Agent {
   personaUuid: string
   prompts: string[]
   tools: string[]
-  contextStrategy: AgentContextStrategy
   config: Record<string, unknown>
   tags: string[]
   createdAt: string
@@ -28,7 +21,6 @@ export interface AgentPayload {
   personaUuid: string
   prompts: string[]
   tools: string[]
-  contextStrategy: AgentContextStrategy
   config: Record<string, unknown>
   tags: string[]
 }

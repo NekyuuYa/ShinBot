@@ -3,8 +3,9 @@
   "nav": {
     "welcome": "Welcome",
     "dashboard": "Dashboard",
-    "instances": "Instances",
-    "instancesManage": "Instance Management",
+    "instances": "Bot Instances",
+    "instancesManage": "Bot Instances",
+    "messagePlatforms": "Message Platforms",
     "plugins": "Plugins",
     "pluginsManage": "Plugin Management",
     "toolsManage": "Tool Management",

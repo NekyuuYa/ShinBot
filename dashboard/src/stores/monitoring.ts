@@ -21,6 +21,13 @@ export interface SystemStatus {
   enabledPlugins: number
   cpuUsage: number
   memoryUsage: number
+  systemCpuUsage: number
+  processCpuUsage: number
+  systemMemoryUsage: number
+  systemMemoryUsedMb: number
+  systemMemoryTotalMb: number
+  systemMemoryAvailableMb: number
+  processMemoryMb: number
   online: boolean
 }
 
@@ -46,6 +53,13 @@ interface StatusWsPayload {
   enabledPlugins?: number
   cpuUsage?: number
   memoryUsage?: number
+  systemCpuUsage?: number
+  processCpuUsage?: number
+  systemMemoryUsage?: number
+  systemMemoryUsedMb?: number
+  systemMemoryTotalMb?: number
+  systemMemoryAvailableMb?: number
+  processMemoryMb?: number
   online?: boolean
   instances?: Array<{ id?: string; running?: boolean }>
 }
@@ -68,6 +82,11 @@ function normalizeLogLevel(level: string | undefined): LogLevel {
 
 function makeLogId(entry: Pick<MonitoringLogEntry, 'timestamp' | 'level' | 'message'>): string {
   return `${entry.timestamp}-${entry.level}-${entry.message.slice(0, 24)}`
+}
+
+function numberField(record: Record<string, unknown>, key: string, fallback = 0): number {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
 function parseEnvelope<T>(payload: string): WsEnvelope<T> | T | null {
@@ -130,8 +149,15 @@ function extractStatus(payload: unknown): SystemStatus | null {
   const stoppedInstances = typeof record.stoppedInstances === 'number' ? record.stoppedInstances : 0
   const totalPlugins = typeof record.totalPlugins === 'number' ? record.totalPlugins : 0
   const enabledPlugins = typeof record.enabledPlugins === 'number' ? record.enabledPlugins : 0
-  const cpuUsage = typeof record.cpuUsage === 'number' ? record.cpuUsage : 0
-  const memoryUsage = typeof record.memoryUsage === 'number' ? record.memoryUsage : 0
+  const systemCpuUsage = numberField(record, 'systemCpuUsage', numberField(record, 'cpuUsage'))
+  const processCpuUsage = numberField(record, 'processCpuUsage')
+  const processMemoryMb = numberField(record, 'processMemoryMb', numberField(record, 'memoryUsage'))
+  const systemMemoryUsage = numberField(record, 'systemMemoryUsage')
+  const systemMemoryUsedMb = numberField(record, 'systemMemoryUsedMb')
+  const systemMemoryTotalMb = numberField(record, 'systemMemoryTotalMb')
+  const systemMemoryAvailableMb = numberField(record, 'systemMemoryAvailableMb')
+  const cpuUsage = numberField(record, 'cpuUsage', systemCpuUsage)
+  const memoryUsage = numberField(record, 'memoryUsage', processMemoryMb)
   const online = typeof record.online === 'boolean' ? record.online : true
 
   return {
@@ -142,6 +168,13 @@ function extractStatus(payload: unknown): SystemStatus | null {
     enabledPlugins,
     cpuUsage,
     memoryUsage,
+    systemCpuUsage,
+    processCpuUsage,
+    systemMemoryUsage,
+    systemMemoryUsedMb,
+    systemMemoryTotalMb,
+    systemMemoryAvailableMb,
+    processMemoryMb,
     online,
   }
 }
@@ -185,6 +218,13 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     enabledPlugins: 0,
     cpuUsage: 0,
     memoryUsage: 0,
+    systemCpuUsage: 0,
+    processCpuUsage: 0,
+    systemMemoryUsage: 0,
+    systemMemoryUsedMb: 0,
+    systemMemoryTotalMb: 0,
+    systemMemoryAvailableMb: 0,
+    processMemoryMb: 0,
     online: false,
   })
 

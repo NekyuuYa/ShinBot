@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from shinbot.api.deps import (
     AuthConfigDep,
     AuthRequired,
+    BootDep,
     DashboardDistUpdateDep,
     RuntimeControlDep,
     SystemUpdateDep,
@@ -17,6 +18,7 @@ from shinbot.api.deps import (
 from shinbot.api.models import EC, ok
 from shinbot.core.application.runtime_control import RestartReason
 from shinbot.core.application.system_update import SystemUpdateError
+from shinbot.utils.logger import apply_logging_runtime_config, logging_runtime_snapshot
 
 router = APIRouter(
     prefix="/system",
@@ -28,6 +30,12 @@ router = APIRouter(
 class RestartRuntimeRequest(BaseModel):
     reason: Literal["manual", "update"] = "manual"
     requestedBy: str = ""
+
+
+class UpdateLoggingRuntimeRequest(BaseModel):
+    level: str | None = None
+    thirdPartyNoise: str | None = None
+    persist: bool = False
 
 
 def _apply_update_guards(
@@ -63,6 +71,48 @@ async def get_runtime_state(runtime_control=RuntimeControlDep):
             "restartRequest": runtime_control.snapshot(),
         }
     )
+
+
+@router.get("/logging")
+async def get_logging_state():
+    return ok(logging_runtime_snapshot())
+
+
+@router.patch("/logging")
+async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot=BootDep):
+    try:
+        state = apply_logging_runtime_config(
+            level_name=body.level,
+            third_party_noise=body.thirdPartyNoise,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": EC.INVALID_ACTION,
+                "message": str(exc),
+            },
+        ) from exc
+
+    if body.persist:
+        logging_cfg = boot.config.get("logging")
+        if not isinstance(logging_cfg, dict):
+            logging_cfg = {}
+            boot.config["logging"] = logging_cfg
+        if body.level is not None:
+            logging_cfg["level"] = state["level"]
+        if body.thirdPartyNoise is not None:
+            logging_cfg["third_party_noise"] = state["thirdPartyNoise"]
+        if not boot.save_config():
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": EC.CONFIG_WRITE_FAILED,
+                    "message": "Failed to persist logging configuration",
+                },
+            )
+
+    return ok(state)
 
 
 @router.get("/update")

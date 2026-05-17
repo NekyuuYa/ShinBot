@@ -1,6 +1,8 @@
 # Design Docs
 
-`docs/design/` 只放“系统应该怎样设计”的长期规范，不放阶段性实现记录。当前设计文档对应的代码实现主要落在 `shinbot/core/*`、`shinbot/agent/*`、`shinbot/api/*` 与 `shinbot/persistence/*`。
+`docs/design/` 只放“某个子系统应该提供什么语义和能力”的长期规范，不放阶段性实现记录。
+
+跨多个子系统的架构边界放在 `docs/architecture/`。例如 Agent 内部的 scheduler / coordinator / workflow / utils 分层，应以 `../architecture/agent_module_layers.md` 为准，而不是散落在 runtime 设计文档里。
 
 ## 目录分层
 
@@ -20,46 +22,64 @@
 
 ### `core/`
 
-- `00_core_philosophy.md`
-- `01_message_workflow.md`
-- `02_message_element_spec.md`
-- `06_message_egress_spec.md`
-- `17_resource_schema_spec.md`
+- `core_philosophy.md`
+- `message_workflow.md`
+- `message_element_spec.md`
+- `message_egress_spec.md`
+- `resource_schema_spec.md`
 
 ### `runtime/`
 
-- `03_command_system.md`
-- `04_session_management.md`
-- `05_permission_system.md`
-- `12_system_boot_lifecycle.md`
-- `18_agent_model_runtime.md`
-- `19_database_persistence_architecture.md`
-- `21_prompt_registry.md`
-- `22_prompt_registry_schema.md`
-- `23_tool_registry_and_manager.md`
-- `24_attention_driven_conversation_workflow.md`
-- `25_media_semantics_and_meme_handling.md`
-- `26_context_memory_architecture.md`
+- `agent_runtime_index.md` — Agent 运行时文档索引（阅读入口）。
+- `active_chat_workflow.md` — Active Chat 双层触发模型、会话生命周期、兴趣衰减。
+- `command_system.md`
+- `session_management.md`
+- `permission_system.md`
+- `system_boot_lifecycle.md`
+- `agent_model_runtime.md`
+- `database_persistence_architecture.md`
+- `prompt_registry.md`
+- `prompt_registry_schema.md`
+- `tool_registry_and_manager.md`
+- `attention_driven_conversation_workflow.md`
+- `media_semantics_and_meme_handling.md`
 
 ### `extensibility/`
 
-- `07_plugin_system_design.md`
-- `09_adapter_interface_spec.md`
+- `plugin_system_design.md`
+- `adapter_interface_spec.md`
 
 ### `interfaces/`
 
-- `13_webui_design_spec.md`
-- `16_api_communication_spec.md`
-- `20_model_runtime_webui_spec.md`
+- `webui_design_spec.md`
+- `api_communication_spec.md`
+- `model_runtime_webui_spec.md`
 
 ### `governance/`
 
-- `10_glossary.md`
+- `glossary.md`
 
 ## 新文档放置规则
 
-- Agent 框架设计：优先放 `runtime/` 或 `extensibility/`
+- Agent 架构分层与模块边界：放 `../architecture/`
+- Agent 内某个具体能力规格：放 `runtime/`
 - 平台接入规范：放 `extensibility/`
 - Dashboard 页面与交互：放 `interfaces/`
 - 新的核心语义模型：放 `core/`
 - 数据库、运行记录和存储边界：放 `runtime/`
+
+## Agent 文档审计状态
+
+以下文档写于早期 Agent 方案阶段，已完成审计：
+
+- `runtime/attention_driven_conversation_workflow.md`
+  - **状态**：部分现行。核心概念（SessionAttentionState、exponential decay、response profiles、tool-driven reply）已被 `scheduler/` 和 `active_chat/` 实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `active_chat/coordinator.py`，workflow 执行已迁移到 `workflow/`。
+  - **保留原因**：仍可作为 attention 模型和 response profile 的设计参考。
+- `runtime/media_semantics_and_meme_handling.md`
+  - **状态**：现行。fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis 等核心设计均已实现于 `media/`。
+  - **保留原因**：仍为媒体子系统的有效能力规格。
+- `../archive/runtime/context_memory_architecture.md`
+  - **状态**：已归档。旧三级记忆与上下文块模型仍有概念参考价值，但不再作为现行 context 模块职责依据。
+  - **替代文档**：`../architecture/agent_context_boundary.md`。
+
+跨模块分层约束以 `../architecture/agent_module_layers.md` 为准。

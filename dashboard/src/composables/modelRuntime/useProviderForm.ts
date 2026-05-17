@@ -1,7 +1,11 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import type { ModelRuntimeProvider, ProviderPayload } from '@/api/modelRuntime'
+import type {
+  ModelRuntimeProvider,
+  ProviderPayload,
+  ProviderProbeResult,
+} from '@/api/modelRuntime'
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import type { useModelRuntimeStore } from '@/stores/modelRuntime'
 import { entriesToObject, objectToEntries, prettyJson, safeJsonParse } from '@/utils/format'
@@ -23,6 +27,22 @@ interface ProviderFormOptions {
   ensureSelection: () => void
 }
 
+const MANAGED_DEFAULT_PARAM_KEYS = [
+  'apiVersion',
+  'filters',
+  'proxy',
+  'requestHeaders',
+  'thinking',
+]
+
+const stripManagedDefaultParams = (value: Record<string, unknown>) => {
+  const result = { ...value }
+  for (const key of MANAGED_DEFAULT_PARAM_KEYS) {
+    delete result[key]
+  }
+  return result
+}
+
 export function useProviderForm({
   store,
   activeTab,
@@ -40,23 +60,124 @@ export function useProviderForm({
     sourceType: 'openai',
     baseUrl: '',
     token: '',
+    clearAuthOnSave: false,
     enabled: true,
     proxyAddress: '',
     thinkingJson: '',
     filtersJson: '',
     apiVersion: '',
+    defaultParamsJson: '',
   })
 
   const providerHeaderRows = ref<KeyValueEntry[]>([])
   const probingProviderId = ref('')
+  const lastProviderProbeResult = ref<ProviderProbeResult | null>(null)
   const providerSourceOptions = providerSourceTemplates
 
+  const providerCapabilityType = computed(() =>
+    selectedProvider.value?.capabilityType || tabToCapabilityType(activeTab.value)
+  )
   const selectedProviderSource = computed(() => resolveProviderSource(providerForm.value.sourceType))
   const sourceSupportsThinking = computed(() => selectedProviderSource.value?.supportsThinking ?? false)
   const sourceSupportsFilters = computed(() => selectedProviderSource.value?.supportsFilters ?? false)
   const showProviderTokenField = computed(() => selectedProviderSource.value?.supportsToken ?? true)
   const showApiVersionField = computed(() => selectedProviderSource.value?.showApiVersion ?? false)
   const providerCanManageModels = computed(() => !!selectedProvider.value && !isCreatingProvider.value)
+  const hasStoredCredential = computed(() =>
+    Boolean(selectedProvider.value?.hasAuth) && !isCreatingProvider.value
+  )
+  const credentialWillBeCleared = computed(() =>
+    hasStoredCredential.value
+    && (!showProviderTokenField.value || providerForm.value.clearAuthOnSave)
+  )
+
+  const parseAdditionalDefaultParams = () =>
+    stripManagedDefaultParams(
+      safeJsonParse<Record<string, unknown>>(
+        providerForm.value.defaultParamsJson,
+        {},
+        t('pages.modelRuntime.messages.invalidDefaultParamsJson'),
+      ),
+    )
+
+  const setOptionalDefaultParam = (
+    target: Record<string, unknown>,
+    key: string,
+    value: unknown,
+  ) => {
+    if (
+      value === undefined ||
+      value === null ||
+      value === '' ||
+      (typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.keys(value).length === 0)
+    ) {
+      delete target[key]
+      return
+    }
+    target[key] = value
+  }
+
+  const buildProviderDefaultParams = () => {
+    const nextDefaults = parseAdditionalDefaultParams()
+    const requestHeaders = entriesToObject(providerHeaderRows.value)
+
+    setOptionalDefaultParam(nextDefaults, 'requestHeaders', requestHeaders)
+    setOptionalDefaultParam(
+      nextDefaults,
+      'proxy',
+      providerForm.value.proxyAddress.trim(),
+    )
+
+    if (showApiVersionField.value) {
+      setOptionalDefaultParam(
+        nextDefaults,
+        'apiVersion',
+        providerForm.value.apiVersion.trim(),
+      )
+    } else {
+      delete nextDefaults.apiVersion
+    }
+
+    if (sourceSupportsThinking.value) {
+      setOptionalDefaultParam(
+        nextDefaults,
+        'thinking',
+        safeJsonParse(providerForm.value.thinkingJson, null),
+      )
+    } else {
+      delete nextDefaults.thinking
+    }
+
+    if (sourceSupportsFilters.value) {
+      setOptionalDefaultParam(
+        nextDefaults,
+        'filters',
+        safeJsonParse(providerForm.value.filtersJson, null),
+      )
+    } else {
+      delete nextDefaults.filters
+    }
+
+    return nextDefaults
+  }
+
+  const defaultParamsJsonError = computed(() => {
+    try {
+      parseAdditionalDefaultParams()
+      return ''
+    } catch (errorDetail: unknown) {
+      return String((errorDetail as Error).message || errorDetail)
+    }
+  })
+  const defaultParamsPreviewJson = computed(() => {
+    try {
+      return prettyJson(buildProviderDefaultParams()) || '{}'
+    } catch {
+      return ''
+    }
+  })
 
   const providerSaveLabel = computed(() =>
     isCreatingProvider.value
@@ -72,13 +193,16 @@ export function useProviderForm({
       sourceType: source?.key || '',
       baseUrl: source?.defaultBaseUrl || '',
       token: '',
+      clearAuthOnSave: false,
       enabled: true,
       proxyAddress: '',
       thinkingJson: '',
       filtersJson: '',
       apiVersion: '',
+      defaultParamsJson: '',
     })
     providerHeaderRows.value = []
+    lastProviderProbeResult.value = null
   }
 
   const applyProviderSource = (type: string, previousType?: string) => {
@@ -98,6 +222,9 @@ export function useProviderForm({
 
     if (!source.supportsToken) {
       providerForm.value.token = ''
+      providerForm.value.clearAuthOnSave = hasStoredCredential.value
+    } else if (previousSource?.supportsToken === false) {
+      providerForm.value.clearAuthOnSave = false
     }
 
     if (!source.showApiVersion) {
@@ -111,48 +238,60 @@ export function useProviderForm({
     }
   }
 
-  const onProviderSourceChange = (value: string | null) => {
-    if (!value) {
+  const onProviderSourceChange = async (value: string | null) => {
+    if (!value || value === providerForm.value.sourceType) {
       return
     }
+    const source = resolveProviderSource(value)
+    if (!source) {
+      return
+    }
+
+    if (!isCreatingProvider.value && selectedProvider.value) {
+      const confirmed = await confirm({
+        title: t('pages.modelRuntime.dialogs.confirmProviderSourceChange'),
+        message: t('pages.modelRuntime.messages.confirmProviderSourceChange', {
+          source: source.label,
+        }),
+        confirmText: t('common.actions.action.confirm'),
+        confirmColor: 'primary',
+        icon: 'mdi-alert-outline',
+        iconColor: 'warning',
+      })
+      if (!confirmed) {
+        return
+      }
+    }
+
     const previousType = providerForm.value.sourceType
     applyProviderSource(value, previousType)
+    lastProviderProbeResult.value = null
+  }
+
+  const toggleStoredCredentialClear = () => {
+    if (!hasStoredCredential.value || !showProviderTokenField.value) {
+      return
+    }
+    providerForm.value.clearAuthOnSave = !providerForm.value.clearAuthOnSave
   }
 
   const saveProvider = async () => {
     try {
-      const existingDefaults = selectedProvider.value?.defaultParams || {}
-      const nextDefaults: Record<string, unknown> = {
-        ...existingDefaults,
-        requestHeaders: entriesToObject(providerHeaderRows.value),
-        proxy: providerForm.value.proxyAddress || undefined,
-      }
-
-      if (showApiVersionField.value) {
-        nextDefaults.apiVersion = providerForm.value.apiVersion || undefined
-      } else {
-        delete nextDefaults.apiVersion
-      }
-
-      nextDefaults.thinking = sourceSupportsThinking.value
-        ? safeJsonParse(providerForm.value.thinkingJson, null)
-        : undefined
-
-      nextDefaults.filters = sourceSupportsFilters.value
-        ? safeJsonParse(providerForm.value.filtersJson, null)
-        : undefined
+      const nextDefaults = buildProviderDefaultParams()
 
       const payload: ProviderPayload = {
         id: providerForm.value.id.trim(),
         displayName: providerForm.value.displayName.trim() || providerForm.value.id.trim(),
         type: resolveProviderSource(providerForm.value.sourceType)?.type ?? providerForm.value.sourceType,
-        capabilityType: tabToCapabilityType(activeTab.value),
+        capabilityType: providerCapabilityType.value,
         baseUrl: providerForm.value.baseUrl.trim(),
         enabled: providerForm.value.enabled,
         defaultParams: nextDefaults,
       }
 
-      if (providerForm.value.token.trim()) {
+      if (!showProviderTokenField.value || providerForm.value.clearAuthOnSave) {
+        payload.auth = {}
+      } else if (providerForm.value.token.trim()) {
         payload.auth = { api_key: providerForm.value.token.trim() }
       }
 
@@ -169,6 +308,7 @@ export function useProviderForm({
         }
       }
       providerForm.value.token = ''
+      providerForm.value.clearAuthOnSave = false
     } catch (errorDetail: unknown) {
       store.error = String((errorDetail as Error).message || errorDetail)
     }
@@ -201,7 +341,10 @@ export function useProviderForm({
       return
     }
     probingProviderId.value = selectedProvider.value.id
-    await store.probeProvider(selectedProvider.value.id, modelId)
+    const result = await store.probeProvider(selectedProvider.value.id, modelId)
+    if (result) {
+      lastProviderProbeResult.value = result
+    }
     probingProviderId.value = ''
   }
 
@@ -221,11 +364,15 @@ export function useProviderForm({
         ),
         baseUrl: selectedProvider.value.baseUrl,
         token: '',
+        clearAuthOnSave: false,
         enabled: selectedProvider.value.enabled,
         proxyAddress: String(selectedProvider.value.defaultParams.proxy || ''),
         thinkingJson: prettyJson(selectedProvider.value.defaultParams.thinking),
         filtersJson: prettyJson(selectedProvider.value.defaultParams.filters),
         apiVersion: String(selectedProvider.value.defaultParams.apiVersion || ''),
+        defaultParamsJson: prettyJson(
+          stripManagedDefaultParams(selectedProvider.value.defaultParams),
+        ),
       })
       providerHeaderRows.value = objectToEntries(
         selectedProvider.value.defaultParams.requestHeaders as Record<string, unknown>
@@ -233,6 +380,7 @@ export function useProviderForm({
       if (source && !providerForm.value.baseUrl) {
         providerForm.value.baseUrl = source.defaultBaseUrl
       }
+      lastProviderProbeResult.value = null
     },
     { immediate: true }
   )
@@ -241,6 +389,7 @@ export function useProviderForm({
     providerForm,
     providerHeaderRows,
     providerSourceOptions,
+    providerCapabilityType,
     providerSaveLabel,
     selectedProviderSource,
     sourceSupportsThinking,
@@ -248,10 +397,16 @@ export function useProviderForm({
     showProviderTokenField,
     showApiVersionField,
     providerCanManageModels,
+    hasStoredCredential,
+    credentialWillBeCleared,
+    defaultParamsJsonError,
+    defaultParamsPreviewJson,
     probingProviderId,
+    lastProviderProbeResult,
     resetProviderForm,
     applyProviderSource,
     onProviderSourceChange,
+    toggleStoredCredentialClear,
     saveProvider,
     deleteCurrentProvider,
     probeSelectedProvider,

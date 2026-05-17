@@ -1,0 +1,184 @@
+# ShinBot full agent configuration template
+#
+# Copy this file to:
+#   data/agents/full-agent.toml
+#
+# The main data/config.toml chooses which bot uses this agent config:
+#
+#   [bots.agent]
+#   mode = "full"
+#   config = "agents/full-agent.toml"
+#
+# Provider credentials and model provider definitions do not belong here.
+# This file only references model routes/model ids that are configured by the
+# model runtime system elsewhere.
+
+
+[agent]
+id = "full-agent"
+mode = "full"
+persona_id = "companion-default"
+
+
+# ─── Prompt Files ────────────────────────────────────────────────────────────
+#
+# Built-in markdown prompts are copied non-destructively to data/prompts on
+# startup.  Existing files are treated as user edits and loaded preferentially.
+
+[agent.prompt_files]
+locale = "zh-CN"
+fallback_locales = ["en-US"]
+sync_to_data = true
+data_root = "prompts" # Resolved relative to data/.
+
+
+# ─── Defaults ────────────────────────────────────────────────────────────────
+
+[agent.defaults]
+llm = "[route]chat.default"
+max_model_retries = 1
+retry_backoff_seconds = 0.25
+
+[agent.defaults.message_format]
+use_thumbnail = true
+include_sender = true
+include_time = true
+include_message_id = true
+
+
+# ─── Review Workflow ─────────────────────────────────────────────────────────
+
+[agent.review]
+scan_batch_size = 500
+overflow_threshold_messages = 3000
+overflow_compression_batch_size = 500
+reply_context_before_messages = 30
+reply_context_after_messages = 10
+block_digest_concurrency = 4
+bootstrap_timeout_seconds = 20
+
+
+[agent.review.overflow_compression]
+enabled = true
+llm = "[route]chat.summary"
+max_model_retries = 1
+retry_backoff_seconds = 0.25
+
+[agent.review.overflow_compression.prompts]
+system = "review.overflow_compression.system"
+task = "review.overflow_compression.task"
+constraints = "review.overflow_compression.constraints"
+
+
+[agent.review.scan]
+enabled = true
+llm = "[route]chat.reasoning"
+max_model_retries = 1
+retry_backoff_seconds = 0.25
+
+[agent.review.scan.prompts]
+system = "review.review_scan.system"
+task = "review.review_scan.task"
+constraints = "review.review_scan.constraints"
+
+
+[agent.review.block_digest]
+enabled = true
+llm = "[route]chat.summary"
+max_model_retries = 1
+retry_backoff_seconds = 0.25
+
+[agent.review.block_digest.prompts]
+system = "review.block_digest.system"
+task = "review.block_digest.task"
+constraints = "review.block_digest.constraints"
+
+
+[agent.review.reply_decision]
+enabled = true
+llm = "[route]chat.default"
+max_model_retries = 1
+retry_backoff_seconds = 0.25
+
+[agent.review.reply_decision.prompts]
+system = "review.reply_decision.system"
+task = "review.reply_decision.task"
+constraints = "review.reply_decision.constraints"
+repair = "review.reply_decision.repair"
+
+# Optional additive tools. Built-in reply tools are always available.
+# [agent.review.reply_decision.tools]
+# extra = ["search_memory"]
+# tags = ["knowledge"]
+
+
+[agent.review.active_chat_bootstrap]
+enabled = true
+llm = "[route]chat.reasoning"
+max_model_retries = 1
+retry_backoff_seconds = 0.25
+
+[agent.review.active_chat_bootstrap.prompts]
+system = "review.active_chat_bootstrap.system"
+task = "review.active_chat_bootstrap.task"
+constraints = "review.active_chat_bootstrap.constraints"
+
+
+# ─── Active Chat Workflow ────────────────────────────────────────────────────
+
+[agent.active_chat]
+initial_interest = 15
+half_life_seconds = 20
+tick_interval_seconds = 5
+idle_interest_threshold = 5
+max_interest = 100
+post_round_attention_multiplier = 0.25
+
+[agent.active_chat.interest_delta]
+normal_message = 1
+mention_self = 8
+reply_to_self = 5
+poke = 0
+mention_other = 0
+send_reply = 8
+send_reply_low = 3
+no_reply = -5
+no_reply_strong = -10
+send_poke = 3
+
+[agent.active_chat.attention]
+base_contribution = 1.0
+mention_self_contribution = 4.0
+mention_other_contribution = 0.5
+reply_to_self_contribution = 3.0
+poke_self_contribution = 0.8
+poke_other_contribution = 0.2
+threshold = 5.0
+
+
+[agent.active_chat.fast_mode]
+llm = "[route]chat.fast"
+
+# Optional additive tools. Built-in active-chat tools are always available.
+# [agent.active_chat.fast_mode.tools]
+# extra = ["search_memory"]
+# tags = ["utility"]
+
+[agent.active_chat.fast_mode.prompts]
+system = "active_chat.fast_mode.system"
+constraints = "active_chat.fast_mode.constraints"
+repair = "active_chat.fast_mode.repair"
+conversation_summary = "active_chat.fast_mode.conversation_summary"
+handoff_overflow = "active_chat.handoff.overflow"
+handoff_digest = "active_chat.handoff.digest"
+handoff_legacy = "active_chat.handoff.legacy"
+
+
+# ─── Summaries ────────────────────────────────────────────────────────────────
+
+[agent.summaries]
+active_chat_summary_max_age_seconds = 1800
+
+[agent.summaries.markdown]
+enabled = true
+dir = "summary"

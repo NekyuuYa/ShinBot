@@ -17,5 +17,5 @@
 
 当前条目：
 
-- `01_context_management.md`
+- `context_management.md`
   - Prompt 上下文构建、别名重建、上下文淘汰与压缩相关的重要参数。

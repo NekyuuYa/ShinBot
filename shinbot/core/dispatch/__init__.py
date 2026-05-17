@@ -1,23 +1,50 @@
-"""Command, event, and message dispatch primitives."""
+"""Event and message dispatch primitives."""
 
-from shinbot.core.dispatch.command import (
-    CommandDef,
-    CommandMatch,
-    CommandMode,
-    CommandPriority,
-    CommandRegistry,
+from shinbot.core.dispatch.dispatchers import (
+    AGENT_ENTRY_TARGET,
+    NOTICE_DISPATCHER_TARGET,
+    AgentEntryDispatcher,
+    AgentEntryHandler,
+    AgentEntrySignal,
+    NoticeDispatcher,
+    make_agent_entry_fallback_route_rule,
+    make_notice_route_rule,
 )
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
-from shinbot.core.dispatch.pipeline import MessageContext, MessagePipeline
+from shinbot.core.dispatch.ingress import (
+    MessageIngress,
+    PreRouteHook,
+    RouteDispatchContext,
+    RouteTargetRegistry,
+)
+from shinbot.core.dispatch.message_context import MessageContext
+from shinbot.core.dispatch.routing import (
+    RouteCondition,
+    RouteMatchContext,
+    RouteMatchMode,
+    RouteRule,
+    RouteTable,
+)
 
 __all__ = [
-    "CommandDef",
-    "CommandMatch",
-    "CommandMode",
-    "CommandPriority",
-    "CommandRegistry",
     "EventBus",
+    "MessageIngress",
     "StopPropagation",
     "MessageContext",
-    "MessagePipeline",
+    "AGENT_ENTRY_TARGET",
+    "NOTICE_DISPATCHER_TARGET",
+    "AgentEntryDispatcher",
+    "AgentEntryHandler",
+    "AgentEntrySignal",
+    "NoticeDispatcher",
+    "PreRouteHook",
+    "RouteDispatchContext",
+    "RouteCondition",
+    "RouteMatchContext",
+    "RouteMatchMode",
+    "RouteRule",
+    "RouteTable",
+    "RouteTargetRegistry",
+    "make_agent_entry_fallback_route_rule",
+    "make_notice_route_rule",
 ]
