@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from scripts.migrate_legacy_config_data import (
 
 
 def test_exports_legacy_db_config_tables_to_file_layout(tmp_path: Path) -> None:
+    _write_legacy_main_config(tmp_path / "config.toml")
     data_dir = tmp_path / "data"
     db_path = data_dir / "db" / "shinbot.sqlite3"
     db_path.parent.mkdir(parents=True)
@@ -52,6 +54,50 @@ def test_exports_legacy_db_config_tables_to_file_layout(tmp_path: Path) -> None:
             "updated_at": "2026-01-02T00:00:00+00:00",
         }
     ]
+    assert plan.main_config_payload["adapter_instances"] == [
+        {
+            "id": "inst-1",
+            "name": "Instance 1",
+            "adapter": "onebot_v11",
+            "enabled": True,
+            "config": {
+                "mode": "reverse",
+                "reverse_port": 3001,
+                "access_token": "token",
+                "auto_download_media": True,
+                "download_file_resources": False,
+                "resource_cache_dir": "data/temp/resources",
+                "reconnect_delay": 5,
+                "max_reconnects": -1,
+                "request_timeout": 20,
+                "forward_max_depth": 3,
+                "silent_reconnect": True,
+                "reconnect_log_interval": 30,
+            },
+            "createdAt": 10,
+            "lastModified": 20,
+        }
+    ]
+    assert plan.main_config_payload["plugins"] == [
+        {
+            "id": "shinbot_debug_message",
+            "enabled": False,
+            "config": {},
+        },
+        {
+            "id": "shinbot_plugin_search",
+            "enabled": True,
+            "config": {"tavily_api_key": "tavily", "default_max_results": 5},
+        },
+    ]
+    assert plan.main_config_payload["bots"][0]["agent"] == {
+        "mode": "full",
+        "config": "agents/demo-agent.toml",
+    }
+    agent_path = data_dir / "agents" / "demo-agent.toml"
+    assert agent_path in plan.agent_files
+    assert 'persona_id = "companion"' in plan.agent_files[agent_path]
+    assert 'llm = "[route]chat.default"' in plan.agent_files[agent_path]
     persona_path = data_dir / "personas" / "companion.md"
     assert persona_path in plan.persona_files
     assert "Please be helpful." in plan.persona_files[persona_path]
@@ -67,6 +113,12 @@ def test_exports_legacy_db_config_tables_to_file_layout(tmp_path: Path) -> None:
     assert json.loads((data_dir / "instance-configs.json").read_text(encoding="utf-8"))[
         "configs"
     ][0]["instance_id"] == "inst-1"
+    main_config = tomllib.loads((data_dir / "config.toml").read_text(encoding="utf-8"))
+    assert main_config["adapter_instances"][0]["id"] == "inst-1"
+    assert main_config["bots"][0]["agent"]["config"] == "agents/demo-agent.toml"
+    assert tomllib.loads(agent_path.read_text(encoding="utf-8"))["agent"]["persona_id"] == (
+        "companion"
+    )
     assert "Please be helpful." in persona_path.read_text(encoding="utf-8")
     assert "Reply with care." in prompt_path.read_text(encoding="utf-8")
 
@@ -90,6 +142,20 @@ def test_apply_refuses_to_overwrite_non_empty_generated_files(tmp_path: Path) ->
     assert json.loads((data_dir / "models.json").read_text(encoding="utf-8"))[
         "providers"
     ][0]["id"] == "openai-main"
+
+
+def test_apply_refuses_to_overwrite_non_empty_main_config(tmp_path: Path) -> None:
+    _write_legacy_main_config(tmp_path / "config.toml")
+    data_dir = tmp_path / "data"
+    db_path = data_dir / "db" / "shinbot.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    _seed_legacy_config_db(db_path)
+    (data_dir / "config.toml").write_text("[admin]\nusername = \"existing\"\n", encoding="utf-8")
+
+    plan = build_migration_plan(data_dir=data_dir)
+
+    with pytest.raises(LegacyConfigMigrationError):
+        apply_migration(plan)
 
 
 def test_supports_older_model_schema_with_provider_id(tmp_path: Path) -> None:
@@ -219,7 +285,21 @@ def _seed_legacy_config_db(path: Path) -> None:
             CREATE TABLE bot_configs (
                 uuid TEXT PRIMARY KEY,
                 instance_id TEXT NOT NULL,
+                default_agent_uuid TEXT,
                 main_llm TEXT NOT NULL DEFAULT '',
+                config_json TEXT NOT NULL DEFAULT '{}',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE agents (
+                uuid TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                persona_uuid TEXT NOT NULL,
+                prompts_json TEXT NOT NULL DEFAULT '[]',
+                tools_json TEXT NOT NULL DEFAULT '[]',
+                context_strategy_json TEXT NOT NULL DEFAULT '{}',
                 config_json TEXT NOT NULL DEFAULT '{}',
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
@@ -328,15 +408,38 @@ def _seed_legacy_config_db(path: Path) -> None:
         conn.execute(
             """
             INSERT INTO bot_configs (
-                uuid, instance_id, main_llm, config_json, tags_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                uuid, instance_id, default_agent_uuid, main_llm, config_json, tags_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "instance-config-1",
                 "inst-1",
+                "agent-1",
                 "chat.default",
                 json.dumps({"response_profile": "balanced"}),
                 json.dumps(["prod"]),
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-02T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO agents (
+                uuid, agent_id, name, persona_uuid, prompts_json, tools_json,
+                context_strategy_json, config_json, tags_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "agent-1",
+                "demo-agent",
+                "Demo Agent",
+                "companion",
+                "[]",
+                "[]",
+                "{}",
+                "{}",
+                "[]",
                 "2026-01-01T00:00:00+00:00",
                 "2026-01-02T00:00:00+00:00",
             ),
@@ -396,3 +499,39 @@ def _seed_legacy_config_db(path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _write_legacy_main_config(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "[admin]",
+                'username = "admin"',
+                'password = "secret"',
+                "jwt_expire_hours = 24",
+                "",
+                "[[instances]]",
+                'id = "inst-1"',
+                'name = "Instance 1"',
+                'adapterType = "onebot_v11"',
+                'platform = "onebot_v11"',
+                "createdAt = 10",
+                "lastModified = 20",
+                "",
+                "[instances.config]",
+                'mode = "reverse"',
+                "reverse_port = 3001",
+                'access_token = "token"',
+                "download_resources = true",
+                "",
+                "[plugin_configs.shinbot_plugin_search]",
+                'tavily_api_key = "tavily"',
+                "default_max_results = 5",
+                "",
+                "[plugin_states.shinbot_debug_message]",
+                "enabled = false",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
