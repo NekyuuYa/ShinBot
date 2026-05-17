@@ -60,6 +60,7 @@ class SanitizationSummary:
     db_bytes_before: int = 0
     db_bytes_after: int = 0
     columns: list[SanitizedColumnSummary] = field(default_factory=list)
+    dropped_tables: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -75,6 +76,7 @@ class SanitizationSummary:
             "dbBytesAfter": self.db_bytes_after,
             "payloadBytesSaved": self.bytes_saved_in_payloads,
             "columns": [item.to_dict() for item in self.columns],
+            "droppedTables": list(self.dropped_tables),
             "warnings": list(self.warnings),
         }
 
@@ -98,6 +100,17 @@ TARGETS = (
         ),
     ),
 )
+MIGRATED_CONFIG_TABLES = (
+    "model_route_members",
+    "model_definitions",
+    "model_routes",
+    "model_providers",
+    "agents",
+    "context_strategies",
+    "personas",
+    "prompt_definitions",
+    "bot_configs",
+)
 
 
 class LegacyAuditMediaSanitizationError(RuntimeError):
@@ -109,12 +122,14 @@ def sanitize_legacy_audit_media(
     *,
     apply: bool = False,
     vacuum: bool = False,
+    drop_migrated_config_tables: bool = False,
 ) -> SanitizationSummary:
     """Replace inline data URLs in legacy audit rows with hash references.
 
     The routine is intentionally narrow: it only rewrites historical audit/snapshot
-    columns that could contain provider-call media payloads.  It does not delete
-    message, media, cost, or runtime history.
+    columns that could contain provider-call media payloads.  It can also remove
+    legacy configuration tables after those records have been exported to files.
+    It does not delete message, media, cost, or runtime history.
     """
 
     sqlite_path = Path(db_path)
@@ -137,6 +152,8 @@ def sanitize_legacy_audit_media(
                 )
                 continue
             summary.columns.append(_sanitize_target(conn, target, apply=apply, summary=summary))
+        if drop_migrated_config_tables:
+            summary.dropped_tables = _drop_migrated_config_tables(conn, apply=apply)
         if apply:
             conn.commit()
             if vacuum:
@@ -173,7 +190,7 @@ def _sanitize_target(
         WHERE {payload_column} LIKE '%data:image%'
            OR {payload_column} LIKE '%data:%;base64%'
         """
-    ).fetchall()
+    )
     for row in rows:
         original = str(row["payload"] or "")
         column_summary.rows_matched += 1
@@ -252,6 +269,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Compact the database after applying updates.",
     )
+    parser.add_argument(
+        "--drop-migrated-config-tables",
+        action="store_true",
+        help=(
+            "Drop legacy config tables that should already be exported to "
+            "config.toml/models.json/persona/prompt/agent files."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON summary.")
     args = parser.parse_args(argv)
 
@@ -259,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.db),
         apply=bool(args.apply),
         vacuum=bool(args.vacuum),
+        drop_migrated_config_tables=bool(args.drop_migrated_config_tables),
     )
     payload = summary.to_dict()
     if args.json:
@@ -280,10 +306,29 @@ def _print_summary(summary: dict[str, Any]) -> None:
             f"{column['rowsMatched']} matched, {column['rowsUpdated']} updated, "
             f"{column['rowsFailed']} failed"
         )
+    if summary["droppedTables"]:
+        action = "Dropped" if summary["applied"] else "Would drop"
+        print(f"{action} migrated config tables: {', '.join(summary['droppedTables'])}")
     if summary["warnings"]:
         print("Warnings:")
         for warning in summary["warnings"]:
             print(f"- {warning}")
+
+
+def _drop_migrated_config_tables(conn: sqlite3.Connection, *, apply: bool) -> list[str]:
+    existing = set(_existing_tables(conn))
+    tables = [table for table in MIGRATED_CONFIG_TABLES if table in existing]
+    if apply:
+        for table in tables:
+            conn.execute(f"DROP TABLE IF EXISTS {_quote_identifier(table)}")
+    return tables
+
+
+def _existing_tables(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+    ).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 if __name__ == "__main__":

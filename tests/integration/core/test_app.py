@@ -55,6 +55,9 @@ class TestShinBotInit:
         assert bot.agent_runtime.tool_manager is not None
         assert bot.model_runtime is not None
 
+        plg = bot.plugin_manager._build_plg("test-agent-runtime")
+        assert plg.agent_runtime is bot.agent_runtime
+
     def test_agent_runtime_reuses_mounted_model_runtime(self):
         bot = ShinBot()
         model_runtime = install_model_runtime(bot)

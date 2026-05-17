@@ -41,6 +41,56 @@ def test_apply_rewrites_inline_image_payloads_to_hash_references(tmp_path: Path)
     assert '"redacted": true' in payloads
 
 
+def test_can_drop_migrated_config_tables_after_file_export(tmp_path: Path) -> None:
+    db_path = tmp_path / "shinbot.sqlite3"
+    _create_legacy_audit_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE model_providers (id TEXT PRIMARY KEY);
+            CREATE TABLE model_definitions (id TEXT PRIMARY KEY);
+            CREATE TABLE model_routes (id TEXT PRIMARY KEY);
+            CREATE TABLE model_route_members (route_id TEXT NOT NULL, model_id TEXT NOT NULL);
+            CREATE TABLE agents (id TEXT PRIMARY KEY);
+            CREATE TABLE personas (id TEXT PRIMARY KEY);
+            CREATE TABLE prompt_definitions (id TEXT PRIMARY KEY);
+            CREATE TABLE bot_configs (id TEXT PRIMARY KEY);
+            CREATE TABLE context_strategies (id TEXT PRIMARY KEY);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY);
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    dry_run = sanitize_legacy_audit_media(db_path, drop_migrated_config_tables=True)
+
+    assert dry_run.applied is False
+    assert set(dry_run.dropped_tables) == {
+        "model_route_members",
+        "model_definitions",
+        "model_routes",
+        "model_providers",
+        "agents",
+        "context_strategies",
+        "personas",
+        "prompt_definitions",
+        "bot_configs",
+    }
+    assert "model_providers" in _read_tables(db_path)
+
+    applied = sanitize_legacy_audit_media(
+        db_path,
+        apply=True,
+        drop_migrated_config_tables=True,
+    )
+
+    assert applied.applied is True
+    assert "model_providers" not in _read_tables(db_path)
+    assert "sessions" in _read_tables(db_path)
+
+
 def test_invalid_legacy_json_is_reported_and_left_untouched(tmp_path: Path) -> None:
     db_path = tmp_path / "shinbot.sqlite3"
     _create_legacy_audit_schema(db_path)
@@ -129,3 +179,14 @@ def _read_payloads(db_path: Path) -> str:
     finally:
         conn.close()
     return "\n".join(row[0] for row in [*ai_payload, *snapshot_payload])
+
+
+def _read_tables(db_path: Path) -> set[str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {str(row[0]) for row in rows}

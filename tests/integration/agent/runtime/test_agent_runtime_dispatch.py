@@ -115,6 +115,41 @@ def test_agent_runtime_reload_prompt_files_picks_up_data_edits(tmp_path: Path) -
     assert "用户在 WebUI 中修改后的审查提示" in component.content
 
 
+def test_agent_runtime_applies_active_chat_threshold_delta_to_all_profiles(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        agent_configs_by_bot_id={
+            "bot-a": {
+                "agent": {
+                    "id": "agent-a",
+                    "active_chat": {"attention": {"threshold": 7}},
+                }
+            }
+        },
+    )
+
+    runtime.set_active_chat_threshold_delta(3.0, source="test")
+
+    assert runtime.active_chat_workflow.attention_config.base_threshold == 8.0
+    assert (
+        runtime.agent_profile_for_bot("bot-a")
+        .active_chat_workflow.attention_config.base_threshold
+        == 10.0
+    )
+
+    runtime.set_active_chat_threshold_delta(0.0, source="test")
+
+    assert runtime.active_chat_workflow.attention_config.base_threshold == 5.0
+    assert (
+        runtime.agent_profile_for_bot("bot-a")
+        .active_chat_workflow.attention_config.base_threshold
+        == 7.0
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_runtime_without_database_shutdown_is_noop() -> None:
     bot = ShinBot()

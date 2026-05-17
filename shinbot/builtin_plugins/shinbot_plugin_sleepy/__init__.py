@@ -1,8 +1,8 @@
 """Builtin plugin: time-based attention threshold scheduler (Sleepy).
 
 Runs a background loop that periodically checks the current local time against
-user-configured schedule slots and adjusts the base threshold for all active
-sessions accordingly.
+user-configured schedule slots and adjusts Agent active chat thresholds
+accordingly.
 
   - Positive threshold_delta  → higher threshold → bot replies less actively
   - Negative threshold_delta  → lower threshold  → bot replies more actively
@@ -13,7 +13,6 @@ Multiple overlapping slots have their deltas summed.
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import tomllib
 from collections.abc import Sequence
@@ -29,11 +28,6 @@ from shinbot.core.plugins.context import Plugin
 from shinbot.utils.logger import get_logger
 
 logger = get_logger(__name__, source="plugin:sleepy", color="bright_magenta")
-
-# ── Metadata keys written into session_attention_states.metadata_json ──
-_KEY_ORIGINAL_BASE = "sleepy_original_base_threshold"
-_KEY_ACTIVE_DELTA = "sleepy_active_delta"
-_KEY_FIXED_BASE = "fixed_base_threshold"  # consumed by AttentionEngine
 
 # Background loop interval (seconds)
 _LOOP_INTERVAL = 60
@@ -146,98 +140,30 @@ def _compute_delta(slots: list[TimeSlot]) -> float:
     return sum(s.threshold_delta for s in slots if _is_slot_active(s))
 
 
-# ── Per-session delta application ─────────────────────────────────────────
+# ── Runtime delta application ─────────────────────────────────────────────
 
 
-def _apply_delta_to_session(
-    repo: Any,
-    db_connect: Any,
-    session_id: str,
-    target_delta: float,
-) -> None:
-    """Update (or remove) the sleepy threshold override for one session."""
-    state = repo.get_attention(session_id)
-    if state is None:
-        return
-
-    current_delta: float = float(state.metadata.get(_KEY_ACTIVE_DELTA, 0.0))
-    if abs(target_delta - current_delta) < 1e-6:
-        return  # nothing to do
-
-    if target_delta == 0.0:
-        # Deactivate — restore original base_threshold if we saved it
-        original = state.metadata.get(_KEY_ORIGINAL_BASE)
-        new_meta = {
-            k: v
-            for k, v in state.metadata.items()
-            if k not in (_KEY_ORIGINAL_BASE, _KEY_ACTIVE_DELTA, _KEY_FIXED_BASE)
-        }
-        if original is not None:
-            with db_connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE session_attention_states
-                    SET base_threshold = ?, metadata_json = ?
-                    WHERE session_id = ?
-                    """,
-                    (float(original), json.dumps(new_meta, ensure_ascii=False), session_id),
-                )
-        else:
-            repo.update_metadata(session_id, new_meta)
-        logger.debug("Sleepy: deactivated for session %s", session_id)
-    else:
-        # Activate or change delta
-        if current_delta == 0.0:
-            original = state.base_threshold
-        else:
-            original = float(state.metadata.get(_KEY_ORIGINAL_BASE, state.base_threshold))
-        fixed = original + target_delta
-        new_meta = {
-            **state.metadata,
-            _KEY_ORIGINAL_BASE: original,
-            _KEY_ACTIVE_DELTA: target_delta,
-            _KEY_FIXED_BASE: fixed,
-        }
-        repo.update_metadata(session_id, new_meta)
-        logger.debug(
-            "Sleepy: session=%s delta=%.2f→%.2f fixed_base=%.2f",
-            session_id,
-            current_delta,
-            target_delta,
-            fixed,
-        )
-
-
-def _apply_schedule(plugin_id: str, db: Any) -> None:
-    """Apply the current schedule delta to all sessions in the DB."""
+def _apply_schedule(plugin_id: str, agent_runtime: Any) -> float:
+    """Apply the current schedule delta to Agent active chat profiles."""
     config = _load_plugin_config(plugin_id)
     target_delta = _compute_delta(config.schedules) if config.enabled else 0.0
 
-    try:
-        with db.connect() as conn:
-            rows = conn.execute(
-                "SELECT session_id FROM session_attention_states"
-            ).fetchall()
-        session_ids = [row["session_id"] for row in rows]
-    except Exception:
-        logger.exception("Sleepy: failed to list sessions")
-        return
-
-    for sid in session_ids:
-        try:
-            _apply_delta_to_session(db.attention, db.connect, sid, target_delta)
-        except Exception:
-            logger.exception("Sleepy: error applying delta to session %s", sid)
+    setter = getattr(agent_runtime, "set_active_chat_threshold_delta", None)
+    if setter is None:
+        raise RuntimeError("Agent runtime does not support active chat threshold updates")
+    setter(float(target_delta), source=plugin_id)
+    logger.debug("Sleepy: applied active chat threshold delta %.2f", target_delta)
+    return float(target_delta)
 
 
 # ── Background loop ───────────────────────────────────────────────────────
 
 
-async def _schedule_loop(plugin_id: str, db: Any) -> None:
+async def _schedule_loop(plugin_id: str, agent_runtime: Any) -> None:
     while True:
         await asyncio.sleep(_LOOP_INTERVAL)
         try:
-            _apply_schedule(plugin_id, db)
+            _apply_schedule(plugin_id, agent_runtime)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -252,22 +178,22 @@ _loop_task: asyncio.Task[None] | None = None
 def setup(plg: Plugin) -> None:
     global _loop_task
 
-    db = plg.database
-    if db is None:
+    agent_runtime = plg.agent_runtime
+    if agent_runtime is None:
         plg.logger.warning(
-            "Sleepy: no database available — schedule loop will not run. "
-            "Ensure ShinBot is started with a data_dir."
+            "Sleepy: no Agent runtime available — schedule loop will not run. "
+            "Enable Agent mode for at least one bot before loading this plugin."
         )
         return
 
     # Apply immediately so the first window doesn't require waiting 60 s
     try:
-        _apply_schedule(plg.plugin_id, db)
+        _apply_schedule(plg.plugin_id, agent_runtime)
     except Exception:
         plg.logger.exception("Sleepy: error applying schedule on startup")
 
     _loop_task = asyncio.create_task(
-        _schedule_loop(plg.plugin_id, db),
+        _schedule_loop(plg.plugin_id, agent_runtime),
         name=f"{plg.plugin_id}.schedule_loop",
     )
     plg.logger.info("Sleepy plugin loaded — schedule loop started (interval=%ds)", _LOOP_INTERVAL)
@@ -279,20 +205,14 @@ def on_disable(plg: Plugin) -> None:
         _loop_task.cancel()
         _loop_task = None
 
-    # Clear all sleepy overrides when the plugin is disabled
-    db = plg.database
-    if db is not None:
+    # Clear sleepy overrides when the plugin is disabled.
+    agent_runtime = plg.agent_runtime
+    if agent_runtime is not None:
         try:
-            with db.connect() as conn:
-                rows = conn.execute(
-                    "SELECT session_id FROM session_attention_states"
-                ).fetchall()
-            for row in rows:
-                try:
-                    _apply_delta_to_session(db.attention, db.connect, row["session_id"], 0.0)
-                except Exception:
-                    pass
+            setter = getattr(agent_runtime, "set_active_chat_threshold_delta", None)
+            if setter is not None:
+                setter(0.0, source=plg.plugin_id)
         except Exception:
-            pass
+            plg.logger.exception("Sleepy: failed to clear runtime threshold delta")
 
     plg.logger.info("Sleepy plugin disabled — schedule loop stopped")

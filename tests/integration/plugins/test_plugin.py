@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from shinbot.agent.services.tools import ToolRegistry
+from shinbot.builtin_plugins import shinbot_plugin_sleepy
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot import BootController
 from shinbot.core.config_provider import ConfigProviderRegistry, load_provider_schema
@@ -217,6 +218,44 @@ def test_plugin_manager_ignores_plugins_without_provider_schema(tmp_path: Path) 
 
     assert [plugin.id for plugin in loaded] == ["no_schema_plugin"]
     assert registry.catalog() == []
+
+
+def test_sleepy_plugin_applies_runtime_threshold_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Runtime:
+        def __init__(self) -> None:
+            self.calls: list[tuple[float, str]] = []
+
+        def set_active_chat_threshold_delta(self, delta: float, *, source: str = "") -> None:
+            self.calls.append((delta, source))
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[[plugins]]
+id = "shinbot_plugin_sleepy"
+
+[plugins.config]
+enabled = true
+
+[[plugins.config.schedules]]
+name = "Always"
+start_time = "00:00"
+end_time = "23:59"
+threshold_delta = 4.5
+enabled = true
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["shinbot", "--config", str(config_path)])
+    runtime = _Runtime()
+
+    delta = shinbot_plugin_sleepy._apply_schedule("shinbot_plugin_sleepy", runtime)
+
+    assert delta == 4.5
+    assert runtime.calls == [(4.5, "shinbot_plugin_sleepy")]
 
 
 @pytest.mark.asyncio
