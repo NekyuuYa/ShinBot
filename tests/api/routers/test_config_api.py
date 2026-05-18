@@ -81,7 +81,36 @@ def test_config_workspace_exposes_frontend_contract(tmp_path: Path):
     assert payload["providers"]["adapters"][0]["id"] == "onebot_v11"
     assert payload["providers"]["adapters"][0]["defaults"]["mode"] == "reverse"
     assert payload["validation"]["valid"] is True
+    assert payload["runtime"]["modelEnabled"] is False
     assert payload["runtime"]["requiresRestartAfterSave"] is True
+
+
+def test_config_workspace_marks_model_enabled_when_agent_bot_requires_it(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    boot = _BootStub(tmp_path)
+    boot.config.pop("runtime")
+    agent_path = tmp_path / "agents" / "full-agent.toml"
+    agent_path.parent.mkdir(parents=True)
+    agent_path.write_text('[agent]\nid = "full-agent"\n', encoding="utf-8")
+    boot.config["bots"] = [
+        {
+            "id": "full-agent",
+            "display_name": "Full Agent",
+            "enabled": True,
+            "agent": {"mode": "full", "config": "agents/full-agent.toml"},
+            "bindings": [],
+        }
+    ]
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/config", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["validation"]["valid"] is True
+    assert payload["runtime"]["modelEnabled"] is True
+    assert payload["runtime"]["modelMounted"] is False
 
 
 def test_config_validate_reports_boot_and_provider_issues(tmp_path: Path):

@@ -1,7 +1,6 @@
 import { computed, inject, onMounted, ref, watch, type InjectionKey } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { getConfigPathValue } from '@/config/paths'
 import { useModelRuntimeStore } from '@/stores/modelRuntime'
 import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
 import { useSystemSettingsStore } from '@/stores/systemSettings'
@@ -28,7 +27,7 @@ export function useModelRuntimePage() {
 
   const tabs = useRuntimeTabs(activeTab)
   const runtimeModelEnabledInConfig = computed(
-    () => getConfigPathValue(configWorkspaceStore.workspace?.config, 'runtime.model') === true
+    () => configWorkspaceStore.workspace?.runtime.modelEnabled ?? false
   )
   const runtimeModelMounted = computed(
     () => configWorkspaceStore.workspace?.runtime.modelMounted ?? false

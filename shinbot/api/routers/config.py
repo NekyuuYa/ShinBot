@@ -91,6 +91,7 @@ def _config_workspace(
 ) -> dict[str, Any]:
     config = deepcopy(boot.config)
     validation = _config_validation_result(config=config, bot=bot, boot=boot)
+    model_runtime_required = _model_runtime_effectively_enabled(config, validation)
     return {
         "version": 1,
         "configPath": str(getattr(boot, "config_path", "")),
@@ -99,6 +100,7 @@ def _config_workspace(
         "validation": validation,
         "runtime": {
             "modelMounted": getattr(bot, "model_runtime", None) is not None,
+            "modelEnabled": model_runtime_required,
             "agentMounted": getattr(bot, "agent_runtime", None) is not None,
             "requiresRestartAfterSave": True,
         },
@@ -177,7 +179,7 @@ def _plugin_catalog(bot: Any) -> list[dict[str, Any]]:
 
 def _config_templates() -> dict[str, Any]:
     return {
-        "runtime": {"model": False, "agent": True},
+        "runtime": {"agent": True},
         "logging": {"level": "INFO", "third_party_noise": "debug"},
         "database": {"url": "sqlite:///data/db/shinbot.sqlite3", "snapshot_ttl": 10800},
         "adapterInstance": {
@@ -209,6 +211,28 @@ def _config_templates() -> dict[str, Any]:
             "priority": 0,
         },
     }
+
+
+def _model_runtime_effectively_enabled(
+    config: dict[str, Any],
+    validation: dict[str, Any],
+) -> bool:
+    runtime = config.get("runtime")
+    if isinstance(runtime, dict):
+        if runtime.get("model") is False:
+            return False
+        if runtime.get("model") is True:
+            return True
+        if runtime.get("agent") is False:
+            return False
+
+    for bot_config in validation["normalized"]["bots"]:
+        if (
+            bot_config.get("enabled") is not False
+            and bot_config.get("agent", {}).get("mode") != "none"
+        ):
+            return True
+    return False
 
 
 @router.get("")
