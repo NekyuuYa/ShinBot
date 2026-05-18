@@ -134,6 +134,7 @@ export interface ConfigValidationResult {
 
 export interface ConfigWorkspaceRuntime {
   modelMounted: boolean
+  modelEnabled: boolean
   agentMounted: boolean
   requiresRestartAfterSave: boolean
 }
@@ -151,7 +152,6 @@ export interface ConfigWorkspaceOptions {
 }
 
 export interface ConfigRuntimeTemplate {
-  model: boolean
   agent: boolean
 }
 
