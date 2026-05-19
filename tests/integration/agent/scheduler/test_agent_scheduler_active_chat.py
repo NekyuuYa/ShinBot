@@ -319,3 +319,56 @@ def test_scheduler_force_exits_active_chat_from_interest_adjustment() -> None:
     assert scheduler.active_chat_state_for("bot:group:room") is None
     assert timer.cancelled == ["bot:group:room"]
     assert dispatcher.active_chat_stops == ["bot:group:room"]
+
+
+def test_scheduler_previews_active_chat_interest_adjustment_exit() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    scheduler.complete_review(
+        "bot:group:room",
+        enter_active_chat=True,
+        active_chat_initial_interest=15.0,
+        now=60.0,
+    )
+
+    preview = scheduler.preview_active_chat_interest_adjustment(
+        "bot:group:room",
+        force_exit=True,
+        now=70.0,
+    )
+
+    assert preview.will_return_idle is True
+    assert preview.active_chat_state is not None
+    assert preview.active_chat_state.interest_value == 0.0
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert scheduler.active_chat_state_for("bot:group:room").interest_value == 15.0
+
+
+def test_scheduler_previews_active_chat_decay_tick_exit() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=10.0,
+                decay_half_life_seconds=5.0,
+                idle_interest_threshold=5.0,
+                tick_interval_seconds=5.0,
+            )
+        ),
+        now=lambda: 10.0,
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+
+    preview = scheduler.preview_active_chat_tick("bot:group:room", now=65.0)
+
+    assert preview.will_return_idle is True
+    assert preview.active_chat_state is not None
+    assert preview.active_chat_state.interest_value == pytest.approx(5.0)
+    assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT
+    assert scheduler.active_chat_state_for("bot:group:room").interest_value == 10.0

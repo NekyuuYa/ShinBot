@@ -215,3 +215,27 @@ class ActiveChatInterestAdjustDecision:
     returned_to_idle: bool = False
     reason: str = ""
     skipped_reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatInterestAdjustmentPreview:
+    """Preview of a workflow-driven active chat interest adjustment."""
+
+    session_id: str
+    state: AgentState
+    active_chat_state: ActiveChatState | None = None
+    delta: float = 0.0
+    force_exit: bool = False
+    will_return_idle: bool = False
+    skipped_reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatTickPreview:
+    """Preview of an active chat decay tick without mutating scheduler state."""
+
+    session_id: str
+    state: AgentState
+    active_chat_state: ActiveChatState | None = None
+    will_return_idle: bool = False
+    skipped_reason: str | None = None

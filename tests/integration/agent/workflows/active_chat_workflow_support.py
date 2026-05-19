@@ -19,12 +19,14 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatRoundResult,
 )
 from shinbot.agent.scheduler import ActiveChatState
+from shinbot.agent.scheduler.models import AgentState, ReviewPlan
 
 
 class RecordingScheduler:
     def __init__(self) -> None:
         self.consumed: list[tuple[str, list[int]]] = []
         self.adjustments: list[dict[str, object]] = []
+        self.planned_review: ReviewPlan | None = None
 
     def mark_active_chat_consumed(
         self,
@@ -41,6 +43,7 @@ class RecordingScheduler:
         delta: float = 0.0,
         force_exit: bool = False,
         reason: str = "",
+        next_review_plan: ReviewPlan | None = None,
     ) -> object:
         self.adjustments.append(
             {
@@ -48,9 +51,32 @@ class RecordingScheduler:
                 "delta": delta,
                 "force_exit": force_exit,
                 "reason": reason,
+                "next_review_plan": next_review_plan,
             }
         )
         return object()
+
+    def preview_active_chat_interest_adjustment(
+        self,
+        session_id: str,
+        *,
+        delta: float = 0.0,
+        force_exit: bool = False,
+    ) -> object:
+        return type(
+            "Preview",
+            (),
+            {
+                "session_id": session_id,
+                "state": AgentState.ACTIVE_CHAT,
+                "delta": delta,
+                "force_exit": force_exit,
+                "will_return_idle": force_exit,
+            },
+        )()
+
+    async def plan_idle_review_after_active_chat(self, session_id: str) -> ReviewPlan | None:
+        return self.planned_review
 
 
 def make_active_state(
@@ -107,6 +133,7 @@ __all__ = [
     "ActiveChatRoundResult",
     "ActiveChatState",
     "RecordingScheduler",
+    "ReviewPlan",
     "annotations",
     "asyncio",
     "interest_effect_for_round",

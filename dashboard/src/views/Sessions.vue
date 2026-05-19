@@ -209,6 +209,10 @@
                     <strong>{{ selectedSession.agent?.reviewPlan?.nextReviewAt ? formatTimestamp(selectedSession.agent.reviewPlan.nextReviewAt) : t('pages.sessions.labels.none') }}</strong>
                   </div>
                   <div class="session-meta-row">
+                    <span>{{ $t('pages.sessions.fields.reviewInterval') }}</span>
+                    <strong>{{ formatReviewInterval(selectedSession.agent?.reviewPlan?.nextReviewAt) }}</strong>
+                  </div>
+                  <div class="session-meta-row">
                     <span>{{ $t('pages.sessions.fields.reviewReason') }}</span>
                     <strong>{{ selectedSession.agent?.reviewPlan?.reason || $t('pages.sessions.labels.none') }}</strong>
                   </div>
@@ -322,6 +326,26 @@ const formatTimestamp = (value: number | string | null | undefined) => {
     return t('pages.sessions.labels.none')
   }
   return formatDateTime(new Date(value).toISOString())
+}
+
+const formatReviewInterval = (value: number | null | undefined) => {
+  if (!value) {
+    return t('pages.sessions.labels.none')
+  }
+  const diffMs = value - Date.now()
+  if (diffMs <= 0) {
+    return t('pages.sessions.labels.reviewDue')
+  }
+  const totalMinutes = Math.max(1, Math.round(diffMs / 60_000))
+  if (totalMinutes < 60) {
+    return t('pages.sessions.labels.reviewInMinutes', { count: totalMinutes })
+  }
+  const totalHours = Math.round(totalMinutes / 60)
+  if (totalHours < 48) {
+    return t('pages.sessions.labels.reviewInHours', { count: totalHours })
+  }
+  const totalDays = Math.round(totalHours / 24)
+  return t('pages.sessions.labels.reviewInDays', { count: totalDays })
 }
 
 const routingColor = (status: string) => {

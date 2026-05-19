@@ -562,6 +562,73 @@ default = {}
 description = "Prompt component ids for active chat bootstrap."
 
 [[fields]]
+path = "agent.review.idle_review_planning.enabled"
+type = "boolean"
+default = true
+description = "Enable ACTIVE_CHAT to IDLE review planning stage."
+
+[[fields]]
+path = "agent.review.idle_review_planning.llm"
+type = "string"
+default = ""
+description = "LLM reference for ACTIVE_CHAT to IDLE review planning."
+
+[[fields]]
+path = "agent.review.idle_review_planning.caller"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific caller label."
+
+[[fields]]
+path = "agent.review.idle_review_planning.profile_id"
+type = "string"
+default = ""
+advanced = true
+description = "Stage-specific prompt profile id."
+
+[[fields]]
+path = "agent.review.idle_review_planning.params"
+type = "object"
+default = {}
+advanced = true
+description = "Stage-specific model params."
+
+[[fields]]
+path = "agent.review.idle_review_planning.max_model_retries"
+type = "integer"
+default = 1
+min = 0
+description = "Model retry count for ACTIVE_CHAT to IDLE review planning."
+
+[[fields]]
+path = "agent.review.idle_review_planning.retry_backoff_seconds"
+type = "float"
+default = 0.25
+min = 0.0
+description = "Model retry backoff for ACTIVE_CHAT to IDLE review planning."
+
+[[fields]]
+path = "agent.review.idle_review_planning.prompts"
+type = "object"
+default = {}
+description = "Prompt component ids for ACTIVE_CHAT to IDLE review planning."
+
+[[fields]]
+path = "agent.review.idle_review_planning_min_after_seconds"
+type = "float"
+default = 30.0
+min = 0.0
+description = "Lower clamp for LLM-planned next review interval after active chat exits."
+
+[[fields]]
+path = "agent.review.idle_review_planning_max_after_seconds"
+type = "float"
+default = 3600.0
+min = 0.0
+description = "Upper clamp for LLM-planned next review interval after active chat exits."
+
+[[fields]]
 path = "agent.active_chat.enabled"
 type = "boolean"
 default = true

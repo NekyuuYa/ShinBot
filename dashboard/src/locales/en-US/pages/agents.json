@@ -56,7 +56,12 @@
     "valid": "Valid",
     "updated": "Updated",
     "noValue": "Unset",
-    "advancedFields": "Advanced Fields"
+    "advancedFields": "Advanced Fields",
+    "reviewInterval": "Review Interval",
+    "reviewDue": "Due",
+    "reviewInMinutes": "In about {count} min",
+    "reviewInHours": "In about {count} hr",
+    "reviewInDays": "In about {count} d"
   },
   "validation": {
     "title": "Configuration Issues"

@@ -24,11 +24,13 @@ from shinbot.agent.runners.review_bootstrap import LLMActiveChatBootstrapStageRu
 from shinbot.agent.runners.review_compression import LLMOverflowCompressionStageRunner
 from shinbot.agent.runners.review_models import (
     ActiveChatBootstrapStageOutput,
+    IdleReviewPlanningStageOutput,
     OverflowCompressionStageOutput,
     ReplyDecisionStageOutput,
     ReviewBlockDigestStageOutput,
     ReviewScanStageOutput,
 )
+from shinbot.agent.runners.review_idle_planning import LLMIdleReviewPlanningStageRunner
 from shinbot.agent.runners.review_reply import LLMReplyDecisionStageRunner
 from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
 from shinbot.agent.runtime.review_stores import (
@@ -586,6 +588,7 @@ __all__ = [
     "FixedCandidateScanRunner",
     "FixedReviewPolicy",
     "LLMActiveChatBootstrapStageRunner",
+    "LLMIdleReviewPlanningStageRunner",
     "LLMOverflowCompressionStageRunner",
     "LLMReplyDecisionStageRunner",
     "LLMReviewBlockDigestStageRunner",
@@ -603,6 +606,7 @@ __all__ = [
     "RecordingReviewContextBuilder",
     "ReplyDecisionStageOutput",
     "ReviewBlockDigestStageOutput",
+    "IdleReviewPlanningStageOutput",
     "ReviewCompletionDecision",
     "ReviewContextBuilderAdapter",
     "ReviewCoordinator",

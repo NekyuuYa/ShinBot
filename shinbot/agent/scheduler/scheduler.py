@@ -17,9 +17,11 @@ from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
+    ActiveChatInterestAdjustmentPreview,
     ActiveChatInterestAdjustDecision,
     ActiveChatState,
     ActiveChatTickDecision,
+    ActiveChatTickPreview,
     ActiveReplyCompletionDecision,
     AgentScheduleDecision,
     AgentState,
@@ -98,6 +100,13 @@ class AgentScheduler:
             bind_scheduler(self)
         if self._active_chat_timer is not None:
             self._active_chat_timer.bind_agent_scheduler(self)
+            bind_idle_review_planner = getattr(
+                self._active_chat_timer,
+                "bind_idle_review_planner",
+                None,
+            )
+            if bind_idle_review_planner is not None:
+                bind_idle_review_planner(self.plan_idle_review_after_active_chat)
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
         """Accept one message signal from core and decide scheduler-side action."""
@@ -295,6 +304,13 @@ class AgentScheduler:
         """Return current active chat interest state for one session, if any."""
         return self._state_store.get_active_chat_state(session_id)
 
+    async def plan_idle_review_after_active_chat(self, session_id: str) -> ReviewPlan | None:
+        """Ask the workflow dispatcher to plan the next review before active chat exits."""
+        planner = getattr(self._workflow_dispatcher, "plan_idle_review_after_active_chat", None)
+        if planner is None:
+            return None
+        return await planner(session_id)
+
     def adjust_active_chat_interest(
         self,
         session_id: str,
@@ -374,6 +390,53 @@ class AgentScheduler:
             force_exit=force_exit,
             returned_to_idle=True,
             reason=reason,
+        )
+
+    def preview_active_chat_interest_adjustment(
+        self,
+        session_id: str,
+        *,
+        delta: float = 0.0,
+        force_exit: bool = False,
+        now: float | None = None,
+    ) -> ActiveChatInterestAdjustmentPreview:
+        """Preview a workflow-driven active chat interest adjustment."""
+        current_state = self._state_store.get_state(session_id)
+        if current_state != AgentState.ACTIVE_CHAT:
+            return ActiveChatInterestAdjustmentPreview(
+                session_id=session_id,
+                state=current_state,
+                delta=delta,
+                force_exit=force_exit,
+                skipped_reason="not_active_chat",
+            )
+
+        active_chat_state = self._state_store.get_active_chat_state(session_id)
+        if active_chat_state is None:
+            return ActiveChatInterestAdjustmentPreview(
+                session_id=session_id,
+                state=current_state,
+                delta=delta,
+                force_exit=force_exit,
+                skipped_reason="missing_active_chat_state",
+            )
+
+        checked_at = self._now() if now is None else now
+        adjusted_state = self._active_chat_policy.adjust_interest(
+            active_chat_state,
+            delta=delta,
+            force_exit=force_exit,
+            now=checked_at,
+        )
+        return ActiveChatInterestAdjustmentPreview(
+            session_id=session_id,
+            state=AgentState.ACTIVE_CHAT,
+            active_chat_state=adjusted_state,
+            delta=delta,
+            force_exit=force_exit,
+            will_return_idle=(
+                force_exit or self._active_chat_policy.should_return_idle(adjusted_state)
+            ),
         )
 
     def due_review_plans(self, *, now: float | None = None, limit: int = 50) -> list[ReviewPlan]:
@@ -662,6 +725,40 @@ class AgentScheduler:
             active_chat_state=decayed_state,
             next_review_plan=plan,
             returned_to_idle=True,
+        )
+
+    def preview_active_chat_tick(
+        self,
+        session_id: str,
+        *,
+        now: float | None = None,
+    ) -> ActiveChatTickPreview:
+        """Preview one active chat decay tick without mutating scheduler state."""
+        current_state = self._state_store.get_state(session_id)
+        if current_state != AgentState.ACTIVE_CHAT:
+            return ActiveChatTickPreview(
+                session_id=session_id,
+                state=current_state,
+                skipped_reason="not_active_chat",
+            )
+
+        checked_at = self._now() if now is None else now
+        active_chat_state = self._state_store.get_active_chat_state(session_id)
+        if active_chat_state is None:
+            active_chat_state = self._active_chat_policy.initial_state(
+                session_id=session_id,
+                now=checked_at,
+            )
+        decayed_state = self._active_chat_policy.decay(
+            active_chat_state,
+            now=checked_at,
+            count_tick=True,
+        )
+        return ActiveChatTickPreview(
+            session_id=session_id,
+            state=AgentState.ACTIVE_CHAT,
+            active_chat_state=decayed_state,
+            will_return_idle=self._active_chat_policy.should_return_idle(decayed_state),
         )
 
     def apply_active_chat_bootstrap(

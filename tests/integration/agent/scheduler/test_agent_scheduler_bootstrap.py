@@ -201,6 +201,46 @@ async def test_active_chat_timer_service_ticks_session_to_idle() -> None:
     assert dispatcher.active_chat_stops == ["bot:group:room"]
 
 
+@pytest.mark.asyncio
+async def test_active_chat_timer_service_plans_review_before_idle_exit() -> None:
+    now = 60.0
+    timer = ActiveChatTimerService(tick_interval_seconds=0.01)
+    dispatcher = RecordingWorkflowDispatcher()
+    planned = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=321.0,
+        reason="timer_planned_after_active_chat",
+        updated_at=107.0,
+    )
+    dispatcher.idle_review_plans.append(planned)
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=10.0,
+                decay_half_life_seconds=5.0,
+                idle_interest_threshold=5.0,
+                tick_interval_seconds=5.0,
+            )
+        ),
+        active_chat_timer=timer,
+        now=lambda: now,
+    )
+    await scheduler.accept_signal(make_signal())
+    now = 102.0
+    scheduler.prepare_due_review("bot:group:room", now=now)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=now)
+    now = 107.0
+
+    await asyncio_sleep(0.05)
+    await timer.shutdown()
+
+    assert dispatcher.idle_review_plan_calls == ["bot:group:room"]
+    assert scheduler.review_plan_for("bot:group:room") == planned
+
+
 def test_scheduler_tick_active_chat_skips_when_state_is_not_active_chat() -> None:
     scheduler = AgentScheduler(
         response_profile_resolver=lambda _signal: "balanced",

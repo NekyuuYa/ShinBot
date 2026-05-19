@@ -10,12 +10,16 @@ from shinbot.agent.coordinators.review.models import (
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
 )
+from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.scheduler.models import (
+    ActiveReplyThreshold,
     ActiveChatState,
     HighPriorityEvent,
+    MentionSensitivity,
     ReviewPlan,
     UnreadMessage,
 )
+from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.summaries import (
     ReviewHandoffContext,
     SummaryHandoffEntry,
@@ -30,6 +34,7 @@ if TYPE_CHECKING:
         ReviewWorkflowExplanation,
         ReviewWorkflowResult,
     )
+    from shinbot.agent.runners.review_idle_planning import IdleReviewPlanningStageRunner
     from shinbot.agent.scheduler.scheduler import AgentScheduler
 
 
@@ -43,11 +48,13 @@ class ActiveReplyDispatcher:
         active_chat_workflow: ActiveChatCoordinator | None = None,
         summary_service: Any | None = None,
         review_config: ReviewWorkflowConfig | None = None,
+        idle_review_planning_runner: IdleReviewPlanningStageRunner | None = None,
     ) -> None:
         self._review_coordinator = review_coordinator
         self._active_chat_workflow = active_chat_workflow
         self._summary_service = summary_service
         self._review_config = review_config or ReviewWorkflowConfig()
+        self._idle_review_planning_runner = idle_review_planning_runner
         self._agent_scheduler: AgentScheduler | None = None
         self.last_review_result: ReviewWorkflowResult | None = None
         self.last_review_explanation: ReviewWorkflowExplanation | None = None
@@ -204,6 +211,61 @@ class ActiveReplyDispatcher:
             active_chat_state=active_chat_state,
         )
 
+    async def plan_idle_review_after_active_chat(
+        self,
+        session_id: str,
+    ) -> ReviewPlan | None:
+        """Plan the next review before ACTIVE_CHAT returns to IDLE."""
+        if self._agent_scheduler is None or self._idle_review_planning_runner is None:
+            return None
+        checked_at = time.time()
+        previous_plan = self._agent_scheduler.review_plan_for(session_id)
+        stage_input = self._build_idle_review_planning_input(
+            session_id=session_id,
+            now=checked_at,
+        )
+        try:
+            output = await self._idle_review_planning_runner.run(stage_input)
+        except Exception:
+            logger.exception("Idle review planning failed for session %s", session_id)
+            return None
+        seconds = output.next_review_after_seconds
+        if seconds is None:
+            return None
+        min_seconds = max(0.0, self._review_config.idle_review_planning_min_after_seconds)
+        max_seconds = max(
+            min_seconds,
+            self._review_config.idle_review_planning_max_after_seconds,
+        )
+        seconds = min(max(seconds, min_seconds), max_seconds)
+        previous_threshold = (
+            previous_plan.active_reply_threshold if previous_plan is not None else None
+        )
+        return ReviewPlan(
+            session_id=session_id,
+            next_review_at=checked_at + seconds,
+            reason=output.reason or "idle_review_planning",
+            mention_sensitivity=(
+                output.mention_sensitivity
+                or (
+                    previous_plan.mention_sensitivity
+                    if previous_plan is not None
+                    else MentionSensitivity.NORMAL
+                )
+            ),
+            active_reply_threshold=ActiveReplyThreshold(
+                at_count=output.mention_wake_count
+                or (previous_threshold.at_count if previous_threshold is not None else 1),
+                window_seconds=output.mention_wake_window_seconds
+                or (
+                    previous_threshold.window_seconds
+                    if previous_threshold is not None
+                    else 60.0
+                ),
+            ),
+            updated_at=checked_at,
+        )
+
 
     def _save_active_chat_summary(self, session_id: str) -> None:
         """Save active_chat summary. Write failure only logs, never blocks exit."""
@@ -234,6 +296,64 @@ class ActiveReplyDispatcher:
             logger.warning(
                 "Failed to save active_chat summary for %s", session_id, exc_info=True,
             )
+
+    def _build_idle_review_planning_input(
+        self,
+        *,
+        session_id: str,
+        now: float,
+    ) -> ReviewStageInput:
+        snapshot = (
+            self._active_chat_workflow.summary_snapshot_for(session_id)
+            if self._active_chat_workflow is not None
+            else None
+        )
+        active_chat_state = (
+            self._agent_scheduler.active_chat_state_for(session_id)
+            if self._agent_scheduler is not None
+            else None
+        )
+        metadata: dict[str, object] = {
+            "transition": "ACTIVE_CHAT->IDLE",
+            "now": now,
+        }
+        if active_chat_state is not None:
+            metadata.update(
+                {
+                    "active_epoch": active_chat_state.active_epoch,
+                    "interest_value": active_chat_state.interest_value,
+                    "decay_half_life_seconds": active_chat_state.decay_half_life_seconds,
+                    "entered_at": active_chat_state.entered_at,
+                    "updated_at": active_chat_state.updated_at,
+                    "tick_count": active_chat_state.tick_count,
+                    "bootstrap_applied": active_chat_state.bootstrap_applied,
+                    "bootstrap_disposition": (
+                        active_chat_state.bootstrap_disposition.value
+                        if active_chat_state.bootstrap_disposition is not None
+                        else None
+                    ),
+                }
+            )
+        if snapshot is not None:
+            context_messages = sanitize_conversation_trace_messages(
+                snapshot.conversation_messages
+            )
+            metadata.update(
+                {
+                    "conversation_message_count": snapshot.conversation_message_count,
+                    "conversation_summary": snapshot.conversation_summary,
+                    "message_log_ids": list(snapshot.message_log_ids),
+                }
+            )
+        else:
+            context_messages = []
+        return ReviewStageInput(
+            session_id=session_id,
+            purpose="idle_review_planning",
+            source_messages=[],
+            context_messages=context_messages,
+            metadata=metadata,
+        )
 
     async def _build_handoff_context(
         self,

@@ -518,7 +518,10 @@ async def test_agent_runtime_exit_active_returns_idle_with_review_plan(
                         {"reason": "conversation has clearly ended"},
                     )
                 ]
-            )
+            ),
+            make_generate_result(
+                text='{"next_review_after_seconds": 120, "reason": "conversation_settled"}'
+            ),
         ]
     )
     bot.mount_model_runtime(model_runtime)
@@ -561,10 +564,13 @@ async def test_agent_runtime_exit_active_returns_idle_with_review_plan(
             + 0.1
         )
 
-        assert len(model_runtime.calls) == 1
+        assert len(model_runtime.calls) == 2
+        assert model_runtime.calls[1].purpose == "idle_review_planning"
         assert runtime.agent_scheduler.state_for(session_id) == AgentState.IDLE
         assert runtime.agent_scheduler.active_chat_state_for(session_id) is None
-        assert runtime.agent_scheduler.review_plan_for(session_id) is not None
+        review_plan = runtime.agent_scheduler.review_plan_for(session_id)
+        assert review_plan is not None
+        assert review_plan.reason == "conversation_settled"
         assert runtime.active_chat_workflow.attention_state_for(session_id) is None
         assert runtime.agent_scheduler.unread_messages(session_id) == []
     finally:

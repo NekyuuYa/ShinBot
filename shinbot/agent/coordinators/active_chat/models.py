@@ -142,6 +142,7 @@ class ActiveChatSummarySnapshot:
     active_epoch: int
     conversation_summary: str
     conversation_message_count: int
+    conversation_messages: list[dict[str, Any]] = field(default_factory=list)
     message_log_ids: list[int] = field(default_factory=list)
     range_source: str = "last_batch"
 

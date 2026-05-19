@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from shinbot.agent.scheduler.models import ActiveChatDisposition
+from shinbot.agent.scheduler.models import ActiveChatDisposition, MentionSensitivity
 
 
 @dataclass(slots=True, frozen=True)
@@ -55,8 +55,20 @@ class ActiveChatBootstrapStageOutput:
     reason: str = "noop_active_chat_bootstrap"
 
 
+@dataclass(slots=True, frozen=True)
+class IdleReviewPlanningStageOutput:
+    """Output from the active_chat -> idle review planning stage."""
+
+    next_review_after_seconds: float | None = None
+    reason: str = "noop_idle_review_planning"
+    mention_sensitivity: MentionSensitivity | None = None
+    mention_wake_count: int | None = None
+    mention_wake_window_seconds: float | None = None
+
+
 __all__ = [
     "ActiveChatBootstrapStageOutput",
+    "IdleReviewPlanningStageOutput",
     "OverflowCompressionStageOutput",
     "ReviewBlockDigestStageOutput",
     "ReplyDecisionStageOutput",

@@ -302,6 +302,7 @@ class ActiveChatCoordinator:
             active_epoch=state.active_epoch,
             conversation_summary=state.conversation_summary,
             conversation_message_count=len(state.conversation_messages),
+            conversation_messages=[dict(message) for message in state.conversation_messages],
             message_log_ids=batch.message_log_ids if batch is not None else [],
         )
 
@@ -541,11 +542,28 @@ class ActiveChatCoordinator:
                 effect.force_exit,
                 effect.reason,
             )
+            next_review_plan = None
+            preview_adjustment = getattr(
+                scheduler,
+                "preview_active_chat_interest_adjustment",
+                None,
+            )
+            if preview_adjustment is not None:
+                preview = preview_adjustment(
+                    session_id,
+                    delta=effect.delta,
+                    force_exit=effect.force_exit,
+                )
+                if getattr(preview, "will_return_idle", False):
+                    planner = getattr(scheduler, "plan_idle_review_after_active_chat", None)
+                    if planner is not None:
+                        next_review_plan = await planner(session_id)
             scheduler.adjust_active_chat_interest(
                 session_id,
                 delta=effect.delta,
                 force_exit=effect.force_exit,
                 reason=effect.reason,
+                next_review_plan=next_review_plan,
             )
             async with self._get_lock(session_id):
                 state = self._states.get(session_id)

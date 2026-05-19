@@ -56,7 +56,12 @@
     "valid": "有效",
     "updated": "更新时间",
     "noValue": "未设置",
-    "advancedFields": "高级字段"
+    "advancedFields": "高级字段",
+    "reviewInterval": "复盘间隔",
+    "reviewDue": "已到期",
+    "reviewInMinutes": "约 {count} 分钟后",
+    "reviewInHours": "约 {count} 小时后",
+    "reviewInDays": "约 {count} 天后"
   },
   "validation": {
     "title": "配置校验问题"

@@ -25,6 +25,12 @@ from shinbot.agent.runners.review_compression import (
     OverflowCompressionStageRunner,
     register_review_compression_prompt_components,
 )
+from shinbot.agent.runners.review_idle_planning import (
+    IdleReviewPlanningStageRunner,
+    LLMIdleReviewPlanningStageRunner,
+    NoopIdleReviewPlanningStageRunner,
+    register_idle_review_planning_prompt_components,
+)
 from shinbot.agent.runners.review_reply import (
     LLMReplyDecisionStageRunner,
     NoopReplyDecisionStageRunner,
@@ -134,6 +140,9 @@ class ReviewRuntimeConfig:
     active_chat_bootstrap: ReviewStageRuntimeConfig = field(
         default_factory=ReviewStageRuntimeConfig
     )
+    idle_review_planning: ReviewStageRuntimeConfig = field(
+        default_factory=ReviewStageRuntimeConfig
+    )
     review_block_digest: ReviewStageRuntimeConfig = field(
         default_factory=ReviewStageRuntimeConfig
     )
@@ -154,6 +163,9 @@ class ReviewRuntimeConfig:
             ),
             active_chat_bootstrap=ReviewStageRuntimeConfig.from_mapping(
                 _mapping_or_none(value.get("active_chat_bootstrap"))
+            ),
+            idle_review_planning=ReviewStageRuntimeConfig.from_mapping(
+                _mapping_or_none(value.get("idle_review_planning"))
             ),
             review_block_digest=ReviewStageRuntimeConfig.from_mapping(
                 _mapping_or_none(value.get("review_block_digest"))
@@ -243,6 +255,17 @@ class ReviewRunnerFactory:
             )
         return NoopReviewBlockDigestStageRunner()
 
+    def create_idle_review_planning_runner(self) -> IdleReviewPlanningStageRunner:
+        stage_config = self._config.idle_review_planning
+        if self._enabled(stage_config):
+            return LLMIdleReviewPlanningStageRunner(
+                self._model_runtime,
+                config=self._llm_config(stage_config),
+                prompt_registry=self._prompt_registry,
+                message_formatter=self._message_formatter,
+            )
+        return NoopIdleReviewPlanningStageRunner()
+
     def create_workflow_runner_kwargs(self) -> dict[str, Any]:
         """Return ReviewCoordinator constructor kwargs for all stage runners."""
         kwargs: dict[str, Any] = {
@@ -289,6 +312,10 @@ def register_review_prompt_components(
         prompt_file_config=prompt_file_config,
     )
     register_review_bootstrap_prompt_components(
+        registry,
+        prompt_file_config=prompt_file_config,
+    )
+    register_idle_review_planning_prompt_components(
         registry,
         prompt_file_config=prompt_file_config,
     )

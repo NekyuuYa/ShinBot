@@ -24,6 +24,7 @@
     "muted": "Muted",
     "auditEnabled": "Audit",
     "reviewAt": "Next Review",
+    "reviewInterval": "Review Interval",
     "reviewReason": "Review Reason",
     "activeChat": "Active Chat",
     "latestReview": "Latest Review Summary",
@@ -51,7 +52,11 @@
     "none": "None",
     "noState": "No State",
     "unknownSender": "Unknown Sender",
-    "mentioned": "Mentioned"
+    "mentioned": "Mentioned",
+    "reviewDue": "Due",
+    "reviewInMinutes": "In about {count} min",
+    "reviewInHours": "In about {count} hr",
+    "reviewInDays": "In about {count} d"
   },
   "messages": {
     "loadFailed": "Failed to load session management data"

@@ -23,6 +23,8 @@ class ReviewWorkflowConfig:
     provisional_active_chat_interest: float = 15.0
     provisional_active_chat_half_life_seconds: float = 20.0
     active_chat_bootstrap_timeout_seconds: float = 20.0
+    idle_review_planning_min_after_seconds: float = 30.0
+    idle_review_planning_max_after_seconds: float = 3600.0
 
 
 @dataclass(slots=True, frozen=True)

@@ -10,6 +10,7 @@ from active_chat_workflow_support import (
     ActiveChatReplyIntensity,
     ActiveChatRoundResult,
     RecordingScheduler,
+    ReviewPlan,
     asyncio,
     interest_effect_for_round,
     make_active_state,
@@ -274,6 +275,7 @@ async def test_active_chat_workflow_flushes_after_semantic_wait() -> None:
             "delta": 0.0,
             "force_exit": False,
             "reason": "ok",
+            "next_review_plan": None,
         }
     ]
     state = workflow.attention_state_for("bot:group:room")
@@ -369,6 +371,64 @@ async def test_active_chat_workflow_retry_failed_consumes_batch_and_adjusts_inte
             "delta": -3.0,
             "force_exit": False,
             "reason": "tool_failed",
+            "next_review_plan": None,
+        }
+    ]
+    await workflow.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_workflow_plans_review_before_exit_to_idle() -> None:
+    async def handler(batch: ActiveChatBatch) -> ActiveChatRoundResult:
+        return ActiveChatRoundResult(
+            action=ActiveChatActionKind.EXIT_ACTIVE,
+            reason="conversation_done",
+        )
+
+    plan = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=180.0,
+        reason="planned_after_exit",
+        updated_at=80.0,
+    )
+    scheduler = RecordingScheduler()
+    scheduler.planned_review = plan
+    workflow = ActiveChatCoordinator(
+        attention=ActiveChatAttention(
+            ActiveChatAttentionConfig(
+                base_threshold=2.0,
+                reference_interest=30.0,
+                semantic_wait_ms=1.0,
+            )
+        ),
+        round_handler=handler,
+        now=lambda: 10.0,
+    )
+    await start_workflow(workflow)
+
+    await workflow.notify_message(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        message_log_id=1,
+        sender_id="user-1",
+        response_profile="balanced",
+        is_mentioned=True,
+        is_reply_to_bot=False,
+        is_mention_to_other=False,
+        is_poke_to_bot=False,
+        is_poke_to_other=False,
+        self_platform_id="bot-self",
+        active_chat_state=make_active_state(),
+    )
+    await asyncio.sleep(0.05)
+
+    assert scheduler.adjustments == [
+        {
+            "session_id": "bot:group:room",
+            "delta": 0.0,
+            "force_exit": True,
+            "reason": "conversation_done",
+            "next_review_plan": plan,
         }
     ]
     await workflow.shutdown()

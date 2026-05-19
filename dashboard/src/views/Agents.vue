@@ -88,6 +88,10 @@
                     }}</strong>
                   </div>
                   <div class="runtime-meta-row">
+                    <span>{{ $t("pages.agents.labels.reviewInterval") }}</span>
+                    <strong>{{ formatReviewInterval(session.reviewPlan?.nextReviewAt) }}</strong>
+                  </div>
+                  <div class="runtime-meta-row">
                     <span>Unread</span>
                     <strong>{{ session.unreadCount }}</strong>
                   </div>
@@ -542,6 +546,27 @@ function formatTimestamp(value: number) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(normalized));
+}
+
+function formatReviewInterval(value: number | null | undefined) {
+  if (!value) {
+    return t("pages.agents.labels.noValue");
+  }
+  const normalized = value > 1_000_000_000_000 ? value : value * 1000;
+  const diffMs = normalized - Date.now();
+  if (diffMs <= 0) {
+    return t("pages.agents.labels.reviewDue");
+  }
+  const totalMinutes = Math.max(1, Math.round(diffMs / 60_000));
+  if (totalMinutes < 60) {
+    return t("pages.agents.labels.reviewInMinutes", { count: totalMinutes });
+  }
+  const totalHours = Math.round(totalMinutes / 60);
+  if (totalHours < 48) {
+    return t("pages.agents.labels.reviewInHours", { count: totalHours });
+  }
+  const totalDays = Math.round(totalHours / 24);
+  return t("pages.agents.labels.reviewInDays", { count: totalDays });
 }
 
 async function loadProfiles() {

@@ -156,11 +156,13 @@ class AgentRuntimeProfile:
                 batch,
             )
         )
+        runner_factory = self._create_review_runner_factory()
         self._workflow_dispatcher = ActiveReplyDispatcher(
             review_coordinator=self.review_coordinator,
             active_chat_workflow=self.active_chat_workflow,
             summary_service=owner.summary_service,
             review_config=self.review_workflow_config,
+            idle_review_planning_runner=runner_factory.create_idle_review_planning_runner(),
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
 
@@ -239,7 +241,17 @@ class AgentRuntimeProfile:
 
     def _create_review_coordinator(self) -> ReviewCoordinator:
         assert self._owner.database is not None
-        runner_factory = ReviewRunnerFactory(
+        runner_factory = self._create_review_runner_factory()
+        return ReviewCoordinator(
+            self.review_workflow_config,
+            message_store=DatabaseReviewMessageStore(self._owner.database),
+            summary_store=DatabaseReviewSummaryStore(self._owner.database),
+            context_builder=ReviewContextBuilderAdapter(),
+            **runner_factory.create_workflow_runner_kwargs(),
+        )
+
+    def _create_review_runner_factory(self) -> ReviewRunnerFactory:
+        return ReviewRunnerFactory(
             self._owner.model_runtime,
             config=self.review_runtime_config,
             prompt_registry=self.prompt_registry,
@@ -248,13 +260,6 @@ class AgentRuntimeProfile:
             message_formatter=self._owner.message_formatter,
             instance_config_resolver=self._owner._resolve_instance_runtime_config,
             model_target_resolver=self._owner._resolve_model_target,
-        )
-        return ReviewCoordinator(
-            self.review_workflow_config,
-            message_store=DatabaseReviewMessageStore(self._owner.database),
-            summary_store=DatabaseReviewSummaryStore(self._owner.database),
-            context_builder=ReviewContextBuilderAdapter(),
-            **runner_factory.create_workflow_runner_kwargs(),
         )
 
     def _validate_config_references(self) -> None:
@@ -677,6 +682,10 @@ def _review_runtime_config_with_persona_component(
         ),
         active_chat_bootstrap=_stage_config_with_persona_component(
             config.active_chat_bootstrap,
+            component_id,
+        ),
+        idle_review_planning=_stage_config_with_persona_component(
+            config.idle_review_planning,
             component_id,
         ),
     )

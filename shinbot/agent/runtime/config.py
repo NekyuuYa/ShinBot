@@ -77,6 +77,7 @@ _REVIEW_STAGE_NAMES = (
     "block_digest",
     "reply_decision",
     "active_chat_bootstrap",
+    "idle_review_planning",
 )
 
 
@@ -384,6 +385,14 @@ def _review_workflow_config(
             review.get("bootstrap_timeout_seconds"),
             20.0,
         ),
+        idle_review_planning_min_after_seconds=_float(
+            review.get("idle_review_planning_min_after_seconds"),
+            30.0,
+        ),
+        idle_review_planning_max_after_seconds=_float(
+            review.get("idle_review_planning_max_after_seconds"),
+            3600.0,
+        ),
     )
 
 
@@ -508,6 +517,12 @@ def _review_runtime_config(
         ),
         active_chat_bootstrap=_review_stage_config(
             _mapping(review.get("active_chat_bootstrap")),
+            message_format,
+            defaults_llm,
+            special_prompt_keys=frozenset(),
+        ),
+        idle_review_planning=_review_stage_config(
+            _mapping(review.get("idle_review_planning")),
             message_format,
             defaults_llm,
             special_prompt_keys=frozenset(),

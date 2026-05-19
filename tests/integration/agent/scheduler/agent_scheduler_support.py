@@ -30,6 +30,8 @@ class RecordingWorkflowDispatcher:
         self.review_calls: list[dict[str, Any]] = []
         self.active_chat_calls: list[dict[str, Any]] = []
         self.active_chat_stops: list[str] = []
+        self.idle_review_plans: list[ReviewPlan] = []
+        self.idle_review_plan_calls: list[str] = []
 
     async def run_active_reply(
         self,
@@ -82,6 +84,12 @@ class RecordingWorkflowDispatcher:
 
     def stop_active_chat(self, session_id: str) -> None:
         self.active_chat_stops.append(session_id)
+
+    async def plan_idle_review_after_active_chat(self, session_id: str) -> ReviewPlan | None:
+        self.idle_review_plan_calls.append(session_id)
+        if not self.idle_review_plans:
+            return None
+        return self.idle_review_plans.pop(0)
 
 
 class RecordingActiveChatTimer:

@@ -62,6 +62,7 @@ async def test_active_chat_workflow_exit_active_forwards_reason_to_scheduler() -
             "delta": 0.0,
             "force_exit": True,
             "reason": "conversation has clearly ended",
+            "next_review_plan": None,
         }
     ]
     await workflow.shutdown()
