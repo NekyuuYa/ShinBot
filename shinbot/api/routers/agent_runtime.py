@@ -95,11 +95,9 @@ def _summary_payload(record: Any) -> dict[str, Any] | None:
     return {
         "id": record.id,
         "sessionId": record.session_id,
-        "startMsgLogId": record.start_msg_log_id,
-        "endMsgLogId": record.end_msg_log_id,
-        "startAt": record.start_at,
-        "endAt": record.end_at,
-        "messageCount": record.message_count,
+        "startMsgLogId": record.msg_log_start,
+        "endMsgLogId": record.msg_log_end,
+        "messageCount": record.msg_count,
         "summary": record.content,
         "reason": metadata.get("reason", ""),
         "createdAt": record.created_at,
@@ -128,7 +126,7 @@ def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
         return []
 
     scheduler = agent_runtime.agent_profile_for_bot(bot_id).agent_scheduler
-    session_ids = scheduler.list_session_ids(prefix=f"{bot_id}:")
+    session_ids = scheduler.list_session_ids(prefix=f"{bot_id}:") or []
     result: list[dict[str, Any]] = []
     for session_id in session_ids:
         review_plan = scheduler.review_plan_for(session_id)

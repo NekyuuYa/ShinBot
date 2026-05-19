@@ -86,6 +86,25 @@ def test_agent_scheduler_repository_persists_state_and_inbox(tmp_path) -> None:
     assert db.agent_scheduler.list_high_priority_events("bot:group:room") == []
 
 
+def test_agent_scheduler_repository_lists_known_session_ids(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_log_id = _insert_message(db)
+    db.agent_scheduler.set_state("bot:group:room", AgentState.ACTIVE_REPLY)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=message_log_id,
+            sender_id="user-1",
+            created_at=10.0,
+        )
+    )
+
+    assert db.agent_scheduler.list_session_ids() == ["bot:group:room"]
+    assert db.agent_scheduler.list_session_ids(prefix="bot:") == ["bot:group:room"]
+    assert db.agent_scheduler.list_session_ids(prefix="other:") == []
+
+
 def test_agent_scheduler_repository_merges_and_splits_unread_ranges(tmp_path) -> None:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()

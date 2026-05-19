@@ -65,10 +65,8 @@ export interface AgentRuntimeSession {
   latestReviewSummary: {
     id: number
     sessionId: string
-    startMsgLogId: number
-    endMsgLogId: number
-    startAt: number
-    endAt: number
+    startMsgLogId: number | null
+    endMsgLogId: number | null
     messageCount: number
     summary: string
     reason: string

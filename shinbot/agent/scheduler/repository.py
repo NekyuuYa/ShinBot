@@ -203,6 +203,23 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 (time.time(), session_id),
             )
 
+    def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id FROM agent_scheduler_states
+                UNION
+                SELECT session_id FROM agent_unread_ranges
+                UNION
+                SELECT session_id FROM agent_high_priority_events
+                ORDER BY session_id ASC
+                """
+            ).fetchall()
+        session_ids = [str(row["session_id"]) for row in rows]
+        if prefix is None:
+            return session_ids
+        return [session_id for session_id in session_ids if session_id.startswith(prefix)]
+
     def add_unread(self, message: UnreadMessage) -> None:
         with self.connect() as conn:
             existing = conn.execute(
