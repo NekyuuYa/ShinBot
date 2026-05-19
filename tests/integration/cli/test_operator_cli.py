@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shinbot.core.application.runtime_control import RuntimeControl
+from shinbot.core.application.runtime_control import RestartReason, RuntimeControl
 from shinbot.core.cli.commands import OperatorCommandRouter
 from shinbot.core.cli.console import OperatorCliSession
 from shinbot.utils import logger as logger_utils
@@ -26,6 +26,54 @@ class _CommandRegistry:
     all_commands: list[object] = []
 
 
+class _FrameworkUpdateService:
+    def __init__(self) -> None:
+        self.called = False
+
+    async def inspect(self) -> dict[str, object]:
+        return {"canUpdate": True, "updateInProgress": False, "blockCode": None}
+
+    async def run_and_request_restart(
+        self,
+        *,
+        runtime_control: RuntimeControl,
+        requested_by: str = "",
+    ) -> dict[str, object]:
+        self.called = True
+        request = runtime_control.request_restart(
+            reason=RestartReason.UPDATE,
+            requested_by=requested_by,
+            source="test",
+        )
+        return {
+            "repoPath": "/repo",
+            "branch": "master",
+            "beforeCommitShort": "111111111111",
+            "afterCommitShort": "222222222222",
+            "updated": True,
+            "restartRequested": True,
+            "restartRequest": request.to_payload(),
+            "output": "Updated.",
+        }
+
+
+class _DashboardBuildService:
+    def __init__(self) -> None:
+        self.called = False
+
+    async def inspect(self) -> dict[str, object]:
+        return {"canBuild": True, "buildInProgress": False, "blockCode": None}
+
+    async def build(self) -> dict[str, object]:
+        self.called = True
+        return {
+            "dashboardPath": "/repo/dashboard",
+            "distPath": "/repo/dashboard/dist",
+            "command": "pnpm build",
+            "output": "built",
+        }
+
+
 class _Bot:
     def __init__(self) -> None:
         self.adapter_manager = _AdapterManager()
@@ -44,6 +92,8 @@ class _Boot:
         self.bot = _Bot()
         self.data_dir = Path("data")
         self.config_path = Path("config.toml")
+        self.dashboard_build_service = _DashboardBuildService()
+        self.framework_update_service = _FrameworkUpdateService()
 
 
 @pytest.fixture
@@ -78,6 +128,44 @@ async def test_operator_command_router_requests_restart() -> None:
     assert "Restart requested" in outcome.message
     assert outcome.exit_requested is True
     assert boot.bot.runtime_control.restart_requested is True
+
+
+@pytest.mark.asyncio
+async def test_operator_command_router_updates_framework_and_exits_for_restart() -> None:
+    boot = _Boot()
+    router = OperatorCommandRouter(boot=boot, api_host="127.0.0.1", api_port=3945)
+
+    outcome = await router.execute("update framework")
+
+    assert outcome.message is not None
+    assert "Framework update accepted" in outcome.message
+    assert outcome.exit_requested is True
+    assert boot.framework_update_service.called is True
+    assert boot.bot.runtime_control.restart_requested is True
+
+
+@pytest.mark.asyncio
+async def test_operator_command_router_builds_dashboard() -> None:
+    boot = _Boot()
+    router = OperatorCommandRouter(boot=boot, api_host="127.0.0.1", api_port=3945)
+
+    outcome = await router.execute("build dashboard")
+
+    assert outcome.message is not None
+    assert "Dashboard build complete" in outcome.message
+    assert outcome.exit_requested is False
+    assert boot.dashboard_build_service.called is True
+
+
+@pytest.mark.asyncio
+async def test_operator_command_router_reports_update_status() -> None:
+    router = OperatorCommandRouter(boot=_Boot(), api_host="127.0.0.1", api_port=3945)
+
+    outcome = await router.execute("update status")
+
+    assert outcome.message is not None
+    assert "framework" in outcome.message
+    assert "dashboard-build" in outcome.message
 
 
 @pytest.mark.asyncio

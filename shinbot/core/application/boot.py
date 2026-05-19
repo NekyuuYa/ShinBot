@@ -60,6 +60,8 @@ class BootController:
         self.bot: ShinBot | None = None
         self.dashboard_dist_dir: Path | None = None
         self.dashboard_index_file: Path | None = None
+        self.dashboard_build_service: Any | None = None
+        self.framework_update_service: Any | None = None
 
     async def boot(self) -> ShinBot:
         """Execute phase 1-5 startup sequence."""

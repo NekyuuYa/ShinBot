@@ -45,7 +45,10 @@ from shinbot.api.ws_manager import (
     status_manager,
 )
 from shinbot.core.application.config_sections import iter_adapter_instance_records
-from shinbot.core.application.system_update import DashboardDistUpdateService, SystemUpdateService
+from shinbot.core.application.system_update import (
+    DashboardBuildService,
+    FrameworkUpdateCommandService,
+)
 from shinbot.utils.logger import get_logger, register_log_handler_installer
 
 # Push the WebSocket log handler installer into utils so that
@@ -120,15 +123,18 @@ def create_api_app(
     app.state.boot_controller = boot
     app.state.runtime_control = runtime_control
     app.state.auth_config = AuthConfig(boot.config, boot.data_dir)
-    app.state.system_update_service = SystemUpdateService(
-        config=boot.config,
-        config_path=getattr(boot, "config_path", None),
-    )
-    app.state.dashboard_dist_update_service = DashboardDistUpdateService(
-        config=boot.config,
-        config_path=getattr(boot, "config_path", None),
-        target_dist_dir=boot.dashboard_dist_dir,
-    )
+    if getattr(boot, "dashboard_build_service", None) is None:
+        boot.dashboard_build_service = DashboardBuildService(
+            config=boot.config,
+            config_path=getattr(boot, "config_path", None),
+        )
+    if getattr(boot, "framework_update_service", None) is None:
+        boot.framework_update_service = FrameworkUpdateCommandService(
+            config=boot.config,
+            config_path=getattr(boot, "config_path", None),
+        )
+    app.state.dashboard_build_service = boot.dashboard_build_service
+    app.state.framework_update_service = boot.framework_update_service
 
     # ── CORS ─────────────────────────────────────────────────────────
 

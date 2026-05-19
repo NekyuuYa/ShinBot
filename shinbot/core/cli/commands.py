@@ -20,6 +20,7 @@ from shinbot.admin.plugin_admin import (
     rescan_plugins,
 )
 from shinbot.core.application.runtime_control import RestartReason
+from shinbot.core.application.system_update import SystemUpdateError
 from shinbot.utils.logger import (
     apply_logging_runtime_config,
     get_logger,
@@ -57,6 +58,11 @@ class OperatorCommandRouter:
             "plugin enable",
             "plugin disable",
             "plugin rescan",
+            "update",
+            "update status",
+            "update framework",
+            "build dashboard",
+            "dashboard build",
             "log",
             "log level",
             "log third-party",
@@ -104,6 +110,10 @@ class OperatorCommandRouter:
             return CommandOutcome(self._instances_text())
         if head == "plugins":
             return CommandOutcome(self._plugins_text())
+        if head == "update":
+            return await self._handle_update(parts[1:])
+        if head in {"build", "dashboard"}:
+            return await self._handle_build(parts)
         if head == "log":
             return CommandOutcome(self._handle_log(parts[1:]))
         if head == "loglevel":
@@ -135,6 +145,9 @@ class OperatorCommandRouter:
                 "  plugin enable <id>       Enable a disabled plugin",
                 "  plugin disable <id>      Disable a loaded plugin",
                 "  plugin rescan            Rescan data/plugins and load new plugins",
+                "  update status            Show framework and Dashboard update state",
+                "  update framework         Run configured framework update command and restart",
+                "  build dashboard          Rebuild local Dashboard assets",
                 "  log                      Show logging runtime state",
                 "  log level [LEVEL]        Show or change root log level",
                 "  log third-party [POLICY] Show or change third-party noise policy",
@@ -279,6 +292,100 @@ class OperatorCommandRouter:
             exit_requested=True,
         )
 
+    async def _handle_update(self, args: list[str]) -> CommandOutcome:
+        action = args[0].lower() if args else "status"
+        if action in {"status", "state"}:
+            return CommandOutcome(await self._update_status_text())
+        if action in {"framework", "app", "core"}:
+            return await self._update_framework()
+        if action in {"dashboard", "build"}:
+            return await self._build_dashboard()
+        return CommandOutcome(
+            "Usage: update [status|framework|dashboard]\n"
+            "Tip: use 'build dashboard' to rebuild local Dashboard assets."
+        )
+
+    async def _handle_build(self, parts: list[str]) -> CommandOutcome:
+        normalized = [part.lower() for part in parts]
+        if normalized in (["build", "dashboard"], ["dashboard", "build"]):
+            return await self._build_dashboard()
+        return CommandOutcome("Usage: build dashboard")
+
+    async def _update_framework(self) -> CommandOutcome:
+        service = getattr(self._boot, "framework_update_service", None)
+        runtime_control = getattr(self._bot(), "runtime_control", None)
+        if service is None or runtime_control is None:
+            return CommandOutcome("Framework update service is not attached.")
+        try:
+            result = await service.run_and_request_restart(
+                runtime_control=runtime_control,
+                requested_by="operator-cli",
+            )
+        except SystemUpdateError as exc:
+            return CommandOutcome(_system_update_error_text(exc))
+
+        message = "\n".join(
+            [
+                "Framework update accepted.",
+                f"workdir     {result.get('workdir') or '-'}",
+                f"command     {result.get('command') or '-'}",
+                f"restart     {_yes_no(bool(result.get('restartRequested')))}",
+                _output_tail(str(result.get("output") or "")),
+            ]
+        )
+        return CommandOutcome(message, exit_requested=bool(result.get("restartRequested")))
+
+    async def _build_dashboard(self) -> CommandOutcome:
+        service = getattr(self._boot, "dashboard_build_service", None)
+        if service is None:
+            return CommandOutcome("Dashboard build service is not attached.")
+        try:
+            result = await service.build()
+        except SystemUpdateError as exc:
+            return CommandOutcome(_system_update_error_text(exc))
+
+        return CommandOutcome(
+            "\n".join(
+                [
+                    "Dashboard build complete.",
+                    f"path        {result.get('dashboardPath') or '-'}",
+                    f"dist        {result.get('distPath') or '-'}",
+                    f"command     {result.get('command') or '-'}",
+                    _output_tail(str(result.get("output") or "")),
+                ]
+            )
+        )
+
+    async def _update_status_text(self) -> str:
+        rows: list[list[str]] = []
+
+        framework_update = getattr(self._boot, "framework_update_service", None)
+        if framework_update is not None:
+            try:
+                state = await framework_update.inspect()
+                rows.append(
+                    [
+                        "framework",
+                        _capability_state(state, ready_key="canUpdate", busy_key="updateInProgress"),
+                        str(state.get("blockCode") or "-"),
+                    ]
+                )
+            except SystemUpdateError as exc:
+                rows.append(["framework", "error", exc.code])
+
+        dashboard_build = getattr(self._boot, "dashboard_build_service", None)
+        if dashboard_build is not None:
+            state = await dashboard_build.inspect()
+            rows.append(
+                [
+                    "dashboard-build",
+                    _capability_state(state, ready_key="canBuild", busy_key="buildInProgress"),
+                    str(state.get("blockCode") or "-"),
+                ]
+            )
+
+        return self._render_table(["TARGET", "STATE", "DETAIL"], rows)
+
     async def _handle_instance(self, args: list[str]) -> CommandOutcome:
         if len(args) != 2 or args[0].lower() not in {"start", "stop"}:
             return CommandOutcome("Usage: instance <start|stop> <instance_id>")
@@ -362,3 +469,30 @@ def _database_path(bot: Any) -> str:
     config = getattr(database, "config", None)
     path = getattr(config, "sqlite_path", None)
     return str(path) if path is not None else "-"
+
+
+def _capability_state(state: dict[str, Any], *, ready_key: str, busy_key: str) -> str:
+    if state.get(busy_key):
+        return "busy"
+    if state.get(ready_key):
+        return "ready"
+    if state.get("blockCode") == "already_up_to_date":
+        return "current"
+    return "blocked"
+
+
+def _system_update_error_text(exc: SystemUpdateError) -> str:
+    message = f"{exc.code}: {exc.message}"
+    if exc.output:
+        return f"{message}\n{_output_tail(exc.output)}"
+    return message
+
+
+def _output_tail(output: str, *, limit: int = 1200) -> str:
+    output = output.strip()
+    if not output:
+        return "output      -"
+    if len(output) > limit:
+        output = f"...\n{output[-limit:]}"
+    indented = "\n".join(f"            {line}" if index else f"output      {line}" for index, line in enumerate(output.splitlines()))
+    return indented

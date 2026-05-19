@@ -32,12 +32,12 @@ async def _runtime_control(request: Request):
     return request.app.state.runtime_control
 
 
-async def _system_update_service(request: Request):
-    return request.app.state.system_update_service
+async def _dashboard_build_service(request: Request):
+    return request.app.state.dashboard_build_service
 
 
-async def _dashboard_dist_update_service(request: Request):
-    return request.app.state.dashboard_dist_update_service
+async def _framework_update_service(request: Request):
+    return request.app.state.framework_update_service
 
 
 # ── Auth dependency ──────────────────────────────────────────────────
@@ -96,5 +96,5 @@ AuthRequired = [Depends(require_auth)]
 BotDep = Depends(_bot)
 BootDep = Depends(_boot_controller)
 RuntimeControlDep = Depends(_runtime_control)
-SystemUpdateDep = Depends(_system_update_service)
-DashboardDistUpdateDep = Depends(_dashboard_dist_update_service)
+DashboardBuildDep = Depends(_dashboard_build_service)
+FrameworkUpdateDep = Depends(_framework_update_service)

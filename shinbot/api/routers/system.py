@@ -11,9 +11,9 @@ from shinbot.api.deps import (
     AuthConfigDep,
     AuthRequired,
     BootDep,
-    DashboardDistUpdateDep,
+    DashboardBuildDep,
+    FrameworkUpdateDep,
     RuntimeControlDep,
-    SystemUpdateDep,
 )
 from shinbot.api.models import EC, ok
 from shinbot.core.application.runtime_control import RestartReason
@@ -119,10 +119,10 @@ async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot=BootDep):
 async def get_update_state(
     auth_config: AuthConfigDep,
     runtime_control=RuntimeControlDep,
-    system_update=SystemUpdateDep,
+    framework_update=FrameworkUpdateDep,
 ):
     try:
-        status = await system_update.inspect()
+        status = await framework_update.inspect()
     except SystemUpdateError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -170,7 +170,7 @@ async def request_restart(body: RestartRuntimeRequest, runtime_control=RuntimeCo
 async def pull_update_and_restart(
     auth_config: AuthConfigDep,
     runtime_control=RuntimeControlDep,
-    system_update=SystemUpdateDep,
+    framework_update=FrameworkUpdateDep,
 ):
     if auth_config.is_using_default_credentials():
         raise HTTPException(
@@ -182,7 +182,7 @@ async def pull_update_and_restart(
         )
 
     try:
-        result = await system_update.pull_and_request_restart(
+        result = await framework_update.run_and_request_restart(
             runtime_control=runtime_control,
             requested_by=auth_config.username,
         )
@@ -208,47 +208,38 @@ async def pull_update_and_restart(
     return ok(result)
 
 
-@router.get("/dashboard-dist")
-async def get_dashboard_dist_update_state(
+@router.get("/dashboard-build")
+async def get_dashboard_build_state(
     auth_config: AuthConfigDep,
-    dashboard_dist_update=DashboardDistUpdateDep,
+    dashboard_build=DashboardBuildDep,
 ):
-    try:
-        status = await dashboard_dist_update.inspect()
-    except SystemUpdateError as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail={
-                "code": EC.UPDATE_FAILED,
-                "message": exc.message,
-            },
-        ) from exc
+    status = await dashboard_build.inspect()
 
     guarded = dict(status)
     guarded["credentialsChangeRequired"] = auth_config.is_using_default_credentials()
     if auth_config.is_using_default_credentials():
-        guarded["canUpdate"] = False
+        guarded["canBuild"] = False
         guarded["blockCode"] = "default_credentials"
-        guarded["blockMessage"] = "WebUI dist update is disabled while using default admin credentials"
+        guarded["blockMessage"] = "Dashboard build is disabled while using default admin credentials"
     return ok(guarded)
 
 
-@router.post("/dashboard-dist/update")
-async def update_dashboard_dist(
+@router.post("/dashboard-build")
+async def build_dashboard(
     auth_config: AuthConfigDep,
-    dashboard_dist_update=DashboardDistUpdateDep,
+    dashboard_build=DashboardBuildDep,
 ):
     if auth_config.is_using_default_credentials():
         raise HTTPException(
             status_code=403,
             detail={
                 "code": EC.UPDATE_NOT_ALLOWED,
-                "message": "WebUI dist update is disabled while using default admin credentials",
+                "message": "Dashboard build is disabled while using default admin credentials",
             },
         )
 
     try:
-        result = await dashboard_dist_update.update_dist()
+        result = await dashboard_build.build()
     except SystemUpdateError as exc:
         code = exc.code
         if code == "UPDATE_ALREADY_RUNNING":
