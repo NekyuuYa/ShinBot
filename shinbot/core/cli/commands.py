@@ -274,7 +274,10 @@ class OperatorCommandRouter:
         except RuntimeError as exc:
             return CommandOutcome(str(exc))
         suffix = f" ({note})" if note else ""
-        return CommandOutcome(f"Restart requested at {request.requested_at}{suffix}.")
+        return CommandOutcome(
+            f"Restart requested at {request.requested_at}{suffix}.",
+            exit_requested=True,
+        )
 
     async def _handle_instance(self, args: list[str]) -> CommandOutcome:
         if len(args) != 2 or args[0].lower() not in {"start", "stop"}:

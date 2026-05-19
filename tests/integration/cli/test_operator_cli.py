@@ -76,6 +76,7 @@ async def test_operator_command_router_requests_restart() -> None:
 
     assert outcome.message is not None
     assert "Restart requested" in outcome.message
+    assert outcome.exit_requested is True
     assert boot.bot.runtime_control.restart_requested is True
 
 

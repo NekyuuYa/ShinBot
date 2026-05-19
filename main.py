@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
 import uvicorn
 
 from shinbot.core.application.boot import BootController
-from shinbot.core.application.runtime_control import RuntimeControl
+from shinbot.core.application.runtime_control import ProcessExitCode, RuntimeControl
 from shinbot.core.cli import serve_with_operator_cli
 from shinbot.utils.logger import get_logger
 
@@ -137,6 +138,12 @@ def main() -> None:
                 args.operator_cli,
             )
         )
+        if exit_code in {
+            int(ProcessExitCode.RESTART_MANUAL),
+            int(ProcessExitCode.RESTART_UPDATE),
+        }:
+            logger.info("Restarting ShinBot process.")
+            os.execv(sys.executable, [sys.executable, *sys.argv])
         if exit_code:
             sys.exit(exit_code)
     except KeyboardInterrupt:
