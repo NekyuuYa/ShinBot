@@ -35,6 +35,7 @@ from shinbot.api.routers import personas as personas_router
 from shinbot.api.routers import plugins as plugins_router
 from shinbot.api.routers import prompt_definitions as prompt_definitions_router
 from shinbot.api.routers import prompts as prompts_router
+from shinbot.api.routers import session_overview as session_overview_router
 from shinbot.api.routers import system as system_router
 from shinbot.api.routers import tools as tools_router
 from shinbot.api.ws_manager import (
@@ -191,6 +192,7 @@ def create_api_app(
     app.include_router(personas_router.router, prefix=api_prefix)
     app.include_router(prompt_definitions_router.router, prefix=api_prefix)
     app.include_router(prompts_router.router, prefix=api_prefix)
+    app.include_router(session_overview_router.router, prefix=api_prefix)
     app.include_router(plugins_router.router, prefix=api_prefix)
     app.include_router(system_router.router, prefix=api_prefix)
     app.include_router(tools_router.router, prefix=api_prefix)

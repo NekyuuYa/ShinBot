@@ -1,0 +1,59 @@
+{
+  "kicker": "会话管理",
+  "title": "会话管理",
+  "subtitle": "左侧列出所有会话，右侧查看选中会话的消息、审计、复盘和运行态。",
+  "actions": {
+    "refresh": "刷新"
+  },
+  "sidebar": {
+    "title": "会话列表",
+    "empty": "暂无会话"
+  },
+  "empty": {
+    "title": "暂无会话数据",
+    "subtitle": "当前没有可展示的会话。",
+    "history": "暂无消息历史"
+  },
+  "fields": {
+    "instanceId": "实例 ID",
+    "channelId": "频道 / 私聊 ID",
+    "lastActive": "最近活跃",
+    "permissionGroup": "权限组",
+    "prefixes": "前缀",
+    "llmEnabled": "LLM",
+    "muted": "静音",
+    "auditEnabled": "审计",
+    "reviewAt": "下次复盘",
+    "reviewReason": "复盘原因",
+    "activeChat": "活跃态",
+    "latestReview": "最新复盘摘要",
+    "activeChatSummary": "最新活跃态摘要",
+    "overflowSummary": "最新压缩摘要",
+    "workflowRun": "最新工作流",
+    "workflowProfile": "响应策略",
+    "workflowResult": "运行结果",
+    "lastAudit": "最近审计"
+  },
+  "sections": {
+    "config": "会话配置",
+    "history": "消息历史",
+    "agent": "Agent 状态",
+    "review": "复盘与摘要",
+    "workflow": "工作流"
+  },
+  "stats": {
+    "messages": "消息数",
+    "audits": "审计数",
+    "unread": "未读数",
+    "highPriority": "高优先级"
+  },
+  "labels": {
+    "none": "无",
+    "noState": "无状态",
+    "unknownSender": "未知发送者",
+    "mentioned": "被提及"
+  },
+  "messages": {
+    "loadFailed": "加载会话管理数据失败"
+  }
+}

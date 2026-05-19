@@ -232,6 +232,11 @@ const agentCoreNavItems: NavItem[] = [
     title: "layout.main.nav.promptsManage",
   },
   { to: "/tools", icon: "mdi-tools", title: "layout.main.nav.toolsManage" },
+  {
+    to: "/sessions",
+    icon: "mdi-forum-outline",
+    title: "layout.main.nav.sessionsManage",
+  },
 ];
 
 const routeTitleMap: Record<string, string> = {
@@ -240,6 +245,7 @@ const routeTitleMap: Record<string, string> = {
   Instances: "layout.main.nav.instancesManage",
   Plugins: "layout.main.nav.pluginsManage",
   Tools: "layout.main.nav.toolsManage",
+  Sessions: "layout.main.nav.sessionsManage",
   Agents: "layout.main.nav.agentsManage",
   Prompts: "layout.main.nav.promptsManage",
   Personas: "layout.main.nav.personasManage",

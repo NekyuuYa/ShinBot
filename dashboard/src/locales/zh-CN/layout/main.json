@@ -13,6 +13,7 @@
     "promptsManage": "提示词管理",
     "personasManage": "人格管理",
     "modelRuntime": "模型管理",
+    "sessionsManage": "会话管理",
     "costAnalysis": "成本分析",
     "agentCore": "Agent core",
     "settings": "设置",

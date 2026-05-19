@@ -1,0 +1,59 @@
+{
+  "kicker": "Session Management",
+  "title": "Session Management",
+  "subtitle": "The left pane lists sessions, and the right pane shows the selected session's messages, audit trail, summaries, and runtime state.",
+  "actions": {
+    "refresh": "Refresh"
+  },
+  "sidebar": {
+    "title": "Session List",
+    "empty": "No sessions"
+  },
+  "empty": {
+    "title": "No session data",
+    "subtitle": "There are no sessions to display right now.",
+    "history": "No message history"
+  },
+  "fields": {
+    "instanceId": "Instance ID",
+    "channelId": "Channel / DM ID",
+    "lastActive": "Last Active",
+    "permissionGroup": "Permission Group",
+    "prefixes": "Prefixes",
+    "llmEnabled": "LLM",
+    "muted": "Muted",
+    "auditEnabled": "Audit",
+    "reviewAt": "Next Review",
+    "reviewReason": "Review Reason",
+    "activeChat": "Active Chat",
+    "latestReview": "Latest Review Summary",
+    "activeChatSummary": "Latest Active Chat Summary",
+    "overflowSummary": "Latest Compression Summary",
+    "workflowRun": "Latest Workflow",
+    "workflowProfile": "Response Profile",
+    "workflowResult": "Run Result",
+    "lastAudit": "Latest Audit"
+  },
+  "sections": {
+    "config": "Session Config",
+    "history": "Message History",
+    "agent": "Agent State",
+    "review": "Review and Summaries",
+    "workflow": "Workflow"
+  },
+  "stats": {
+    "messages": "Messages",
+    "audits": "Audits",
+    "unread": "Unread",
+    "highPriority": "High Priority"
+  },
+  "labels": {
+    "none": "None",
+    "noState": "No State",
+    "unknownSender": "Unknown Sender",
+    "mentioned": "Mentioned"
+  },
+  "messages": {
+    "loadFailed": "Failed to load session management data"
+  }
+}
