@@ -24,9 +24,15 @@
     "name": "Name",
     "adapter": "Adapter",
     "status": "Status",
+    "connection": "Connection",
     "config": "Config",
     "updated": "Updated",
     "actions": "Actions"
+  },
+  "connection": {
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "disabled": "Disabled"
   },
   "form": {
     "name": "Name",

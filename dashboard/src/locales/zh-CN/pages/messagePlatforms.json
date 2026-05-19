@@ -24,9 +24,15 @@
     "name": "名称",
     "adapter": "适配器",
     "status": "状态",
+    "connection": "连接",
     "config": "配置项",
     "updated": "更新时间",
     "actions": "操作"
+  },
+  "connection": {
+    "connected": "已连接",
+    "disconnected": "未连接",
+    "disabled": "未启用"
   },
   "form": {
     "name": "名称",

@@ -136,6 +136,10 @@ export interface ConfigWorkspaceRuntime {
   modelMounted: boolean
   modelEnabled: boolean
   agentMounted: boolean
+  adapterInstances: Array<{
+    id: string
+    running: boolean
+  }>
   requiresRestartAfterSave: boolean
 }
 

@@ -112,6 +112,7 @@ def _config_workspace(
             "modelMounted": getattr(bot, "model_runtime", None) is not None,
             "modelEnabled": model_runtime_required,
             "agentMounted": getattr(bot, "agent_runtime", None) is not None,
+            "adapterInstances": _adapter_instance_runtime_payload(bot=bot, config=config),
             "requiresRestartAfterSave": True,
         },
         "templates": _config_templates(),
@@ -119,6 +120,40 @@ def _config_workspace(
         "providers": _provider_catalog(bot.config_provider_registry),
         "plugins": _plugin_catalog(bot),
     }
+
+
+def _adapter_instance_runtime_payload(
+    *,
+    bot: Any,
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    manager = getattr(bot, "adapter_manager", None)
+    if manager is None:
+        return []
+
+    runtime_items: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in iter_adapter_instance_records(config):
+        instance_id = str(item.get("id") or "")
+        if not instance_id:
+            continue
+        seen_ids.add(instance_id)
+        runtime_items.append(
+            {
+                "id": instance_id,
+                "running": bool(manager.is_running(instance_id)),
+            }
+        )
+    for adapter in getattr(manager, "all_instances", []):
+        if adapter.instance_id in seen_ids:
+            continue
+        runtime_items.append(
+            {
+                "id": adapter.instance_id,
+                "running": bool(manager.is_running(adapter.instance_id)),
+            }
+        )
+    return runtime_items
 
 def _save_config_payload(
     *,

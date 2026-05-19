@@ -156,6 +156,14 @@
               <v-chip :color="platform.enabled ? 'success' : 'grey'" size="small" variant="tonal">
                 {{ platform.enabled ? $t('common.actions.status.enabled') : $t('common.actions.status.disabled') }}
               </v-chip>
+              <v-chip
+                :color="connectionStatus(platform).color"
+                size="small"
+                variant="tonal"
+                :prepend-icon="connectionStatus(platform).icon"
+              >
+                {{ connectionStatus(platform).label }}
+              </v-chip>
               <v-chip color="info" size="small" variant="tonal">
                 {{ adapterLabel(platform.adapter) }}
               </v-chip>
@@ -215,6 +223,17 @@
               variant="tonal"
             >
               {{ tableRow(item).enabled ? $t('common.actions.status.enabled') : $t('common.actions.status.disabled') }}
+            </v-chip>
+          </template>
+
+          <template #item.connection="{ item }">
+            <v-chip
+              :color="connectionStatus(tableRow(item)).color"
+              size="small"
+              variant="tonal"
+              :prepend-icon="connectionStatus(tableRow(item)).icon"
+            >
+              {{ connectionStatus(tableRow(item)).label }}
             </v-chip>
           </template>
 
@@ -327,6 +346,14 @@ const platforms = computed<MessagePlatformDraft[]>(() =>
   adapterInstanceRecords.value.map((record, index) => normalizePlatformDraft(record, index))
 )
 
+const platformRuntimeById = computed(() => {
+  const rows = configStore.workspace?.runtime.adapterInstances ?? []
+  return rows.reduce<Record<string, { running: boolean }>>((result, item) => {
+    result[item.id] = { running: item.running }
+    return result
+  }, {})
+})
+
 const initialSkeletonRequested = computed(
   () => configStore.isLoading && !hasLoadedWorkspace.value && platforms.value.length === 0
 )
@@ -356,11 +383,12 @@ const hiddenValidationIssueCount = computed(() =>
 )
 
 const tableHeaders = computed(() => [
-  { title: t('pages.messagePlatforms.table.name'), value: 'name', width: '28%' },
-  { title: t('pages.messagePlatforms.table.adapter'), value: 'adapter', width: '18%' },
+  { title: t('pages.messagePlatforms.table.name'), value: 'name', width: '24%' },
+  { title: t('pages.messagePlatforms.table.adapter'), value: 'adapter', width: '16%' },
   { title: t('pages.messagePlatforms.table.status'), value: 'enabled', width: '14%' },
-  { title: t('pages.messagePlatforms.table.config'), value: 'config', width: '14%' },
-  { title: t('pages.messagePlatforms.table.updated'), value: 'lastModified', width: '16%' },
+  { title: t('pages.messagePlatforms.table.connection'), value: 'connection', width: '14%' },
+  { title: t('pages.messagePlatforms.table.config'), value: 'config', width: '12%' },
+  { title: t('pages.messagePlatforms.table.updated'), value: 'lastModified', width: '14%' },
   { title: t('pages.messagePlatforms.table.actions'), value: 'actions', width: '10%', sortable: false },
 ])
 
@@ -420,6 +448,7 @@ function normalizePlatformDraft(record: ConfigRecord, index: number): MessagePla
     config,
     createdAt: normalizeTimestamp(record.createdAt),
     lastModified: normalizeTimestamp(record.lastModified),
+    running: platformRuntimeById.value[id]?.running ?? false,
   }
 }
 
@@ -442,6 +471,32 @@ function configFieldCount(config: ConfigRecord): string {
   return t('pages.messagePlatforms.configFieldCount', {
     count: Object.keys(config).length,
   })
+}
+
+function connectionStatus(platform: MessagePlatformDraft): {
+  color: string
+  icon: string
+  label: string
+} {
+  if (!platform.enabled) {
+    return {
+      color: 'grey',
+      icon: 'mdi-power-plug-off-outline',
+      label: t('pages.messagePlatforms.connection.disabled'),
+    }
+  }
+  if (platform.running) {
+    return {
+      color: 'success',
+      icon: 'mdi-lan-connect',
+      label: t('pages.messagePlatforms.connection.connected'),
+    }
+  }
+  return {
+    color: 'warning',
+    icon: 'mdi-lan-disconnect',
+    label: t('pages.messagePlatforms.connection.disconnected'),
+  }
 }
 
 function issueMessage(issue: ConfigValidationIssue): string {
