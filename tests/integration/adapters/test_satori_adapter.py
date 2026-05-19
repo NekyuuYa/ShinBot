@@ -181,7 +181,13 @@ class TestHandleRaw:
     @pytest.mark.asyncio
     async def test_pong_op_no_error(self):
         adapter = _make_adapter()
-        await adapter._handle_raw('{"op": 6}')  # PONG, no action
+        await adapter._handle_raw('{"op": 2}')  # PONG (op=2), no action
+
+    @pytest.mark.asyncio
+    async def test_unknown_op_no_crash(self):
+        adapter = _make_adapter()
+        # Unknown / future opcodes should be ignored without raising.
+        await adapter._handle_raw('{"op": 99}')
 
     @pytest.mark.asyncio
     async def test_invalid_json_no_crash(self):
@@ -256,7 +262,14 @@ class TestCallApi:
         assert result == [{"id": "m1"}]
         mock_http.post.assert_called_once()
         call_args = mock_http.post.call_args
-        assert "channel/message/create" in call_args[0][0] or "channel.message" in str(call_args)
+        # ShinBot's universal `channel.message.create` should be translated to
+        # Satori's native `message.create`, hit `/v1/message.create`, and carry
+        # Satori-Platform / Satori-User-ID headers.
+        url = call_args[0][0]
+        assert url == "http://localhost:5140/v1/message.create"
+        sent_headers = call_args.kwargs["headers"]
+        assert sent_headers["Satori-Platform"] == "llonebot"
+        assert sent_headers["Satori-User-ID"] == "bot1"
 
     @pytest.mark.asyncio
     async def test_call_api_internal_route(self):

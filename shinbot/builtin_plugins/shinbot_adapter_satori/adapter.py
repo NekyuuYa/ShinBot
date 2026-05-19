@@ -3,18 +3,26 @@
 Connects to any Satori-compatible server (LLOneBot, official Satori, etc.)
 via WebSocket and exposes the standard BaseAdapter interface.
 
-Wire format:
-  - op=0: EVENT — incoming platform events → UnifiedEvent
-  - op=4: READY — server sends login info on connect
-  - op=3: PING — client heartbeat
-  - op=6: PONG — server heartbeat reply
+Reference: docs/references/satori-docs/zh-CN/protocol/{events,api}.md
+
+Wire format (signal opcodes):
+  - op=0: EVENT     — incoming platform events  → UnifiedEvent
+  - op=1: PING      — client → server heartbeat
+  - op=2: PONG      — server → client heartbeat reply
+  - op=3: IDENTIFY  — client → server authentication / session recovery
+  - op=4: READY     — server → client login info on connect
+  - op=5: META      — server → client metadata update (experimental)
 
 HTTP API (send):
-  POST /v1/channel.message.create
+  POST /v1/{resource}.{method}            (e.g. /v1/message.create)
   Headers: Authorization: Bearer <token>
-           X-Platform: <platform>
-           X-Self-ID: <bot_id>
+           Satori-Platform: <platform>
+           Satori-User-ID:  <bot_id>
   Body:    {"channel_id": "...", "content": "<xml>..."}
+
+For backward compatibility with older SDKs (e.g. early LLOneBot builds) the
+legacy ``X-Platform`` / ``X-Self-ID`` headers are also emitted alongside the
+standard ``Satori-*`` headers.
 """
 
 from __future__ import annotations
@@ -37,15 +45,31 @@ from shinbot.utils.satori_parser import elements_to_xml
 
 logger = get_logger(__name__, source="adapter:satori", color="green")
 
-# Satori opcodes
+# Satori opcodes (per docs/references/satori-docs/zh-CN/protocol/events.md).
 OP_EVENT = 0
-OP_PING = 3
+OP_PING = 1
+OP_PONG = 2
+OP_IDENTIFY = 3
 OP_READY = 4
-OP_PONG = 6
+OP_META = 5
 
-# Heartbeat interval in seconds (slightly less than typical server timeout)
+# Heartbeat interval in seconds (the protocol specifies 10s).
 HEARTBEAT_INTERVAL = 10
 EVENT_QUEUE_MAXSIZE = 1024
+
+
+# ── ShinBot ↔ Satori method-name translation ──────────────────────────────────
+# ShinBot uses "channel.message.*" as its internal universal naming for
+# message lifecycle calls (so the same method-name table works across
+# OneBot v11, QQ Official, and Satori). Satori itself uses bare "message.*".
+# This map is applied in both directions on the wire boundary.
+_SHINBOT_TO_SATORI_METHODS: dict[str, str] = {
+    "channel.message.create": "message.create",
+    "channel.message.delete": "message.delete",
+    "channel.message.update": "message.update",
+    "channel.message.get": "message.get",
+    "channel.message.list": "message.list",
+}
 
 
 @dataclass
@@ -69,9 +93,10 @@ class SatoriAdapter(BaseAdapter):
     """Connects to a Satori-compatible WebSocket server.
 
     Handles the full lifecycle:
-      1. WebSocket connect + READY handshake
-      2. Heartbeat (PING/PONG)
-      3. Event dispatch to the registered callback
+      1. WebSocket connect → send IDENTIFY → wait for READY
+      2. Heartbeat (client → PING op=1, server → PONG op=2)
+      3. Event dispatch to the registered callback (with `sn` tracking
+         for session recovery)
       4. Graceful disconnect on shutdown()
       5. Automatic reconnection with configurable back-off
     """
@@ -90,6 +115,9 @@ class SatoriAdapter(BaseAdapter):
         self._http: httpx.AsyncClient | None = None
         self._resource_cache_dir = Path(self.config.resource_cache_dir)
         self._resource_cache_dir.mkdir(parents=True, exist_ok=True)
+        # Last seen `sn` from EVENT signals; sent back in IDENTIFY for session
+        # recovery on reconnect.
+        self._last_event_sn: int | None = None
 
     # ── BaseAdapter interface ────────────────────────────────────────
 
@@ -137,7 +165,7 @@ class SatoriAdapter(BaseAdapter):
         logger.info("Satori adapter %s shut down", self.instance_id)
 
     async def send(self, target_session: str, elements: list[MessageElement]) -> MessageHandle:
-        """Serialize elements to Satori XML and POST to channel.message.create."""
+        """Serialize elements to Satori XML and POST to message.create."""
         channel_id = self._decode_session_id(target_session)
         xml_content = elements_to_xml(elements)
 
@@ -159,8 +187,10 @@ class SatoriAdapter(BaseAdapter):
     async def call_api(self, method: str, params: dict[str, Any]) -> Any:
         """Call a Satori standard API method via HTTP POST.
 
-        Standard methods use dotted names (e.g. "channel.message.create").
-        Internal methods use the "internal.{platform}.{action}" namespace.
+        ShinBot's universal method names (``channel.message.*``) are
+        translated to Satori's bare names (``message.*``) at the wire
+        boundary. Internal methods use ``internal.{platform}.{action}``
+        and are routed under ``/v1/internal/{action}`` per the spec.
         """
         if self._http is None:
             raise RuntimeError("Adapter not started — call start() first")
@@ -169,14 +199,24 @@ class SatoriAdapter(BaseAdapter):
         params.pop("session_id", None)
         if method == "message.update" and isinstance(params.get("elements"), list):
             params["content"] = elements_to_xml(params.pop("elements"))
+        if method == "channel.message.update" and isinstance(params.get("elements"), list):
+            params["content"] = elements_to_xml(params.pop("elements"))
 
-        # Convert dotted method to URL path (e.g. channel.message.create → /v1/channel.message.create)
+        # Translate ShinBot universal method names to Satori native ones.
+        wire_method = _SHINBOT_TO_SATORI_METHODS.get(method, method)
+
+        # Build the URL path. Satori HTTP API keeps the dot in
+        # `{resource}.{method}` form and uses `/v1/internal/{action}` for
+        # platform-internal calls.
         base = f"http://{self.config.host}"
-        if method.startswith("internal."):
-            # internal.{platform}.{action} → /v1/internal/{action}
-            path = "/v1/" + method.replace(".", "/", 1).replace(".", "/", 1)
+        if wire_method.startswith("internal."):
+            # `internal.{platform}.{action}` → `/v1/internal/{action}`
+            # The `{platform}` segment is dropped because the call is already
+            # scoped by the Satori-Platform header.
+            internal_action = wire_method.split(".", 2)[-1]
+            path = f"/v1/internal/{internal_action.replace('.', '/')}"
         else:
-            path = f"/v1/{method.replace('.', '/')}"
+            path = f"/v1/{wire_method}"
 
         headers = self._build_headers()
         try:
@@ -277,8 +317,17 @@ class SatoriAdapter(BaseAdapter):
                 await asyncio.sleep(self.config.reconnect_delay)
 
     async def _connect_and_receive(self) -> None:
-        """Open a single WebSocket session and process it until disconnect."""
+        """Open a single WebSocket session and process it until disconnect.
+
+        Per the Satori protocol the client must send an IDENTIFY signal
+        within 10s of opening the WebSocket. The SDK then replies with
+        READY and starts pushing EVENT signals.
+        """
         ws_url = f"ws://{self.config.host}{self.config.path}"
+        # The Authorization header on the WebSocket handshake itself is
+        # optional in the spec — the canonical authentication path is the
+        # `token` field of the IDENTIFY signal. We still pass it to remain
+        # compatible with older SDK builds that gate the upgrade on it.
         headers = {}
         if self.config.token:
             headers["Authorization"] = f"Bearer {self.config.token}"
@@ -287,7 +336,11 @@ class SatoriAdapter(BaseAdapter):
             self._ws = ws
             logger.info("Satori %s connected to %s", self.instance_id, ws_url)
 
-            # Start heartbeat
+            # IDENTIFY: send authentication + optional sequence number for
+            # session recovery on reconnect.
+            await self._send_identify(ws)
+
+            # Start client-side heartbeat (PING op=1, every HEARTBEAT_INTERVAL).
             self._ping_task = asyncio.create_task(self._heartbeat(ws))
 
             try:
@@ -298,8 +351,25 @@ class SatoriAdapter(BaseAdapter):
                     self._ping_task.cancel()
                 self._ws = None
 
+    async def _send_identify(self, ws: Any) -> None:
+        """Send the IDENTIFY signal (op=3) right after connection.
+
+        ``token`` is omitted if the SDK is not configured for auth, per spec.
+        ``sn`` is included when we have a previously seen sequence number,
+        triggering server-side session recovery.
+        """
+        body: dict[str, Any] = {}
+        if self.config.token:
+            body["token"] = self.config.token
+        if self._last_event_sn is not None:
+            body["sn"] = self._last_event_sn
+        payload: dict[str, Any] = {"op": OP_IDENTIFY}
+        if body:
+            payload["body"] = body
+        await ws.send(json.dumps(payload))
+
     async def _heartbeat(self, ws: Any) -> None:
-        """Send periodic PING to keep the connection alive."""
+        """Send periodic PING (op=1) to keep the connection alive."""
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             try:
@@ -316,14 +386,26 @@ class SatoriAdapter(BaseAdapter):
             return
 
         op = data.get("op")
-        body = data.get("body", {})
+        body = data.get("body", {}) or {}
 
         if op == OP_READY:
             await self._handle_ready(body)
         elif op == OP_EVENT:
             await self._handle_event(body)
+        elif op == OP_PING:
+            # The protocol places PING on the client→server direction, but
+            # some servers proxy ping frames back. Reply with PONG to be safe.
+            if self._ws is not None:
+                try:
+                    await self._ws.send(json.dumps({"op": OP_PONG}))
+                except Exception:
+                    pass
         elif op == OP_PONG:
             pass  # Heartbeat response, no action needed
+        elif op == OP_META:
+            # Metadata update (experimental). Currently informational only;
+            # accept and ignore the proxy_urls payload without crashing.
+            pass
 
     async def _handle_ready(self, body: dict[str, Any]) -> None:
         """Process READY event: extract bot login info."""
@@ -349,8 +431,9 @@ class SatoriAdapter(BaseAdapter):
 
         The adapter's responsibility is to:
           1. Validate the Satori JSON into UnifiedEvent with proper resource models
-          2. Emit the event as-is (message or notice)
-          3. Let message ingress handle dual-track dispatching
+          2. Track the latest `sn` for session recovery on reconnect
+          3. Emit the event as-is (message or notice)
+          4. Let message ingress handle dual-track dispatching
         """
         if self._event_callback is None:
             return
@@ -360,6 +443,10 @@ class SatoriAdapter(BaseAdapter):
         except Exception as e:
             logger.warning("Satori %s: failed to parse event body: %s", self.instance_id, e)
             return
+
+        # Track the latest sequence number for session recovery on reconnect.
+        if event.sn is not None:
+            self._last_event_sn = event.sn
 
         should_download_resources = (
             self.config.auto_download_media or self.config.download_file_resources
@@ -435,13 +522,21 @@ class SatoriAdapter(BaseAdapter):
     # ── Helpers ──────────────────────────────────────────────────────
 
     def _build_headers(self) -> dict[str, str]:
+        """Build HTTP headers per the Satori spec.
+
+        Emits the standard ``Satori-Platform`` / ``Satori-User-ID`` headers
+        and also the legacy ``X-Platform`` / ``X-Self-ID`` aliases for
+        backward compatibility with older SDK builds.
+        """
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self.config.token:
             headers["Authorization"] = f"Bearer {self.config.token}"
         if self._detected_platform:
-            headers["X-Platform"] = self._detected_platform
+            headers["Satori-Platform"] = self._detected_platform
+            headers["X-Platform"] = self._detected_platform  # legacy alias
         if self._self_id:
-            headers["X-Self-ID"] = self._self_id
+            headers["Satori-User-ID"] = self._self_id
+            headers["X-Self-ID"] = self._self_id  # legacy alias
         return headers
 
     def _decode_session_id(self, session_id: str) -> str:
