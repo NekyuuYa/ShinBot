@@ -91,14 +91,6 @@
         class="platform-search"
       />
       <v-spacer />
-      <v-chip
-        :color="configStore.isDirty ? 'warning' : 'success'"
-        variant="tonal"
-        size="small"
-        class="platform-dirty-chip"
-      >
-        {{ configStore.isDirty ? $t('pages.messagePlatforms.status.unsaved') : $t('pages.messagePlatforms.status.saved') }}
-      </v-chip>
       <layout-mode-button
         v-model="viewMode"
         :list-label="t('pages.messagePlatforms.views.list')"
@@ -633,7 +625,6 @@ async function applyDialog() {
     dialogVisible.value = false
     return
   }
-
   editorError.value = configStore.error
 }
 
@@ -683,11 +674,6 @@ onMounted(() => {
 
 .platform-search {
   flex: 0 1 420px;
-}
-
-.platform-dirty-chip {
-  min-width: 92px;
-  justify-content: center;
 }
 
 .validation-issue-line {

@@ -91,14 +91,6 @@
         class="instances-search"
       />
       <v-spacer />
-      <v-chip
-        :color="configStore.isDirty ? 'warning' : 'success'"
-        variant="tonal"
-        size="small"
-        class="instances-dirty-chip"
-      >
-        {{ configStore.isDirty ? $t('pages.instances.status.unsaved') : $t('pages.instances.status.saved') }}
-      </v-chip>
       <layout-mode-button
         v-model="viewMode"
         :list-label="t('pages.instances.views.list')"
@@ -737,7 +729,6 @@ async function applyDialog() {
     dialogVisible.value = false
     return
   }
-
   editorError.value = configStore.error
 }
 
@@ -787,11 +778,6 @@ onMounted(() => {
 
 .instances-search {
   flex: 0 1 420px;
-}
-
-.instances-dirty-chip {
-  min-width: 92px;
-  justify-content: center;
 }
 
 .validation-issue-line {

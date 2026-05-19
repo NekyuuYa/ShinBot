@@ -120,8 +120,7 @@ def _config_workspace(
         "plugins": _plugin_catalog(bot),
     }
 
-
-def _save_config_sections(
+def _save_config_payload(
     *,
     bot: Any,
     boot: Any,
@@ -296,7 +295,7 @@ async def validate_config(body: ValidateConfigRequest, bot=BotDep, boot=BootDep)
 
 @router.put("")
 async def save_config(body: SaveConfigRequest, bot=BotDep, boot=BootDep):
-    return _save_config_sections(
+    return _save_config_payload(
         bot=bot,
         boot=boot,
         next_config=deepcopy(body.config),
@@ -312,7 +311,7 @@ async def save_adapter_instances(
 ):
     next_config = deepcopy(boot.config)
     next_config["adapter_instances"] = deepcopy(body.adapterInstances)
-    return _save_config_sections(
+    return _save_config_payload(
         bot=bot,
         boot=boot,
         next_config=next_config,
@@ -321,14 +320,10 @@ async def save_adapter_instances(
 
 
 @router.put("/bots")
-async def save_bots(
-    body: SaveBotsRequest,
-    bot=BotDep,
-    boot=BootDep,
-):
+async def save_bots(body: SaveBotsRequest, bot=BotDep, boot=BootDep):
     next_config = deepcopy(boot.config)
     next_config["bots"] = deepcopy(body.bots)
-    return _save_config_sections(
+    return _save_config_payload(
         bot=bot,
         boot=boot,
         next_config=next_config,
