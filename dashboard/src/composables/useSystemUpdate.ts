@@ -3,8 +3,8 @@ import { ref } from 'vue'
 import { apiClient } from '@/api/client'
 import {
   systemApi,
-  type DashboardDistUpdateResult,
-  type DashboardDistUpdateStatus,
+  type DashboardBuildResult,
+  type DashboardBuildStatus,
   type SystemUpdateResult,
   type SystemUpdateStatus,
 } from '@/api/system'
@@ -20,33 +20,16 @@ const loadCachedUpdateStatus = createCachedRequest(
   SYSTEM_UPDATE_STATUS_STALE_TIME_MS
 )
 
-const loadCachedDistStatus = createCachedRequest(
-  () => apiClient.unwrap(systemApi.getDashboardDistStatus()),
+const loadCachedBuildStatus = createCachedRequest(
+  () => apiClient.unwrap(systemApi.getDashboardBuildStatus()),
   SYSTEM_UPDATE_STATUS_STALE_TIME_MS
 )
 
 const createDefaultUpdateStatus = (): SystemUpdateStatus => ({
-  repoDetected: false,
-  repoPath: '',
-  branch: '',
-  upstream: '',
-  upstreamRef: '',
-  upstreamTrackingCommit: '',
-  upstreamTrackingCommitShort: '',
-  remoteName: '',
-  remoteUrl: '',
-  remoteHeadCommit: '',
-  remoteHeadCommitShort: '',
-  remoteCheckOk: false,
-  updateAvailable: false,
-  aheadCount: 0,
-  behindCount: 0,
-  currentCommit: '',
-  currentCommitShort: '',
-  dirty: false,
-  dirtyCount: 0,
-  dirtyEntries: [],
-  allowedBranches: ['main', 'master'],
+  enabled: false,
+  workdir: '',
+  command: '',
+  restartAfterSuccess: true,
   canUpdate: false,
   blockCode: null,
   blockMessage: null,
@@ -56,40 +39,15 @@ const createDefaultUpdateStatus = (): SystemUpdateStatus => ({
   restartRequest: null,
 })
 
-const createDefaultDistStatus = (): DashboardDistUpdateStatus => ({
-  enabled: false,
-  sourceType: 'zip',
-  packageSource: '',
-  packageSha256: '',
-  expectedPackageSha256: '',
-  expectedPackageSha256Url: '',
-  deployedPackageSha256: '',
-  sourceRepoPath: '',
-  sourceSubdir: '.',
-  sourceDistPath: '',
-  targetDistPath: '',
-  branch: '',
-  upstream: '',
-  upstreamRef: '',
-  remoteName: '',
-  remoteUrl: '',
-  currentCommit: '',
-  currentCommitShort: '',
-  remoteHeadCommit: '',
-  remoteHeadCommitShort: '',
-  remoteCheckOk: false,
-  updateAvailable: false,
-  replaceRequired: false,
-  deployedSourceCommit: '',
-  deployedSourceCommitShort: '',
-  dirty: false,
-  dirtyCount: 0,
-  dirtyEntries: [],
-  allowedBranches: ['main', 'master'],
-  canUpdate: false,
+const createDefaultBuildStatus = (): DashboardBuildStatus => ({
+  enabled: true,
+  dashboardPath: '',
+  distPath: '',
+  command: '',
+  canBuild: false,
   blockCode: null,
   blockMessage: null,
-  updateInProgress: false,
+  buildInProgress: false,
   credentialsChangeRequired: false,
 })
 
@@ -97,17 +55,17 @@ export function useSystemUpdate() {
   const uiStore = useUiStore()
 
   const updateConfirmDialog = ref(false)
-  const distConfirmDialog = ref(false)
+  const buildConfirmDialog = ref(false)
   const isLoadingUpdateStatus = ref(false)
   const isSubmittingUpdate = ref(false)
-  const isLoadingDistStatus = ref(false)
-  const isSubmittingDist = ref(false)
+  const isLoadingBuildStatus = ref(false)
+  const isSubmittingBuild = ref(false)
   const updateError = ref('')
-  const distError = ref('')
+  const buildError = ref('')
   const lastResult = ref<SystemUpdateResult | null>(null)
-  const lastDistResult = ref<DashboardDistUpdateResult | null>(null)
+  const lastBuildResult = ref<DashboardBuildResult | null>(null)
   const updateStatus = ref<SystemUpdateStatus>(createDefaultUpdateStatus())
-  const distStatus = ref<DashboardDistUpdateStatus>(createDefaultDistStatus())
+  const buildStatus = ref<DashboardBuildStatus>(createDefaultBuildStatus())
 
   const loadUpdateStatus = async (options: CachedRequestOptions = {}) => {
     isLoadingUpdateStatus.value = true
@@ -130,24 +88,19 @@ export function useSystemUpdate() {
     updateError.value = ''
 
     try {
-      const data = await apiClient.unwrap(systemApi.pullAndRestart())
+      const data = await apiClient.unwrap(systemApi.runFrameworkUpdate())
       lastResult.value = data
       updateConfirmDialog.value = false
 
-      if (data.updated) {
-        updateStatus.value = {
-          ...updateStatus.value,
-          canUpdate: false,
-          blockCode: 'restart_pending',
-          blockMessage: translate('pages.settings.update.restartPending'),
-          restartRequested: data.restartRequested,
-          restartRequest: data.restartRequest,
-        }
-        uiStore.showSnackbar(translate('pages.settings.update.updatedToast'), 'success', 5000)
-      } else {
-        uiStore.showSnackbar(translate('pages.settings.update.upToDateToast'), 'info', 5000)
-        await loadUpdateStatus({ force: true })
+      updateStatus.value = {
+        ...updateStatus.value,
+        canUpdate: false,
+        blockCode: data.restartRequested ? 'restart_pending' : null,
+        blockMessage: data.restartRequested ? translate('pages.settings.update.restartPending') : null,
+        restartRequested: data.restartRequested,
+        restartRequest: data.restartRequest,
       }
+      uiStore.showSnackbar(translate('pages.settings.update.updatedToast'), 'success', 5000)
     } catch (errorDetail: unknown) {
       updateError.value = getErrorMessage(
         errorDetail,
@@ -159,65 +112,59 @@ export function useSystemUpdate() {
     }
   }
 
-  const loadDistStatus = async (options: CachedRequestOptions = {}) => {
-    isLoadingDistStatus.value = true
-    distError.value = ''
+  const loadBuildStatus = async (options: CachedRequestOptions = {}) => {
+    isLoadingBuildStatus.value = true
+    buildError.value = ''
 
     try {
-      distStatus.value = await loadCachedDistStatus(options)
+      buildStatus.value = await loadCachedBuildStatus(options)
     } catch (errorDetail: unknown) {
-      distError.value = getErrorMessage(
+      buildError.value = getErrorMessage(
         errorDetail,
-        translate('pages.settings.dist.loadFailed')
+        translate('pages.settings.build.loadFailed')
       )
     } finally {
-      isLoadingDistStatus.value = false
+      isLoadingBuildStatus.value = false
     }
   }
 
-  const submitDistUpdate = async () => {
-    isSubmittingDist.value = true
-    distError.value = ''
+  const submitBuild = async () => {
+    isSubmittingBuild.value = true
+    buildError.value = ''
 
     try {
-      const data = await apiClient.unwrap(systemApi.updateDashboardDist())
-      lastDistResult.value = data
-      distConfirmDialog.value = false
-      uiStore.showSnackbar(
-        data.copied
-          ? translate('pages.settings.dist.replacedToast')
-          : translate('pages.settings.dist.upToDateToast'),
-        data.copied ? 'success' : 'info',
-        5000
-      )
-      await loadDistStatus({ force: true })
+      const data = await apiClient.unwrap(systemApi.buildDashboard())
+      lastBuildResult.value = data
+      buildConfirmDialog.value = false
+      uiStore.showSnackbar(translate('pages.settings.build.builtToast'), 'success', 5000)
+      await loadBuildStatus({ force: true })
     } catch (errorDetail: unknown) {
-      distError.value = getErrorMessage(
+      buildError.value = getErrorMessage(
         errorDetail,
-        translate('pages.settings.dist.runFailed')
+        translate('pages.settings.build.runFailed')
       )
-      uiStore.showSnackbar(distError.value, 'error', 5000)
+      uiStore.showSnackbar(buildError.value, 'error', 5000)
     } finally {
-      isSubmittingDist.value = false
+      isSubmittingBuild.value = false
     }
   }
 
   return {
     updateConfirmDialog,
-    distConfirmDialog,
+    buildConfirmDialog,
     updateStatus,
-    distStatus,
+    buildStatus,
     updateError,
-    distError,
+    buildError,
     lastResult,
-    lastDistResult,
+    lastBuildResult,
     isLoadingUpdateStatus,
     isSubmittingUpdate,
-    isLoadingDistStatus,
-    isSubmittingDist,
+    isLoadingBuildStatus,
+    isSubmittingBuild,
     loadUpdateStatus,
     submitUpdate,
-    loadDistStatus,
-    submitDistUpdate,
+    loadBuildStatus,
+    submitBuild,
   }
 }

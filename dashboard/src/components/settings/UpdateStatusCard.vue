@@ -41,47 +41,20 @@
 
     <div class="settings-detail-grid mt-6">
       <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.repoPath') }}</div>
-        <div class="settings-detail-item__value">{{ props.status.repoPath || emptyText }}</div>
+        <div class="settings-detail-item__label">{{ $t('pages.settings.update.workdir') }}</div>
+        <div class="settings-detail-item__value">{{ props.status.workdir || emptyText }}</div>
       </div>
       <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.branch') }}</div>
-        <div class="settings-detail-item__value">{{ props.status.branch || emptyText }}</div>
+        <div class="settings-detail-item__label">{{ $t('pages.settings.update.command') }}</div>
+        <div class="settings-detail-item__value">{{ props.status.command || emptyText }}</div>
       </div>
       <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.upstream') }}</div>
-        <div class="settings-detail-item__value">{{ props.status.upstream || emptyText }}</div>
-      </div>
-      <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.commit') }}</div>
-        <div class="settings-detail-item__value">{{ props.status.currentCommitShort || emptyText }}</div>
-      </div>
-      <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.remoteHead') }}</div>
-        <div class="settings-detail-item__value">{{ props.status.remoteHeadCommitShort || emptyText }}</div>
-      </div>
-      <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.aheadBehind') }}</div>
-        <div class="settings-detail-item__value">
-          {{ $t('pages.settings.update.aheadBehindValue', {
-            ahead: props.status.aheadCount,
-            behind: props.status.behindCount,
-          }) }}
-        </div>
-      </div>
-      <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.allowedBranches') }}</div>
-        <div class="settings-detail-item__value">
-          {{ allowedBranches }}
-        </div>
-      </div>
-      <div class="settings-detail-item">
-        <div class="settings-detail-item__label">{{ $t('pages.settings.update.workingTree') }}</div>
+        <div class="settings-detail-item__label">{{ $t('pages.settings.update.restartPolicy') }}</div>
         <div class="settings-detail-item__value">
           {{
-            props.status.dirty
-              ? $t('pages.settings.update.workingTreeDirty', { count: props.status.dirtyCount })
-              : $t('pages.settings.update.workingTreeClean')
+            props.status.restartAfterSuccess
+              ? $t('pages.settings.update.restartEnabled')
+              : $t('pages.settings.update.restartDisabled')
           }}
         </div>
       </div>
@@ -111,11 +84,8 @@
     >
       {{
         props.lastResult.updated
-          ? $t('pages.settings.update.updatedResult', {
-              before: props.lastResult.beforeCommitShort,
-              after: props.lastResult.afterCommitShort,
-            })
-          : $t('pages.settings.update.upToDateResult')
+          ? $t('pages.settings.update.updatedResult')
+          : $t('pages.settings.update.noRestartResult')
       }}
     </v-alert>
 
@@ -156,20 +126,12 @@
 
         <div class="settings-detail-grid">
           <div class="settings-detail-item">
-            <div class="settings-detail-item__label">{{ $t('pages.settings.update.branch') }}</div>
-            <div class="settings-detail-item__value">{{ props.status.branch || emptyText }}</div>
+            <div class="settings-detail-item__label">{{ $t('pages.settings.update.workdir') }}</div>
+            <div class="settings-detail-item__value">{{ props.status.workdir || emptyText }}</div>
           </div>
           <div class="settings-detail-item">
-            <div class="settings-detail-item__label">{{ $t('pages.settings.update.commit') }}</div>
-            <div class="settings-detail-item__value">{{ props.status.currentCommitShort || emptyText }}</div>
-          </div>
-          <div class="settings-detail-item">
-            <div class="settings-detail-item__label">{{ $t('pages.settings.update.upstream') }}</div>
-            <div class="settings-detail-item__value">{{ props.status.upstream || emptyText }}</div>
-          </div>
-          <div class="settings-detail-item">
-            <div class="settings-detail-item__label">{{ $t('pages.settings.update.pullMode') }}</div>
-            <div class="settings-detail-item__value">{{ $t('pages.settings.update.pullModeValue') }}</div>
+            <div class="settings-detail-item__label">{{ $t('pages.settings.update.command') }}</div>
+            <div class="settings-detail-item__value">{{ props.status.command || emptyText }}</div>
           </div>
         </div>
 
@@ -228,18 +190,14 @@ const confirmDialog = computed({
 const statusChipColor = computed(() => {
   if (props.status.updateInProgress) return 'warning'
   if (props.status.canUpdate) return 'success'
-  if (props.status.blockCode === 'already_up_to_date') return 'info'
-  if (props.status.repoDetected) return 'warning'
-  return 'error'
+  if (props.status.enabled) return 'warning'
+  return 'grey'
 })
 
 const statusChipLabel = computed(() => {
   if (props.status.updateInProgress) return translate('pages.settings.update.stateRunning')
   if (props.status.canUpdate) return translate('pages.settings.update.stateReady')
-  if (props.status.blockCode === 'already_up_to_date') {
-    return translate('pages.settings.update.stateUpToDate')
-  }
-  if (props.status.repoDetected) return translate('pages.settings.update.stateBlocked')
+  if (props.status.enabled) return translate('pages.settings.update.stateBlocked')
   return translate('pages.settings.update.stateUnavailable')
 })
 
@@ -250,9 +208,6 @@ const statusAlertType = computed(() => {
   return 'warning'
 })
 
-const allowedBranches = computed(() =>
-  props.status.allowedBranches.length ? props.status.allowedBranches.join(', ') : emptyText
-)
 </script>
 
 <style scoped lang="scss">

@@ -8,27 +8,10 @@ export interface RestartRequestPayload {
 }
 
 export interface SystemUpdateStatus {
-  repoDetected: boolean
-  repoPath: string
-  branch: string
-  upstream: string
-  upstreamRef: string
-  upstreamTrackingCommit: string
-  upstreamTrackingCommitShort: string
-  remoteName: string
-  remoteUrl: string
-  remoteHeadCommit: string
-  remoteHeadCommitShort: string
-  remoteCheckOk: boolean
-  updateAvailable: boolean
-  aheadCount: number
-  behindCount: number
-  currentCommit: string
-  currentCommitShort: string
-  dirty: boolean
-  dirtyCount: number
-  dirtyEntries: string[]
-  allowedBranches: string[]
+  enabled: boolean
+  workdir: string
+  command: string
+  restartAfterSuccess: boolean
   canUpdate: boolean
   blockCode: string | null
   blockMessage: string | null
@@ -41,66 +24,31 @@ export interface SystemUpdateStatus {
 export interface SystemUpdateResult {
   accepted: boolean
   updated: boolean
-  alreadyUpToDate: boolean
   restartRequested: boolean
   restartRequest: RestartRequestPayload | null
-  repoPath: string
-  branch: string
-  upstream: string
-  beforeCommit: string
-  beforeCommitShort: string
-  afterCommit: string
-  afterCommitShort: string
+  workdir: string
+  command: string
   output: string
 }
 
-export interface DashboardDistUpdateStatus {
+export interface DashboardBuildStatus {
   enabled: boolean
-  sourceType?: 'zip' | 'git'
-  packageSource?: string
-  packageSha256?: string
-  expectedPackageSha256?: string
-  expectedPackageSha256Url?: string
-  deployedPackageSha256?: string
-  sourceRepoPath: string
-  sourceSubdir: string
-  sourceDistPath: string
-  targetDistPath: string
-  branch: string
-  upstream: string
-  upstreamRef: string
-  remoteName: string
-  remoteUrl: string
-  currentCommit: string
-  currentCommitShort: string
-  remoteHeadCommit: string
-  remoteHeadCommitShort: string
-  remoteCheckOk: boolean
-  updateAvailable: boolean
-  replaceRequired: boolean
-  deployedSourceCommit: string
-  deployedSourceCommitShort: string
-  dirty: boolean
-  dirtyCount: number
-  dirtyEntries: string[]
-  allowedBranches: string[]
-  canUpdate: boolean
+  dashboardPath: string
+  distPath: string
+  command: string
+  canBuild: boolean
   blockCode: string | null
   blockMessage: string | null
-  updateInProgress: boolean
+  buildInProgress: boolean
   credentialsChangeRequired: boolean
 }
 
-export interface DashboardDistUpdateResult {
+export interface DashboardBuildResult {
   accepted: boolean
-  updated: boolean
-  copied: boolean
-  restartRequired: boolean
-  sourceCommit: string
-  sourceCommitShort: string
-  packageSha256?: string
-  packageSha256Short?: string
-  targetDistPath: string
+  built: boolean
+  dashboardPath: string
+  distPath: string
+  command: string
   output: string
 }
 
@@ -111,22 +59,22 @@ export const systemApi = {
     })
   },
 
-  pullAndRestart() {
+  runFrameworkUpdate() {
     return apiClient.post<SystemUpdateResult>('/system/update', undefined, {
-      timeout: 120000,
+      timeout: 300000,
       suppressErrorNotify: true,
     })
   },
 
-  getDashboardDistStatus() {
-    return apiClient.get<DashboardDistUpdateStatus>('/system/dashboard-dist', {
+  getDashboardBuildStatus() {
+    return apiClient.get<DashboardBuildStatus>('/system/dashboard-build', {
       suppressErrorNotify: true,
     })
   },
 
-  updateDashboardDist() {
-    return apiClient.post<DashboardDistUpdateResult>('/system/dashboard-dist/update', undefined, {
-      timeout: 120000,
+  buildDashboard() {
+    return apiClient.post<DashboardBuildResult>('/system/dashboard-build', undefined, {
+      timeout: 180000,
       suppressErrorNotify: true,
     })
   },

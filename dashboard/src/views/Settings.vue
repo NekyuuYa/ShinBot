@@ -81,15 +81,15 @@
       </v-col>
 
       <v-col cols="12">
-        <dist-update-card
-          v-model:confirm-visible="distConfirmDialog"
-          :status="distStatus"
-          :error="distError"
-          :last-result="lastDistResult"
-          :is-loading="isLoadingDistStatus"
-          :is-submitting="isSubmittingDist"
-          @refresh="() => loadDistStatus({ force: true })"
-          @submit="submitDistUpdate"
+        <dashboard-build-card
+          v-model:confirm-visible="buildConfirmDialog"
+          :status="buildStatus"
+          :error="buildError"
+          :last-result="lastBuildResult"
+          :is-loading="isLoadingBuildStatus"
+          :is-submitting="isSubmittingBuild"
+          @refresh="() => loadBuildStatus({ force: true })"
+          @submit="submitBuild"
         />
       </v-col>
     </v-row>
@@ -101,7 +101,7 @@ import { computed, onMounted } from 'vue'
 
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import CredentialsUpdateForm from '@/components/CredentialsUpdateForm.vue'
-import DistUpdateCard from '@/components/settings/DistUpdateCard.vue'
+import DashboardBuildCard from '@/components/settings/DashboardBuildCard.vue'
 import UpdateStatusCard from '@/components/settings/UpdateStatusCard.vue'
 import { useSystemUpdate } from '@/composables/useSystemUpdate'
 import { translate } from '@/plugins/i18n'
@@ -111,21 +111,21 @@ const systemSettingsStore = useSystemSettingsStore()
 
 const {
   updateConfirmDialog,
-  distConfirmDialog,
+  buildConfirmDialog,
   updateStatus,
-  distStatus,
+  buildStatus,
   updateError,
-  distError,
+  buildError,
   lastResult,
-  lastDistResult,
+  lastBuildResult,
   isLoadingUpdateStatus,
   isSubmittingUpdate,
-  isLoadingDistStatus,
-  isSubmittingDist,
+  isLoadingBuildStatus,
+  isSubmittingBuild,
   loadUpdateStatus,
   submitUpdate,
-  loadDistStatus,
-  submitDistUpdate,
+  loadBuildStatus,
+  submitBuild,
 } = useSystemUpdate()
 
 const pricingCurrencyOptions = computed(() => [
@@ -145,7 +145,7 @@ const pricingPreview = computed(
 
 onMounted(() => {
   void loadUpdateStatus()
-  void loadDistStatus()
+  void loadBuildStatus()
 })
 </script>
 
