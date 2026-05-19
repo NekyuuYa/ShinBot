@@ -7,6 +7,7 @@ import {
   configApi,
   extractConfigValidationIssues,
   type ConfigDocument,
+  type ConfigRecord,
   type ConfigValidationIssue,
   type ConfigValidationResult,
   type ConfigValue,
@@ -210,6 +211,84 @@ export const useConfigWorkspaceStore = defineStore('configWorkspace', () => {
     }
   }
 
+  const saveAdapterInstances = async (
+    payload: {
+      adapterInstances: ConfigRecord[]
+      validateBeforeSave?: boolean
+    }
+  ): Promise<SaveConfigResult | null> => {
+    isSaving.value = true
+    error.value = ''
+
+    try {
+      const result = await apiClient.unwrap(
+        configApi.saveAdapterInstances(
+          {
+            adapterInstances: cloneConfig(payload.adapterInstances) as ConfigRecord[],
+            validateBeforeSave: payload.validateBeforeSave ?? true,
+          },
+          { suppressErrorNotify: true }
+        )
+      )
+      applyWorkspace(result.workspace)
+      validation.value = result.validation
+      lastSavedAt.value = Date.now()
+      uiStore.showSnackbar(translate('common.actions.message.operationSuccess'), 'success')
+      return result
+    } catch (errorDetail: unknown) {
+      const issues = extractConfigValidationIssues(errorDetail)
+      if (issues.length > 0) {
+        applyValidationIssues(issues)
+      }
+      error.value = getErrorMessage(
+        errorDetail,
+        translate('common.actions.message.operationFailed')
+      )
+      return null
+    } finally {
+      isSaving.value = false
+    }
+  }
+
+  const saveBots = async (
+    payload: {
+      bots: ConfigRecord[]
+      validateBeforeSave?: boolean
+    }
+  ): Promise<SaveConfigResult | null> => {
+    isSaving.value = true
+    error.value = ''
+
+    try {
+      const result = await apiClient.unwrap(
+        configApi.saveBots(
+          {
+            bots: cloneConfig(payload.bots) as ConfigRecord[],
+            validateBeforeSave: payload.validateBeforeSave ?? true,
+          },
+          { suppressErrorNotify: true }
+        )
+      )
+      applyWorkspace(result.workspace)
+      validation.value = result.validation
+      lastSavedAt.value = Date.now()
+      uiStore.showSnackbar(translate('common.actions.message.operationSuccess'), 'success')
+      return result
+    } catch (errorDetail: unknown) {
+      const issues = extractConfigValidationIssues(errorDetail)
+      if (issues.length > 0) {
+        applyValidationIssues(issues)
+      }
+      error.value = getErrorMessage(
+        errorDetail,
+        translate('common.actions.message.operationFailed')
+      )
+      return null
+    } finally {
+      isSaving.value = false
+    }
+  }
+
   return {
     workspace,
     draft,
@@ -238,5 +317,7 @@ export const useConfigWorkspaceStore = defineStore('configWorkspace', () => {
     setDraftPath,
     validateDraft,
     saveDraft,
+    saveAdapterInstances,
+    saveBots,
   }
 })

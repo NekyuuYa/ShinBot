@@ -36,16 +36,6 @@
         </v-btn>
         <v-btn
           color="primary"
-          prepend-icon="mdi-content-save-outline"
-          :disabled="!configStore.isDirty"
-          :loading="configStore.isSaving"
-          rounded="lg"
-          @click="saveDraft"
-        >
-          {{ $t('common.actions.action.save') }}
-        </v-btn>
-        <v-btn
-          color="primary"
           prepend-icon="mdi-plus"
           rounded="lg"
           @click="openCreate"
@@ -605,7 +595,21 @@ function updateAdapterInstances(records: ConfigRecord[]) {
   )
 }
 
-function applyDialog() {
+async function saveAdapterInstances(records: ConfigRecord[]) {
+  const previousRecords = adapterInstanceRecords.value.map((record) => cloneConfigRecord(record))
+  updateAdapterInstances(records)
+  const result = await configStore.saveAdapterInstances({
+    adapterInstances: records,
+    validateBeforeSave: true,
+  })
+  if (!result) {
+    updateAdapterInstances(previousRecords)
+    return false
+  }
+  return true
+}
+
+async function applyDialog() {
   const error = validateEditorForm()
   if (error) {
     editorError.value = error
@@ -624,16 +628,21 @@ function applyDialog() {
     records.push(nextRecord)
   }
 
-  updateAdapterInstances(records)
-  dialogVisible.value = false
+  const saved = await saveAdapterInstances(records)
+  if (saved) {
+    dialogVisible.value = false
+    return
+  }
+
+  editorError.value = configStore.error
 }
 
-function deletePlatform(platform: MessagePlatformDraft) {
+async function deletePlatform(platform: MessagePlatformDraft) {
   if (!window.confirm(t('pages.messagePlatforms.deleteConfirm', { name: platformDisplayName(platform) }))) {
     return
   }
 
-  updateAdapterInstances(
+  await saveAdapterInstances(
     adapterInstanceRecords.value
       .filter((_, index) => platforms.value[index]?.id !== platform.id)
       .map((record) => cloneConfigRecord(record))
@@ -654,10 +663,6 @@ async function loadInitialWorkspace() {
 
 async function validateDraft() {
   await configStore.validateDraft()
-}
-
-async function saveDraft() {
-  await configStore.saveDraft({ validateBeforeSave: true })
 }
 
 onMounted(() => {

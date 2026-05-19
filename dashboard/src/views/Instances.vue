@@ -36,15 +36,10 @@
         </v-btn>
         <v-btn
           color="primary"
-          prepend-icon="mdi-content-save-outline"
-          :disabled="!configStore.isDirty"
-          :loading="configStore.isSaving"
+          prepend-icon="mdi-plus"
           rounded="lg"
-          @click="saveDraft"
+          @click="openCreate"
         >
-          {{ $t('common.actions.action.save') }}
-        </v-btn>
-        <v-btn color="primary" prepend-icon="mdi-plus" rounded="lg" @click="openCreate">
           {{ $t('pages.instances.create') }}
         </v-btn>
       </template>
@@ -709,7 +704,21 @@ function updateBots(records: ConfigRecord[]) {
   configStore.setDraftPath('bots', records.map((record) => cloneConfigRecord(record)))
 }
 
-function applyDialog() {
+async function saveBots(records: ConfigRecord[]) {
+  const previousRecords = botRecords.value.map((record) => cloneConfigRecord(record))
+  updateBots(records)
+  const result = await configStore.saveBots({
+    bots: records,
+    validateBeforeSave: true,
+  })
+  if (!result) {
+    updateBots(previousRecords)
+    return false
+  }
+  return true
+}
+
+async function applyDialog() {
   const error = validateEditorForm()
   if (error) {
     editorError.value = error
@@ -723,16 +732,21 @@ function applyDialog() {
   } else {
     records.push(nextRecord)
   }
-  updateBots(records)
-  dialogVisible.value = false
+  const saved = await saveBots(records)
+  if (saved) {
+    dialogVisible.value = false
+    return
+  }
+
+  editorError.value = configStore.error
 }
 
-function deleteBot(bot: BotInstanceDraft) {
+async function deleteBot(bot: BotInstanceDraft) {
   if (!window.confirm(t('pages.instances.deleteConfirm', { name: botDisplayName(bot) }))) {
     return
   }
 
-  updateBots(
+  await saveBots(
     botRecords.value
       .filter((_, index) => bots.value[index]?.id !== bot.id)
       .map((record) => cloneConfigRecord(record))
@@ -753,10 +767,6 @@ async function loadInitialWorkspace() {
 
 async function validateDraft() {
   await configStore.validateDraft()
-}
-
-async function saveDraft() {
-  await configStore.saveDraft({ validateBeforeSave: true })
 }
 
 onMounted(() => {

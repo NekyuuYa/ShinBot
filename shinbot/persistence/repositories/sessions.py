@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -10,6 +11,62 @@ from .base import Repository
 
 class SessionRepository(Repository):
     """Persistence adapter for structured session state."""
+
+    def list(self, *, instance_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            if instance_id:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.instance_id,
+                        s.session_type,
+                        s.platform,
+                        s.guild_id,
+                        s.channel_id,
+                        s.display_name,
+                        s.permission_group,
+                        s.created_at,
+                        s.last_active,
+                        s.state_json,
+                        s.plugin_data_json,
+                        c.prefixes_json,
+                        c.llm_enabled,
+                        c.is_muted,
+                        c.audit_enabled
+                    FROM sessions AS s
+                    LEFT JOIN session_configs AS c ON c.session_id = s.id
+                    WHERE s.instance_id = ?
+                    ORDER BY s.last_active DESC, s.id ASC
+                    """,
+                    (instance_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.instance_id,
+                        s.session_type,
+                        s.platform,
+                        s.guild_id,
+                        s.channel_id,
+                        s.display_name,
+                        s.permission_group,
+                        s.created_at,
+                        s.last_active,
+                        s.state_json,
+                        s.plugin_data_json,
+                        c.prefixes_json,
+                        c.llm_enabled,
+                        c.is_muted,
+                        c.audit_enabled
+                    FROM sessions AS s
+                    LEFT JOIN session_configs AS c ON c.session_id = s.id
+                    ORDER BY s.last_active DESC, s.id ASC
+                    """
+                ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     def get(self, session_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -56,6 +113,31 @@ class SessionRepository(Repository):
             "plugin_data": self.json_loads(row["plugin_data_json"], {}),
             "config": {
                 "prefixes": self.json_loads(row["prefixes_json"], ["/"]),
+                "llm_enabled": bool(row["llm_enabled"]) if row["llm_enabled"] is not None else True,
+                "is_muted": bool(row["is_muted"]) if row["is_muted"] is not None else False,
+                "audit_enabled": (
+                    bool(row["audit_enabled"]) if row["audit_enabled"] is not None else False
+                ),
+            },
+        }
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "instance_id": row["instance_id"],
+            "session_type": row["session_type"],
+            "platform": row["platform"],
+            "guild_id": row["guild_id"],
+            "channel_id": row["channel_id"],
+            "display_name": row["display_name"],
+            "permission_group": row["permission_group"],
+            "created_at": row["created_at"],
+            "last_active": row["last_active"],
+            "state": json.loads(row["state_json"] or "{}"),
+            "plugin_data": json.loads(row["plugin_data_json"] or "{}"),
+            "config": {
+                "prefixes": json.loads(row["prefixes_json"] or '["/"]'),
                 "llm_enabled": bool(row["llm_enabled"]) if row["llm_enabled"] is not None else True,
                 "is_muted": bool(row["is_muted"]) if row["is_muted"] is not None else False,
                 "audit_enabled": (
@@ -132,6 +214,24 @@ class SessionRepository(Repository):
 class AuditRepository(Repository):
     """Persistence adapter for structured audit logs."""
 
+    def list_by_session(self, session_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM audit_logs
+                WHERE session_id = ?
+                ORDER BY timestamp DESC, id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def get_latest_by_session(self, session_id: str) -> dict[str, Any] | None:
+        rows = self.list_by_session(session_id, limit=1)
+        return rows[0] if rows else None
+
     def insert(self, payload: dict[str, Any]) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -158,3 +258,22 @@ class AuditRepository(Repository):
                 ),
             )
             return int(cursor.lastrowid)
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "id": int(row["id"]),
+            "timestamp": str(row["timestamp"] or ""),
+            "entry_type": str(row["entry_type"] or ""),
+            "command_name": str(row["command_name"] or ""),
+            "plugin_id": str(row["plugin_id"] or ""),
+            "user_id": str(row["user_id"] or ""),
+            "session_id": str(row["session_id"] or ""),
+            "instance_id": str(row["instance_id"] or ""),
+            "permission_required": str(row["permission_required"] or ""),
+            "permission_granted": bool(row["permission_granted"]),
+            "execution_time_ms": float(row["execution_time_ms"] or 0.0),
+            "success": bool(row["success"]),
+            "error": str(row["error"] or ""),
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+        }

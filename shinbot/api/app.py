@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from shinbot.api.auth import AuthConfig
 from shinbot.api.models import EC, Envelope, ErrorBody
 from shinbot.api.routers import agent_configs as agent_configs_router
+from shinbot.api.routers import agent_runtime as agent_runtime_router
 from shinbot.api.routers import auth as auth_router
 from shinbot.api.routers import config as config_router
 from shinbot.api.routers import config_providers as config_providers_router
@@ -180,6 +181,7 @@ def create_api_app(
 
     api_prefix = "/api/v1"
     app.include_router(agent_configs_router.router, prefix=api_prefix)
+    app.include_router(agent_runtime_router.router, prefix=api_prefix)
     app.include_router(auth_router.router, prefix=api_prefix)
     app.include_router(config_router.router, prefix=api_prefix)
     app.include_router(config_providers_router.router, prefix=api_prefix)
