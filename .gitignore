@@ -33,6 +33,7 @@ data/
 
 # local config
 config.toml
+deploy/update-framework.sh
 
 # test
 .test/
