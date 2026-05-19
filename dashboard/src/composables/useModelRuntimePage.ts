@@ -158,6 +158,15 @@ export function useModelRuntimePage() {
       configWorkspaceStore.loadWorkspace({ preserveDraft: true })
     ])
     selection.ensureSelection()
+    syncCurrentFormFromSelection()
+  }
+
+  const syncCurrentFormFromSelection = () => {
+    if (tabs.isRouteMode.value) {
+      routeForm.syncRouteFormFromSelection()
+      return
+    }
+    providerForm.syncProviderFormFromSelection()
   }
 
   watch(activeTab, (nextTab, previousTab) => {
@@ -200,12 +209,8 @@ export function useModelRuntimePage() {
       store.fetchAll(),
       configWorkspaceStore.loadWorkspace({ preserveDraft: true })
     ])
-    if (activeTab.value === 'routes') {
-      routeForm.resetRouteForm()
-    } else {
-      providerForm.resetProviderForm()
-    }
     selection.ensureSelection()
+    syncCurrentFormFromSelection()
     syncQuery()
   })
 

@@ -348,42 +348,40 @@ export function useProviderForm({
     probingProviderId.value = ''
   }
 
-  watch(
-    () => selectedProvider.value?.id,
-    () => {
-      if (isCreatingProvider.value || !selectedProvider.value) {
-        return
-      }
-      const source = resolveProviderSource(selectedProvider.value.type)
-      Object.assign(providerForm.value, {
-        id: selectedProvider.value.id,
-        displayName: selectedProvider.value.displayName,
-        sourceType: resolveProviderSourceKey(
-          selectedProvider.value.type,
-          selectedProvider.value.baseUrl
-        ),
-        baseUrl: selectedProvider.value.baseUrl,
-        token: '',
-        clearAuthOnSave: false,
-        enabled: selectedProvider.value.enabled,
-        proxyAddress: String(selectedProvider.value.defaultParams.proxy || ''),
-        thinkingJson: prettyJson(selectedProvider.value.defaultParams.thinking),
-        filtersJson: prettyJson(selectedProvider.value.defaultParams.filters),
-        apiVersion: String(selectedProvider.value.defaultParams.apiVersion || ''),
-        defaultParamsJson: prettyJson(
-          stripManagedDefaultParams(selectedProvider.value.defaultParams),
-        ),
-      })
-      providerHeaderRows.value = objectToEntries(
-        selectedProvider.value.defaultParams.requestHeaders as Record<string, unknown>
-      )
-      if (source && !providerForm.value.baseUrl) {
-        providerForm.value.baseUrl = source.defaultBaseUrl
-      }
-      lastProviderProbeResult.value = null
-    },
-    { immediate: true }
-  )
+  const syncProviderFormFromSelection = () => {
+    if (isCreatingProvider.value || !selectedProvider.value) {
+      return
+    }
+    const source = resolveProviderSource(selectedProvider.value.type)
+    Object.assign(providerForm.value, {
+      id: selectedProvider.value.id,
+      displayName: selectedProvider.value.displayName,
+      sourceType: resolveProviderSourceKey(
+        selectedProvider.value.type,
+        selectedProvider.value.baseUrl
+      ),
+      baseUrl: selectedProvider.value.baseUrl,
+      token: '',
+      clearAuthOnSave: false,
+      enabled: selectedProvider.value.enabled,
+      proxyAddress: String(selectedProvider.value.defaultParams.proxy || ''),
+      thinkingJson: prettyJson(selectedProvider.value.defaultParams.thinking),
+      filtersJson: prettyJson(selectedProvider.value.defaultParams.filters),
+      apiVersion: String(selectedProvider.value.defaultParams.apiVersion || ''),
+      defaultParamsJson: prettyJson(
+        stripManagedDefaultParams(selectedProvider.value.defaultParams),
+      ),
+    })
+    providerHeaderRows.value = objectToEntries(
+      selectedProvider.value.defaultParams.requestHeaders as Record<string, unknown>
+    )
+    if (source && !providerForm.value.baseUrl) {
+      providerForm.value.baseUrl = source.defaultBaseUrl
+    }
+    lastProviderProbeResult.value = null
+  }
+
+  watch(() => selectedProvider.value, syncProviderFormFromSelection, { immediate: true })
 
   return {
     providerForm,
@@ -404,6 +402,7 @@ export function useProviderForm({
     probingProviderId,
     lastProviderProbeResult,
     resetProviderForm,
+    syncProviderFormFromSelection,
     applyProviderSource,
     onProviderSourceChange,
     toggleStoredCredentialClear,

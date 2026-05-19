@@ -45,6 +45,86 @@ def test_model_execution_list_endpoint(tmp_path: Path, make_boot_stub, make_auth
     assert payload["metadata"]["trace_id"] == "trace-1"
 
 
+def test_model_execution_audit_endpoint_filters_and_paginates(
+    tmp_path: Path,
+    make_boot_stub,
+    make_auth_headers,
+):
+    bot = ShinBot(data_dir=tmp_path)
+    now = datetime.now(UTC)
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-audit-1",
+            started_at=now.isoformat(),
+            route_id="agent.default_chat",
+            provider_id="openai-main",
+            model_id="openai-main/gpt-fast",
+            caller="agent.runtime",
+            session_id="onebot:group:g1",
+            instance_id="onebot",
+            purpose="chat",
+            success=True,
+            latency_ms=123,
+            input_tokens=10,
+            output_tokens=20,
+            prompt_snapshot_id="snapshot-1",
+            metadata={"route_strategy": "priority"},
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-audit-2",
+            started_at=(now - timedelta(minutes=1)).isoformat(),
+            route_id="agent.default_chat",
+            provider_id="openai-main",
+            model_id="openai-main/gpt-slow",
+            caller="agent.runtime",
+            session_id="onebot:group:g2",
+            instance_id="onebot",
+            success=False,
+            error_code="MODEL_ERROR",
+            error_message="temporary failure",
+        )
+    )
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-audit-3",
+            started_at=(now - timedelta(minutes=2)).isoformat(),
+            route_id="agent.summary",
+            provider_id="local-main",
+            model_id="local-main/qwen",
+            caller="summary.worker",
+            session_id="napcat:private:u1",
+            instance_id="napcat",
+            success=True,
+        )
+    )
+    app = create_api_app(bot, make_boot_stub(tmp_path))
+    headers = make_auth_headers(app)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/model-runtime/executions/audit",
+            params={
+                "providerId": "openai-main",
+                "success": "true",
+                "query": "g1",
+                "limit": 1,
+                "offset": 0,
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["total"] == 1
+    assert payload["limit"] == 1
+    assert payload["offset"] == 0
+    assert payload["items"][0]["id"] == "exec-audit-1"
+    assert payload["items"][0]["promptSnapshotId"] == "snapshot-1"
+    assert payload["items"][0]["metadata"]["route_strategy"] == "priority"
+
+
 def test_model_token_summary_endpoint(tmp_path: Path, make_boot_stub, make_auth_headers):
     bot = ShinBot(data_dir=tmp_path)
     recent_started_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
@@ -287,5 +367,4 @@ async def test_cost_estimation_does_not_double_charge_cached_input(tmp_path: Pat
     response = await get_cost_analysis(days=7, modelLimit=1, bot=bot)
     payload = response["data"]
     assert payload["summary"]["estimatedCost"] == pytest.approx(0.163)
-
 

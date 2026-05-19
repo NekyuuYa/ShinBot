@@ -76,7 +76,28 @@ export interface ModelExecutionRecord {
   fallbackReason: string
   estimatedCost: number | null
   currency: string
+  promptSnapshotId: string
   metadata: Record<string, unknown>
+}
+
+export interface ModelExecutionAuditQuery {
+  limit?: number
+  offset?: number
+  providerId?: string
+  modelId?: string
+  routeId?: string
+  caller?: string
+  sessionId?: string
+  instanceId?: string
+  success?: boolean | null
+  query?: string
+}
+
+export interface ModelExecutionAuditResponse {
+  items: ModelExecutionRecord[]
+  total: number
+  limit: number
+  offset: number
 }
 
 export interface ModelTokenSummaryModel {
@@ -305,6 +326,12 @@ export const modelRuntimeApi = {
   listExecutions(limit = 50) {
     return apiClient.get<ModelExecutionRecord[]>('/model-runtime/executions', {
       params: { limit },
+    })
+  },
+
+  listExecutionAuditRecords(params: ModelExecutionAuditQuery = {}) {
+    return apiClient.get<ModelExecutionAuditResponse>('/model-runtime/executions/audit', {
+      params,
     })
   },
 

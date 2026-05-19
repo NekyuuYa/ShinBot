@@ -15,6 +15,7 @@
     "modelRuntime": "Model Runtime",
     "sessionsManage": "Session Management",
     "costAnalysis": "Cost Analysis",
+    "modelAudit": "Model Call Audit",
     "agentCore": "Agent core",
     "settings": "Settings",
     "logout": "Logout",

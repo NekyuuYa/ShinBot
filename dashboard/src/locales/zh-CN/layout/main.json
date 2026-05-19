@@ -15,6 +15,7 @@
     "modelRuntime": "模型管理",
     "sessionsManage": "会话管理",
     "costAnalysis": "成本分析",
+    "modelAudit": "模型调用审计",
     "agentCore": "Agent core",
     "settings": "设置",
     "logout": "登出",

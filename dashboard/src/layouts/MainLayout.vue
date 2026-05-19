@@ -204,6 +204,11 @@ const primaryNavItems: NavItem[] = [
     title: "layout.main.nav.costAnalysis",
   },
   {
+    to: "/model-audit",
+    icon: "mdi-clipboard-pulse-outline",
+    title: "layout.main.nav.modelAudit",
+  },
+  {
     to: "/monitoring",
     icon: "mdi-monitor-dashboard",
     title: "layout.main.nav.monitoring",
@@ -250,6 +255,7 @@ const routeTitleMap: Record<string, string> = {
   Prompts: "layout.main.nav.promptsManage",
   Personas: "layout.main.nav.personasManage",
   ModelRuntime: "layout.main.nav.modelRuntime",
+  ModelAudit: "layout.main.nav.modelAudit",
   CostAnalysis: "layout.main.nav.costAnalysis",
   Monitoring: "layout.main.nav.monitoring",
   Settings: "layout.main.nav.settings",

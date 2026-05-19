@@ -230,7 +230,17 @@ def _serialize_execution(payload: dict[str, Any]) -> dict[str, Any]:
         "fallbackReason": payload["fallback_reason"],
         "estimatedCost": payload["estimated_cost"],
         "currency": payload["currency"],
+        "promptSnapshotId": payload.get("prompt_snapshot_id", ""),
         "metadata": payload["metadata"],
+    }
+
+
+def _serialize_execution_audit_page(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "items": [_serialize_execution(item) for item in payload["items"]],
+        "total": payload["total"],
+        "limit": payload["limit"],
+        "offset": payload["offset"],
     }
 
 
@@ -722,6 +732,35 @@ async def delete_route(route_id: str, bot=BotDep):
 async def list_model_executions(limit: int = Query(default=50, ge=1, le=200), bot=BotDep):
     records = bot.database.model_executions.list_recent(limit=limit)
     return ok([_serialize_execution(item) for item in records])
+
+
+@router.get("/executions/audit")
+async def list_model_execution_audit_records(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    providerId: str | None = Query(default=None),
+    modelId: str | None = Query(default=None),
+    routeId: str | None = Query(default=None),
+    caller: str | None = Query(default=None),
+    sessionId: str | None = Query(default=None),
+    instanceId: str | None = Query(default=None),
+    success: bool | None = Query(default=None),
+    query: str | None = Query(default=None, max_length=200),
+    bot=BotDep,
+):
+    records = bot.database.model_executions.list_audit_records(
+        limit=limit,
+        offset=offset,
+        provider_id=providerId,
+        model_id=modelId,
+        route_id=routeId,
+        caller=caller,
+        session_id=sessionId,
+        instance_id=instanceId,
+        success=success,
+        query=query.strip() if query else None,
+    )
+    return ok(_serialize_execution_audit_page(records))
 
 
 @router.get("/token-summary")

@@ -206,24 +206,22 @@ export function useRouteForm({
     member.timeoutOverride = stringValue ? Number(stringValue) : null
   }
 
-  watch(
-    () => selectedRoute.value?.id,
-    () => {
-      if (isCreatingRoute.value || !selectedRoute.value) {
-        return
-      }
-      Object.assign(routeForm.value, {
-        id: selectedRoute.value.id,
-        purpose: selectedRoute.value.purpose,
-        strategy: selectedRoute.value.strategy,
-        enabled: selectedRoute.value.enabled,
-        stickySessions: selectedRoute.value.stickySessions,
-        domain: String(selectedRoute.value.metadata.domain || 'chat'),
-      })
-      routeMembersEditor.value = cloneRouteMembers(selectedRoute.value.members)
-    },
-    { immediate: true }
-  )
+  const syncRouteFormFromSelection = () => {
+    if (isCreatingRoute.value || !selectedRoute.value) {
+      return
+    }
+    Object.assign(routeForm.value, {
+      id: selectedRoute.value.id,
+      purpose: selectedRoute.value.purpose,
+      strategy: selectedRoute.value.strategy,
+      enabled: selectedRoute.value.enabled,
+      stickySessions: selectedRoute.value.stickySessions,
+      domain: String(selectedRoute.value.metadata.domain || 'chat'),
+    })
+    routeMembersEditor.value = cloneRouteMembers(selectedRoute.value.members)
+  }
+
+  watch(() => selectedRoute.value, syncRouteFormFromSelection, { immediate: true })
 
   return {
     routeSaveLabel,
@@ -233,6 +231,7 @@ export function useRouteForm({
     availableRouteModels,
     availableRouteModelsGrouped,
     resetRouteForm,
+    syncRouteFormFromSelection,
     saveRoute,
     deleteCurrentRoute,
     routeMemberByModel,

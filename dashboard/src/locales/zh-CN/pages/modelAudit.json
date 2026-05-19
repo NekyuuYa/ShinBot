@@ -1,0 +1,73 @@
+{
+  "kicker": "Runtime audit",
+  "title": "模型调用审计",
+  "subtitle": "按模型、供应商、路由和会话查看每一次模型调用的执行记录。",
+  "actions": {
+    "refresh": "刷新",
+    "previous": "上一页",
+    "next": "下一页",
+    "clear": "清空筛选"
+  },
+  "filters": {
+    "title": "筛选",
+    "search": "搜索调用、会话、错误",
+    "provider": "供应商",
+    "model": "模型",
+    "route": "路由",
+    "caller": "调用方",
+    "session": "会话",
+    "instance": "实例",
+    "status": "状态",
+    "all": "全部",
+    "success": "成功",
+    "failed": "失败"
+  },
+  "sections": {
+    "records": "调用记录",
+    "details": "详细信息",
+    "timing": "时间",
+    "usage": "用量",
+    "routing": "路由",
+    "error": "错误",
+    "metadata": "元数据"
+  },
+  "labels": {
+    "total": "共 {total} 条",
+    "page": "{start}-{end} / {total}",
+    "empty": "暂无模型调用记录",
+    "none": "无",
+    "success": "成功",
+    "failed": "失败",
+    "yes": "是",
+    "no": "否",
+    "startedAt": "开始时间",
+    "finishedAt": "结束时间",
+    "firstTokenAt": "首 token",
+    "latency": "延迟",
+    "ttft": "首 token 延迟",
+    "inputTokens": "输入 token",
+    "outputTokens": "输出 token",
+    "cacheRead": "缓存读取",
+    "cacheWrite": "缓存写入",
+    "cacheHit": "缓存命中",
+    "cost": "预估成本",
+    "executionId": "执行 ID",
+    "providerId": "供应商 ID",
+    "modelId": "模型 ID",
+    "routeId": "路由 ID",
+    "caller": "调用方",
+    "purpose": "用途",
+    "sessionId": "会话 ID",
+    "instanceId": "实例 ID",
+    "promptSnapshotId": "Prompt 快照",
+    "fallback": "回退",
+    "fallbackFrom": "来源模型",
+    "fallbackReason": "原因",
+    "errorCode": "错误码",
+    "errorMessage": "错误信息",
+    "metadataEmpty": "无元数据"
+  },
+  "messages": {
+    "loadFailed": "加载模型调用审计失败"
+  }
+}

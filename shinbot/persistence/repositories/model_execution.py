@@ -58,24 +58,86 @@ class ModelExecutionRepository(ModelUsageHourlyRepositoryMixin):
             )
             self._increment_usage_hourly(conn, payload)
 
+    def _row_to_dict(self, row: Any) -> dict[str, Any]:
+        return {
+            **{k: row[k] for k in row.keys() if k != "metadata_json"},
+            "cache_hit": bool(row["cache_hit"]),
+            "success": bool(row["success"]),
+            "metadata": self.json_loads(row["metadata_json"], {}),
+        }
+
     def list_recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return self.list_audit_records(limit=limit)["items"]
+
+    def list_audit_records(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        route_id: str | None = None,
+        caller: str | None = None,
+        session_id: str | None = None,
+        instance_id: str | None = None,
+        success: bool | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        filters: list[str] = []
+        params: list[Any] = []
+
+        exact_filters = {
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "route_id": route_id,
+            "caller": caller,
+            "session_id": session_id,
+            "instance_id": instance_id,
+        }
+        for column, value in exact_filters.items():
+            if value:
+                filters.append(f"{column} = ?")
+                params.append(value)
+
+        if success is not None:
+            filters.append("success = ?")
+            params.append(1 if success else 0)
+
+        if query:
+            like_query = f"%{query}%"
+            filters.append(
+                "("
+                "id LIKE ? OR caller LIKE ? OR session_id LIKE ? OR instance_id LIKE ? "
+                "OR purpose LIKE ? OR error_code LIKE ? OR error_message LIKE ?"
+                ")"
+            )
+            params.extend([like_query] * 7)
+
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+
         with self.connect() as conn:
+            total = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM model_execution_records
+                {where_clause}
+                """,
+                params,
+            ).fetchone()["total"]
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM model_execution_records
-                ORDER BY started_at DESC
-                LIMIT ?
+                {where_clause}
+                ORDER BY started_at DESC, id DESC
+                LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                (*params, limit, offset),
             ).fetchall()
 
-        return [
-            {
-                **{k: row[k] for k in row.keys() if k != "metadata_json"},
-                "cache_hit": bool(row["cache_hit"]),
-                "success": bool(row["success"]),
-                "metadata": self.json_loads(row["metadata_json"], {}),
-            }
-            for row in rows
-        ]
+        return {
+            "items": [self._row_to_dict(row) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }

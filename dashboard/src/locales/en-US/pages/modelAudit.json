@@ -1,0 +1,73 @@
+{
+  "kicker": "Runtime audit",
+  "title": "Model Call Audit",
+  "subtitle": "Inspect each model execution by model, provider, route, and session.",
+  "actions": {
+    "refresh": "Refresh",
+    "previous": "Previous",
+    "next": "Next",
+    "clear": "Clear filters"
+  },
+  "filters": {
+    "title": "Filters",
+    "search": "Search calls, sessions, errors",
+    "provider": "Provider",
+    "model": "Model",
+    "route": "Route",
+    "caller": "Caller",
+    "session": "Session",
+    "instance": "Instance",
+    "status": "Status",
+    "all": "All",
+    "success": "Success",
+    "failed": "Failed"
+  },
+  "sections": {
+    "records": "Call records",
+    "details": "Details",
+    "timing": "Timing",
+    "usage": "Usage",
+    "routing": "Routing",
+    "error": "Error",
+    "metadata": "Metadata"
+  },
+  "labels": {
+    "total": "{total} records",
+    "page": "{start}-{end} / {total}",
+    "empty": "No model call records",
+    "none": "None",
+    "success": "Success",
+    "failed": "Failed",
+    "yes": "Yes",
+    "no": "No",
+    "startedAt": "Started",
+    "finishedAt": "Finished",
+    "firstTokenAt": "First token",
+    "latency": "Latency",
+    "ttft": "TTFT",
+    "inputTokens": "Input tokens",
+    "outputTokens": "Output tokens",
+    "cacheRead": "Cache read",
+    "cacheWrite": "Cache write",
+    "cacheHit": "Cache hit",
+    "cost": "Estimated cost",
+    "executionId": "Execution ID",
+    "providerId": "Provider ID",
+    "modelId": "Model ID",
+    "routeId": "Route ID",
+    "caller": "Caller",
+    "purpose": "Purpose",
+    "sessionId": "Session ID",
+    "instanceId": "Instance ID",
+    "promptSnapshotId": "Prompt snapshot",
+    "fallback": "Fallback",
+    "fallbackFrom": "From model",
+    "fallbackReason": "Reason",
+    "errorCode": "Error code",
+    "errorMessage": "Error message",
+    "metadataEmpty": "No metadata"
+  },
+  "messages": {
+    "loadFailed": "Failed to load model call audit"
+  }
+}
