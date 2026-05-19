@@ -40,6 +40,16 @@ class SaveConfigRequest(BaseModel):
     validateBeforeSave: bool = True
 
 
+class SaveAdapterInstancesRequest(BaseModel):
+    adapterInstances: list[dict[str, Any]] = Field(default_factory=list)
+    validateBeforeSave: bool = True
+
+
+class SaveBotsRequest(BaseModel):
+    bots: list[dict[str, Any]] = Field(default_factory=list)
+    validateBeforeSave: bool = True
+
+
 def _config_validation_result(
     *,
     config: dict[str, Any],
@@ -109,6 +119,45 @@ def _config_workspace(
         "providers": _provider_catalog(bot.config_provider_registry),
         "plugins": _plugin_catalog(bot),
     }
+
+
+def _save_config_sections(
+    *,
+    bot: Any,
+    boot: Any,
+    next_config: dict[str, Any],
+    validate_before_save: bool,
+) -> dict[str, Any]:
+    validation = _config_validation_result(config=next_config, bot=bot, boot=boot)
+    if validate_before_save and not validation["valid"]:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": EC.CONFIG_VALIDATION_FAILED,
+                "message": "Configuration validation failed",
+                "issues": validation["issues"],
+            },
+        )
+
+    boot.config.clear()
+    boot.config.update(deepcopy(next_config))
+    if not boot.save_config():
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": EC.CONFIG_WRITE_FAILED,
+                "message": "Failed to persist configuration",
+            },
+        )
+
+    return ok(
+        {
+            "saved": True,
+            "requiresRestart": True,
+            "validation": validation,
+            "workspace": _config_workspace(bot=bot, boot=boot),
+        }
+    )
 
 
 def _provider_catalog(registry: ConfigProviderRegistry) -> dict[str, list[dict[str, Any]]]:
@@ -247,33 +296,41 @@ async def validate_config(body: ValidateConfigRequest, bot=BotDep, boot=BootDep)
 
 @router.put("")
 async def save_config(body: SaveConfigRequest, bot=BotDep, boot=BootDep):
-    validation = _config_validation_result(config=body.config, bot=bot, boot=boot)
-    if body.validateBeforeSave and not validation["valid"]:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": EC.CONFIG_VALIDATION_FAILED,
-                "message": "Configuration validation failed",
-                "issues": validation["issues"],
-            },
-        )
+    return _save_config_sections(
+        bot=bot,
+        boot=boot,
+        next_config=deepcopy(body.config),
+        validate_before_save=body.validateBeforeSave,
+    )
 
-    boot.config.clear()
-    boot.config.update(deepcopy(body.config))
-    if not boot.save_config():
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "code": EC.CONFIG_WRITE_FAILED,
-                "message": "Failed to persist configuration",
-            },
-        )
 
-    return ok(
-        {
-            "saved": True,
-            "requiresRestart": True,
-            "validation": validation,
-            "workspace": _config_workspace(bot=bot, boot=boot),
-        }
+@router.put("/adapter-instances")
+async def save_adapter_instances(
+    body: SaveAdapterInstancesRequest,
+    bot=BotDep,
+    boot=BootDep,
+):
+    next_config = deepcopy(boot.config)
+    next_config["adapter_instances"] = deepcopy(body.adapterInstances)
+    return _save_config_sections(
+        bot=bot,
+        boot=boot,
+        next_config=next_config,
+        validate_before_save=body.validateBeforeSave,
+    )
+
+
+@router.put("/bots")
+async def save_bots(
+    body: SaveBotsRequest,
+    bot=BotDep,
+    boot=BootDep,
+):
+    next_config = deepcopy(boot.config)
+    next_config["bots"] = deepcopy(body.bots)
+    return _save_config_sections(
+        bot=bot,
+        boot=boot,
+        next_config=next_config,
+        validate_before_save=body.validateBeforeSave,
     )

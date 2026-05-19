@@ -35,6 +35,9 @@ class AgentStateStore(Protocol):
     def clear_active_chat_state(self, session_id: str) -> None:
         """Clear active chat interest state for one session."""
 
+    def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
+        """Return known session ids, optionally filtered by prefix."""
+
 
 class InMemoryAgentStateStore:
     """In-memory state store used before Agent scheduler persistence exists."""
@@ -73,6 +76,15 @@ class InMemoryAgentStateStore:
 
     def clear_active_chat_state(self, session_id: str) -> None:
         self._active_chat_states.pop(session_id, None)
+
+    def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
+        session_ids = set(self._states)
+        session_ids.update(self._review_plans)
+        session_ids.update(self._active_chat_states)
+        items = sorted(session_ids)
+        if prefix is None:
+            return items
+        return [session_id for session_id in items if session_id.startswith(prefix)]
 
 
 __all__ = ["AgentStateStore", "InMemoryAgentStateStore"]

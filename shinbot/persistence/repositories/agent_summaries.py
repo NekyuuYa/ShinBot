@@ -189,6 +189,14 @@ class AgentSummaryRepository(Repository):
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def get_latest_by_session_summary(
+        self,
+        session_id: str,
+        *,
+        summary_type: SummaryType | None = None,
+    ) -> SummaryRecord | None:
+        return self.get_latest_by_session(session_id, summary_type=summary_type)
+
 
 def _row_to_record(row: Any) -> SummaryRecord:
     metadata_json = str(row["metadata_json"] or "{}")

@@ -25,6 +25,88 @@ export interface AgentPayload {
   tags: string[]
 }
 
+export interface AgentRuntimeSession {
+  sessionId: string
+  state: string
+  reviewPlan: {
+    sessionId: string
+    nextReviewAt: number
+    reason: string
+    mentionSensitivity: string
+    activeReplyThreshold: {
+      atCount: number
+      windowSeconds: number
+    }
+    updatedAt: number
+  } | null
+  activeChatState: {
+    sessionId: string
+    interestValue: number
+    decayHalfLifeSeconds: number
+    enteredAt: number
+    updatedAt: number
+    tickCount: number
+    activeEpoch: number
+    bootstrapApplied: boolean
+    bootstrapDisposition: string | null
+  } | null
+  unreadCount: number
+  highPriorityCount: number
+  latestReviewRun: {
+    id: string
+    sessionId: string
+    startedAt: number
+    finishedAt: number | null
+    batchSize: number
+    replied: boolean
+    responseSummary: string
+    finishReason: string
+  } | null
+  latestReviewSummary: {
+    id: number
+    sessionId: string
+    startMsgLogId: number
+    endMsgLogId: number
+    startAt: number
+    endAt: number
+    messageCount: number
+    summary: string
+    reason: string
+    createdAt: number
+  } | null
+  latestAudit: {
+    id: number
+    timestamp: string
+    entry_type: string
+    command_name: string
+    plugin_id: string
+    user_id: string
+    session_id: string
+    instance_id: string
+    permission_required: string
+    permission_granted: boolean
+    execution_time_ms: number
+    success: boolean
+    error: string
+    metadata: Record<string, unknown>
+  } | null
+}
+
+export interface AgentRuntimeProfile {
+  botId: string
+  botName: string
+  enabled: boolean
+  agentMode: string
+  agentConfig: string
+  bindings: {
+    adapterInstanceId: string
+    sessionPatterns: string[]
+    enabled: boolean
+    priority: number
+  }[]
+  sessions: AgentRuntimeSession[]
+}
+
 export const agentsApi = {
   list() {
     return apiClient.get<Agent[]>('/agents')
@@ -46,5 +128,9 @@ export const agentsApi = {
     return apiClient.delete<{ deleted: boolean; uuid: string }>(
       `/agents/${encodeURIComponent(uuid)}`
     )
+  },
+
+  runtimeOverview(config?: { suppressErrorNotify?: boolean }) {
+    return apiClient.get<AgentRuntimeProfile[]>('/agent-runtime', config)
   },
 }

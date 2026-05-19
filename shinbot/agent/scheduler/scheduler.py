@@ -279,6 +279,10 @@ class AgentScheduler:
         """Return high-priority events known to AgentScheduler for one session."""
         return self._inbox.list_high_priority_events(session_id)
 
+    def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
+        """Return known scheduler session ids."""
+        return self._state_store.list_session_ids(prefix=prefix)
+
     def state_for(self, session_id: str) -> AgentState:
         """Return current scheduler state for one session."""
         return self._state_store.get_state(session_id)

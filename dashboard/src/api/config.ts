@@ -240,6 +240,16 @@ export interface SaveConfigRequest {
   validateBeforeSave?: boolean
 }
 
+export interface SaveAdapterInstancesRequest {
+  adapterInstances: ConfigRecord[]
+  validateBeforeSave?: boolean
+}
+
+export interface SaveBotsRequest {
+  bots: ConfigRecord[]
+  validateBeforeSave?: boolean
+}
+
 export interface SaveConfigResult {
   saved: boolean
   requiresRestart: boolean
@@ -272,6 +282,14 @@ export const configApi = {
 
   save(payload: SaveConfigRequest, config?: ApiRequestConfig) {
     return apiClient.put<SaveConfigResult>('/config', payload, config)
+  },
+
+  saveAdapterInstances(payload: SaveAdapterInstancesRequest, config?: ApiRequestConfig) {
+    return apiClient.put<SaveConfigResult>('/config/adapter-instances', payload, config)
+  },
+
+  saveBots(payload: SaveBotsRequest, config?: ApiRequestConfig) {
+    return apiClient.put<SaveConfigResult>('/config/bots', payload, config)
   },
 }
 
