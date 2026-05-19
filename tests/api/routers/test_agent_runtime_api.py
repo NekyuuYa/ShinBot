@@ -70,3 +70,36 @@ def test_agent_runtime_overview_lists_persisted_scheduler_sessions(tmp_path: Pat
     assert payload[0]["botId"] == "bot-main"
     assert payload[0]["sessions"][0]["sessionId"] == session_id
     assert payload[0]["sessions"][0]["state"] == "active_reply"
+
+
+def test_agent_runtime_overview_does_not_filter_session_ids_by_bot_prefix(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "inst-1:group:room"
+    runtime.agent_profile_for_bot("bot-main").agent_scheduler._state_store.set_state(
+        session_id,
+        AgentState.ACTIVE_CHAT,
+    )
+    boot = _BootStub(tmp_path)
+    boot.bot_service_configs = (
+        type(
+            "BotConfig",
+            (),
+            {
+                "id": "bot-main",
+                "display_name": "Bot Main",
+                "enabled": True,
+                "agent": type("AgentConfig", (), {"mode": "full", "config": ""})(),
+                "bindings": (),
+            },
+        )(),
+    )
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/agent-runtime", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload[0]["sessions"][0]["sessionId"] == session_id
+    assert payload[0]["sessions"][0]["state"] == "active_chat"

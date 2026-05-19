@@ -126,7 +126,10 @@ def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
         return []
 
     scheduler = agent_runtime.agent_profile_for_bot(bot_id).agent_scheduler
-    session_ids = scheduler.list_session_ids(prefix=f"{bot_id}:") or []
+    # The scheduler is already isolated per bot profile, while session ids are
+    # anchored to adapter instance ids. Filtering again by bot id would hide
+    # valid sessions for the selected profile.
+    session_ids = scheduler.list_session_ids() or []
     result: list[dict[str, Any]] = []
     for session_id in session_ids:
         review_plan = scheduler.review_plan_for(session_id)
