@@ -565,7 +565,7 @@ async function refreshPage() {
   error.value = "";
   try {
     await Promise.all([
-      configStore.loadWorkspace({ preserveDraft: true }),
+      configStore.loadWorkspace({ preserveDraft: configStore.isDirty }),
       loadProfiles(),
       loadRuntimeProfiles(),
     ]);
