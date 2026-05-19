@@ -333,7 +333,7 @@ class OneBotV11Adapter(BaseAdapter):
                 self._connection_loop(), name=f"onebot-v11-{self.instance_id}"
             )
             logger.info(
-                "OneBot v11 adapter %s started in forward mode (url=%s)",
+                "OneBot v11 adapter %s starting forward connection to %s",
                 self.instance_id,
                 self.config.url,
             )
@@ -343,7 +343,7 @@ class OneBotV11Adapter(BaseAdapter):
             self._registered_port = port
             await _GATEWAY.register(self, host, port, path)
             logger.info(
-                "OneBot v11 adapter %s registered with gateway on %s:%d%s",
+                "OneBot v11 adapter %s waiting for reverse connection on ws://%s:%d%s",
                 self.instance_id,
                 host,
                 port,
@@ -394,7 +394,7 @@ class OneBotV11Adapter(BaseAdapter):
         self._detected_platform = "qq"
         self._ws = websocket
         logger.info(
-            "OneBot v11 %s accepted reverse connection (self_id=%s role=%s)",
+            "OneBot v11 %s connected via reverse WebSocket (self_id=%s role=%s)",
             self.instance_id,
             self._self_id,
             client_role,
@@ -634,7 +634,7 @@ class OneBotV11Adapter(BaseAdapter):
                 )
                 if should_log:
                     logger.warning(
-                        "OneBot v11 %s reconnecting in %.1fs (attempt %d): %s",
+                        "OneBot v11 %s forward connection failed; retrying in %.1fs (attempt %d): %s",
                         self.instance_id,
                         self.config.reconnect_delay,
                         attempts,

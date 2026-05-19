@@ -137,8 +137,8 @@ const listValue = computed<Array<string | number>>(() => {
 
 const jsonRows = computed(() => (props.field.component === 'array-object' ? 6 : 5))
 const resolvedInputType = computed(() => {
-  if (props.field.secret && !secretVisible.value) {
-    return 'password'
+  if (props.field.secret) {
+    return secretVisible.value ? 'text' : 'password'
   }
   return props.field.inputType
 })

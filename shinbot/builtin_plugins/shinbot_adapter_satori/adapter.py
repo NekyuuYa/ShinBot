@@ -105,7 +105,7 @@ class SatoriAdapter(BaseAdapter):
         self._recv_task = asyncio.create_task(
             self._connection_loop(), name=f"satori-{self.instance_id}"
         )
-        logger.info("Satori adapter %s started (host=%s)", self.instance_id, self.config.host)
+        logger.info("Satori adapter %s starting connection to %s", self.instance_id, self.config.host)
 
     async def shutdown(self) -> None:
         """Gracefully close the WebSocket and cancel background tasks."""
@@ -262,7 +262,7 @@ class SatoriAdapter(BaseAdapter):
                 )
                 if should_log:
                     logger.warning(
-                        "Satori %s reconnecting in %.1fs (attempt %d): %s",
+                        "Satori %s connection failed; retrying in %.1fs (attempt %d): %s",
                         self.instance_id,
                         self.config.reconnect_delay,
                         attempt,

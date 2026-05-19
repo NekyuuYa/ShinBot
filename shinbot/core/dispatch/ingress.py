@@ -556,8 +556,19 @@ def is_event_fresh(
     if event.timestamp is None:
         return True
     current_time = time.time() if now is None else now
-    age = current_time - event.timestamp / 1000
+    event_seconds = normalize_event_timestamp_seconds(event.timestamp, now=current_time)
+    age = current_time - event_seconds
     return age < max_age_seconds
+
+
+def normalize_event_timestamp_seconds(timestamp: float | int, *, now: float | None = None) -> float:
+    """Normalize common platform timestamp units to epoch seconds."""
+
+    value = float(timestamp)
+    millisecond_value = value / 1000
+    if now is None:
+        return millisecond_value if value > 1_000_000_000_000 else value
+    return min((value, millisecond_value), key=lambda candidate: abs(now - candidate))
 
 
 def _log_route_target_task_result(done: asyncio.Task[Any], rule: RouteRule) -> None:

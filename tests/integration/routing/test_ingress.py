@@ -325,6 +325,15 @@ def test_is_event_fresh_uses_platform_timestamp_milliseconds() -> None:
     assert is_event_fresh(make_event(timestamp=None), now=now, max_age_seconds=60)
 
 
+def test_is_event_fresh_accepts_platform_timestamp_seconds() -> None:
+    now = 1_779_210_000.0
+    fresh = make_event(timestamp=1_779_209_995)
+    stale = make_event(timestamp=1_779_209_900)
+
+    assert is_event_fresh(fresh, now=now, max_age_seconds=60)
+    assert not is_event_fresh(stale, now=now, max_age_seconds=60)
+
+
 @pytest.mark.asyncio
 async def test_text_command_dispatcher_executes_command_without_fallback(tmp_path) -> None:
     command_registry = CommandRegistry()

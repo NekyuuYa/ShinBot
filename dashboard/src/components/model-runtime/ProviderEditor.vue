@@ -176,9 +176,11 @@
               :label="$t('pages.modelRuntime.fields.token')"
               density="comfortable"
               variant="outlined"
-              type="password"
+              :type="tokenVisible ? 'text' : 'password'"
+              :append-inner-icon="tokenVisible ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
               :hint="tokenHint"
               persistent-hint
+              @click:append-inner="tokenVisible = !tokenVisible"
             />
             <div v-if="hasStoredCredential" class="credential-state-row mt-2">
               <v-chip
@@ -812,6 +814,7 @@ const { t } = useI18n();
 const showProviderSourcePicker = ref(false);
 const configuredModelSearch = ref("");
 const configuredModelsView = ref<"table" | "card">("table");
+const tokenVisible = ref(false);
 
 const {
   store,
