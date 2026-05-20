@@ -7,6 +7,10 @@
     />
 
     <v-row>
+      <v-col cols="12">
+        <global-runtime-settings-card />
+      </v-col>
+
       <v-col cols="12" lg="6">
         <v-card class="pa-6 settings-card" elevation="0">
           <v-card-title class="px-0 pt-0">
@@ -102,6 +106,7 @@ import { computed, onMounted } from 'vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import CredentialsUpdateForm from '@/components/CredentialsUpdateForm.vue'
 import DashboardBuildCard from '@/components/settings/DashboardBuildCard.vue'
+import GlobalRuntimeSettingsCard from '@/components/settings/GlobalRuntimeSettingsCard.vue'
 import UpdateStatusCard from '@/components/settings/UpdateStatusCard.vue'
 import { useSystemUpdate } from '@/composables/useSystemUpdate'
 import { translate } from '@/plugins/i18n'

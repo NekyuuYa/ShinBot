@@ -52,7 +52,34 @@ export interface DashboardBuildResult {
   output: string
 }
 
+export interface SystemLoggingState {
+  level: string
+  thirdPartyNoise: string
+  sources: Array<{
+    name: string
+    source: string
+    color: string
+    level: string
+  }>
+}
+
+export interface UpdateLoggingStatePayload {
+  level?: string
+  thirdPartyNoise?: string
+  persist?: boolean
+}
+
 export const systemApi = {
+  getLoggingState() {
+    return apiClient.get<SystemLoggingState>('/system/logging', {
+      suppressErrorNotify: true,
+    })
+  },
+
+  updateLoggingState(payload: UpdateLoggingStatePayload) {
+    return apiClient.patch<SystemLoggingState>('/system/logging', payload)
+  },
+
   getUpdateStatus() {
     return apiClient.get<SystemUpdateStatus>('/system/update', {
       suppressErrorNotify: true,
