@@ -456,6 +456,26 @@ class OneBotV11Adapter(BaseAdapter):
         if method == "message.delete":
             return await self._call_ob11_api("delete_msg", {"message_id": params.get("message_id")})
 
+        if method == "reaction.create":
+            return await self._call_ob11_api(
+                "set_msg_emoji_like",
+                {
+                    "message_id": params.get("message_id"),
+                    "emoji_id": params.get("emoji_id"),
+                    "set": True,
+                },
+            )
+
+        if method == "reaction.delete":
+            return await self._call_ob11_api(
+                "set_msg_emoji_like",
+                {
+                    "message_id": params.get("message_id"),
+                    "emoji_id": params.get("emoji_id"),
+                    "set": False,
+                },
+            )
+
         if method == "message.update":
             session_id = str(params.get("session_id", ""))
             message_id = params.get("message_id")
@@ -598,6 +618,8 @@ class OneBotV11Adapter(BaseAdapter):
             "actions": [
                 "channel.message.create",
                 "message.delete",
+                "reaction.create",
+                "reaction.delete",
                 "guild.member.get",
                 "guild.member.list",
                 "member.kick",
