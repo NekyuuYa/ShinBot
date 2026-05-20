@@ -98,6 +98,10 @@ def create_api_app(
     async def lifespan(app: FastAPI):
         install_log_handler()
         broadcaster_task = asyncio.create_task(log_broadcaster())
+        agent_runtime = getattr(bot, "agent_runtime", None)
+        start_agent_background_tasks = getattr(agent_runtime, "start_background_tasks", None)
+        if start_agent_background_tasks is not None:
+            start_agent_background_tasks()
         logger.info("Management API ready")
         yield
         broadcaster_task.cancel()

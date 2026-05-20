@@ -18,6 +18,7 @@ from shinbot.agent.scheduler import (
     InMemoryAgentInbox,
     InMemoryAgentStateStore,
     PriorityPolicyDecision,
+    ReviewDueTimerService,
     calculate_bootstrap_correction,
 )
 from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan
@@ -204,6 +205,7 @@ __all__ = [
     "RecordingActiveChatTimer",
     "RecordingWorkflowDispatcher",
     "ReviewPlan",
+    "ReviewDueTimerService",
     "annotations",
     "asyncio_sleep",
     "calculate_bootstrap_correction",

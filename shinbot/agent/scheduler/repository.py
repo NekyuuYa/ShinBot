@@ -100,10 +100,11 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 FROM agent_scheduler_states
                 WHERE next_review_at IS NOT NULL
                   AND next_review_at <= ?
+                  AND state = ?
                 ORDER BY next_review_at ASC, session_id ASC
                 LIMIT ?
                 """,
-                (now, limit),
+                (now, AgentState.IDLE.value, limit),
             ).fetchall()
         return [self._review_plan_from_row(row) for row in rows]
 

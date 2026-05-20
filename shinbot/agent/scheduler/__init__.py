@@ -44,6 +44,7 @@ from shinbot.agent.scheduler.review_policy import (
     ReviewPolicy,
     ReviewPolicyConfig,
 )
+from shinbot.agent.scheduler.review_timer import ReviewDueTimerService
 from shinbot.agent.scheduler.scheduler import AgentScheduler, AgentSchedulerConfig
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
@@ -90,6 +91,7 @@ __all__ = [
     "ReviewPlan",
     "ReviewPolicy",
     "ReviewPolicyConfig",
+    "ReviewDueTimerService",
     "UnreadMessage",
     "UnreadRange",
 ]

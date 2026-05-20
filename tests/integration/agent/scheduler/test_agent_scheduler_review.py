@@ -12,6 +12,7 @@ from agent_scheduler_support import (
     InMemoryAgentStateStore,
     RecordingActiveChatTimer,
     RecordingWorkflowDispatcher,
+    ReviewDueTimerService,
     ReviewPlan,
     make_signal,
     pytest,
@@ -215,7 +216,7 @@ async def test_scheduler_due_review_is_interrupted_by_high_priority_queue() -> N
 
 
 @pytest.mark.asyncio
-async def test_scheduler_does_not_dispatch_review_when_high_priority_is_pending() -> None:
+async def test_scheduler_does_not_dispatch_due_review_while_active_reply_is_running() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(
         workflow_dispatcher=dispatcher,
@@ -224,13 +225,15 @@ async def test_scheduler_does_not_dispatch_review_when_high_priority_is_pending(
         now=lambda: 10.0,
     )
     await scheduler.accept_signal(make_signal(is_mentioned=True))
+    dispatcher.calls.clear()
 
     decision = await scheduler.run_due_review("bot:group:room", now=52.0)
 
     assert decision.review_started is False
     assert decision.review_workflow_started is False
-    assert decision.active_reply_pending is True
-    assert dispatcher.calls[0]["message_log_id"] == 1
+    assert decision.active_reply_pending is False
+    assert decision.skipped_reason == "active_reply_running"
+    assert dispatcher.calls == []
     assert dispatcher.review_calls == []
 
 
@@ -252,6 +255,71 @@ async def test_concrete_active_reply_noop_allows_due_review_to_continue() -> Non
     assert decision.state == AgentState.REVIEW
     assert scheduler.state_for("bot:group:room") == AgentState.REVIEW
     assert scheduler.high_priority_events("bot:group:room") == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_review_skips_when_review_already_running() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+
+    decision = await scheduler.run_due_review("bot:group:room", now=52.0)
+
+    assert decision.review_started is False
+    assert decision.skipped_reason == "review_already_running"
+    assert decision.state == AgentState.REVIEW
+    assert dispatcher.review_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_due_review_skips_while_active_chat_is_running() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler._state_store.set_state("bot:group:room", AgentState.ACTIVE_CHAT)
+
+    decision = await scheduler.run_due_review("bot:group:room", now=52.0)
+
+    assert decision.review_started is False
+    assert decision.skipped_reason == "active_chat_running"
+    assert decision.state == AgentState.ACTIVE_CHAT
+    assert dispatcher.review_calls == []
+
+
+@pytest.mark.asyncio
+async def test_review_due_timer_dispatches_due_idle_review() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    now = 10.0
+
+    def clock() -> float:
+        return now
+
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=clock,
+    )
+    await scheduler.accept_signal(make_signal())
+    now = 52.0
+    timer = ReviewDueTimerService()
+    timer.bind_agent_scheduler(scheduler)
+
+    await timer.run_once()
+
+    assert [call["session_id"] for call in dispatcher.review_calls] == ["bot:group:room"]
+    assert scheduler.state_for("bot:group:room") == AgentState.REVIEW
 
 
 @pytest.mark.asyncio

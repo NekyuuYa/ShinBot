@@ -40,6 +40,7 @@ from shinbot.agent.runtime.review_stores import (
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
     AgentScheduler,
+    ReviewDueTimerService,
 )
 from shinbot.agent.scheduler.active_chat_policy import DefaultActiveChatPolicy
 from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy
@@ -114,6 +115,7 @@ class AgentRuntimeProfile:
         self.review_runtime_config = self.config.review_runtime_config
         self.review_workflow_config = self.config.review_workflow_config
         self.active_chat_timer = ActiveChatTimerService()
+        self.review_due_timer = ReviewDueTimerService()
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = self._create_active_chat_workflow()
         self._workflow_dispatcher = ActiveReplyDispatcher(
@@ -122,6 +124,7 @@ class AgentRuntimeProfile:
             review_config=self.review_workflow_config,
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
+        self.review_due_timer.bind_agent_scheduler(self.agent_scheduler)
 
         if owner.database is None:
             return
@@ -165,6 +168,7 @@ class AgentRuntimeProfile:
             idle_review_planning_runner=runner_factory.create_idle_review_planning_runner(),
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
+        self.review_due_timer.bind_agent_scheduler(self.agent_scheduler)
 
     def reload_prompt_files(self) -> None:
         """Reload file-backed prompt components for this profile."""
@@ -198,6 +202,12 @@ class AgentRuntimeProfile:
         self._workflow_dispatcher.flush_active_chat_summaries()
         await self.active_chat_workflow.shutdown()
         await self.active_chat_timer.shutdown()
+        await self.review_due_timer.shutdown()
+
+    def start_background_tasks(self) -> None:
+        """Start profile-owned timers after the main event loop is running."""
+
+        self.review_due_timer.start()
 
     def _create_active_chat_workflow(self) -> ActiveChatCoordinator:
         return ActiveChatCoordinator(
@@ -517,7 +527,14 @@ class AgentRuntime:
 
     async def handle_agent_entry(self, signal: AgentEntrySignal) -> None:
         """Receive the minimal routing signal and let Agent internals process it."""
+        self.start_background_tasks()
         await self.agent_profile_for_bot(signal.bot_id).agent_scheduler.accept_signal(signal)
+
+    def start_background_tasks(self) -> None:
+        """Start Agent background services once an event loop is available."""
+
+        for profile in self._unique_profiles():
+            profile.start_background_tasks()
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
         instance_config = self._instance_config_payload(signal.instance_id)

@@ -471,6 +471,28 @@ class AgentScheduler:
                 skipped_reason="review_not_due",
             )
 
+        if current_state == AgentState.REVIEW:
+            return ReviewDueDecision(
+                session_id=session_id,
+                state=current_state,
+                review_plan=plan,
+                skipped_reason="review_already_running",
+            )
+        if current_state == AgentState.ACTIVE_REPLY:
+            return ReviewDueDecision(
+                session_id=session_id,
+                state=current_state,
+                review_plan=plan,
+                skipped_reason="active_reply_running",
+            )
+        if current_state == AgentState.ACTIVE_CHAT:
+            return ReviewDueDecision(
+                session_id=session_id,
+                state=current_state,
+                review_plan=plan,
+                skipped_reason="active_chat_running",
+            )
+
         high_priority_events = self._inbox.list_high_priority_events(session_id)
         if high_priority_events:
             self._state_store.set_state(session_id, AgentState.ACTIVE_REPLY)
