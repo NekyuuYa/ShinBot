@@ -45,78 +45,17 @@
       </template>
 
       <template #card="{ item }">
-        <v-card class="prompt-card h-100 d-flex flex-column" elevation="0">
-          <v-card-item>
-            <template #prepend>
-              <v-avatar color="primary" variant="tonal" icon="mdi-text-box-outline" />
-            </template>
-            <v-card-title class="text-break">{{ item.name }}</v-card-title>
-            <v-card-subtitle>{{ item.promptId }}</v-card-subtitle>
-            <template #append>
-              <v-switch
-                :model-value="item.enabled"
-                color="success"
-                density="compact"
-                hide-details
-                @update:model-value="(val: boolean | null) => store.toggleEnabled(item.uuid, Boolean(val))"
-              />
-            </template>
-          </v-card-item>
-
-          <v-card-text class="pt-1 flex-grow-1">
-            <div v-if="item.description" class="text-body-2 text-medium-emphasis mb-2">
-              {{ item.description }}
-            </div>
-            <div class="d-flex flex-wrap ga-2 mb-2">
-              <v-chip size="small" color="info" variant="tonal">
-                {{ $t(`pages.prompts.stages.${item.stage}`, item.stage) }}
-              </v-chip>
-              <v-chip size="small" variant="tonal">
-                {{ $t(`pages.prompts.kinds.${item.type}`, item.type) }}
-              </v-chip>
-              <v-chip size="small" variant="outlined">
-                v{{ item.version }}
-              </v-chip>
-              <v-chip size="small" variant="outlined">
-                P{{ item.priority }}
-              </v-chip>
-            </div>
-            <div class="d-flex flex-wrap ga-2">
-              <v-chip
-                v-for="tag in item.tags"
-                :key="`${item.uuid}-${tag}`"
-                size="small"
-                color="secondary"
-                variant="tonal"
-              >
-                {{ tag }}
-              </v-chip>
-              <v-chip
-                v-if="item.tags.length === 0"
-                size="small"
-                color="grey"
-                variant="tonal"
-              >
-                {{ $t('pages.prompts.tags.untagged') }}
-              </v-chip>
-            </div>
-          </v-card-text>
-
-          <v-card-actions>
-            <v-btn variant="text" prepend-icon="mdi-pencil" @click="openEdit(item)">
-              {{ $t('common.actions.action.edit') }}
-            </v-btn>
-            <v-spacer />
-            <v-btn
-              color="error"
-              variant="text"
-              prepend-icon="mdi-delete-outline"
-              @click="removeItem(item.uuid, item.name)"
-            >
-              {{ $t('common.actions.action.delete') }}
-            </v-btn>
-          </v-card-actions>
-        </v-card>
+        <prompt-card
+          :item="item"
+          :stage-label="$t(`pages.prompts.stages.${item.stage}`, item.stage)"
+          :kind-label="$t(`pages.prompts.kinds.${item.type}`, item.type)"
+          :empty-tag-label="$t('pages.prompts.tags.untagged')"
+          :edit-label="$t('common.actions.action.edit')"
+          :delete-label="$t('common.actions.action.delete')"
+          @edit="openEdit"
+          @delete="(prompt) => removeItem(prompt.uuid, prompt.name)"
+          @toggle="(uuid, enabled) => store.toggleEnabled(uuid, enabled)"
+        />
       </template>
     </dual-pane-list-view>
 
@@ -306,6 +245,7 @@ import { computed, onMounted, reactive } from 'vue'
 import type { PromptDefinition, PromptDefinitionPayload } from '@/api/promptDefinitions'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import DualPaneListView from '@/components/DualPaneListView.vue'
+import PromptCard from '@/components/prompts/PromptCard.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useTagSidebar } from '@/composables/useTagSidebar'
@@ -479,10 +419,4 @@ onMounted(() => {
 </script>
 
 <style scoped lang="scss">
-@use '@/styles/mixins' as *;
-
-.prompt-card {
-  @include surface-card;
-  @include hover-lift;
-}
 </style>

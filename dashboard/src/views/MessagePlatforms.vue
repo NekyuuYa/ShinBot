@@ -123,144 +123,42 @@
         md="4"
         lg="3"
       >
-        <v-card class="platform-card h-100" hover>
-          <v-card-item class="pb-2">
-            <template #prepend>
-              <v-avatar color="primary" variant="tonal" icon="mdi-message-processing-outline" />
-            </template>
-            <v-card-title class="text-break">
-              {{ platformDisplayName(platform) }}
-            </v-card-title>
-            <v-card-subtitle class="text-truncate">
-              {{ platform.id }}
-            </v-card-subtitle>
-            <template #append>
-              <v-menu>
-                <template #activator="{ props }">
-                  <v-btn icon="mdi-dots-vertical" variant="text" v-bind="props" />
-                </template>
-                <v-list>
-                  <v-list-item @click="openEdit(platform)">
-                    <v-list-item-title>{{ $t('common.actions.action.edit') }}</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="deletePlatform(platform)">
-                    <v-list-item-title>{{ $t('common.actions.action.delete') }}</v-list-item-title>
-                  </v-list-item>
-                </v-list>
-              </v-menu>
-            </template>
-          </v-card-item>
-
-          <v-card-text class="pt-2">
-            <div class="platform-card-chips">
-              <v-chip :color="platform.enabled ? 'success' : 'grey'" size="small" variant="tonal">
-                {{ platform.enabled ? $t('common.actions.status.enabled') : $t('common.actions.status.disabled') }}
-              </v-chip>
-              <v-chip
-                :color="connectionStatus(platform).color"
-                size="small"
-                variant="tonal"
-                :prepend-icon="connectionStatus(platform).icon"
-              >
-                {{ connectionStatus(platform).label }}
-              </v-chip>
-              <v-chip color="info" size="small" variant="tonal">
-                {{ adapterLabel(platform.adapter) }}
-              </v-chip>
-            </div>
-
-            <div class="platform-meta-row">
-              <span>{{ $t('pages.messagePlatforms.table.config') }}</span>
-              <strong>{{ configFieldCount(platform.config) }}</strong>
-            </div>
-            <div class="platform-meta-row">
-              <span>{{ $t('pages.messagePlatforms.table.updated') }}</span>
-              <strong>{{ formatTimestamp(platform.lastModified) }}</strong>
-            </div>
-          </v-card-text>
-
-          <v-card-actions>
-            <v-btn
-              color="primary"
-              variant="text"
-              size="small"
-              prepend-icon="mdi-pencil"
-              @click="openEdit(platform)"
-            >
-              {{ $t('pages.messagePlatforms.actions.configure') }}
-            </v-btn>
-          </v-card-actions>
-        </v-card>
+        <message-platform-card
+          :platform="platform"
+          :display-name="platformDisplayName(platform)"
+          :adapter-label="adapterLabel(platform.adapter)"
+          :config-field-count="configFieldCount(platform.config)"
+          :updated-at="formatTimestamp(platform.lastModified)"
+          :enabled-label="$t('common.actions.status.enabled')"
+          :disabled-label="$t('common.actions.status.disabled')"
+          :config-label="$t('pages.messagePlatforms.table.config')"
+          :updated-label="$t('pages.messagePlatforms.table.updated')"
+          :configure-label="$t('pages.messagePlatforms.actions.configure')"
+          :edit-label="$t('common.actions.action.edit')"
+          :delete-label="$t('common.actions.action.delete')"
+          :connection="connectionStatus(platform)"
+          @edit="openEdit"
+          @delete="deletePlatform"
+        />
       </v-col>
     </v-row>
 
     <v-row v-else>
       <v-col cols="12">
-        <v-data-table
+        <message-platform-table
           :headers="tableHeaders"
           :items="filteredPlatforms"
           :loading="configStore.isLoading"
-          hide-default-footer
-          class="platform-table"
-        >
-          <template #item.name="{ item }">
-            <div class="platform-name-cell">
-              <span class="font-weight-medium">{{ platformDisplayName(tableRow(item)) }}</span>
-              <span class="text-caption text-medium-emphasis">{{ tableRow(item).id }}</span>
-            </div>
-          </template>
-
-          <template #item.adapter="{ item }">
-            <v-chip size="small" color="info" variant="tonal">
-              {{ adapterLabel(tableRow(item).adapter) }}
-            </v-chip>
-          </template>
-
-          <template #item.enabled="{ item }">
-            <v-chip
-              :color="tableRow(item).enabled ? 'success' : 'grey'"
-              size="small"
-              variant="tonal"
-            >
-              {{ tableRow(item).enabled ? $t('common.actions.status.enabled') : $t('common.actions.status.disabled') }}
-            </v-chip>
-          </template>
-
-          <template #item.connection="{ item }">
-            <v-chip
-              :color="connectionStatus(tableRow(item)).color"
-              size="small"
-              variant="tonal"
-              :prepend-icon="connectionStatus(tableRow(item)).icon"
-            >
-              {{ connectionStatus(tableRow(item)).label }}
-            </v-chip>
-          </template>
-
-          <template #item.config="{ item }">
-            {{ configFieldCount(tableRow(item).config) }}
-          </template>
-
-          <template #item.lastModified="{ item }">
-            {{ formatTimestamp(tableRow(item).lastModified) }}
-          </template>
-
-          <template #item.actions="{ item }">
-            <v-btn
-              icon="mdi-pencil"
-              size="small"
-              variant="text"
-              @click="openEdit(tableRow(item))"
-            />
-            <v-btn
-              icon="mdi-delete"
-              size="small"
-              variant="text"
-              color="error"
-              @click="deletePlatform(tableRow(item))"
-            />
-          </template>
-        </v-data-table>
+          :display-name="platformDisplayName"
+          :adapter-label="adapterLabel"
+          :config-field-count="configFieldCount"
+          :format-timestamp="formatTimestamp"
+          :connection-status="connectionStatus"
+          :enabled-label="$t('common.actions.status.enabled')"
+          :disabled-label="$t('common.actions.status.disabled')"
+          @edit="openEdit"
+          @delete="deletePlatform"
+        />
       </v-col>
     </v-row>
 
@@ -294,7 +192,9 @@ import type {
 } from '@/api/config'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import LayoutModeButton from '@/components/LayoutModeButton.vue'
+import MessagePlatformCard from '@/components/message-platforms/MessagePlatformCard.vue'
 import MessagePlatformFormDialog from '@/components/message-platforms/MessagePlatformFormDialog.vue'
+import MessagePlatformTable from '@/components/message-platforms/MessagePlatformTable.vue'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import type {
   MessagePlatformAdapterOption,
@@ -308,8 +208,6 @@ import {
   providerDisplayName,
 } from '@/config'
 import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
-
-type TableRowItem = MessagePlatformDraft | { raw: MessagePlatformDraft }
 
 const { locale, t } = useI18n()
 const configStore = useConfigWorkspaceStore()
@@ -450,10 +348,6 @@ function normalizePlatformDraft(record: ConfigRecord, index: number): MessagePla
     lastModified: normalizeTimestamp(record.lastModified),
     running: platformRuntimeById.value[id]?.running ?? false,
   }
-}
-
-function tableRow(item: TableRowItem): MessagePlatformDraft {
-  return 'raw' in item ? item.raw : item
 }
 
 function adapterLabel(adapter: string): string {
@@ -735,45 +629,6 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   align-items: baseline;
-  min-width: 0;
-}
-
-.platform-card {
-  @include surface-card;
-  @include hover-lift;
-}
-
-.platform-card-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.platform-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
-  border-top: 1px solid $border-color-soft;
-  color: rgba(var(--v-theme-on-surface), 0.66);
-  font-size: $font-size-sm;
-}
-
-.platform-meta-row strong {
-  color: rgba(var(--v-theme-on-surface), 0.9);
-  font-weight: 700;
-}
-
-.platform-table {
-  @include surface-card;
-}
-
-.platform-name-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
 

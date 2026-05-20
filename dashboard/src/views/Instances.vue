@@ -116,129 +116,39 @@
 
     <v-row v-else-if="viewMode === 'card'" class="ma-0">
       <v-col v-for="bot in filteredBots" :key="bot.id" cols="12" sm="6" md="4" lg="3">
-        <v-card class="bot-card h-100" hover>
-          <v-card-item class="pb-2">
-            <template #prepend>
-              <v-avatar color="primary" variant="tonal" icon="mdi-robot-outline" />
-            </template>
-            <v-card-title class="text-break">
-              {{ botDisplayName(bot) }}
-            </v-card-title>
-            <v-card-subtitle class="text-truncate">
-              {{ bot.id }}
-            </v-card-subtitle>
-            <template #append>
-              <v-menu>
-                <template #activator="{ props }">
-                  <v-btn icon="mdi-dots-vertical" variant="text" v-bind="props" />
-                </template>
-                <v-list>
-                  <v-list-item @click="openEdit(bot)">
-                    <v-list-item-title>{{ $t('common.actions.action.edit') }}</v-list-item-title>
-                  </v-list-item>
-                  <v-list-item @click="deleteBot(bot)">
-                    <v-list-item-title>{{ $t('common.actions.action.delete') }}</v-list-item-title>
-                  </v-list-item>
-                </v-list>
-              </v-menu>
-            </template>
-          </v-card-item>
-
-          <v-card-text class="pt-2">
-            <div class="bot-card-chips">
-              <v-chip :color="bot.enabled ? 'success' : 'grey'" size="small" variant="tonal">
-                {{ bot.enabled ? $t('common.actions.status.enabled') : $t('common.actions.status.disabled') }}
-              </v-chip>
-              <v-chip color="info" size="small" variant="tonal">
-                {{ agentModeLabel(bot.agent.mode) }}
-              </v-chip>
-            </div>
-
-            <div class="bot-meta-row">
-              <span>{{ $t('pages.instances.table.bindings') }}</span>
-              <strong>{{ bot.bindings.length }}</strong>
-            </div>
-            <div class="bot-meta-row">
-              <span>{{ $t('pages.instances.table.platforms') }}</span>
-              <strong>{{ botPlatformSummary(bot) }}</strong>
-            </div>
-            <div class="bot-meta-row">
-              <span>{{ $t('pages.instances.table.commands') }}</span>
-              <strong>{{ bot.commands.enabled ? bot.commands.prefixes.join(' ') : $t('common.actions.status.disabled') }}</strong>
-            </div>
-          </v-card-text>
-
-          <v-card-actions>
-            <v-btn
-              color="primary"
-              variant="text"
-              size="small"
-              prepend-icon="mdi-pencil"
-              @click="openEdit(bot)"
-            >
-              {{ $t('pages.instances.actions.configure') }}
-            </v-btn>
-          </v-card-actions>
-        </v-card>
+        <bot-instance-card
+          :bot="bot"
+          :display-name="botDisplayName(bot)"
+          :platform-summary="botPlatformSummary(bot)"
+          :agent-mode-label="agentModeLabel(bot.agent.mode)"
+          :bindings-label="$t('pages.instances.table.bindings')"
+          :platforms-label="$t('pages.instances.table.platforms')"
+          :commands-label="$t('pages.instances.table.commands')"
+          :configure-label="$t('pages.instances.actions.configure')"
+          :edit-label="$t('common.actions.action.edit')"
+          :delete-label="$t('common.actions.action.delete')"
+          :enabled-label="$t('common.actions.status.enabled')"
+          :disabled-label="$t('common.actions.status.disabled')"
+          @edit="openEdit"
+          @delete="deleteBot"
+        />
       </v-col>
     </v-row>
 
     <v-row v-else>
       <v-col cols="12">
-        <v-data-table
+        <bot-instance-table
           :headers="tableHeaders"
           :items="filteredBots"
           :loading="configStore.isLoading"
-          hide-default-footer
-          class="bot-table"
-        >
-          <template #item.display_name="{ item }">
-            <div class="bot-name-cell">
-              <span class="font-weight-medium">{{ botDisplayName(tableRow(item)) }}</span>
-              <span class="text-caption text-medium-emphasis">{{ tableRow(item).id }}</span>
-            </div>
-          </template>
-
-          <template #item.enabled="{ item }">
-            <v-chip
-              :color="tableRow(item).enabled ? 'success' : 'grey'"
-              size="small"
-              variant="tonal"
-            >
-              {{ tableRow(item).enabled ? $t('common.actions.status.enabled') : $t('common.actions.status.disabled') }}
-            </v-chip>
-          </template>
-
-          <template #item.agent="{ item }">
-            <v-chip color="info" size="small" variant="tonal">
-              {{ agentModeLabel(tableRow(item).agent.mode) }}
-            </v-chip>
-          </template>
-
-          <template #item.bindings="{ item }">
-            {{ tableRow(item).bindings.length }}
-          </template>
-
-          <template #item.platforms="{ item }">
-            {{ botPlatformSummary(tableRow(item)) }}
-          </template>
-
-          <template #item.actions="{ item }">
-            <v-btn
-              icon="mdi-pencil"
-              size="small"
-              variant="text"
-              @click="openEdit(tableRow(item))"
-            />
-            <v-btn
-              icon="mdi-delete"
-              size="small"
-              variant="text"
-              color="error"
-              @click="deleteBot(tableRow(item))"
-            />
-          </template>
-        </v-data-table>
+          :display-name="botDisplayName"
+          :platform-summary="botPlatformSummary"
+          :agent-mode-label="agentModeLabel"
+          :enabled-label="$t('common.actions.status.enabled')"
+          :disabled-label="$t('common.actions.status.disabled')"
+          @edit="openEdit"
+          @delete="deleteBot"
+        />
       </v-col>
     </v-row>
 
@@ -270,7 +180,9 @@ import type {
   NormalizedBotBindingConfig,
 } from '@/api/config'
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import BotInstanceCard from '@/components/instances/BotInstanceCard.vue'
 import BotInstanceFormDialog from '@/components/instances/BotInstanceFormDialog.vue'
+import BotInstanceTable from '@/components/instances/BotInstanceTable.vue'
 import type {
   BotInstanceDraft,
   BotInstanceFormState,
@@ -280,8 +192,6 @@ import LayoutModeButton from '@/components/LayoutModeButton.vue'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { localizedConfigIssueMessage } from '@/config'
 import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
-
-type TableRowItem = BotInstanceDraft | { raw: BotInstanceDraft }
 
 const { locale, t } = useI18n()
 const configStore = useConfigWorkspaceStore()
@@ -497,10 +407,6 @@ function normalizeBot(record: ConfigRecord, index: number): BotInstanceDraft {
       normalizeBinding(binding, bindingIndex, id)
     ),
   }
-}
-
-function tableRow(item: TableRowItem): BotInstanceDraft {
-  return 'raw' in item ? item.raw : item
 }
 
 function botDisplayName(bot: BotInstanceDraft): string {
@@ -784,49 +690,6 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   align-items: baseline;
-  min-width: 0;
-}
-
-.bot-card {
-  @include surface-card;
-  @include hover-lift;
-}
-
-.bot-card-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.bot-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
-  border-top: 1px solid $border-color-soft;
-  color: rgba(var(--v-theme-on-surface), 0.66);
-  font-size: $font-size-sm;
-}
-
-.bot-meta-row strong {
-  max-width: 62%;
-  color: rgba(var(--v-theme-on-surface), 0.9);
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.bot-table {
-  @include surface-card;
-}
-
-.bot-name-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
 
