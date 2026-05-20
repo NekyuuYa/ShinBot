@@ -596,6 +596,51 @@ async def test_generate_passes_custom_llm_provider_for_custom_openai(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_generate_persists_audit_payload_to_file(monkeypatch, tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db)
+
+    def fake_completion(**kwargs):
+        assert kwargs["messages"][0]["content"] == "Hello"
+        return {
+            "model": kwargs["model"],
+            "choices": [{"message": {"content": "hello from model"}}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 9},
+            "_hidden_params": {"response_cost": 0.03},
+        }
+
+    monkeypatch.setattr("shinbot.agent.services.model_runtime.litellm_adapter.completion", fake_completion)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="agent.runtime",
+            session_id="inst1:group:g1",
+            instance_id="inst1",
+            purpose="chat",
+            messages=[{"role": "user", "content": "Hello"}],
+            metadata={"trace_id": "trace-1"},
+            params={"temperature": 0.7},
+        )
+    )
+
+    record = db.model_executions.list_recent(limit=1)[0]
+    assert record["metadata"]["audit_payload_ref"] == f"model-audit/{result.execution_id}.json"
+    assert "audit_payload_expires_at" in record["metadata"]
+
+    audit_path = tmp_path / "model-audit" / f"{result.execution_id}.json"
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert payload["execution_id"] == result.execution_id
+    assert payload["request"]["caller"] == "agent.runtime"
+    assert payload["request"]["messages"][0]["content"] == "Hello"
+    assert payload["response"]["choices"][0]["message"]["content"] == "hello from model"
+    assert payload["meta"]["operation"] == "generate"
+    assert payload["status"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_generate_requires_valid_target(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()

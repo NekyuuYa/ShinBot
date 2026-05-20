@@ -10,10 +10,12 @@ import random
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, TypeVar
 
 from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecutionRecord
 
+from .audit_store import ModelAuditPayloadStore, sanitize_payload_for_audit
 from . import litellm_adapter
 from .extraction import (
     extract_embedding,
@@ -74,6 +76,10 @@ class ModelRuntime:
 
     def __init__(self, database: DatabaseManager | None) -> None:
         self._database = database
+        data_dir = database.config.data_dir if database is not None else None
+        self._audit_store = (
+            ModelAuditPayloadStore(data_dir) if data_dir is not None else None
+        )
         self._random = random.Random()
         self._observers: list[ModelRuntimeObserver] = []
 
@@ -246,6 +252,19 @@ class ModelRuntime:
                 )
                 if build_response_return is not None:
                     execution.return_payload = build_response_return(execution)
+                audit_metadata = self._persist_audit_payload(
+                    execution_id=execution_id,
+                    operation=operation,
+                    started_at=started,
+                    finished_at=finished,
+                    call=call,
+                    attempt=attempt,
+                    kwargs=kwargs,
+                    response_payload=response_payload,
+                    return_payload=execution.return_payload,
+                    status="success",
+                    error=None,
+                )
 
                 record = ModelExecutionRecord(
                     id=execution_id,
@@ -274,6 +293,7 @@ class ModelRuntime:
                         attempt=attempt,
                         response=response,
                         response_payload=response_payload,
+                        audit_metadata=audit_metadata,
                         include_response_model=include_response_model_metadata,
                         include_usage_raw=include_usage_raw_metadata,
                     ),
@@ -301,6 +321,22 @@ class ModelRuntime:
             except Exception as exc:  # noqa: BLE001
                 finished = utc_now()
                 latency_ms = (finished - started).total_seconds() * 1000
+                audit_metadata = self._persist_audit_payload(
+                    execution_id=execution_id,
+                    operation=operation,
+                    started_at=started,
+                    finished_at=finished,
+                    call=call,
+                    attempt=attempt,
+                    kwargs=kwargs,
+                    response_payload=None,
+                    return_payload=None,
+                    status="error",
+                    error={
+                        "code": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                )
                 record = ModelExecutionRecord(
                     id=execution_id,
                     route_id=route_id,
@@ -319,7 +355,11 @@ class ModelRuntime:
                     fallback_from_model_id=previous_model_id,
                     fallback_reason="provider_error" if previous_model_id else "",
                     prompt_snapshot_id=call.prompt_snapshot_id if record_prompt_snapshot else "",
-                    metadata=self._build_execution_metadata(call=call, attempt=attempt),
+                    metadata=self._build_execution_metadata(
+                        call=call,
+                        attempt=attempt,
+                        audit_metadata=audit_metadata,
+                    ),
                 )
                 persist_model_execution(self._database, record)
                 if notify_response:
@@ -474,6 +514,7 @@ class ModelRuntime:
         attempt: dict[str, Any],
         response: Any | None = None,
         response_payload: dict[str, Any] | None = None,
+        audit_metadata: dict[str, Any] | None = None,
         include_response_model: bool = False,
         include_usage_raw: bool = False,
     ) -> dict[str, Any]:
@@ -484,7 +525,73 @@ class ModelRuntime:
             payload = response_payload or {}
             metadata["usage_raw"] = payload.get("usage")
         metadata.update(call.metadata)
+        if audit_metadata:
+            metadata.update(audit_metadata)
         return metadata
+
+    def _persist_audit_payload(
+        self,
+        *,
+        execution_id: str,
+        operation: str,
+        started_at: datetime,
+        finished_at: datetime,
+        call: ModelRuntimeCall,
+        attempt: dict[str, Any],
+        kwargs: dict[str, Any],
+        response_payload: dict[str, Any] | None,
+        return_payload: dict[str, Any] | None,
+        status: str,
+        error: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if self._audit_store is None:
+            return None
+        try:
+            payload = {
+                "status": status,
+                "request": {
+                    "operation": operation,
+                    "route_strategy": attempt["strategy"],
+                    "caller": call.caller,
+                    "purpose": call.purpose,
+                    "session_id": call.session_id,
+                    "instance_id": call.instance_id,
+                    "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "provider_type": attempt["provider"]["type"],
+                    "model_id": attempt["model"]["id"],
+                    "messages": sanitize_payload_for_audit(call.messages),
+                    "input_data": sanitize_payload_for_audit(call.input_data),
+                    "tools": sanitize_payload_for_audit(call.tools),
+                    "response_format": sanitize_payload_for_audit(call.response_format),
+                    "params": sanitize_payload_for_audit(call.params),
+                    "metadata": sanitize_payload_for_audit(call.metadata),
+                    "kwargs": sanitize_payload_for_audit(kwargs),
+                    "prompt_snapshot_id": call.prompt_snapshot_id,
+                    "started_at": started_at.isoformat(),
+                },
+                "response": sanitize_payload_for_audit(response_payload),
+                "return": sanitize_payload_for_audit(return_payload),
+                "error": sanitize_payload_for_audit(error),
+                    "meta": {
+                        "execution_id": execution_id,
+                        "operation": operation,
+                        "attempt_started_at": started_at.isoformat(),
+                        "attempt_finished_at": finished_at.isoformat(),
+                        "route_id": call.route_id or "",
+                    "provider_id": attempt["provider"]["id"],
+                    "model_id": attempt["model"]["id"],
+                    "strategy": attempt["strategy"],
+                },
+            }
+            return self._audit_store.write(
+                execution_id=execution_id,
+                created_at=started_at,
+                payload=payload,
+            )
+        except Exception:
+            logger.exception("Failed to persist audit payload for execution %s", execution_id)
+            return None
 
     @staticmethod
     def _empty_usage() -> dict[str, int]:

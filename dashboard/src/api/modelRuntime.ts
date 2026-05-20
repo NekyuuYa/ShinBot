@@ -78,6 +78,9 @@ export interface ModelExecutionRecord {
   currency: string
   promptSnapshotId: string
   metadata: Record<string, unknown>
+  auditPayloadRef: string
+  auditPayloadExpiresAt: string
+  auditPayloadAvailable: boolean
 }
 
 export interface ModelExecutionAuditQuery {
@@ -98,6 +101,17 @@ export interface ModelExecutionAuditResponse {
   total: number
   limit: number
   offset: number
+}
+
+export interface ModelExecutionAuditPayloadResponse {
+  available: boolean
+  executionId: string
+  expired: boolean
+  request: Record<string, unknown> | null
+  response: Record<string, unknown> | null
+  return: Record<string, unknown> | null
+  error: Record<string, unknown> | null
+  meta: Record<string, unknown> | null
 }
 
 export interface ModelTokenSummaryModel {
@@ -333,6 +347,12 @@ export const modelRuntimeApi = {
     return apiClient.get<ModelExecutionAuditResponse>('/model-runtime/executions/audit', {
       params,
     })
+  },
+
+  getExecutionAuditPayload(executionId: string) {
+    return apiClient.get<ModelExecutionAuditPayloadResponse>(
+      `/model-runtime/executions/${encodePathSegment(executionId)}/payload`
+    )
   },
 
   getTokenSummary(days = 7) {

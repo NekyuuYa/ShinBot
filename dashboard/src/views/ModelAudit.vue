@@ -246,8 +246,80 @@
                   <v-icon icon="mdi-code-json" size="18" />
                   <strong>{{ $t('pages.modelAudit.sections.metadata') }}</strong>
                 </div>
-                <pre v-if="hasMetadata(record)" class="metadata-json">{{ stringifyMetadata(record.metadata) }}</pre>
+                <div v-if="hasMetadata(record)" class="json-tree-shell">
+                  <json-tree-node :value="record.metadata" />
+                </div>
                 <div v-else class="metadata-empty">{{ $t('pages.modelAudit.labels.metadataEmpty') }}</div>
+              </section>
+
+              <section class="payload-block">
+                <div class="payload-block__head">
+                  <div class="payload-block__title">
+                    <v-icon icon="mdi-file-document-outline" size="18" />
+                    <strong>{{ $t('pages.modelAudit.sections.payload') }}</strong>
+                  </div>
+                  <v-btn
+                    size="small"
+                    variant="tonal"
+                    color="primary"
+                    :loading="payloadLoadingId === record.id"
+                    :disabled="!record.auditPayloadAvailable"
+                    @click="loadPayload(record.id)"
+                  >
+                    {{ $t('pages.modelAudit.actions.viewPayload') }}
+                  </v-btn>
+                </div>
+                <v-alert
+                  v-if="payloadErrorById[record.id]"
+                  type="warning"
+                  variant="tonal"
+                  class="mb-3"
+                >
+                  {{ payloadErrorById[record.id] }}
+                </v-alert>
+                <div v-if="payloadById[record.id]" class="payload-tabs">
+                  <v-tabs v-model="payloadTabById[record.id]" density="comfortable">
+                    <v-tab value="request">{{ $t('pages.modelAudit.payload.request') }}</v-tab>
+                    <v-tab value="response">{{ $t('pages.modelAudit.payload.response') }}</v-tab>
+                    <v-tab value="return">{{ $t('pages.modelAudit.payload.return') }}</v-tab>
+                    <v-tab value="error">{{ $t('pages.modelAudit.payload.error') }}</v-tab>
+                    <v-tab value="meta">{{ $t('pages.modelAudit.payload.meta') }}</v-tab>
+                  </v-tabs>
+                  <v-window v-model="payloadTabById[record.id]" class="payload-window">
+                    <v-window-item value="request">
+                      <div class="json-tree-shell">
+                        <json-tree-node :value="payloadById[record.id]?.request" />
+                      </div>
+                    </v-window-item>
+                    <v-window-item value="response">
+                      <div class="json-tree-shell">
+                        <json-tree-node :value="payloadById[record.id]?.response" />
+                      </div>
+                    </v-window-item>
+                    <v-window-item value="return">
+                      <div class="json-tree-shell">
+                        <json-tree-node :value="payloadById[record.id]?.['return']" />
+                      </div>
+                    </v-window-item>
+                    <v-window-item value="error">
+                      <div class="json-tree-shell">
+                        <json-tree-node :value="payloadById[record.id]?.error" />
+                      </div>
+                    </v-window-item>
+                    <v-window-item value="meta">
+                      <div class="json-tree-shell">
+                        <json-tree-node :value="payloadById[record.id]?.meta" />
+                      </div>
+                    </v-window-item>
+                  </v-window>
+                  <div class="payload-footnote">
+                    <span>{{ $t('pages.modelAudit.labels.auditPayloadRef') }}: {{ record.auditPayloadRef || NONE_VALUE }}</span>
+                    <span>{{ $t('pages.modelAudit.labels.auditPayloadExpiresAt') }}: {{ record.auditPayloadExpiresAt || NONE_VALUE }}</span>
+                  </div>
+                </div>
+                <div v-else class="payload-empty">
+                  {{ record.auditPayloadAvailable ? $t('pages.modelAudit.payload.notLoaded') : $t('pages.modelAudit.payload.unavailable') }}
+                </div>
               </section>
             </div>
           </v-expand-transition>
@@ -258,13 +330,25 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  h,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+  type Component,
+  type VNode,
+} from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import {
   modelRuntimeApi,
+  type ModelExecutionAuditPayloadResponse,
   type ModelExecutionAuditQuery,
   type ModelExecutionRecord,
   type ModelRuntimeModel,
@@ -317,6 +401,91 @@ const DetailSection = defineComponent({
   },
 })
 
+const JsonTreeNode: Component = defineComponent({
+  name: 'JsonTreeNode',
+  props: {
+    value: { type: null, default: null },
+    label: { type: String, default: '' },
+    depth: { type: Number, default: 0 },
+    open: { type: Boolean, default: false },
+  },
+  setup(props) {
+    const renderScalar = (value: unknown): string => {
+      if (value === null) return 'null'
+      if (value === undefined) return 'undefined'
+      if (typeof value === 'string') return JSON.stringify(value)
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+      return JSON.stringify(value, null, 2)
+    }
+
+    return (): VNode => {
+      const value = props.value as unknown
+      const indentStyle = { paddingLeft: `${props.depth * 16}px` }
+      if (Array.isArray(value)) {
+        return h(
+          'details',
+          { class: 'json-node', open: props.open, style: indentStyle },
+          [
+            h('summary', { class: 'json-node__summary' }, [
+              h('span', { class: 'json-node__key' }, props.label || '[ ]'),
+              h('span', { class: 'json-node__meta' }, `Array(${value.length})`),
+            ]),
+            h('div', { class: 'json-node__body' }, [
+              value.length
+                ? value.map((item, index) =>
+                    h(JsonTreeNode, {
+                      key: `${props.depth}-${index}`,
+                      value: item,
+                      label: `[${index}]`,
+                      depth: props.depth + 1,
+                      open: props.depth < 1,
+                    })
+                  )
+                : h('div', { class: 'json-node__empty' }, '[]'),
+            ]),
+          ]
+        )
+      }
+      if (value && typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>)
+        return h(
+          'details',
+          { class: 'json-node', open: props.open || props.depth < 1, style: indentStyle },
+          [
+            h('summary', { class: 'json-node__summary' }, [
+              h('span', { class: 'json-node__key' }, props.label || '{ }'),
+              h('span', { class: 'json-node__meta' }, `Object(${entries.length})`),
+            ]),
+            h('div', { class: 'json-node__body' }, [
+              entries.length
+                ? entries.map(([key, child]) =>
+                    h(JsonTreeNode, {
+                      key: `${props.depth}-${key}`,
+                      value: child,
+                      label: key,
+                      depth: props.depth + 1,
+                      open: props.depth < 1,
+                    })
+                  )
+                : h('div', { class: 'json-node__empty' }, '{}'),
+            ]),
+          ]
+        )
+      }
+      return h(
+        'div',
+        { class: 'json-node json-node--scalar', style: indentStyle },
+        [
+          props.label
+            ? h('span', { class: 'json-node__key' }, props.label)
+            : null,
+          h('span', { class: 'json-node__scalar' }, renderScalar(value)),
+        ]
+      )
+    }
+  },
+})
+
 const systemSettingsStore = useSystemSettingsStore()
 const { locale, t } = useI18n()
 const { pricingCurrency } = storeToRefs(systemSettingsStore)
@@ -326,6 +495,10 @@ const { formatNumber, formatCompactNumber, formatCurrency, formatDateTime, forma
 const loading = ref(false)
 const error = ref('')
 const records = ref<ModelExecutionRecord[]>([])
+const payloadById = reactive<Record<string, ModelExecutionAuditPayloadResponse | null | undefined>>({})
+const payloadTabById = reactive<Record<string, string>>({})
+const payloadErrorById = reactive<Record<string, string>>({})
+const payloadLoadingId = ref('')
 const total = ref(0)
 const offset = ref(0)
 const selectedRecordId = ref('')
@@ -469,6 +642,26 @@ const nextPage = () => {
 
 const toggleRecord = (id: string) => {
   selectedRecordId.value = selectedRecordId.value === id ? '' : id
+  if (selectedRecordId.value === id && !payloadTabById[id]) {
+    payloadTabById[id] = 'request'
+  }
+}
+
+const loadPayload = async (executionId: string) => {
+  payloadLoadingId.value = executionId
+  payloadErrorById[executionId] = ''
+  try {
+    const response = await modelRuntimeApi.getExecutionAuditPayload(executionId)
+    payloadById[executionId] = response.data.data || null
+    payloadTabById[executionId] = payloadTabById[executionId] || 'request'
+    if (!response.data.data?.available) {
+      payloadErrorById[executionId] = t('pages.modelAudit.payload.unavailable')
+    }
+  } catch (err) {
+    payloadErrorById[executionId] = err instanceof Error ? err.message : t('pages.modelAudit.messages.loadFailed')
+  } finally {
+    payloadLoadingId.value = ''
+  }
 }
 
 const boolLabel = (value: boolean) =>
@@ -485,8 +678,6 @@ const formatCost = (record: ModelExecutionRecord) => {
 }
 
 const hasMetadata = (record: ModelExecutionRecord) => Object.keys(record.metadata || {}).length > 0
-
-const stringifyMetadata = (metadata: Record<string, unknown>) => JSON.stringify(metadata || {}, null, 2)
 
 watch(
   () => [
@@ -734,6 +925,64 @@ onBeforeUnmount(() => {
 
 .metadata-block {
   margin-top: 12px;
+}
+
+.payload-block {
+  margin-top: 12px;
+  border: 1px solid $border-color-soft;
+  border-radius: $radius-xs;
+  background: rgba(var(--v-theme-on-surface), 0.018);
+}
+
+.payload-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 8px;
+}
+
+.payload-block__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.82);
+}
+
+.payload-tabs {
+  padding: 0 14px 12px;
+}
+
+.payload-window {
+  margin-top: 10px;
+}
+
+.payload-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-top: 10px;
+  padding: 0 2px 2px;
+  color: rgba(var(--v-theme-on-surface), 0.56);
+  font-size: $font-size-xs;
+}
+
+.payload-json {
+  max-height: 360px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+  font-size: $font-size-xs;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.payload-empty {
+  padding: 0 14px 14px;
+  color: rgba(var(--v-theme-on-surface), 0.54);
+  font-size: $font-size-sm;
 }
 
 .metadata-json {

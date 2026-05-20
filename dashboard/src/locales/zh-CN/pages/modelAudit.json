@@ -6,7 +6,8 @@
     "refresh": "刷新",
     "previous": "上一页",
     "next": "下一页",
-    "clear": "清空筛选"
+    "clear": "清空筛选",
+    "viewPayload": "查看审计文件"
   },
   "filters": {
     "title": "筛选",
@@ -29,7 +30,8 @@
     "usage": "用量",
     "routing": "路由",
     "error": "错误",
-    "metadata": "元数据"
+    "metadata": "元数据",
+    "payload": "请求与返回"
   },
   "labels": {
     "total": "共 {total} 条",
@@ -65,7 +67,19 @@
     "fallbackReason": "原因",
     "errorCode": "错误码",
     "errorMessage": "错误信息",
+    "auditPayloadRef": "审计文件",
+    "auditPayloadExpiresAt": "审计过期",
+    "auditPayloadAvailable": "审计可用",
     "metadataEmpty": "无元数据"
+  },
+  "payload": {
+    "request": "请求",
+    "response": "返回",
+    "return": "结构化结果",
+    "error": "错误",
+    "meta": "元信息",
+    "notLoaded": "点击右侧按钮加载审计文件",
+    "unavailable": "当前审计文件已过期或不可用"
   },
   "messages": {
     "loadFailed": "加载模型调用审计失败"

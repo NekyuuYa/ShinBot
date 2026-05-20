@@ -6,7 +6,8 @@
     "refresh": "Refresh",
     "previous": "Previous",
     "next": "Next",
-    "clear": "Clear filters"
+    "clear": "Clear filters",
+    "viewPayload": "View audit file"
   },
   "filters": {
     "title": "Filters",
@@ -29,7 +30,8 @@
     "usage": "Usage",
     "routing": "Routing",
     "error": "Error",
-    "metadata": "Metadata"
+    "metadata": "Metadata",
+    "payload": "Request & response"
   },
   "labels": {
     "total": "{total} records",
@@ -65,7 +67,19 @@
     "fallbackReason": "Reason",
     "errorCode": "Error code",
     "errorMessage": "Error message",
+    "auditPayloadRef": "Audit file",
+    "auditPayloadExpiresAt": "Audit expires",
+    "auditPayloadAvailable": "Audit available",
     "metadataEmpty": "No metadata"
+  },
+  "payload": {
+    "request": "Request",
+    "response": "Response",
+    "return": "Structured result",
+    "error": "Error",
+    "meta": "Meta",
+    "notLoaded": "Click the button on the right to load the audit file",
+    "unavailable": "This audit file has expired or is unavailable"
   },
   "messages": {
     "loadFailed": "Failed to load model call audit"

@@ -125,6 +125,59 @@ def test_model_execution_audit_endpoint_filters_and_paginates(
     assert payload["items"][0]["metadata"]["route_strategy"] == "priority"
 
 
+def test_model_execution_payload_endpoint_reads_file(tmp_path: Path, make_boot_stub, make_auth_headers):
+    bot = ShinBot(data_dir=tmp_path)
+    bot.database.model_executions.insert(
+        ModelExecutionRecord(
+            id="exec-payload-1",
+            route_id="agent.default_chat",
+            provider_id="openai-main",
+            model_id="openai-main/gpt-4.1-mini",
+            caller="agent.runtime",
+            session_id="inst1:group:g1",
+            instance_id="inst1",
+            success=True,
+            metadata={
+                "audit_payload_ref": "model-audit/exec-payload-1.json",
+                "audit_payload_expires_at": "2099-01-01T00:00:00+00:00",
+            },
+        )
+    )
+    payload_dir = tmp_path / "model-audit"
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    (payload_dir / "exec-payload-1.json").write_text(
+        """
+        {
+          "schema_version": 1,
+          "execution_id": "exec-payload-1",
+          "created_at": "2099-01-01T00:00:00+00:00",
+          "expires_at": "2099-01-02T00:00:00+00:00",
+          "status": "success",
+          "request": {"caller": "agent.runtime"},
+          "response": {"text": "hello"},
+          "return": {"text": "hello"},
+          "error": null,
+          "meta": {"operation": "generate"}
+        }
+        """,
+        encoding="utf-8",
+    )
+    app = create_api_app(bot, make_boot_stub(tmp_path))
+    headers = make_auth_headers(app)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/model-runtime/executions/exec-payload-1/payload",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["available"] is True
+    assert payload["request"]["caller"] == "agent.runtime"
+    assert payload["response"]["text"] == "hello"
+
+
 def test_model_token_summary_endpoint(tmp_path: Path, make_boot_stub, make_auth_headers):
     bot = ShinBot(data_dir=tmp_path)
     recent_started_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
@@ -367,4 +420,3 @@ async def test_cost_estimation_does_not_double_charge_cached_input(tmp_path: Pat
     response = await get_cost_analysis(days=7, modelLimit=1, bot=bot)
     payload = response["data"]
     assert payload["summary"]["estimatedCost"] == pytest.approx(0.163)
-

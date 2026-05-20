@@ -18,6 +18,7 @@ from shinbot.agent.services.model_runtime.admin import (
     probe_provider_runtime,
     validate_route_member_ids,
 )
+from shinbot.agent.services.model_runtime.audit_store import ModelAuditPayloadStore
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, ok
 from shinbot.persistence.records import (
@@ -204,6 +205,7 @@ def _serialize_route(payload: dict[str, Any], members: list[dict[str, Any]]) -> 
 
 
 def _serialize_execution(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(payload["metadata"] or {})
     return {
         "id": payload["id"],
         "routeId": payload["route_id"],
@@ -231,7 +233,10 @@ def _serialize_execution(payload: dict[str, Any]) -> dict[str, Any]:
         "estimatedCost": payload["estimated_cost"],
         "currency": payload["currency"],
         "promptSnapshotId": payload.get("prompt_snapshot_id", ""),
-        "metadata": payload["metadata"],
+        "metadata": metadata,
+        "auditPayloadRef": str(metadata.get("audit_payload_ref") or ""),
+        "auditPayloadExpiresAt": str(metadata.get("audit_payload_expires_at") or ""),
+        "auditPayloadAvailable": bool(metadata.get("audit_payload_ref")),
     }
 
 
@@ -761,6 +766,36 @@ async def list_model_execution_audit_records(
         query=query.strip() if query else None,
     )
     return ok(_serialize_execution_audit_page(records))
+
+
+@router.get("/executions/{execution_id:path}/payload")
+async def get_model_execution_payload(execution_id: str, bot=BotDep):
+    store = ModelAuditPayloadStore(bot.database.config.data_dir)
+    payload = store.read(execution_id)
+    if payload is None:
+        return ok(
+            {
+                "available": False,
+                "executionId": execution_id,
+                "expired": False,
+                "request": None,
+                "response": None,
+                "error": None,
+                "meta": None,
+            }
+        )
+    return ok(
+        {
+            "available": True,
+            "executionId": execution_id,
+            "expired": False,
+            "request": payload.get("request"),
+            "response": payload.get("response"),
+            "return": payload.get("return"),
+            "error": payload.get("error"),
+            "meta": payload.get("meta"),
+        }
+    )
 
 
 @router.get("/token-summary")
