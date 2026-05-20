@@ -37,105 +37,21 @@
       {{ error || configStore.error }}
     </v-alert>
 
-    <v-row v-if="runtimeProfiles.length > 0" class="mb-6">
-      <v-col
-        v-for="profile in runtimeProfiles"
-        :key="profile.botId"
-        cols="12"
-        lg="6"
-      >
-        <v-card class="runtime-card h-100" elevation="0">
-          <v-card-item>
-            <template #prepend>
-              <v-avatar color="info" variant="tonal" icon="mdi-robot-outline" />
-            </template>
-            <v-card-title class="text-break">
-              {{ profile.botName || profile.botId }}
-            </v-card-title>
-            <v-card-subtitle class="text-break">
-              {{ profile.botId }} · {{ profile.agentMode }}
-            </v-card-subtitle>
-          </v-card-item>
-          <v-card-text class="pt-1">
-            <div class="runtime-meta-row">
-              <span>Bindings</span>
-              <strong>{{ profile.bindings.length }}</strong>
-            </div>
-            <div class="runtime-meta-row">
-              <span>Sessions</span>
-              <strong>{{ profile.sessions.length }}</strong>
-            </div>
-            <v-expansion-panels class="mt-3" variant="accordion">
-              <v-expansion-panel
-                v-for="session in profile.sessions"
-                :key="session.sessionId"
-              >
-                <v-expansion-panel-title>
-                  <div class="d-flex w-100 align-center justify-space-between gap-3">
-                    <span class="text-truncate">{{ session.sessionId }}</span>
-                    <v-chip size="x-small" variant="tonal" color="primary">
-                      {{ session.state }}
-                    </v-chip>
-                  </div>
-                </v-expansion-panel-title>
-                <v-expansion-panel-text>
-                  <div class="runtime-meta-row">
-                    <span>Review</span>
-                    <strong>{{
-                      session.reviewPlan?.nextReviewAt
-                        ? formatTimestamp(session.reviewPlan.nextReviewAt)
-                        : $t("pages.agents.labels.noValue")
-                    }}</strong>
-                  </div>
-                  <div class="runtime-meta-row">
-                    <span>{{ $t("pages.agents.labels.reviewInterval") }}</span>
-                    <strong>{{ formatReviewInterval(session.reviewPlan?.nextReviewAt) }}</strong>
-                  </div>
-                  <div class="runtime-meta-row">
-                    <span>Unread</span>
-                    <strong>{{ session.unreadCount }}</strong>
-                  </div>
-                  <div class="runtime-meta-row">
-                    <span>Active Chat</span>
-                    <strong>{{
-                      session.activeChatState
-                        ? `${session.activeChatState.interestValue.toFixed(1)} / ${session.activeChatState.tickCount}`
-                        : $t("pages.agents.labels.noValue")
-                    }}</strong>
-                  </div>
-                  <div class="runtime-meta-row">
-                    <span>Last Review</span>
-                    <strong>{{
-                      session.latestReviewSummary
-                        ? formatTimestamp(session.latestReviewSummary.createdAt)
-                        : session.latestReviewRun
-                          ? formatTimestamp(session.latestReviewRun.startedAt)
-                        : $t("pages.agents.labels.noValue")
-                    }}</strong>
-                  </div>
-                  <div class="runtime-meta-row">
-                    <span>Review Note</span>
-                    <strong>{{
-                      session.latestReviewSummary?.summary ||
-                      session.latestReviewRun?.responseSummary ||
-                      $t("pages.agents.labels.noValue")
-                    }}</strong>
-                  </div>
-                  <div class="runtime-meta-row">
-                    <span>Last Audit</span>
-                    <strong>{{
-                      session.latestAudit
-                        ? session.latestAudit.timestamp
-                        : $t("pages.agents.labels.noValue")
-                    }}</strong>
-                  </div>
-                </v-expansion-panel-text>
-              </v-expansion-panel>
-            </v-expansion-panels>
-          </v-card-text>
-        </v-card>
-      </v-col>
-    </v-row>
+    <agent-runtime-profiles
+      :profiles="runtimeProfiles"
+      :bindings-label="'Bindings'"
+      :sessions-label="'Sessions'"
+      :review-label="'Review'"
+      :review-interval-label="$t('pages.agents.labels.reviewInterval')"
+      :unread-label="'Unread'"
+      :active-chat-label="'Active Chat'"
+      :last-review-label="'Last Review'"
+      :review-note-label="'Review Note'"
+      :last-audit-label="'Last Audit'"
+      :no-value-label="$t('pages.agents.labels.noValue')"
+      :format-timestamp="formatTimestamp"
+      :format-review-interval="formatReviewInterval"
+    />
 
     <div class="agents-toolbar mb-6">
       <v-text-field
@@ -265,162 +181,19 @@
       </v-col>
     </v-row>
 
-    <v-dialog v-model="dialogVisible" max-width="1100" scrollable>
-      <v-card class="agent-dialog">
-        <v-card-title class="agent-dialog__title">
-          {{
-            editingFileName
-              ? $t("pages.agents.overlay.editTitle")
-              : $t("pages.agents.overlay.createTitle")
-          }}
-        </v-card-title>
-
-        <v-card-text class="agent-dialog__body">
-          <div class="agent-dialog__file-row">
-            <v-text-field
-              v-model="form.fileName"
-              :label="$t('pages.agents.fields.fileName')"
-              :hint="$t('pages.agents.hints.fileName')"
-              :disabled="Boolean(editingFileName)"
-              persistent-hint
-              variant="outlined"
-              density="comfortable"
-            />
-          </div>
-
-          <v-tabs
-            v-model="activeAgentTab"
-            class="agent-tabs"
-            density="comfortable"
-            height="56"
-            show-arrows
-          >
-            <v-tab v-for="tab in agentTabs" :key="tab.value" :value="tab.value">
-              <v-icon :icon="tab.icon" size="18" class="me-2" />
-              <span>{{ tab.label }}</span>
-            </v-tab>
-          </v-tabs>
-
-          <v-window v-model="activeAgentTab" class="agent-tab-window">
-            <v-window-item value="identity">
-              <provider-schema-form
-                v-model="form.config"
-                :provider="agentProvider"
-                :issues="profileIssues"
-                :field-prefixes="['agent.id', 'agent.mode', 'agent.persona_id']"
-                :model-ref-route-options="modelRefRouteOptions"
-                :model-ref-provider-groups="modelRefProviderGroups"
-                :advanced-label="$t('pages.agents.labels.advancedFields')"
-                :empty-text="$t('pages.agents.empty.noFields')"
-                :json-error-text="$t('pages.agents.messages.invalidJson')"
-              />
-            </v-window-item>
-
-            <v-window-item value="defaults">
-              <provider-schema-form
-                v-model="form.config"
-                :provider="agentProvider"
-                :issues="profileIssues"
-                :field-prefixes="['agent.prompt_files', 'agent.defaults']"
-                :model-ref-route-options="modelRefRouteOptions"
-                :model-ref-provider-groups="modelRefProviderGroups"
-                :advanced-label="$t('pages.agents.labels.advancedFields')"
-                :empty-text="$t('pages.agents.empty.noFields')"
-                :json-error-text="$t('pages.agents.messages.invalidJson')"
-              />
-            </v-window-item>
-
-            <v-window-item value="review">
-              <provider-schema-form
-                v-model="form.config"
-                :provider="agentProvider"
-                :issues="profileIssues"
-                :field-prefixes="['agent.review']"
-                :model-ref-route-options="modelRefRouteOptions"
-                :model-ref-provider-groups="modelRefProviderGroups"
-                :advanced-label="$t('pages.agents.labels.advancedFields')"
-                :empty-text="$t('pages.agents.empty.noFields')"
-                :json-error-text="$t('pages.agents.messages.invalidJson')"
-              />
-            </v-window-item>
-
-            <v-window-item value="active">
-              <provider-schema-form
-                v-model="form.config"
-                :provider="agentProvider"
-                :issues="profileIssues"
-                :field-prefixes="['agent.active_chat']"
-                :model-ref-route-options="modelRefRouteOptions"
-                :model-ref-provider-groups="modelRefProviderGroups"
-                :advanced-label="$t('pages.agents.labels.advancedFields')"
-                :empty-text="$t('pages.agents.empty.noFields')"
-                :json-error-text="$t('pages.agents.messages.invalidJson')"
-              />
-            </v-window-item>
-
-            <v-window-item value="advanced">
-              <provider-schema-form
-                v-model="form.config"
-                :provider="agentProvider"
-                :issues="profileIssues"
-                :field-prefixes="[
-                  'agent.context',
-                  'agent.summaries',
-                  'agent.media',
-                ]"
-                :model-ref-route-options="modelRefRouteOptions"
-                :model-ref-provider-groups="modelRefProviderGroups"
-                :advanced-label="$t('pages.agents.labels.advancedFields')"
-                :empty-text="$t('pages.agents.empty.noFields')"
-                :json-error-text="$t('pages.agents.messages.invalidJson')"
-              />
-            </v-window-item>
-          </v-window>
-
-          <v-alert
-            v-if="profileIssues.length > 0"
-            type="warning"
-            variant="tonal"
-            class="mx-6 mb-4"
-          >
-            <div class="font-weight-medium mb-2">
-              {{ $t("pages.agents.validation.title") }}
-            </div>
-            <div
-              v-for="issue in profileIssues.slice(0, 6)"
-              :key="`${issue.path}:${issue.code}:${issue.message}`"
-              class="text-body-2 validation-issue-line"
-            >
-              <span class="font-weight-medium">{{ issue.path || "-" }}</span>
-              <span>{{ issue.message }}</span>
-            </div>
-          </v-alert>
-
-          <v-alert
-            v-if="dialogError"
-            type="error"
-            variant="tonal"
-            class="mx-6 mb-6"
-          >
-            {{ dialogError }}
-          </v-alert>
-        </v-card-text>
-
-        <v-card-actions class="agent-dialog__actions">
-          <v-spacer />
-          <v-btn variant="text" @click="dialogVisible = false">
-            {{ $t("common.actions.action.cancel") }}
-          </v-btn>
-          <v-btn color="primary" :loading="isSaving" @click="saveProfile">
-            {{
-              editingFileName
-                ? $t("common.actions.action.save")
-                : $t("common.actions.action.create")
-            }}
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <agent-config-dialog
+      v-model:visible="dialogVisible"
+      v-model:active-agent-tab="activeAgentTab"
+      v-model:form="form"
+      :editing-file-name="editingFileName"
+      :agent-provider="agentProvider"
+      :profile-issues="profileIssues"
+      :dialog-error="dialogError"
+      :is-saving="isSaving"
+      :model-ref-route-options="modelRefRouteOptions"
+      :model-ref-provider-groups="modelRefProviderGroups"
+      @save="saveProfile"
+    />
   </v-container>
 </template>
 
@@ -437,7 +210,8 @@ import {
   type ConfigWorkspaceProvider,
 } from "@/api/config";
 import AppPageHeader from "@/components/AppPageHeader.vue";
-import ProviderSchemaForm from "@/components/config/ProviderSchemaForm.vue";
+import AgentRuntimeProfiles from "@/components/agents/AgentRuntimeProfiles.vue";
+import AgentConfigDialog from "@/components/agents/AgentConfigDialog.vue";
 import { useConfirmDialog } from "@/composables/useConfirmDialog";
 import { useDelayedFlag } from "@/composables/useDelayedFlag";
 import { translate } from "@/plugins/i18n";
@@ -474,34 +248,6 @@ const form = reactive({
   fileName: "",
   config: {} as ConfigRecord,
 });
-
-const agentTabs = computed(() => [
-  {
-    value: "identity" as const,
-    label: t("pages.agents.tabs.identity"),
-    icon: "mdi-card-account-details-outline",
-  },
-  {
-    value: "defaults" as const,
-    label: t("pages.agents.tabs.defaults"),
-    icon: "mdi-tune-variant",
-  },
-  {
-    value: "review" as const,
-    label: t("pages.agents.tabs.review"),
-    icon: "mdi-message-processing-outline",
-  },
-  {
-    value: "active" as const,
-    label: t("pages.agents.tabs.active"),
-    icon: "mdi-chat-processing-outline",
-  },
-  {
-    value: "advanced" as const,
-    label: t("pages.agents.tabs.advanced"),
-    icon: "mdi-code-json",
-  },
-]);
 
 const agentProvider = computed<ConfigWorkspaceProvider | null>(
   () => configStore.agentProvidersById[AGENT_RUNTIME_PROVIDER_ID] ?? null,
@@ -784,32 +530,6 @@ onMounted(() => {
   @include surface-card;
 }
 
-.runtime-card {
-  @include surface-card;
-}
-
-.runtime-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 0;
-
-  span {
-    color: rgba(var(--v-theme-on-surface), 0.58);
-    font-size: $font-size-xs;
-  }
-
-  strong {
-    min-width: 0;
-    overflow: hidden;
-    color: rgba(var(--v-theme-on-surface), 0.88);
-    font-size: $font-size-xs;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
 .agents-search {
   max-width: 420px;
 }
@@ -846,121 +566,6 @@ onMounted(() => {
   }
 }
 
-.agent-dialog {
-  overflow: hidden;
-  border-radius: $radius-base;
-}
-
-.agent-dialog__title {
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid $border-color-soft;
-  color: rgba(var(--v-theme-on-surface), 0.94);
-  font-size: $font-size-lg;
-  font-weight: 800;
-}
-
-.agent-dialog__body {
-  padding: 0;
-}
-
-.agent-dialog__file-row {
-  padding: 20px 24px 8px;
-}
-
-.agent-tabs {
-  min-height: 64px;
-  padding: 10px 18px 0;
-  border-bottom: 1px solid $border-color-soft;
-  background: rgba(var(--v-theme-on-surface), 0.018);
-  overflow: visible;
-}
-
-.agent-tabs :deep(.v-slide-group__container),
-.agent-tabs :deep(.v-slide-group__content) {
-  min-height: 56px;
-}
-
-.agent-tabs :deep(.v-slide-group__content) {
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.agent-tabs :deep(.v-tab) {
-  position: relative;
-  min-width: 0;
-  min-height: 48px;
-  padding-inline: 18px;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: 14px 14px 0 0 !important;
-  background: rgba(var(--v-theme-on-surface), 0.025);
-  color: rgba(var(--v-theme-on-surface), 0.68);
-  font-weight: 700;
-  text-transform: none;
-  transition:
-    background-color $transition-fast,
-    border-color $transition-fast,
-    color $transition-fast,
-    box-shadow $transition-fast;
-}
-
-.agent-tabs :deep(.v-tab:hover) {
-  background: rgba(var(--v-theme-primary), 0.08);
-  color: rgba(var(--v-theme-on-surface), 0.88);
-}
-
-.agent-tabs :deep(.v-tab.v-tab--selected) {
-  z-index: 2;
-  border-color: $border-color-soft;
-  background: rgb(var(--v-theme-surface));
-  color: rgb(var(--v-theme-primary));
-  box-shadow: 0 -6px 16px rgba(var(--v-theme-on-surface), 0.05);
-}
-
-.agent-tabs :deep(.v-tab.v-tab--selected::after) {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 1px;
-  background: rgb(var(--v-theme-surface));
-  content: "";
-}
-
-.agent-tabs :deep(.v-btn__overlay),
-.agent-tabs :deep(.v-btn__underlay) {
-  border-radius: inherit;
-}
-
-.agent-tabs :deep(.v-tab__slider) {
-  display: none;
-}
-
-.agent-tab-window {
-  min-height: 430px;
-  padding-top: 10px;
-  background: rgb(var(--v-theme-surface));
-}
-
-.agent-tab-window :deep(.provider-schema-form) {
-  padding: 24px;
-}
-
-.agent-tab-window :deep(.v-field) {
-  border-radius: $radius-base;
-}
-
-.agent-dialog__actions {
-  padding: 14px 24px 20px;
-  border-top: 1px solid $border-color-soft;
-}
-
-.validation-issue-line {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 @include respond-to("mobile") {
   .agents-toolbar {
     flex-direction: column;
@@ -969,19 +574,6 @@ onMounted(() => {
 
   .agents-search {
     max-width: none;
-  }
-
-  .agent-dialog__title {
-    padding: 18px 18px 14px;
-  }
-
-  .agent-dialog__file-row,
-  .agent-tab-window :deep(.provider-schema-form) {
-    padding: 18px;
-  }
-
-  .agent-dialog__actions {
-    padding: 12px 18px 18px;
   }
 }
 </style>
