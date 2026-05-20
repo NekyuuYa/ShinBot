@@ -23,94 +23,33 @@
       {{ error }}
     </v-alert>
 
-    <section class="audit-filter-panel mb-6">
-      <div class="filter-head">
-        <div>
-          <div class="panel-kicker">{{ $t('pages.modelAudit.filters.title') }}</div>
-          <div class="panel-total">{{ $t('pages.modelAudit.labels.total', { total }) }}</div>
-        </div>
-        <v-btn
-          variant="text"
-          color="secondary"
-          prepend-icon="mdi-filter-off-outline"
-          rounded="lg"
-          @click="clearFilters"
-        >
-          {{ $t('pages.modelAudit.actions.clear') }}
-        </v-btn>
-      </div>
-
-      <div class="filter-grid">
-        <v-text-field
-          v-model="filters.query"
-          :label="$t('pages.modelAudit.filters.search')"
-          prepend-inner-icon="mdi-magnify"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-          clearable
-        />
-        <v-select
-          v-model="filters.providerId"
-          :label="$t('pages.modelAudit.filters.provider')"
-          :items="providerOptions"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-          clearable
-        />
-        <v-select
-          v-model="filters.modelId"
-          :label="$t('pages.modelAudit.filters.model')"
-          :items="modelOptions"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-          clearable
-        />
-        <v-select
-          v-model="filters.routeId"
-          :label="$t('pages.modelAudit.filters.route')"
-          :items="routeOptions"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-          clearable
-        />
-        <v-text-field
-          v-model="filters.caller"
-          :label="$t('pages.modelAudit.filters.caller')"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-          clearable
-        />
-        <v-text-field
-          v-model="filters.sessionId"
-          :label="$t('pages.modelAudit.filters.session')"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-          clearable
-        />
-        <v-text-field
-          v-model="filters.instanceId"
-          :label="$t('pages.modelAudit.filters.instance')"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-          clearable
-        />
-        <v-select
-          v-model="statusFilter"
-          :label="$t('pages.modelAudit.filters.status')"
-          :items="statusOptions"
-          density="comfortable"
-          variant="outlined"
-          hide-details
-        />
-      </div>
-    </section>
+    <model-audit-filter-panel
+      class="mb-6"
+      v-model:query="filters.query"
+      v-model:provider-id="filters.providerId"
+      v-model:model-id="filters.modelId"
+      v-model:route-id="filters.routeId"
+      v-model:caller="filters.caller"
+      v-model:session-id="filters.sessionId"
+      v-model:instance-id="filters.instanceId"
+      v-model:status="statusFilter"
+      :title="$t('pages.modelAudit.filters.title')"
+      :total-label="$t('pages.modelAudit.labels.total', { total })"
+      :clear-label="$t('pages.modelAudit.actions.clear')"
+      :search-label="$t('pages.modelAudit.filters.search')"
+      :provider-label="$t('pages.modelAudit.filters.provider')"
+      :model-label="$t('pages.modelAudit.filters.model')"
+      :route-label="$t('pages.modelAudit.filters.route')"
+      :caller-label="$t('pages.modelAudit.filters.caller')"
+      :session-label="$t('pages.modelAudit.filters.session')"
+      :instance-label="$t('pages.modelAudit.filters.instance')"
+      :status-label="$t('pages.modelAudit.filters.status')"
+      :provider-options="providerOptions"
+      :model-options="modelOptions"
+      :route-options="routeOptions"
+      :status-options="statusOptions"
+      @clear="clearFilters"
+    />
 
     <section class="audit-record-panel">
       <div class="record-panel-head">
@@ -234,6 +173,7 @@ import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import ModelAuditFilterPanel from '@/components/model-audit/ModelAuditFilterPanel.vue'
 import ModelAuditRecordList from '@/components/model-audit/ModelAuditRecordList.vue'
 import ModelAuditRecordDetail from '@/components/model-audit/ModelAuditRecordDetail.vue'
 import {
@@ -494,39 +434,17 @@ onBeforeUnmount(() => {
 <style scoped lang="scss">
 @use '@/styles/mixins' as *;
 
-.audit-filter-panel,
 .audit-record-panel {
   @include surface-card;
   padding: 20px;
 }
 
-.filter-head,
 .record-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
-}
-
-.panel-kicker {
-  color: rgb(var(--v-theme-primary));
-  font-size: $font-size-xs;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.panel-total {
-  margin-top: 4px;
-  color: rgba(var(--v-theme-on-surface), 0.68);
-  font-size: $font-size-sm;
-}
-
-.filter-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
-  gap: 12px;
 }
 
 .record-panel-head h2 {
@@ -682,10 +600,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1280px) {
-  .filter-grid {
-    grid-template-columns: repeat(2, minmax(180px, 1fr));
-  }
-
   .record-summary {
     grid-template-columns: minmax(92px, 0.7fr) minmax(200px, 1.6fr) minmax(140px, 1fr) 32px;
   }
@@ -700,13 +614,11 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
-  .filter-head,
   .record-panel-head {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .filter-grid,
   .detail-grid {
     grid-template-columns: 1fr;
   }
