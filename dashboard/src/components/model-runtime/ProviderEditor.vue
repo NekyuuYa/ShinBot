@@ -73,9 +73,7 @@
 
     <v-card class="editor-card">
       <v-card-item>
-        <v-card-title>{{
-          $t("pages.modelRuntime.cards.providerIdentity")
-        }}</v-card-title>
+        <v-card-title>{{ $t("pages.modelRuntime.cards.providerIdentity") }}</v-card-title>
         <template #append>
           <div class="d-flex ga-2">
             <v-btn
@@ -117,25 +115,18 @@
                 variant="tonal"
                 class="selector-avatar"
               >
-                <v-icon
-                  :icon="providerSourceIcon(providerForm.sourceType)"
-                  size="20"
-                />
+                <v-icon :icon="providerSourceIcon(providerForm.sourceType)" size="20" />
               </v-avatar>
               <span class="selector-copy">
-                <span class="selector-title">{{
-                  currentProviderSourceTitle
-                }}</span>
-                <span class="selector-subtitle">{{
-                  currentProviderSourceSubtitle
-                }}</span>
+                <span class="selector-title">{{ currentProviderSourceTitle }}</span>
+                <span class="selector-subtitle">{{ currentProviderSourceSubtitle }}</span>
               </span>
               <v-icon icon="mdi-chevron-right" size="20" class="selector-arrow" />
             </button>
           </v-col>
           <v-col cols="12" md="6">
             <v-text-field
-              :model-value="providerCapabilityLabel"
+              :model-value="$t(`pages.modelRuntime.labels.${providerCapabilityType}`)"
               :label="$t('pages.modelRuntime.fields.capabilityType')"
               density="comfortable"
               variant="outlined"
@@ -304,9 +295,7 @@
               v-model="providerForm.defaultParamsJson"
               :label="$t('pages.modelRuntime.fields.defaultParamsJson')"
               :hint="$t('pages.modelRuntime.hints.defaultParamsJson')"
-              :error-messages="
-                defaultParamsJsonError ? [defaultParamsJsonError] : []
-              "
+              :error-messages="defaultParamsJsonError ? [defaultParamsJsonError] : []"
               persistent-hint
               auto-grow
               rows="7"
@@ -331,437 +320,8 @@
       </v-card-text>
     </v-card>
 
-    <v-card class="editor-card">
-      <v-card-item>
-        <v-card-title>{{ $t("pages.modelRuntime.cards.models") }}</v-card-title>
-        <template #append>
-          <div class="d-flex ga-2 flex-wrap justify-end">
-            <v-btn
-              variant="outlined"
-              rounded="xl"
-              color="info"
-              :disabled="
-                !selectedProvider ||
-                isCreatingProvider ||
-                !selectedProviderSource?.supportsCatalog
-              "
-              :loading="catalogLoading"
-              @click="fetchCatalogInline"
-            >
-              {{ $t("pages.modelRuntime.actions.fetchCatalog") }}
-            </v-btn>
-            <v-btn
-              color="primary"
-              variant="tonal"
-              rounded="xl"
-              :disabled="!providerCanManageModels"
-              @click="openInlineModelEditor()"
-            >
-              {{ $t("pages.modelRuntime.actions.addModel") }}
-            </v-btn>
-          </div>
-        </template>
-      </v-card-item>
-
-      <v-card-text class="d-flex flex-column ga-5">
-        <v-card v-if="showInlineModelEditor" class="model-editor-card" variant="outlined">
-          <v-card-item>
-            <v-card-title>{{
-              $t("pages.modelRuntime.cards.modelEditor")
-            }}</v-card-title>
-            <template #append>
-              <div class="d-flex ga-2">
-                <v-btn variant="text" @click="cancelInlineModelEditor">
-                  {{ $t("common.actions.action.cancel") }}
-                </v-btn>
-                <v-btn
-                  color="primary"
-                  variant="tonal"
-                  rounded="xl"
-                  class="action-btn"
-                  @click="saveModel"
-                >
-                  {{ inlineModelSaveLabel }}
-                </v-btn>
-              </div>
-            </template>
-          </v-card-item>
-          <v-card-text>
-            <v-row>
-              <v-col cols="12" md="6">
-                <v-text-field
-                  v-model="modelForm.id"
-                  :label="$t('pages.modelRuntime.fields.id')"
-                  density="comfortable"
-                  variant="outlined"
-                  :readonly="!!editingModelId"
-                />
-              </v-col>
-              <v-col cols="12" md="6">
-                <v-text-field
-                  v-model="modelForm.displayName"
-                  :label="$t('pages.modelRuntime.fields.displayName')"
-                  density="comfortable"
-                  variant="outlined"
-                />
-              </v-col>
-              <v-col cols="12">
-                <v-text-field
-                  v-model="modelForm.litellmModel"
-                  :label="$t('pages.modelRuntime.fields.litellmModel')"
-                  density="comfortable"
-                  variant="outlined"
-                  append-inner-icon="mdi-database-search-outline"
-                  :hint="$t('pages.modelRuntime.hints.modelIdPicker')"
-                  persistent-hint
-                  @click:append-inner="openModelIdPicker"
-                />
-              </v-col>
-              <v-col cols="12" md="6">
-                <v-alert
-                  type="info"
-                  variant="tonal"
-                  density="comfortable"
-                  class="model-context-window-alert"
-                >
-                  {{
-                    $t("pages.modelRuntime.hints.contextWindowAuto", {
-                      value: modelForm.contextWindow || "-",
-                    })
-                  }}
-                </v-alert>
-              </v-col>
-              <v-col cols="12" md="6">
-                <v-text-field
-                  v-model="modelForm.inputPrice"
-                  :label="$t('pages.modelRuntime.fields.inputPrice')"
-                  :hint="priceHint"
-                  persistent-hint
-                  density="comfortable"
-                  variant="outlined"
-                  type="number"
-                  min="0"
-                  step="any"
-                />
-              </v-col>
-              <v-col cols="12" md="6">
-                <v-text-field
-                  v-model="modelForm.outputPrice"
-                  :label="$t('pages.modelRuntime.fields.outputPrice')"
-                  :hint="priceHint"
-                  persistent-hint
-                  density="comfortable"
-                  variant="outlined"
-                  type="number"
-                  min="0"
-                  step="any"
-                />
-              </v-col>
-              <v-col cols="12" md="6">
-                <v-text-field
-                  v-model="modelForm.cacheWritePrice"
-                  :label="$t('pages.modelRuntime.fields.cacheWritePrice')"
-                  :hint="priceHint"
-                  persistent-hint
-                  density="comfortable"
-                  variant="outlined"
-                  type="number"
-                  min="0"
-                  step="any"
-                />
-              </v-col>
-              <v-col cols="12" md="6">
-                <v-text-field
-                  v-model="modelForm.cacheReadPrice"
-                  :label="$t('pages.modelRuntime.fields.cacheReadPrice')"
-                  :hint="priceHint"
-                  persistent-hint
-                  density="comfortable"
-                  variant="outlined"
-                  type="number"
-                  min="0"
-                  step="any"
-                />
-              </v-col>
-              <v-col cols="12">
-                <v-switch
-                  v-model="modelForm.enabled"
-                  color="primary"
-                  inset
-                  :label="$t('pages.modelRuntime.fields.enabled')"
-                />
-              </v-col>
-            </v-row>
-          </v-card-text>
-        </v-card>
-
-        <div>
-          <div class="configured-model-header mb-3">
-            <div>
-              <div class="section-label">
-                {{ $t("pages.modelRuntime.cards.configuredModels") }}
-              </div>
-              <div class="text-caption text-medium-emphasis mt-1">
-                {{
-                  $t("pages.modelRuntime.labels.providerCount", {
-                    count: filteredSelectedProviderModels.length,
-                  })
-                }}
-              </div>
-            </div>
-
-            <div v-if="selectedProviderModels.length > 0" class="configured-model-tools">
-              <v-text-field
-                v-model="configuredModelSearch"
-                :placeholder="$t('common.actions.action.search')"
-                prepend-inner-icon="mdi-magnify"
-                variant="outlined"
-                density="compact"
-                clearable
-                hide-details
-                class="configured-model-search"
-              />
-              <v-btn-toggle
-                v-model="configuredModelsView"
-                mandatory
-                density="compact"
-                class="model-view-toggle"
-              >
-                <v-btn
-                  value="table"
-                  icon="mdi-table"
-                  :title="$t('pages.modelRuntime.labels.tableView')"
-                  :aria-label="$t('pages.modelRuntime.labels.tableView')"
-                />
-                <v-btn
-                  value="card"
-                  icon="mdi-view-grid-outline"
-                  :title="$t('pages.modelRuntime.labels.cardView')"
-                  :aria-label="$t('pages.modelRuntime.labels.cardView')"
-                />
-              </v-btn-toggle>
-            </div>
-          </div>
-
-          <v-table
-            v-if="
-              configuredModelsView === 'table' &&
-              filteredSelectedProviderModels.length > 0
-            "
-            density="compact"
-            class="configured-model-table"
-          >
-            <thead>
-              <tr>
-                <th>{{ $t("pages.modelRuntime.fields.model") }}</th>
-                <th>{{ $t("pages.modelRuntime.fields.litellmModel") }}</th>
-                <th>{{ $t("pages.modelRuntime.fields.capabilities") }}</th>
-                <th>{{ $t("pages.modelRuntime.fields.details") }}</th>
-                <th>{{ $t("pages.modelRuntime.fields.enabled") }}</th>
-                <th class="text-right">
-                  {{ $t("pages.modelRuntime.fields.actions") }}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="model in filteredSelectedProviderModels" :key="model.id">
-                <td class="model-name-cell">
-                  <div class="text-body-2 font-weight-medium table-text-clip">
-                    {{ model.displayName || model.id }}
-                  </div>
-                  <div class="text-caption text-medium-emphasis table-text-clip">
-                    {{ model.id }}
-                  </div>
-                </td>
-                <td class="litellm-cell">
-                  <code>{{ model.litellmModel }}</code>
-                </td>
-                <td>
-                  <div class="model-capability-chips">
-                    <v-chip
-                      v-for="capability in model.capabilities"
-                      :key="capability"
-                      size="x-small"
-                      variant="tonal"
-                      color="primary"
-                    >
-                      {{ capability }}
-                    </v-chip>
-                    <span
-                      v-if="model.capabilities.length === 0"
-                      class="text-caption text-medium-emphasis"
-                    >
-                      -
-                    </span>
-                  </div>
-                </td>
-                <td>
-                  <div class="model-meta-lines">
-                    <div v-for="line in providerModelMeta(model)" :key="line">
-                      {{ line }}
-                    </div>
-                  </div>
-                </td>
-                <td class="model-enabled-cell">
-                  <v-switch
-                    :model-value="model.enabled"
-                    color="primary"
-                    density="compact"
-                    hide-details
-                    inset
-                    @update:model-value="toggleModel(model.id, Boolean($event))"
-                  />
-                </td>
-                <td class="model-table-actions">
-                  <v-tooltip location="top">
-                    <template #activator="{ props }">
-                      <v-btn
-                        v-bind="props"
-                        icon="mdi-pencil-outline"
-                        variant="text"
-                        size="small"
-                        color="primary"
-                        @click="openInlineModelEditor(model.id)"
-                      />
-                    </template>
-                    <span>{{ $t("common.actions.action.edit") }}</span>
-                  </v-tooltip>
-                  <v-tooltip location="top">
-                    <template #activator="{ props }">
-                      <v-btn
-                        v-bind="props"
-                        icon="mdi-connection"
-                        variant="text"
-                        size="small"
-                        color="info"
-                        :loading="probingProviderId === selectedProvider?.id"
-                        @click="probeSelectedProvider(model.id)"
-                      />
-                    </template>
-                    <span>{{ $t("pages.modelRuntime.actions.testConnection") }}</span>
-                  </v-tooltip>
-                  <v-tooltip location="top">
-                    <template #activator="{ props }">
-                      <v-btn
-                        v-bind="props"
-                        icon="mdi-delete-outline"
-                        variant="text"
-                        size="small"
-                        color="error"
-                        @click="removeModel(model.id)"
-                      />
-                    </template>
-                    <span>{{ $t("common.actions.action.delete") }}</span>
-                  </v-tooltip>
-                </td>
-              </tr>
-            </tbody>
-          </v-table>
-
-          <v-row v-else-if="filteredSelectedProviderModels.length > 0">
-            <v-col
-              v-for="model in filteredSelectedProviderModels"
-              :key="model.id"
-              cols="12"
-              lg="6"
-            >
-              <model-member-card
-                :title="model.displayName || model.id"
-                :subtitle="model.litellmModel"
-                :enabled="model.enabled"
-                :chips="model.capabilities"
-                :meta-lines="providerModelMeta(model)"
-                :show-probe="true"
-                @edit="openInlineModelEditor(model.id)"
-                @probe="probeSelectedProvider(model.id)"
-                @remove="removeModel(model.id)"
-                @toggle="toggleModel(model.id, $event)"
-              />
-            </v-col>
-          </v-row>
-          <v-sheet
-            v-else
-            rounded="xl"
-            class="empty-state-panel text-body-2 text-medium-emphasis py-6 px-5"
-          >
-            {{
-              selectedProviderModels.length > 0
-                ? $t("pages.modelRuntime.hints.noModelMatches")
-                : $t("pages.modelRuntime.hints.noConfiguredModels")
-            }}
-          </v-sheet>
-        </div>
-
-        <div v-if="availableCatalogItems.length > 0">
-          <v-divider class="mb-4" />
-          <div class="d-flex align-center justify-space-between mb-3">
-            <span class="section-label">
-              {{ $t("pages.modelRuntime.cards.availableModels") }}
-            </span>
-            <span class="text-caption text-medium-emphasis">
-              {{ filteredCatalogItems.length }} / {{ availableCatalogItems.length }}
-            </span>
-          </div>
-          <v-text-field
-            v-model="catalogSearch"
-            :placeholder="$t('common.actions.action.search')"
-            prepend-inner-icon="mdi-magnify"
-            variant="outlined"
-            density="compact"
-            clearable
-            hide-details
-            class="mb-3"
-          />
-          <div class="d-flex flex-column ga-3">
-            <v-card
-              v-for="item in filteredCatalogItems"
-              :key="item.id"
-              variant="outlined"
-              class="catalog-item-card"
-            >
-              <v-card-text
-                class="d-flex justify-space-between align-start ga-4 flex-wrap"
-              >
-                <div>
-                  <div class="text-body-1 font-weight-medium">
-                    {{ item.displayName }}
-                  </div>
-                  <div class="text-caption text-medium-emphasis">
-                    {{ item.litellmModel }}
-                  </div>
-                  <div class="text-caption text-medium-emphasis mt-1">
-                    {{
-                      $t("pages.modelRuntime.hints.contextWindowAuto", {
-                        value: item.contextWindow || "-",
-                      })
-                    }}
-                  </div>
-                </div>
-                <v-btn
-                  color="primary"
-                  variant="tonal"
-                  rounded="xl"
-                  class="action-btn"
-                  @click="importCatalogItem(item.id)"
-                >
-                  {{ $t("pages.modelRuntime.actions.addToConfigured") }}
-                </v-btn>
-              </v-card-text>
-            </v-card>
-          </div>
-        </div>
-      </v-card-text>
-    </v-card>
+    <provider-models-panel />
   </div>
-
-  <model-id-picker-dialog
-    :model-value="showModelIdPicker"
-    :current-value="modelForm.litellmModel"
-    :route-options="modelIdPickerRouteOptions"
-    :provider-groups="modelIdPickerProviderGroups"
-    @update:model-value="closeModelIdPicker"
-    @select="applyPickedModelId"
-  />
 
   <generic-picker-dialog
     :model-value="showProviderSourcePicker"
@@ -770,9 +330,7 @@
     :sections="providerSourcePickerSections"
     :selected="providerForm.sourceType ? [providerForm.sourceType] : []"
     :empty-text="$t('pages.modelRuntime.hints.providerSourcePickerEmpty')"
-    :no-results-text="
-      $t('pages.modelRuntime.hints.providerSourcePickerNoMatches')
-    "
+    :no-results-text="$t('pages.modelRuntime.hints.providerSourcePickerNoMatches')"
     @update:model-value="showProviderSourcePicker = $event"
     @update:selected="applyProviderSourcePick"
   />
@@ -784,14 +342,11 @@ import { useI18n } from "vue-i18n";
 
 import { useModelRuntimeContext } from "@/composables/useModelRuntimePage";
 import { providerSourceIcon } from "@/utils/modelRuntimeSources";
-import GenericPickerDialog, {
-  type GenericPickerSection,
-} from "./GenericPickerDialog.vue";
+import GenericPickerDialog, { type GenericPickerSection } from "./GenericPickerDialog.vue";
 import KeyValueEditor from "./KeyValueEditor.vue";
-import ModelIdPickerDialog from "./ModelIdPickerDialog.vue";
-import ModelMemberCard from "./ModelMemberCard.vue";
+import ProviderModelsPanel from "./ProviderModelsPanel.vue";
 
-type ProviderSetupAction = "source" | "save" | "probe" | "catalog";
+type ProviderSetupAction = "source" | "save" | "probe";
 type ProviderSetupState = "complete" | "active" | "pending" | "skipped";
 
 interface ProviderSetupStep {
@@ -812,8 +367,6 @@ interface ProviderSetupStep {
 
 const { t } = useI18n();
 const showProviderSourcePicker = ref(false);
-const configuredModelSearch = ref("");
-const configuredModelsView = ref<"table" | "card">("table");
 const tokenVisible = ref(false);
 
 const {
@@ -835,36 +388,10 @@ const {
   sourceSupportsThinking,
   sourceSupportsFilters,
   showApiVersionField,
+  providerHeaderRows,
   probingProviderId,
   lastProviderProbeResult,
   probeSelectedProvider,
-  providerHeaderRows,
-  fetchCatalogInline,
-  catalogLoading,
-  catalogSearch,
-  pricingCurrency,
-  pricingTokenUnit,
-  providerCanManageModels,
-  openInlineModelEditor,
-  showInlineModelEditor,
-  showModelIdPicker,
-  cancelInlineModelEditor,
-  saveModel,
-  inlineModelSaveLabel,
-  editingModelId,
-  modelForm,
-  modelIdPickerRouteOptions,
-  modelIdPickerProviderGroups,
-  openModelIdPicker,
-  closeModelIdPicker,
-  applyPickedModelId,
-  selectedProviderModels,
-  providerModelMeta,
-  removeModel,
-  toggleModel,
-  availableCatalogItems,
-  filteredCatalogItems,
-  importCatalogItem,
   deleteCurrentProvider,
   saveProvider,
 } = useModelRuntimeContext();
@@ -880,15 +407,8 @@ const currentProviderSourceSubtitle = computed(() => {
   if (selectedProviderSource.value?.defaultBaseUrl) {
     return selectedProviderSource.value.defaultBaseUrl;
   }
-  return (
-    providerForm.value.sourceType ||
-    t("pages.modelRuntime.hints.providerSourcePickerEmpty")
-  );
+  return providerForm.value.sourceType || t("pages.modelRuntime.hints.providerSourcePickerEmpty");
 });
-
-const providerCapabilityLabel = computed(() =>
-  t(`pages.modelRuntime.labels.${providerCapabilityType.value}`),
-);
 
 const tokenHint = computed(() => {
   if (credentialWillBeCleared.value) {
@@ -912,65 +432,6 @@ const credentialActionLabel = computed(() =>
     : t("pages.modelRuntime.actions.clearCredential"),
 );
 
-const probeModeLabel = computed(() => {
-  const mode = lastProviderProbeResult.value?.mode;
-  return mode
-    ? t(`pages.modelRuntime.labels.probeModes.${mode}`, { mode })
-    : "";
-});
-
-const probeResultTitle = computed(() =>
-  t("pages.modelRuntime.labels.probeResult", {
-    mode: probeModeLabel.value,
-  }),
-);
-
-const probeResultSubtitle = computed(() => {
-  const result = lastProviderProbeResult.value;
-  if (!result) {
-    return "";
-  }
-  if (result.executionId) {
-    return t("pages.modelRuntime.labels.probeExecution", {
-      id: result.executionId,
-    });
-  }
-  if (result.catalogSize !== undefined) {
-    return t("pages.modelRuntime.labels.probeCatalogSize", {
-      count: result.catalogSize,
-    });
-  }
-  return t("pages.modelRuntime.labels.probeCheckedAt", {
-    time: result.checkedAt,
-  });
-});
-
-const priceHint = computed(() =>
-  t("pages.modelRuntime.hints.pricePerUnit", {
-    currency: pricingCurrency,
-    unit: t(`pages.settings.pricing.units.${pricingTokenUnit}`),
-  }),
-);
-
-const filteredSelectedProviderModels = computed(() => {
-  const keyword = configuredModelSearch.value.trim().toLowerCase();
-  if (!keyword) {
-    return selectedProviderModels.value;
-  }
-  return selectedProviderModels.value.filter((model) =>
-    [
-      model.id,
-      model.displayName,
-      model.litellmModel,
-      ...model.capabilities,
-      ...providerModelMeta(model),
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(keyword),
-  );
-});
-
 const providerSourceReady = computed(() => Boolean(providerForm.value.sourceType));
 
 const providerCredentialReady = computed(() => {
@@ -991,36 +452,12 @@ const providerProbePassed = computed(
   () => lastProviderProbeResult.value?.success === true,
 );
 
-const providerCatalogSupported = computed(
-  () => selectedProviderSource.value?.supportsCatalog ?? false,
-);
-
-const selectedProviderCatalogItems = computed(() => {
-  const providerId = selectedProvider.value?.id;
-  return providerId ? store.catalogItems[providerId] || [] : [];
-});
-
-const providerCatalogFetched = computed(() => {
-  const providerId = selectedProvider.value?.id;
-  return providerId
-    ? Object.prototype.hasOwnProperty.call(store.catalogItems, providerId)
-    : false;
-});
-
-const providerCatalogReady = computed(
-  () =>
-    !providerCatalogSupported.value ||
-    providerCatalogFetched.value ||
-    selectedProviderModels.value.length > 0,
-);
-
 const providerSetupComplete = computed(
   () =>
     providerSourceReady.value &&
     providerCredentialReady.value &&
     providerSaved.value &&
-    providerProbePassed.value &&
-    providerCatalogReady.value,
+    providerProbePassed.value,
 );
 
 const providerSetupSummary = computed(() => {
@@ -1039,7 +476,7 @@ const providerSetupSummary = computed(() => {
   if (!providerProbePassed.value) {
     return t("pages.modelRuntime.labels.setupSummaryProbe");
   }
-  return t("pages.modelRuntime.labels.setupSummaryCatalog");
+  return t("pages.modelRuntime.labels.setupSummaryReady");
 });
 
 const statusLabelForSetupStep = (state: ProviderSetupState) => {
@@ -1069,16 +506,18 @@ const colorForSetupStep = (state: ProviderSetupState) => {
 };
 
 const providerSetupSteps = computed<ProviderSetupStep[]>(() => {
-  const catalogCount = selectedProviderCatalogItems.value.length;
-  const baseSteps = [
+  const baseSteps: ProviderSetupStep[] = [
     {
       key: "source",
       icon: "mdi-source-branch",
       title: t("pages.modelRuntime.labels.setupStepSource"),
       detail: currentProviderSourceTitle.value,
       complete: providerSourceReady.value,
-      action: "source" as const,
+      action: "source",
       actionLabel: t("pages.modelRuntime.actions.selectSource"),
+      state: "pending",
+      color: "default",
+      statusLabel: "",
     },
     {
       key: "credential",
@@ -1090,6 +529,9 @@ const providerSetupSteps = computed<ProviderSetupStep[]>(() => {
           ? t("pages.modelRuntime.labels.credentialReady")
           : t("pages.modelRuntime.labels.credentialRequired"),
       complete: providerCredentialReady.value,
+      state: "pending",
+      color: "default",
+      statusLabel: "",
     },
     {
       key: "save",
@@ -1099,10 +541,13 @@ const providerSetupSteps = computed<ProviderSetupStep[]>(() => {
         ? t("pages.modelRuntime.labels.providerSaved")
         : t("pages.modelRuntime.labels.providerDraft"),
       complete: providerSaved.value,
-      action: "save" as const,
+      action: "save",
       actionLabel: providerSaveLabel.value,
       actionDisabled: !providerSourceReady.value || !providerForm.value.id.trim(),
       loading: store.isSaving,
+      state: "pending",
+      color: "default",
+      statusLabel: "",
     },
     {
       key: "probe",
@@ -1112,44 +557,55 @@ const providerSetupSteps = computed<ProviderSetupStep[]>(() => {
         ? t("pages.modelRuntime.labels.probePassed")
         : t("pages.modelRuntime.labels.probePending"),
       complete: providerProbePassed.value,
-      action: "probe" as const,
+      action: "probe",
       actionLabel: t("pages.modelRuntime.actions.testConnection"),
       actionDisabled: !providerSaved.value,
       loading: probingProviderId.value === selectedProvider.value?.id,
-    },
-    {
-      key: "catalog",
-      icon: "mdi-database-search-outline",
-      title: t("pages.modelRuntime.labels.setupStepCatalog"),
-      detail: !providerCatalogSupported.value
-        ? t("pages.modelRuntime.labels.catalogUnsupported")
-        : providerCatalogFetched.value
-          ? t("pages.modelRuntime.labels.catalogFetched", { count: catalogCount })
-          : t("pages.modelRuntime.labels.catalogPending"),
-      complete: providerCatalogReady.value,
-      skipped: !providerCatalogSupported.value,
-      action: providerCatalogSupported.value ? ("catalog" as const) : undefined,
-      actionLabel: t("pages.modelRuntime.actions.fetchCatalog"),
-      actionDisabled: !providerSaved.value,
-      loading: catalogLoading.value,
+      state: "pending",
+      color: "default",
+      statusLabel: "",
     },
   ];
 
-  const activeIndex = baseSteps.findIndex((step) => !step.complete && !step.skipped);
+  const activeIndex = baseSteps.findIndex((step) => !step.complete);
   return baseSteps.map((step, index) => {
-    const state: ProviderSetupState = step.skipped
-      ? "skipped"
-      : step.complete
-        ? "complete"
-        : index === activeIndex
-          ? "active"
-          : "pending";
+    const state: ProviderSetupState = step.complete
+      ? "complete"
+      : index === activeIndex
+        ? "active"
+        : "pending";
     return {
       ...step,
       state,
       color: colorForSetupStep(state),
       statusLabel: statusLabelForSetupStep(state),
     };
+  });
+});
+
+const probeResultTitle = computed(() =>
+  t("pages.modelRuntime.labels.probeResult", {
+    mode: lastProviderProbeResult.value?.mode || "",
+  }),
+);
+
+const probeResultSubtitle = computed(() => {
+  const result = lastProviderProbeResult.value;
+  if (!result) {
+    return "";
+  }
+  if (result.executionId) {
+    return t("pages.modelRuntime.labels.probeExecution", {
+      id: result.executionId,
+    });
+  }
+  if (result.catalogSize !== undefined) {
+    return t("pages.modelRuntime.labels.probeCatalogSize", {
+      count: result.catalogSize,
+    });
+  }
+  return t("pages.modelRuntime.labels.probeCheckedAt", {
+    time: result.checkedAt,
   });
 });
 
@@ -1164,10 +620,6 @@ const runProviderSetupAction = async (action?: ProviderSetupAction) => {
   }
   if (action === "probe") {
     await probeSelectedProvider();
-    return;
-  }
-  if (action === "catalog") {
-    await fetchCatalogInline();
   }
 };
 
@@ -1226,7 +678,7 @@ const applyProviderSourcePick = async (values: string[]) => {
 
 .setup-flow-steps {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 
   @include respond-to("tablet") {
@@ -1259,7 +711,6 @@ const applyProviderSourcePick = async (values: string[]) => {
   border-color: rgba(var(--v-theme-success), 0.28);
 }
 
-.setup-flow-step--skipped,
 .setup-flow-step--pending {
   opacity: 0.78;
 }
@@ -1280,7 +731,6 @@ const applyProviderSourcePick = async (values: string[]) => {
   color: rgb(var(--v-theme-success));
 }
 
-.setup-flow-step--skipped .setup-step-marker,
 .setup-flow-step--pending .setup-step-marker {
   background: rgba(var(--v-theme-on-surface), 0.06);
   color: rgba(var(--v-theme-on-surface), 0.56);
@@ -1378,102 +828,6 @@ const applyProviderSourcePick = async (values: string[]) => {
   flex-wrap: wrap;
 }
 
-.configured-model-header,
-.configured-model-tools {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.configured-model-header {
-  justify-content: space-between;
-}
-
-.configured-model-tools {
-  justify-content: flex-end;
-}
-
-.configured-model-search {
-  width: min(280px, 100vw - 64px);
-}
-
-.model-view-toggle {
-  border: 1px solid $border-color-soft;
-  background: rgba(var(--v-theme-surface), 0.78);
-}
-
-.model-view-toggle :deep(.v-btn) {
-  min-width: 40px;
-}
-
-.configured-model-table {
-  overflow: hidden;
-  border: 1px solid $border-color-soft;
-  border-radius: $radius-lg;
-  background: rgba(var(--v-theme-surface), 0.72);
-}
-
-.configured-model-table :deep(th) {
-  color: rgba(var(--v-theme-on-surface), 0.62);
-  font-size: $font-size-xs;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.configured-model-table :deep(td) {
-  vertical-align: middle;
-}
-
-.model-name-cell {
-  min-width: 180px;
-}
-
-.litellm-cell {
-  max-width: 220px;
-}
-
-.litellm-cell code {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  color: rgba(var(--v-theme-on-surface), 0.78);
-  font-size: $font-size-xs;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table-text-clip {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-capability-chips {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.model-meta-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  color: rgba(var(--v-theme-on-surface), 0.62);
-  font-size: $font-size-xs;
-  line-height: 1.35;
-}
-
-.model-enabled-cell {
-  width: 80px;
-}
-
-.model-table-actions {
-  width: 132px;
-  white-space: nowrap;
-}
-
 .json-editor-field {
   font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
 }
@@ -1482,14 +836,6 @@ const applyProviderSourcePick = async (values: string[]) => {
   font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
   font-size: $font-size-sm;
   line-height: 1.5;
-}
-
-.model-editor-card,
-.catalog-item-card {
-  border-radius: $radius-lg;
-  border: 1px solid $border-color-soft;
-  background: rgba(var(--v-theme-surface), 0.66);
-  transition: all $transition-fast;
 }
 
 .section-label {
