@@ -136,195 +136,87 @@
         </div>
       </div>
 
-      <v-progress-linear
-        v-if="loading"
-        indeterminate
-        color="primary"
-        rounded
-        class="mb-4"
-      />
-
-      <v-empty-state
-        v-if="!loading && records.length === 0"
-        icon="mdi-clipboard-search-outline"
-        :title="$t('pages.modelAudit.labels.empty')"
-        variant="plain"
-      />
-
-      <div v-else class="record-list">
-        <article
-          v-for="record in records"
-          :key="record.id"
-          class="record-item"
-          :class="{ 'record-item--active': selectedRecordId === record.id }"
-        >
-          <button type="button" class="record-summary" @click="toggleRecord(record.id)">
-            <span class="record-status" :class="record.success ? 'record-status--success' : 'record-status--failed'">
-              <v-icon :icon="record.success ? 'mdi-check-circle-outline' : 'mdi-alert-circle-outline'" size="18" />
-              {{ record.success ? $t('pages.modelAudit.labels.success') : $t('pages.modelAudit.labels.failed') }}
-            </span>
-
-            <span class="record-main">
-              <strong>{{ record.modelId || $t('pages.modelAudit.labels.none') }}</strong>
-              <small>{{ formatDateTime(record.startedAt) }} · {{ record.providerId || $t('pages.modelAudit.labels.none') }}</small>
-            </span>
-
-            <span class="record-meta">
-              <span>{{ record.caller || $t('pages.modelAudit.labels.none') }}</span>
-              <span>{{ record.sessionId || record.instanceId || $t('pages.modelAudit.labels.none') }}</span>
-            </span>
-
-            <span class="record-usage">
-              <strong>{{ formatDuration(record.latencyMs) }}</strong>
-              <small>{{ formatCompactNumber(record.inputTokens + record.outputTokens) }} tokens</small>
-            </span>
-
-            <v-icon
-              :icon="selectedRecordId === record.id ? 'mdi-chevron-up' : 'mdi-chevron-down'"
-              size="20"
-              class="record-chevron"
-            />
-          </button>
-
-          <v-expand-transition>
-            <div v-if="selectedRecordId === record.id" class="record-detail">
-              <div class="detail-grid">
-                <detail-section :title="$t('pages.modelAudit.sections.details')" icon="mdi-identifier">
-                  <detail-row :label="$t('pages.modelAudit.labels.executionId')" :value="record.id" />
-                  <detail-row :label="$t('pages.modelAudit.labels.promptSnapshotId')" :value="record.promptSnapshotId" />
-                  <detail-row :label="$t('pages.modelAudit.labels.purpose')" :value="record.purpose" />
-                </detail-section>
-
-                <detail-section :title="$t('pages.modelAudit.sections.routing')" icon="mdi-routes">
-                  <detail-row :label="$t('pages.modelAudit.labels.providerId')" :value="record.providerId" />
-                  <detail-row :label="$t('pages.modelAudit.labels.modelId')" :value="record.modelId" />
-                  <detail-row :label="$t('pages.modelAudit.labels.routeId')" :value="record.routeId" />
-                  <detail-row :label="$t('pages.modelAudit.labels.caller')" :value="record.caller" />
-                  <detail-row :label="$t('pages.modelAudit.labels.sessionId')" :value="record.sessionId" />
-                  <detail-row :label="$t('pages.modelAudit.labels.instanceId')" :value="record.instanceId" />
-                </detail-section>
-
-                <detail-section :title="$t('pages.modelAudit.sections.timing')" icon="mdi-timer-outline">
-                  <detail-row :label="$t('pages.modelAudit.labels.startedAt')" :value="formatDateTime(record.startedAt)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.firstTokenAt')" :value="formatDateTime(record.firstTokenAt)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.finishedAt')" :value="formatDateTime(record.finishedAt)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.latency')" :value="formatDuration(record.latencyMs)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.ttft')" :value="formatDuration(record.timeToFirstTokenMs)" />
-                </detail-section>
-
-                <detail-section :title="$t('pages.modelAudit.sections.usage')" icon="mdi-counter">
-                  <detail-row :label="$t('pages.modelAudit.labels.inputTokens')" :value="formatNumber(record.inputTokens)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.outputTokens')" :value="formatNumber(record.outputTokens)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.cacheRead')" :value="formatNumber(record.cacheReadTokens)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.cacheWrite')" :value="formatNumber(record.cacheWriteTokens)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.cacheHit')" :value="boolLabel(record.cacheHit)" />
-                  <detail-row :label="$t('pages.modelAudit.labels.cost')" :value="formatCost(record)" />
-                </detail-section>
-
-                <detail-section
-                  v-if="record.fallbackFromModelId || record.fallbackReason"
-                  :title="$t('pages.modelAudit.labels.fallback')"
-                  icon="mdi-call-split"
-                >
-                  <detail-row :label="$t('pages.modelAudit.labels.fallbackFrom')" :value="record.fallbackFromModelId" />
-                  <detail-row :label="$t('pages.modelAudit.labels.fallbackReason')" :value="record.fallbackReason" />
-                </detail-section>
-
-                <detail-section
-                  v-if="!record.success || record.errorCode || record.errorMessage"
-                  :title="$t('pages.modelAudit.sections.error')"
-                  icon="mdi-alert-outline"
-                  tone="error"
-                >
-                  <detail-row :label="$t('pages.modelAudit.labels.errorCode')" :value="record.errorCode" />
-                  <detail-row :label="$t('pages.modelAudit.labels.errorMessage')" :value="record.errorMessage" />
-                </detail-section>
-              </div>
-
-              <section class="metadata-block">
-                <div class="metadata-block__head">
-                  <v-icon icon="mdi-code-json" size="18" />
-                  <strong>{{ $t('pages.modelAudit.sections.metadata') }}</strong>
-                </div>
-                <div v-if="hasMetadata(record)" class="json-tree-shell">
-                  <json-tree-node :value="record.metadata" />
-                </div>
-                <div v-else class="metadata-empty">{{ $t('pages.modelAudit.labels.metadataEmpty') }}</div>
-              </section>
-
-              <section class="payload-block">
-                <div class="payload-block__head">
-                  <div class="payload-block__title">
-                    <v-icon icon="mdi-file-document-outline" size="18" />
-                    <strong>{{ $t('pages.modelAudit.sections.payload') }}</strong>
-                  </div>
-                  <v-btn
-                    size="small"
-                    variant="tonal"
-                    color="primary"
-                    :loading="payloadLoadingId === record.id"
-                    :disabled="!record.auditPayloadAvailable"
-                    @click="loadPayload(record.id)"
-                  >
-                    {{ $t('pages.modelAudit.actions.viewPayload') }}
-                  </v-btn>
-                </div>
-                <v-alert
-                  v-if="payloadErrorById[record.id]"
-                  type="warning"
-                  variant="tonal"
-                  class="mb-3"
-                >
-                  {{ payloadErrorById[record.id] }}
-                </v-alert>
-                <div v-if="payloadById[record.id]" class="payload-tabs">
-                  <v-tabs v-model="payloadTabById[record.id]" density="comfortable">
-                    <v-tab value="request">{{ $t('pages.modelAudit.payload.request') }}</v-tab>
-                    <v-tab value="response">{{ $t('pages.modelAudit.payload.response') }}</v-tab>
-                    <v-tab value="return">{{ $t('pages.modelAudit.payload.return') }}</v-tab>
-                    <v-tab value="error">{{ $t('pages.modelAudit.payload.error') }}</v-tab>
-                    <v-tab value="meta">{{ $t('pages.modelAudit.payload.meta') }}</v-tab>
-                  </v-tabs>
-                  <v-window v-model="payloadTabById[record.id]" class="payload-window">
-                    <v-window-item value="request">
-                      <div class="json-tree-shell">
-                        <json-tree-node :value="payloadById[record.id]?.request" />
-                      </div>
-                    </v-window-item>
-                    <v-window-item value="response">
-                      <div class="json-tree-shell">
-                        <json-tree-node :value="payloadById[record.id]?.response" />
-                      </div>
-                    </v-window-item>
-                    <v-window-item value="return">
-                      <div class="json-tree-shell">
-                        <json-tree-node :value="payloadById[record.id]?.['return']" />
-                      </div>
-                    </v-window-item>
-                    <v-window-item value="error">
-                      <div class="json-tree-shell">
-                        <json-tree-node :value="payloadById[record.id]?.error" />
-                      </div>
-                    </v-window-item>
-                    <v-window-item value="meta">
-                      <div class="json-tree-shell">
-                        <json-tree-node :value="payloadById[record.id]?.meta" />
-                      </div>
-                    </v-window-item>
-                  </v-window>
-                  <div class="payload-footnote">
-                    <span>{{ $t('pages.modelAudit.labels.auditPayloadRef') }}: {{ record.auditPayloadRef || NONE_VALUE }}</span>
-                    <span>{{ $t('pages.modelAudit.labels.auditPayloadExpiresAt') }}: {{ record.auditPayloadExpiresAt || NONE_VALUE }}</span>
-                  </div>
-                </div>
-                <div v-else class="payload-empty">
-                  {{ record.auditPayloadAvailable ? $t('pages.modelAudit.payload.notLoaded') : $t('pages.modelAudit.payload.unavailable') }}
-                </div>
-              </section>
-            </div>
-          </v-expand-transition>
-        </article>
-      </div>
+      <model-audit-record-list
+        :records="records"
+        :loading="loading"
+        :offset="offset"
+        :has-next-page="hasNextPage"
+        :selected-record-id="selectedRecordId"
+        :page-label="$t('pages.modelAudit.labels.page', pageRange)"
+        :records-label="$t('pages.modelAudit.sections.records')"
+        :empty-label="$t('pages.modelAudit.labels.empty')"
+        :success-label="$t('pages.modelAudit.labels.success')"
+        :failed-label="$t('pages.modelAudit.labels.failed')"
+        :none-label="$t('pages.modelAudit.labels.none')"
+        :previous-label="$t('pages.modelAudit.actions.previous')"
+        :next-label="$t('pages.modelAudit.actions.next')"
+        :format-date-time="formatDateTime"
+        :format-compact-number="formatCompactNumber"
+        :format-duration="formatDuration"
+        @previous="previousPage"
+        @next="nextPage"
+        @toggle="toggleRecord"
+      >
+        <template #detail="{ record }">
+          <model-audit-record-detail
+            :record="record"
+            :active-tab="payloadTabById[record.id]"
+            :payload="payloadById[record.id]"
+            :payload-error="payloadErrorById[record.id]"
+            :loading="payloadLoadingId === record.id"
+            :available="record.auditPayloadAvailable"
+            :payload-ref="record.auditPayloadRef"
+            :payload-expires-at="record.auditPayloadExpiresAt"
+            :labels="payloadLabels"
+            :details-label="$t('pages.modelAudit.sections.details')"
+            :routing-label="$t('pages.modelAudit.sections.routing')"
+            :timing-label="$t('pages.modelAudit.sections.timing')"
+            :usage-label="$t('pages.modelAudit.sections.usage')"
+            :fallback-label="$t('pages.modelAudit.labels.fallback')"
+            :error-label="$t('pages.modelAudit.sections.error')"
+            :metadata-label="$t('pages.modelAudit.sections.metadata')"
+            :metadata-empty-label="$t('pages.modelAudit.labels.metadataEmpty')"
+            :payload-label="$t('pages.modelAudit.sections.payload')"
+            :view-payload-label="$t('pages.modelAudit.actions.viewPayload')"
+            :not-loaded-label="$t('pages.modelAudit.payload.notLoaded')"
+            :unavailable-label="$t('pages.modelAudit.payload.unavailable')"
+            :payload-ref-label="$t('pages.modelAudit.labels.auditPayloadRef')"
+            :payload-expires-at-label="$t('pages.modelAudit.labels.auditPayloadExpiresAt')"
+            :empty-value="NONE_VALUE"
+            :execution-id-label="$t('pages.modelAudit.labels.executionId')"
+            :prompt-snapshot-id-label="$t('pages.modelAudit.labels.promptSnapshotId')"
+            :purpose-label="$t('pages.modelAudit.labels.purpose')"
+            :provider-id-label="$t('pages.modelAudit.labels.providerId')"
+            :model-id-label="$t('pages.modelAudit.labels.modelId')"
+            :route-id-label="$t('pages.modelAudit.labels.routeId')"
+            :caller-label="$t('pages.modelAudit.labels.caller')"
+            :session-id-label="$t('pages.modelAudit.labels.sessionId')"
+            :instance-id-label="$t('pages.modelAudit.labels.instanceId')"
+            :started-at-label="$t('pages.modelAudit.labels.startedAt')"
+            :first-token-at-label="$t('pages.modelAudit.labels.firstTokenAt')"
+            :finished-at-label="$t('pages.modelAudit.labels.finishedAt')"
+            :latency-label="$t('pages.modelAudit.labels.latency')"
+            :ttft-label="$t('pages.modelAudit.labels.ttft')"
+            :input-tokens-label="$t('pages.modelAudit.labels.inputTokens')"
+            :output-tokens-label="$t('pages.modelAudit.labels.outputTokens')"
+            :cache-read-label="$t('pages.modelAudit.labels.cacheRead')"
+            :cache-write-label="$t('pages.modelAudit.labels.cacheWrite')"
+            :cache-hit-label="$t('pages.modelAudit.labels.cacheHit')"
+            :cost-label="$t('pages.modelAudit.labels.cost')"
+            :fallback-from-label="$t('pages.modelAudit.labels.fallbackFrom')"
+            :fallback-reason-label="$t('pages.modelAudit.labels.fallbackReason')"
+            :error-code-label="$t('pages.modelAudit.labels.errorCode')"
+            :error-message-label="$t('pages.modelAudit.labels.errorMessage')"
+            :format-number="formatNumber"
+            :format-duration="formatDuration"
+            :format-date-time="formatDateTime"
+            :format-cost="formatCost"
+            :bool-label="boolLabel"
+            @load-payload="loadPayload(record.id)"
+            @update:active-tab="(value) => { payloadTabById[record.id] = value }"
+          />
+        </template>
+      </model-audit-record-list>
     </section>
   </v-container>
 </template>
@@ -332,20 +224,18 @@
 <script setup lang="ts">
 import {
   computed,
-  defineComponent,
-  h,
   onBeforeUnmount,
   onMounted,
   reactive,
   ref,
   watch,
-  type Component,
-  type VNode,
 } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import ModelAuditRecordList from '@/components/model-audit/ModelAuditRecordList.vue'
+import ModelAuditRecordDetail from '@/components/model-audit/ModelAuditRecordDetail.vue'
 import {
   modelRuntimeApi,
   type ModelExecutionAuditPayloadResponse,
@@ -362,129 +252,6 @@ const PAGE_SIZE = 30
 const NONE_VALUE = '—'
 
 type StatusFilter = 'all' | 'success' | 'failed'
-
-const DetailRow = defineComponent({
-  name: 'DetailRow',
-  props: {
-    label: { type: String, required: true },
-    value: { type: [String, Number, Boolean], default: '' },
-  },
-  setup(props) {
-    return () =>
-      h('div', { class: 'detail-row' }, [
-        h('span', props.label),
-        h('strong', String(props.value || NONE_VALUE)),
-      ])
-  },
-})
-
-const DetailSection = defineComponent({
-  name: 'DetailSection',
-  props: {
-    title: { type: String, required: true },
-    icon: { type: String, required: true },
-    tone: { type: String, default: '' },
-  },
-  setup(props, { slots }) {
-    return () =>
-      h(
-        'section',
-        { class: ['detail-section', props.tone ? `detail-section--${props.tone}` : ''] },
-        [
-          h('div', { class: 'detail-section__title' }, [
-            h('i', { class: ['mdi', props.icon] }),
-            h('span', props.title),
-          ]),
-          h('div', { class: 'detail-section__body' }, slots.default?.()),
-        ]
-      )
-  },
-})
-
-const JsonTreeNode: Component = defineComponent({
-  name: 'JsonTreeNode',
-  props: {
-    value: { type: null, default: null },
-    label: { type: String, default: '' },
-    depth: { type: Number, default: 0 },
-    open: { type: Boolean, default: false },
-  },
-  setup(props) {
-    const renderScalar = (value: unknown): string => {
-      if (value === null) return 'null'
-      if (value === undefined) return 'undefined'
-      if (typeof value === 'string') return JSON.stringify(value)
-      if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-      return JSON.stringify(value, null, 2)
-    }
-
-    return (): VNode => {
-      const value = props.value as unknown
-      const indentStyle = { paddingLeft: `${props.depth * 16}px` }
-      if (Array.isArray(value)) {
-        return h(
-          'details',
-          { class: 'json-node', open: props.open, style: indentStyle },
-          [
-            h('summary', { class: 'json-node__summary' }, [
-              h('span', { class: 'json-node__key' }, props.label || '[ ]'),
-              h('span', { class: 'json-node__meta' }, `Array(${value.length})`),
-            ]),
-            h('div', { class: 'json-node__body' }, [
-              value.length
-                ? value.map((item, index) =>
-                    h(JsonTreeNode, {
-                      key: `${props.depth}-${index}`,
-                      value: item,
-                      label: `[${index}]`,
-                      depth: props.depth + 1,
-                      open: props.depth < 1,
-                    })
-                  )
-                : h('div', { class: 'json-node__empty' }, '[]'),
-            ]),
-          ]
-        )
-      }
-      if (value && typeof value === 'object') {
-        const entries = Object.entries(value as Record<string, unknown>)
-        return h(
-          'details',
-          { class: 'json-node', open: props.open || props.depth < 1, style: indentStyle },
-          [
-            h('summary', { class: 'json-node__summary' }, [
-              h('span', { class: 'json-node__key' }, props.label || '{ }'),
-              h('span', { class: 'json-node__meta' }, `Object(${entries.length})`),
-            ]),
-            h('div', { class: 'json-node__body' }, [
-              entries.length
-                ? entries.map(([key, child]) =>
-                    h(JsonTreeNode, {
-                      key: `${props.depth}-${key}`,
-                      value: child,
-                      label: key,
-                      depth: props.depth + 1,
-                      open: props.depth < 1,
-                    })
-                  )
-                : h('div', { class: 'json-node__empty' }, '{}'),
-            ]),
-          ]
-        )
-      }
-      return h(
-        'div',
-        { class: 'json-node json-node--scalar', style: indentStyle },
-        [
-          props.label
-            ? h('span', { class: 'json-node__key' }, props.label)
-            : null,
-          h('span', { class: 'json-node__scalar' }, renderScalar(value)),
-        ]
-      )
-    }
-  },
-})
 
 const systemSettingsStore = useSystemSettingsStore()
 const { locale, t } = useI18n()
@@ -523,6 +290,14 @@ const statusOptions = computed(() => [
   { title: t('pages.modelAudit.filters.success'), value: 'success' },
   { title: t('pages.modelAudit.filters.failed'), value: 'failed' },
 ])
+
+const payloadLabels = computed(() => ({
+  request: t('pages.modelAudit.payload.request'),
+  response: t('pages.modelAudit.payload.response'),
+  return: t('pages.modelAudit.payload.return'),
+  error: t('pages.modelAudit.payload.error'),
+  meta: t('pages.modelAudit.payload.meta'),
+}))
 
 const providerOptions = computed(() =>
   providers.value.map((provider) => ({
@@ -677,8 +452,6 @@ const formatCost = (record: ModelExecutionRecord) => {
   return formatCurrency(record.estimatedCost)
 }
 
-const hasMetadata = (record: ModelExecutionRecord) => Object.keys(record.metadata || {}).length > 0
-
 watch(
   () => [
     filters.query,
@@ -690,7 +463,7 @@ watch(
     filters.instanceId,
     statusFilter.value,
   ],
-  scheduleRefresh
+  scheduleRefresh,
 )
 
 watch(
@@ -878,19 +651,12 @@ onBeforeUnmount(() => {
   gap: 14px;
 }
 
-.detail-section,
 .metadata-block {
   border: 1px solid $border-color-soft;
   border-radius: $radius-xs;
   background: rgba(var(--v-theme-on-surface), 0.018);
 }
 
-.detail-section--error {
-  border-color: rgba(var(--v-theme-error), 0.24);
-  background: rgba(var(--v-theme-error), 0.05);
-}
-
-.detail-section__title,
 .metadata-block__head {
   display: flex;
   align-items: center;
@@ -901,140 +667,12 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
-.detail-section__body {
-  padding: 0 14px 12px;
-}
-
-:deep(.detail-row) {
-  display: grid;
-  grid-template-columns: minmax(92px, 0.75fr) minmax(0, 1.25fr);
-  gap: 12px;
-  padding: 6px 0;
-  font-size: $font-size-xs;
-}
-
-:deep(.detail-row span) {
-  color: rgba(var(--v-theme-on-surface), 0.52);
-}
-
-:deep(.detail-row strong) {
-  overflow-wrap: anywhere;
-  color: rgba(var(--v-theme-on-surface), 0.86);
-  font-weight: 700;
-}
-
 .metadata-block {
   margin-top: 16px;
 }
 
-.payload-block {
-  margin-top: 16px;
-  border: 1px solid $border-color-soft;
-  border-radius: $radius-xs;
-  background: rgba(var(--v-theme-on-surface), 0.018);
-}
-
-.payload-block__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px 10px;
-}
-
-.payload-block__title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: rgba(var(--v-theme-on-surface), 0.82);
-}
-
-.payload-tabs {
-  padding: 0 16px 16px;
-}
-
-.payload-window {
-  margin-top: 14px;
-}
-
-.payload-footnote {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 20px;
-  margin-top: 10px;
-  padding: 0 2px 2px;
-  color: rgba(var(--v-theme-on-surface), 0.56);
-  font-size: $font-size-xs;
-}
-
-.payload-empty {
-  padding: 0 16px 16px;
-  color: rgba(var(--v-theme-on-surface), 0.54);
-  font-size: $font-size-sm;
-}
-
-.json-tree-shell {
-  max-height: 360px;
+.metadata-json {
   margin: 6px 16px 16px;
-  padding: 14px 16px;
-  overflow: auto;
-  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-  border-radius: $radius-xs;
-  background: rgba(var(--v-theme-surface), 0.36);
-  color: rgba(var(--v-theme-on-surface), 0.78);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  font-size: $font-size-xs;
-  line-height: 1.55;
-}
-
-.payload-tabs .json-tree-shell {
-  margin: 0;
-}
-
-:deep(.json-node) {
-  min-height: 22px;
-}
-
-:deep(.json-node__summary) {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-height: 22px;
-  padding: 1px 0;
-  cursor: pointer;
-}
-
-:deep(.json-node__summary::marker) {
-  color: rgba(var(--v-theme-on-surface), 0.46);
-}
-
-:deep(.json-node__body) {
-  margin-left: 8px;
-  border-left: 1px solid rgba(var(--v-theme-on-surface), 0.08);
-}
-
-:deep(.json-node__key) {
-  color: rgba(var(--v-theme-on-surface), 0.86);
-  font-weight: 700;
-  overflow-wrap: anywhere;
-}
-
-:deep(.json-node__meta) {
-  color: rgba(var(--v-theme-on-surface), 0.46);
-  font-size: $font-size-xs;
-}
-
-:deep(.json-node--scalar) {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 1px 0;
-}
-
-:deep(.json-node__scalar),
-:deep(.json-node__empty) {
-  color: rgba(var(--v-theme-on-surface), 0.72);
-  overflow-wrap: anywhere;
 }
 
 .metadata-empty {

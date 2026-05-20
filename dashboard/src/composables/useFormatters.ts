@@ -45,13 +45,13 @@ export function useFormatters(
     return new Intl.DateTimeFormat(locale.value, options).format(toDate(value))
   }
 
-  const formatDate = (value: string | null) =>
+  const formatDate = (value: string | null | undefined) =>
     formatDateValue(value, { month: 'short', day: 'numeric' })
 
-  const formatDateRangeStart = (value: string | null) =>
+  const formatDateRangeStart = (value: string | null | undefined) =>
     formatDateValue(value, { year: 'numeric', month: 'short', day: 'numeric' })
 
-  const formatDateTime = (value: string | null) =>
+  const formatDateTime = (value: string | null | undefined) =>
     formatDateValue(value, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
   const formatHour = (value: DateLike | null | undefined) =>
@@ -60,8 +60,8 @@ export function useFormatters(
   const formatShortDate = (value: DateLike | null | undefined) =>
     formatDateValue(value, { month: 'short', day: 'numeric' })
 
-  const formatDuration = (value: number | null) => {
-    if (value === null || Number.isNaN(value)) {
+  const formatDuration = (value: number | null | undefined) => {
+    if (value === null || value === undefined || Number.isNaN(value)) {
       return EMPTY_VALUE
     }
 
