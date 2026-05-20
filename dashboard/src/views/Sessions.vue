@@ -54,221 +54,17 @@
       </template>
 
       <template #content>
-        <template v-if="selectedSession">
-          <v-card class="sessions-panel mb-6" elevation="0">
-            <v-card-item>
-              <template #prepend>
-                <v-avatar color="primary" variant="tonal" icon="mdi-forum-outline" />
-              </template>
-              <v-card-title class="text-break">{{ selectedSession.session.displayName || selectedSession.session.id }}</v-card-title>
-              <v-card-subtitle class="text-break">
-                {{ selectedSession.session.id }} · {{ selectedSession.session.platform || selectedSession.session.sessionType }}
-              </v-card-subtitle>
-              <template #append>
-                <v-chip size="small" variant="tonal" color="info">
-                  {{ selectedSession.agent?.state || $t('pages.sessions.labels.noState') }}
-                </v-chip>
-              </template>
-            </v-card-item>
-
-            <v-card-text class="pt-1">
-              <v-row>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.instanceId') }}</span>
-                    <strong>{{ selectedSession.session.instanceId }}</strong>
-                  </div>
-                </v-col>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.channelId') }}</span>
-                    <strong>{{ selectedSession.session.channelId || $t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                </v-col>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.lastActive') }}</span>
-                    <strong>{{ formatTimestamp(selectedSession.session.lastActive) }}</strong>
-                  </div>
-                </v-col>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.permissionGroup') }}</span>
-                    <strong>{{ selectedSession.session.permissionGroup }}</strong>
-                  </div>
-                </v-col>
-              </v-row>
-            </v-card-text>
-          </v-card>
-
-          <v-row class="mx-0 mb-6">
-            <v-col cols="12" md="3" class="pa-2">
-              <v-card class="session-stat-card" elevation="0">
-                <v-card-text>
-                  <div class="text-caption text-medium-emphasis">{{ $t('pages.sessions.stats.messages') }}</div>
-                  <div class="text-h4 font-weight-black mt-2">{{ selectedSession.messageCount }}</div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-            <v-col cols="12" md="3" class="pa-2">
-              <v-card class="session-stat-card" elevation="0">
-                <v-card-text>
-                  <div class="text-caption text-medium-emphasis">{{ $t('pages.sessions.stats.audits') }}</div>
-                  <div class="text-h4 font-weight-black mt-2">{{ selectedSession.auditCount }}</div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-            <v-col cols="12" md="3" class="pa-2">
-              <v-card class="session-stat-card" elevation="0">
-                <v-card-text>
-                  <div class="text-caption text-medium-emphasis">{{ $t('pages.sessions.stats.unread') }}</div>
-                  <div class="text-h4 font-weight-black mt-2">{{ selectedSession.agent?.unreadCount ?? 0 }}</div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-            <v-col cols="12" md="3" class="pa-2">
-              <v-card class="session-stat-card" elevation="0">
-                <v-card-text>
-                  <div class="text-caption text-medium-emphasis">{{ $t('pages.sessions.stats.highPriority') }}</div>
-                  <div class="text-h4 font-weight-black mt-2">{{ selectedSession.agent?.highPriorityCount ?? 0 }}</div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-          </v-row>
-
-          <v-card class="sessions-panel mb-6" elevation="0">
-            <v-card-title class="text-subtitle-1 font-weight-bold">
-              {{ $t('pages.sessions.sections.config') }}
-            </v-card-title>
-            <v-card-text>
-              <v-row>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.prefixes') }}</span>
-                    <strong>{{ (selectedSession.config?.prefixes || []).join(' ') || $t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                </v-col>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.llmEnabled') }}</span>
-                    <strong>{{ boolLabel(selectedSession.config?.llmEnabled) }}</strong>
-                  </div>
-                </v-col>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.muted') }}</span>
-                    <strong>{{ boolLabel(selectedSession.config?.isMuted) }}</strong>
-                  </div>
-                </v-col>
-                <v-col cols="12" md="3">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.auditEnabled') }}</span>
-                    <strong>{{ boolLabel(selectedSession.config?.auditEnabled) }}</strong>
-                  </div>
-                </v-col>
-              </v-row>
-            </v-card-text>
-          </v-card>
-
-          <v-row class="mx-0">
-            <v-col cols="12" lg="7" class="pa-2">
-              <v-card class="sessions-panel h-100" elevation="0">
-                <v-card-title class="text-subtitle-1 font-weight-bold">
-                  {{ $t('pages.sessions.sections.history') }}
-                </v-card-title>
-                <v-card-text>
-                  <div v-if="selectedSession.history.length === 0" class="text-body-2 text-medium-emphasis py-6 text-center">
-                    {{ $t('pages.sessions.empty.history') }}
-                  </div>
-                  <div v-else class="session-message-list">
-                    <div v-for="message in selectedSession.history" :key="message.id" class="session-message-row">
-                      <div class="session-message-row__head">
-                        <strong>{{ message.senderName || message.senderId || $t('pages.sessions.labels.unknownSender') }}</strong>
-                        <span>{{ formatTimestamp(message.createdAt) }}</span>
-                      </div>
-                      <div class="session-message-row__meta">
-                        <v-chip size="x-small" variant="tonal">{{ message.role }}</v-chip>
-                        <v-chip size="x-small" variant="tonal" :color="routingColor(message.routingStatus)">{{ message.routingStatus }}</v-chip>
-                        <v-chip v-if="message.isMentioned" size="x-small" variant="tonal" color="warning">{{ $t('pages.sessions.labels.mentioned') }}</v-chip>
-                      </div>
-                      <div class="session-message-row__body">{{ message.rawText || stringifyContent(message.content) }}</div>
-                    </div>
-                  </div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-
-            <v-col cols="12" lg="5" class="pa-2">
-              <v-card class="sessions-panel mb-4" elevation="0">
-                <v-card-title class="text-subtitle-1 font-weight-bold">
-                  {{ $t('pages.sessions.sections.agent') }}
-                </v-card-title>
-                <v-card-text class="pt-1">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.reviewAt') }}</span>
-                    <strong>{{ selectedSession.agent?.reviewPlan?.nextReviewAt ? formatTimestamp(selectedSession.agent.reviewPlan.nextReviewAt) : t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.reviewInterval') }}</span>
-                    <strong>{{ formatReviewInterval(selectedSession.agent?.reviewPlan?.nextReviewAt) }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.reviewReason') }}</span>
-                    <strong>{{ selectedSession.agent?.reviewPlan?.reason || $t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.activeChat') }}</span>
-                    <strong>{{ selectedSession.agent?.activeChatState ? `${selectedSession.agent.activeChatState.interestValue.toFixed(1)} / ${selectedSession.agent.activeChatState.tickCount}` : $t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                </v-card-text>
-              </v-card>
-
-              <v-card class="sessions-panel mb-4" elevation="0">
-                <v-card-title class="text-subtitle-1 font-weight-bold">
-                  {{ $t('pages.sessions.sections.review') }}
-                </v-card-title>
-                <v-card-text class="pt-1">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.latestReview') }}</span>
-                    <strong>{{ formatSummary(selectedSession.latestReviewSummary) }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.activeChatSummary') }}</span>
-                    <strong>{{ formatSummary(selectedSession.latestActiveChatSummary) }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.overflowSummary') }}</span>
-                    <strong>{{ formatSummary(selectedSession.latestOverflowSummary) }}</strong>
-                  </div>
-                </v-card-text>
-              </v-card>
-
-              <v-card class="sessions-panel" elevation="0">
-                <v-card-title class="text-subtitle-1 font-weight-bold">
-                  {{ $t('pages.sessions.sections.workflow') }}
-                </v-card-title>
-                <v-card-text class="pt-1">
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.workflowRun') }}</span>
-                    <strong>{{ selectedSession.latestWorkflowRun?.id || $t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.workflowProfile') }}</span>
-                    <strong>{{ selectedSession.latestWorkflowRun?.responseProfile || $t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.workflowResult') }}</span>
-                    <strong>{{ selectedSession.latestWorkflowRun?.responseSummary || selectedSession.latestWorkflowRun?.finishReason || $t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                  <div class="session-meta-row">
-                    <span>{{ $t('pages.sessions.fields.lastAudit') }}</span>
-                    <strong>{{ selectedSession.latestAudit ? formatDateTime(selectedSession.latestAudit.timestamp) : t('pages.sessions.labels.none') }}</strong>
-                  </div>
-                </v-card-text>
-              </v-card>
-            </v-col>
-          </v-row>
-        </template>
+        <session-detail-panel
+          :session="selectedSession"
+          :empty-label="$t('pages.sessions.empty.title')"
+          :format-timestamp="formatTimestamp"
+          :format-date-time="formatDateTime"
+          :format-review-interval="formatReviewInterval"
+          :bool-label="boolLabel"
+          :format-summary="formatSummary"
+          :routing-color="routingColor"
+          :stringify-content="stringifyContent"
+        />
       </template>
     </dual-pane-list-view>
   </v-container>
@@ -282,6 +78,7 @@ import { useI18n } from 'vue-i18n'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
+import SessionDetailPanel from '@/components/sessions/SessionDetailPanel.vue'
 import { sessionsApi, type SessionOverviewItem, type SessionSummary } from '@/api/sessions'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { useFormatters } from '@/composables/useFormatters'
@@ -387,75 +184,11 @@ const refresh = async () => {
   }
 }
 
-const selectedSessionItem = computed(() =>
+const selectedSession = computed(() =>
   sessions.value.find((item) => item.session.id === selectedSessionId.value) || sessions.value[0] || null
 )
-
-const selectedSession = selectedSessionItem
 
 onMounted(() => {
   void refresh()
 })
 </script>
-
-<style scoped lang="scss">
-@use '@/styles/mixins' as *;
-
-.sessions-content {
-  min-height: 0;
-}
-
-.sessions-panel,
-.session-stat-card {
-  @include surface-card;
-}
-
-.session-meta-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 0;
-}
-
-.session-meta-row span {
-  color: rgba(var(--v-theme-on-surface), 0.6);
-  font-size: 0.78rem;
-}
-
-.session-message-list {
-  display: grid;
-  gap: 12px;
-}
-
-.session-message-row {
-  padding: 12px 14px;
-  border: 1px solid $border-color-soft;
-  border-radius: $radius-base;
-  background: rgba(var(--v-theme-surface), 0.7);
-}
-
-.session-message-row__head,
-.session-message-row__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.session-message-row__head {
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.session-message-row__head span {
-  color: rgba(var(--v-theme-on-surface), 0.52);
-  font-size: 0.8rem;
-}
-
-.session-message-row__body {
-  margin-top: 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: rgba(var(--v-theme-on-surface), 0.84);
-}
-</style>
