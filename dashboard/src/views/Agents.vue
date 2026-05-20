@@ -39,15 +39,15 @@
 
     <agent-runtime-profiles
       :profiles="runtimeProfiles"
-      :bindings-label="'Bindings'"
-      :sessions-label="'Sessions'"
-      :review-label="'Review'"
+      :bindings-label="$t('pages.agents.labels.bindings')"
+      :sessions-label="$t('pages.agents.labels.sessions')"
+      :review-label="$t('pages.agents.labels.review')"
       :review-interval-label="$t('pages.agents.labels.reviewInterval')"
-      :unread-label="'Unread'"
-      :active-chat-label="'Active Chat'"
-      :last-review-label="'Last Review'"
-      :review-note-label="'Review Note'"
-      :last-audit-label="'Last Audit'"
+      :unread-label="$t('pages.agents.labels.unread')"
+      :active-chat-label="$t('pages.agents.labels.activeChat')"
+      :last-review-label="$t('pages.agents.labels.lastReview')"
+      :review-note-label="$t('pages.agents.labels.reviewNote')"
+      :last-audit-label="$t('pages.agents.labels.lastAudit')"
       :no-value-label="$t('pages.agents.labels.noValue')"
       :format-timestamp="formatTimestamp"
       :format-review-interval="formatReviewInterval"
@@ -110,74 +110,25 @@
         sm="6"
         lg="4"
       >
-        <v-card class="agent-card h-100 d-flex flex-column" elevation="0">
-          <v-card-item>
-            <template #prepend>
-              <v-avatar
-                color="primary"
-                variant="tonal"
-                icon="mdi-account-cog-outline"
-              />
-            </template>
-            <v-card-title class="text-break">
-              {{ profile.agentId || profile.fileName }}
-            </v-card-title>
-            <v-card-subtitle>{{ profile.path }}</v-card-subtitle>
-            <template #append>
-              <v-chip
-                :color="profile.issues.length > 0 ? 'warning' : 'success'"
-                size="small"
-                variant="tonal"
-              >
-                {{
-                  profile.issues.length > 0
-                    ? $t("pages.agents.labels.issueCount", {
-                        count: profile.issues.length,
-                      })
-                    : $t("pages.agents.labels.valid")
-                }}
-              </v-chip>
-            </template>
-          </v-card-item>
-
-          <v-card-text class="pt-1 flex-grow-1">
-            <div class="agent-meta-row">
-              <span>{{ $t("pages.agents.fields.mode") }}</span>
-              <strong>{{
-                profile.mode || $t("pages.agents.labels.noValue")
-              }}</strong>
-            </div>
-            <div class="agent-meta-row">
-              <span>{{ $t("pages.agents.fields.persona") }}</span>
-              <strong>{{
-                profile.personaId || $t("pages.agents.labels.noValue")
-              }}</strong>
-            </div>
-            <div class="agent-meta-row">
-              <span>{{ $t("pages.agents.labels.updated") }}</span>
-              <strong>{{ formatTimestamp(profile.lastModified) }}</strong>
-            </div>
-          </v-card-text>
-
-          <v-card-actions>
-            <v-btn
-              variant="text"
-              prepend-icon="mdi-pencil"
-              @click="openEdit(profile)"
-            >
-              {{ $t("common.actions.action.edit") }}
-            </v-btn>
-            <v-spacer />
-            <v-btn
-              color="error"
-              variant="text"
-              prepend-icon="mdi-delete-outline"
-              @click="removeProfile(profile)"
-            >
-              {{ $t("common.actions.action.delete") }}
-            </v-btn>
-          </v-card-actions>
-        </v-card>
+        <agent-config-card
+          :profile="profile"
+          :mode-label="$t('pages.agents.fields.mode')"
+          :persona-label="$t('pages.agents.fields.persona')"
+          :updated-label="$t('pages.agents.labels.updated')"
+          :no-value-label="$t('pages.agents.labels.noValue')"
+          :valid-label="$t('pages.agents.labels.valid')"
+          :edit-label="$t('common.actions.action.edit')"
+          :delete-label="$t('common.actions.action.delete')"
+          :issue-count-label="
+            (count: number) =>
+              $t('pages.agents.labels.issueCount', {
+                count,
+              })
+          "
+          :format-timestamp="formatTimestamp"
+          @edit="openEdit"
+          @remove="removeProfile"
+        />
       </v-col>
     </v-row>
 
@@ -210,6 +161,7 @@ import {
   type ConfigWorkspaceProvider,
 } from "@/api/config";
 import AppPageHeader from "@/components/AppPageHeader.vue";
+import AgentConfigCard from "@/components/agents/AgentConfigCard.vue";
 import AgentRuntimeProfiles from "@/components/agents/AgentRuntimeProfiles.vue";
 import AgentConfigDialog from "@/components/agents/AgentConfigDialog.vue";
 import { useConfirmDialog } from "@/composables/useConfirmDialog";
