@@ -63,6 +63,23 @@
   />
 
   <v-text-field
+    v-else-if="field.component === 'model-ref'"
+    :model-value="scalarText"
+    :label="field.label"
+    :hint="field.description"
+    :placeholder="field.placeholder"
+    :error-messages="errorMessages"
+    :disabled="disabled"
+    :density="density"
+    append-inner-icon="mdi-cube-scan"
+    variant="outlined"
+    persistent-hint
+    clearable
+    @click:append-inner="modelPickerVisible = true"
+    @update:model-value="updateScalarValue"
+  />
+
+  <v-text-field
     v-else
     :model-value="scalarText"
     :label="field.label"
@@ -80,6 +97,15 @@
     @click:append-inner="toggleSecretVisibility"
     @update:model-value="updateScalarValue"
   />
+
+  <model-id-picker-dialog
+    v-if="field.component === 'model-ref'"
+    v-model="modelPickerVisible"
+    :current-value="scalarText"
+    :route-options="modelRefRouteOptions"
+    :provider-groups="modelRefProviderGroups"
+    @select="selectModelRef"
+  />
 </template>
 
 <script setup lang="ts">
@@ -87,20 +113,46 @@ import { computed, ref, watch } from 'vue'
 
 import type { ConfigValue } from '@/api/config'
 import type { ConfigFormField } from '@/config'
+import ModelIdPickerDialog from '@/components/model-runtime/ModelIdPickerDialog.vue'
 
 type FieldDensity = 'default' | 'comfortable' | 'compact'
+
+interface ModelRefRouteOption {
+  id: string
+  title: string
+  subtitle: string
+  enabled: boolean
+}
+
+interface ModelRefProviderGroupItem {
+  value: string
+  title: string
+  subtitle: string
+  kind: 'catalog' | 'configured'
+}
+
+interface ModelRefProviderGroup {
+  providerId: string
+  providerName: string
+  providerType: string
+  items: ModelRefProviderGroupItem[]
+}
 
 interface Props {
   field: ConfigFormField
   modelValue?: ConfigValue
   disabled?: boolean
   density?: FieldDensity
+  modelRefRouteOptions?: ModelRefRouteOption[]
+  modelRefProviderGroups?: ModelRefProviderGroup[]
   jsonErrorText?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
   disabled: false,
   density: 'comfortable',
+  modelRefRouteOptions: () => [],
+  modelRefProviderGroups: () => [],
   jsonErrorText: 'Invalid JSON.',
 })
 
@@ -109,6 +161,7 @@ const emit = defineEmits<{
 }>()
 
 const secretVisible = ref(false)
+const modelPickerVisible = ref(false)
 const jsonText = ref('')
 const localJsonError = ref('')
 
@@ -196,6 +249,11 @@ function updateScalarValue(value: unknown) {
     return
   }
   emitValue(text)
+}
+
+function selectModelRef(value: string) {
+  modelPickerVisible.value = false
+  emitValue(value)
 }
 
 function updateListValue(value: unknown) {

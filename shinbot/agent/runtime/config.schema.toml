@@ -53,6 +53,7 @@ path = "agent.defaults.llm"
 type = "string"
 default = "[route]chat.default"
 description = "Default LLM reference for Agent stages. Prefix with [route] or [model] to force target type."
+component = "model-ref"
 
 [[fields]]
 path = "agent.defaults.caller"
@@ -287,6 +288,7 @@ path = "agent.review.overflow_compression.llm"
 type = "string"
 default = ""
 description = "LLM reference for overflow compression."
+component = "model-ref"
 
 [[fields]]
 path = "agent.review.overflow_compression.caller"
@@ -340,6 +342,7 @@ path = "agent.review.scan.llm"
 type = "string"
 default = ""
 description = "LLM reference for review scan."
+component = "model-ref"
 
 [[fields]]
 path = "agent.review.scan.caller"
@@ -393,6 +396,7 @@ path = "agent.review.block_digest.llm"
 type = "string"
 default = ""
 description = "LLM reference for block digest."
+component = "model-ref"
 
 [[fields]]
 path = "agent.review.block_digest.caller"
@@ -446,6 +450,7 @@ path = "agent.review.reply_decision.llm"
 type = "string"
 default = ""
 description = "LLM reference for reply decision."
+component = "model-ref"
 
 [[fields]]
 path = "agent.review.reply_decision.caller"
@@ -511,6 +516,7 @@ path = "agent.review.active_chat_bootstrap.llm"
 type = "string"
 default = ""
 description = "LLM reference for active chat bootstrap."
+component = "model-ref"
 
 [[fields]]
 path = "agent.review.active_chat_bootstrap.timeout_seconds"
@@ -572,6 +578,7 @@ path = "agent.review.idle_review_planning.llm"
 type = "string"
 default = ""
 description = "LLM reference for ACTIVE_CHAT to IDLE review planning."
+component = "model-ref"
 
 [[fields]]
 path = "agent.review.idle_review_planning.caller"
@@ -873,6 +880,7 @@ path = "agent.active_chat.fast_mode.llm"
 type = "string"
 default = ""
 description = "LLM reference for active chat fast mode."
+component = "model-ref"
 
 [[fields]]
 path = "agent.active_chat.fast_mode.caller"

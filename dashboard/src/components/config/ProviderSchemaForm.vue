@@ -20,6 +20,8 @@
           <provider-field-control
             :field="field"
             :model-value="fieldValue(field)"
+            :model-ref-route-options="modelRefRouteOptions"
+            :model-ref-provider-groups="modelRefProviderGroups"
             :disabled="disabled"
             :density="density"
             :json-error-text="jsonErrorText"
@@ -44,6 +46,8 @@
                 <provider-field-control
                   :field="field"
                   :model-value="fieldValue(field)"
+                  :model-ref-route-options="modelRefRouteOptions"
+                  :model-ref-provider-groups="modelRefProviderGroups"
                   :disabled="disabled"
                   :density="density"
                   :json-error-text="jsonErrorText"
@@ -81,6 +85,27 @@ import ProviderFieldControl from "./ProviderFieldControl.vue";
 
 type FieldDensity = "default" | "comfortable" | "compact";
 
+interface ModelRefRouteOption {
+  id: string;
+  title: string;
+  subtitle: string;
+  enabled: boolean;
+}
+
+interface ModelRefProviderGroupItem {
+  value: string;
+  title: string;
+  subtitle: string;
+  kind: "catalog" | "configured";
+}
+
+interface ModelRefProviderGroup {
+  providerId: string;
+  providerName: string;
+  providerType: string;
+  items: ModelRefProviderGroupItem[];
+}
+
 interface Props {
   provider: ConfigProviderDefinition | ConfigWorkspaceProvider | null;
   modelValue: ConfigRecord;
@@ -90,6 +115,8 @@ interface Props {
   fieldPrefixes?: string[];
   disabled?: boolean;
   density?: FieldDensity;
+  modelRefRouteOptions?: ModelRefRouteOption[];
+  modelRefProviderGroups?: ModelRefProviderGroup[];
   advancedLabel?: string;
   emptyText?: string;
   jsonErrorText?: string;
@@ -102,6 +129,8 @@ const props = withDefaults(defineProps<Props>(), {
   fieldPrefixes: () => [],
   disabled: false,
   density: "comfortable",
+  modelRefRouteOptions: () => [],
+  modelRefProviderGroups: () => [],
   advancedLabel: "Advanced",
   emptyText: "No configurable fields.",
   jsonErrorText: "Invalid JSON.",

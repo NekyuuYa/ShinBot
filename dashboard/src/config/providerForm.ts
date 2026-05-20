@@ -25,6 +25,7 @@ export type ConfigFormComponent =
   | 'integer-list'
   | 'json'
   | 'array-object'
+  | 'model-ref'
 
 export interface ConfigFormOption {
   title: string
@@ -81,6 +82,24 @@ const fieldComponentByType: Record<ConfigFieldType, ConfigFormComponent> = {
   array_object: 'array-object',
   path: 'text',
   duration: 'number',
+}
+
+function fieldComponentFor(field: ConfigFieldDefinition): ConfigFormComponent {
+  const explicitComponent = metadataString(field, 'component')
+  if (
+    explicitComponent === 'model-ref' ||
+    explicitComponent === 'text' ||
+    explicitComponent === 'number' ||
+    explicitComponent === 'switch' ||
+    explicitComponent === 'select' ||
+    explicitComponent === 'string-list' ||
+    explicitComponent === 'integer-list' ||
+    explicitComponent === 'json' ||
+    explicitComponent === 'array-object'
+  ) {
+    return explicitComponent
+  }
+  return fieldComponentByType[field.type]
 }
 
 const isRecord = (value: ConfigValue | undefined): value is ConfigRecord =>
@@ -314,7 +333,7 @@ export function buildProviderFormFields(
         || prettyFieldLabel(field.path),
       description: localizedMetadataString(field.metadata, 'description', locale)
         || field.description,
-      component: fieldComponentByType[field.type],
+      component: fieldComponentFor(field),
       valueType: field.type,
       inputType: field.secret ? 'password' : field.type === 'integer' || field.type === 'float' || field.type === 'duration' ? 'number' : 'text',
       required: field.required,

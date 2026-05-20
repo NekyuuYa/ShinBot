@@ -308,6 +308,8 @@
                 :provider="agentProvider"
                 :issues="profileIssues"
                 :field-prefixes="['agent.id', 'agent.mode', 'agent.persona_id']"
+                :model-ref-route-options="modelRefRouteOptions"
+                :model-ref-provider-groups="modelRefProviderGroups"
                 :advanced-label="$t('pages.agents.labels.advancedFields')"
                 :empty-text="$t('pages.agents.empty.noFields')"
                 :json-error-text="$t('pages.agents.messages.invalidJson')"
@@ -320,6 +322,8 @@
                 :provider="agentProvider"
                 :issues="profileIssues"
                 :field-prefixes="['agent.prompt_files', 'agent.defaults']"
+                :model-ref-route-options="modelRefRouteOptions"
+                :model-ref-provider-groups="modelRefProviderGroups"
                 :advanced-label="$t('pages.agents.labels.advancedFields')"
                 :empty-text="$t('pages.agents.empty.noFields')"
                 :json-error-text="$t('pages.agents.messages.invalidJson')"
@@ -332,6 +336,8 @@
                 :provider="agentProvider"
                 :issues="profileIssues"
                 :field-prefixes="['agent.review']"
+                :model-ref-route-options="modelRefRouteOptions"
+                :model-ref-provider-groups="modelRefProviderGroups"
                 :advanced-label="$t('pages.agents.labels.advancedFields')"
                 :empty-text="$t('pages.agents.empty.noFields')"
                 :json-error-text="$t('pages.agents.messages.invalidJson')"
@@ -344,6 +350,8 @@
                 :provider="agentProvider"
                 :issues="profileIssues"
                 :field-prefixes="['agent.active_chat']"
+                :model-ref-route-options="modelRefRouteOptions"
+                :model-ref-provider-groups="modelRefProviderGroups"
                 :advanced-label="$t('pages.agents.labels.advancedFields')"
                 :empty-text="$t('pages.agents.empty.noFields')"
                 :json-error-text="$t('pages.agents.messages.invalidJson')"
@@ -360,6 +368,8 @@
                   'agent.summaries',
                   'agent.media',
                 ]"
+                :model-ref-route-options="modelRefRouteOptions"
+                :model-ref-provider-groups="modelRefProviderGroups"
                 :advanced-label="$t('pages.agents.labels.advancedFields')"
                 :empty-text="$t('pages.agents.empty.noFields')"
                 :json-error-text="$t('pages.agents.messages.invalidJson')"
@@ -432,8 +442,10 @@ import { useConfirmDialog } from "@/composables/useConfirmDialog";
 import { useDelayedFlag } from "@/composables/useDelayedFlag";
 import { translate } from "@/plugins/i18n";
 import { useConfigWorkspaceStore } from "@/stores/configWorkspace";
+import { useModelRuntimeStore } from "@/stores/modelRuntime";
 import { useUiStore } from "@/stores/ui";
 import { getErrorMessage } from "@/utils/error";
+import { resolveProviderSource } from "@/utils/modelRuntimeSources";
 
 type AgentFormTab = "identity" | "defaults" | "review" | "active" | "advanced";
 
@@ -441,6 +453,7 @@ const AGENT_RUNTIME_PROVIDER_ID = "shinbot.agent.runtime";
 
 const { t, locale } = useI18n();
 const configStore = useConfigWorkspaceStore();
+const modelRuntimeStore = useModelRuntimeStore();
 const uiStore = useUiStore();
 const { confirm } = useConfirmDialog();
 
@@ -492,6 +505,55 @@ const agentTabs = computed(() => [
 
 const agentProvider = computed<ConfigWorkspaceProvider | null>(
   () => configStore.agentProvidersById[AGENT_RUNTIME_PROVIDER_ID] ?? null,
+);
+
+const routeTitle = (route: { id: string; purpose: string; metadata: Record<string, unknown> }) => {
+  const metadata = route.metadata || {};
+  for (const key of ["displayName", "name", "title"]) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return route.purpose || route.id;
+};
+
+const modelRefRouteOptions = computed(() =>
+  modelRuntimeStore.routes
+    .map((route) => ({
+      id: `[route]${route.id}`,
+      title: routeTitle(route),
+      subtitle: `${route.id}${route.strategy ? ` · ${route.strategy}` : ""}`,
+      enabled: route.enabled,
+    }))
+    .sort((left, right) => {
+      if (left.enabled !== right.enabled) {
+        return left.enabled ? -1 : 1;
+      }
+      return left.title.localeCompare(right.title);
+    }),
+);
+
+const modelRefProviderGroups = computed(() =>
+  modelRuntimeStore.providers
+    .map((provider) => ({
+      providerId: provider.id,
+      providerName: provider.displayName || provider.id,
+      providerType: resolveProviderSource(provider.type)?.label || provider.type,
+      items: (modelRuntimeStore.modelsByProvider[provider.id] || [])
+        .map((model) => ({
+          value: `[model]${model.id}`,
+          title: model.displayName || model.id,
+          subtitle:
+            model.litellmModel && model.litellmModel !== model.id
+              ? `${model.id} · ${model.litellmModel}`
+              : model.id,
+          kind: "configured" as const,
+        }))
+        .sort((left, right) => left.title.localeCompare(right.title)),
+    }))
+    .filter((group) => group.items.length > 0)
+    .sort((left, right) => left.providerName.localeCompare(right.providerName)),
 );
 
 const initialSkeletonRequested = computed(
@@ -591,6 +653,7 @@ async function refreshPage() {
   try {
     await Promise.all([
       configStore.loadWorkspace({ preserveDraft: configStore.isDirty }),
+      modelRuntimeStore.fetchAll(),
       loadProfiles(),
       loadRuntimeProfiles(),
     ]);
