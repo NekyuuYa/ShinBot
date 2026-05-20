@@ -18,6 +18,8 @@ from agent_scheduler_support import (
     pytest,
 )
 
+from shinbot.agent.signals import AgentSignal, AgentSignalKind, AgentSignalSource
+
 
 @pytest.mark.asyncio
 async def test_scheduler_applies_active_chat_bootstrap_correction() -> None:
@@ -167,78 +169,35 @@ def test_bootstrap_correction_applies_tick_diff_to_current_interest() -> None:
 
 
 @pytest.mark.asyncio
-async def test_active_chat_timer_service_ticks_session_to_idle() -> None:
-    now = 60.0
+async def test_active_chat_timer_service_dispatches_tick_signal() -> None:
     timer = ActiveChatTimerService(tick_interval_seconds=0.01)
-    dispatcher = RecordingWorkflowDispatcher()
-    scheduler = AgentScheduler(
-        workflow_dispatcher=dispatcher,
-        response_profile_resolver=lambda _signal: "balanced",
-        review_policy=FixedReviewPolicy(),
-        active_chat_policy=DefaultActiveChatPolicy(
-            ActiveChatPolicyConfig(
-                initial_interest_value=10.0,
-                decay_half_life_seconds=5.0,
-                idle_interest_threshold=5.0,
-                tick_interval_seconds=5.0,
-            )
-        ),
-        active_chat_timer=timer,
-        now=lambda: now,
-    )
-    await scheduler.accept_signal(make_signal())
-    now = 102.0
-    scheduler.prepare_due_review("bot:group:room", now=now)
-    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=now)
-    now = 107.0
+    calls: list[AgentSignal] = []
+
+    class Scheduler:
+        def state_for(self, _session_id: str) -> AgentState:
+            return AgentState.IDLE
+
+    class Profile:
+        agent_scheduler = Scheduler()
+
+    class Runtime:
+        async def handle_agent_signal(self, signal: AgentSignal) -> None:
+            calls.append(signal)
+
+        def agent_profile_for_bot(self, _bot_id: str) -> Profile:
+            return Profile()
+
+    timer.bind_agent_runtime(Runtime(), bot_id="bot-a")
+    timer.start("bot:group:room")
 
     await asyncio_sleep(0.05)
     await timer.shutdown()
 
-    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
-    assert scheduler.active_chat_state_for("bot:group:room") is None
+    assert [call.kind for call in calls] == [AgentSignalKind.ACTIVE_CHAT_TICK]
+    assert [call.source for call in calls] == [AgentSignalSource.TIMER]
+    assert [call.bot_id for call in calls] == ["bot-a"]
+    assert [call.session_id for call in calls] == ["bot:group:room"]
     assert timer.active_sessions() == []
-    assert dispatcher.active_chat_stops == ["bot:group:room"]
-
-
-@pytest.mark.asyncio
-async def test_active_chat_timer_service_plans_review_before_idle_exit() -> None:
-    now = 60.0
-    timer = ActiveChatTimerService(tick_interval_seconds=0.01)
-    dispatcher = RecordingWorkflowDispatcher()
-    planned = ReviewPlan(
-        session_id="bot:group:room",
-        next_review_at=321.0,
-        reason="timer_planned_after_active_chat",
-        updated_at=107.0,
-    )
-    dispatcher.idle_review_plans.append(planned)
-    scheduler = AgentScheduler(
-        workflow_dispatcher=dispatcher,
-        response_profile_resolver=lambda _signal: "balanced",
-        review_policy=FixedReviewPolicy(),
-        active_chat_policy=DefaultActiveChatPolicy(
-            ActiveChatPolicyConfig(
-                initial_interest_value=10.0,
-                decay_half_life_seconds=5.0,
-                idle_interest_threshold=5.0,
-                tick_interval_seconds=5.0,
-            )
-        ),
-        active_chat_timer=timer,
-        now=lambda: now,
-    )
-    await scheduler.accept_signal(make_signal())
-    now = 102.0
-    scheduler.prepare_due_review("bot:group:room", now=now)
-    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=now)
-    now = 107.0
-
-    await asyncio_sleep(0.05)
-    await timer.shutdown()
-
-    assert dispatcher.idle_review_plan_calls == ["bot:group:room"]
-    assert scheduler.review_plan_for("bot:group:room") == planned
 
 
 def test_scheduler_tick_active_chat_skips_when_state_is_not_active_chat() -> None:

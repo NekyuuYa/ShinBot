@@ -21,6 +21,13 @@ from agent_runtime_support import (
     pytest,
 )
 
+from shinbot.agent.signals import (
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+    AgentTimerSignal,
+)
+
 
 @pytest.mark.asyncio
 async def test_agent_runtime_selects_profile_by_bot_id(tmp_path: Path) -> None:
@@ -573,5 +580,70 @@ async def test_agent_runtime_exit_active_returns_idle_with_review_plan(
         assert review_plan.reason == "conversation_settled"
         assert runtime.active_chat_workflow.attention_state_for(session_id) is None
         assert runtime.agent_scheduler.unread_messages(session_id) == []
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_active_chat_tick_plans_review_before_idle(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime(
+        [
+            make_generate_result(
+                text='{"next_review_after_seconds": 120, "reason": "timer_settled"}'
+            )
+        ]
+    )
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(
+        bot,
+        agent_config={
+            "agent": {
+                "active_chat": {
+                    "initial_interest": 10.0,
+                    "idle_interest_threshold": 5.0,
+                    "decay_half_life_seconds": 5.0,
+                    "tick_interval_seconds": 5.0,
+                }
+            }
+        },
+    )
+    session_id = "test-bot:group:group:1"
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=10.0,
+        decay_half_life_seconds=5.0,
+        entered_at=10.0,
+        updated_at=10.0,
+        active_epoch=7,
+    )
+    runtime.agent_scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    runtime.agent_scheduler._state_store.set_active_chat_state(active_state)
+    await runtime.active_chat_workflow.start_active_chat(
+        session_id=session_id,
+        active_chat_state=active_state,
+    )
+
+    try:
+        await runtime.handle_agent_signal(
+            AgentSignal(
+                signal_id="tick:test-bot:group:group:1",
+                kind=AgentSignalKind.ACTIVE_CHAT_TICK,
+                source=AgentSignalSource.TIMER,
+                session_id=session_id,
+                occurred_at=15.0,
+                timer=AgentTimerSignal(trigger=AgentSignalKind.ACTIVE_CHAT_TICK.value),
+            )
+        )
+
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.IDLE
+        assert runtime.agent_scheduler.active_chat_state_for(session_id) is None
+        assert runtime.active_chat_workflow.attention_state_for(session_id) is None
+        review_plan = runtime.agent_scheduler.review_plan_for(session_id)
+        assert review_plan is not None
+        assert review_plan.reason == "timer_settled"
+        assert model_runtime.calls[0].purpose == "idle_review_planning"
     finally:
         await runtime.shutdown()

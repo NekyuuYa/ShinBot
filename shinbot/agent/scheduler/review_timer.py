@@ -6,8 +6,15 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from shinbot.agent.signals import (
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+    AgentTimerSignal,
+)
+
 if TYPE_CHECKING:
-    from shinbot.agent.scheduler.scheduler import AgentScheduler
+    from shinbot.agent.runtime.services import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +30,14 @@ class ReviewDueTimerService:
     ) -> None:
         self._tick_interval_seconds = tick_interval_seconds
         self._batch_limit = batch_limit
-        self._scheduler: AgentScheduler | None = None
+        self._runtime: AgentRuntime | None = None
+        self._bot_id = ""
         self._task: asyncio.Task[None] | None = None
         self._in_flight: set[str] = set()
 
-    def bind_agent_scheduler(self, scheduler: AgentScheduler) -> None:
-        self._scheduler = scheduler
+    def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
+        self._runtime = runtime
+        self._bot_id = str(bot_id or "").strip()
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -51,15 +60,31 @@ class ReviewDueTimerService:
     async def run_once(self) -> None:
         """Run one polling pass for tests and manual maintenance."""
 
-        scheduler = self._scheduler
-        if scheduler is None:
+        runtime = self._runtime
+        if runtime is None:
             return
+        scheduler = runtime.agent_profile_for_bot(self._bot_id).agent_scheduler
         for plan in scheduler.due_review_plans(limit=self._batch_limit):
             if plan.session_id in self._in_flight:
                 continue
             self._in_flight.add(plan.session_id)
             try:
-                await scheduler.run_due_review(plan.session_id)
+                await runtime.handle_agent_signal(
+                    AgentSignal(
+                        signal_id=f"review-due:{plan.session_id}:{int(plan.next_review_at)}",
+                        kind=AgentSignalKind.REVIEW_DUE,
+                        source=AgentSignalSource.TIMER,
+                        session_id=plan.session_id,
+                        occurred_at=plan.next_review_at,
+                        bot_id=self._bot_id,
+                        timer=AgentTimerSignal(
+                            trigger=AgentSignalKind.REVIEW_DUE.value,
+                            due_at=plan.next_review_at,
+                            plan_id=f"{plan.session_id}:{int(plan.next_review_at)}",
+                        ),
+                        meta={"review_plan": plan.reason},
+                    )
+                )
             except Exception:
                 logger.exception(
                     "Agent review due timer failed for session %s",

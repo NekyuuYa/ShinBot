@@ -18,6 +18,8 @@ from agent_scheduler_support import (
     pytest,
 )
 
+from shinbot.agent.signals import AgentSignal, AgentSignalKind, AgentSignalSource
+
 
 @pytest.mark.asyncio
 async def test_scheduler_records_ordinary_message_without_workflow() -> None:
@@ -299,27 +301,34 @@ async def test_scheduler_due_review_skips_while_active_chat_is_running() -> None
 
 @pytest.mark.asyncio
 async def test_review_due_timer_dispatches_due_idle_review() -> None:
-    dispatcher = RecordingWorkflowDispatcher()
-    now = 10.0
+    class RecordingRuntime:
+        def __init__(self) -> None:
+            self.calls: list[AgentSignal] = []
+            self.agent_scheduler = type(
+                "Scheduler",
+                (),
+                {"due_review_plans": lambda self, limit=50: [ReviewPlan(session_id="bot:group:room", next_review_at=52.0, reason="fixed_test_review")]},
+            )()
 
-    def clock() -> float:
-        return now
+        async def handle_agent_signal(self, signal: AgentSignal) -> None:
+            self.calls.append(signal)
 
-    scheduler = AgentScheduler(
-        workflow_dispatcher=dispatcher,
-        response_profile_resolver=lambda _signal: "balanced",
-        review_policy=FixedReviewPolicy(),
-        now=clock,
-    )
-    await scheduler.accept_signal(make_signal())
-    now = 52.0
+        def agent_profile_for_bot(self, _bot_id: str):
+            return self
+
+    runtime = RecordingRuntime()
     timer = ReviewDueTimerService()
-    timer.bind_agent_scheduler(scheduler)
+    timer.bind_agent_runtime(runtime, bot_id="bot-a")
 
     await timer.run_once()
 
-    assert [call["session_id"] for call in dispatcher.review_calls] == ["bot:group:room"]
-    assert scheduler.state_for("bot:group:room") == AgentState.REVIEW
+    assert [call.kind for call in runtime.calls] == [AgentSignalKind.REVIEW_DUE]
+    assert [call.source for call in runtime.calls] == [AgentSignalSource.TIMER]
+    assert [call.bot_id for call in runtime.calls] == ["bot-a"]
+    assert [call.session_id for call in runtime.calls] == ["bot:group:room"]
+    assert [call.timer.trigger for call in runtime.calls if call.timer is not None] == [
+        "review_due"
+    ]
 
 
 @pytest.mark.asyncio
@@ -459,7 +468,6 @@ async def test_scheduler_completes_review_to_active_chat() -> None:
     assert decision.active_chat_state is not None
     assert decision.active_chat_state.interest_value == 20.0
     assert decision.active_chat_state.entered_at == 60.0
-    assert timer.scheduler is scheduler
     assert timer.started == ["bot:group:room"]
     assert decision.next_review_plan is None
     assert scheduler.state_for("bot:group:room") == AgentState.ACTIVE_CHAT

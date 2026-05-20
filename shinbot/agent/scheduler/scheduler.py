@@ -17,8 +17,8 @@ from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
-    ActiveChatInterestAdjustmentPreview,
     ActiveChatInterestAdjustDecision,
+    ActiveChatInterestAdjustmentPreview,
     ActiveChatState,
     ActiveChatTickDecision,
     ActiveChatTickPreview,
@@ -98,15 +98,6 @@ class AgentScheduler:
         bind_scheduler = getattr(self._workflow_dispatcher, "bind_agent_scheduler", None)
         if bind_scheduler is not None:
             bind_scheduler(self)
-        if self._active_chat_timer is not None:
-            self._active_chat_timer.bind_agent_scheduler(self)
-            bind_idle_review_planner = getattr(
-                self._active_chat_timer,
-                "bind_idle_review_planner",
-                None,
-            )
-            if bind_idle_review_planner is not None:
-                bind_idle_review_planner(self.plan_idle_review_after_active_chat)
 
     async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
         """Accept one message signal from core and decide scheduler-side action."""

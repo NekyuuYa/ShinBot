@@ -4,30 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+import time
 from typing import TYPE_CHECKING, Protocol
 
 from shinbot.agent.scheduler.models import AgentState
+from shinbot.agent.signals import (
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+    AgentTimerSignal,
+)
 
 if TYPE_CHECKING:
-    from shinbot.agent.scheduler.scheduler import AgentScheduler
+    from shinbot.agent.runtime.services import AgentRuntime
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from shinbot.agent.scheduler.models import ReviewPlan
-
-ActiveChatIdleReviewPlanner = Callable[
-    [str],
-    Awaitable["ReviewPlan | None"],
-]
 
 
 class ActiveChatTimer(Protocol):
     """Lifecycle boundary for per-session active chat tick tasks."""
 
-    def bind_agent_scheduler(self, scheduler: AgentScheduler) -> None:
-        """Bind the scheduler used by timer ticks."""
+    def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
+        """Bind the runtime entry point used by timer ticks."""
 
     def start(self, session_id: str) -> None:
         """Start a session-bound active chat timer if one is not running."""
@@ -44,19 +42,13 @@ class ActiveChatTimerService:
 
     def __init__(self, *, tick_interval_seconds: float = 5.0) -> None:
         self._tick_interval_seconds = tick_interval_seconds
-        self._scheduler: AgentScheduler | None = None
-        self._idle_review_planner: ActiveChatIdleReviewPlanner | None = None
+        self._runtime: AgentRuntime | None = None
+        self._bot_id = ""
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
-    def bind_agent_scheduler(self, scheduler: AgentScheduler) -> None:
-        self._scheduler = scheduler
-
-    def bind_idle_review_planner(
-        self,
-        planner: ActiveChatIdleReviewPlanner | None,
-    ) -> None:
-        """Bind an async hook used before decay returns ACTIVE_CHAT to IDLE."""
-        self._idle_review_planner = planner
+    def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
+        self._runtime = runtime
+        self._bot_id = str(bot_id or "").strip()
 
     def start(self, session_id: str) -> None:
         task = self._tasks.get(session_id)
@@ -102,17 +94,25 @@ class ActiveChatTimerService:
         try:
             while True:
                 await asyncio.sleep(self._tick_interval_seconds)
-                if self._scheduler is None:
+                if self._runtime is None:
                     return
-                next_review_plan = None
-                preview = self._scheduler.preview_active_chat_tick(session_id)
-                if preview.will_return_idle and self._idle_review_planner is not None:
-                    next_review_plan = await self._idle_review_planner(session_id)
-                decision = self._scheduler.tick_active_chat(
-                    session_id,
-                    next_review_plan=next_review_plan,
+                await self._runtime.handle_agent_signal(
+                    AgentSignal(
+                        signal_id=f"active-chat-tick:{session_id}",
+                        kind=AgentSignalKind.ACTIVE_CHAT_TICK,
+                        source=AgentSignalSource.TIMER,
+                        session_id=session_id,
+                        occurred_at=time.time(),
+                        bot_id=self._bot_id,
+                        timer=AgentTimerSignal(
+                            trigger=AgentSignalKind.ACTIVE_CHAT_TICK.value,
+                        ),
+                    )
                 )
-                if decision.state != AgentState.ACTIVE_CHAT:
+                scheduler = self._runtime.agent_profile_for_bot(
+                    self._bot_id
+                ).agent_scheduler
+                if scheduler.state_for(session_id) != AgentState.ACTIVE_CHAT:
                     return
         except asyncio.CancelledError:
             raise
@@ -124,4 +124,4 @@ class ActiveChatTimerService:
                 self._tasks.pop(session_id, None)
 
 
-__all__ = ["ActiveChatIdleReviewPlanner", "ActiveChatTimer", "ActiveChatTimerService"]
+__all__ = ["ActiveChatTimer", "ActiveChatTimerService"]

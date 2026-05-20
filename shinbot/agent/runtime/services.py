@@ -7,6 +7,7 @@ attach the Agent entry handler to message routing.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -65,12 +66,19 @@ from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptReg
 from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_components
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
+from shinbot.agent.signals import (
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat import models as active_chat_workflow_models
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.workflows.chat_actions import register_chat_action_tools
+from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.instance_config import (
     resolve_instance_runtime_config,
     select_response_profile,
@@ -78,7 +86,6 @@ from shinbot.core.instance_config import (
 
 if TYPE_CHECKING:
     from shinbot.core.application.app import ShinBot
-    from shinbot.core.dispatch.dispatchers import AgentEntrySignal
     from shinbot.core.platform.adapter_manager import AdapterManager
     from shinbot.core.security.audit import AuditLogger
     from shinbot.core.security.permission import PermissionEngine
@@ -95,10 +102,12 @@ class AgentRuntimeProfile:
         owner: AgentRuntime,
         *,
         profile_id: str,
+        bot_id: str = "",
         config: AgentRuntimeConfig,
     ) -> None:
         self._owner = owner
         self.profile_id = profile_id
+        self.bot_id = bot_id
         self.config = config
         self._base_active_chat_attention_config = replace(config.active_chat_attention_config)
         self.prompt_file_config = config.prompt_file_config or PromptFileLoadConfig.from_data_dir(
@@ -115,6 +124,7 @@ class AgentRuntimeProfile:
         self.review_runtime_config = self.config.review_runtime_config
         self.review_workflow_config = self.config.review_workflow_config
         self.active_chat_timer = ActiveChatTimerService()
+        self.active_chat_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
         self.review_due_timer = ReviewDueTimerService()
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = self._create_active_chat_workflow()
@@ -124,7 +134,7 @@ class AgentRuntimeProfile:
             review_config=self.review_workflow_config,
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
-        self.review_due_timer.bind_agent_scheduler(self.agent_scheduler)
+        self.review_due_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
 
         if owner.database is None:
             return
@@ -168,7 +178,7 @@ class AgentRuntimeProfile:
             idle_review_planning_runner=runner_factory.create_idle_review_planning_runner(),
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
-        self.review_due_timer.bind_agent_scheduler(self.agent_scheduler)
+        self.review_due_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
 
     def reload_prompt_files(self) -> None:
         """Reload file-backed prompt components for this profile."""
@@ -399,6 +409,7 @@ class AgentRuntime:
             self._profiles_by_bot_id[normalized_bot_id] = AgentRuntimeProfile(
                 self,
                 profile_id=config.agent_id or normalized_bot_id,
+                bot_id=normalized_bot_id,
                 config=config,
             )
         self.media_inspection_runner = (
@@ -526,15 +537,95 @@ class AgentRuntime:
             profile.reload_prompt_files()
 
     async def handle_agent_entry(self, signal: AgentEntrySignal) -> None:
-        """Receive the minimal routing signal and let Agent internals process it."""
+        """Backward-compatible message entry point."""
+        await self.handle_agent_signal(self._agent_signal_from_entry(signal))
+
+    async def handle_agent_signal(self, signal: AgentSignal) -> None:
+        """Receive a unified Agent signal and let Agent internals process it."""
         self.start_background_tasks()
-        await self.agent_profile_for_bot(signal.bot_id).agent_scheduler.accept_signal(signal)
+        profile = self.agent_profile_for_bot(signal.bot_id)
+        if signal.kind == AgentSignalKind.MESSAGE:
+            if signal.message is None:
+                return
+            await profile.agent_scheduler.accept_signal(
+                self._entry_signal_from_agent_signal(signal)
+            )
+            return
+        if signal.kind == AgentSignalKind.REVIEW_DUE:
+            await profile.agent_scheduler.run_due_review(signal.session_id)
+            return
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
+            next_review_plan = None
+            preview = profile.agent_scheduler.preview_active_chat_tick(signal.session_id)
+            if preview.will_return_idle:
+                next_review_plan = await profile.agent_scheduler.plan_idle_review_after_active_chat(
+                    signal.session_id
+                )
+            profile.agent_scheduler.tick_active_chat(
+                signal.session_id,
+                next_review_plan=next_review_plan,
+            )
+            return
 
     def start_background_tasks(self) -> None:
         """Start Agent background services once an event loop is available."""
 
         for profile in self._unique_profiles():
             profile.start_background_tasks()
+
+    def _agent_signal_from_entry(self, signal: AgentEntrySignal) -> AgentSignal:
+        message_token = signal.message_log_id if signal.message_log_id is not None else "missing"
+        return AgentSignal(
+            signal_id=f"entry:{signal.session_id}:{message_token}",
+            kind=AgentSignalKind.MESSAGE,
+            source=AgentSignalSource.MESSAGE_INGRESS,
+            session_id=signal.session_id,
+            occurred_at=time.time(),
+            bot_id=signal.bot_id,
+            bot_binding_id=signal.bot_binding_id,
+            bot_session_id=signal.bot_session_id,
+            message=AgentMessageSignal(
+                message_log_id=signal.message_log_id,
+                sender_id=signal.sender_id,
+                instance_id=signal.instance_id,
+                platform=signal.platform,
+                self_id=signal.self_id,
+                is_private=signal.is_private,
+                is_mentioned=signal.is_mentioned,
+                is_reply_to_bot=signal.is_reply_to_bot,
+                is_mention_to_other=signal.is_mention_to_other,
+                is_poke_to_bot=signal.is_poke_to_bot,
+                is_poke_to_other=signal.is_poke_to_other,
+                already_handled=signal.already_handled,
+                is_stopped=signal.is_stopped,
+            ),
+        )
+
+    def _entry_signal_from_agent_signal(self, signal: AgentSignal) -> AgentEntrySignal:
+        assert signal.message is not None
+        return AgentEntrySignal(
+            session_id=signal.session_id,
+            message_log_id=signal.message.message_log_id,
+            event_type="message-created",
+            sender_id=signal.message.sender_id,
+            instance_id=signal.message.instance_id,
+            platform=signal.message.platform,
+            self_id=signal.message.self_id,
+            is_private=signal.message.is_private,
+            is_mentioned=signal.message.is_mentioned,
+            is_reply_to_bot=signal.message.is_reply_to_bot,
+            is_mention_to_other=signal.message.is_mention_to_other,
+            is_poke_to_bot=signal.message.is_poke_to_bot,
+            is_poke_to_other=signal.message.is_poke_to_other,
+            already_handled=signal.message.already_handled,
+            is_stopped=signal.message.is_stopped,
+            bot_id=signal.bot_id,
+            bot_binding_id=signal.bot_binding_id,
+            bot_session_id=signal.bot_session_id,
+        )
+
+    def _signal_from_agent_entry(self, signal: AgentEntrySignal) -> AgentSignal:
+        return self._agent_signal_from_entry(signal)
 
     def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
         instance_config = self._instance_config_payload(signal.instance_id)
