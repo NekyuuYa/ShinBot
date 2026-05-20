@@ -16,7 +16,7 @@
               @click="clearLogs"
             />
           </template>
-          <span>{{ $t("common.actions.action.reset") }}</span>
+          <span>{{ $t('common.actions.action.reset') }}</span>
         </v-tooltip>
 
         <v-tooltip location="bottom">
@@ -30,614 +30,86 @@
               @click="connectLogs"
             />
           </template>
-          <span>{{ $t("pages.monitoring.connectLogs") }}</span>
+          <span>{{ $t('pages.monitoring.connectLogs') }}</span>
         </v-tooltip>
       </template>
     </app-page-header>
 
-    <section class="terminal-shell">
-      <div class="terminal-shell__topbar">
-        <div class="terminal-title-group">
-          <div class="terminal-title">
-            <v-icon icon="mdi-console-line" size="18" class="me-2" />
-            {{ $t("pages.monitoring.terminalTitle") }}
-          </div>
-          <div class="terminal-caption">
-            {{ $t("pages.monitoring.terminalSubtitle") }}
-          </div>
-        </div>
-
-        <div class="terminal-status-row">
-          <span class="terminal-status-pill">
-            <span class="terminal-status-pill__label">{{
-              $t("pages.monitoring.status")
-            }}</span>
-            <span
-              class="terminal-status-pill__value"
-              :class="isOnline ? 'text-success' : 'text-error'"
-            >
-              {{
-                isOnline
-                  ? $t("common.actions.status.online")
-                  : $t("common.actions.status.offline")
-              }}
-            </span>
-          </span>
-          <span class="terminal-status-pill">
-            <span class="terminal-status-pill__label">{{
-              $t("pages.monitoring.systemCpu")
-            }}</span>
-            <span class="terminal-status-pill__value">{{
-              formatPercent(status.systemCpuUsage)
-            }}</span>
-          </span>
-          <span class="terminal-status-pill">
-            <span class="terminal-status-pill__label">{{
-              $t("pages.monitoring.systemMemory")
-            }}</span>
-            <span class="terminal-status-pill__value">
-              {{
-                formatSystemMemoryUsage(
-                  status.systemMemoryUsage,
-                  status.systemMemoryUsedMb,
-                  status.systemMemoryTotalMb,
-                )
-              }}
-            </span>
-          </span>
-          <span class="terminal-status-pill">
-            <span class="terminal-status-pill__label">{{
-              $t("pages.monitoring.processMemory")
-            }}</span>
-            <span class="terminal-status-pill__value">{{
-              formatMemorySize(status.processMemoryMb)
-            }}</span>
-          </span>
-          <span class="terminal-status-pill">
-            <span class="terminal-status-pill__label">{{
-              $t("pages.monitoring.logs")
-            }}</span>
-            <span class="terminal-status-pill__value">{{
-              terminalLogs.length
-            }}</span>
-          </span>
-        </div>
-      </div>
-
-      <div class="terminal-toolbar">
-        <v-btn-toggle
-          v-model="enabledLogLevels"
-          multiple
-          divided
-          density="comfortable"
-          class="terminal-level-toggle"
-        >
-          <v-btn
-            v-for="option in logLevelOptions"
-            :key="option.value"
-            :value="option.value"
-            rounded="lg"
-          >
-            <span
-              class="terminal-level-toggle__label"
-              :class="`terminal-level-toggle__label--${option.value.toLowerCase()}`"
-            >
-              {{ option.label }}
-            </span>
-          </v-btn>
-        </v-btn-toggle>
-
-        <div class="terminal-toolbar__actions">
-          <v-chip
-            size="small"
-            variant="flat"
-            :color="logConnected ? 'success' : 'error'"
-            class="terminal-stream-chip"
-          >
-            {{
-              logConnected
-                ? $t("pages.monitoring.streamConnected")
-                : $t("pages.monitoring.streamDisconnected")
-            }}
-          </v-chip>
-
-          <v-tooltip location="bottom">
-            <template #activator="{ props }">
-              <v-btn
-                v-bind="props"
-                :icon="
-                  followTail
-                    ? 'mdi-pause-circle-outline'
-                    : 'mdi-arrow-collapse-down'
-                "
-                variant="text"
-                rounded="lg"
-                class="terminal-tool-btn"
-                @click="toggleFollowTail"
-              />
-            </template>
-            <span>
-              {{
-                followTail
-                  ? $t("pages.monitoring.pauseFollow")
-                  : $t("pages.monitoring.followLatest")
-              }}
-            </span>
-          </v-tooltip>
-
-          <v-tooltip location="bottom">
-            <template #activator="{ props }">
-              <v-btn
-                v-bind="props"
-                icon="mdi-arrow-down-circle-outline"
-                variant="text"
-                rounded="lg"
-                class="terminal-tool-btn"
-                @click="jumpToLatest"
-              />
-            </template>
-            <span>{{ $t("pages.monitoring.jumpLatest") }}</span>
-          </v-tooltip>
-        </div>
-      </div>
-
-      <div class="terminal-screen">
-        <div
-          ref="logScrollArea"
-          class="terminal-scroll-area"
-          @scroll="handleScroll"
-        >
-          <div v-if="terminalLogs.length > 0" class="terminal-stream">
-            <div
-              v-for="item in terminalLogs"
-              :key="item.id"
-              class="terminal-line"
-              :class="`terminal-line--${item.level.toLowerCase()}`"
-            >
-              <span class="terminal-line__time"
-                >[{{ formatTimestamp(item.timestamp) }}]</span
-              >
-              <span class="terminal-line__level">{{ item.level }}</span>
-              <span class="terminal-line__source">{{
-                item.source ?? $t("pages.monitoring.systemSource")
-              }}</span>
-              <span class="terminal-line__message">{{ item.message }}</span>
-            </div>
-          </div>
-
-          <v-empty-state
-            v-else
-            icon="mdi-console-line"
-            :title="$t('pages.monitoring.noData')"
-            :text="$t('pages.monitoring.noDataSubtitle')"
-            variant="plain"
-            class="terminal-empty-state"
-          />
-        </div>
-      </div>
-
-      <div class="terminal-footer">
-        <div class="terminal-footer__meta">
-          <span
-            >{{ $t("pages.monitoring.logs") }} {{ terminalLogs.length }}</span
-          >
-          <span>{{
-            followTail
-              ? $t("pages.monitoring.following")
-              : $t("pages.monitoring.followPaused")
-          }}</span>
-        </div>
-        <div class="terminal-footer__meta">
-          <span
-            >{{ $t("pages.monitoring.systemCpu") }}
-            {{ formatPercent(status.systemCpuUsage) }}</span
-          >
-          <span>{{
-            formatSystemMemoryUsage(
-              status.systemMemoryUsage,
-              status.systemMemoryUsedMb,
-              status.systemMemoryTotalMb,
-            )
-          }}</span>
-          <span
-            >{{ $t("pages.monitoring.processMemory") }}
-            {{ formatMemorySize(status.processMemoryMb) }}</span
-          >
-        </div>
-      </div>
-    </section>
+    <monitoring-terminal-shell
+      v-model:enabled-log-levels="enabledLogLevels"
+      :terminal-title="$t('pages.monitoring.terminalTitle')"
+      :terminal-subtitle="$t('pages.monitoring.terminalSubtitle')"
+      :status-label="$t('pages.monitoring.status')"
+      :system-cpu-label="$t('pages.monitoring.systemCpu')"
+      :system-memory-label="$t('pages.monitoring.systemMemory')"
+      :process-memory-label="$t('pages.monitoring.processMemory')"
+      :logs-label="$t('pages.monitoring.logs')"
+      :stream-connected-label="$t('pages.monitoring.streamConnected')"
+      :stream-disconnected-label="$t('pages.monitoring.streamDisconnected')"
+      :pause-follow-label="$t('pages.monitoring.pauseFollow')"
+      :follow-latest-label="$t('pages.monitoring.followLatest')"
+      :jump-latest-label="$t('pages.monitoring.jumpLatest')"
+      :following-label="$t('pages.monitoring.following')"
+      :follow-paused-label="$t('pages.monitoring.followPaused')"
+      :system-source-label="$t('pages.monitoring.systemSource')"
+      :no-data-label="$t('pages.monitoring.noData')"
+      :no-data-subtitle-label="$t('pages.monitoring.noDataSubtitle')"
+      :online-label="$t('common.actions.status.online')"
+      :offline-label="$t('common.actions.status.offline')"
+      :is-online="isOnline"
+      :log-connected="logConnected"
+      :status="status"
+      :terminal-logs="terminalLogs"
+      :format-percent="formatPercent"
+      :format-memory-size="formatMemorySize"
+      :format-system-memory-usage="formatSystemMemoryUsage"
+      :format-timestamp="formatTimestamp"
+    />
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { storeToRefs } from "pinia";
-import AppPageHeader from "@/components/AppPageHeader.vue";
-import { useMonitoringStore } from "@/stores/monitoring";
-import type { LogLevel } from "@/stores/monitoring";
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 
-const monitoringStore = useMonitoringStore();
+import AppPageHeader from '@/components/AppPageHeader.vue'
+import MonitoringTerminalShell from '@/components/monitoring/MonitoringTerminalShell.vue'
+import { useMonitoringStore } from '@/stores/monitoring'
+
+const monitoringStore = useMonitoringStore()
 const { filteredLogs, enabledLogLevels, isOnline, logConnected, status } =
-  storeToRefs(monitoringStore);
+  storeToRefs(monitoringStore)
 
-const logScrollArea = ref<HTMLElement | null>(null);
-const followTail = ref(true);
+const terminalLogs = computed(() => filteredLogs.value.slice().reverse())
 
-const logLevelOptions: ReadonlyArray<{ value: LogLevel; label: string }> = [
-  { value: "DEBUG", label: "DEBUG" },
-  { value: "INFO", label: "INFO" },
-  { value: "WARN", label: "WARN" },
-  { value: "ERROR", label: "ERROR" },
-];
+const connectLogs = () => monitoringStore.connectLogs()
+const clearLogs = () => monitoringStore.clearLogs()
 
-const terminalLogs = computed(() => filteredLogs.value.slice().reverse());
-
-const connectLogs = () => monitoringStore.connectLogs();
-const clearLogs = () => monitoringStore.clearLogs();
-
-const formatPercent = (value: number) => `${Number(value || 0).toFixed(1)}%`;
+const formatPercent = (value: number) => `${Number(value || 0).toFixed(1)}%`
 const formatMemorySize = (value: number) => {
-  const mb = Number(value || 0);
+  const mb = Number(value || 0)
   if (mb >= 1024) {
-    return `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB`;
+    return `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB`
   }
-  return `${mb.toFixed(1)} MB`;
-};
+  return `${mb.toFixed(1)} MB`
+}
 const formatSystemMemoryUsage = (
   percent: number,
   usedMb: number,
   totalMb: number,
 ) => {
   if (!totalMb) {
-    return formatPercent(percent);
+    return formatPercent(percent)
   }
-  return `${formatPercent(percent)} · ${formatMemorySize(usedMb)}/${formatMemorySize(totalMb)}`;
-};
+  return `${formatPercent(percent)} · ${formatMemorySize(usedMb)}/${formatMemorySize(totalMb)}`
+}
 
 const formatTimestamp = (timestamp: number) => {
-  const date = new Date(timestamp);
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const seconds = String(date.getSeconds()).padStart(2, "0");
-  const milliseconds = String(date.getMilliseconds()).padStart(3, "0");
-  return `${hours}:${minutes}:${seconds}.${milliseconds}`;
-};
-
-const isNearBottom = (element: HTMLElement) =>
-  element.scrollHeight - element.scrollTop - element.clientHeight <= 32;
-
-const scrollToBottom = () => {
-  if (!logScrollArea.value) {
-    return;
-  }
-  logScrollArea.value.scrollTop = logScrollArea.value.scrollHeight;
-};
-
-const jumpToLatest = async () => {
-  followTail.value = true;
-  await nextTick();
-  scrollToBottom();
-};
-
-const toggleFollowTail = async () => {
-  followTail.value = !followTail.value;
-  if (followTail.value) {
-    await nextTick();
-    scrollToBottom();
-  }
-};
-
-const handleScroll = () => {
-  if (!logScrollArea.value) {
-    return;
-  }
-  if (!isNearBottom(logScrollArea.value) && followTail.value) {
-    followTail.value = false;
-  }
-};
-
-watch(
-  terminalLogs,
-  async () => {
-    if (!followTail.value) {
-      return;
-    }
-    await nextTick();
-    scrollToBottom();
-  },
-  { deep: true },
-);
-
-onMounted(async () => {
-  await nextTick();
-  scrollToBottom();
-});
+  const date = new Date(timestamp)
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  const milliseconds = String(date.getMilliseconds()).padStart(3, '0')
+  return `${hours}:${minutes}:${seconds}.${milliseconds}`
+}
 </script>
-
-<style scoped lang="scss">
-$term-font: "Roboto Mono", monospace, sans-serif;
-
-.terminal-shell {
-  display: flex;
-  flex-direction: column;
-  min-height: 76vh;
-  border: 1px solid rgba(var(--v-theme-primary), 0.18);
-  border-radius: 20px;
-  background: linear-gradient(
-    180deg,
-    rgba(var(--v-theme-surface), 0.98) 0%,
-    rgba(var(--v-theme-background), 0.98) 100%
-  );
-  box-shadow: 0 24px 40px rgba(var(--v-theme-on-surface), 0.1);
-  overflow: hidden;
-}
-
-.terminal-shell__topbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid rgba(var(--v-theme-primary), 0.12);
-  background: rgba(var(--v-theme-surface), 0.96);
-}
-
-.terminal-title-group {
-  min-width: 0;
-}
-
-.terminal-title {
-  display: flex;
-  align-items: center;
-  color: rgb(var(--v-theme-on-surface));
-  font-size: 0.98rem;
-  font-weight: 700;
-}
-
-.terminal-caption {
-  margin-top: 6px;
-  color: rgba(var(--v-theme-on-surface), 0.68);
-  font-size: 0.82rem;
-}
-
-.terminal-status-row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.terminal-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  border-radius: 12px;
-  background: rgba(var(--v-theme-on-surface), 0.03);
-  color: rgba(var(--v-theme-on-surface), 0.82);
-  font-family: $term-font;
-  font-size: 0.75rem;
-}
-
-.terminal-status-pill__label {
-  color: rgba(var(--v-theme-on-surface), 0.62);
-  text-transform: uppercase;
-}
-
-.terminal-status-pill__value {
-  color: rgb(var(--v-theme-on-surface));
-  font-weight: 700;
-}
-
-.terminal-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 18px;
-  border-bottom: 1px solid rgba(var(--v-theme-primary), 0.1);
-  background: rgba(var(--v-theme-surface), 0.92);
-}
-
-.terminal-level-toggle {
-  overflow: visible;
-  padding: 2px;
-}
-
-.terminal-level-toggle :deep(.v-btn) {
-  margin: 2px;
-  border-radius: 12px;
-  min-width: 72px;
-}
-
-.terminal-level-toggle__label {
-  font-family: $term-font;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-
-.terminal-level-toggle__label--debug {
-  color: rgba(var(--v-theme-on-surface), 0.6);
-}
-.terminal-level-toggle__label--info {
-  color: rgb(var(--v-theme-info));
-}
-.terminal-level-toggle__label--warn {
-  color: rgb(var(--v-theme-warning));
-}
-.terminal-level-toggle__label--error {
-  color: rgb(var(--v-theme-error));
-}
-
-.terminal-toolbar__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.terminal-stream-chip {
-  font-family: $term-font;
-}
-
-.terminal-tool-btn {
-  color: rgba(var(--v-theme-on-surface), 0.82);
-}
-
-.terminal-screen {
-  flex: 1;
-  min-height: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(var(--v-theme-background), 0.92) 0%,
-    rgba(var(--v-theme-surface), 0.96) 100%
-  );
-}
-
-.terminal-scroll-area {
-  height: 100%;
-  min-height: 520px;
-  overflow-y: auto;
-  padding: 12px 0;
-  font-family: $term-font;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(var(--v-theme-primary), 0.32) transparent;
-}
-
-.terminal-scroll-area::-webkit-scrollbar {
-  width: 10px;
-}
-
-.terminal-scroll-area::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(var(--v-theme-primary), 0.28);
-}
-
-.terminal-stream {
-  display: flex;
-  flex-direction: column;
-}
-
-.terminal-line {
-  display: grid;
-  grid-template-columns: 132px 56px 160px minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-  padding: 4px 18px;
-  color: rgba(var(--v-theme-on-surface), 0.86);
-  font-size: 0.78rem;
-  line-height: 1.45;
-}
-
-.terminal-line:hover {
-  background: rgba(var(--v-theme-primary), 0.07);
-}
-
-.terminal-line--debug {
-  color: rgba(var(--v-theme-on-surface), 0.62);
-}
-.terminal-line--info {
-  color: rgba(var(--v-theme-on-surface), 0.86);
-}
-.terminal-line--warn {
-  color: rgb(var(--v-theme-warning));
-}
-.terminal-line--error {
-  color: rgb(var(--v-theme-error));
-  background: rgba(var(--v-theme-error), 0.08);
-}
-
-.terminal-line__time,
-.terminal-line__level,
-.terminal-line__source {
-  white-space: nowrap;
-}
-
-.terminal-line__time {
-  color: rgba(var(--v-theme-on-surface), 0.62);
-}
-.terminal-line__level {
-  font-weight: 700;
-}
-
-.terminal-line__source {
-  overflow: hidden;
-  color: rgba(var(--v-theme-on-surface), 0.72);
-  text-overflow: ellipsis;
-}
-
-.terminal-line__message {
-  min-width: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.terminal-empty-state {
-  color: rgba(var(--v-theme-on-surface), 0.74);
-}
-
-.terminal-empty-state :deep(.v-empty-state__title) {
-  color: rgba(var(--v-theme-on-surface), 0.9);
-}
-.terminal-empty-state :deep(.v-empty-state__text) {
-  color: rgba(var(--v-theme-on-surface), 0.7);
-}
-
-.terminal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 18px 12px;
-  border-top: 1px solid rgba(var(--v-theme-primary), 0.1);
-  background: rgba(var(--v-theme-surface), 0.94);
-  color: rgba(var(--v-theme-on-surface), 0.72);
-  font-family: $term-font;
-  font-size: 0.74rem;
-}
-
-.terminal-footer__meta {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-@media (max-width: 960px) {
-  .terminal-shell__topbar,
-  .terminal-toolbar,
-  .terminal-footer {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .terminal-status-row,
-  .terminal-toolbar__actions,
-  .terminal-footer__meta {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .terminal-line {
-    grid-template-columns: 116px 52px 120px minmax(0, 1fr);
-    gap: 10px;
-    padding-inline: 14px;
-  }
-}
-
-@media (max-width: 640px) {
-  .terminal-line {
-    grid-template-columns: 1fr;
-    gap: 2px;
-  }
-
-  .terminal-line__time,
-  .terminal-line__level,
-  .terminal-line__source {
-    white-space: normal;
-  }
-}
-</style>
