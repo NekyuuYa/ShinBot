@@ -22,7 +22,12 @@ from shinbot.agent.scheduler import (
     calculate_bootstrap_correction,
 )
 from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
+from shinbot.agent.signals import (
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 
 
 class RecordingWorkflowDispatcher:
@@ -114,12 +119,13 @@ class RecordingActiveChatTimer:
 
 class AlwaysWakePriorityPolicy:
     def evaluate(self, signal, *, now, inbox):
+        assert signal.message is not None
         return PriorityPolicyDecision(
             events=[
                 HighPriorityEvent(
                     session_id=signal.session_id,
-                    message_log_id=signal.message_log_id or 0,
-                    sender_id=signal.sender_id,
+                    message_log_id=signal.message.message_log_id or 0,
+                    sender_id=signal.message.sender_id,
                     kind=HighPriorityEventKind.POKE,
                     created_at=now,
                     reason="test_policy",
@@ -164,23 +170,28 @@ def make_signal(
     sender_id: str = "user-1",
     already_handled: bool = False,
     is_stopped: bool = False,
-) -> AgentEntrySignal:
-    return AgentEntrySignal(
+) -> AgentSignal:
+    return AgentSignal(
+        signal_id=f"message:bot:group:room:{message_log_id if message_log_id is not None else 'missing'}",
+        kind=AgentSignalKind.MESSAGE,
+        source=AgentSignalSource.MESSAGE_INGRESS,
         session_id="bot:group:room",
-        message_log_id=message_log_id,
-        event_type="message-created",
-        sender_id=sender_id,
-        instance_id="bot",
-        platform="mock",
-        self_id="bot-self",
-        is_private=False,
-        is_mentioned=is_mentioned,
-        is_reply_to_bot=is_reply_to_bot,
-        is_mention_to_other=is_mention_to_other,
-        is_poke_to_bot=is_poke_to_bot,
-        is_poke_to_other=is_poke_to_other,
-        already_handled=already_handled,
-        is_stopped=is_stopped,
+        occurred_at=10.0,
+        message=AgentMessageSignal(
+            message_log_id=message_log_id,
+            sender_id=sender_id,
+            instance_id="bot",
+            platform="mock",
+            self_id="bot-self",
+            is_private=False,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+            is_mention_to_other=is_mention_to_other,
+            is_poke_to_bot=is_poke_to_bot,
+            is_poke_to_other=is_poke_to_other,
+            already_handled=already_handled,
+            is_stopped=is_stopped,
+        ),
     )
 
 
@@ -189,9 +200,12 @@ __all__ = [
     "ActiveChatPolicyConfig",
     "ActiveChatTimerService",
     "ActiveReplyDispatcher",
-    "AgentEntrySignal",
+    "AgentMessageSignal",
     "AgentScheduler",
     "AgentSchedulerConfig",
+    "AgentSignal",
+    "AgentSignalKind",
+    "AgentSignalSource",
     "AgentState",
     "AlwaysWakePriorityPolicy",
     "Any",

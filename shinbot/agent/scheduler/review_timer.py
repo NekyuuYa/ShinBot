@@ -15,6 +15,7 @@ from shinbot.agent.signals import (
 
 if TYPE_CHECKING:
     from shinbot.agent.runtime.services import AgentRuntime
+    from shinbot.agent.runtime.task_manager import AgentTaskScope
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,14 @@ class ReviewDueTimerService:
         self._bot_id = ""
         self._task: asyncio.Task[None] | None = None
         self._in_flight: set[str] = set()
+        self._task_scope: AgentTaskScope | None = None
 
     def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
         self._runtime = runtime
         self._bot_id = str(bot_id or "").strip()
+
+    def bind_task_scope(self, scope: AgentTaskScope) -> None:
+        self._task_scope = scope
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -47,7 +52,14 @@ class ReviewDueTimerService:
         except RuntimeError:
             logger.debug("Review due timer start skipped outside running event loop")
             return
-        self._task = loop.create_task(self._run_loop(), name="agent-review-due-timer")
+        if self._task_scope is not None:
+            self._task = self._task_scope.create_task(
+                "loop",
+                self._run_loop(),
+                name="agent-review-due-timer",
+            )
+        else:
+            self._task = loop.create_task(self._run_loop(), name="agent-review-due-timer")
 
     async def shutdown(self) -> None:
         task = self._task

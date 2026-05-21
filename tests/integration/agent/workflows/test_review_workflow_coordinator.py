@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from review_workflow_support import (
     ActiveChatDisposition,
-    AgentEntrySignal,
     AgentScheduler,
     AgentState,
     DatabaseManager,
@@ -26,6 +25,7 @@ from review_workflow_support import (
     _insert_message,
     _strip_run_id_from_calls,
     asyncio,
+    make_agent_signal,
     pytest,
 )
 
@@ -189,18 +189,7 @@ async def test_review_workflow_freezes_unread_snapshot_at_entry(tmp_path) -> Non
     second_message_id = _insert_message(db, raw_text="during review", created_at=2000.0)
     now = 11.0
     await scheduler.accept_signal(
-        AgentEntrySignal(
-            session_id="bot:group:room",
-            message_log_id=second_message_id,
-            event_type="message-created",
-            sender_id="user-2",
-            instance_id="bot",
-            platform="mock",
-            self_id="bot-self",
-            is_private=False,
-            is_mentioned=False,
-            is_reply_to_bot=False,
-        )
+        make_agent_signal(message_log_id=second_message_id, sender_id="user-2")
     )
 
     context_builder = RecordingReviewContextBuilder()

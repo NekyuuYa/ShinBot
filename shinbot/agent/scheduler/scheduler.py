@@ -6,7 +6,6 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
 
 from shinbot.agent.scheduler.active_chat_policy import (
     ActiveChatPolicy,
@@ -41,13 +40,11 @@ from shinbot.agent.scheduler.priority_policy import (
 from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy, ReviewPolicy
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
+from shinbot.agent.signals import AgentSignal, AgentSignalKind
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from shinbot.core.dispatch.dispatchers import AgentEntrySignal
-
-ResponseProfileResolver = Callable[["AgentEntrySignal"], str]
+ResponseProfileResolver = Callable[[AgentSignal], str]
 
 
 @dataclass(slots=True)
@@ -66,7 +63,7 @@ class AgentSchedulerConfig:
 
 
 class AgentScheduler:
-    """Accepts Agent entry signals and decides which Agent workflow should run."""
+    """Accepts unified Agent signals and decides which Agent workflow should run."""
 
     def __init__(
         self,
@@ -99,21 +96,28 @@ class AgentScheduler:
         if bind_scheduler is not None:
             bind_scheduler(self)
 
-    async def accept_signal(self, signal: AgentEntrySignal) -> AgentScheduleDecision:
-        """Accept one message signal from core and decide scheduler-side action."""
-        if signal.message_log_id is None:
+    async def accept_signal(self, signal: AgentSignal) -> AgentScheduleDecision:
+        """Accept one unified message signal and decide scheduler-side action."""
+        message = signal.message
+        if signal.kind != AgentSignalKind.MESSAGE or message is None:
+            return AgentScheduleDecision(
+                accepted=False,
+                state=self._state_store.get_state(signal.session_id),
+                skipped_reason="not_message_signal",
+            )
+        if message.message_log_id is None:
             return AgentScheduleDecision(
                 accepted=False,
                 state=self._state_store.get_state(signal.session_id),
                 skipped_reason="missing_message_log_id",
             )
-        if signal.already_handled:
+        if message.already_handled:
             return AgentScheduleDecision(
                 accepted=False,
                 state=self._state_store.get_state(signal.session_id),
                 skipped_reason="already_handled",
             )
-        if signal.is_stopped:
+        if message.is_stopped:
             return AgentScheduleDecision(
                 accepted=False,
                 state=self._state_store.get_state(signal.session_id),
@@ -132,16 +136,16 @@ class AgentScheduler:
         response_profile = self._response_profile_resolver(signal)
         unread = UnreadMessage(
             session_id=signal.session_id,
-            message_log_id=signal.message_log_id,
-            sender_id=signal.sender_id,
+            message_log_id=message.message_log_id,
+            sender_id=message.sender_id,
             created_at=now,
             response_profile=response_profile,
-            is_mentioned=signal.is_mentioned,
-            is_reply_to_bot=signal.is_reply_to_bot,
-            is_mention_to_other=signal.is_mention_to_other,
-            is_poke_to_bot=signal.is_poke_to_bot,
-            is_poke_to_other=signal.is_poke_to_other,
-            self_platform_id=signal.self_id,
+            is_mentioned=message.is_mentioned,
+            is_reply_to_bot=message.is_reply_to_bot,
+            is_mention_to_other=message.is_mention_to_other,
+            is_poke_to_bot=message.is_poke_to_bot,
+            is_poke_to_other=message.is_poke_to_other,
+            self_platform_id=message.self_id,
         )
         self._unread_metadata[(unread.session_id, unread.message_log_id)] = unread
         self._inbox.add_unread(unread)
@@ -168,12 +172,12 @@ class AgentScheduler:
             self._cancel_active_chat_timer(signal.session_id)
             await self._workflow_dispatcher.run_active_reply(
                 session_id=signal.session_id,
-                message_log_id=signal.message_log_id,
-                sender_id=signal.sender_id,
+                message_log_id=message.message_log_id,
+                sender_id=message.sender_id,
                 response_profile=response_profile,
-                is_mentioned=signal.is_mentioned,
-                is_reply_to_bot=signal.is_reply_to_bot,
-                self_platform_id=signal.self_id,
+                is_mentioned=message.is_mentioned,
+                is_reply_to_bot=message.is_reply_to_bot,
+                self_platform_id=message.self_id,
                 events=high_priority_events,
             )
             return AgentScheduleDecision(
@@ -192,26 +196,26 @@ class AgentScheduler:
                 session_id=signal.session_id,
                 now=now,
                 is_from_bot=False,
-                is_mentioned=signal.is_mentioned,
-                is_reply_to_bot=signal.is_reply_to_bot,
-                is_mention_to_other=signal.is_mention_to_other,
-                is_poke_to_bot=signal.is_poke_to_bot,
-                is_poke_to_other=signal.is_poke_to_other,
+                is_mentioned=message.is_mentioned,
+                is_reply_to_bot=message.is_reply_to_bot,
+                is_mention_to_other=message.is_mention_to_other,
+                is_poke_to_bot=message.is_poke_to_bot,
+                is_poke_to_other=message.is_poke_to_other,
             )
             self._start_active_chat_timer(signal.session_id)
             active_chat_observed = True
             if self._workflow_dispatcher is not None:
                 await self._workflow_dispatcher.notify_active_chat_message(
                     session_id=signal.session_id,
-                    message_log_id=signal.message_log_id,
-                    sender_id=signal.sender_id,
+                    message_log_id=message.message_log_id,
+                    sender_id=message.sender_id,
                     response_profile=response_profile,
-                    is_mentioned=signal.is_mentioned,
-                    is_reply_to_bot=signal.is_reply_to_bot,
-                    is_mention_to_other=signal.is_mention_to_other,
-                    is_poke_to_bot=signal.is_poke_to_bot,
-                    is_poke_to_other=signal.is_poke_to_other,
-                    self_platform_id=signal.self_id,
+                    is_mentioned=message.is_mentioned,
+                    is_reply_to_bot=message.is_reply_to_bot,
+                    is_mention_to_other=message.is_mention_to_other,
+                    is_poke_to_bot=message.is_poke_to_bot,
+                    is_poke_to_other=message.is_poke_to_other,
+                    self_platform_id=message.self_id,
                     active_chat_state=active_chat_state,
                 )
                 active_chat_workflow_notified = True
@@ -928,8 +932,15 @@ class AgentScheduler:
         return plan.next_review_at <= now
 
 
-def _is_self_message(signal: AgentEntrySignal) -> bool:
-    return bool(signal.sender_id and signal.self_id and signal.sender_id == signal.self_id)
+def _is_self_message(signal: AgentSignal) -> bool:
+    message = signal.message
+    if message is None:
+        return False
+    return bool(
+        message.sender_id
+        and message.self_id
+        and message.sender_id == message.self_id
+    )
 
 
 def _has_high_priority_kind(

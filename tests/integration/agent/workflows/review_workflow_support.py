@@ -65,7 +65,12 @@ from shinbot.agent.utils.parsing import parse_json_object
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
+from shinbot.agent.signals import (
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
 
@@ -99,6 +104,47 @@ class FixedReviewPolicy:
             reason="fixed_after_review",
             updated_at=now,
         )
+
+
+def make_agent_signal(
+    *,
+    session_id: str = "bot:group:room",
+    message_log_id: int | None = 1,
+    sender_id: str = "user-1",
+    instance_id: str = "bot",
+    platform: str = "mock",
+    self_id: str = "bot-self",
+    is_private: bool = False,
+    is_mentioned: bool = False,
+    is_reply_to_bot: bool = False,
+    is_mention_to_other: bool = False,
+    is_poke_to_bot: bool = False,
+    is_poke_to_other: bool = False,
+    already_handled: bool = False,
+    is_stopped: bool = False,
+) -> AgentSignal:
+    return AgentSignal(
+        signal_id=f"message:{session_id}:{message_log_id if message_log_id is not None else 'missing'}",
+        kind=AgentSignalKind.MESSAGE,
+        source=AgentSignalSource.MESSAGE_INGRESS,
+        session_id=session_id,
+        occurred_at=10.0,
+        message=AgentMessageSignal(
+            message_log_id=message_log_id,
+            sender_id=sender_id,
+            instance_id=instance_id,
+            platform=platform,
+            self_id=self_id,
+            is_private=is_private,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+            is_mention_to_other=is_mention_to_other,
+            is_poke_to_bot=is_poke_to_bot,
+            is_poke_to_other=is_poke_to_other,
+            already_handled=already_handled,
+            is_stopped=is_stopped,
+        ),
+    )
 
 
 class FakeReviewScheduler:
@@ -572,8 +618,11 @@ __all__ = [
     "ActiveChatDisposition",
     "ActiveChatState",
     "ActiveReplyDispatcher",
-    "AgentEntrySignal",
+    "AgentMessageSignal",
     "AgentScheduler",
+    "AgentSignal",
+    "AgentSignalKind",
+    "AgentSignalSource",
     "AgentState",
     "Any",
     "DatabaseManager",
@@ -630,6 +679,7 @@ __all__ = [
     "annotations",
     "asyncio",
     "build_review_workflow_explanation",
+    "make_agent_signal",
     "parse_json_object",
     "pytest",
     "register_active_chat_prompt_components",

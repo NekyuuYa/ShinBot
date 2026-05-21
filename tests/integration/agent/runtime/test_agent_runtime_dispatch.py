@@ -22,11 +22,25 @@ from agent_runtime_support import (
 )
 
 from shinbot.agent.signals import (
+    AgentActiveChatBootstrapSignal,
+    ActiveChatDisposition,
     AgentSignal,
     AgentSignalKind,
     AgentSignalSource,
     AgentTimerSignal,
 )
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_registers_background_tasks_in_manager(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("test-bot")
+
+    profile.review_due_timer.run_once = lambda: None  # type: ignore[assignment]
+    profile.review_due_timer.start()
+
+    assert runtime.task_manager.tasks(prefix=f"agent:{profile.bot_id or profile.profile_id}") != []
 
 
 @pytest.mark.asyncio
@@ -647,3 +661,41 @@ async def test_agent_runtime_active_chat_tick_plans_review_before_idle(
         assert model_runtime.calls[0].purpose == "idle_review_planning"
     finally:
         await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_active_chat_bootstrap_signal_applies_disposition(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:group:1"
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=10.0,
+        decay_half_life_seconds=5.0,
+        entered_at=10.0,
+        updated_at=10.0,
+        active_epoch=9,
+    )
+    runtime.agent_scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    runtime.agent_scheduler._state_store.set_active_chat_state(active_state)
+
+    decision = await runtime.handle_agent_signal(
+        AgentSignal(
+            signal_id="bootstrap:test-bot:group:group:1",
+            kind=AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP,
+            source=AgentSignalSource.MANUAL,
+            session_id=session_id,
+            occurred_at=15.0,
+            active_chat_bootstrap=AgentActiveChatBootstrapSignal(
+                disposition=ActiveChatDisposition.ENGAGED,
+                active_epoch=9,
+                reason="test",
+            ),
+        )
+    )
+
+    assert decision is not None
+    assert decision.bootstrap_applied is True
+    assert runtime.agent_scheduler.state_for(session_id) == AgentState.ACTIVE_CHAT

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from inspect import isawaitable
 from typing import Any
+from typing import TYPE_CHECKING
 
 from shinbot.agent.coordinators.active_chat.actions import (
     ActiveChatInterestEffectConfig,
@@ -35,6 +36,9 @@ from shinbot.agent.coordinators.active_chat.trace import (
 from shinbot.agent.scheduler.models import ActiveChatState
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from shinbot.agent.runtime.task_manager import AgentTaskScope
 
 ActiveChatRoundHandler = Callable[
     [ActiveChatBatch],
@@ -72,6 +76,11 @@ class ActiveChatCoordinator:
         self._semantic_wait_tasks: dict[str, asyncio.Task[None]] = {}
         self._running_rounds: dict[str, asyncio.Task[None]] = {}
         self.last_batches: dict[str, ActiveChatBatch] = {}
+        self._task_scope: AgentTaskScope | None = None
+
+    def bind_task_scope(self, scope: AgentTaskScope | None) -> None:
+        """Bind the task scope used for background semantic wait work."""
+        self._task_scope = scope
 
     def set_round_handler(self, round_handler: ActiveChatRoundHandler | None) -> None:
         """Replace the active chat round handler."""
@@ -356,14 +365,22 @@ class ActiveChatCoordinator:
                 return False, False
 
         wait_seconds = self._attention.config.semantic_wait_ms / 1000.0
-        task = asyncio.create_task(
-            self._semantic_wait_then_flush(
-                scheduler=scheduler,
-                session_id=session_id,
-                wait_seconds=wait_seconds,
-            ),
-            name=f"active-chat-wait-{session_id}",
+        coro = self._semantic_wait_then_flush(
+            scheduler=scheduler,
+            session_id=session_id,
+            wait_seconds=wait_seconds,
         )
+        if self._task_scope is not None:
+            task = self._task_scope.create_task(
+                f"{session_id}:semantic_wait",
+                coro,
+                name=f"active-chat-wait-{session_id}",
+            )
+        else:
+            task = asyncio.create_task(
+                coro,
+                name=f"active-chat-wait-{session_id}",
+            )
         self._semantic_wait_tasks[session_id] = task
         logger.debug(
             "Active chat semantic wait started session=%s wait_seconds=%.3f",
@@ -407,10 +424,18 @@ class ActiveChatCoordinator:
                     session_id,
                 )
                 return
-            task = asyncio.create_task(
-                self._flush(session_id=session_id, scheduler=scheduler),
-                name=f"active-chat-round-{session_id}",
-            )
+            coro = self._flush(session_id=session_id, scheduler=scheduler)
+            if self._task_scope is not None:
+                task = self._task_scope.create_task(
+                    f"{session_id}:round",
+                    coro,
+                    name=f"active-chat-round-{session_id}",
+                )
+            else:
+                task = asyncio.create_task(
+                    coro,
+                    name=f"active-chat-round-{session_id}",
+                )
             self._running_rounds[session_id] = task
             logger.debug("Active chat semantic wait flushed session=%s", session_id)
 

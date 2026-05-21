@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from shinbot.agent.scheduler.inbox import AgentInbox
 from shinbot.agent.scheduler.models import HighPriorityEvent, HighPriorityEventKind
-
-if TYPE_CHECKING:
-    from shinbot.core.dispatch.dispatchers import AgentEntrySignal
+from shinbot.agent.signals import AgentSignal
 
 
 @dataclass(slots=True, frozen=True)
@@ -33,7 +31,7 @@ class PriorityPolicy(Protocol):
 
     def evaluate(
         self,
-        signal: AgentEntrySignal,
+        signal: AgentSignal,
         *,
         now: float,
         inbox: AgentInbox,
@@ -49,7 +47,7 @@ class DefaultPriorityPolicy:
 
     def evaluate(
         self,
-        signal: AgentEntrySignal,
+        signal: AgentSignal,
         *,
         now: float,
         inbox: AgentInbox,
@@ -63,38 +61,42 @@ class DefaultPriorityPolicy:
 
     def _detect_events(
         self,
-        signal: AgentEntrySignal,
+        signal: AgentSignal,
         now: float,
     ) -> list[HighPriorityEvent]:
+        message = signal.message
+        if message is None:
+            return []
+
         events: list[HighPriorityEvent] = []
-        if signal.is_mentioned:
+        if message.is_mentioned:
             events.append(
                 HighPriorityEvent(
                     session_id=signal.session_id,
-                    message_log_id=signal.message_log_id or 0,
-                    sender_id=signal.sender_id,
+                    message_log_id=message.message_log_id or 0,
+                    sender_id=message.sender_id,
                     kind=HighPriorityEventKind.MENTION,
                     created_at=now,
                     reason="message_mentions_self",
                 )
             )
-        if signal.is_reply_to_bot:
+        if message.is_reply_to_bot:
             events.append(
                 HighPriorityEvent(
                     session_id=signal.session_id,
-                    message_log_id=signal.message_log_id or 0,
-                    sender_id=signal.sender_id,
+                    message_log_id=message.message_log_id or 0,
+                    sender_id=message.sender_id,
                     kind=HighPriorityEventKind.REPLY_TO_BOT,
                     created_at=now,
                     reason="message_replies_to_self",
                 )
             )
-        if signal.is_poke_to_bot:
+        if message.is_poke_to_bot:
             events.append(
                 HighPriorityEvent(
                     session_id=signal.session_id,
-                    message_log_id=signal.message_log_id or 0,
-                    sender_id=signal.sender_id,
+                    message_log_id=message.message_log_id or 0,
+                    sender_id=message.sender_id,
                     kind=HighPriorityEventKind.POKE,
                     created_at=now,
                     reason="message_pokes_self",
@@ -104,16 +106,19 @@ class DefaultPriorityPolicy:
 
     def _should_wake(
         self,
-        signal: AgentEntrySignal,
+        signal: AgentSignal,
         *,
         now: float,
         inbox: AgentInbox,
     ) -> bool:
-        if signal.is_reply_to_bot:
+        message = signal.message
+        if message is None:
+            return False
+        if message.is_reply_to_bot:
             return True
-        if signal.is_poke_to_bot:
+        if message.is_poke_to_bot:
             return True
-        if not signal.is_mentioned:
+        if not message.is_mentioned:
             return False
 
         inbox.record_mention(signal.session_id, now)

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from shinbot.agent.scheduler.models import AgentState
+from shinbot.agent.scheduler.models import ActiveChatDisposition, AgentState
 
 
 class AgentSignalKind(StrEnum):
@@ -56,6 +56,15 @@ class AgentTimerSignal:
 
 
 @dataclass(slots=True, frozen=True)
+class AgentActiveChatBootstrapSignal:
+    """Workflow-driven payload for applying active chat bootstrap disposition."""
+
+    disposition: ActiveChatDisposition
+    active_epoch: int | None = None
+    reason: str = ""
+
+
+@dataclass(slots=True, frozen=True)
 class AgentSignal:
     """Unified signal accepted by the Agent runtime."""
 
@@ -69,10 +78,12 @@ class AgentSignal:
     bot_session_id: str = ""
     message: AgentMessageSignal | None = None
     timer: AgentTimerSignal | None = None
+    active_chat_bootstrap: AgentActiveChatBootstrapSignal | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
 
 __all__ = [
+    "AgentActiveChatBootstrapSignal",
     "AgentMessageSignal",
     "AgentSignal",
     "AgentSignalKind",

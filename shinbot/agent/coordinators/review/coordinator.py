@@ -57,12 +57,21 @@ from shinbot.agent.scheduler.models import (
     UnreadMessage,
     UnreadRange,
 )
+from shinbot.agent.signals import (
+    AgentActiveChatBootstrapSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 from shinbot.agent.services.context.review_context_builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
     ReviewContextBuildOptions,
     ReviewStageInput,
 )
+
+if False:
+    from shinbot.agent.runtime.task_manager import AgentTaskScope
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +153,9 @@ class ReviewSchedulerPort(Protocol):
         """Apply delayed stage-3 active chat disposition."""
 
 
+ReviewBootstrapSignalHandler = Callable[[AgentSignal], Any]
+
+
 class ReviewCoordinator:
     """Three-stage review workflow shell.
 
@@ -165,6 +177,9 @@ class ReviewCoordinator:
         block_digest_runner: ReviewBlockDigestStageRunner | None = None,
         reply_runner: ReplyDecisionStageRunner | None = None,
         bootstrap_runner: ActiveChatBootstrapStageRunner | None = None,
+        bootstrap_signal_handler: ReviewBootstrapSignalHandler | None = None,
+        bot_id: str = "",
+        bootstrap_task_scope: "AgentTaskScope | None" = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
@@ -177,6 +192,9 @@ class ReviewCoordinator:
         self._block_digest_runner = block_digest_runner or NoopReviewBlockDigestStageRunner()
         self._reply_runner = reply_runner or NoopReplyDecisionStageRunner()
         self._bootstrap_runner = bootstrap_runner or NoopActiveChatBootstrapStageRunner()
+        self._bootstrap_signal_handler = bootstrap_signal_handler
+        self._bot_id = str(bot_id or "").strip()
+        self._bootstrap_task_scope = bootstrap_task_scope
         self._now = now or time.time
         self._bootstrap_tasks: set[asyncio.Task[ActiveChatBootstrapResult]] = set()
         self._last_bootstrap_results: dict[str, ActiveChatBootstrapResult] = {}
@@ -612,19 +630,27 @@ class ReviewCoordinator:
         review_run_id: str,
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
-        task = asyncio.create_task(
-            self._run_active_chat_bootstrap_with_timeout(
-                scheduler=scheduler,
-                session_id=session_id,
-                started_at=started_at,
-                summaries=summaries,
-                reply=reply,
-                active_epoch=active_epoch,
-                review_run_id=review_run_id,
-                stage_traces=list(stage_traces),
-            ),
-            name=f"review-active-chat-bootstrap:{session_id}",
+        coro = self._run_active_chat_bootstrap_with_timeout(
+            scheduler=scheduler,
+            session_id=session_id,
+            started_at=started_at,
+            summaries=summaries,
+            reply=reply,
+            active_epoch=active_epoch,
+            review_run_id=review_run_id,
+            stage_traces=list(stage_traces),
         )
+        if self._bootstrap_task_scope is not None:
+            task = self._bootstrap_task_scope.create_task(
+                session_id,
+                coro,
+                name=f"review-active-chat-bootstrap:{session_id}",
+            )
+        else:
+            task = asyncio.create_task(
+                coro,
+                name=f"review-active-chat-bootstrap:{session_id}",
+            )
         self._bootstrap_tasks.add(task)
         task.add_done_callback(
             lambda completed, task_session_id=session_id: self._finish_bootstrap_task(
@@ -720,10 +746,12 @@ class ReviewCoordinator:
         )
         apply_decision = None
         if stage_output.disposition is not None:
-            apply_decision = scheduler.apply_active_chat_bootstrap(
-                session_id,
+            apply_decision = await self._apply_active_chat_bootstrap(
+                scheduler=scheduler,
+                session_id=session_id,
                 disposition=stage_output.disposition,
                 active_epoch=active_epoch,
+                reason=stage_output.reason,
             )
         return ActiveChatBootstrapResult(
             disposition=stage_output.disposition,
@@ -748,6 +776,41 @@ class ReviewCoordinator:
             tail_history_message_count=tail_history_message_count,
             stage_input_built=stage_input_built,
         )
+
+    async def _apply_active_chat_bootstrap(
+        self,
+        *,
+        scheduler: ReviewSchedulerPort,
+        session_id: str,
+        disposition: ActiveChatDisposition,
+        active_epoch: int | None,
+        reason: str,
+    ) -> ActiveChatBootstrapApplyDecision | None:
+        handler = self._bootstrap_signal_handler
+        if handler is None:
+            return scheduler.apply_active_chat_bootstrap(
+                session_id,
+                disposition=disposition,
+                active_epoch=active_epoch,
+            )
+        signal = AgentSignal(
+            signal_id=f"active-chat-bootstrap:{session_id}:{active_epoch if active_epoch is not None else 'none'}",
+            kind=AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP,
+            source=AgentSignalSource.MANUAL,
+            session_id=session_id,
+            occurred_at=self._now(),
+            bot_id=self._bot_id,
+            active_chat_bootstrap=AgentActiveChatBootstrapSignal(
+                disposition=disposition,
+                active_epoch=active_epoch,
+                reason=reason,
+            ),
+            meta={"reason": reason},
+        )
+        result = handler(signal)
+        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+            result = await result
+        return result if isinstance(result, ActiveChatBootstrapApplyDecision) else None
 
     async def _load_scan_batches(
         self,

@@ -17,6 +17,7 @@ from shinbot.agent.signals import (
 
 if TYPE_CHECKING:
     from shinbot.agent.runtime.services import AgentRuntime
+    from shinbot.agent.runtime.task_manager import AgentTaskScope
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ class ActiveChatTimer(Protocol):
 
     def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
         """Bind the runtime entry point used by timer ticks."""
+
+    def bind_task_scope(self, scope: AgentTaskScope) -> None:
+        """Bind the task scope used to manage timer tasks."""
 
     def start(self, session_id: str) -> None:
         """Start a session-bound active chat timer if one is not running."""
@@ -45,10 +49,14 @@ class ActiveChatTimerService:
         self._runtime: AgentRuntime | None = None
         self._bot_id = ""
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._task_scope: AgentTaskScope | None = None
 
     def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
         self._runtime = runtime
         self._bot_id = str(bot_id or "").strip()
+
+    def bind_task_scope(self, scope: AgentTaskScope) -> None:
+        self._task_scope = scope
 
     def start(self, session_id: str) -> None:
         task = self._tasks.get(session_id)
@@ -59,10 +67,18 @@ class ActiveChatTimerService:
         except RuntimeError:
             logger.debug("Active chat timer start skipped outside running event loop")
             return
-        self._tasks[session_id] = loop.create_task(
-            self._run_session_timer(session_id),
-            name=f"active-chat-timer:{session_id}",
-        )
+        if self._task_scope is not None:
+            task = self._task_scope.create_task(
+                session_id,
+                self._run_session_timer(session_id),
+                name=f"active-chat-timer:{session_id}",
+            )
+        else:
+            task = loop.create_task(
+                self._run_session_timer(session_id),
+                name=f"active-chat-timer:{session_id}",
+            )
+        self._tasks[session_id] = task
 
     def cancel(self, session_id: str) -> None:
         task = self._tasks.pop(session_id, None)

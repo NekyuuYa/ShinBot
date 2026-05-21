@@ -4,7 +4,6 @@ from review_workflow_support import (
     ActiveChatCoordinator,
     ActiveChatDisposition,
     ActiveReplyDispatcher,
-    AgentEntrySignal,
     AgentScheduler,
     AgentState,
     Any,
@@ -20,6 +19,7 @@ from review_workflow_support import (
     _insert_message,
     _strip_run_id_from_calls,
     build_review_workflow_explanation,
+    make_agent_signal,
     pytest,
 )
 
@@ -39,20 +39,7 @@ async def test_attention_dispatcher_can_run_review_workflow() -> None:
         now=lambda: 10.0,
     )
 
-    await scheduler.accept_signal(
-        AgentEntrySignal(
-            session_id="bot:group:room",
-            message_log_id=1,
-            event_type="message-created",
-            sender_id="user-1",
-            instance_id="bot",
-            platform="mock",
-            self_id="bot-self",
-            is_private=False,
-            is_mentioned=False,
-            is_reply_to_bot=False,
-        )
-    )
+    await scheduler.accept_signal(make_agent_signal(message_log_id=1))
 
     decision = await scheduler.run_due_review("bot:group:room", now=10.0)
 
@@ -97,42 +84,23 @@ async def test_attention_dispatcher_feeds_review_added_unread_to_active_chat(tmp
     now = 10.0
     scheduler = AgentScheduler(
         workflow_dispatcher=dispatcher,
-        response_profile_resolver=lambda signal: f"profile-{signal.message_log_id}",
+        response_profile_resolver=lambda signal: (
+            f"profile-{signal.message.message_log_id}" if signal.message else "profile-missing"
+        ),
         review_policy=FixedReviewPolicy(),
         inbox=db.agent_scheduler,
         state_store=db.agent_scheduler,
         now=lambda: now,
     )
-    await scheduler.accept_signal(
-        AgentEntrySignal(
-            session_id="bot:group:room",
-            message_log_id=before_review_id,
-            event_type="message-created",
-            sender_id="user-1",
-            instance_id="bot",
-            platform="mock",
-            self_id="bot-self",
-            is_private=False,
-            is_mentioned=False,
-            is_reply_to_bot=False,
-        )
-    )
+    await scheduler.accept_signal(make_agent_signal(message_log_id=before_review_id))
     scheduler.prepare_due_review("bot:group:room", now=10.0)
     frozen_unread = scheduler.unread_messages("bot:group:room")
 
     now = 11.0
     await scheduler.accept_signal(
-        AgentEntrySignal(
-            session_id="bot:group:room",
+        make_agent_signal(
             message_log_id=during_review_id,
-            event_type="message-created",
             sender_id="user-2",
-            instance_id="bot",
-            platform="mock",
-            self_id="bot-self",
-            is_private=False,
-            is_mentioned=False,
-            is_reply_to_bot=False,
             is_mention_to_other=True,
         )
     )

@@ -38,6 +38,7 @@ from shinbot.agent.runtime.review_stores import (
     DatabaseReviewMessageStore,
     DatabaseReviewSummaryStore,
 )
+from shinbot.agent.runtime.task_manager import AgentTaskManager
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
     AgentScheduler,
@@ -66,6 +67,7 @@ from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptReg
 from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_components
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
+from shinbot.agent.scheduler.models import ActiveChatBootstrapApplyDecision
 from shinbot.agent.signals import (
     AgentMessageSignal,
     AgentSignal,
@@ -125,9 +127,15 @@ class AgentRuntimeProfile:
         self.review_workflow_config = self.config.review_workflow_config
         self.active_chat_timer = ActiveChatTimerService()
         self.active_chat_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
+        self.active_chat_timer.bind_task_scope(
+            self._owner.task_manager.scope(self._task_namespace("active_chat_timer"))
+        )
         self.review_due_timer = ReviewDueTimerService()
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = self._create_active_chat_workflow()
+        self.active_chat_workflow.bind_task_scope(
+            self._owner.task_manager.scope(self._task_namespace("active_chat_workflow"))
+        )
         self._workflow_dispatcher = ActiveReplyDispatcher(
             active_chat_workflow=self.active_chat_workflow,
             summary_service=owner.summary_service,
@@ -135,12 +143,18 @@ class AgentRuntimeProfile:
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
         self.review_due_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
+        self.review_due_timer.bind_task_scope(
+            self._owner.task_manager.scope(self._task_namespace("review_due_timer"))
+        )
 
         if owner.database is None:
             return
 
         self.review_coordinator = self._create_review_coordinator()
         self.active_chat_workflow = self._create_active_chat_workflow()
+        self.active_chat_workflow.bind_task_scope(
+            self._owner.task_manager.scope(self._task_namespace("active_chat_workflow"))
+        )
         active_chat_fast_runner = ActiveChatFastRunner(
             owner.model_runtime,
             prompt_registry=self.prompt_registry,
@@ -179,6 +193,9 @@ class AgentRuntimeProfile:
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
         self.review_due_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
+        self.review_due_timer.bind_task_scope(
+            self._owner.task_manager.scope(self._task_namespace("review_due_timer"))
+        )
 
     def reload_prompt_files(self) -> None:
         """Reload file-backed prompt components for this profile."""
@@ -213,6 +230,7 @@ class AgentRuntimeProfile:
         await self.active_chat_workflow.shutdown()
         await self.active_chat_timer.shutdown()
         await self.review_due_timer.shutdown()
+        await self._owner.task_manager.shutdown(prefix=self._task_namespace(""))
 
     def start_background_tasks(self) -> None:
         """Start profile-owned timers after the main event loop is running."""
@@ -220,11 +238,12 @@ class AgentRuntimeProfile:
         self.review_due_timer.start()
 
     def _create_active_chat_workflow(self) -> ActiveChatCoordinator:
-        return ActiveChatCoordinator(
+        workflow = ActiveChatCoordinator(
             attention=ActiveChatAttention(self.config.active_chat_attention_config),
             conversation_message_limit=self.config.active_chat_conversation_message_limit,
             interest_effect_config=self.config.active_chat_interest_effect_config,
         )
+        return workflow
 
     def set_active_chat_threshold_delta(self, delta: float, *, source: str = "") -> None:
         """Apply a runtime-only active chat threshold delta for this profile."""
@@ -267,8 +286,17 @@ class AgentRuntimeProfile:
             message_store=DatabaseReviewMessageStore(self._owner.database),
             summary_store=DatabaseReviewSummaryStore(self._owner.database),
             context_builder=ReviewContextBuilderAdapter(),
+            bootstrap_signal_handler=self._owner.handle_agent_signal,
+            bot_id=self.bot_id,
+            bootstrap_task_scope=self._owner.task_manager.scope(
+                self._task_namespace("review_bootstrap")
+            ),
             **runner_factory.create_workflow_runner_kwargs(),
         )
+
+    def _task_namespace(self, suffix: str) -> str:
+        bot_part = self.bot_id or self.profile_id
+        return f"agent:{bot_part}:{suffix}"
 
     def _create_review_runner_factory(self) -> ReviewRunnerFactory:
         return ReviewRunnerFactory(
@@ -377,6 +405,7 @@ class AgentRuntime:
             permission_engine=permission_engine,
             audit_logger=audit_logger,
         )
+        self.task_manager = AgentTaskManager()
         register_identity_tools(self.tool_registry, self.identity_store, self.context_manager)
 
         if review_runtime_config is not None:
@@ -540,20 +569,21 @@ class AgentRuntime:
         """Backward-compatible message entry point."""
         await self.handle_agent_signal(self._agent_signal_from_entry(signal))
 
-    async def handle_agent_signal(self, signal: AgentSignal) -> None:
+    async def handle_agent_signal(
+        self,
+        signal: AgentSignal,
+    ) -> ActiveChatBootstrapApplyDecision | None:
         """Receive a unified Agent signal and let Agent internals process it."""
         self.start_background_tasks()
         profile = self.agent_profile_for_bot(signal.bot_id)
         if signal.kind == AgentSignalKind.MESSAGE:
             if signal.message is None:
-                return
-            await profile.agent_scheduler.accept_signal(
-                self._entry_signal_from_agent_signal(signal)
-            )
-            return
+                return None
+            await profile.agent_scheduler.accept_signal(signal)
+            return None
         if signal.kind == AgentSignalKind.REVIEW_DUE:
             await profile.agent_scheduler.run_due_review(signal.session_id)
-            return
+            return None
         if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
             next_review_plan = None
             preview = profile.agent_scheduler.preview_active_chat_tick(signal.session_id)
@@ -565,7 +595,17 @@ class AgentRuntime:
                 signal.session_id,
                 next_review_plan=next_review_plan,
             )
-            return
+            return None
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
+            payload = signal.active_chat_bootstrap
+            if payload is None:
+                return None
+            return profile.agent_scheduler.apply_active_chat_bootstrap(
+                signal.session_id,
+                disposition=payload.disposition,
+                active_epoch=payload.active_epoch,
+            )
+        return None
 
     def start_background_tasks(self) -> None:
         """Start Agent background services once an event loop is available."""
@@ -601,39 +641,19 @@ class AgentRuntime:
             ),
         )
 
-    def _entry_signal_from_agent_signal(self, signal: AgentSignal) -> AgentEntrySignal:
-        assert signal.message is not None
-        return AgentEntrySignal(
-            session_id=signal.session_id,
-            message_log_id=signal.message.message_log_id,
-            event_type="message-created",
-            sender_id=signal.message.sender_id,
-            instance_id=signal.message.instance_id,
-            platform=signal.message.platform,
-            self_id=signal.message.self_id,
-            is_private=signal.message.is_private,
-            is_mentioned=signal.message.is_mentioned,
-            is_reply_to_bot=signal.message.is_reply_to_bot,
-            is_mention_to_other=signal.message.is_mention_to_other,
-            is_poke_to_bot=signal.message.is_poke_to_bot,
-            is_poke_to_other=signal.message.is_poke_to_other,
-            already_handled=signal.message.already_handled,
-            is_stopped=signal.message.is_stopped,
-            bot_id=signal.bot_id,
-            bot_binding_id=signal.bot_binding_id,
-            bot_session_id=signal.bot_session_id,
-        )
-
     def _signal_from_agent_entry(self, signal: AgentEntrySignal) -> AgentSignal:
         return self._agent_signal_from_entry(signal)
 
-    def _resolve_response_profile(self, signal: AgentEntrySignal) -> str:
-        instance_config = self._instance_config_payload(signal.instance_id)
+    def _resolve_response_profile(self, signal: AgentSignal) -> str:
+        message = signal.message
+        if message is None:
+            return ""
+        instance_config = self._instance_config_payload(message.instance_id)
         return select_response_profile(
             instance_config,
-            is_private=signal.is_private,
-            is_mentioned=signal.is_mentioned,
-            is_reply_to_bot=signal.is_reply_to_bot,
+            is_private=message.is_private,
+            is_mentioned=message.is_mentioned,
+            is_reply_to_bot=message.is_reply_to_bot,
         )
 
     def _resolve_instance_runtime_config(self, instance_id: str):
