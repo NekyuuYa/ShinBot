@@ -196,10 +196,6 @@ class AgentRuntimeProfile:
         self.review_due_timer.bind_task_scope(
             self._owner.task_manager.scope(self._task_namespace("review_due_timer"))
         )
-        if self._owner.media_inspection_runner is not None:
-            self._owner.media_inspection_runner.bind_task_scope(
-                self._owner.task_manager.scope(self._task_namespace("media_inspection"))
-            )
 
     def reload_prompt_files(self) -> None:
         """Reload file-backed prompt components for this profile."""
@@ -459,6 +455,10 @@ class AgentRuntime:
             if database is not None and self.media_service is not None
             else None
         )
+        if self.media_inspection_runner is not None:
+            self.media_inspection_runner.bind_task_scope(
+                self.task_manager.scope("agent:media_inspection")
+            )
         self.media_ingress_hook = MediaIngressHook(
             self.media_service,
             self.media_inspection_runner,
