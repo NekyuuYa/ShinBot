@@ -50,6 +50,9 @@ from shinbot.agent.runtime.instance_config import (
 from shinbot.agent.runtime.tool_config import StageToolConfig, stage_tool_config_from_mapping
 from shinbot.agent.services.message_formatter import MessageFormatConfig
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptStage
+from shinbot.agent.runners.templates.review_instruction import (
+    register_review_stage_instruction_components,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -295,6 +298,7 @@ def register_review_prompt_components(
     prompt_file_config: PromptFileLoadConfig | None = None,
 ) -> None:
     """Register all review stage prompt components."""
+    register_review_stage_instruction_components(registry)
     register_review_compression_prompt_components(
         registry,
         prompt_file_config=prompt_file_config,

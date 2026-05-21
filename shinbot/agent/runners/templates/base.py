@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -16,10 +15,12 @@ from shinbot.agent.runtime.instance_config import (
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.runners.templates.review_instruction import (
+    review_stage_instruction_component_id,
+)
 from shinbot.agent.services.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
-    PromptInjection,
     PromptRegistry,
     PromptStage,
 )
@@ -54,6 +55,10 @@ class RunnerTemplateBase:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         fallback_metadata = {
             "review_stage": stage_input.purpose,
+            "review_stage_metadata": dict(stage_input.metadata),
+            "review_instruction_content": list(stage_input.instruction_content),
+            "review_source_messages": list(stage_input.source_messages),
+            "review_source_messages_text": self._format_source_messages(stage_input),
             **dict(stage_input.metadata),
         }
         instance_id = instance_id_from_session(stage_input.session_id)
@@ -82,63 +87,15 @@ class RunnerTemplateBase:
                 model_id=(runtime_target.model_id or "") if runtime_target is not None else "",
                 profile_id=self._config.profile_id,
                 component_ids_by_stage=component_ids_by_stage,
-                injections=self._build_prompt_injections(
-                    stage_input,
-                    component_ids_by_stage=component_ids_by_stage,
-                ),
                 context_policy=PromptContextPolicy.DISABLED,
                 metadata=fallback_metadata,
             )
         )
-        return result.messages, dict(result.metadata)
-
-    def _build_prompt_injections(
-        self,
-        stage_input: ReviewStageInput,
-        *,
-        component_ids_by_stage: dict[PromptStage, list[str]],
-    ) -> list[PromptInjection]:
-        injections: list[PromptInjection] = []
-        injections.append(
-            PromptInjection(
-                stage=PromptStage.INSTRUCTIONS,
-                component_id=f"review.{stage_input.purpose}.instruction",
-                content_blocks=self._build_instruction_content(stage_input),
-                priority=10,
-                metadata={"review_stage": stage_input.purpose},
-            )
-        )
-        return injections
-
-    def _build_instruction_content(
-        self,
-        stage_input: ReviewStageInput,
-    ) -> list[dict[str, Any]]:
-        metadata_json = json.dumps(
-            stage_input.metadata, ensure_ascii=False, sort_keys=True
-        )
-        instruction = (
-            f"Stage purpose: {stage_input.purpose}\n"
-            f"Metadata JSON: {metadata_json}"
-        )
-        content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
-        if stage_input.instruction_content:
-            content.extend(stage_input.instruction_content)
-            return content
-
-        formatted_text = self._format_source_messages(stage_input)
-        if formatted_text:
-            content.append({"type": "text", "text": "Source messages:\n" + formatted_text})
-            return content
-
-        content.append(
-            {
-                "type": "text",
-                "text": "Source messages JSON:\n"
-                + json.dumps(stage_input.source_messages, ensure_ascii=False),
-            }
-        )
-        return content
+        metadata = dict(result.metadata)
+        metadata["prompt_component_ids"] = [
+            record.component_id for record in result.ordered_components
+        ]
+        return result.messages, metadata
 
     def _format_source_messages(self, stage_input: ReviewStageInput) -> str:
         if self._message_formatter is None or not stage_input.source_messages:
@@ -176,6 +133,13 @@ class RunnerTemplateBase:
             result[stage].extend(
                 cid for cid in registered if cid not in result[stage]
             )
+        instruction_component_id = review_stage_instruction_component_id(
+            stage_input.purpose
+        )
+        if self._prompt_registry.get_component(instruction_component_id) is not None:
+            result.setdefault(PromptStage.INSTRUCTIONS, [])
+            if instruction_component_id not in result[PromptStage.INSTRUCTIONS]:
+                result[PromptStage.INSTRUCTIONS].append(instruction_component_id)
         return result
 
     async def _generate_model(

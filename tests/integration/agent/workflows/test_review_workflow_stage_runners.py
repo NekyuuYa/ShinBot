@@ -259,3 +259,4 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
     assert call.metadata["stage_id"] == "review_scan"
     assert call.metadata["review_stage"] == "review_scan"
     assert call.metadata["batch"] == 1
+    assert "review.review_scan.instruction" in call.metadata["prompt_component_ids"]
