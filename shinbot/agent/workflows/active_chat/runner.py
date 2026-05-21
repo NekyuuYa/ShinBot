@@ -225,6 +225,12 @@ class ActiveChatFastRunner:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         source_messages = self._load_source_messages(batch)
         context = self._build_context(batch, source_messages)
+        instruction_content = self._instruction_content(
+            batch,
+            context=context,
+            source_messages=source_messages,
+        )
+        source_messages_text = self._format_source_messages(source_messages)
         review_result_summary = _jsonable(batch.review_result_summary)
         instance_id = instance_id_from_session(batch.session_id)
         instance_config = self._resolve_instance_config(instance_id)
@@ -234,6 +240,9 @@ class ActiveChatFastRunner:
             "interest_value": batch.active_chat_state.interest_value,
             "active_epoch": batch.active_chat_state.active_epoch,
             "review_result_summary": review_result_summary,
+            "active_chat_instruction_content": instruction_content,
+            "active_chat_source_messages": source_messages,
+            "active_chat_source_messages_text": source_messages_text,
             **dict(getattr(context, "metadata", {}) or {}),
         }
         metadata = apply_instance_runtime_config_to_metadata(metadata, instance_config)
@@ -260,14 +269,16 @@ class ActiveChatFastRunner:
                 injections=self._build_prompt_injections(
                     batch,
                     context=context,
-                    source_messages=source_messages,
-                    component_ids_by_stage=component_ids_by_stage,
                 ),
                 context_policy=PromptContextPolicy.DISABLED,
                 metadata=metadata,
             )
         )
-        return build_result.messages, dict(build_result.metadata)
+        prompt_metadata = dict(build_result.metadata)
+        prompt_metadata["prompt_component_ids"] = [
+            record.component_id for record in build_result.ordered_components
+        ]
+        return build_result.messages, prompt_metadata
 
     def _load_source_messages(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
         if self._message_store is None:
@@ -320,23 +331,8 @@ class ActiveChatFastRunner:
         batch: ActiveChatBatch,
         *,
         context: Any,
-        source_messages: list[dict[str, Any]],
-        component_ids_by_stage: dict[PromptStage, list[str]],
     ) -> list[PromptInjection]:
         injections: list[PromptInjection] = []
-        injections.append(
-            PromptInjection(
-                stage=PromptStage.INSTRUCTIONS,
-                component_id="active_chat.fast_mode.batch",
-                content_blocks=self._instruction_content(
-                    batch,
-                    context=context,
-                    source_messages=source_messages,
-                ),
-                priority=10,
-                metadata={"active_chat_stage": self.stage_id},
-            )
-        )
         context_messages = list(getattr(context, "context_messages", []) or [])
         if context_messages:
             injections.append(
@@ -355,7 +351,11 @@ class ActiveChatFastRunner:
                     "active_chat.fast_mode.conversation_summary",
                 )
             )
-            summary_prefix = summary_component.content if summary_component else "Active chat compacted conversation trace summary:"
+            summary_prefix = (
+                summary_component.content
+                if summary_component
+                else "Active chat compacted conversation trace summary:"
+            )
             injections.append(
                 PromptInjection(
                     stage=PromptStage.CONTEXT,
@@ -409,9 +409,7 @@ class ActiveChatFastRunner:
             }
         ]
         if batch.review_result_summary is not None:
-            content.extend(
-                self._render_review_handoff(batch.review_result_summary)
-            )
+            content.extend(self._render_review_handoff(batch.review_result_summary))
         instruction_content = list(getattr(context, "instruction_content", []) or [])
         if instruction_content:
             content.extend(instruction_content)

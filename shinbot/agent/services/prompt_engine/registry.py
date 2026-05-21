@@ -18,6 +18,7 @@ from shinbot.agent.services.prompt_engine.runtime_resolvers import (
     resolve_message_text_prompt,
 )
 from shinbot.agent.services.prompt_engine.dynamic_components import (
+    active_chat_instruction_component_id,
     review_stage_instruction_component_id,
 )
 from shinbot.agent.services.prompt_engine.schema import (
@@ -373,6 +374,8 @@ class PromptRegistry:
     def _dynamic_instruction_component_id(self, request: PromptBuildRequest) -> str:
         if request.workflow_id == "review":
             return review_stage_instruction_component_id(request.stage_id)
+        if request.workflow_id == "active_chat":
+            return active_chat_instruction_component_id(request.stage_id)
         if request.workflow_id == "media":
             trigger = str(request.stage_id or "").strip()
             if trigger == "media_reanalysis":
