@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from shinbot.agent.services.context.projectors.projection import PromptMemoryProjectionRequest
+from shinbot.agent.services.context.projectors.headings import LONG_TERM_MEMORY_HEADING
 
 
 @dataclass(slots=True)
@@ -46,7 +47,9 @@ class LongTermMemoryProjector:
                 "content": [
                     {
                         "type": "text",
-                        "text": "### 长期记忆\n" + "\n".join(f"- {line}" for line in lines),
+                        "text": LONG_TERM_MEMORY_HEADING + "\n" + "\n".join(
+                            f"- {line}" for line in lines
+                        ),
                     }
                 ],
             }

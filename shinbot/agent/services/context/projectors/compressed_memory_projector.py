@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from shinbot.agent.services.context.projectors.projection import block_text_parts
+from shinbot.agent.services.context.projectors.headings import (
+    COMPRESSED_MEMORY_ALIAS_HEADING,
+    COMPRESSED_MEMORY_HEADING,
+    COMPRESSED_MEMORY_SOURCE_HEADING,
+)
 from shinbot.agent.services.context.state.alias_table import SessionAliasTable
 from shinbot.agent.services.context.state.state_store import (
     CompressedMemoryState,
@@ -31,7 +36,7 @@ class CompressedMemoryProjector:
                     "content": [
                         {
                             "type": "text",
-                            "text": f"### 压缩记忆\n{item.text}",
+                            "text": f"{COMPRESSED_MEMORY_HEADING}\n{item.text}",
                         }
                     ],
                 }
@@ -52,9 +57,9 @@ class CompressedMemoryProjector:
 
         sections: list[str] = []
         if alias_lines:
-            sections.append("### 成员映射\n" + "\n".join(alias_lines))
+            sections.append(f"{COMPRESSED_MEMORY_ALIAS_HEADING}\n" + "\n".join(alias_lines))
         if context_lines:
-            sections.append("### 待压缩上下文\n" + "\n".join(context_lines))
+            sections.append(f"{COMPRESSED_MEMORY_SOURCE_HEADING}\n" + "\n".join(context_lines))
         return "\n\n".join(sections).strip()
 
     def expand_aliases(self, text: str, alias_table: SessionAliasTable) -> str:

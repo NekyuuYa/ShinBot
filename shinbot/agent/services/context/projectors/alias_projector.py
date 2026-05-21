@@ -8,6 +8,10 @@ from typing import Any
 from shinbot.agent.services.context.builders.message_parts import parse_message_parts
 from shinbot.agent.services.context.state.alias_table import SessionAliasTable
 from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
+from shinbot.agent.services.context.projectors.headings import (
+    ACTIVE_ALIAS_HEADING,
+    INACTIVE_ALIAS_HEADING,
+)
 
 
 @dataclass(slots=True)
@@ -50,7 +54,7 @@ class AliasContextProjector:
         if not active_entries:
             return ""
         lines = [
-            "### 当前活跃成员映射",
+            ACTIVE_ALIAS_HEADING,
             "如需称呼用户，优先使用有意义的称呼(display_name)而非代称。",
         ]
         for entry in active_entries:
@@ -152,7 +156,7 @@ class AliasContextProjector:
         if not entries:
             return None
 
-        lines = ["### 会话历史成员映射"]
+        lines = [INACTIVE_ALIAS_HEADING]
         for entry in entries:
             alias_id = str(entry.get("alias", "") or entry.get("platform_id", "")).strip()
             platform_id = str(entry.get("platform_id", "") or "").strip()
