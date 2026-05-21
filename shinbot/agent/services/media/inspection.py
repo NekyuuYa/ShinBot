@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shinbot.admin.prompt_definition_admin import PromptDefinitionFileRepository
 from shinbot.agent.runtime.instance_config import parse_tagged_llm_ref
@@ -32,6 +32,9 @@ from shinbot.utils.logger import get_logger
 
 logger = get_logger(__name__, source="media.inspect", color="bright_cyan")
 
+if TYPE_CHECKING:
+    from shinbot.agent.runtime.task_manager import AgentTaskScope
+
 
 class MediaInspectionRunner:
     """Schedules and executes media inspection requests in the background."""
@@ -53,6 +56,11 @@ class MediaInspectionRunner:
             or PromptDefinitionFileRepository.from_data_dir(database.config.sqlite_path.parent.parent)
         )
         self._inflight: dict[str, asyncio.Task[None]] = {}
+        self._task_scope: AgentTaskScope | None = None
+
+    def bind_task_scope(self, scope: AgentTaskScope) -> None:
+        """Bind the task scope used to register inspection tasks."""
+        self._task_scope = scope
 
     def schedule_items(
         self,
@@ -67,15 +75,23 @@ class MediaInspectionRunner:
             if item.raw_hash in self._inflight:
                 continue
 
-            task = asyncio.create_task(
-                self._inspect_with_guard(
-                    instance_id=instance_id,
-                    session_id=session_id,
-                    raw_hash=item.raw_hash,
-                    prefer_sticker_model=item.is_custom_emoji,
-                ),
-                name=f"media-inspect-{item.raw_hash[:12]}",
+            coro = self._inspect_with_guard(
+                instance_id=instance_id,
+                session_id=session_id,
+                raw_hash=item.raw_hash,
+                prefer_sticker_model=item.is_custom_emoji,
             )
+            if self._task_scope is not None:
+                task = self._task_scope.create_task(
+                    item.raw_hash,
+                    coro,
+                    name=f"media-inspect-{item.raw_hash[:12]}",
+                )
+            else:
+                task = asyncio.create_task(
+                    coro,
+                    name=f"media-inspect-{item.raw_hash[:12]}",
+                )
             self._inflight[item.raw_hash] = task
             task.add_done_callback(
                 lambda _task, raw_hash=item.raw_hash: self._inflight.pop(raw_hash, None)

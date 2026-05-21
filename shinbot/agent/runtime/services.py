@@ -196,6 +196,10 @@ class AgentRuntimeProfile:
         self.review_due_timer.bind_task_scope(
             self._owner.task_manager.scope(self._task_namespace("review_due_timer"))
         )
+        if self._owner.media_inspection_runner is not None:
+            self._owner.media_inspection_runner.bind_task_scope(
+                self._owner.task_manager.scope(self._task_namespace("media_inspection"))
+            )
 
     def reload_prompt_files(self) -> None:
         """Reload file-backed prompt components for this profile."""
@@ -290,6 +294,9 @@ class AgentRuntimeProfile:
             bot_id=self.bot_id,
             bootstrap_task_scope=self._owner.task_manager.scope(
                 self._task_namespace("review_bootstrap")
+            ),
+            block_digest_task_scope=self._owner.task_manager.scope(
+                self._task_namespace("review_block_digest")
             ),
             **runner_factory.create_workflow_runner_kwargs(),
         )

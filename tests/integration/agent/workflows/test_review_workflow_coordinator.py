@@ -28,6 +28,7 @@ from review_workflow_support import (
     make_agent_signal,
     pytest,
 )
+from shinbot.agent.runtime.task_manager import AgentTaskManager
 
 
 @pytest.mark.asyncio
@@ -665,6 +666,53 @@ async def test_block_digest_failure_does_not_block_scan_or_reply(tmp_path) -> No
     assert result.scan.candidate_message_ids == [message_ids[-1]]
     assert result.reply.target_message_ids == [message_ids[-1]]
     assert "block_digests" not in reply_runner.calls[0]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_block_digest_tasks_register_in_task_scope(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 4)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    task_manager = AgentTaskManager()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(review_scan_batch_size=2),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        now=lambda: 5.0,
+        block_digest_task_scope=task_manager.scope("agent:test:review_block_digest"),
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    assert result.scan.scanned_message_count == 3
+    assert task_manager.tasks(prefix="agent:test:review_block_digest") == []
 
 
 @pytest.mark.asyncio

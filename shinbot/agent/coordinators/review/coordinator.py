@@ -180,6 +180,7 @@ class ReviewCoordinator:
         bootstrap_signal_handler: ReviewBootstrapSignalHandler | None = None,
         bot_id: str = "",
         bootstrap_task_scope: "AgentTaskScope | None" = None,
+        block_digest_task_scope: "AgentTaskScope | None" = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()
@@ -195,6 +196,7 @@ class ReviewCoordinator:
         self._bootstrap_signal_handler = bootstrap_signal_handler
         self._bot_id = str(bot_id or "").strip()
         self._bootstrap_task_scope = bootstrap_task_scope
+        self._block_digest_task_scope = block_digest_task_scope
         self._now = now or time.time
         self._bootstrap_tasks: set[asyncio.Task[ActiveChatBootstrapResult]] = set()
         self._last_bootstrap_results: dict[str, ActiveChatBootstrapResult] = {}
@@ -1101,14 +1103,20 @@ class ReviewCoordinator:
             },
         )
         if stage_input is None:
-            return asyncio.ensure_future(
-                _noop_block_digest(
-                    block_index=block_index,
-                    msg_log_start=start_msg_log_id,
-                    msg_log_end=end_msg_log_id,
-                    message_count=len(messages),
-                )
+            coro = _noop_block_digest(
+                block_index=block_index,
+                msg_log_start=start_msg_log_id,
+                msg_log_end=end_msg_log_id,
+                message_count=len(messages),
             )
+            task_name = f"review-block-digest:{session_id}:{block_index}"
+            if self._block_digest_task_scope is not None:
+                return self._block_digest_task_scope.create_task(
+                    f"{session_id}:{block_index}",
+                    coro,
+                    name=task_name,
+                )
+            return asyncio.create_task(coro, name=task_name)
 
         async def _run() -> ReviewBlockDigestStageOutput:
             async with semaphore:
@@ -1121,9 +1129,16 @@ class ReviewCoordinator:
                 message_count=len(messages),
             )
 
+        task_name = f"review-block-digest:{session_id}:{block_index}"
+        if self._block_digest_task_scope is not None:
+            return self._block_digest_task_scope.create_task(
+                f"{session_id}:{block_index}",
+                _run(),
+                name=task_name,
+            )
         return asyncio.create_task(
             _run(),
-            name=f"review-block-digest:{session_id}:{block_index}",
+            name=task_name,
         )
 
     async def _await_block_digests(

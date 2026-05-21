@@ -18,6 +18,7 @@ from media_support import (
     json,
     pytest,
 )
+from shinbot.agent.runtime.task_manager import AgentTaskManager
 
 
 @pytest.mark.asyncio
@@ -77,6 +78,41 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
     assert "repeat_count_14d=3" in user_content[0]["text"]
     assert user_content[1]["type"] == "image_url"
     assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_media_inspection_runner_registers_tasks_in_scope(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_media_runtime(db, instance_id="inst-media-scope")
+    media_service = MediaService(db)
+
+    image_path = _write_png(tmp_path / "assets" / "inspect-scope.png")
+    message = Message.from_elements(MessageElement.img(str(image_path)))
+    items = None
+    for offset in range(3):
+        items = media_service.ingest_message_media(
+            session_id="inst-media-scope:group:1",
+            sender_id=f"user-{offset}",
+            platform_msg_id=f"msg-scope-{offset}",
+            elements=message.elements,
+            seen_at=1_000.0 + offset,
+        )
+
+    runtime = FakeModelRuntime(
+        '{"kind":"meme_image","digest":"scope","confidence_band":"high","reason":"scope"}'
+    )
+    runner = MediaInspectionRunner(db, PromptRegistry(), runtime, media_service)
+    manager = AgentTaskManager()
+    runner.bind_task_scope(manager.scope("agent:test:media_inspection"))
+    await runner.inspect_raw_hash(
+        instance_id="inst-media-scope",
+        session_id="inst-media-scope:group:1",
+        raw_hash=items[0].raw_hash,
+    )
+
+    assert runtime.calls
+    assert manager.tasks(prefix="agent:test:media_inspection") == []
 
 
 @pytest.mark.asyncio
