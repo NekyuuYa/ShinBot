@@ -7,6 +7,7 @@ from shinbot.agent.services.media.config import (
     BUILTIN_MEDIA_REANALYSIS_PROMPT_ID,
     BUILTIN_STICKER_SUMMARY_PROMPT_ID,
 )
+from shinbot.agent.services.media.prompt_resolvers import register_media_instruction_components
 from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, register_prompt_files
 
 
@@ -17,6 +18,7 @@ def register_media_prompt_components(
 ) -> None:
     """Register built-in system prompts for media inspection and sticker summary."""
 
+    register_media_instruction_components(registry)
     register_prompt_files(
         registry,
         package=__package__,

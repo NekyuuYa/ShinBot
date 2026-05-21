@@ -3,6 +3,7 @@
 from shinbot.agent.services.media.config import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
+    BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
     ResolvedMediaInspectionConfig,
     resolve_media_inspection_config,
 )
@@ -21,6 +22,7 @@ from shinbot.agent.services.media.tools import register_media_tools
 __all__ = [
     "BUILTIN_MEDIA_INSPECTION_AGENT_REF",
     "BUILTIN_MEDIA_INSPECTION_LLM_REF",
+    "BUILTIN_MEDIA_INSPECTION_PROMPT_ID",
     "IngestedMediaItem",
     "MediaFingerprint",
     "MediaIngressHook",

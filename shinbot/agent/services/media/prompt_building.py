@@ -14,7 +14,6 @@ from shinbot.agent.services.media.config import (
 from shinbot.agent.services.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
-    PromptInjection,
     PromptStage,
 )
 from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_component
@@ -57,6 +56,7 @@ def build_media_inspection_messages(
         session_id=session_id,
         raw_hash=raw_hash,
         asset=asset,
+        occurrence=occurrence,
         model_context_window=model_context_window,
     )
 
@@ -95,6 +95,7 @@ def build_sticker_summary_messages(
         session_id=session_id,
         raw_hash=raw_hash,
         asset=asset,
+        occurrence=occurrence,
         model_context_window=model_context_window,
     )
 
@@ -113,6 +114,7 @@ def _build_media_prompt_messages(
     session_id: str,
     raw_hash: str,
     asset: dict[str, Any],
+    occurrence: dict[str, Any] | None,
     model_context_window: int | None,
 ) -> list[dict[str, Any]]:
     component_ids = _resolve_prompt_component_ids(
@@ -136,17 +138,6 @@ def _build_media_prompt_messages(
             instance_id=instance_id,
             model_context_window=model_context_window,
             component_ids_by_stage={PromptStage.SYSTEM_BASE: component_ids},
-            injections=[
-                PromptInjection(
-                    stage=PromptStage.INSTRUCTIONS,
-                    component_id=f"media.{trigger}.instruction",
-                    content_blocks=[
-                        {"type": "text", "text": instruction_text},
-                        image_block,
-                    ],
-                    priority=10,
-                )
-            ],
             context_policy=PromptContextPolicy.DISABLED,
             template_inputs={
                 "session_id": session_id,
@@ -155,13 +146,16 @@ def _build_media_prompt_messages(
                 "message_text": instruction_text,
                 "user_id": "",
             },
-            metadata={
-                "trigger": trigger,
-                "inspection_prompt_ref": resolved_prompt_ref,
-                "inspection_llm_ref": resolved_llm_ref,
-                "raw_hash": raw_hash,
-            },
-        )
+                metadata={
+                    "trigger": trigger,
+                    "inspection_prompt_ref": resolved_prompt_ref,
+                    "inspection_llm_ref": resolved_llm_ref,
+                    "raw_hash": raw_hash,
+                    "asset": dict(asset),
+                    "occurrence": dict(occurrence or {}),
+                    "instruction_text": instruction_text,
+                },
+            )
     )
     return result.messages
 
@@ -215,22 +209,13 @@ def build_media_reanalysis_messages(
                 component_ids_by_stage={
                     PromptStage.SYSTEM_BASE: [MEDIA_REANALYSIS_PROMPT_ID]
                 },
-                injections=[
-                    PromptInjection(
-                        stage=PromptStage.INSTRUCTIONS,
-                        component_id="media.reanalysis.instruction",
-                        content_blocks=[
-                            {"type": "text", "text": instruction_text},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": build_media_data_url(asset)},
-                            },
-                        ],
-                        priority=10,
-                    )
-                ],
                 context_policy=PromptContextPolicy.DISABLED,
-                metadata={"raw_hash": raw_hash, "question": question},
+                metadata={
+                    "raw_hash": raw_hash,
+                    "question": question,
+                    "asset": dict(asset),
+                    "instruction_text": instruction_text,
+                },
             )
         )
         return result.messages

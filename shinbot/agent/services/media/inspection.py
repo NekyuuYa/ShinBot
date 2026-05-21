@@ -13,6 +13,9 @@ from shinbot.agent.services.media.parsing import (
     clip_media_digest,
     parse_media_inspection_payload,
 )
+from shinbot.agent.services.prompt_engine.dynamic_components import (
+    media_instruction_component_id,
+)
 from shinbot.agent.services.media.prompt_building import (
     build_media_inspection_messages,
     build_media_reanalysis_messages,
@@ -190,6 +193,9 @@ class MediaInspectionRunner:
                         "inspection_prompt_ref": selected_prompt_ref,
                         "inspection_llm_ref": resolved_llm_ref,
                         "summary_mode": "sticker" if prefer_sticker_model else "image",
+                        "prompt_component_ids": [
+                            media_instruction_component_id(purpose)
+                        ],
                     },
                 )
             )

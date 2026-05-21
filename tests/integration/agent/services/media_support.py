@@ -16,6 +16,7 @@ from shinbot.agent.services.context.builders.message_parts import parse_message_
 from shinbot.agent.services.media import (
     BUILTIN_MEDIA_INSPECTION_AGENT_REF,
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
+    BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
     MediaIngressHook,
     MediaInspectionRunner,
     MediaService,
@@ -333,6 +334,7 @@ class FakeInspectionRunner:
 __all__ = [
     "BUILTIN_MEDIA_INSPECTION_AGENT_REF",
     "BUILTIN_MEDIA_INSPECTION_LLM_REF",
+    "BUILTIN_MEDIA_INSPECTION_PROMPT_ID",
     "BUILTIN_MEDIA_INSPECTION_PROMPT_ID",
     "BaseAdapter",
     "Channel",

@@ -17,6 +17,9 @@ from shinbot.agent.services.prompt_engine.runtime_resolvers import (
     resolve_current_time_prompt,
     resolve_message_text_prompt,
 )
+from shinbot.agent.services.prompt_engine.dynamic_components import (
+    review_stage_instruction_component_id,
+)
 from shinbot.agent.services.prompt_engine.schema import (
     PROMPT_STAGE_ORDER,
     PromptAssemblyRequest,
@@ -358,9 +361,27 @@ class PromptRegistry:
                     raise ValueError(
                         f"Prompt component {component_id!r} belongs to stage "
                         f"{component.stage.value!r}, not {stage.value!r}"
-                    )
+                )
                 component_ids.append(component_id)
+        dynamic_instruction_id = self._dynamic_instruction_component_id(request)
+        if dynamic_instruction_id:
+            component = self._components.get(dynamic_instruction_id)
+            if component is not None:
+                component_ids.append(dynamic_instruction_id)
         return self._dedupe(component_ids)
+
+    def _dynamic_instruction_component_id(self, request: PromptBuildRequest) -> str:
+        if request.workflow_id == "review":
+            return review_stage_instruction_component_id(request.stage_id)
+        if request.workflow_id == "media":
+            trigger = str(request.stage_id or "").strip()
+            if trigger == "media_reanalysis":
+                return "media.media_reanalysis.instruction"
+            if trigger == "media_inspection":
+                return "media.media_inspection.instruction"
+            if trigger == "sticker_summary":
+                return "media.sticker_summary.instruction"
+        return ""
 
     def _inject_explicit_records(
         self,

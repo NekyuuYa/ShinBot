@@ -15,14 +15,14 @@ from shinbot.agent.runtime.instance_config import (
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.message_formatter import MessageFormatterService
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
-from shinbot.agent.runners.templates.review_instruction import (
-    review_stage_instruction_component_id,
-)
 from shinbot.agent.services.prompt_engine import (
     PromptBuildRequest,
     PromptContextPolicy,
     PromptRegistry,
     PromptStage,
+)
+from shinbot.agent.services.prompt_engine.dynamic_components import (
+    review_stage_instruction_component_id,
 )
 from shinbot.agent.utils.parsing import instance_id_from_session
 
