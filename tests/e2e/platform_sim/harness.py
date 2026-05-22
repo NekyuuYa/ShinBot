@@ -484,6 +484,11 @@ def build_message_event(
         name=sender.get("name"),
         nick=sender.get("nick"),
     )
+    message_content = str(step.get("content", ""))
+    if not message_content and step.get("elements"):
+        message_content = Message(
+            elements=[MessageElement.model_validate(element) for element in step["elements"]]
+        ).to_xml()
     return UnifiedEvent(
         type="message-created",
         self_id=adapter.self_id,
@@ -494,7 +499,7 @@ def build_message_event(
         guild=guild,
         message=MessagePayload(
             id=str(step.get("id", "msg-1")),
-            content=str(step.get("content", "")),
+            content=message_content,
         ),
     )
 
@@ -662,11 +667,21 @@ def assert_agent_entry_signals(
         if "platform" in item:
             assert signal.platform == item["platform"]
         if "isPrivate" in item:
-            assert signal.is_private is bool(item["isPrivate"])
+            assert signal.is_private == bool(item["isPrivate"])
         if "isMentioned" in item:
-            assert signal.is_mentioned is bool(item["isMentioned"])
+            assert signal.is_mentioned == bool(item["isMentioned"])
+        if "isMentionToOther" in item:
+            assert signal.is_mention_to_other == bool(item["isMentionToOther"])
+        if "isReplyToBot" in item:
+            assert signal.is_reply_to_bot == bool(item["isReplyToBot"])
+        if "isPokeToBot" in item:
+            assert signal.is_poke_to_bot == bool(item["isPokeToBot"])
+        if "isPokeToOther" in item:
+            assert signal.is_poke_to_other == bool(item["isPokeToOther"])
         if "alreadyHandled" in item:
-            assert signal.already_handled is bool(item["alreadyHandled"])
+            assert signal.already_handled == bool(item["alreadyHandled"])
+        if "isStopped" in item:
+            assert signal.is_stopped == bool(item["isStopped"])
         if item.get("messageLogId"):
             assert signal.message_log_id is not None
 

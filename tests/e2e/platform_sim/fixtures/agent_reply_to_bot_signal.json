@@ -1,14 +1,12 @@
 {
-  "name": "agent_scheduler_signal",
+  "name": "agent_reply_to_bot_signal",
   "adapter": {
     "instanceId": "sim-main",
     "platform": "sim",
     "selfId": "bot-self"
   },
-  "agentSchedulerProbe": {
-    "enabled": true,
-    "now": 1000.0,
-    "responseProfile": "balanced"
+  "agentEntryProbe": {
+    "enabled": true
   },
   "config": {
     "adapter_instances": [
@@ -45,6 +43,12 @@
       }
     ]
   },
+  "commands": [
+    {
+      "name": "ping",
+      "reply": "pong: {args}"
+    }
+  ],
   "steps": [
     {
       "type": "message",
@@ -58,37 +62,45 @@
         "id": "user-1",
         "name": "Alice"
       },
+      "content": "/ping ok",
+      "expectSentCount": 1
+    },
+    {
+      "type": "message",
+      "id": "msg-2",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Agent Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
       "elements": [
         {
-          "type": "text",
+          "type": "quote",
           "attrs": {
-            "content": "hello "
-          }
-        },
-        {
-          "type": "at",
-          "attrs": {
-            "id": "bot-self"
+            "id": "sim-out-1"
           }
         },
         {
           "type": "text",
           "attrs": {
-            "content": " scheduler"
+            "content": " thanks"
           }
         }
       ],
-      "expectSentCount": 0
+      "expectSentCount": 1
     }
   ],
   "expect": {
-    "sent": [],
-    "messageLogs": {
-      "sessionId": "sim-main:group:group-1",
-      "countAtLeast": 1,
-      "roles": ["user"],
-      "incomingRoutingStatus": "dispatched"
-    },
+    "sent": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "textContains": "pong: ok"
+      }
+    ],
     "agentEntrySignals": [
       {
         "sessionId": "sim-main:group:group-1",
@@ -98,18 +110,14 @@
         "eventType": "message-created",
         "senderId": "user-1",
         "messageLogId": true,
-        "isMentioned": true
+        "isReplyToBot": true
       }
     ],
-    "agentScheduler": {
+    "messageLogs": {
       "sessionId": "sim-main:group:group-1",
-      "state": "idle",
-      "unreadCount": 1,
-      "knownSessionIds": ["sim-main:group:group-1"],
-      "reviewPlan": {
-        "reason": "default_idle_review_interval",
-        "nextReviewAt": 1900.0
-      }
+      "countAtLeast": 3,
+      "roles": ["user", "assistant", "user"],
+      "incomingRoutingStatus": "dispatched"
     }
   }
 }
