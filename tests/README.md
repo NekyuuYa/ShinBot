@@ -91,7 +91,8 @@ Scenario fixtures should stay declarative JSON where practical:
 - `actions`: optional post-event actions such as `agentReviewDue`,
   `agentCompleteReview`, and `agentActiveChatTick`, used to exercise
   timer-like state-machine signals through the same scenario flow.
-- `expect`: outbound message, session, and persistence assertions.
+- `expect`: outbound message, platform API call, session, and persistence
+  assertions.
 
 Use this layer for full user-like backend flows. Keep pure routing policy,
 parser, repository, and workflow unit behavior in `unit` or `integration`.

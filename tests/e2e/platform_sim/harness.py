@@ -295,6 +295,8 @@ def register_commands(
             handler = _make_prompt_handler(command)
         elif kind == "model":
             handler = _make_model_handler(runtime_bot, command)
+        elif kind == "api":
+            handler = _make_api_handler(command)
         else:
             handler = _make_reply_handler(str(command.get("reply", "")))
         bot.command_registry.register(
@@ -458,6 +460,51 @@ def _make_model_handler(bot: ShinBot, command: dict[str, Any]) -> Callable[[Mess
     return handler
 
 
+def _make_api_handler(command: dict[str, Any]) -> Callable[[MessageContext, str], Awaitable[None]]:
+    api_config = dict(command.get("api", {}))
+    method_template = str(api_config.get("method", ""))
+    params_template = dict(api_config.get("params", {}))
+    reply_template = str(command.get("reply", ""))
+
+    async def handler(ctx: MessageContext, args: str) -> None:
+        method = method_template.format(
+            args=args,
+            text=ctx.text,
+            session_id=ctx.session_id,
+            user_id=ctx.user_id,
+        )
+        params = _format_payload(
+            params_template,
+            args=args,
+            text=ctx.text,
+            session_id=ctx.session_id,
+            user_id=ctx.user_id,
+        )
+        result = await ctx.adapter.call_api(method, params)
+        if reply_template:
+            await ctx.send(
+                reply_template.format(
+                    args=args,
+                    text=ctx.text,
+                    session_id=ctx.session_id,
+                    method=method,
+                    result=result,
+                )
+            )
+
+    return handler
+
+
+def _format_payload(value: Any, **kwargs: str) -> Any:
+    if isinstance(value, str):
+        return value.format(**kwargs)
+    if isinstance(value, list):
+        return [_format_payload(item, **kwargs) for item in value]
+    if isinstance(value, dict):
+        return {key: _format_payload(item, **kwargs) for key, item in value.items()}
+    return value
+
+
 def build_message_event(
     step: dict[str, Any],
     *,
@@ -587,6 +634,8 @@ async def assert_scenario_expectations(
         assert_message_logs(bot, expected_logs)
     if "noticeEvents" in expect:
         assert adapter.notice_events == list(expect["noticeEvents"])
+    if "apiCalls" in expect:
+        assert_api_calls(adapter, expect["apiCalls"])
     if "agentEntrySignals" in expect:
         assert_agent_entry_signals(adapter, expect["agentEntrySignals"])
     if "agentScheduler" in expect:
@@ -607,6 +656,22 @@ def assert_sent_messages(
             assert sent.text == item["text"]
         if "textContains" in item:
             assert item["textContains"] in sent.text
+
+
+def assert_api_calls(
+    adapter: SimulatedPlatformAdapter,
+    expected: list[dict[str, Any]],
+) -> None:
+    assert len(adapter.api_calls) >= len(expected)
+    for index, item in enumerate(expected):
+        method, params = adapter.api_calls[index]
+        if "method" in item:
+            assert method == item["method"]
+        if "params" in item:
+            assert params == item["params"]
+        if "paramsContains" in item:
+            for key, value in item["paramsContains"].items():
+                assert params[key] == value
 
 
 def assert_sessions(bot: ShinBot, expected: list[dict[str, Any]]) -> None:

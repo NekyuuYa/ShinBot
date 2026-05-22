@@ -1,0 +1,62 @@
+{
+  "name": "api_call_command",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "commands": [
+    {
+      "name": "poke",
+      "kind": "api",
+      "api": {
+        "method": "internal.sim.poke",
+        "params": {
+          "user_id": "{args}",
+          "session_id": "{session_id}"
+        }
+      },
+      "reply": "api ok: {method}"
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Test Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "/poke user-2",
+      "expectSentCount": 1
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "text": "api ok: internal.sim.poke"
+      }
+    ],
+    "apiCalls": [
+      {
+        "method": "internal.sim.poke",
+        "params": {
+          "user_id": "user-2",
+          "session_id": "sim-main:group:group-1"
+        }
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 2,
+      "incomingRoutingStatus": "dispatched",
+      "roles": ["user", "assistant"]
+    }
+  }
+}
