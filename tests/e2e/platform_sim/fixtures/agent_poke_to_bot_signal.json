@@ -1,0 +1,90 @@
+{
+  "name": "agent_poke_to_bot_signal",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentEntryProbe": {
+    "enabled": true
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [],
+    "bots": [
+      {
+        "id": "agent-bot",
+        "display_name": "Agent Bot",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["/"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["*"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "agent-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Agent Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "elements": [
+        {
+          "type": "sb:poke",
+          "attrs": {
+            "target": "bot-self"
+          }
+        }
+      ],
+      "expectSentCount": 0
+    }
+  ],
+  "expect": {
+    "agentEntrySignals": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "botId": "agent-bot",
+        "botBindingId": "agent-group",
+        "botSessionId": "agent-bot:group:group-1",
+        "eventType": "message-created",
+        "senderId": "user-1",
+        "messageLogId": true,
+        "isPokeToBot": true
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 1,
+      "roles": ["user"],
+      "incomingRoutingStatus": "dispatched"
+    }
+  }
+}
