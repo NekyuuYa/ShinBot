@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from shinbot.agent.scheduler import AgentScheduler
 from shinbot.agent.services.model_runtime import ModelRuntimeCall
+from shinbot.agent.signals import (
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.bots_config import load_bot_service_configs
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
@@ -54,6 +61,7 @@ class SimulatedPlatformAdapter(BaseAdapter):
         self.api_calls: list[tuple[str, dict[str, Any]]] = []
         self.notice_events: list[str] = []
         self.agent_entry_signals: list[AgentEntrySignal] = []
+        self.agent_scheduler: AgentScheduler | None = None
 
     async def start(self) -> None:
         self.started = True
@@ -131,6 +139,7 @@ async def run_platform_scenario(
 
     configure_bot_services(bot, scenario.get("config"), data_dir=data_dir)
     register_agent_entry_probe(bot, scenario.get("agentEntryProbe"), adapter)
+    register_agent_scheduler_probe(bot, scenario.get("agentSchedulerProbe"), adapter)
     register_event_bus_handlers(bot, scenario.get("eventBusHandlers", []), adapter)
     register_commands(bot, scenario.get("commands", []), runtime_bot=bot)
     register_model_runtime_setup(bot, scenario.get("modelRuntime", {}))
@@ -174,6 +183,58 @@ def register_agent_entry_probe(
         adapter.agent_entry_signals.append(signal)
 
     bot.set_agent_entry_handler(record)
+
+
+def register_agent_scheduler_probe(
+    bot: ShinBot,
+    config: dict[str, Any] | None,
+    adapter: SimulatedPlatformAdapter,
+) -> None:
+    if not config:
+        return
+    now = float(config.get("now", time.time()))
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: str(config.get("responseProfile", "")),
+        inbox=bot.database.agent_scheduler,
+        state_store=bot.database.agent_scheduler,
+        now=lambda: now,
+    )
+    adapter.agent_scheduler = scheduler
+
+    async def handle(signal: AgentEntrySignal) -> None:
+        adapter.agent_entry_signals.append(signal)
+        await scheduler.accept_signal(agent_signal_from_entry(signal, occurred_at=now))
+
+    bot.set_agent_entry_handler(handle)
+
+
+def agent_signal_from_entry(signal: AgentEntrySignal, *, occurred_at: float) -> AgentSignal:
+    message_token = signal.message_log_id if signal.message_log_id is not None else "missing"
+    return AgentSignal(
+        signal_id=f"e2e-entry:{signal.session_id}:{message_token}",
+        kind=AgentSignalKind.MESSAGE,
+        source=AgentSignalSource.MESSAGE_INGRESS,
+        session_id=signal.session_id,
+        occurred_at=occurred_at,
+        bot_id=signal.bot_id,
+        bot_binding_id=signal.bot_binding_id,
+        bot_session_id=signal.bot_session_id,
+        message=AgentMessageSignal(
+            message_log_id=signal.message_log_id,
+            sender_id=signal.sender_id,
+            instance_id=signal.instance_id,
+            platform=signal.platform,
+            self_id=signal.self_id,
+            is_private=signal.is_private,
+            is_mentioned=signal.is_mentioned,
+            is_reply_to_bot=signal.is_reply_to_bot,
+            is_mention_to_other=signal.is_mention_to_other,
+            is_poke_to_bot=signal.is_poke_to_bot,
+            is_poke_to_other=signal.is_poke_to_other,
+            already_handled=signal.already_handled,
+            is_stopped=signal.is_stopped,
+        ),
+    )
 
 
 def register_commands(
@@ -478,6 +539,8 @@ async def assert_scenario_expectations(
         assert adapter.notice_events == list(expect["noticeEvents"])
     if "agentEntrySignals" in expect:
         assert_agent_entry_signals(adapter, expect["agentEntrySignals"])
+    if "agentScheduler" in expect:
+        assert_agent_scheduler_state(bot, adapter, expect["agentScheduler"])
     if "modelRuntime" in expect:
         await assert_model_runtime_expectations(bot, expect["modelRuntime"])
 
@@ -561,6 +624,33 @@ def assert_agent_entry_signals(
             assert signal.already_handled is bool(item["alreadyHandled"])
         if item.get("messageLogId"):
             assert signal.message_log_id is not None
+
+
+def assert_agent_scheduler_state(
+    bot: ShinBot,
+    adapter: SimulatedPlatformAdapter,
+    expected: dict[str, Any],
+) -> None:
+    scheduler = adapter.agent_scheduler
+    assert scheduler is not None
+    session_id = str(expected["sessionId"])
+    if "state" in expected:
+        assert scheduler.state_for(session_id).value == expected["state"]
+    if "unreadCount" in expected:
+        assert scheduler.count_unread_messages(session_id) == int(expected["unreadCount"])
+    if "knownSessionIds" in expected:
+        assert scheduler.list_session_ids() == list(expected["knownSessionIds"])
+    plan = scheduler.review_plan_for(session_id)
+    if expected.get("reviewPlan"):
+        assert plan is not None
+        review_plan = expected["reviewPlan"]
+        if "reason" in review_plan:
+            assert plan.reason == review_plan["reason"]
+        if "nextReviewAt" in review_plan:
+            assert plan.next_review_at == float(review_plan["nextReviewAt"])
+    rows = bot.database.agent_scheduler.list_unread(session_id)
+    if "unreadMessageLogIds" in expected:
+        assert [row.message_log_id for row in rows] == list(expected["unreadMessageLogIds"])
 
 
 async def assert_model_runtime_expectations(bot: ShinBot, expected: dict[str, Any]) -> None:

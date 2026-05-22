@@ -1,0 +1,95 @@
+{
+  "name": "agent_scheduler_signal",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentSchedulerProbe": {
+    "enabled": true,
+    "now": 1000.0,
+    "responseProfile": "balanced"
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [],
+    "bots": [
+      {
+        "id": "agent-bot",
+        "display_name": "Agent Bot",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["/"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["*"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "agent-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Agent Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "hello scheduler",
+      "expectSentCount": 0
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 1,
+      "roles": ["user"],
+      "incomingRoutingStatus": "dispatched"
+    },
+    "agentEntrySignals": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "botId": "agent-bot",
+        "botBindingId": "agent-group",
+        "botSessionId": "agent-bot:group:group-1",
+        "eventType": "message-created",
+        "senderId": "user-1",
+        "messageLogId": true
+      }
+    ],
+    "agentScheduler": {
+      "sessionId": "sim-main:group:group-1",
+      "state": "idle",
+      "unreadCount": 1,
+      "knownSessionIds": ["sim-main:group:group-1"],
+      "reviewPlan": {
+        "reason": "default_idle_review_interval",
+        "nextReviewAt": 1900.0
+      }
+    }
+  }
+}

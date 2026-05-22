@@ -81,6 +81,8 @@ Scenario fixtures should stay declarative JSON where practical:
   service config loader.
 - `agentEntryProbe`: optional Agent entry recorder that asserts messages reach
   the unified Agent entry signal without running the full Agent workflow.
+- `agentSchedulerProbe`: optional scheduler recorder that feeds Agent entry
+  signals into the real `AgentScheduler` with database-backed state stores.
 - `commands`: command handlers installed for the scenario. Use `kind: "prompt"`
   for a command that calls `wait_for_input()`.
 - `steps`: user-like platform events to emit. Use `expectSentCount` when a step
