@@ -1,0 +1,51 @@
+{
+  "name": "command_reply",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "commands": [
+    {
+      "name": "ping",
+      "reply": "pong: {args}"
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Test Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "/ping ok"
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "textContains": "pong: ok"
+      }
+    ],
+    "sessions": [
+      {
+        "id": "sim-main:group:group-1",
+        "type": "group",
+        "displayName": "Test Group"
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 2,
+      "incomingRoutingStatus": "dispatched",
+      "roles": ["user", "assistant"]
+    }
+  }
+}

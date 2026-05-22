@@ -53,6 +53,7 @@ explicit over time.
 uv run pytest -m unit
 uv run pytest -m api
 uv run pytest -m "integration and not slow"
+uv run pytest -m e2e
 uv run python scripts/test_audit.py
 ```
 
@@ -63,6 +64,24 @@ cd dashboard && pnpm run build
 ```
 
 Use Playwright for route, layout, or interaction regressions.
+
+## E2E Platform Simulation
+
+Backend E2E scenarios live under `tests/e2e/platform_sim/`. These tests start a
+real `ShinBot` instance with a temporary data directory, attach an in-process
+simulated message platform, inject configured platform events, and assert
+observable outcomes such as outbound messages, sessions, routing status, and
+message logs.
+
+Scenario fixtures should stay declarative JSON where practical:
+
+- `adapter`: simulated platform instance identity.
+- `commands`: command handlers installed for the scenario.
+- `steps`: user-like platform events to emit.
+- `expect`: outbound message, session, and persistence assertions.
+
+Use this layer for full user-like backend flows. Keep pure routing policy,
+parser, repository, and workflow unit behavior in `unit` or `integration`.
 
 ## Expectations
 
