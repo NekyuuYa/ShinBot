@@ -87,6 +87,8 @@ Scenario fixtures should stay declarative JSON where practical:
   for a command that calls `wait_for_input()`.
 - `steps`: user-like platform events to emit. Use `expectSentCount` when a step
   should wait for intermediate outbound messages before the next event.
+- `actions`: optional post-event actions such as `agentReviewDue`, used to
+  exercise timer-like state-machine signals through the same scenario flow.
 - `expect`: outbound message, session, and persistence assertions.
 
 Use this layer for full user-like backend flows. Keep pure routing policy,

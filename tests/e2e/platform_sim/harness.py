@@ -157,6 +157,8 @@ async def run_platform_scenario(
                     scenario.get("expect", {}),
                     expected_sent_count=step.get("expectSentCount"),
                 )
+            for action in scenario.get("actions", []):
+                await run_scenario_action(action, adapter)
         await assert_scenario_expectations(bot, adapter, scenario.get("expect", {}))
     finally:
         if debug_model_plugin_loaded:
@@ -235,6 +237,20 @@ def agent_signal_from_entry(signal: AgentEntrySignal, *, occurred_at: float) -> 
             is_stopped=signal.is_stopped,
         ),
     )
+
+
+async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatformAdapter) -> None:
+    action_type = str(action.get("type", ""))
+    if action_type == "agentReviewDue":
+        scheduler = adapter.agent_scheduler
+        if scheduler is None:
+            raise RuntimeError("agentReviewDue action requires agentSchedulerProbe")
+        await scheduler.run_due_review(
+            str(action["sessionId"]),
+            now=float(action.get("now", time.time())),
+        )
+        return
+    raise ValueError(f"unsupported scenario action type: {action_type!r}")
 
 
 def register_commands(
