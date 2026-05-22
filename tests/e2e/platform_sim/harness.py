@@ -241,8 +241,8 @@ def agent_signal_from_entry(signal: AgentEntrySignal, *, occurred_at: float) -> 
 
 async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatformAdapter) -> None:
     action_type = str(action.get("type", ""))
+    scheduler = adapter.agent_scheduler
     if action_type == "agentReviewDue":
-        scheduler = adapter.agent_scheduler
         if scheduler is None:
             raise RuntimeError("agentReviewDue action requires agentSchedulerProbe")
         await scheduler.run_due_review(
@@ -250,7 +250,36 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
             now=float(action.get("now", time.time())),
         )
         return
+    if action_type == "agentCompleteReview":
+        if scheduler is None:
+            raise RuntimeError("agentCompleteReview action requires agentSchedulerProbe")
+        scheduler.complete_review(
+            str(action["sessionId"]),
+            enter_active_chat=bool(action.get("enterActiveChat", False)),
+            active_chat_initial_interest=_optional_float(
+                action.get("activeChatInitialInterest")
+            ),
+            active_chat_decay_half_life_seconds=_optional_float(
+                action.get("activeChatDecayHalfLifeSeconds")
+            ),
+            now=float(action.get("now", time.time())),
+        )
+        return
+    if action_type == "agentActiveChatTick":
+        if scheduler is None:
+            raise RuntimeError("agentActiveChatTick action requires agentSchedulerProbe")
+        scheduler.tick_active_chat(
+            str(action["sessionId"]),
+            now=float(action.get("now", time.time())),
+        )
+        return
     raise ValueError(f"unsupported scenario action type: {action_type!r}")
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def register_commands(
@@ -664,9 +693,38 @@ def assert_agent_scheduler_state(
             assert plan.reason == review_plan["reason"]
         if "nextReviewAt" in review_plan:
             assert plan.next_review_at == float(review_plan["nextReviewAt"])
+    if "activeChatState" in expected:
+        assert_active_chat_state(scheduler, session_id, expected["activeChatState"])
     rows = bot.database.agent_scheduler.list_unread(session_id)
     if "unreadMessageLogIds" in expected:
         assert [row.message_log_id for row in rows] == list(expected["unreadMessageLogIds"])
+
+
+def assert_active_chat_state(
+    scheduler: AgentScheduler,
+    session_id: str,
+    expected: dict[str, Any] | None,
+) -> None:
+    active_chat_state = scheduler.active_chat_state_for(session_id)
+    if expected is None or expected.get("exists") is False:
+        assert active_chat_state is None
+        return
+
+    assert active_chat_state is not None
+    if "interestValue" in expected:
+        assert active_chat_state.interest_value == float(expected["interestValue"])
+    if "decayHalfLifeSeconds" in expected:
+        assert active_chat_state.decay_half_life_seconds == float(
+            expected["decayHalfLifeSeconds"]
+        )
+    if "enteredAt" in expected:
+        assert active_chat_state.entered_at == float(expected["enteredAt"])
+    if "updatedAt" in expected:
+        assert active_chat_state.updated_at == float(expected["updatedAt"])
+    if "tickCount" in expected:
+        assert active_chat_state.tick_count == int(expected["tickCount"])
+    if "activeEpoch" in expected:
+        assert active_chat_state.active_epoch == int(expected["activeEpoch"])
 
 
 async def assert_model_runtime_expectations(bot: ShinBot, expected: dict[str, Any]) -> None:
