@@ -92,7 +92,9 @@ Scenario fixtures should stay declarative JSON where practical:
   `agentCompleteReview`, and `agentActiveChatTick`, used to exercise
   timer-like state-machine signals through the same scenario flow.
 - `expect`: outbound message, platform API call, session, and persistence
-  assertions.
+  assertions. For `sent`, use `elements` when you want to assert the exact
+  message AST. For `messageLogs`, use `contentElements` when you want to assert
+  the stored element JSON exactly.
 
 Use this layer for full user-like backend flows. Keep pure routing policy,
 parser, repository, and workflow unit behavior in `unit` or `integration`.

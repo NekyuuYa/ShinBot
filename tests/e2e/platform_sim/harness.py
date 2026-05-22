@@ -652,10 +652,19 @@ def assert_sent_messages(
     for index, item in enumerate(expected):
         sent = adapter.sent[index]
         assert sent.session_id == item["sessionId"]
+        if "messageId" in item:
+            assert sent.message_id == item["messageId"]
+        if "messageIdStartsWith" in item:
+            assert sent.message_id.startswith(str(item["messageIdStartsWith"]))
         if "text" in item:
             assert sent.text == item["text"]
         if "textContains" in item:
             assert item["textContains"] in sent.text
+        if "elements" in item:
+            expected_elements = [
+                MessageElement.model_validate(element) for element in item["elements"]
+            ]
+            assert sent.elements == expected_elements
 
 
 def assert_api_calls(
@@ -690,10 +699,46 @@ def assert_message_logs(bot: ShinBot, expected: dict[str, Any]) -> None:
         expected["sessionId"],
         limit=int(expected.get("limit", 50)),
     )
-    assert len(rows) >= int(expected.get("countAtLeast", 0))
+    if "countExact" in expected:
+        assert len(rows) == int(expected["countExact"])
+    else:
+        assert len(rows) >= int(expected.get("countAtLeast", 0))
+    if "ids" in expected:
+        assert [row["id"] for row in rows[: len(expected["ids"])]] == list(expected["ids"])
     roles = expected.get("roles")
     if roles is not None:
         assert [row["role"] for row in rows[: len(roles)]] == roles
+    sender_ids = expected.get("senderIds")
+    if sender_ids is not None:
+        assert [row["sender_id"] for row in rows[: len(sender_ids)]] == list(sender_ids)
+    sender_names = expected.get("senderNames")
+    if sender_names is not None:
+        assert [row["sender_name"] for row in rows[: len(sender_names)]] == list(sender_names)
+    platform_msg_ids = expected.get("platformMsgIds")
+    if platform_msg_ids is not None:
+        assert [row["platform_msg_id"] for row in rows[: len(platform_msg_ids)]] == list(
+            platform_msg_ids
+        )
+    is_read = expected.get("isRead")
+    if is_read is not None:
+        assert [row["is_read"] for row in rows[: len(is_read)]] == list(is_read)
+    is_mentioned = expected.get("isMentioned")
+    if is_mentioned is not None:
+        assert [row["is_mentioned"] for row in rows[: len(is_mentioned)]] == list(
+            is_mentioned
+        )
+    raw_texts = expected.get("rawTexts")
+    if raw_texts is not None:
+        assert [row["raw_text"] for row in rows[: len(raw_texts)]] == list(raw_texts)
+    raw_text_contains = expected.get("rawTextContains")
+    if raw_text_contains is not None:
+        for index, needle in enumerate(raw_text_contains):
+            assert needle in rows[index]["raw_text"]
+    content_elements = expected.get("contentElements")
+    if content_elements is not None:
+        assert [
+            json.loads(row["content_json"]) for row in rows[: len(content_elements)]
+        ] == list(content_elements)
     routing_statuses = expected.get("routingStatuses")
     if routing_statuses is not None:
         assert [row["routing_status"] for row in rows[: len(routing_statuses)]] == routing_statuses
