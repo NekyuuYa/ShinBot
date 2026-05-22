@@ -46,11 +46,27 @@
     "sent": [
       {
         "sessionId": "sim-main:private:user-1",
-        "text": "what is your answer?"
+        "messageId": "sim-out-1",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "what is your answer?"
+            }
+          }
+        ]
       },
       {
         "sessionId": "sim-main:private:user-1",
-        "text": "received: blue"
+        "messageId": "sim-out-2",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "received: blue"
+            }
+          }
+        ]
       }
     ],
     "sessions": [
@@ -61,11 +77,53 @@
     ],
     "messageLogs": {
       "sessionId": "sim-main:private:user-1",
-      "countAtLeast": 4,
+      "countExact": 4,
       "incomingRoutingStatus": "dispatched",
       "routingStatuses": ["dispatched", "pending", "skipped", "pending"],
       "routingSkipReasons": [null, null, "wait_for_input", null],
-      "roles": ["user", "assistant", "user", "assistant"]
+      "roles": ["user", "assistant", "user", "assistant"],
+      "senderIds": ["user-1", "bot-self", "user-1", "bot-self"],
+      "platformMsgIds": ["msg-1", "sim-out-1", "msg-2", "sim-out-2"],
+      "isRead": [false, true, false, true],
+      "rawTexts": ["/ask", "what is your answer?", "blue", "received: blue"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "/ask"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "what is your answer?"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "blue"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "received: blue"
+            },
+            "children": []
+          }
+        ]
+      ]
     }
   }
 }

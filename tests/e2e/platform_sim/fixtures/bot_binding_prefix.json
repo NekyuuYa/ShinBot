@@ -91,7 +91,16 @@
     "sent": [
       {
         "sessionId": "sim-main:group:group-1",
-        "text": "bound: ok"
+        "messageId": "sim-out-1",
+        "text": "bound: ok",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "bound: ok"
+            }
+          }
+        ]
       }
     ],
     "sessions": [
@@ -106,16 +115,64 @@
     ],
     "messageLogs": {
       "sessionId": "sim-main:group:group-1",
-      "countAtLeast": 3,
+      "countExact": 3,
       "roles": ["user", "user", "assistant"],
+      "senderIds": ["user-1", "user-1", "bot-self"],
+      "platformMsgIds": ["msg-2", "msg-3", "sim-out-1"],
+      "isRead": [false, false, true],
+      "rawTexts": ["/ping wrong-prefix", "!ping ok", "bound: ok"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "/ping wrong-prefix"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "!ping ok"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "bound: ok"
+            },
+            "children": []
+          }
+        ]
+      ],
       "routingStatuses": ["skipped", "dispatched", "pending"],
       "routingSkipReasons": ["no_route_matched", null, null]
     },
     "messageLogsBySession": [
       {
         "sessionId": "sim-main:group:group-2",
-        "countAtLeast": 1,
+        "countExact": 1,
         "roles": ["user"],
+        "senderIds": ["user-1"],
+        "platformMsgIds": ["msg-1"],
+        "isRead": [false],
+        "rawTexts": ["!ping wrong"],
+        "contentElements": [
+          [
+            {
+              "type": "text",
+              "attrs": {
+                "content": "!ping wrong"
+              },
+              "children": []
+            }
+          ]
+        ],
         "routingStatuses": ["skipped"],
         "routingSkipReasons": ["no_route_matched"]
       }

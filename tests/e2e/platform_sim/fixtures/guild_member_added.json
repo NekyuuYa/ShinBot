@@ -43,8 +43,12 @@
     "sent": [],
     "messageLogs": {
       "sessionId": "sim-main:group:guild-1:group-1",
-      "countAtLeast": 1,
+      "countExact": 1,
       "roles": ["system"],
+      "senderIds": ["user-1"],
+      "platformMsgIds": ["1001"],
+      "isRead": [true],
+      "rawTexts": ["[notice:guild-member-added]"],
       "routingStatuses": ["dispatched"],
       "routingSkipReasons": [null]
     },

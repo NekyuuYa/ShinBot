@@ -67,9 +67,47 @@
     "sent": [
       {
         "sessionId": "sim-main:private:user-1",
-        "textContains": "model-result:"
+        "messageId": "sim-out-1",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "model-result: stubbed model response"
+            }
+          }
+        ]
       }
     ],
+    "messageLogs": {
+      "sessionId": "sim-main:private:user-1",
+      "countAtLeast": 2,
+      "roles": ["user", "assistant"],
+      "senderIds": ["user-1", "bot-self"],
+      "platformMsgIds": ["msg-1", "sim-out-1"],
+      "isRead": [false, true],
+      "rawTexts": ["/audit beta", "model-result: stubbed model response"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "/audit beta"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "model-result: stubbed model response"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "incomingRoutingStatus": "dispatched"
+    },
     "modelRuntime": {
       "providerId": "stub-provider",
       "modelId": "stub-provider/stub-model",

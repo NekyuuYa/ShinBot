@@ -40,7 +40,16 @@
     "sent": [
       {
         "sessionId": "sim-main:group:group-1",
-        "text": "api ok: internal.sim.poke"
+        "messageId": "sim-out-1",
+        "text": "api ok: internal.sim.poke",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "api ok: internal.sim.poke"
+            }
+          }
+        ]
       }
     ],
     "apiCalls": [
@@ -54,9 +63,35 @@
     ],
     "messageLogs": {
       "sessionId": "sim-main:group:group-1",
-      "countAtLeast": 2,
+      "countExact": 2,
       "incomingRoutingStatus": "dispatched",
-      "roles": ["user", "assistant"]
+      "roles": ["user", "assistant"],
+      "senderIds": ["user-1", "bot-self"],
+      "senderNames": ["Alice", ""],
+      "platformMsgIds": ["msg-1", "sim-out-1"],
+      "isRead": [false, true],
+      "rawTexts": ["/poke user-2", "api ok: internal.sim.poke"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "/poke user-2"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "api ok: internal.sim.poke"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "routingStatuses": ["dispatched", "pending"]
     }
   }
 }

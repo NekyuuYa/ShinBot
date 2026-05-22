@@ -98,7 +98,15 @@
     "sent": [
       {
         "sessionId": "sim-main:group:group-1",
-        "textContains": "pong: ok"
+        "messageId": "sim-out-1",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "pong: ok"
+            }
+          }
+        ]
       }
     ],
     "agentEntrySignals": [
@@ -117,7 +125,49 @@
       "sessionId": "sim-main:group:group-1",
       "countAtLeast": 3,
       "roles": ["user", "assistant", "user"],
-      "incomingRoutingStatus": "dispatched"
+      "incomingRoutingStatus": "dispatched",
+      "senderIds": ["user-1", "bot-self", "user-1"],
+      "senderNames": ["Alice", "", "Alice"],
+      "platformMsgIds": ["msg-1", "sim-out-1", "msg-2"],
+      "isRead": [false, true, false],
+      "rawTexts": ["/ping ok", "pong: ok", " thanks"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "/ping ok"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "pong: ok"
+            },
+            "children": []
+          }
+        ],
+        [
+          {
+            "type": "quote",
+            "attrs": {
+              "id": "sim-out-1"
+            },
+            "children": []
+          },
+          {
+            "type": "text",
+            "attrs": {
+              "content": " thanks"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "routingStatuses": ["dispatched", "pending", "dispatched"]
     }
   }
 }
