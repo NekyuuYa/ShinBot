@@ -69,8 +69,24 @@
     ],
     "messageLogs": {
       "sessionId": "sim-main:private:user-1",
-      "countAtLeast": 1,
+      "countExact": 1,
       "roles": ["user"],
+      "senderIds": ["user-1"],
+      "senderNames": ["Alice"],
+      "platformMsgIds": ["msg-1"],
+      "isRead": [false],
+      "rawTexts": ["hello private agent"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "hello private agent"
+            },
+            "children": []
+          }
+        ]
+      ],
       "incomingRoutingStatus": "dispatched",
       "routingStatuses": ["dispatched"],
       "routingSkipReasons": [null]
@@ -87,7 +103,12 @@
         "platform": "sim",
         "isPrivate": true,
         "isMentioned": false,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
         "alreadyHandled": false,
+        "isStopped": false,
         "messageLogId": true
       }
     ]

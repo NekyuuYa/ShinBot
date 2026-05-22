@@ -89,15 +89,58 @@
         "botSessionId": "agent-bot:group:group-1",
         "eventType": "message-created",
         "senderId": "user-1",
-        "messageLogId": true,
-        "isMentionToOther": true
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": false,
+        "isMentioned": false,
+        "isMentionToOther": true,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
+        "messageLogId": true
       }
     ],
     "messageLogs": {
       "sessionId": "sim-main:group:group-1",
-      "countAtLeast": 1,
+      "countExact": 1,
       "roles": ["user"],
-      "incomingRoutingStatus": "dispatched"
+      "senderIds": ["user-1"],
+      "senderNames": ["Alice"],
+      "platformMsgIds": ["msg-1"],
+      "isRead": [false],
+      "isMentioned": [false],
+      "rawTexts": ["hi [@Bob(user-2)] there"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "hi "
+            },
+            "children": []
+          },
+          {
+            "type": "at",
+            "attrs": {
+              "id": "user-2",
+              "name": "Bob"
+            },
+            "children": []
+          },
+          {
+            "type": "text",
+            "attrs": {
+              "content": " there"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched"],
+      "routingSkipReasons": [null]
     }
   }
 }

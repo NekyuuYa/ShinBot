@@ -73,9 +73,27 @@
     "sent": [],
     "messageLogs": {
       "sessionId": "sim-main:group:group-1",
-      "countAtLeast": 1,
+      "countExact": 1,
       "roles": ["user"],
-      "incomingRoutingStatus": "dispatched"
+      "senderIds": ["user-1"],
+      "senderNames": ["Alice"],
+      "platformMsgIds": ["msg-1"],
+      "isRead": [false],
+      "rawTexts": ["review me later"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "review me later"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched"],
+      "routingSkipReasons": [null]
     },
     "agentEntrySignals": [
       {
@@ -85,6 +103,16 @@
         "botSessionId": "agent-bot:group:group-1",
         "eventType": "message-created",
         "senderId": "user-1",
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": false,
+        "isMentioned": false,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
         "messageLogId": true
       }
     ],

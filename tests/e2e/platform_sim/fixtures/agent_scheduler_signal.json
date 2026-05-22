@@ -85,9 +85,42 @@
     "sent": [],
     "messageLogs": {
       "sessionId": "sim-main:group:group-1",
-      "countAtLeast": 1,
+      "countExact": 1,
       "roles": ["user"],
-      "incomingRoutingStatus": "dispatched"
+      "senderIds": ["user-1"],
+      "senderNames": ["Alice"],
+      "platformMsgIds": ["msg-1"],
+      "isRead": [false],
+      "isMentioned": [true],
+      "rawTexts": ["hello [@你] scheduler"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "hello "
+            },
+            "children": []
+          },
+          {
+            "type": "at",
+            "attrs": {
+              "id": "bot-self"
+            },
+            "children": []
+          },
+          {
+            "type": "text",
+            "attrs": {
+              "content": " scheduler"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched"],
+      "routingSkipReasons": [null]
     },
     "agentEntrySignals": [
       {
@@ -97,8 +130,17 @@
         "botSessionId": "agent-bot:group:group-1",
         "eventType": "message-created",
         "senderId": "user-1",
-        "messageLogId": true,
-        "isMentioned": true
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": false,
+        "isMentioned": true,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
+        "messageLogId": true
       }
     ],
     "agentScheduler": {
