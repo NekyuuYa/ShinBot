@@ -1,0 +1,95 @@
+{
+  "name": "agent_private_entry_signal",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentEntryProbe": {
+    "enabled": true
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [],
+    "bots": [
+      {
+        "id": "agent-bot",
+        "display_name": "Agent Bot",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["/"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["*"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "agent-private",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["private:user-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "private",
+        "channelId": "dm-user-1"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "hello private agent",
+      "expectSentCount": 0
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "sessions": [
+      {
+        "id": "sim-main:private:user-1",
+        "type": "private"
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:private:user-1",
+      "countAtLeast": 1,
+      "roles": ["user"],
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched"],
+      "routingSkipReasons": [null]
+    },
+    "agentEntrySignals": [
+      {
+        "sessionId": "sim-main:private:user-1",
+        "botId": "agent-bot",
+        "botBindingId": "agent-private",
+        "botSessionId": "agent-bot:private:user-1",
+        "eventType": "message-created",
+        "senderId": "user-1",
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": true,
+        "isMentioned": false,
+        "alreadyHandled": false,
+        "messageLogId": true
+      }
+    ]
+  }
+}
