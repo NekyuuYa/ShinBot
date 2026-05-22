@@ -1,0 +1,71 @@
+{
+  "name": "wait_for_input",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "commands": [
+    {
+      "name": "ask",
+      "kind": "prompt",
+      "prompt": "what is your answer?",
+      "replyAfterInput": "received: {input}",
+      "timeout": 1.0
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "private"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "/ask",
+      "expectSentCount": 1
+    },
+    {
+      "type": "message",
+      "id": "msg-2",
+      "session": {
+        "type": "private"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "blue",
+      "expectSentCount": 2
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "sessionId": "sim-main:private:user-1",
+        "text": "what is your answer?"
+      },
+      {
+        "sessionId": "sim-main:private:user-1",
+        "text": "received: blue"
+      }
+    ],
+    "sessions": [
+      {
+        "id": "sim-main:private:user-1",
+        "type": "private"
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:private:user-1",
+      "countAtLeast": 4,
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched", "pending", "skipped", "pending"],
+      "routingSkipReasons": [null, null, "wait_for_input", null],
+      "roles": ["user", "assistant", "user", "assistant"]
+    }
+  }
+}

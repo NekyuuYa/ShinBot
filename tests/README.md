@@ -76,8 +76,13 @@ message logs.
 Scenario fixtures should stay declarative JSON where practical:
 
 - `adapter`: simulated platform instance identity.
-- `commands`: command handlers installed for the scenario.
-- `steps`: user-like platform events to emit.
+- `config`: optional normalized backend config sections, including
+  `adapter_instances`, `plugins`, and `bots`, parsed through the production bot
+  service config loader.
+- `commands`: command handlers installed for the scenario. Use `kind: "prompt"`
+  for a command that calls `wait_for_input()`.
+- `steps`: user-like platform events to emit. Use `expectSentCount` when a step
+  should wait for intermediate outbound messages before the next event.
 - `expect`: outbound message, session, and persistence assertions.
 
 Use this layer for full user-like backend flows. Keep pure routing policy,

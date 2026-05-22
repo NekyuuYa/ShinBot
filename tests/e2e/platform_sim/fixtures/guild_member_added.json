@@ -1,0 +1,53 @@
+{
+  "name": "guild_member_added",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "eventBusHandlers": [
+    {
+      "eventType": "guild-member-added"
+    }
+  ],
+  "steps": [
+    {
+      "type": "notice",
+      "eventType": "guild-member-added",
+      "id": "1001",
+      "session": {
+        "type": "group",
+        "guildId": "guild-1",
+        "guildName": "Test Guild",
+        "channelId": "group-1",
+        "channelName": "Test Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "member": {
+        "user": {
+          "id": "user-1",
+          "name": "Alice"
+        },
+        "nick": "Alice"
+      },
+      "operator": {
+        "id": "admin-1",
+        "name": "Admin"
+      }
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "messageLogs": {
+      "sessionId": "sim-main:group:guild-1:group-1",
+      "countAtLeast": 1,
+      "roles": ["system"],
+      "routingStatuses": ["dispatched"],
+      "routingSkipReasons": [null]
+    },
+    "noticeEvents": ["guild-member-added"]
+  }
+}

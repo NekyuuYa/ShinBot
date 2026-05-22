@@ -1,0 +1,92 @@
+{
+  "name": "model_runtime_audit",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "eventBusHandlers": [],
+  "modelRuntime": {
+    "debugPlugin": true,
+    "fakeCompletion": {
+      "text": "stubbed model response",
+      "inputTokens": 4,
+      "outputTokens": 2,
+      "cacheReadTokens": 1,
+      "cacheWriteTokens": 3
+    },
+    "providers": [
+      {
+        "id": "stub-provider",
+        "type": "openai",
+        "displayName": "Stub Provider"
+      }
+    ],
+    "models": [
+      {
+        "id": "stub-provider/stub-model",
+        "providerId": "stub-provider",
+        "litellmModel": "stub/stub-model",
+        "displayName": "Stub Model",
+        "enabled": true
+      }
+    ]
+  },
+  "commands": [
+    {
+      "name": "audit",
+      "kind": "model",
+      "call": {
+        "caller": "e2e.platform_sim",
+        "modelId": "stub-provider/stub-model",
+        "purpose": "audit",
+        "prompt": "audit {args}",
+        "metadata": {
+          "scene": "model_runtime_audit"
+        }
+      },
+      "reply": "model-result: {text}"
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "private"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "/audit beta",
+      "expectSentCount": 1
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "sessionId": "sim-main:private:user-1",
+        "textContains": "model-result:"
+      }
+    ],
+    "modelRuntime": {
+      "providerId": "stub-provider",
+      "modelId": "stub-provider/stub-model",
+      "caller": "e2e.platform_sim",
+      "success": true,
+      "countAtLeast": 1,
+      "debugModelLog": {
+        "lineCountAtLeast": 2,
+        "requestEventType": "model_runtime.request",
+        "responseEventType": "model_runtime.response",
+        "requestContains": {
+          "caller": "e2e.platform_sim"
+        },
+        "responseContains": {
+          "status": "success"
+        }
+      }
+    }
+  }
+}

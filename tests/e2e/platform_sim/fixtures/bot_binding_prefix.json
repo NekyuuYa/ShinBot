@@ -1,0 +1,124 @@
+{
+  "name": "bot_binding_prefix",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [
+      {
+        "id": "e2e.platform_sim"
+      }
+    ],
+    "bots": [
+      {
+        "id": "alpha",
+        "display_name": "Alpha",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["!"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["e2e.platform_sim"]
+        },
+        "bindings": [
+          {
+            "id": "alpha-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "name": "ping",
+      "reply": "bound: {args}"
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-2"
+      },
+      "sender": {
+        "id": "user-1"
+      },
+      "content": "!ping wrong",
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "msg-2",
+      "session": {
+        "type": "group",
+        "channelId": "group-1"
+      },
+      "sender": {
+        "id": "user-1"
+      },
+      "content": "/ping wrong-prefix",
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "msg-3",
+      "session": {
+        "type": "group",
+        "channelId": "group-1"
+      },
+      "sender": {
+        "id": "user-1"
+      },
+      "content": "!ping ok",
+      "expectSentCount": 1
+    }
+  ],
+  "expect": {
+    "sent": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "text": "bound: ok"
+      }
+    ],
+    "sessions": [
+      {
+        "id": "sim-main:group:group-1",
+        "type": "group"
+      },
+      {
+        "id": "sim-main:group:group-2",
+        "type": "group"
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 3,
+      "roles": ["user", "user", "assistant"],
+      "routingStatuses": ["skipped", "dispatched", "pending"],
+      "routingSkipReasons": ["no_route_matched", null, null]
+    },
+    "messageLogsBySession": [
+      {
+        "sessionId": "sim-main:group:group-2",
+        "countAtLeast": 1,
+        "roles": ["user"],
+        "routingStatuses": ["skipped"],
+        "routingSkipReasons": ["no_route_matched"]
+      }
+    ]
+  }
+}
