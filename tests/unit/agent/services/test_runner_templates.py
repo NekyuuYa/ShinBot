@@ -19,7 +19,6 @@ from shinbot.agent.runtime.instance_config import RuntimeModelTarget
 from shinbot.agent.runtime.tool_config import StageToolConfig
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
 from shinbot.agent.services.model_runtime import GenerateResult, ModelCallError
-from shinbot.agent.services.prompt_engine import PromptStage
 from shinbot.core.instance_config import resolve_instance_runtime_config
 
 # -- helpers --
@@ -643,14 +642,11 @@ async def test_structured_output_runner_includes_instruction_content() -> None:
     )
     await runner.run(stage)
     build_request = registry.build_messages.call_args[0][0]
-    instructions = [
-        i for i in build_request.injections
-        if i.stage == PromptStage.INSTRUCTIONS
-    ]
-    assert len(instructions) == 1
-    content_blocks = instructions[0].content_blocks
-    assert any("test_stage" in b.get("text", "") for b in content_blocks)
-    assert any("Source messages JSON" in b.get("text", "") for b in content_blocks)
+    assert build_request.component_ids_by_stage == {}
+    assert build_request.metadata["review_stage"] == "test_stage"
+    assert build_request.metadata["review_stage_metadata"] == {"key": "value"}
+    assert build_request.metadata["review_source_messages"] == [{"id": 1, "text": "hello"}]
+    assert build_request.metadata["review_source_messages_text"] == ""
 
 
 @pytest.mark.asyncio
@@ -676,11 +672,7 @@ async def test_structured_output_runner_uses_message_formatter() -> None:
 
     formatter.format_text.assert_called_once()
     build_request = registry.build_messages.call_args[0][0]
-    instruction_injection = next(
-        injection
-        for injection in build_request.injections
-        if injection.stage == PromptStage.INSTRUCTIONS
-    )
-    content_blocks = instruction_injection.content_blocks
-    assert any("Source messages:\nAlice: hello" in b.get("text", "") for b in content_blocks)
-    assert not any("Source messages JSON" in b.get("text", "") for b in content_blocks)
+    assert build_request.metadata["review_source_messages_text"] == "Alice: hello"
+    assert build_request.metadata["review_source_messages"] == [
+        {"id": 1, "sender_id": "alice", "raw_text": "hello"}
+    ]

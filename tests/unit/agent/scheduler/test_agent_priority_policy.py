@@ -6,7 +6,7 @@ from shinbot.agent.scheduler import (
     InMemoryAgentInbox,
     PriorityPolicyConfig,
 )
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
+from shinbot.agent.signals import AgentMessageSignal, AgentSignal, AgentSignalKind, AgentSignalSource
 
 
 def make_signal(
@@ -15,19 +15,24 @@ def make_signal(
     is_mentioned: bool = False,
     is_reply_to_bot: bool = False,
     is_poke_to_bot: bool = False,
-) -> AgentEntrySignal:
-    return AgentEntrySignal(
+) -> AgentSignal:
+    return AgentSignal(
+        signal_id=f"message:{message_log_id}",
+        kind=AgentSignalKind.MESSAGE,
+        source=AgentSignalSource.MESSAGE_INGRESS,
         session_id="bot:group:room",
-        message_log_id=message_log_id,
-        event_type="message-created",
-        sender_id="user-1",
-        instance_id="bot",
-        platform="mock",
-        self_id="bot-self",
-        is_private=False,
-        is_mentioned=is_mentioned,
-        is_reply_to_bot=is_reply_to_bot,
-        is_poke_to_bot=is_poke_to_bot,
+        occurred_at=0.0,
+        message=AgentMessageSignal(
+            message_log_id=message_log_id,
+            sender_id="user-1",
+            instance_id="bot",
+            platform="mock",
+            self_id="bot-self",
+            is_private=False,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+            is_poke_to_bot=is_poke_to_bot,
+        ),
     )
 
 
