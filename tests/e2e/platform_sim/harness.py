@@ -14,6 +14,7 @@ from unittest.mock import patch
 from shinbot.agent.services.model_runtime import ModelRuntimeCall
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.bots_config import load_bot_service_configs
+from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.dispatch.message_context import MessageContext
 from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
@@ -52,6 +53,7 @@ class SimulatedPlatformAdapter(BaseAdapter):
         self.sent: list[SentMessage] = []
         self.api_calls: list[tuple[str, dict[str, Any]]] = []
         self.notice_events: list[str] = []
+        self.agent_entry_signals: list[AgentEntrySignal] = []
 
     async def start(self) -> None:
         self.started = True
@@ -128,6 +130,7 @@ async def run_platform_scenario(
         install_model_runtime(bot)
 
     configure_bot_services(bot, scenario.get("config"), data_dir=data_dir)
+    register_agent_entry_probe(bot, scenario.get("agentEntryProbe"), adapter)
     register_event_bus_handlers(bot, scenario.get("eventBusHandlers", []), adapter)
     register_commands(bot, scenario.get("commands", []), runtime_bot=bot)
     register_model_runtime_setup(bot, scenario.get("modelRuntime", {}))
@@ -157,6 +160,20 @@ def configure_bot_services(bot: ShinBot, config: dict[str, Any] | None, *, data_
     if config is None:
         return
     bot.configure_bot_service_configs(load_bot_service_configs(config, data_dir=data_dir))
+
+
+def register_agent_entry_probe(
+    bot: ShinBot,
+    config: dict[str, Any] | None,
+    adapter: SimulatedPlatformAdapter,
+) -> None:
+    if not config:
+        return
+
+    async def record(signal: AgentEntrySignal) -> None:
+        adapter.agent_entry_signals.append(signal)
+
+    bot.set_agent_entry_handler(record)
 
 
 def register_commands(
@@ -459,6 +476,8 @@ async def assert_scenario_expectations(
         assert_message_logs(bot, expected_logs)
     if "noticeEvents" in expect:
         assert adapter.notice_events == list(expect["noticeEvents"])
+    if "agentEntrySignals" in expect:
+        assert_agent_entry_signals(adapter, expect["agentEntrySignals"])
     if "modelRuntime" in expect:
         await assert_model_runtime_expectations(bot, expect["modelRuntime"])
 
@@ -509,6 +528,39 @@ def assert_message_logs(bot: ShinBot, expected: dict[str, Any]) -> None:
     if routing_status is not None:
         incoming = next(row for row in rows if row["role"] == "user")
         assert incoming["routing_status"] == routing_status
+
+
+def assert_agent_entry_signals(
+    adapter: SimulatedPlatformAdapter,
+    expected: list[dict[str, Any]],
+) -> None:
+    assert len(adapter.agent_entry_signals) >= len(expected)
+    for index, item in enumerate(expected):
+        signal = adapter.agent_entry_signals[index]
+        if "sessionId" in item:
+            assert signal.session_id == item["sessionId"]
+        if "botId" in item:
+            assert signal.bot_id == item["botId"]
+        if "botBindingId" in item:
+            assert signal.bot_binding_id == item["botBindingId"]
+        if "botSessionId" in item:
+            assert signal.bot_session_id == item["botSessionId"]
+        if "eventType" in item:
+            assert signal.event_type == item["eventType"]
+        if "senderId" in item:
+            assert signal.sender_id == item["senderId"]
+        if "instanceId" in item:
+            assert signal.instance_id == item["instanceId"]
+        if "platform" in item:
+            assert signal.platform == item["platform"]
+        if "isPrivate" in item:
+            assert signal.is_private is bool(item["isPrivate"])
+        if "isMentioned" in item:
+            assert signal.is_mentioned is bool(item["isMentioned"])
+        if "alreadyHandled" in item:
+            assert signal.already_handled is bool(item["alreadyHandled"])
+        if item.get("messageLogId"):
+            assert signal.message_log_id is not None
 
 
 async def assert_model_runtime_expectations(bot: ShinBot, expected: dict[str, Any]) -> None:

@@ -79,6 +79,8 @@ Scenario fixtures should stay declarative JSON where practical:
 - `config`: optional normalized backend config sections, including
   `adapter_instances`, `plugins`, and `bots`, parsed through the production bot
   service config loader.
+- `agentEntryProbe`: optional Agent entry recorder that asserts messages reach
+  the unified Agent entry signal without running the full Agent workflow.
 - `commands`: command handlers installed for the scenario. Use `kind: "prompt"`
   for a command that calls `wait_for_input()`.
 - `steps`: user-like platform events to emit. Use `expectSentCount` when a step
