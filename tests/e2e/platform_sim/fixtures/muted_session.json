@@ -1,0 +1,78 @@
+{
+  "name": "muted_session",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "sessions": [
+    {
+      "id": "sim-main:group:muted-group",
+      "instanceId": "sim-main",
+      "platform": "sim",
+      "type": "group",
+      "channelId": "muted-group",
+      "displayName": "Muted Group",
+      "config": {
+        "isMuted": true
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "ping",
+      "reply": "pong: {args}"
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-muted-1",
+      "session": {
+        "type": "group",
+        "channelId": "muted-group",
+        "channelName": "Muted Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "/ping quiet",
+      "expectSentCount": 0
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "sessions": [
+      {
+        "id": "sim-main:group:muted-group",
+        "type": "group",
+        "displayName": "Muted Group"
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:group:muted-group",
+      "countExact": 1,
+      "incomingRoutingStatus": "skipped",
+      "roles": ["user"],
+      "senderIds": ["user-1"],
+      "senderNames": ["Alice"],
+      "platformMsgIds": ["msg-muted-1"],
+      "isRead": [false],
+      "rawTexts": ["/ping quiet"],
+      "routingStatuses": ["skipped"],
+      "routingSkipReasons": ["session_muted"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "/ping quiet"
+            },
+            "children": []
+          }
+        ]
+      ]
+    }
+  }
+}

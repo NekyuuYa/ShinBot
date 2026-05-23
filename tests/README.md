@@ -87,7 +87,11 @@ Scenario fixtures should stay declarative JSON where practical:
   for a command that calls `wait_for_input()`.
 - `steps`: user-like platform events to emit. Use `expectSentCount` when a step
   should wait for intermediate outbound messages before the next event. Use
-  `content` for plain text or `elements` for explicit Satori message elements.
+  `expect` for cumulative assertions immediately after that step is drained;
+  it accepts the same assertion subsets as top-level `expect`, including
+  `sent`, `messageLogs`, `messageLogsBySession`, `agentEntrySignals`, and
+  `agentScheduler`. Use `content` for plain text or `elements` for explicit
+  Satori message elements.
 - `actions`: optional post-event actions such as `agentReviewDue`,
   `agentCompleteReview`, and `agentActiveChatTick`, used to exercise
   timer-like state-machine signals through the same scenario flow.

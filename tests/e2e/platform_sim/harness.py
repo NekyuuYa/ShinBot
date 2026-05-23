@@ -26,6 +26,7 @@ from shinbot.core.dispatch.message_context import MessageContext
 from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.runtime.model import install_model_runtime
+from shinbot.core.state.session import Session
 from shinbot.persistence import ModelDefinitionRecord, ModelProviderRecord
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
@@ -143,6 +144,7 @@ async def run_platform_scenario(
     register_event_bus_handlers(bot, scenario.get("eventBusHandlers", []), adapter)
     register_commands(bot, scenario.get("commands", []), runtime_bot=bot)
     register_model_runtime_setup(bot, scenario.get("modelRuntime", {}))
+    configure_sessions(bot, scenario.get("sessions", []))
     if scenario.get("debugPlugin") or model_runtime.get("debugPlugin"):
         await load_debug_model_plugin(bot)
         debug_model_plugin_loaded = True
@@ -152,11 +154,14 @@ async def run_platform_scenario(
         with patch("shinbot.agent.services.model_runtime.litellm_adapter.completion", side_effect=_build_fake_model_completion(fake_completion)):
             for step in scenario.get("steps", []):
                 await adapter.emit_step(step)
+                step_expect = step.get("expect")
                 await drain_route_tasks(
                     adapter,
-                    scenario.get("expect", {}),
+                    step_expect if step_expect is not None else scenario.get("expect", {}),
                     expected_sent_count=step.get("expectSentCount"),
                 )
+                if step_expect is not None:
+                    await assert_scenario_expectations(bot, adapter, step_expect)
             for action in scenario.get("actions", []):
                 await run_scenario_action(action, adapter)
         await assert_scenario_expectations(bot, adapter, scenario.get("expect", {}))
@@ -171,6 +176,27 @@ def configure_bot_services(bot: ShinBot, config: dict[str, Any] | None, *, data_
     if config is None:
         return
     bot.configure_bot_service_configs(load_bot_service_configs(config, data_dir=data_dir))
+
+
+def configure_sessions(bot: ShinBot, sessions: list[dict[str, Any]]) -> None:
+    for item in sessions:
+        session = bot.session_manager.get(str(item["id"]))
+        if session is None:
+            session = Session(
+                id=str(item["id"]),
+                instance_id=str(item.get("instanceId", "sim-main")),
+                session_type=str(item["type"]),
+                platform=str(item.get("platform", "sim")),
+                guild_id=str(item["guildId"]) if item.get("guildId") else None,
+                channel_id=str(item.get("channelId", "")),
+                display_name=str(item.get("displayName", "")),
+            )
+        config = item.get("config", {})
+        if "isMuted" in config:
+            session.config.is_muted = bool(config["isMuted"])
+        if "prefixes" in config:
+            session.config.prefixes = [str(prefix) for prefix in config["prefixes"]]
+        bot.session_manager.update(session)
 
 
 def register_agent_entry_probe(
