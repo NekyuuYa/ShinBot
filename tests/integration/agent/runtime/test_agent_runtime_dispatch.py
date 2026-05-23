@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from agent_runtime_support import (
     ActiveChatState,
-    AgentEntrySignal,
     AgentScheduler,
     AgentState,
     Any,
@@ -21,8 +20,8 @@ from agent_runtime_support import (
     pytest,
 )
 
+from shinbot.agent.scheduler.models import ActiveChatDisposition
 from shinbot.agent.signals import (
-    ActiveChatDisposition,
     AgentActiveChatBootstrapSignal,
     AgentSignal,
     AgentSignalKind,
@@ -62,8 +61,8 @@ async def test_agent_runtime_selects_profile_by_bot_id(tmp_path: Path) -> None:
     runtime.agent_profile_for_bot("bot-a").agent_scheduler = bot_a_scheduler
     runtime.agent_scheduler = default_scheduler
 
-    await runtime.handle_agent_entry(make_signal(bot_id="bot-a"))
-    await runtime.handle_agent_entry(make_signal(bot_id="bot-b"))
+    await runtime.handle_agent_signal(make_signal(bot_id="bot-a"))
+    await runtime.handle_agent_signal(make_signal(bot_id="bot-b"))
 
     assert runtime.agent_profile_for_bot("bot-a").profile_id == "agent-a"
     assert (
@@ -205,9 +204,9 @@ async def test_agent_runtime_resolves_response_profile_from_agent_boundary(
         )
     )
 
-    await runtime.handle_agent_entry(make_signal())
-    await runtime.handle_agent_entry(make_signal(is_mentioned=True))
-    await runtime.handle_agent_entry(make_signal(is_private=True))
+    await runtime.handle_agent_signal(make_signal())
+    await runtime.handle_agent_signal(make_signal(is_mentioned=True))
+    await runtime.handle_agent_signal(make_signal(is_private=True))
 
     assert [call["response_profile"] for call in dispatcher.calls] == [
         "balanced",
@@ -224,22 +223,9 @@ async def test_agent_runtime_skips_unusable_agent_entry_signals(tmp_path: Path) 
         response_profile_resolver=runtime._resolve_response_profile,
     )
 
-    await runtime.handle_agent_entry(make_signal(is_reply_to_bot=True))
-    await runtime.handle_agent_entry(make_signal(is_mentioned=True, is_private=False))
-    await runtime.handle_agent_entry(
-        AgentEntrySignal(
-            session_id="test-bot:group:group:1",
-            message_log_id=None,
-            event_type="message-created",
-            sender_id="user-1",
-            instance_id="test-bot",
-            platform="mock",
-            self_id="bot-1",
-            is_private=False,
-            is_mentioned=False,
-            is_reply_to_bot=False,
-        )
-    )
+    await runtime.handle_agent_signal(make_signal(is_reply_to_bot=True))
+    await runtime.handle_agent_signal(make_signal(is_mentioned=True, is_private=False))
+    await runtime.handle_agent_signal(make_signal(message_log_id=None))
 
     assert [call["response_profile"] for call in dispatcher.calls] == [
         "immediate",
@@ -259,7 +245,7 @@ async def test_agent_runtime_records_ordinary_messages_without_active_reply(
         response_profile_resolver=runtime._resolve_response_profile,
     )
 
-    await runtime.handle_agent_entry(make_signal())
+    await runtime.handle_agent_signal(make_signal())
 
     assert dispatcher.calls == []
     assert [
@@ -325,7 +311,7 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
     )
 
     try:
-        await runtime.handle_agent_entry(
+        await runtime.handle_agent_signal(
             make_signal(message_log_id=message_log_id, is_mentioned=True)
         )
         await asyncio.sleep(
@@ -401,7 +387,7 @@ async def test_agent_runtime_keeps_active_chat_pending_unread_on_exit(
     )
 
     try:
-        await runtime.handle_agent_entry(
+        await runtime.handle_agent_signal(
             make_signal(message_log_id=message_log_id, is_mentioned=True)
         )
         state = runtime.active_chat_workflow.attention_state_for(session_id)
@@ -491,14 +477,14 @@ async def test_agent_runtime_repair_merges_active_chat_pending_messages(
     async def inject_pending_message(_call: Any) -> None:
         if len(model_runtime.calls) != 1:
             return
-        await runtime.handle_agent_entry(
+        await runtime.handle_agent_signal(
             make_signal(message_log_id=second_message_log_id, is_mentioned=True)
         )
 
     model_runtime.on_generate = inject_pending_message
 
     try:
-        await runtime.handle_agent_entry(
+        await runtime.handle_agent_signal(
             make_signal(message_log_id=first_message_log_id, is_mentioned=True)
         )
         await asyncio.sleep(
@@ -577,7 +563,7 @@ async def test_agent_runtime_exit_active_returns_idle_with_review_plan(
     )
 
     try:
-        await runtime.handle_agent_entry(
+        await runtime.handle_agent_signal(
             make_signal(message_log_id=message_log_id, is_mentioned=True)
         )
         await asyncio.sleep(

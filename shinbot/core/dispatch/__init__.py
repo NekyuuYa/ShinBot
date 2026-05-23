@@ -1,11 +1,18 @@
 """Event and message dispatch primitives."""
 
+from shinbot.core.dispatch.agent_signals import (
+    AgentActiveChatBootstrapSignal,
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+    AgentTimerSignal,
+)
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
     AgentEntryDispatcher,
-    AgentEntryHandler,
-    AgentEntrySignal,
+    AgentSignalHandler,
     NoticeDispatcher,
     make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
@@ -34,8 +41,13 @@ __all__ = [
     "AGENT_ENTRY_TARGET",
     "NOTICE_DISPATCHER_TARGET",
     "AgentEntryDispatcher",
-    "AgentEntryHandler",
-    "AgentEntrySignal",
+    "AgentSignalHandler",
+    "AgentActiveChatBootstrapSignal",
+    "AgentMessageSignal",
+    "AgentSignal",
+    "AgentSignalKind",
+    "AgentSignalSource",
+    "AgentTimerSignal",
     "NoticeDispatcher",
     "PreRouteHook",
     "RouteDispatchContext",

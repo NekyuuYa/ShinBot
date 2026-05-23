@@ -29,9 +29,14 @@ from shinbot.agent.services.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.signals import AgentActiveChatBootstrapSignal, AgentSignal
+from shinbot.agent.signals import (
+    AgentActiveChatBootstrapSignal,
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 from shinbot.core.application.app import ShinBot
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
     InstanceConfigRecord,
@@ -80,25 +85,32 @@ class RecordingWorkflowDispatcher:
 
 def make_signal(
     *,
-    message_log_id: int = 123,
+    message_log_id: int | None = 123,
     instance_id: str = "test-bot",
     bot_id: str = "",
     is_private: bool = False,
     is_mentioned: bool = False,
     is_reply_to_bot: bool = False,
-) -> AgentEntrySignal:
-    return AgentEntrySignal(
+) -> AgentSignal:
+    message_token = message_log_id if message_log_id is not None else "missing"
+    return AgentSignal(
+        signal_id=f"message-ingress:test-bot:group:group:1:{message_token}",
+        kind=AgentSignalKind.MESSAGE,
+        source=AgentSignalSource.MESSAGE_INGRESS,
         session_id="test-bot:group:group:1",
-        message_log_id=message_log_id,
-        event_type="message-created",
-        sender_id="user-1",
-        instance_id=instance_id,
-        platform="mock",
-        self_id="bot-1",
-        is_private=is_private,
-        is_mentioned=is_mentioned,
-        is_reply_to_bot=is_reply_to_bot,
+        occurred_at=10.0,
         bot_id=bot_id,
+        message=AgentMessageSignal(
+            message_log_id=message_log_id,
+            sender_id="user-1",
+            instance_id=instance_id,
+            platform="mock",
+            self_id="bot-1",
+            is_private=is_private,
+            is_mentioned=is_mentioned,
+            is_reply_to_bot=is_reply_to_bot,
+        ),
+        meta={"event_type": "message-created"},
     )
 
 
@@ -218,9 +230,12 @@ class RecordingScheduler:
 __all__ = [
     "ActiveChatState",
     "AgentActiveChatBootstrapSignal",
+    "AgentMessageSignal",
     "AgentRuntimeConfigError",
     "AgentScheduler",
     "AgentSignal",
+    "AgentSignalKind",
+    "AgentSignalSource",
     "AgentState",
     "Any",
     "DatabaseManager",

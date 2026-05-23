@@ -10,7 +10,7 @@ import pytest
 
 from shinbot.agent.runtime import install_agent_runtime
 from shinbot.core.application.app import ShinBot
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
+from shinbot.core.dispatch.dispatchers import AgentSignal
 from shinbot.core.dispatch.routing import RouteCondition
 from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.plugins.context import Plugin
@@ -276,23 +276,24 @@ class TestOnEvent:
         bot = ShinBot()
         bot.adapter_manager.register_adapter("mock", MockAdapter)
         adapter = bot.add_adapter("inst1", "mock")
-        signals: list[AgentEntrySignal] = []
+        signals: list[AgentSignal] = []
 
-        async def handler(signal: AgentEntrySignal) -> None:
+        async def handler(signal: AgentSignal) -> None:
             signals.append(signal)
 
-        bot.set_agent_entry_handler(handler)
+        bot.set_agent_signal_handler(handler)
 
         event = make_message_event(content="hello agent", instance_id="inst1")
         await bot.on_event(event, adapter)
         await asyncio.sleep(0)
 
         assert len(signals) == 1
-        assert signals[0].session_id == "inst1:group:ch-1"
-        assert signals[0].event_type == "message-created"
-        assert signals[0].instance_id == "inst1"
-        assert signals[0].platform == "mock"
-        assert not hasattr(signals[0], "message")
+        signal = signals[0]
+        assert signal.session_id == "inst1:group:ch-1"
+        assert signal.meta["event_type"] == "message-created"
+        assert signal.message is not None
+        assert signal.message.instance_id == "inst1"
+        assert signal.message.platform == "mock"
 
     @pytest.mark.asyncio
     async def test_on_event_handles_exceptions_gracefully(self):

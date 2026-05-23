@@ -15,7 +15,7 @@ from shinbot.core.application.bots_config import (
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     AgentEntryDispatcher,
-    AgentEntrySignal,
+    AgentSignal,
     make_agent_entry_fallback_route_rule,
 )
 from shinbot.core.dispatch.ingress import (
@@ -263,7 +263,7 @@ async def test_plugin_route_filter_runs_before_exclusive_route_suppresses_fallba
 
 @pytest.mark.asyncio
 async def test_agent_entry_signal_includes_selected_bot_identity() -> None:
-    signals: list[AgentEntrySignal] = []
+    signals: list[AgentSignal] = []
     dispatcher = AgentEntryDispatcher(handler=lambda signal: signals.append(signal))
     fallback_rule = make_agent_entry_fallback_route_rule()
     table = RouteTable()
@@ -289,6 +289,8 @@ async def test_agent_entry_signal_includes_selected_bot_identity() -> None:
     assert signals[0].bot_session_id == "full-agent:private:user-1"
     assert signals[0].bot_id == "full-agent"
     assert signals[0].bot_binding_id == "full-agent-private"
+    assert signals[0].message is not None
+    assert signals[0].message.instance_id == "qq-main"
 
 
 @pytest.mark.asyncio

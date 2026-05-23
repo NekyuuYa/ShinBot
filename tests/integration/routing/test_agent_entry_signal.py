@@ -9,7 +9,7 @@ import pytest
 from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     AgentEntryDispatcher,
-    AgentEntrySignal,
+    AgentSignal,
     make_agent_entry_fallback_route_rule,
 )
 from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
@@ -74,9 +74,9 @@ def make_event(
 
 class RecordingAgentHandler:
     def __init__(self) -> None:
-        self.signals: list[AgentEntrySignal] = []
+        self.signals: list[AgentSignal] = []
 
-    def __call__(self, signal: AgentEntrySignal) -> None:
+    def __call__(self, signal: AgentSignal) -> None:
         self.signals.append(signal)
 
 
@@ -101,7 +101,7 @@ def make_agent_ingress(
     )
 
 
-class TestAgentEntrySignal:
+class TestAgentSignal:
     def setup_method(self) -> None:
         self.adapter = MockAdapter()
 
@@ -121,11 +121,12 @@ class TestAgentEntrySignal:
         assert len(handler.signals) == 1
         signal = handler.signals[0]
         assert signal.session_id == "test-bot:private:user-1"
-        assert signal.is_private is True
-        assert signal.is_mentioned is False
-        assert signal.is_reply_to_bot is False
-        assert not hasattr(signal, "response_profile")
-        assert not hasattr(signal, "message")
+        assert signal.message is not None
+        assert signal.message.is_private is True
+        assert signal.message.is_mentioned is False
+        assert signal.message.is_reply_to_bot is False
+        assert signal.message.instance_id == "test-bot"
+        assert signal.meta["event_type"] == "message-created"
 
     @pytest.mark.asyncio
     async def test_agent_entry_signal_keeps_priority_facts_without_policy(
@@ -144,8 +145,10 @@ class TestAgentEntrySignal:
         )
         await asyncio.sleep(0)
 
-        assert [signal.is_mentioned for signal in handler.signals] == [False, True]
-        assert all(not hasattr(signal, "response_profile") for signal in handler.signals)
+        assert [signal.message.is_mentioned for signal in handler.signals if signal.message] == [
+            False,
+            True,
+        ]
 
     @pytest.mark.asyncio
     async def test_agent_entry_fallback_is_skipped_when_plugin_route_consumes_message(

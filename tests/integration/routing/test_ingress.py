@@ -13,7 +13,7 @@ from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
     AgentEntryDispatcher,
-    AgentEntrySignal,
+    AgentSignal,
     NoticeDispatcher,
     make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
@@ -80,9 +80,9 @@ class MockAdapter(BaseAdapter):
 
 class RecordingAgentHandler:
     def __init__(self) -> None:
-        self.signals: list[AgentEntrySignal] = []
+        self.signals: list[AgentSignal] = []
 
-    def __call__(self, signal: AgentEntrySignal) -> None:
+    def __call__(self, signal: AgentSignal) -> None:
         self.signals.append(signal)
 
 
@@ -661,21 +661,21 @@ async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path)
 
     signal = agent_handler.signals[0]
     assert signal.session_id == "test-bot:group:group:1"
-    assert signal.message_log_id == result.message_log_id
-    assert signal.event_type == "message-created"
-    assert signal.sender_id == "user-1"
-    assert signal.instance_id == "test-bot"
-    assert signal.platform == "mock"
-    assert signal.self_id == "bot-1"
-    assert signal.is_private is False
-    assert signal.is_mentioned is False
-    assert signal.is_mention_to_other is False
-    assert signal.is_reply_to_bot is False
-    assert signal.is_poke_to_bot is False
-    assert signal.is_poke_to_other is False
-    assert signal.already_handled is False
-    assert signal.is_stopped is False
-    assert not hasattr(signal, "message")
+    assert signal.message is not None
+    assert signal.message.message_log_id == result.message_log_id
+    assert signal.meta["event_type"] == "message-created"
+    assert signal.message.sender_id == "user-1"
+    assert signal.message.instance_id == "test-bot"
+    assert signal.message.platform == "mock"
+    assert signal.message.self_id == "bot-1"
+    assert signal.message.is_private is False
+    assert signal.message.is_mentioned is False
+    assert signal.message.is_mention_to_other is False
+    assert signal.message.is_reply_to_bot is False
+    assert signal.message.is_poke_to_bot is False
+    assert signal.message.is_poke_to_other is False
+    assert signal.message.already_handled is False
+    assert signal.message.is_stopped is False
 
     row = db.message_logs.get(result.message_log_id)
     assert row is not None

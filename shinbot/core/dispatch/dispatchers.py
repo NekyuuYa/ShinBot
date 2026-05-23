@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from inspect import isawaitable
 
+from shinbot.core.dispatch.agent_signals import (
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
 from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteRule
@@ -19,32 +25,7 @@ logger = logging.getLogger(__name__)
 NOTICE_DISPATCHER_TARGET = "notice_dispatcher"
 AGENT_ENTRY_TARGET = "agent_entry"
 
-
-@dataclass(slots=True, frozen=True)
-class AgentEntrySignal:
-    """Minimal signal emitted when an unmatched user message reaches Agent entry."""
-
-    session_id: str
-    message_log_id: int | None
-    event_type: str
-    sender_id: str
-    instance_id: str
-    platform: str
-    self_id: str
-    is_private: bool
-    is_mentioned: bool
-    is_reply_to_bot: bool
-    is_mention_to_other: bool = False
-    is_poke_to_bot: bool = False
-    is_poke_to_other: bool = False
-    already_handled: bool = False
-    is_stopped: bool = False
-    bot_id: str = ""
-    bot_binding_id: str = ""
-    bot_session_id: str = ""
-
-
-AgentEntryHandler = Callable[[AgentEntrySignal], Awaitable[None] | None]
+AgentSignalHandler = Callable[[AgentSignal], Awaitable[None] | None]
 
 
 class NoticeDispatcher:
@@ -76,54 +57,58 @@ def make_notice_route_rule(
 
 
 class AgentEntryDispatcher:
-    """Route target that hands unmatched user messages to the Agent entry layer.
-
-    The dispatcher emits a minimal signal describing why Agent was notified.
-    Agent modules are responsible for reading message_logs and constructing
-    their own internal context.
-    """
+    """Route target that hands unmatched user messages to the Agent signal layer."""
 
     def __init__(
         self,
         *,
-        handler: AgentEntryHandler | None = None,
+        handler: AgentSignalHandler | None = None,
     ) -> None:
         self._handler = handler
 
-    def set_handler(self, handler: AgentEntryHandler | None) -> None:
+    def set_handler(self, handler: AgentSignalHandler | None) -> None:
         """Set or clear the Agent-side signal handler."""
         self._handler = handler
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
         bot = context.require_message_context()
-        signal = AgentEntrySignal(
+        message_token = (
+            context.message_log_id if context.message_log_id is not None else "missing"
+        )
+        signal = AgentSignal(
+            signal_id=f"message-ingress:{bot.session_id}:{message_token}",
+            kind=AgentSignalKind.MESSAGE,
+            source=AgentSignalSource.MESSAGE_INGRESS,
             bot_id=bot.bot_id,
             bot_binding_id=bot.bot_binding_id,
             bot_session_id=bot.bot_session_id,
             session_id=bot.session_id,
-            message_log_id=context.message_log_id,
-            event_type=bot.event.type,
-            sender_id=bot.event.sender_id or "",
-            instance_id=bot.adapter.instance_id,
-            platform=bot.event.platform,
-            self_id=bot.event.self_id,
-            is_private=bot.is_private,
-            is_mentioned=bot.is_mentioned,
-            is_mention_to_other=_contains_mention_to_other(
-                bot.message,
-                bot.event.self_id,
+            occurred_at=time.time(),
+            message=AgentMessageSignal(
+                message_log_id=context.message_log_id,
+                sender_id=bot.event.sender_id or "",
+                instance_id=bot.adapter.instance_id,
+                platform=bot.event.platform,
+                self_id=bot.event.self_id,
+                is_private=bot.is_private,
+                is_mentioned=bot.is_mentioned,
+                is_mention_to_other=_contains_mention_to_other(
+                    bot.message,
+                    bot.event.self_id,
+                ),
+                is_reply_to_bot=bot.is_reply_to_bot(),
+                is_poke_to_bot=_contains_poke_to(
+                    bot.message,
+                    bot.event.self_id,
+                ),
+                is_poke_to_other=_contains_poke_to_other(
+                    bot.message,
+                    bot.event.self_id,
+                ),
+                already_handled=bool(bot._sent_messages),
+                is_stopped=bot.is_stopped,
             ),
-            is_reply_to_bot=bot.is_reply_to_bot(),
-            is_poke_to_bot=_contains_poke_to(
-                bot.message,
-                bot.event.self_id,
-            ),
-            is_poke_to_other=_contains_poke_to_other(
-                bot.message,
-                bot.event.self_id,
-            ),
-            already_handled=bool(bot._sent_messages),
-            is_stopped=bot.is_stopped,
+            meta={"event_type": bot.event.type},
         )
 
         if self._handler is not None:

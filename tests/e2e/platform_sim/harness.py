@@ -14,7 +14,6 @@ from unittest.mock import patch
 from shinbot.agent.scheduler import AgentScheduler
 from shinbot.agent.services.model_runtime import ModelRuntimeCall
 from shinbot.agent.signals import (
-    AgentMessageSignal,
     AgentSignal,
     AgentSignalKind,
     AgentSignalSource,
@@ -22,7 +21,6 @@ from shinbot.agent.signals import (
 )
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.bots_config import load_bot_service_configs
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.dispatch.message_context import MessageContext
 from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
@@ -63,7 +61,7 @@ class SimulatedPlatformAdapter(BaseAdapter):
         self.sent: list[SentMessage] = []
         self.api_calls: list[tuple[str, dict[str, Any]]] = []
         self.notice_events: list[str] = []
-        self.agent_entry_signals: list[AgentEntrySignal] = []
+        self.agent_entry_signals: list[AgentSignal] = []
         self.agent_scheduler: AgentScheduler | None = None
         self.agent_signal_handler: Callable[[AgentSignal], Awaitable[None] | None] | None = None
 
@@ -212,10 +210,10 @@ def register_agent_entry_probe(
     if not config:
         return
 
-    async def record(signal: AgentEntrySignal) -> None:
+    async def record(signal: AgentSignal) -> None:
         adapter.agent_entry_signals.append(signal)
 
-    bot.set_agent_entry_handler(record)
+    bot.set_agent_signal_handler(record)
 
 
 def register_agent_scheduler_probe(
@@ -239,40 +237,11 @@ def register_agent_scheduler_probe(
 
     adapter.agent_signal_handler = dispatch
 
-    async def handle(signal: AgentEntrySignal) -> None:
+    async def handle(signal: AgentSignal) -> None:
         adapter.agent_entry_signals.append(signal)
-        await dispatch(agent_signal_from_entry(signal, occurred_at=now))
+        await dispatch(signal)
 
-    bot.set_agent_entry_handler(handle)
-
-
-def agent_signal_from_entry(signal: AgentEntrySignal, *, occurred_at: float) -> AgentSignal:
-    message_token = signal.message_log_id if signal.message_log_id is not None else "missing"
-    return AgentSignal(
-        signal_id=f"e2e-entry:{signal.session_id}:{message_token}",
-        kind=AgentSignalKind.MESSAGE,
-        source=AgentSignalSource.MESSAGE_INGRESS,
-        session_id=signal.session_id,
-        occurred_at=occurred_at,
-        bot_id=signal.bot_id,
-        bot_binding_id=signal.bot_binding_id,
-        bot_session_id=signal.bot_session_id,
-        message=AgentMessageSignal(
-            message_log_id=signal.message_log_id,
-            sender_id=signal.sender_id,
-            instance_id=signal.instance_id,
-            platform=signal.platform,
-            self_id=signal.self_id,
-            is_private=signal.is_private,
-            is_mentioned=signal.is_mentioned,
-            is_reply_to_bot=signal.is_reply_to_bot,
-            is_mention_to_other=signal.is_mention_to_other,
-            is_poke_to_bot=signal.is_poke_to_bot,
-            is_poke_to_other=signal.is_poke_to_other,
-            already_handled=signal.already_handled,
-            is_stopped=signal.is_stopped,
-        ),
-    )
+    bot.set_agent_signal_handler(handle)
 
 
 async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatformAdapter) -> None:
@@ -823,6 +792,8 @@ def assert_agent_entry_signals(
     assert len(adapter.agent_entry_signals) >= len(expected)
     for index, item in enumerate(expected):
         signal = adapter.agent_entry_signals[index]
+        message = signal.message
+        assert message is not None
         if "sessionId" in item:
             assert signal.session_id == item["sessionId"]
         if "botId" in item:
@@ -832,31 +803,31 @@ def assert_agent_entry_signals(
         if "botSessionId" in item:
             assert signal.bot_session_id == item["botSessionId"]
         if "eventType" in item:
-            assert signal.event_type == item["eventType"]
+            assert signal.meta.get("event_type") == item["eventType"]
         if "senderId" in item:
-            assert signal.sender_id == item["senderId"]
+            assert message.sender_id == item["senderId"]
         if "instanceId" in item:
-            assert signal.instance_id == item["instanceId"]
+            assert message.instance_id == item["instanceId"]
         if "platform" in item:
-            assert signal.platform == item["platform"]
+            assert message.platform == item["platform"]
         if "isPrivate" in item:
-            assert signal.is_private == bool(item["isPrivate"])
+            assert message.is_private == bool(item["isPrivate"])
         if "isMentioned" in item:
-            assert signal.is_mentioned == bool(item["isMentioned"])
+            assert message.is_mentioned == bool(item["isMentioned"])
         if "isMentionToOther" in item:
-            assert signal.is_mention_to_other == bool(item["isMentionToOther"])
+            assert message.is_mention_to_other == bool(item["isMentionToOther"])
         if "isReplyToBot" in item:
-            assert signal.is_reply_to_bot == bool(item["isReplyToBot"])
+            assert message.is_reply_to_bot == bool(item["isReplyToBot"])
         if "isPokeToBot" in item:
-            assert signal.is_poke_to_bot == bool(item["isPokeToBot"])
+            assert message.is_poke_to_bot == bool(item["isPokeToBot"])
         if "isPokeToOther" in item:
-            assert signal.is_poke_to_other == bool(item["isPokeToOther"])
+            assert message.is_poke_to_other == bool(item["isPokeToOther"])
         if "alreadyHandled" in item:
-            assert signal.already_handled == bool(item["alreadyHandled"])
+            assert message.already_handled == bool(item["alreadyHandled"])
         if "isStopped" in item:
-            assert signal.is_stopped == bool(item["isStopped"])
+            assert message.is_stopped == bool(item["isStopped"])
         if item.get("messageLogId"):
-            assert signal.message_log_id is not None
+            assert message.message_log_id is not None
 
 
 def assert_agent_scheduler_state(

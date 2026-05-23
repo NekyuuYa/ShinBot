@@ -17,7 +17,7 @@ from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
     AgentEntryDispatcher,
-    AgentEntryHandler,
+    AgentSignalHandler,
     NoticeDispatcher,
     make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
@@ -161,7 +161,7 @@ class ShinBot:
         except Exception:
             logger.exception("Unhandled error processing event: %s", event.type)
 
-    def set_agent_entry_handler(self, handler: AgentEntryHandler | None) -> None:
+    def set_agent_signal_handler(self, handler: AgentSignalHandler | None) -> None:
         """Attach the Agent-side handler for unmatched user-message signals."""
         self.agent_entry_dispatcher.set_handler(handler)
 
@@ -196,9 +196,9 @@ class ShinBot:
         ingress_handler = getattr(runtime, "handle_ingress_message", None)
         if ingress_handler is not None:
             self.message_ingress.add_pre_route_hook(ingress_handler)
-        handler = getattr(runtime, "handle_agent_entry", None)
+        handler = getattr(runtime, "handle_agent_signal", None)
         if handler is not None:
-            self.set_agent_entry_handler(handler)
+            self.set_agent_signal_handler(handler)
 
     # ── Adapter management shortcuts ─────────────────────────────────
 

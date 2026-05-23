@@ -9,7 +9,7 @@ from shinbot.core.dispatch.dispatchers import (
     AGENT_ENTRY_TARGET,
     NOTICE_DISPATCHER_TARGET,
     AgentEntryDispatcher,
-    AgentEntrySignal,
+    AgentSignal,
     NoticeDispatcher,
     make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
@@ -75,9 +75,9 @@ def make_event(content="hello", user_id="user-1", channel_type=1):
 
 class RecordingAgentHandler:
     def __init__(self) -> None:
-        self.signals: list[AgentEntrySignal] = []
+        self.signals: list[AgentSignal] = []
 
-    def __call__(self, signal: AgentEntrySignal) -> None:
+    def __call__(self, signal: AgentSignal) -> None:
         self.signals.append(signal)
 
 
@@ -386,9 +386,9 @@ class TestMessageIngressCore:
         await asyncio.sleep(0)
 
         assert len(agent_handler.signals) == 1
-        assert agent_handler.signals[0].is_reply_to_bot is True
-        assert agent_handler.signals[0].self_id == "bot-1"
-        assert not hasattr(agent_handler.signals[0], "message")
+        assert agent_handler.signals[0].message is not None
+        assert agent_handler.signals[0].message.is_reply_to_bot is True
+        assert agent_handler.signals[0].message.self_id == "bot-1"
 
     @pytest.mark.asyncio
     async def test_message_log_is_mentioned_uses_recursive_mention_detection(self, tmp_path):

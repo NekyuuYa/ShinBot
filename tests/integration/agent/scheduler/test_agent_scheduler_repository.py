@@ -15,8 +15,13 @@ from shinbot.agent.scheduler.models import (
     ReviewPlan,
     UnreadMessage,
 )
+from shinbot.agent.signals import (
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 from shinbot.core.application.app import ShinBot
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
 
@@ -304,18 +309,23 @@ async def test_agent_runtime_uses_persistent_scheduler_store(tmp_path) -> None:
     runtime = install_agent_runtime(bot)
     message_log_id = _insert_message(bot.database)
 
-    await runtime.handle_agent_entry(
-        AgentEntrySignal(
+    await runtime.handle_agent_signal(
+        AgentSignal(
+            signal_id=f"message-ingress:bot:group:room:{message_log_id}",
+            kind=AgentSignalKind.MESSAGE,
+            source=AgentSignalSource.MESSAGE_INGRESS,
             session_id="bot:group:room",
-            message_log_id=message_log_id,
-            event_type="message-created",
-            sender_id="user-1",
-            instance_id="bot",
-            platform="mock",
-            self_id="bot-self",
-            is_private=False,
-            is_mentioned=False,
-            is_reply_to_bot=False,
+            occurred_at=10.0,
+            message=AgentMessageSignal(
+                message_log_id=message_log_id,
+                sender_id="user-1",
+                instance_id="bot",
+                platform="mock",
+                self_id="bot-self",
+                is_private=False,
+                is_mentioned=False,
+                is_reply_to_bot=False,
+            ),
         )
     )
 

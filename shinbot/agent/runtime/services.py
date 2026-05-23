@@ -7,7 +7,6 @@ attach the Agent entry handler to message routing.
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -68,19 +67,13 @@ from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptReg
 from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_components
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
-from shinbot.agent.signals import (
-    AgentMessageSignal,
-    AgentSignal,
-    AgentSignalKind,
-    AgentSignalSource,
-)
+from shinbot.agent.signals import AgentSignal
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat import models as active_chat_workflow_models
 from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.workflows.chat_actions import register_chat_action_tools
-from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.core.instance_config import (
     resolve_instance_runtime_config,
     select_response_profile,
@@ -572,10 +565,6 @@ class AgentRuntime:
         for profile in self._unique_profiles():
             profile.reload_prompt_files()
 
-    async def handle_agent_entry(self, signal: AgentEntrySignal) -> None:
-        """Backward-compatible message entry point."""
-        await self.handle_agent_signal(self._agent_signal_from_entry(signal))
-
     async def handle_agent_signal(
         self,
         signal: AgentSignal,
@@ -593,37 +582,6 @@ class AgentRuntime:
 
         for profile in self._unique_profiles():
             profile.start_background_tasks()
-
-    def _agent_signal_from_entry(self, signal: AgentEntrySignal) -> AgentSignal:
-        message_token = signal.message_log_id if signal.message_log_id is not None else "missing"
-        return AgentSignal(
-            signal_id=f"entry:{signal.session_id}:{message_token}",
-            kind=AgentSignalKind.MESSAGE,
-            source=AgentSignalSource.MESSAGE_INGRESS,
-            session_id=signal.session_id,
-            occurred_at=time.time(),
-            bot_id=signal.bot_id,
-            bot_binding_id=signal.bot_binding_id,
-            bot_session_id=signal.bot_session_id,
-            message=AgentMessageSignal(
-                message_log_id=signal.message_log_id,
-                sender_id=signal.sender_id,
-                instance_id=signal.instance_id,
-                platform=signal.platform,
-                self_id=signal.self_id,
-                is_private=signal.is_private,
-                is_mentioned=signal.is_mentioned,
-                is_reply_to_bot=signal.is_reply_to_bot,
-                is_mention_to_other=signal.is_mention_to_other,
-                is_poke_to_bot=signal.is_poke_to_bot,
-                is_poke_to_other=signal.is_poke_to_other,
-                already_handled=signal.already_handled,
-                is_stopped=signal.is_stopped,
-            ),
-        )
-
-    def _signal_from_agent_entry(self, signal: AgentEntrySignal) -> AgentSignal:
-        return self._agent_signal_from_entry(signal)
 
     def _resolve_response_profile(self, signal: AgentSignal) -> str:
         message = signal.message
