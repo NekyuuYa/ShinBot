@@ -22,8 +22,8 @@ from agent_runtime_support import (
 )
 
 from shinbot.agent.signals import (
-    AgentActiveChatBootstrapSignal,
     ActiveChatDisposition,
+    AgentActiveChatBootstrapSignal,
     AgentSignal,
     AgentSignalKind,
     AgentSignalSource,
@@ -661,6 +661,37 @@ async def test_agent_runtime_active_chat_tick_plans_review_before_idle(
         assert model_runtime.calls[0].purpose == "idle_review_planning"
     finally:
         await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_review_due_signal_runs_due_review(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:group:1"
+    calls: list[tuple[str, float | None]] = []
+
+    class _RecordingReviewScheduler:
+        async def run_due_review(self, session_id: str, *, now: float | None = None):
+            calls.append((session_id, now))
+            return None
+
+    runtime.agent_scheduler = _RecordingReviewScheduler()  # type: ignore[assignment]
+
+    decision = await runtime.handle_agent_signal(
+        AgentSignal(
+            signal_id="review:test-bot:group:group:1",
+            kind=AgentSignalKind.REVIEW_DUE,
+            source=AgentSignalSource.TIMER,
+            session_id=session_id,
+            occurred_at=200.0,
+            timer=AgentTimerSignal(trigger=AgentSignalKind.REVIEW_DUE.value, due_at=190.0),
+        )
+    )
+
+    assert decision is None
+    assert calls == [(session_id, 190.0)]
 
 
 @pytest.mark.asyncio

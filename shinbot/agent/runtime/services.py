@@ -45,6 +45,7 @@ from shinbot.agent.scheduler import (
     ReviewDueTimerService,
 )
 from shinbot.agent.scheduler.active_chat_policy import DefaultActiveChatPolicy
+from shinbot.agent.scheduler.models import ActiveChatBootstrapApplyDecision
 from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy
 from shinbot.agent.services.context import ContextManager
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
@@ -67,7 +68,6 @@ from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptReg
 from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_components
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
-from shinbot.agent.scheduler.models import ActiveChatBootstrapApplyDecision
 from shinbot.agent.signals import (
     AgentMessageSignal,
     AgentSignal,
@@ -589,11 +589,24 @@ class AgentRuntime:
             await profile.agent_scheduler.accept_signal(signal)
             return None
         if signal.kind == AgentSignalKind.REVIEW_DUE:
-            await profile.agent_scheduler.run_due_review(signal.session_id)
+            checked_at = (
+                signal.timer.due_at
+                if signal.timer is not None and signal.timer.due_at is not None
+                else signal.occurred_at
+            )
+            await profile.agent_scheduler.run_due_review(signal.session_id, now=checked_at)
             return None
         if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
+            checked_at = (
+                signal.timer.due_at
+                if signal.timer is not None and signal.timer.due_at is not None
+                else signal.occurred_at
+            )
             next_review_plan = None
-            preview = profile.agent_scheduler.preview_active_chat_tick(signal.session_id)
+            preview = profile.agent_scheduler.preview_active_chat_tick(
+                signal.session_id,
+                now=checked_at,
+            )
             if preview.will_return_idle:
                 next_review_plan = await profile.agent_scheduler.plan_idle_review_after_active_chat(
                     signal.session_id
@@ -601,6 +614,7 @@ class AgentRuntime:
             profile.agent_scheduler.tick_active_chat(
                 signal.session_id,
                 next_review_plan=next_review_plan,
+                now=checked_at,
             )
             return None
         if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:

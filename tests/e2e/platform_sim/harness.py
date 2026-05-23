@@ -18,6 +18,7 @@ from shinbot.agent.signals import (
     AgentSignal,
     AgentSignalKind,
     AgentSignalSource,
+    AgentTimerSignal,
 )
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.bots_config import load_bot_service_configs
@@ -64,6 +65,7 @@ class SimulatedPlatformAdapter(BaseAdapter):
         self.notice_events: list[str] = []
         self.agent_entry_signals: list[AgentEntrySignal] = []
         self.agent_scheduler: AgentScheduler | None = None
+        self.agent_signal_handler: Callable[[AgentSignal], Awaitable[None] | None] | None = None
 
     async def start(self) -> None:
         self.started = True
@@ -232,9 +234,54 @@ def register_agent_scheduler_probe(
     )
     adapter.agent_scheduler = scheduler
 
+    async def dispatch(signal: AgentSignal) -> None:
+        if signal.kind == AgentSignalKind.MESSAGE:
+            if signal.message is None:
+                return
+            await scheduler.accept_signal(signal)
+            return
+        if signal.kind == AgentSignalKind.REVIEW_DUE:
+            checked_at = (
+                signal.timer.due_at
+                if signal.timer is not None and signal.timer.due_at is not None
+                else signal.occurred_at
+            )
+            await scheduler.run_due_review(signal.session_id, now=checked_at)
+            return
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
+            checked_at = (
+                signal.timer.due_at
+                if signal.timer is not None and signal.timer.due_at is not None
+                else signal.occurred_at
+            )
+            next_review_plan = None
+            preview = scheduler.preview_active_chat_tick(signal.session_id, now=checked_at)
+            if preview.will_return_idle:
+                next_review_plan = await scheduler.plan_idle_review_after_active_chat(
+                    signal.session_id
+                )
+            scheduler.tick_active_chat(
+                signal.session_id,
+                next_review_plan=next_review_plan,
+                now=checked_at,
+            )
+            return
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
+            payload = signal.active_chat_bootstrap
+            if payload is None:
+                return
+            scheduler.apply_active_chat_bootstrap(
+                signal.session_id,
+                disposition=payload.disposition,
+                active_epoch=payload.active_epoch,
+            )
+            return
+
+    adapter.agent_signal_handler = dispatch
+
     async def handle(signal: AgentEntrySignal) -> None:
         adapter.agent_entry_signals.append(signal)
-        await scheduler.accept_signal(agent_signal_from_entry(signal, occurred_at=now))
+        await dispatch(agent_signal_from_entry(signal, occurred_at=now))
 
     bot.set_agent_entry_handler(handle)
 
@@ -270,16 +317,16 @@ def agent_signal_from_entry(signal: AgentEntrySignal, *, occurred_at: float) -> 
 
 async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatformAdapter) -> None:
     action_type = str(action.get("type", ""))
-    scheduler = adapter.agent_scheduler
     if action_type == "agentReviewDue":
-        if scheduler is None:
-            raise RuntimeError("agentReviewDue action requires agentSchedulerProbe")
-        await scheduler.run_due_review(
-            str(action["sessionId"]),
+        await _emit_agent_signal(
+            adapter,
+            AgentSignalKind.REVIEW_DUE,
+            session_id=str(action["sessionId"]),
             now=float(action.get("now", time.time())),
         )
         return
     if action_type == "agentCompleteReview":
+        scheduler = adapter.agent_scheduler
         if scheduler is None:
             raise RuntimeError("agentCompleteReview action requires agentSchedulerProbe")
         scheduler.complete_review(
@@ -295,14 +342,41 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
         )
         return
     if action_type == "agentActiveChatTick":
-        if scheduler is None:
-            raise RuntimeError("agentActiveChatTick action requires agentSchedulerProbe")
-        scheduler.tick_active_chat(
-            str(action["sessionId"]),
+        await _emit_agent_signal(
+            adapter,
+            AgentSignalKind.ACTIVE_CHAT_TICK,
+            session_id=str(action["sessionId"]),
             now=float(action.get("now", time.time())),
         )
         return
     raise ValueError(f"unsupported scenario action type: {action_type!r}")
+
+
+async def _emit_agent_signal(
+    adapter: SimulatedPlatformAdapter,
+    kind: AgentSignalKind,
+    *,
+    session_id: str,
+    now: float,
+) -> None:
+    handler = adapter.agent_signal_handler
+    if handler is None:
+        raise RuntimeError(f"{kind.value} action requires agentSchedulerProbe")
+    signal = AgentSignal(
+        signal_id=f"e2e-{kind.value}:{session_id}:{int(now)}",
+        kind=kind,
+        source=AgentSignalSource.TIMER,
+        session_id=session_id,
+        occurred_at=now,
+        timer=AgentTimerSignal(
+            trigger=kind.value,
+            due_at=now,
+            plan_id=f"{session_id}:{int(now)}",
+        ),
+    )
+    result = handler(signal)
+    if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+        await result
 
 
 def _optional_float(value: Any) -> float | None:
