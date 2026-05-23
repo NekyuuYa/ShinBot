@@ -23,10 +23,12 @@ from shinbot.agent.scheduler import (
 )
 from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan
 from shinbot.agent.signals import (
+    AgentActiveChatBootstrapSignal,
     AgentMessageSignal,
     AgentSignal,
     AgentSignalKind,
     AgentSignalSource,
+    AgentTimerSignal,
 )
 
 
@@ -195,11 +197,71 @@ def make_signal(
     )
 
 
+def make_review_due_signal(
+    *,
+    session_id: str = "bot:group:room",
+    occurred_at: float = 52.0,
+    due_at: float | None = None,
+) -> AgentSignal:
+    return AgentSignal(
+        signal_id=f"review-due:{session_id}:{int(occurred_at)}",
+        kind=AgentSignalKind.REVIEW_DUE,
+        source=AgentSignalSource.TIMER,
+        session_id=session_id,
+        occurred_at=occurred_at,
+        timer=AgentTimerSignal(
+            trigger=AgentSignalKind.REVIEW_DUE.value,
+            due_at=due_at,
+        ),
+    )
+
+
+def make_active_chat_tick_signal(
+    *,
+    session_id: str = "bot:group:room",
+    occurred_at: float = 65.0,
+    due_at: float | None = None,
+) -> AgentSignal:
+    return AgentSignal(
+        signal_id=f"active-chat-tick:{session_id}:{int(occurred_at)}",
+        kind=AgentSignalKind.ACTIVE_CHAT_TICK,
+        source=AgentSignalSource.TIMER,
+        session_id=session_id,
+        occurred_at=occurred_at,
+        timer=AgentTimerSignal(
+            trigger=AgentSignalKind.ACTIVE_CHAT_TICK.value,
+            due_at=due_at,
+        ),
+    )
+
+
+def make_active_chat_bootstrap_signal(
+    *,
+    session_id: str = "bot:group:room",
+    disposition: ActiveChatDisposition = ActiveChatDisposition.WATCH,
+    active_epoch: int | None = None,
+    occurred_at: float = 66.0,
+) -> AgentSignal:
+    return AgentSignal(
+        signal_id=f"active-chat-bootstrap:{session_id}:{active_epoch or 'none'}",
+        kind=AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP,
+        source=AgentSignalSource.MANUAL,
+        session_id=session_id,
+        occurred_at=occurred_at,
+        active_chat_bootstrap=AgentActiveChatBootstrapSignal(
+            disposition=disposition,
+            active_epoch=active_epoch,
+            reason="test",
+        ),
+    )
+
+
 __all__ = [
     "ActiveChatDisposition",
     "ActiveChatPolicyConfig",
     "ActiveChatTimerService",
     "ActiveReplyDispatcher",
+    "AgentActiveChatBootstrapSignal",
     "AgentMessageSignal",
     "AgentScheduler",
     "AgentSchedulerConfig",
@@ -223,6 +285,9 @@ __all__ = [
     "annotations",
     "asyncio_sleep",
     "calculate_bootstrap_correction",
+    "make_active_chat_bootstrap_signal",
+    "make_active_chat_tick_signal",
+    "make_review_due_signal",
     "make_signal",
     "pytest",
 ]

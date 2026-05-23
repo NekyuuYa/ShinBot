@@ -14,6 +14,7 @@ from agent_scheduler_support import (
     RecordingWorkflowDispatcher,
     ReviewDueTimerService,
     ReviewPlan,
+    make_review_due_signal,
     make_signal,
     pytest,
 )
@@ -195,6 +196,47 @@ async def test_scheduler_dispatches_due_review_workflow() -> None:
         message.message_log_id
         for message in dispatcher.review_calls[0]["unread_messages"]
     ] == [1]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_accept_signal_dispatches_due_review_workflow() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+
+    decision = await scheduler.accept_signal(
+        make_review_due_signal(occurred_at=80.0, due_at=52.0)
+    )
+
+    assert decision.review_started is True
+    assert decision.review_workflow_started is True
+    assert decision.state == AgentState.REVIEW
+    assert dispatcher.review_calls[0]["session_id"] == "bot:group:room"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_accept_signal_uses_review_due_timer_due_at() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+
+    decision = await scheduler.accept_signal(
+        make_review_due_signal(occurred_at=80.0, due_at=51.0)
+    )
+
+    assert decision.skipped_reason == "review_not_due"
+    assert decision.state == AgentState.IDLE
+    assert dispatcher.review_calls == []
 
 
 @pytest.mark.asyncio

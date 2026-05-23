@@ -670,11 +670,11 @@ async def test_agent_runtime_review_due_signal_runs_due_review(
     bot = ShinBot(data_dir=tmp_path)
     runtime = install_agent_runtime(bot)
     session_id = "test-bot:group:group:1"
-    calls: list[tuple[str, float | None]] = []
+    calls: list[AgentSignal] = []
 
     class _RecordingReviewScheduler:
-        async def run_due_review(self, session_id: str, *, now: float | None = None):
-            calls.append((session_id, now))
+        async def accept_signal(self, signal: AgentSignal):
+            calls.append(signal)
             return None
 
     runtime.agent_scheduler = _RecordingReviewScheduler()  # type: ignore[assignment]
@@ -691,7 +691,9 @@ async def test_agent_runtime_review_due_signal_runs_due_review(
     )
 
     assert decision is None
-    assert calls == [(session_id, 190.0)]
+    assert [signal.kind for signal in calls] == [AgentSignalKind.REVIEW_DUE]
+    assert [signal.session_id for signal in calls] == [session_id]
+    assert [signal.timer.due_at for signal in calls if signal.timer is not None] == [190.0]
 
 
 @pytest.mark.asyncio

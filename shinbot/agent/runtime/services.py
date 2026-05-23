@@ -583,49 +583,9 @@ class AgentRuntime:
         """Receive a unified Agent signal and let Agent internals process it."""
         self.start_background_tasks()
         profile = self.agent_profile_for_bot(signal.bot_id)
-        if signal.kind == AgentSignalKind.MESSAGE:
-            if signal.message is None:
-                return None
-            await profile.agent_scheduler.accept_signal(signal)
-            return None
-        if signal.kind == AgentSignalKind.REVIEW_DUE:
-            checked_at = (
-                signal.timer.due_at
-                if signal.timer is not None and signal.timer.due_at is not None
-                else signal.occurred_at
-            )
-            await profile.agent_scheduler.run_due_review(signal.session_id, now=checked_at)
-            return None
-        if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
-            checked_at = (
-                signal.timer.due_at
-                if signal.timer is not None and signal.timer.due_at is not None
-                else signal.occurred_at
-            )
-            next_review_plan = None
-            preview = profile.agent_scheduler.preview_active_chat_tick(
-                signal.session_id,
-                now=checked_at,
-            )
-            if preview.will_return_idle:
-                next_review_plan = await profile.agent_scheduler.plan_idle_review_after_active_chat(
-                    signal.session_id
-                )
-            profile.agent_scheduler.tick_active_chat(
-                signal.session_id,
-                next_review_plan=next_review_plan,
-                now=checked_at,
-            )
-            return None
-        if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
-            payload = signal.active_chat_bootstrap
-            if payload is None:
-                return None
-            return profile.agent_scheduler.apply_active_chat_bootstrap(
-                signal.session_id,
-                disposition=payload.disposition,
-                active_epoch=payload.active_epoch,
-            )
+        decision = await profile.agent_scheduler.accept_signal(signal)
+        if isinstance(decision, ActiveChatBootstrapApplyDecision):
+            return decision
         return None
 
     def start_background_tasks(self) -> None:

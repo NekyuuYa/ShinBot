@@ -19,7 +19,6 @@ from shinbot.agent.runtime.config import (
     validate_agent_runtime_config_references,
 )
 from shinbot.agent.scheduler import ActiveChatState, AgentScheduler, AgentState
-from shinbot.agent.signals import AgentActiveChatBootstrapSignal, AgentSignal
 from shinbot.agent.services.message_formatter import ImageMode
 from shinbot.agent.services.model_runtime import GenerateResult
 from shinbot.agent.services.prompt_engine import (
@@ -30,6 +29,7 @@ from shinbot.agent.services.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
+from shinbot.agent.signals import AgentActiveChatBootstrapSignal, AgentSignal
 from shinbot.core.application.app import ShinBot
 from shinbot.core.dispatch.dispatchers import AgentEntrySignal
 from shinbot.persistence import DatabaseManager
@@ -208,9 +208,11 @@ def make_prompt_registry(
 class RecordingScheduler:
     def __init__(self) -> None:
         self.calls: list[AgentSignal] = []
+        self.return_value: Any | None = None
 
-    async def accept_signal(self, signal: AgentSignal) -> None:
+    async def accept_signal(self, signal: AgentSignal) -> Any | None:
         self.calls.append(signal)
+        return self.return_value
 
 
 __all__ = [

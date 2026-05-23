@@ -45,6 +45,12 @@ from shinbot.agent.signals import AgentSignal, AgentSignalKind
 logger = logging.getLogger(__name__)
 
 ResponseProfileResolver = Callable[[AgentSignal], str]
+AgentSignalDecision = (
+    AgentScheduleDecision
+    | ReviewDueDecision
+    | ActiveChatTickDecision
+    | ActiveChatBootstrapApplyDecision
+)
 
 
 @dataclass(slots=True)
@@ -96,8 +102,18 @@ class AgentScheduler:
         if bind_scheduler is not None:
             bind_scheduler(self)
 
-    async def accept_signal(self, signal: AgentSignal) -> AgentScheduleDecision:
-        """Accept one unified message signal and decide scheduler-side action."""
+    async def accept_signal(self, signal: AgentSignal) -> AgentSignalDecision | None:
+        """Accept one unified Agent signal and decide scheduler-side action."""
+        if signal.kind == AgentSignalKind.REVIEW_DUE:
+            return await self._accept_review_due_signal(signal)
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
+            return await self._accept_active_chat_tick_signal(signal)
+        if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
+            return self._accept_active_chat_bootstrap_signal(signal)
+        return await self._accept_message_signal(signal)
+
+    async def _accept_message_signal(self, signal: AgentSignal) -> AgentScheduleDecision:
+        """Accept one message signal and decide scheduler-side action."""
         message = signal.message
         if signal.kind != AgentSignalKind.MESSAGE or message is None:
             return AgentScheduleDecision(
@@ -229,6 +245,39 @@ class AgentScheduler:
             active_chat_observed=active_chat_observed,
             active_chat_workflow_notified=active_chat_workflow_notified,
             active_reply_started=False,
+        )
+
+    async def _accept_review_due_signal(self, signal: AgentSignal) -> ReviewDueDecision:
+        checked_at = self._timer_checked_at(signal)
+        return await self.run_due_review(signal.session_id, now=checked_at)
+
+    async def _accept_active_chat_tick_signal(
+        self,
+        signal: AgentSignal,
+    ) -> ActiveChatTickDecision:
+        checked_at = self._timer_checked_at(signal)
+        next_review_plan = None
+        preview = self.preview_active_chat_tick(signal.session_id, now=checked_at)
+        if preview.will_return_idle:
+            next_review_plan = await self.plan_idle_review_after_active_chat(signal.session_id)
+        return self.tick_active_chat(
+            signal.session_id,
+            next_review_plan=next_review_plan,
+            now=checked_at,
+        )
+
+    def _accept_active_chat_bootstrap_signal(
+        self,
+        signal: AgentSignal,
+    ) -> ActiveChatBootstrapApplyDecision | None:
+        payload = signal.active_chat_bootstrap
+        if payload is None:
+            return None
+        return self.apply_active_chat_bootstrap(
+            signal.session_id,
+            disposition=payload.disposition,
+            active_epoch=payload.active_epoch,
+            now=signal.occurred_at,
         )
 
     def unread_messages(self, session_id: str) -> list[UnreadMessage]:
@@ -901,6 +950,12 @@ class AgentScheduler:
         self._state_store.set_review_plan(
             self._review_policy.initial_plan(session_id=session_id, now=now)
         )
+
+    @staticmethod
+    def _timer_checked_at(signal: AgentSignal) -> float:
+        if signal.timer is not None and signal.timer.due_at is not None:
+            return signal.timer.due_at
+        return signal.occurred_at
 
     def _with_unread_metadata(self, message: UnreadMessage) -> UnreadMessage:
         metadata = self._unread_metadata.get((message.session_id, message.message_log_id))

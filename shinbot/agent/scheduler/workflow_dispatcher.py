@@ -68,5 +68,11 @@ class AgentWorkflowDispatcher(Protocol):
     ) -> None:
         """Notify active chat workflow about one observed message signal."""
 
+    async def plan_idle_review_after_active_chat(
+        self,
+        session_id: str,
+    ) -> ReviewPlan | None:
+        """Plan the next review before active chat returns to idle."""
+
 
 __all__ = ["AgentWorkflowDispatcher"]

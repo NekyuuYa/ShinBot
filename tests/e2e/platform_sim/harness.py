@@ -235,47 +235,7 @@ def register_agent_scheduler_probe(
     adapter.agent_scheduler = scheduler
 
     async def dispatch(signal: AgentSignal) -> None:
-        if signal.kind == AgentSignalKind.MESSAGE:
-            if signal.message is None:
-                return
-            await scheduler.accept_signal(signal)
-            return
-        if signal.kind == AgentSignalKind.REVIEW_DUE:
-            checked_at = (
-                signal.timer.due_at
-                if signal.timer is not None and signal.timer.due_at is not None
-                else signal.occurred_at
-            )
-            await scheduler.run_due_review(signal.session_id, now=checked_at)
-            return
-        if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
-            checked_at = (
-                signal.timer.due_at
-                if signal.timer is not None and signal.timer.due_at is not None
-                else signal.occurred_at
-            )
-            next_review_plan = None
-            preview = scheduler.preview_active_chat_tick(signal.session_id, now=checked_at)
-            if preview.will_return_idle:
-                next_review_plan = await scheduler.plan_idle_review_after_active_chat(
-                    signal.session_id
-                )
-            scheduler.tick_active_chat(
-                signal.session_id,
-                next_review_plan=next_review_plan,
-                now=checked_at,
-            )
-            return
-        if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
-            payload = signal.active_chat_bootstrap
-            if payload is None:
-                return
-            scheduler.apply_active_chat_bootstrap(
-                signal.session_id,
-                disposition=payload.disposition,
-                active_epoch=payload.active_epoch,
-            )
-            return
+        await scheduler.accept_signal(signal)
 
     adapter.agent_signal_handler = dispatch
 

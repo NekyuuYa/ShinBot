@@ -15,8 +15,8 @@ from shinbot.agent.scheduler.inbox import AgentInbox, InMemoryAgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatBootstrapApplyDecision,
     ActiveChatDisposition,
-    ActiveChatInterestAdjustmentPreview,
     ActiveChatInterestAdjustDecision,
+    ActiveChatInterestAdjustmentPreview,
     ActiveChatState,
     ActiveChatTickDecision,
     ActiveChatTickPreview,
@@ -45,7 +45,11 @@ from shinbot.agent.scheduler.review_policy import (
     ReviewPolicyConfig,
 )
 from shinbot.agent.scheduler.review_timer import ReviewDueTimerService
-from shinbot.agent.scheduler.scheduler import AgentScheduler, AgentSchedulerConfig
+from shinbot.agent.scheduler.scheduler import (
+    AgentScheduler,
+    AgentSchedulerConfig,
+    AgentSignalDecision,
+)
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
 
@@ -69,6 +73,7 @@ __all__ = [
     "AgentScheduleDecision",
     "AgentScheduler",
     "AgentSchedulerConfig",
+    "AgentSignalDecision",
     "AgentState",
     "AgentInbox",
     "AgentStateStore",
