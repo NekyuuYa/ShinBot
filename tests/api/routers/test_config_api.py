@@ -238,6 +238,45 @@ def test_config_save_adapter_instances_persists_section_only(tmp_path: Path):
     assert boot.save_config_calls == 1
 
 
+def test_config_save_adapter_instances_roundtrip_via_workspace(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    boot = _BootStub(tmp_path)
+    boot.config["adapter_instances"] = []
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        save_resp = client.put(
+            "/api/v1/config/adapter-instances",
+            headers=_auth_headers(app),
+            json={
+                "adapterInstances": [
+                    {
+                        "id": "qq-main",
+                        "adapter": "onebot_v11",
+                        "enabled": True,
+                        "config": {"mode": "reverse"},
+                    }
+                ],
+            },
+        )
+        assert save_resp.status_code == 200
+
+        workspace_resp = client.get("/api/v1/config", headers=_auth_headers(app))
+
+    assert workspace_resp.status_code == 200
+    payload = workspace_resp.json()["data"]
+    assert payload["config"]["adapter_instances"] == [
+        {
+            "id": "qq-main",
+            "adapter": "onebot_v11",
+            "enabled": True,
+            "config": {"mode": "reverse"},
+        }
+    ]
+    assert payload["validation"]["normalized"]["adapterInstances"][0]["id"] == "qq-main"
+    assert boot.save_config_calls == 1
+
+
 def test_config_save_bots_persists_section_only(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     boot = _BootStub(tmp_path)

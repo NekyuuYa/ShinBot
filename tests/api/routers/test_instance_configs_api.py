@@ -10,6 +10,7 @@ from shinbot.persistence import (
     ModelDefinitionRecord,
     ModelProviderRecord,
 )
+from shinbot.persistence.repositories.admin_instance_configs import InstanceConfigRepository
 
 
 class _BootStub:
@@ -136,6 +137,38 @@ def test_instance_config_crud_roundtrip(tmp_path: Path):
         delete_resp = client.delete(f"/api/v1/instance-configs/{config_uuid}", headers=headers)
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"]["deleted"] is True
+
+
+def test_instance_config_roundtrip_persists_to_file(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    _seed_models(bot)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        create_resp = client.post(
+            "/api/v1/instance-configs",
+            headers=headers,
+            json={
+                "instanceId": "inst-1",
+                "mainLlm": "openai-main/gpt-fast",
+                "config": {"replyMode": "group"},
+            },
+        )
+
+    assert create_resp.status_code == 201
+    created = create_resp.json()["data"]
+    repo = InstanceConfigRepository.from_data_dir(tmp_path)
+    persisted = repo.get(created["uuid"])
+    assert persisted is not None
+    assert persisted["instance_id"] == "inst-1"
+    assert persisted["main_llm"] == "openai-main/gpt-fast"
+    assert persisted["config"]["replyMode"] == "group"
+
+    reloaded_bot = ShinBot(data_dir=tmp_path)
+    reloaded_repo = InstanceConfigRepository.from_data_dir(tmp_path)
+    assert reloaded_repo.get_by_instance_id("inst-1") is not None
+    assert reloaded_bot.database.instance_configs.get_by_instance_id("inst-1") is not None
 
 
 def test_instance_config_validates_instance_and_uniqueness(tmp_path: Path):
