@@ -100,6 +100,10 @@ Scenario fixtures should stay declarative JSON where practical:
   message AST. For `messageLogs`, use `contentElements` when you want to assert
   the stored element JSON exactly.
 
+Fixtures are validated when loaded. Keep keys, enums, and booleans in the
+documented shape; update the platform sim schema tests when adding new fixture
+fields so typos fail before the bot starts.
+
 Use this layer for full user-like backend flows. Keep pure routing policy,
 parser, repository, and workflow unit behavior in `unit` or `integration`.
 

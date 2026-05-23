@@ -31,6 +31,7 @@ from shinbot.persistence import ModelDefinitionRecord, ModelProviderRecord
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
+from tests.e2e.platform_sim.fixture_schema import validate_scenario
 
 
 @dataclass(slots=True)
@@ -114,7 +115,9 @@ class SimulatedPlatformAdapter(BaseAdapter):
 
 
 def load_scenario(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    scenario = json.loads(path.read_text(encoding="utf-8"))
+    validate_scenario(scenario, source=path)
+    return scenario
 
 
 async def run_platform_scenario(
