@@ -106,28 +106,36 @@ class ActiveChatTimerService:
             if not task.done()
         ]
 
+    async def run_once(self, session_id: str) -> None:
+        """Dispatch one active-chat timer tick for tests and manual maintenance."""
+
+        runtime = self._runtime
+        if runtime is None:
+            return
+        now = time.time()
+        await runtime.handle_agent_signal(
+            AgentSignal(
+                signal_id=f"active-chat-tick:{session_id}:{int(now)}",
+                kind=AgentSignalKind.ACTIVE_CHAT_TICK,
+                source=AgentSignalSource.TIMER,
+                session_id=session_id,
+                occurred_at=now,
+                bot_id=self._bot_id,
+                timer=AgentTimerSignal(
+                    trigger=AgentSignalKind.ACTIVE_CHAT_TICK.value,
+                    due_at=now,
+                ),
+            )
+        )
+
     async def _run_session_timer(self, session_id: str) -> None:
         try:
             while True:
                 await asyncio.sleep(self._tick_interval_seconds)
+                await self.run_once(session_id)
                 if self._runtime is None:
                     return
-                await self._runtime.handle_agent_signal(
-                    AgentSignal(
-                        signal_id=f"active-chat-tick:{session_id}",
-                        kind=AgentSignalKind.ACTIVE_CHAT_TICK,
-                        source=AgentSignalSource.TIMER,
-                        session_id=session_id,
-                        occurred_at=time.time(),
-                        bot_id=self._bot_id,
-                        timer=AgentTimerSignal(
-                            trigger=AgentSignalKind.ACTIVE_CHAT_TICK.value,
-                        ),
-                    )
-                )
-                scheduler = self._runtime.agent_profile_for_bot(
-                    self._bot_id
-                ).agent_scheduler
+                scheduler = self._runtime.agent_profile_for_bot(self._bot_id).agent_scheduler
                 if scheduler.state_for(session_id) != AgentState.ACTIVE_CHAT:
                     return
         except asyncio.CancelledError:

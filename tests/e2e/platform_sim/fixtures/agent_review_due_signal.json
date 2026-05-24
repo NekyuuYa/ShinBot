@@ -64,7 +64,7 @@
   ],
   "actions": [
     {
-      "type": "agentReviewDue",
+      "type": "agentReviewDueTimerRunOnce",
       "sessionId": "sim-main:group:group-1",
       "now": 1900.0
     }

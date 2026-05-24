@@ -77,7 +77,7 @@
       "now": 1910.0
     },
     {
-      "type": "agentActiveChatTick",
+      "type": "agentActiveChatTimerRunOnce",
       "sessionId": "sim-main:group:group-1",
       "now": 1915.0
     }

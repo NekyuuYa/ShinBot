@@ -236,6 +236,59 @@ async def test_active_chat_timer_service_dispatches_tick_signal() -> None:
     assert timer.active_sessions() == []
 
 
+@pytest.mark.asyncio
+async def test_active_chat_timer_service_drives_scheduler_idle_transition() -> None:
+    now = 10.0
+    dispatcher = RecordingWorkflowDispatcher()
+    dispatcher.idle_review_plans.append(
+        ReviewPlan(
+            session_id="bot:group:room",
+            next_review_at=123.0,
+            reason="timer_service_settled",
+            updated_at=65.0,
+        )
+    )
+    timer = ActiveChatTimerService()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        active_chat_policy=DefaultActiveChatPolicy(
+            ActiveChatPolicyConfig(
+                initial_interest_value=10.0,
+                idle_interest_threshold=5.0,
+                decay_half_life_seconds=5.0,
+            )
+        ),
+        active_chat_timer=timer,
+        now=lambda: now,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+    scheduler.complete_review("bot:group:room", enter_active_chat=True, now=60.0)
+    now = 70.0
+
+    class Profile:
+        agent_scheduler = scheduler
+
+    class Runtime:
+        async def handle_agent_signal(self, signal: AgentSignal) -> None:
+            await scheduler.accept_signal(signal)
+
+        def agent_profile_for_bot(self, _bot_id: str) -> Profile:
+            return Profile()
+
+    timer.bind_agent_runtime(Runtime(), bot_id="bot-a")
+
+    await timer.run_once("bot:group:room")
+
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert scheduler.active_chat_state_for("bot:group:room") is None
+    assert scheduler.review_plan_for("bot:group:room").reason == "timer_service_settled"
+    assert dispatcher.idle_review_plan_calls == ["bot:group:room"]
+    assert dispatcher.active_chat_stops == ["bot:group:room"]
+
+
 def test_scheduler_tick_active_chat_skips_when_state_is_not_active_chat() -> None:
     scheduler = AgentScheduler(
         response_profile_resolver=lambda _signal: "balanced",

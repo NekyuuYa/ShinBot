@@ -374,6 +374,39 @@ async def test_review_due_timer_dispatches_due_idle_review() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_due_timer_service_drives_scheduler_review_state() -> None:
+    now = 10.0
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: now,
+    )
+    await scheduler.accept_signal(make_signal())
+    now = 52.0
+
+    class Profile:
+        agent_scheduler = scheduler
+
+    class Runtime:
+        async def handle_agent_signal(self, signal: AgentSignal) -> None:
+            await scheduler.accept_signal(signal)
+
+        def agent_profile_for_bot(self, _bot_id: str) -> Profile:
+            return Profile()
+
+    timer = ReviewDueTimerService()
+    timer.bind_agent_runtime(Runtime(), bot_id="bot-a")
+
+    await timer.run_once()
+
+    assert scheduler.state_for("bot:group:room") == AgentState.REVIEW
+    assert [call["session_id"] for call in dispatcher.review_calls] == ["bot:group:room"]
+    assert dispatcher.review_calls[0]["review_plan"].next_review_at == 52.0
+
+
+@pytest.mark.asyncio
 async def test_scheduler_completes_active_reply_to_idle_when_review_is_not_requested() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(

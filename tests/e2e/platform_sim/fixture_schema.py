@@ -90,12 +90,20 @@ class _ScenarioValidator:
     ACTION_KEYS = {
         "activeChatDecayHalfLifeSeconds",
         "activeChatInitialInterest",
+        "batchLimit",
+        "botId",
         "enterActiveChat",
         "now",
         "sessionId",
         "type",
     }
-    ACTION_TYPES = {"agentReviewDue", "agentCompleteReview", "agentActiveChatTick"}
+    ACTION_TYPES = {
+        "agentActiveChatTick",
+        "agentActiveChatTimerRunOnce",
+        "agentCompleteReview",
+        "agentReviewDue",
+        "agentReviewDueTimerRunOnce",
+    }
     MEDIA_ASSET_KEYS = {"name", "color", "repeat", "subType"}
     EVENT_BUS_HANDLER_KEYS = {"eventType"}
     MODEL_RUNTIME_KEYS = {"debugPlugin", "fakeCompletion", "models", "providers"}
@@ -439,6 +447,12 @@ class _ScenarioValidator:
                 item,
                 item_path,
                 "activeChatDecayHalfLifeSeconds",
+            )
+            self._require_optional_int(item, item_path, "batchLimit")
+            self._require_optional_string(
+                item.get("botId"),
+                f"{item_path}.botId",
+                "botId" in item,
             )
 
     def _validate_media_assets(self, value: Any, path: str) -> None:

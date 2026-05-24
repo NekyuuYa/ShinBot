@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from shinbot.agent.scheduler import AgentScheduler
+from shinbot.agent.scheduler import (
+    ActiveChatTimerService,
+    AgentScheduler,
+    ReviewDueTimerService,
+)
 from shinbot.agent.services.model_runtime import ModelRuntimeCall
 from shinbot.agent.services.media import MediaIngressHook, MediaInspectionRunner, MediaService
 from shinbot.agent.services.prompt_engine import PromptRegistry
@@ -73,6 +77,7 @@ class SimulatedPlatformAdapter(BaseAdapter):
         self.notice_events: list[str] = []
         self.agent_entry_signals: list[AgentSignal] = []
         self.agent_scheduler: AgentScheduler | None = None
+        self.agent_scheduler_now: float | None = None
         self.agent_signal_handler: Callable[[AgentSignal], Awaitable[None] | None] | None = None
 
     async def start(self) -> None:
@@ -391,12 +396,14 @@ def register_agent_scheduler_probe(
 ) -> None:
     if not config:
         return
-    now = float(config.get("now", time.time()))
+    adapter.agent_scheduler_now = float(config.get("now", time.time()))
     scheduler = AgentScheduler(
         response_profile_resolver=lambda _signal: str(config.get("responseProfile", "")),
         inbox=bot.database.agent_scheduler,
         state_store=bot.database.agent_scheduler,
-        now=lambda: now,
+        now=lambda: adapter.agent_scheduler_now
+        if adapter.agent_scheduler_now is not None
+        else time.time(),
     )
     adapter.agent_scheduler = scheduler
 
@@ -422,6 +429,9 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
             now=float(action.get("now", time.time())),
         )
         return
+    if action_type == "agentReviewDueTimerRunOnce":
+        await _run_review_due_timer_once(action, adapter)
+        return
     if action_type == "agentCompleteReview":
         scheduler = adapter.agent_scheduler
         if scheduler is None:
@@ -446,7 +456,66 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
             now=float(action.get("now", time.time())),
         )
         return
+    if action_type == "agentActiveChatTimerRunOnce":
+        await _run_active_chat_timer_once(action, adapter)
+        return
     raise ValueError(f"unsupported scenario action type: {action_type!r}")
+
+
+async def _run_review_due_timer_once(
+    action: dict[str, Any],
+    adapter: SimulatedPlatformAdapter,
+) -> None:
+    scheduler = adapter.agent_scheduler
+    if scheduler is None or adapter.agent_signal_handler is None:
+        raise RuntimeError("agentReviewDueTimerRunOnce action requires agentSchedulerProbe")
+    adapter.agent_scheduler_now = float(action.get("now", time.time()))
+    timer = ReviewDueTimerService(batch_limit=int(action.get("batchLimit", 50)))
+    timer.bind_agent_runtime(
+        _ProbeAgentRuntime(adapter),
+        bot_id=str(action.get("botId", "")),
+    )
+    await timer.run_once()
+
+
+async def _run_active_chat_timer_once(
+    action: dict[str, Any],
+    adapter: SimulatedPlatformAdapter,
+) -> None:
+    if adapter.agent_scheduler is None or adapter.agent_signal_handler is None:
+        raise RuntimeError("agentActiveChatTimerRunOnce action requires agentSchedulerProbe")
+    now = float(action.get("now", time.time()))
+    adapter.agent_scheduler_now = now
+    timer = ActiveChatTimerService()
+    timer.bind_agent_runtime(
+        _ProbeAgentRuntime(adapter),
+        bot_id=str(action.get("botId", "")),
+    )
+    with patch("shinbot.agent.scheduler.active_chat_timer.time.time", return_value=now):
+        await timer.run_once(str(action["sessionId"]))
+
+
+class _ProbeAgentRuntime:
+    def __init__(self, adapter: SimulatedPlatformAdapter) -> None:
+        self._adapter = adapter
+
+    async def handle_agent_signal(self, signal: AgentSignal) -> None:
+        handler = self._adapter.agent_signal_handler
+        if handler is None:
+            raise RuntimeError("timer action requires agentSchedulerProbe")
+        result = handler(signal)
+        if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+            await result
+
+    def agent_profile_for_bot(self, _bot_id: str) -> "_ProbeAgentRuntime":
+        return self
+
+    @property
+    def agent_scheduler(self) -> AgentScheduler:
+        scheduler = self._adapter.agent_scheduler
+        if scheduler is None:
+            raise RuntimeError("timer action requires agentSchedulerProbe")
+        return scheduler
 
 
 async def _emit_agent_signal(
