@@ -48,6 +48,7 @@ from shinbot.agent.scheduler.models import ActiveChatBootstrapApplyDecision
 from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy
 from shinbot.agent.services.context import ContextManager
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
+from shinbot.agent.services.context.prompt_registration import register_context_prompt_components
 from shinbot.agent.services.context.review_context_builder import ReviewContextBuilderAdapter
 from shinbot.agent.services.identity import (
     IdentityStore,
@@ -537,6 +538,10 @@ class AgentRuntime:
         register_identity_prompt_components(
             registry,
             identity_store=self.identity_store,
+            prompt_file_config=prompt_file_config,
+        )
+        register_context_prompt_components(
+            registry,
             prompt_file_config=prompt_file_config,
         )
         register_runtime_prompt_components(

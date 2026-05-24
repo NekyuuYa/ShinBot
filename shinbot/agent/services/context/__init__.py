@@ -38,6 +38,7 @@ from shinbot.agent.services.context.projectors.projection import (
     make_record_key,
     projection_to_context_block,
 )
+from shinbot.agent.services.context.prompt_registration import register_context_prompt_components
 from shinbot.agent.services.context.runtime.alias_runtime import ContextAliasRuntime
 from shinbot.agent.services.context.runtime.context_stage_runtime import ContextStageRuntime
 from shinbot.agent.services.context.runtime.control_signals import CacheReleaseSignal
@@ -109,6 +110,7 @@ __all__ = [
     "ShortTermMemoryState",
     "StableRingIdAllocator",
     "TimelineRun",
+    "register_context_prompt_components",
     "block_content_blocks",
     "block_text_parts",
     "block_to_prompt_message",
