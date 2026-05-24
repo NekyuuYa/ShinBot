@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from shinbot.agent.services.context.builders.message_parts import parse_message_parts
-from shinbot.agent.services.context.state.alias_table import SessionAliasTable
-from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
 from shinbot.agent.services.context.projectors.headings import (
     ACTIVE_ALIAS_HEADING,
     INACTIVE_ALIAS_HEADING,
 )
+from shinbot.agent.services.context.state.alias_table import SessionAliasTable
+from shinbot.agent.services.context.state.state_store import ContextBlockState, ContextSessionState
 
 
 @dataclass(slots=True)

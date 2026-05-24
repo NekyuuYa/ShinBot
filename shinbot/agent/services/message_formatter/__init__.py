@@ -151,7 +151,12 @@ class MessageFormatterService:
                     continue
                 raw_hash = str(part.image.raw_hash or "").strip()
                 if raw_hash:
-                    _collect_media_semantic(raw_hash, descriptions, self._media_service)
+                    _collect_media_semantic(
+                        raw_hash,
+                        strict_dhash=str(part.image.strict_dhash or "").strip(),
+                        descriptions=descriptions,
+                        media_service=self._media_service,
+                    )
 
             content_json = str(record.get("content_json", "") or "").strip()
             if not content_json:
@@ -178,7 +183,18 @@ def _collect_image_hashes(
         if item.get("type") == "img" and attrs.get("src"):
             src = str(attrs.get("src", "") or "").strip()
             if src:
-                _collect_media_semantic(src, descriptions, media_service)
+                from shinbot.agent.services.media.fingerprint import fingerprint_image_file
+
+                fingerprint = fingerprint_image_file(src)
+                if fingerprint is None:
+                    _collect_media_semantic(src, "", descriptions, media_service)
+                else:
+                    _collect_media_semantic(
+                        fingerprint.raw_hash,
+                        fingerprint.strict_dhash,
+                        descriptions,
+                        media_service,
+                    )
         children = item.get("children")
         if isinstance(children, list):
             _collect_image_hashes(children, descriptions, media_service)
@@ -186,13 +202,14 @@ def _collect_image_hashes(
 
 def _collect_media_semantic(
     raw_hash: str,
+    strict_dhash: str,
     descriptions: dict[str, str],
     media_service: Any,
 ) -> None:
     if not raw_hash or raw_hash in descriptions:
         return
     try:
-        semantics = media_service.get_media_semantic(raw_hash)
+        semantics = media_service.get_media_semantic(raw_hash, strict_dhash=strict_dhash)
         if semantics and semantics.get("digest"):
             descriptions[raw_hash] = str(semantics["digest"])
     except Exception:

@@ -15,8 +15,16 @@ from shinbot.agent.services.media.config import (
     ResolvedMediaInspectionConfig,
     resolve_media_inspection_config,
 )
-from shinbot.agent.services.media.fingerprint import MediaFingerprint, fingerprint_image_file
-from shinbot.persistence.records import MediaAssetRecord, SessionMediaOccurrenceRecord
+from shinbot.agent.services.media.fingerprint import (
+    MediaFingerprint,
+    fingerprint_image_file,
+    hamming_distance,
+)
+from shinbot.persistence.records import (
+    MediaAssetRecord,
+    MediaSemanticRecord,
+    SessionMediaOccurrenceRecord,
+)
 from shinbot.schema.elements import MessageElement
 
 if TYPE_CHECKING:
@@ -70,6 +78,10 @@ class MediaService:
             if fingerprint is None:
                 continue
             linked_raw_hashes.append(fingerprint.raw_hash)
+            existing_asset = self._database.media_assets.get(fingerprint.raw_hash)
+            existing_metadata = (
+                dict(existing_asset.get("metadata", {})) if existing_asset is not None else {}
+            )
 
             self._database.media_assets.upsert(
                 MediaAssetRecord(
@@ -81,7 +93,7 @@ class MediaService:
                     strict_dhash=fingerprint.strict_dhash,
                     width=fingerprint.width,
                     height=fingerprint.height,
-                    metadata={},
+                    metadata=existing_metadata,
                     first_seen_at=observed_at,
                     last_seen_at=observed_at,
                     expire_at=observed_at + RAW_MEDIA_TTL_SECONDS,
@@ -108,7 +120,21 @@ class MediaService:
                 known_kind = str(semantics.get("kind") or "")
                 known_digest = str(semantics.get("digest") or "")
 
+            matched_semantics = semantics
+            if matched_semantics is None:
+                matched_semantics = self._match_media_semantics(fingerprint)
+                if matched_semantics is not None:
+                    known_kind = str(matched_semantics.get("kind") or "")
+                    known_digest = str(matched_semantics.get("digest") or "")
+                    self._attach_matched_semantics(
+                        raw_hash=fingerprint.raw_hash,
+                        strict_dhash=fingerprint.strict_dhash,
+                        matched=matched_semantics,
+                        observed_at=observed_at,
+                    )
             already_verified = bool(semantics and semantics.get("verified_by_model"))
+            if matched_semantics is not None:
+                already_verified = bool(matched_semantics.get("verified_by_model"))
             if is_custom_emoji:
                 should_request_inspection = not already_verified
             else:
@@ -237,14 +263,21 @@ class MediaService:
     def get_media_semantic(
         self,
         raw_hash: str,
+        *,
+        strict_dhash: str = "",
     ) -> dict[str, object] | None:
         normalized = raw_hash.strip()
         if not normalized:
             return None
         semantics = self._database.media_semantics.get(normalized)
-        if semantics is None:
-            return None
-        return semantics
+        if semantics is not None:
+            return semantics
+        if strict_dhash.strip():
+            exact = self._database.media_semantics.get_by_strict_dhash(strict_dhash)
+            if exact is not None:
+                return exact
+        matched = self._match_media_semantics_by_strict_dhash(strict_dhash)
+        return matched
 
     def get_message_image_data_urls(
         self,
@@ -338,6 +371,66 @@ class MediaService:
                 return [str(link["raw_hash"]) for link in links]
 
         return self._extract_raw_hashes_from_record(record)
+
+    def _match_media_semantics(self, fingerprint: MediaFingerprint) -> dict[str, object] | None:
+        semantics = self.get_media_semantic(
+            fingerprint.raw_hash,
+            strict_dhash=fingerprint.strict_dhash,
+        )
+        if semantics is not None:
+            return semantics
+        return None
+
+    def _attach_matched_semantics(
+        self,
+        *,
+        raw_hash: str,
+        strict_dhash: str,
+        matched: dict[str, object],
+        observed_at: float,
+    ) -> None:
+        metadata = dict(matched.get("metadata") or {})
+        metadata.setdefault("matched_from_raw_hash", str(matched.get("raw_hash") or ""))
+        self._database.media_semantics.upsert(
+            MediaSemanticRecord(
+                raw_hash=raw_hash,
+                strict_dhash=strict_dhash,
+                kind=str(matched.get("kind") or ""),
+                digest=str(matched.get("digest") or ""),
+                verified_by_model=bool(matched.get("verified_by_model")),
+                inspection_agent_ref=str(matched.get("inspection_agent_ref") or ""),
+                inspection_llm_ref=str(matched.get("inspection_llm_ref") or ""),
+                metadata=metadata,
+                first_seen_at=observed_at,
+                last_seen_at=observed_at,
+                expire_at=float(matched.get("expire_at") or observed_at + SEMANTIC_TTL_SECONDS),
+            )
+        )
+
+    def _match_media_semantics_by_strict_dhash(
+        self,
+        strict_dhash: str,
+    ) -> dict[str, object] | None:
+        normalized = strict_dhash.strip()
+        if not normalized:
+            return None
+        exact = self._database.media_semantics.get_by_strict_dhash(normalized)
+        if exact is not None:
+            return exact
+        candidates = self._database.media_semantics.list_recent(limit=200)
+        best_match: dict[str, object] | None = None
+        best_distance = 999
+        for candidate in candidates:
+            candidate_hash = str(candidate.get("strict_dhash") or "")
+            if not candidate_hash or len(candidate_hash) != len(normalized):
+                continue
+            distance = hamming_distance(normalized, candidate_hash)
+            if distance < best_distance:
+                best_distance = distance
+                best_match = candidate
+        if best_match is not None and best_distance <= 6:
+            return best_match
+        return None
 
     def _extract_raw_hashes_from_record(
         self,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.services.media.prompt_building import (
@@ -124,10 +123,7 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 
 __all__ = [
-    "MEDIA_INSPECTION_INSTRUCTION_COMPONENT_ID",
     "MEDIA_PROMPT_RESOLVER",
-    "MEDIA_REANALYSIS_INSTRUCTION_COMPONENT_ID",
-    "STICKER_SUMMARY_INSTRUCTION_COMPONENT_ID",
     "register_media_instruction_components",
     "resolve_media_instruction",
 ]

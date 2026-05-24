@@ -515,7 +515,10 @@ class ContextStageBuilder:
                 image_kind = "custom_emoji" if part.image.is_custom_emoji else "image"
                 summary_text = ""
                 if self._media_service is not None and part.image.raw_hash:
-                    semantics = self._media_service.get_media_semantic(part.image.raw_hash)
+                    semantics = self._media_service.get_media_semantic(
+                        part.image.raw_hash,
+                        strict_dhash=part.image.strict_dhash,
+                    )
                     if semantics is not None:
                         image_kind = str(semantics.get("kind") or image_kind).strip() or image_kind
                         summary_text = str(semantics.get("digest") or "").strip()

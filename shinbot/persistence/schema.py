@@ -457,6 +457,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS media_semantics (
         raw_hash TEXT PRIMARY KEY,
+        strict_dhash TEXT NOT NULL DEFAULT '',
         kind TEXT NOT NULL DEFAULT '',
         digest TEXT NOT NULL DEFAULT '',
         verified_by_model INTEGER NOT NULL DEFAULT 0,
@@ -471,6 +472,10 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_media_semantics_expire_at
     ON media_semantics(expire_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_media_semantics_strict_dhash
+    ON media_semantics(strict_dhash)
     """,
 )
 
@@ -628,6 +633,19 @@ def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_media_semantics_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "media_semantics")
+    if not columns:
+        return
+    if "strict_dhash" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE media_semantics
+            ADD COLUMN strict_dhash TEXT NOT NULL DEFAULT ''
+            """
+        )
+
+
 def apply_schema(conn: sqlite3.Connection) -> None:
     """Create all persistence tables if they do not exist yet."""
     for statement in SCHEMA_STATEMENTS:
@@ -644,3 +662,4 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_agent_scheduler_schema(conn)
     _migrate_agent_unread_ranges(conn)
     _migrate_workflow_runs_schema(conn)
+    _migrate_media_semantics_schema(conn)

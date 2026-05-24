@@ -31,10 +31,16 @@ class MediaAssetRepository(Repository):
         payload = asdict(record)
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT first_seen_at FROM media_assets WHERE raw_hash = ?",
+                "SELECT first_seen_at, metadata_json FROM media_assets WHERE raw_hash = ?",
                 (payload["raw_hash"],),
             ).fetchone()
             first_seen_at = row["first_seen_at"] if row is not None else payload["first_seen_at"]
+            metadata = dict(payload["metadata"])
+            if row is not None:
+                metadata = {
+                    **self.json_loads(row["metadata_json"], {}),
+                    **metadata,
+                }
             conn.execute(
                 """
                 INSERT INTO media_assets (
@@ -63,11 +69,22 @@ class MediaAssetRepository(Repository):
                     payload["strict_dhash"],
                     payload["width"],
                     payload["height"],
-                    self.json_dumps(payload["metadata"]),
+                    self.json_dumps(metadata),
                     first_seen_at,
                     payload["last_seen_at"],
                     payload["expire_at"],
                 ),
+            )
+
+    def update_metadata(self, raw_hash: str, metadata: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE media_assets
+                SET metadata_json = ?
+                WHERE raw_hash = ?
+                """,
+                (self.json_dumps(metadata), raw_hash),
             )
 
     def list_expired(self, now: float) -> list[dict[str, Any]]:
@@ -251,6 +268,17 @@ class MediaSemanticRepository(Repository):
             ).fetchone()
         return self._row_to_payload(row) if row is not None else None
 
+    def get_by_strict_dhash(self, strict_dhash: str) -> dict[str, Any] | None:
+        normalized = strict_dhash.strip()
+        if not normalized:
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM media_semantics WHERE strict_dhash = ? LIMIT 1",
+                (normalized,),
+            ).fetchone()
+        return self._row_to_payload(row) if row is not None else None
+
     def upsert(self, record: MediaSemanticRecord) -> None:
         payload = asdict(record)
         with self.connect() as conn:
@@ -262,11 +290,11 @@ class MediaSemanticRepository(Repository):
             conn.execute(
                 """
                 INSERT INTO media_semantics (
-                    raw_hash, kind, digest, verified_by_model, inspection_agent_ref,
-                    inspection_llm_ref, metadata_json, first_seen_at, last_seen_at,
-                    expire_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    raw_hash, strict_dhash, kind, digest, verified_by_model, inspection_agent_ref,
+                    inspection_llm_ref, metadata_json, first_seen_at, last_seen_at, expire_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(raw_hash) DO UPDATE SET
+                    strict_dhash = excluded.strict_dhash,
                     kind = excluded.kind,
                     digest = excluded.digest,
                     verified_by_model = excluded.verified_by_model,
@@ -278,6 +306,7 @@ class MediaSemanticRepository(Repository):
                 """,
                 (
                     payload["raw_hash"],
+                    payload["strict_dhash"],
                     payload["kind"],
                     payload["digest"],
                     1 if payload["verified_by_model"] else 0,
@@ -308,6 +337,18 @@ class MediaSemanticRepository(Repository):
                 (now,),
             )
             return int(cursor.rowcount or 0)
+
+    def list_recent(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM media_semantics
+                ORDER BY last_seen_at DESC, raw_hash DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_payload(row) for row in rows]
 
     def _row_to_payload(self, row: Any) -> dict[str, Any]:
         return self.row_to_dict(

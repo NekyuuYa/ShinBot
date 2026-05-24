@@ -6,12 +6,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from shinbot.agent.services.context.projectors.projection import block_text_parts
 from shinbot.agent.services.context.projectors.headings import (
     COMPRESSED_MEMORY_ALIAS_HEADING,
     COMPRESSED_MEMORY_HEADING,
     COMPRESSED_MEMORY_SOURCE_HEADING,
 )
+from shinbot.agent.services.context.projectors.projection import block_text_parts
 from shinbot.agent.services.context.state.alias_table import SessionAliasTable
 from shinbot.agent.services.context.state.state_store import (
     CompressedMemoryState,

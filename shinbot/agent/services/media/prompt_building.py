@@ -127,7 +127,6 @@ def _build_media_prompt_messages(
         prompt_registry=prompt_registry,
         component_id=builtin_prompt_id,
     )
-    image_block = {"type": "image_url", "image_url": {"url": build_media_data_url(asset)}}
     result = prompt_registry.build_messages(
         PromptBuildRequest(
             caller=caller,

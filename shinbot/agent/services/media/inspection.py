@@ -13,9 +13,6 @@ from shinbot.agent.services.media.parsing import (
     clip_media_digest,
     parse_media_inspection_payload,
 )
-from shinbot.agent.services.prompt_engine.dynamic_components import (
-    media_instruction_component_id,
-)
 from shinbot.agent.services.media.prompt_building import (
     build_media_inspection_messages,
     build_media_reanalysis_messages,
@@ -28,6 +25,9 @@ from shinbot.agent.services.media.service import (
 )
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntime, ModelRuntimeCall
 from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.services.prompt_engine.dynamic_components import (
+    media_instruction_component_id,
+)
 from shinbot.agent.services.prompt_engine.runtime_sync import build_runtime_component_ids
 from shinbot.persistence.engine import DatabaseManager
 from shinbot.persistence.records import MediaSemanticRecord
@@ -212,6 +212,7 @@ class MediaInspectionRunner:
         digest = clip_media_digest(str(payload.get("digest") or ""))
         semantics_record = MediaSemanticRecord(
             raw_hash=raw_hash,
+            strict_dhash=str(asset.get("strict_dhash") or ""),
             kind=str(payload.get("kind") or ""),
             digest=digest,
             verified_by_model=True,

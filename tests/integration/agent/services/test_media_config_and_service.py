@@ -5,6 +5,7 @@ from media_support import (
     BUILTIN_MEDIA_INSPECTION_LLM_REF,
     BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
     DatabaseManager,
+    MediaSemanticRecord,
     MediaService,
     Message,
     MessageElement,
@@ -245,6 +246,60 @@ def test_media_service_ignores_native_emoji_elements(tmp_path):
     with db.connect() as conn:
         asset_count = conn.execute("SELECT COUNT(*) AS cnt FROM media_assets").fetchone()["cnt"]
     assert asset_count == 0
+
+
+def test_media_service_reuses_semantics_by_strict_dhash(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    service = MediaService(db)
+
+    source_path = _write_png(tmp_path / "assets" / "source.png", color=(20, 30, 40))
+    mirror_path = _write_png(tmp_path / "assets" / "mirror.png", color=(20, 30, 40))
+    mirror_bytes = mirror_path.read_bytes() + b"mirror"
+    mirror_path.write_bytes(mirror_bytes)
+
+    source = Message.from_elements(MessageElement.img(str(source_path)))
+    mirror = Message.from_elements(MessageElement.img(str(mirror_path)))
+
+    source_items = service.ingest_message_media(
+        session_id="inst:group:match",
+        sender_id="user-1",
+        platform_msg_id="match-1",
+        elements=source.elements,
+        seen_at=1_000.0,
+    )
+    db.media_semantics.upsert(
+        MediaSemanticRecord(
+            raw_hash=source_items[0].raw_hash,
+            strict_dhash=source_items[0].strict_dhash,
+            kind="meme_image",
+            digest="相同表情",
+            verified_by_model=True,
+            inspection_agent_ref="builtin.media_inspection.agent",
+            inspection_llm_ref="builtin.media_inspection.default",
+            metadata={},
+            first_seen_at=1_000.0,
+            last_seen_at=1_000.0,
+            expire_at=1_000.0 + 180 * 24 * 60 * 60,
+        )
+    )
+
+    mirror_items = service.ingest_message_media(
+        session_id="inst:group:match",
+        sender_id="user-2",
+        platform_msg_id="match-2",
+        elements=mirror.elements,
+        seen_at=1_010.0,
+    )
+
+    semantic = service.get_media_semantic(
+        mirror_items[0].raw_hash,
+        strict_dhash=mirror_items[0].strict_dhash,
+    )
+
+    assert mirror_items[0].should_request_inspection is False
+    assert semantic is not None
+    assert semantic["digest"] == "相同表情"
 
 
 def test_media_service_persists_message_links_and_resolves_by_message_log_id(tmp_path):

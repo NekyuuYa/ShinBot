@@ -213,6 +213,7 @@ class SessionMediaOccurrenceRecord:
 @dataclass(slots=True)
 class MediaSemanticRecord:
     raw_hash: str
+    strict_dhash: str = ""
     kind: str = ""
     digest: str = ""
     verified_by_model: bool = False

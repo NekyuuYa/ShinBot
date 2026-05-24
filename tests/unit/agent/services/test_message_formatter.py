@@ -288,8 +288,9 @@ def test_service_resolves_media_semantics_by_fingerprint(monkeypatch, tmp_path) 
         storage_path = str(img_file)
 
     class FakeMediaService:
-        def get_media_semantic(self, raw_hash: str) -> dict | None:
+        def get_media_semantic(self, raw_hash: str, strict_dhash: str = "") -> dict | None:
             assert raw_hash == "raw-semantic"
+            assert strict_dhash == "dhash"
             return {"digest": "a semantic image"}
 
     import shinbot.agent.services.media.fingerprint as fp_mod
