@@ -93,6 +93,13 @@
       "purpose": "Separate bot bindings keep command prefixes and agent entry signals isolated."
     },
     {
+      "name": "bot_binding_group_private_isolation",
+      "path": "fixtures/bot_binding_group_private_isolation.json",
+      "area": "bot-config",
+      "tags": ["config", "routing", "agent", "command", "session"],
+      "purpose": "A bot bound to group and private sessions keeps routing, replies, and histories isolated."
+    },
+    {
       "name": "command_reply",
       "path": "fixtures/command_reply.json",
       "area": "command-runtime",

@@ -1,0 +1,231 @@
+{
+  "name": "bot_binding_group_private_isolation",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentEntryProbe": {
+    "enabled": true
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [
+      {
+        "id": "e2e.platform_sim"
+      }
+    ],
+    "bots": [
+      {
+        "id": "hybrid",
+        "display_name": "Hybrid Bot",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["!"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["e2e.platform_sim"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "hybrid-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          },
+          {
+            "id": "hybrid-private",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["private:user-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "name": "ping",
+      "reply": "echo: {args}"
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "group-msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Hybrid Group"
+      },
+      "sender": {
+        "id": "user-2",
+        "name": "Bob"
+      },
+      "content": "group-only plain",
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "private-msg-1",
+      "session": {
+        "type": "private",
+        "channelId": "dm-user-1"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "private-only plain",
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "group-msg-2",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Hybrid Group"
+      },
+      "sender": {
+        "id": "user-2",
+        "name": "Bob"
+      },
+      "content": "!ping group",
+      "expectSentCount": 1
+    },
+    {
+      "type": "message",
+      "id": "private-msg-2",
+      "session": {
+        "type": "private",
+        "channelId": "dm-user-1"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "!ping private",
+      "expectSentCount": 2
+    }
+  ],
+  "expect": {
+    "agentEntrySignals": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "botId": "hybrid",
+        "botBindingId": "hybrid-group",
+        "botSessionId": "hybrid:group:group-1",
+        "eventType": "message-created",
+        "senderId": "user-2",
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": false,
+        "isMentioned": false,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
+        "messageLogId": true
+      },
+      {
+        "sessionId": "sim-main:private:user-1",
+        "botId": "hybrid",
+        "botBindingId": "hybrid-private",
+        "botSessionId": "hybrid:private:user-1",
+        "eventType": "message-created",
+        "senderId": "user-1",
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": true,
+        "isMentioned": false,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
+        "messageLogId": true
+      }
+    ],
+    "sent": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "messageId": "sim-out-1",
+        "text": "echo: group",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "echo: group"
+            }
+          }
+        ]
+      },
+      {
+        "sessionId": "sim-main:private:user-1",
+        "messageId": "sim-out-2",
+        "text": "echo: private",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "echo: private"
+            }
+          }
+        ]
+      }
+    ],
+    "sessions": [
+      {
+        "id": "sim-main:group:group-1",
+        "type": "group",
+        "displayName": "Hybrid Group"
+      },
+      {
+        "id": "sim-main:private:user-1",
+        "type": "private"
+      }
+    ],
+    "messageLogsBySession": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "countExact": 3,
+        "roles": ["user", "user", "assistant"],
+        "senderIds": ["user-2", "user-2", "bot-self"],
+        "senderNames": ["Bob", "Bob", ""],
+        "platformMsgIds": ["group-msg-1", "group-msg-2", "sim-out-1"],
+        "isRead": [false, false, true],
+        "rawTexts": ["group-only plain", "!ping group", "echo: group"],
+        "rawTextNotContains": ["private-only plain", "!ping private", "echo: private"],
+        "routingStatuses": ["dispatched", "dispatched", "pending"],
+        "routingSkipReasons": [null, null, null]
+      },
+      {
+        "sessionId": "sim-main:private:user-1",
+        "countExact": 3,
+        "roles": ["user", "user", "assistant"],
+        "senderIds": ["user-1", "user-1", "bot-self"],
+        "senderNames": ["Alice", "Alice", ""],
+        "platformMsgIds": ["private-msg-1", "private-msg-2", "sim-out-2"],
+        "isRead": [false, false, true],
+        "rawTexts": ["private-only plain", "!ping private", "echo: private"],
+        "rawTextNotContains": ["group-only plain", "!ping group", "echo: group"],
+        "routingStatuses": ["dispatched", "dispatched", "pending"],
+        "routingSkipReasons": [null, null, null]
+      }
+    ]
+  }
+}

@@ -1005,6 +1005,11 @@ def assert_message_logs(bot: ShinBot, expected: dict[str, Any]) -> None:
     if raw_text_contains is not None:
         for index, needle in enumerate(raw_text_contains):
             assert needle in rows[index]["raw_text"]
+    raw_text_not_contains = expected.get("rawTextNotContains")
+    if raw_text_not_contains is not None:
+        raw_text_values = [str(row["raw_text"] or "") for row in rows]
+        for needle in raw_text_not_contains:
+            assert all(str(needle) not in value for value in raw_text_values)
     content_elements = expected.get("contentElements")
     if content_elements is not None:
         assert [

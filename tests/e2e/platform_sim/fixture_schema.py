@@ -185,6 +185,7 @@ class _ScenarioValidator:
         "limit",
         "platformMsgIds",
         "rawTextContains",
+        "rawTextNotContains",
         "rawTexts",
         "roles",
         "routingSkipReasons",
