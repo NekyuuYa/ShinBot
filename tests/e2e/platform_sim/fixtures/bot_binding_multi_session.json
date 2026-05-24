@@ -1,0 +1,246 @@
+{
+  "name": "bot_binding_multi_session",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentEntryProbe": {
+    "enabled": true
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [
+      {
+        "id": "e2e.platform_sim"
+      }
+    ],
+    "bots": [
+      {
+        "id": "alpha",
+        "display_name": "Alpha",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["!"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["e2e.platform_sim"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "alpha-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          }
+        ]
+      },
+      {
+        "id": "beta",
+        "display_name": "Beta",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["?"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["e2e.platform_sim"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "beta-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-2"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "name": "ping",
+      "reply": "pong: {args}"
+    }
+  ],
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Alpha Room"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "alpha plain",
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "msg-2",
+      "session": {
+        "type": "group",
+        "channelId": "group-2",
+        "channelName": "Beta Room"
+      },
+      "sender": {
+        "id": "user-2",
+        "name": "Bob"
+      },
+      "content": "beta plain",
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "msg-3",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Alpha Room"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "!ping alpha",
+      "expectSentCount": 1
+    },
+    {
+      "type": "message",
+      "id": "msg-4",
+      "session": {
+        "type": "group",
+        "channelId": "group-2",
+        "channelName": "Beta Room"
+      },
+      "sender": {
+        "id": "user-2",
+        "name": "Bob"
+      },
+      "content": "?ping beta",
+      "expectSentCount": 2
+    }
+  ],
+  "expect": {
+    "agentEntrySignals": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "botId": "alpha",
+        "botBindingId": "alpha-group",
+        "botSessionId": "alpha:group:group-1",
+        "eventType": "message-created",
+        "senderId": "user-1",
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": false,
+        "isMentioned": false,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
+        "messageLogId": true
+      },
+      {
+        "sessionId": "sim-main:group:group-2",
+        "botId": "beta",
+        "botBindingId": "beta-group",
+        "botSessionId": "beta:group:group-2",
+        "eventType": "message-created",
+        "senderId": "user-2",
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": false,
+        "isMentioned": false,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
+        "messageLogId": true
+      }
+    ],
+    "sent": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "messageId": "sim-out-1",
+        "text": "pong: alpha",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "pong: alpha"
+            }
+          }
+        ]
+      },
+      {
+        "sessionId": "sim-main:group:group-2",
+        "messageId": "sim-out-2",
+        "text": "pong: beta",
+        "elements": [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "pong: beta"
+            }
+          }
+        ]
+      }
+    ],
+    "sessions": [
+      {
+        "id": "sim-main:group:group-1",
+        "type": "group",
+        "displayName": "Alpha Room"
+      },
+      {
+        "id": "sim-main:group:group-2",
+        "type": "group",
+        "displayName": "Beta Room"
+      }
+    ],
+    "messageLogsBySession": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "countExact": 3,
+        "roles": ["user", "user", "assistant"],
+        "senderIds": ["user-1", "user-1", "bot-self"],
+        "senderNames": ["Alice", "Alice", ""],
+        "rawTexts": ["alpha plain", "!ping alpha", "pong: alpha"],
+        "routingStatuses": ["dispatched", "dispatched", "pending"],
+        "routingSkipReasons": [null, null, null]
+      },
+      {
+        "sessionId": "sim-main:group:group-2",
+        "countExact": 3,
+        "roles": ["user", "user", "assistant"],
+        "senderIds": ["user-2", "user-2", "bot-self"],
+        "senderNames": ["Bob", "Bob", ""],
+        "rawTexts": ["beta plain", "?ping beta", "pong: beta"],
+        "routingStatuses": ["dispatched", "dispatched", "pending"],
+        "routingSkipReasons": [null, null, null]
+      }
+    ]
+  }
+}

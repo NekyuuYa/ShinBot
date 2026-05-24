@@ -86,6 +86,13 @@
       "purpose": "Bot bindings and command prefixes gate command dispatch."
     },
     {
+      "name": "bot_binding_multi_session",
+      "path": "fixtures/bot_binding_multi_session.json",
+      "area": "bot-config",
+      "tags": ["config", "routing", "agent", "command"],
+      "purpose": "Separate bot bindings keep command prefixes and agent entry signals isolated."
+    },
+    {
       "name": "command_reply",
       "path": "fixtures/command_reply.json",
       "area": "command-runtime",
