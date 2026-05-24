@@ -23,7 +23,6 @@ from shinbot.agent.services.media import (
     register_media_tools,
     resolve_media_inspection_config,
 )
-from shinbot.agent.services.media.config import BUILTIN_MEDIA_INSPECTION_PROMPT_ID
 from shinbot.agent.services.media.prompt_building import build_media_reanalysis_messages
 from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.agent.services.tools import ToolCallRequest, ToolManager, ToolRegistry

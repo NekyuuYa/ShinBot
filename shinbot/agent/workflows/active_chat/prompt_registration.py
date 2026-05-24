@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.services.prompt_engine.dynamic_components import (
+    ACTIVE_CHAT_FAST_MODE_BATCH_COMPONENT_ID,
+)
 from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, register_prompt_files
 from shinbot.agent.services.prompt_engine.schema import (
     PromptComponent,
     PromptComponentKind,
     PromptStage,
-)
-from shinbot.agent.services.prompt_engine.dynamic_components import (
-    ACTIVE_CHAT_FAST_MODE_BATCH_COMPONENT_ID,
 )
 
 if TYPE_CHECKING:

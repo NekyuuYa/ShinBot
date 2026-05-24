@@ -8,8 +8,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from inspect import isawaitable
-from typing import Any
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.coordinators.active_chat.actions import (
     ActiveChatInterestEffectConfig,

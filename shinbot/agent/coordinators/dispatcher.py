@@ -6,14 +6,14 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.coordinators.review.models import (
     ReviewWorkflowConfig,
     build_review_workflow_explanation,
 )
-from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.scheduler.models import (
-    ActiveReplyThreshold,
     ActiveChatState,
+    ActiveReplyThreshold,
     HighPriorityEvent,
     MentionSensitivity,
     ReviewPlan,

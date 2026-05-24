@@ -57,17 +57,17 @@ from shinbot.agent.scheduler.models import (
     UnreadMessage,
     UnreadRange,
 )
-from shinbot.agent.signals import (
-    AgentActiveChatBootstrapSignal,
-    AgentSignal,
-    AgentSignalKind,
-    AgentSignalSource,
-)
 from shinbot.agent.services.context.review_context_builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
     ReviewContextBuildOptions,
     ReviewStageInput,
+)
+from shinbot.agent.signals import (
+    AgentActiveChatBootstrapSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
 )
 
 if False:
@@ -179,8 +179,8 @@ class ReviewCoordinator:
         bootstrap_runner: ActiveChatBootstrapStageRunner | None = None,
         bootstrap_signal_handler: ReviewBootstrapSignalHandler | None = None,
         bot_id: str = "",
-        bootstrap_task_scope: "AgentTaskScope | None" = None,
-        block_digest_task_scope: "AgentTaskScope | None" = None,
+        bootstrap_task_scope: AgentTaskScope | None = None,
+        block_digest_task_scope: AgentTaskScope | None = None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self._config = config or ReviewWorkflowConfig()

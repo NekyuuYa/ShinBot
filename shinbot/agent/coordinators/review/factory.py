@@ -43,6 +43,9 @@ from shinbot.agent.runners.review_scan import (
     ReviewScanStageRunner,
     register_review_scan_prompt_components,
 )
+from shinbot.agent.runners.templates.review_instruction import (
+    register_review_stage_instruction_components,
+)
 from shinbot.agent.runtime.instance_config import (
     InstanceRuntimeConfigResolver,
     RuntimeModelTarget,
@@ -50,9 +53,6 @@ from shinbot.agent.runtime.instance_config import (
 from shinbot.agent.runtime.tool_config import StageToolConfig, stage_tool_config_from_mapping
 from shinbot.agent.services.message_formatter import MessageFormatConfig
 from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptStage
-from shinbot.agent.runners.templates.review_instruction import (
-    register_review_stage_instruction_components,
-)
 
 
 @dataclass(slots=True, frozen=True)

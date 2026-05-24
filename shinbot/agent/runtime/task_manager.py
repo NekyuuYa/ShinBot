@@ -105,7 +105,7 @@ class AgentTaskManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def scope(self, namespace: str) -> "AgentTaskScope":
+    def scope(self, namespace: str) -> AgentTaskScope:
         """Create a namespaced task scope."""
 
         return AgentTaskScope(self, namespace)

@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from shinbot.agent.runtime.task_manager import AgentTaskManager
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
     AgentScheduler,
     ReviewDueTimerService,
 )
-from shinbot.agent.services.model_runtime import ModelRuntimeCall
 from shinbot.agent.services.media import MediaIngressHook, MediaInspectionRunner, MediaService
+from shinbot.agent.services.model_runtime import ModelRuntimeCall
 from shinbot.agent.services.prompt_engine import PromptRegistry
-from shinbot.agent.runtime.task_manager import AgentTaskManager
 from shinbot.agent.signals import (
     AgentSignal,
     AgentSignalKind,
@@ -507,7 +507,7 @@ class _ProbeAgentRuntime:
         if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
             await result
 
-    def agent_profile_for_bot(self, _bot_id: str) -> "_ProbeAgentRuntime":
+    def agent_profile_for_bot(self, _bot_id: str) -> _ProbeAgentRuntime:
         return self
 
     @property

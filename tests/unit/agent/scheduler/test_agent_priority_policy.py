@@ -6,7 +6,12 @@ from shinbot.agent.scheduler import (
     InMemoryAgentInbox,
     PriorityPolicyConfig,
 )
-from shinbot.agent.signals import AgentMessageSignal, AgentSignal, AgentSignalKind, AgentSignalSource
+from shinbot.agent.signals import (
+    AgentMessageSignal,
+    AgentSignal,
+    AgentSignalKind,
+    AgentSignalSource,
+)
 
 
 def make_signal(

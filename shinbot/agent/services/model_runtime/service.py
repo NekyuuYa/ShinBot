@@ -15,8 +15,8 @@ from typing import Any, TypeVar
 
 from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecutionRecord
 
-from .audit_store import ModelAuditPayloadStore, sanitize_payload_for_audit
 from . import litellm_adapter
+from .audit_store import ModelAuditPayloadStore, sanitize_payload_for_audit
 from .extraction import (
     extract_embedding,
     extract_estimated_cost,

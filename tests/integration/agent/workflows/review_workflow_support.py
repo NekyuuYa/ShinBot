@@ -22,6 +22,7 @@ from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
 from shinbot.agent.runners.review_block_digest import LLMReviewBlockDigestStageRunner
 from shinbot.agent.runners.review_bootstrap import LLMActiveChatBootstrapStageRunner
 from shinbot.agent.runners.review_compression import LLMOverflowCompressionStageRunner
+from shinbot.agent.runners.review_idle_planning import LLMIdleReviewPlanningStageRunner
 from shinbot.agent.runners.review_models import (
     ActiveChatBootstrapStageOutput,
     IdleReviewPlanningStageOutput,
@@ -30,7 +31,6 @@ from shinbot.agent.runners.review_models import (
     ReviewBlockDigestStageOutput,
     ReviewScanStageOutput,
 )
-from shinbot.agent.runners.review_idle_planning import LLMIdleReviewPlanningStageRunner
 from shinbot.agent.runners.review_reply import LLMReplyDecisionStageRunner
 from shinbot.agent.runners.review_scan import LLMReviewScanStageRunner
 from shinbot.agent.runtime.review_stores import (
@@ -61,15 +61,15 @@ from shinbot.agent.services.prompt_engine import (
     PromptRegistry,
     PromptStage,
 )
-from shinbot.agent.utils.parsing import parse_json_object
-from shinbot.agent.workflows.active_chat.prompt_registration import (
-    register_active_chat_prompt_components,
-)
 from shinbot.agent.signals import (
     AgentMessageSignal,
     AgentSignal,
     AgentSignalKind,
     AgentSignalSource,
+)
+from shinbot.agent.utils.parsing import parse_json_object
+from shinbot.agent.workflows.active_chat.prompt_registration import (
+    register_active_chat_prompt_components,
 )
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
