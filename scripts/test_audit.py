@@ -297,7 +297,10 @@ def main(argv: list[str] | None = None) -> int:
             errors.append(f"{rel}: parse error: {audit.parse_error}")
             continue
         if test_rel.parent == Path("."):
-            errors.append(f"{rel}: test files must live under tests/unit, tests/api, or tests/integration")
+            errors.append(
+                f"{rel}: test files must live under tests/unit, tests/api, "
+                "tests/integration, or tests/e2e"
+            )
         if not audit.tests:
             errors.append(f"{rel}: no test functions or classes discovered")
         if len(audit.explicit_layers) > 1:

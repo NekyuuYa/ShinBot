@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "name": "agent_active_chat_tick_idle",
+      "path": "fixtures/agent_active_chat_tick_idle.json",
+      "area": "agent-scheduler",
+      "tags": ["agent", "scheduler", "active-chat", "timer"],
+      "purpose": "Active-chat timer signal decays a session back to idle."
+    },
+    {
+      "name": "agent_entry_signal",
+      "path": "fixtures/agent_entry_signal.json",
+      "area": "agent-routing",
+      "tags": ["agent", "routing", "signal"],
+      "purpose": "A bound group message reaches the unified Agent entry signal."
+    },
+    {
+      "name": "agent_mention_other_signal",
+      "path": "fixtures/agent_mention_other_signal.json",
+      "area": "agent-routing",
+      "tags": ["agent", "routing", "mention"],
+      "purpose": "Mentioning another user is preserved on the Agent entry signal."
+    },
+    {
+      "name": "agent_poke_to_bot_signal",
+      "path": "fixtures/agent_poke_to_bot_signal.json",
+      "area": "agent-routing",
+      "tags": ["agent", "routing", "poke"],
+      "purpose": "Poke events targeting the bot are surfaced on Agent entry."
+    },
+    {
+      "name": "agent_private_entry_signal",
+      "path": "fixtures/agent_private_entry_signal.json",
+      "area": "agent-routing",
+      "tags": ["agent", "routing", "private"],
+      "purpose": "Private-session bindings create Agent entry signals."
+    },
+    {
+      "name": "agent_reply_to_bot_signal",
+      "path": "fixtures/agent_reply_to_bot_signal.json",
+      "area": "agent-routing",
+      "tags": ["agent", "routing", "reply"],
+      "purpose": "Replies to bot messages are detected for Agent routing."
+    },
+    {
+      "name": "agent_review_complete_active_chat",
+      "path": "fixtures/agent_review_complete_active_chat.json",
+      "area": "agent-scheduler",
+      "tags": ["agent", "scheduler", "review", "active-chat"],
+      "purpose": "Completing a review can enter active-chat state."
+    },
+    {
+      "name": "agent_review_complete_idle",
+      "path": "fixtures/agent_review_complete_idle.json",
+      "area": "agent-scheduler",
+      "tags": ["agent", "scheduler", "review", "idle"],
+      "purpose": "Completing a review can return the session to idle."
+    },
+    {
+      "name": "agent_review_due_signal",
+      "path": "fixtures/agent_review_due_signal.json",
+      "area": "agent-scheduler",
+      "tags": ["agent", "scheduler", "review", "timer"],
+      "purpose": "A review-due timer signal moves a known session into review."
+    },
+    {
+      "name": "agent_scheduler_signal",
+      "path": "fixtures/agent_scheduler_signal.json",
+      "area": "agent-scheduler",
+      "tags": ["agent", "scheduler", "mention"],
+      "purpose": "AgentScheduler consumes the same entry signal path as routing."
+    },
+    {
+      "name": "api_call_command",
+      "path": "fixtures/api_call_command.json",
+      "area": "command-runtime",
+      "tags": ["command", "adapter-api"],
+      "purpose": "A command can call the adapter API and persist the reply."
+    },
+    {
+      "name": "bot_binding_prefix",
+      "path": "fixtures/bot_binding_prefix.json",
+      "area": "bot-config",
+      "tags": ["config", "routing", "command"],
+      "purpose": "Bot bindings and command prefixes gate command dispatch."
+    },
+    {
+      "name": "command_reply",
+      "path": "fixtures/command_reply.json",
+      "area": "command-runtime",
+      "tags": ["command", "routing", "message-log"],
+      "purpose": "A basic command emits a reply and records message logs."
+    },
+    {
+      "name": "expired_message",
+      "path": "fixtures/expired_message.json",
+      "area": "routing",
+      "tags": ["routing", "message-log", "expiry"],
+      "purpose": "Expired inbound messages are persisted but skipped."
+    },
+    {
+      "name": "guild_member_added",
+      "path": "fixtures/guild_member_added.json",
+      "area": "event-bus",
+      "tags": ["notice", "event-bus", "message-log"],
+      "purpose": "Notice events are logged and delivered through the event bus."
+    },
+    {
+      "name": "model_runtime_audit",
+      "path": "fixtures/model_runtime_audit.json",
+      "area": "model-runtime",
+      "tags": ["model-runtime", "audit", "command"],
+      "purpose": "A command model call records runtime audit and debug log data."
+    },
+    {
+      "name": "muted_session",
+      "path": "fixtures/muted_session.json",
+      "area": "routing",
+      "tags": ["routing", "session", "message-log"],
+      "purpose": "Muted sessions persist inbound messages and skip dispatch."
+    },
+    {
+      "name": "wait_for_input",
+      "path": "fixtures/wait_for_input.json",
+      "area": "command-runtime",
+      "tags": ["command", "interaction", "message-log"],
+      "purpose": "A prompt command waits for the next user message."
+    }
+  ]
+}

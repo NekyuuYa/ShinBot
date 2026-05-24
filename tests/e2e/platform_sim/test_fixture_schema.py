@@ -7,6 +7,11 @@ from tests.e2e.platform_sim.fixture_schema import (
     validate_scenario,
 )
 from tests.e2e.platform_sim.harness import load_scenario
+from tests.e2e.platform_sim.scenarios import (
+    discover_fixture_paths,
+    fixture_paths_from_manifest,
+    load_scenario_entries,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -37,6 +42,14 @@ def _minimal_scenario() -> dict:
 )
 def test_platform_sim_fixtures_match_schema(scenario_path: Path) -> None:
     load_scenario(scenario_path)
+
+
+def test_platform_sim_manifest_covers_every_fixture() -> None:
+    entries = load_scenario_entries()
+    manifest_paths = fixture_paths_from_manifest()
+
+    assert entries
+    assert manifest_paths == discover_fixture_paths()
 
 
 def test_fixture_schema_rejects_unknown_top_level_key() -> None:

@@ -54,6 +54,8 @@ uv run pytest -m unit
 uv run pytest -m api
 uv run pytest -m "integration and not slow"
 uv run pytest -m e2e
+uv run pytest -m e2e --e2e-tag agent
+uv run pytest -m e2e --e2e-scenario "agent_review_*"
 uv run python scripts/test_audit.py
 ```
 
