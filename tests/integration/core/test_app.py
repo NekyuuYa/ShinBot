@@ -323,6 +323,24 @@ class TestLifecycle:
         assert adapter.started is True
 
     @pytest.mark.asyncio
+    async def test_start_starts_agent_background_tasks(self):
+        bot = ShinBot(data_dir=None)
+        calls = []
+
+        class Runtime:
+            def start_background_tasks(self):
+                calls.append("started")
+
+            async def shutdown(self):
+                return None
+
+        bot.mount_agent_runtime(Runtime())
+
+        await bot.start()
+
+        assert calls == ["started"]
+
+    @pytest.mark.asyncio
     async def test_shutdown_stops_adapters(self):
         bot = ShinBot()
         bot.adapter_manager.register_adapter("mock", MockAdapter)

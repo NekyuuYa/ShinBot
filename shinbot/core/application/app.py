@@ -231,6 +231,10 @@ class ShinBot:
     async def start(self) -> None:
         """Start all adapter instances."""
         logger.info("ShinBot starting...")
+        if self.agent_runtime is not None:
+            start_background_tasks = getattr(self.agent_runtime, "start_background_tasks", None)
+            if start_background_tasks is not None:
+                start_background_tasks()
         await self.adapter_manager.start_all()
         logger.info("ShinBot started with %d adapters", len(self.adapter_manager.all_instances))
 
