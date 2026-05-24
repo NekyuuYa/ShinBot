@@ -7,12 +7,16 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from shinbot.agent.scheduler import AgentScheduler
 from shinbot.agent.services.model_runtime import ModelRuntimeCall
+from shinbot.agent.services.media import MediaIngressHook, MediaInspectionRunner, MediaService
+from shinbot.agent.services.prompt_engine import PromptRegistry
+from shinbot.agent.runtime.task_manager import AgentTaskManager
 from shinbot.agent.signals import (
     AgentSignal,
     AgentSignalKind,
@@ -26,7 +30,13 @@ from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.runtime.model import install_model_runtime
 from shinbot.core.state.session import Session
-from shinbot.persistence import ModelDefinitionRecord, ModelProviderRecord
+from shinbot.persistence import (
+    InstanceConfigRecord,
+    ModelDefinitionRecord,
+    ModelProviderRecord,
+    ModelRouteMemberRecord,
+    ModelRouteRecord,
+)
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
@@ -125,9 +135,14 @@ async def run_platform_scenario(
     *,
     data_dir: Path,
 ) -> tuple[ShinBot, SimulatedPlatformAdapter]:
+    materialize_media_assets(scenario, data_dir=data_dir)
     bot = ShinBot(data_dir=data_dir)
     bot.adapter_manager.register_adapter("sim", SimulatedPlatformAdapter)
+    if scenario.get("mediaAssets") and bot.model_runtime is None:
+        install_model_runtime(bot)
     adapter_config = scenario.get("adapter", {})
+    if scenario.get("mediaAssets"):
+        _seed_media_runtime(bot, str(adapter_config.get("instanceId", "sim-main")))
     adapter = bot.add_adapter(
         adapter_config.get("instanceId", "sim-main"),
         adapter_config.get("platform", "sim"),
@@ -151,6 +166,20 @@ async def run_platform_scenario(
     if scenario.get("debugPlugin") or model_runtime.get("debugPlugin"):
         await load_debug_model_plugin(bot)
         debug_model_plugin_loaded = True
+    media_task_manager: AgentTaskManager | None = None
+    if scenario.get("mediaAssets"):
+        if bot.database is None or bot.model_runtime is None:
+            raise RuntimeError("mediaAssets scenarios require database and model runtime")
+        media_service = MediaService(bot.database)
+        media_runner = MediaInspectionRunner(
+            bot.database,
+            PromptRegistry(),
+            bot.model_runtime,
+            media_service,
+        )
+        media_task_manager = AgentTaskManager()
+        media_runner.bind_task_scope(media_task_manager.scope("e2e:media_inspection"))
+        bot.message_ingress.add_pre_route_hook(MediaIngressHook(media_service, media_runner))
     fake_completion = model_runtime.get("fakeCompletion") or scenario.get("fakeCompletion")
     await bot.start()
     try:
@@ -163,10 +192,14 @@ async def run_platform_scenario(
                     step_expect if step_expect is not None else scenario.get("expect", {}),
                     expected_sent_count=step.get("expectSentCount"),
                 )
+                if media_task_manager is not None:
+                    await drain_task_manager(media_task_manager, prefix="e2e:media_inspection")
                 if step_expect is not None:
                     await assert_scenario_expectations(bot, adapter, step_expect)
             for action in scenario.get("actions", []):
                 await run_scenario_action(action, adapter)
+                if media_task_manager is not None:
+                    await drain_task_manager(media_task_manager, prefix="e2e:media_inspection")
         await assert_scenario_expectations(bot, adapter, scenario.get("expect", {}))
     finally:
         if debug_model_plugin_loaded:
@@ -200,6 +233,141 @@ def configure_sessions(bot: ShinBot, sessions: list[dict[str, Any]]) -> None:
         if "prefixes" in config:
             session.config.prefixes = [str(prefix) for prefix in config["prefixes"]]
         bot.session_manager.update(session)
+
+
+def _seed_media_runtime(bot: ShinBot, instance_id: str) -> None:
+    assert bot.database is not None
+    provider_id = "e2e-media-provider"
+    model_id = "e2e-media-provider/gpt-vision"
+    route_id = "route.media.inspect"
+    bot.database.model_registry.upsert_provider(
+        ModelProviderRecord(
+            id=provider_id,
+            type="openai",
+            display_name="E2E Media",
+            base_url="https://api.openai.com/v1",
+            auth={"api_key": "secret-key"},
+        )
+    )
+    bot.database.model_registry.upsert_model(
+        ModelDefinitionRecord(
+            id=model_id,
+            provider_id=provider_id,
+            litellm_model="openai/gpt-4.1-mini",
+            display_name="E2E Media Vision",
+            capabilities=["chat"],
+            context_window=64000,
+        )
+    )
+    bot.database.model_registry.upsert_route(
+        ModelRouteRecord(id=route_id, purpose="media_inspection", strategy="priority"),
+        members=[
+            ModelRouteMemberRecord(
+                route_id=route_id,
+                model_id=model_id,
+                priority=10,
+                weight=1.0,
+            )
+        ],
+    )
+    bot.database.instance_configs.upsert(
+        InstanceConfigRecord(
+            uuid=instance_id,
+            instance_id=instance_id,
+            main_llm=route_id,
+            config={
+                "media_inspection_llm": route_id,
+                "media_inspection_prompt": "builtin.prompt.media_inspection",
+            },
+        )
+    )
+
+
+def materialize_media_assets(scenario: dict[str, Any], *, data_dir: Path) -> None:
+    assets = scenario.get("mediaAssets") or []
+    if not assets:
+        return
+    asset_dir = data_dir / "e2e-media"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    asset_paths: dict[str, str] = {}
+    for index, asset in enumerate(assets):
+        name = str(asset.get("name", f"asset-{index}"))
+        path = asset_dir / f"{index:02d}-{name}.png"
+        color = tuple(int(value) for value in asset.get("color", [255, 0, 0])[:3])
+        repeat = int(asset.get("repeat", 1))
+        _write_png_asset(path, color=color, repeat=repeat)
+        asset_path = str(path.resolve())
+        asset["path"] = asset_path
+        try:
+            from shinbot.agent.services.media.fingerprint import fingerprint_image_file
+
+            fingerprint = fingerprint_image_file(asset_path)
+            if fingerprint is not None:
+                asset["rawHash"] = fingerprint.raw_hash
+                asset["strictDhash"] = fingerprint.strict_dhash
+                asset_paths[f"media.{name}.rawHash"] = fingerprint.raw_hash
+                asset_paths[f"media.{name}.strictDhash"] = fingerprint.strict_dhash
+        except Exception:
+            pass
+        asset_paths[f"media.{name}"] = asset_path
+    _replace_media_asset_refs(scenario, asset_paths)
+
+
+def _write_png_asset(path: Path, *, color: tuple[int, int, int], repeat: int) -> None:
+    repeat = max(repeat, 1)
+    from PIL import Image
+
+    image = Image.new("RGB", (8, 8), color)
+    if repeat > 1:
+        canvas = Image.new("RGB", (8 * repeat, 8), color)
+        for offset in range(repeat):
+            canvas.paste(image, (offset * 8, 0))
+        canvas.save(path)
+        return
+    image.save(path)
+
+
+def _replace_media_asset_refs(value: Any, asset_paths: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            value[key] = _replace_media_asset_refs(item, asset_paths)
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(list(value)):
+            value[index] = _replace_media_asset_refs(item, asset_paths)
+        return value
+    if isinstance(value, str):
+        match = re.fullmatch(r"\$\{([^}]+)\}", value.strip())
+        if match:
+            token = match.group(1)
+            if token in asset_paths:
+                return asset_paths[token]
+            parts = token.split(".")
+            if len(parts) >= 3 and parts[0] == "media":
+                asset_key = ".".join(parts[:2])
+                attr_key = parts[2]
+                asset_value = asset_paths.get(asset_key)
+                if asset_value is not None:
+                    asset_ref = asset_paths.get(f"{asset_key}.{attr_key}")
+                    if asset_ref is not None:
+                        return asset_ref
+            return asset_paths.get(token, value)
+    return value
+
+
+async def drain_task_manager(
+    task_manager: AgentTaskManager,
+    *,
+    prefix: str,
+    timeout: float = 1.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0)
+        if not task_manager.tasks(prefix=prefix):
+            await asyncio.sleep(0)
+            return
+    await asyncio.sleep(0)
 
 
 def register_agent_entry_probe(
@@ -674,6 +842,8 @@ async def assert_scenario_expectations(
         assert_agent_scheduler_state(bot, adapter, expect["agentScheduler"])
     if "modelRuntime" in expect:
         await assert_model_runtime_expectations(bot, expect["modelRuntime"])
+    if "mediaSemantics" in expect:
+        assert_media_semantics_expectations(bot, expect["mediaSemantics"])
 
 
 def assert_sent_messages(
@@ -903,6 +1073,24 @@ async def assert_model_runtime_expectations(bot: ShinBot, expected: dict[str, An
         assert record["prompt_snapshot_id"] == expected["promptSnapshotId"]
     if "debugModelLog" in expected:
         await assert_debug_model_log(bot, expected["debugModelLog"])
+
+
+def assert_media_semantics_expectations(bot: ShinBot, expected: list[dict[str, Any]]) -> None:
+    assert bot.database is not None
+    rows = bot.database.media_semantics.list_recent(limit=max(len(expected), 1))
+    assert len(rows) >= len(expected)
+    for index, item in enumerate(expected):
+        row = rows[index]
+        if "rawHash" in item:
+            assert row["raw_hash"] == item["rawHash"]
+        if "strictDhash" in item:
+            assert row["strict_dhash"] == item["strictDhash"]
+        if "digest" in item:
+            assert row["digest"] == item["digest"]
+        if "verifiedByModel" in item:
+            assert bool(row["verified_by_model"]) is bool(item["verifiedByModel"])
+        if "countExact" in item:
+            assert len(rows) == int(item["countExact"])
 
 
 async def assert_debug_model_log(bot: ShinBot, expected: dict[str, Any]) -> None:

@@ -27,6 +27,7 @@ class _ScenarioValidator:
         "config",
         "eventBusHandlers",
         "expect",
+        "mediaAssets",
         "modelRuntime",
         "name",
         "sessions",
@@ -95,6 +96,7 @@ class _ScenarioValidator:
         "type",
     }
     ACTION_TYPES = {"agentReviewDue", "agentCompleteReview", "agentActiveChatTick"}
+    MEDIA_ASSET_KEYS = {"name", "color", "repeat", "subType"}
     EVENT_BUS_HANDLER_KEYS = {"eventType"}
     MODEL_RUNTIME_KEYS = {"debugPlugin", "fakeCompletion", "models", "providers"}
     FAKE_COMPLETION_KEYS = {
@@ -146,6 +148,7 @@ class _ScenarioValidator:
         "agentEntrySignals",
         "agentScheduler",
         "apiCalls",
+        "mediaSemantics",
         "messageLogs",
         "messageLogsBySession",
         "modelRuntime",
@@ -230,6 +233,13 @@ class _ScenarioValidator:
         "providerId",
         "success",
     }
+    EXPECT_MEDIA_SEMANTICS_KEYS = {
+        "countExact",
+        "digest",
+        "rawHash",
+        "strictDhash",
+        "verifiedByModel",
+    }
     EXPECT_DEBUG_LOG_KEYS = {
         "lineCountAtLeast",
         "requestContains",
@@ -255,6 +265,8 @@ class _ScenarioValidator:
             self._validate_probe(scenario["agentSchedulerProbe"], "$.agentSchedulerProbe")
         if "config" in scenario:
             self._validate_config(scenario["config"], "$.config")
+        if "mediaAssets" in scenario:
+            self._validate_media_assets(scenario["mediaAssets"], "$.mediaAssets")
         if "sessions" in scenario:
             self._validate_session_inits(scenario["sessions"], "$.sessions")
         if "modelRuntime" in scenario:
@@ -428,6 +440,20 @@ class _ScenarioValidator:
                 item_path,
                 "activeChatDecayHalfLifeSeconds",
             )
+
+    def _validate_media_assets(self, value: Any, path: str) -> None:
+        for index, item in enumerate(self._require_list(value, path)):
+            item_path = f"{path}[{index}]"
+            self._require_object(item, item_path)
+            self._check_keys(item, item_path, self.MEDIA_ASSET_KEYS)
+            self._require_string(item.get("name"), f"{item_path}.name")
+            if "color" in item:
+                color = self._require_list(item["color"], f"{item_path}.color")
+                for color_index, channel in enumerate(color):
+                    if not self._is_int(channel):
+                        self._fail(f"{item_path}.color[{color_index}] must be an integer")
+            self._require_optional_int(item, item_path, "repeat")
+            self._require_optional_int(item, item_path, "subType")
 
     def _validate_model_runtime(self, value: Any, path: str) -> None:
         self._require_object(value, path)
@@ -606,6 +632,11 @@ class _ScenarioValidator:
             self._validate_agent_scheduler_expect(value["agentScheduler"], f"{path}.agentScheduler")
         if "modelRuntime" in value:
             self._validate_model_runtime_expect(value["modelRuntime"], f"{path}.modelRuntime")
+        if "mediaSemantics" in value:
+            for index, item in enumerate(
+                self._require_list(value["mediaSemantics"], f"{path}.mediaSemantics")
+            ):
+                self._validate_media_semantics_expect(item, f"{path}.mediaSemantics[{index}]")
 
     def _validate_expect_sent(self, value: Any, path: str) -> None:
         self._require_object(value, path)
@@ -743,6 +774,19 @@ class _ScenarioValidator:
             for field in ("requestContains", "responseContains"):
                 if field in debug_log:
                     self._require_object(debug_log[field], f"{debug_path}.{field}")
+
+    def _validate_media_semantics_expect(self, value: Any, path: str) -> None:
+        self._require_object(value, path)
+        self._check_keys(value, path, self.EXPECT_MEDIA_SEMANTICS_KEYS)
+        self._require_optional_string(value.get("rawHash"), f"{path}.rawHash", "rawHash" in value)
+        self._require_optional_string(
+            value.get("strictDhash"),
+            f"{path}.strictDhash",
+            "strictDhash" in value,
+        )
+        self._require_optional_string(value.get("digest"), f"{path}.digest", "digest" in value)
+        self._require_optional_bool(value, path, "verifiedByModel")
+        self._require_optional_int(value, path, "countExact")
 
     def _validate_elements(self, value: Any, path: str) -> None:
         elements = self._require_list(value, path)

@@ -1,0 +1,174 @@
+{
+  "name": "media_semantic_dedup_strict_dhash",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "mediaAssets": [
+    {
+      "name": "source",
+      "color": [24, 32, 40],
+      "repeat": 1
+    },
+    {
+      "name": "mirror",
+      "color": [24, 32, 40],
+      "repeat": 2
+    }
+  ],
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [],
+    "bots": []
+  },
+  "modelRuntime": {
+    "fakeCompletion": {
+      "text": "{\"kind\":\"meme_image\",\"digest\":\"同一张图的重复语义\",\"confidence_band\":\"high\",\"reason\":\"strict dhash matched\"}",
+      "inputTokens": 4,
+      "outputTokens": 2
+    },
+    "providers": [
+      {
+        "id": "stub-provider",
+        "type": "openai",
+        "displayName": "Stub Provider"
+      }
+    ],
+    "models": [
+      {
+        "id": "stub-provider/stub-model",
+        "providerId": "stub-provider",
+        "litellmModel": "stub/stub-model",
+        "displayName": "Stub Model",
+        "enabled": true
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Media Room"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "elements": [
+        {
+          "type": "img",
+          "attrs": {
+            "src": "${media.source}",
+            "sub_type": "0"
+          }
+        }
+      ],
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "msg-2",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Media Room"
+      },
+      "sender": {
+        "id": "user-2",
+        "name": "Bob"
+      },
+      "elements": [
+        {
+          "type": "img",
+          "attrs": {
+            "src": "${media.source}",
+            "sub_type": "0"
+          }
+        }
+      ],
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "msg-3",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Media Room"
+      },
+      "sender": {
+        "id": "user-3",
+        "name": "Carol"
+      },
+      "elements": [
+        {
+          "type": "img",
+          "attrs": {
+            "src": "${media.source}",
+            "sub_type": "0"
+          }
+        }
+      ],
+      "expectSentCount": 0
+    },
+    {
+      "type": "message",
+      "id": "msg-4",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Media Room"
+      },
+      "sender": {
+        "id": "user-4",
+        "name": "Dave"
+      },
+      "elements": [
+        {
+          "type": "img",
+          "attrs": {
+            "src": "${media.mirror}",
+            "sub_type": "0"
+          }
+        }
+      ],
+      "expectSentCount": 0
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "modelRuntime": {
+      "caller": "media.inspection_runner",
+      "countAtLeast": 1,
+      "success": true
+    },
+    "mediaSemantics": [
+      {
+        "rawHash": "${media.mirror.rawHash}",
+        "strictDhash": "${media.mirror.strictDhash}",
+        "verifiedByModel": true
+      },
+      {
+        "rawHash": "${media.source.rawHash}",
+        "strictDhash": "${media.source.strictDhash}",
+        "verifiedByModel": true
+      }
+    ],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 4,
+      "roles": ["user", "user", "user", "user"],
+      "senderIds": ["user-1", "user-2", "user-3", "user-4"],
+      "rawTextContains": ["", "", "", ""]
+    }
+  }
+}
