@@ -35,6 +35,9 @@ uv run --group dev python -m pytest tests/e2e/platform_sim
 accepts exact names or shell-style globs against the manifest name, fixture
 stem, or fixture filename.
 
+In GitHub Actions, run `Python CI` manually and set `e2e_scenario` or
+`e2e_tag` to pass the same filters to the platform simulation job.
+
 ## Adding A Scenario
 
 1. Add a declarative JSON fixture under `tests/e2e/platform_sim/fixtures/`.

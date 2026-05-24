@@ -2,6 +2,15 @@ name: Python CI
 
 on:
   workflow_dispatch:
+    inputs:
+      e2e_scenario:
+        description: "Optional platform-sim scenario name/glob, for example agent_review_*"
+        required: false
+        type: string
+      e2e_tag:
+        description: "Optional comma-separated platform-sim tags. All tags must match."
+        required: false
+        type: string
   pull_request:
     branches:
       - main
@@ -106,4 +115,15 @@ jobs:
         run: uv sync --group dev
 
       - name: Run platform simulation E2E
-        run: uv run --group dev python -m pytest -m e2e tests/e2e/platform_sim
+        env:
+          E2E_SCENARIO: ${{ inputs.e2e_scenario }}
+          E2E_TAG: ${{ inputs.e2e_tag }}
+        run: |
+          args=()
+          if [ -n "$E2E_SCENARIO" ]; then
+            args+=(--e2e-scenario "$E2E_SCENARIO")
+          fi
+          if [ -n "$E2E_TAG" ]; then
+            args+=(--e2e-tag "$E2E_TAG")
+          fi
+          uv run --group dev python -m pytest -m e2e tests/e2e/platform_sim "${args[@]}"
