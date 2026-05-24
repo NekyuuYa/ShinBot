@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 class AgentTaskManager:
@@ -88,6 +91,11 @@ class AgentTaskManager:
     def _finish(self, key: str, task: asyncio.Task[Any]) -> None:
         if self._tasks.get(key) is task:
             self._tasks.pop(key, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.exception("Agent background task failed: %s", key, exc_info=error)
 
     @staticmethod
     def _normalize_key(key: str | None) -> str:
