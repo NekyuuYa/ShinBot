@@ -13,6 +13,17 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True, frozen=True)
+class AgentTaskSnapshot:
+    """Read-only status for one Agent-owned background task."""
+
+    key: str
+    name: str
+    done: bool
+    cancelled: bool
+    error: str | None = None
+
+
 class AgentTaskManager:
     """Register and cancel named Agent background tasks."""
 
@@ -56,6 +67,17 @@ class AgentTaskManager:
             if (prefix is None or key.startswith(prefix)) and not task.done()
         ]
 
+    def snapshots(self, *, prefix: str | None = None) -> list[AgentTaskSnapshot]:
+        """Return read-only status for tracked tasks, optionally filtered by prefix."""
+
+        normalized_prefix = self._normalize_key(prefix) if prefix else None
+        result: list[AgentTaskSnapshot] = []
+        for key, task in sorted(self._tasks.items()):
+            if normalized_prefix is not None and not key.startswith(normalized_prefix):
+                continue
+            result.append(self._snapshot_task(key, task))
+        return result
+
     def cancel(self, key: str) -> None:
         """Cancel one named task."""
 
@@ -98,6 +120,21 @@ class AgentTaskManager:
             logger.exception("Agent background task failed: %s", key, exc_info=error)
 
     @staticmethod
+    def _snapshot_task(key: str, task: asyncio.Task[Any]) -> AgentTaskSnapshot:
+        error: str | None = None
+        if task.done() and not task.cancelled():
+            exception = task.exception()
+            if exception is not None:
+                error = f"{type(exception).__name__}: {exception}"
+        return AgentTaskSnapshot(
+            key=key,
+            name=task.get_name(),
+            done=task.done(),
+            cancelled=task.cancelled(),
+            error=error,
+        )
+
+    @staticmethod
     def _normalize_key(key: str | None) -> str:
         return str(key or "").strip()
 
@@ -136,6 +173,11 @@ class AgentTaskScope:
 
         return self.manager.tasks(prefix=self.key(prefix) if prefix else self.namespace)
 
+    def snapshots(self, *, prefix: str | None = None) -> list[AgentTaskSnapshot]:
+        """Return task snapshots in this namespace, optionally filtered by sub-prefix."""
+
+        return self.manager.snapshots(prefix=self.key(prefix) if prefix else self.namespace)
+
     def cancel(self, suffix: str) -> None:
         """Cancel one namespaced task."""
 
@@ -147,4 +189,4 @@ class AgentTaskScope:
         await self.manager.shutdown(prefix=self.namespace)
 
 
-__all__ = ["AgentTaskManager", "AgentTaskScope"]
+__all__ = ["AgentTaskManager", "AgentTaskScope", "AgentTaskSnapshot"]

@@ -39,3 +39,26 @@ async def test_task_manager_does_not_log_cancelled_background_task(caplog) -> No
 
     assert manager.task("agent:test:cancelled") is None
     assert "Agent background task failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_task_manager_snapshots_are_filtered_by_prefix() -> None:
+    manager = AgentTaskManager()
+
+    async def wait_forever() -> None:
+        await asyncio.Event().wait()
+
+    manager.create_task("agent:bot-a:review_due_timer:loop", wait_forever())
+    manager.create_task("agent:bot-b:review_due_timer:loop", wait_forever())
+
+    snapshots = manager.snapshots(prefix="agent:bot-a:")
+
+    assert [snapshot.key for snapshot in snapshots] == [
+        "agent:bot-a:review_due_timer:loop"
+    ]
+    assert snapshots[0].name == "agent:bot-a:review_due_timer:loop"
+    assert snapshots[0].done is False
+    assert snapshots[0].cancelled is False
+    assert snapshots[0].error is None
+
+    await manager.shutdown()

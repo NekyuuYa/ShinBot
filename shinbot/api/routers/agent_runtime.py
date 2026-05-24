@@ -25,6 +25,14 @@ class AgentRuntimeBinding(BaseModel):
     priority: int = 0
 
 
+class AgentRuntimeTask(BaseModel):
+    key: str = ""
+    name: str = ""
+    done: bool = False
+    cancelled: bool = False
+    error: str | None = None
+
+
 class AgentRuntimeSession(BaseModel):
     sessionId: str = ""
     state: str = ""
@@ -44,6 +52,7 @@ class AgentRuntimeProfile(BaseModel):
     agentMode: str = ""
     agentConfig: str = ""
     bindings: list[AgentRuntimeBinding] = Field(default_factory=list)
+    tasks: list[AgentRuntimeTask] = Field(default_factory=list)
     sessions: list[AgentRuntimeSession] = Field(default_factory=list)
 
 
@@ -163,6 +172,27 @@ def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
     return result
 
 
+def _task_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
+    agent_runtime = getattr(bot, "agent_runtime", None)
+    if agent_runtime is None:
+        return []
+    profile = agent_runtime.agent_profile_for_bot(bot_id)
+    task_manager = getattr(agent_runtime, "task_manager", None)
+    if task_manager is None:
+        return []
+    namespace = f"agent:{profile.bot_id or profile.profile_id}:"
+    return [
+        {
+            "key": snapshot.key,
+            "name": snapshot.name,
+            "done": snapshot.done,
+            "cancelled": snapshot.cancelled,
+            "error": snapshot.error,
+        }
+        for snapshot in task_manager.snapshots(prefix=namespace)
+    ]
+
+
 @router.get("")
 def get_agent_runtime_overview(bot=BotDep, boot=BootDep):
     profiles: list[AgentRuntimeProfile] = []
@@ -184,6 +214,7 @@ def get_agent_runtime_overview(bot=BotDep, boot=BootDep):
                 agentMode=bot_config.agent.mode,
                 agentConfig=bot_config.agent.config,
                 bindings=bindings,
+                tasks=_task_overview(bot, bot_config.id),
                 sessions=_session_overview(bot, bot_config.id),
             )
         )
