@@ -634,21 +634,42 @@ def _migrate_workflow_runs_schema(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_media_semantics_schema(conn: sqlite3.Connection) -> None:
-    columns = _table_columns(conn, "media_semantics")
-    if not columns:
-        return
-    if "strict_dhash" not in columns:
-        conn.execute(
-            """
-            ALTER TABLE media_semantics
-            ADD COLUMN strict_dhash TEXT NOT NULL DEFAULT ''
-            """
-        )
+    _add_column_if_missing(
+        conn,
+        "media_assets",
+        "strict_dhash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        conn,
+        "session_media_occurrences",
+        "strict_dhash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _add_column_if_missing(
+        conn,
+        "media_semantics",
+        "strict_dhash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_spec: str,
+) -> None:
+    columns = _table_columns(conn, table_name)
+    if columns and column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_spec}")
 
 
 def apply_schema(conn: sqlite3.Connection) -> None:
     """Create all persistence tables if they do not exist yet."""
     for statement in SCHEMA_STATEMENTS:
+        if "idx_media_semantics_strict_dhash" in statement:
+            _migrate_media_semantics_schema(conn)
         conn.execute(statement)
     _drop_legacy_model_registry_tables(conn)
     _drop_legacy_agents_table(conn)

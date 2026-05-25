@@ -121,6 +121,95 @@ class TestDatabaseManager:
         assert row["routed_at"] is None
         assert row["routing_skip_reason"] is None
 
+    def test_initialize_migrates_legacy_media_strict_dhash_before_index(self, tmp_path):
+        db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+        sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(sqlite_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE media_assets (
+                    raw_hash TEXT PRIMARY KEY,
+                    element_type TEXT NOT NULL DEFAULT 'img',
+                    storage_path TEXT NOT NULL DEFAULT '',
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    width INTEGER,
+                    height INTEGER,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    first_seen_at REAL NOT NULL,
+                    last_seen_at REAL NOT NULL,
+                    expire_at REAL NOT NULL
+                );
+                CREATE TABLE session_media_occurrences (
+                    session_id TEXT NOT NULL,
+                    raw_hash TEXT NOT NULL,
+                    last_sender_id TEXT NOT NULL DEFAULT '',
+                    last_platform_msg_id TEXT NOT NULL DEFAULT '',
+                    recent_timestamps_json TEXT NOT NULL DEFAULT '[]',
+                    occurrence_count INTEGER NOT NULL DEFAULT 0,
+                    first_seen_at REAL NOT NULL,
+                    last_seen_at REAL NOT NULL,
+                    expire_at REAL NOT NULL,
+                    PRIMARY KEY(session_id, raw_hash)
+                );
+                CREATE TABLE media_semantics (
+                    raw_hash TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL DEFAULT '',
+                    digest TEXT NOT NULL DEFAULT '',
+                    verified_by_model INTEGER NOT NULL DEFAULT 0,
+                    inspection_agent_ref TEXT NOT NULL DEFAULT '',
+                    inspection_llm_ref TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    first_seen_at REAL NOT NULL,
+                    last_seen_at REAL NOT NULL,
+                    expire_at REAL NOT NULL
+                );
+                INSERT INTO media_semantics (
+                    raw_hash, kind, digest, first_seen_at, last_seen_at, expire_at
+                ) VALUES ('raw-1', 'image', 'legacy digest', 1, 2, 3);
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db.initialize()
+
+        with db.connect() as conn:
+            media_asset_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(media_assets)").fetchall()
+            }
+            occurrence_columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(session_media_occurrences)"
+                ).fetchall()
+            }
+            semantic_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(media_semantics)").fetchall()
+            }
+            index_row = conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index' AND name = 'idx_media_semantics_strict_dhash'
+                """
+            ).fetchone()
+            row = conn.execute(
+                "SELECT raw_hash, strict_dhash, digest FROM media_semantics"
+            ).fetchone()
+
+        assert "strict_dhash" in media_asset_columns
+        assert "strict_dhash" in occurrence_columns
+        assert "strict_dhash" in semantic_columns
+        assert index_row is not None
+        assert row["raw_hash"] == "raw-1"
+        assert row["strict_dhash"] == ""
+        assert row["digest"] == "legacy digest"
+
     def test_initialize_drops_legacy_agents_table(self, tmp_path):
         sqlite_path = tmp_path / "db" / "shinbot.sqlite3"
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)

@@ -235,6 +235,69 @@ async def test_clean_boot_initializes_file_configs_without_config_tables(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_boot_migrates_legacy_media_schema_before_startup_indexes(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    data_dir = tmp_path / "data"
+    db_path = data_dir / "db" / "shinbot.sqlite3"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_config(config_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE media_semantics (
+                raw_hash TEXT PRIMARY KEY,
+                kind TEXT NOT NULL DEFAULT '',
+                digest TEXT NOT NULL DEFAULT '',
+                verified_by_model INTEGER NOT NULL DEFAULT 0,
+                inspection_agent_ref TEXT NOT NULL DEFAULT '',
+                inspection_llm_ref TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                first_seen_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                expire_at REAL NOT NULL
+            );
+            INSERT INTO media_semantics (
+                raw_hash, kind, digest, first_seen_at, last_seen_at, expire_at
+            ) VALUES ('raw-boot', 'image', 'boot legacy digest', 1, 2, 3);
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    boot = BootController(config_path=config_path, data_dir=data_dir)
+
+    try:
+        bot = await boot.boot()
+        assert boot.state == BootState.RUNNING
+        assert bot.database is not None
+        with bot.database.connect() as conn:
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(media_semantics)").fetchall()
+            }
+            row = conn.execute(
+                "SELECT raw_hash, strict_dhash, digest FROM media_semantics"
+            ).fetchone()
+            index_row = conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index' AND name = 'idx_media_semantics_strict_dhash'
+                """
+            ).fetchone()
+
+        assert "strict_dhash" in columns
+        assert row["raw_hash"] == "raw-boot"
+        assert row["strict_dhash"] == ""
+        assert row["digest"] == "boot legacy digest"
+        assert index_row is not None
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_api_creation_does_not_mount_model_runtime_without_runtime_config(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     _write_config(config_path)
