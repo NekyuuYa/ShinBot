@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -36,6 +37,38 @@ class _BootStub:
 def _auth_headers(app) -> dict[str, str]:
     token = app.state.auth_config.create_token()
     return {"Authorization": f"Bearer {token}"}
+
+
+def _insert_workflow_run(bot: ShinBot, *, session_id: str, response_summary: str, finish_reason: str) -> None:
+    assert bot.database is not None
+    with bot.database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO workflow_runs (
+                id, session_id, instance_id, response_profile,
+                batch_start_msg_id, batch_end_msg_id, batch_size,
+                trigger_attention, effective_threshold, tool_calls_json,
+                replied, response_summary, finish_reason, started_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "run-1",
+                session_id,
+                session_id.split(":", 1)[0],
+                "balanced",
+                1,
+                1,
+                1,
+                0.0,
+                0.0,
+                "[]",
+                0,
+                response_summary,
+                finish_reason,
+                time.time(),
+                time.time(),
+            ),
+        )
 
 
 def test_agent_runtime_overview_lists_persisted_scheduler_sessions(tmp_path: Path):
@@ -140,3 +173,54 @@ def test_agent_runtime_overview_does_not_filter_session_ids_by_bot_prefix(tmp_pa
     payload = response.json()["data"]
     assert payload[0]["sessions"][0]["sessionId"] == session_id
     assert payload[0]["sessions"][0]["state"] == "active_chat"
+
+
+def test_agent_runtime_overview_includes_latest_review_run(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "bot-main:group:room"
+    runtime.agent_profile_for_bot("bot-main").agent_scheduler._state_store.set_state(
+        session_id,
+        AgentState.REVIEW,
+    )
+    assert bot.database is not None
+    bot.database.sessions.upsert(
+        {
+            "id": session_id,
+            "instance_id": "bot-main",
+            "session_type": "group",
+            "platform": "sim",
+            "channel_id": "room",
+            "display_name": "Room",
+        }
+    )
+    _insert_workflow_run(
+        bot,
+        session_id=session_id,
+        response_summary="scan=selected; reply=no_reply; active_chat=observe",
+        finish_reason="active_chat_started",
+    )
+    boot = _BootStub(tmp_path)
+    boot.bot_service_configs = (
+        type(
+            "BotConfig",
+            (),
+            {
+                "id": "bot-main",
+                "display_name": "Bot Main",
+                "enabled": True,
+                "agent": type("AgentConfig", (), {"mode": "full", "config": ""})(),
+                "bindings": (),
+            },
+        )(),
+    )
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/agent-runtime", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    session = response.json()["data"][0]["sessions"][0]
+    assert session["latestReviewRun"]["sessionId"] == session_id
+    assert session["latestReviewRun"]["finishReason"] == "active_chat_started"
+    assert "scan=selected" in session["latestReviewRun"]["responseSummary"]
