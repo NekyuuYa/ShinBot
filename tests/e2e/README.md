@@ -50,3 +50,11 @@ In GitHub Actions, run `Python CI` manually and set `e2e_scenario` or
 
 Use this layer for full message-path behavior. Keep pure parser, policy,
 repository, and workflow edge cases in unit or integration tests.
+
+## Startup Smoke
+
+`tests/e2e/startup/` launches `main.py` in a subprocess with an isolated
+`--data-dir`, waits for the management API to serve `/api/openapi.json`, then
+shuts the process down. Use this lane for regressions that only appear through
+the real process entrypoint, boot controller, API app, and database migration
+sequence together.

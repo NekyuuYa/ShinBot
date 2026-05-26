@@ -19,6 +19,7 @@ logger = get_logger("shinbot.main", source="main", color="bright_cyan")
 
 async def _run(
     config_path: str,
+    data_dir: str,
     log_level: str,
     api_host: str,
     api_port: int,
@@ -27,7 +28,7 @@ async def _run(
     runtime_control = RuntimeControl()
     controller = BootController(
         config_path=config_path,
-        data_dir="data",
+        data_dir=data_dir,
         log_level=log_level,
     )
     await controller.boot()
@@ -94,6 +95,12 @@ def main() -> None:
         help="Path to the TOML config file (default: config.toml)",
     )
     parser.add_argument(
+        "--data-dir",
+        default="data",
+        metavar="DIR",
+        help="Path to the ShinBot data directory (default: data)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         metavar="LEVEL",
@@ -132,6 +139,7 @@ def main() -> None:
         exit_code = asyncio.run(
             _run(
                 args.config,
+                args.data_dir,
                 args.log_level,
                 args.api_host,
                 args.api_port,
