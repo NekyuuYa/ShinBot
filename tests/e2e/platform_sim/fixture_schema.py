@@ -21,6 +21,7 @@ class _ScenarioValidator:
     ROOT_KEYS = {
         "actions",
         "adapter",
+        "agentRuntime",
         "agentEntryProbe",
         "agentSchedulerProbe",
         "commands",
@@ -32,6 +33,12 @@ class _ScenarioValidator:
         "name",
         "sessions",
         "steps",
+    }
+    AGENT_RUNTIME_KEYS = {
+        "agentConfig",
+        "agentConfigsByBotId",
+        "enabled",
+        "waitForBootstraps",
     }
     ADAPTER_KEYS = {"instanceId", "platform", "selfId"}
     PROBE_KEYS = {"enabled", "now", "responseProfile"}
@@ -113,6 +120,7 @@ class _ScenarioValidator:
         "inputTokens",
         "outputTokens",
         "text",
+        "texts",
     }
     MODEL_PROVIDER_KEYS = {
         "auth",
@@ -215,6 +223,7 @@ class _ScenarioValidator:
     }
     EXPECT_AGENT_SCHEDULER_KEYS = {
         "activeChatState",
+        "botId",
         "knownSessionIds",
         "reviewPlan",
         "sessionId",
@@ -238,6 +247,7 @@ class _ScenarioValidator:
         "debugModelLog",
         "limit",
         "modelId",
+        "purposes",
         "promptSnapshotId",
         "providerId",
         "success",
@@ -272,6 +282,8 @@ class _ScenarioValidator:
             self._validate_probe(scenario["agentEntryProbe"], "$.agentEntryProbe")
         if "agentSchedulerProbe" in scenario:
             self._validate_probe(scenario["agentSchedulerProbe"], "$.agentSchedulerProbe")
+        if "agentRuntime" in scenario:
+            self._validate_agent_runtime(scenario["agentRuntime"], "$.agentRuntime")
         if "config" in scenario:
             self._validate_config(scenario["config"], "$.config")
         if "mediaAssets" in scenario:
@@ -484,7 +496,11 @@ class _ScenarioValidator:
                 f"{fake_path}.text",
                 "text" in fake,
             )
+            if "texts" in fake:
+                self._require_string_list(fake["texts"], f"{fake_path}.texts")
             for field in self.FAKE_COMPLETION_KEYS - {"text"}:
+                if field == "texts":
+                    continue
                 self._require_optional_int(fake, fake_path, field)
         if "providers" in value:
             for index, provider in enumerate(
@@ -546,6 +562,20 @@ class _ScenarioValidator:
         if "bots" in value:
             for index, item in enumerate(self._require_list(value["bots"], f"{path}.bots")):
                 self._validate_config_bot(item, f"{path}.bots[{index}]")
+
+    def _validate_agent_runtime(self, value: Any, path: str) -> None:
+        self._require_object(value, path)
+        self._check_keys(value, path, self.AGENT_RUNTIME_KEYS)
+        self._require_optional_bool(value, path, "enabled")
+        self._require_optional_bool(value, path, "waitForBootstraps")
+        if "agentConfig" in value:
+            self._require_object(value["agentConfig"], f"{path}.agentConfig")
+        if "agentConfigsByBotId" in value:
+            configs = value["agentConfigsByBotId"]
+            self._require_object(configs, f"{path}.agentConfigsByBotId")
+            for bot_id, config in configs.items():
+                self._require_string(str(bot_id), f"{path}.agentConfigsByBotId key")
+                self._require_object(config, f"{path}.agentConfigsByBotId.{bot_id}")
 
     def _validate_config_bot(self, value: Any, path: str) -> None:
         self._require_object(value, path)
@@ -771,6 +801,7 @@ class _ScenarioValidator:
             path,
             {"caller", "modelId", "promptSnapshotId", "providerId"},
         )
+        self._require_optional_string_list(value, path, "purposes")
         self._require_optional_bool(value, path, "success")
         for field in ("countAtLeast", "limit"):
             self._require_optional_int(value, path, field)

@@ -1,0 +1,196 @@
+{
+  "name": "agent_runtime_active_chat_idle_planning",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentRuntime": {
+    "enabled": true,
+    "agentConfigsByBotId": {
+      "agent-bot": {
+        "agent": {
+          "id": "e2e-agent",
+          "mode": "full",
+          "defaults": {
+            "llm": "[model] stub-provider/stub-model"
+          },
+          "review": {
+            "active_chat_bootstrap": {
+              "enabled": false
+            },
+            "block_digest": {
+              "enabled": false
+            },
+            "idle_review_planning": {
+              "enabled": true
+            },
+            "overflow_compression": {
+              "enabled": false
+            },
+            "reply_decision": {
+              "enabled": true
+            },
+            "scan": {
+              "enabled": true
+            }
+          },
+          "active_chat": {
+            "initial_interest": 4.0,
+            "half_life_seconds": 30.0,
+            "idle_interest_threshold": 5.0
+          }
+        }
+      }
+    }
+  },
+  "modelRuntime": {
+    "fakeCompletion": {
+      "texts": [
+        "{\"candidate_message_ids\":[1],\"reason\":\"selected\"}",
+        "{\"replied\":false,\"reply_message_id\":null,\"reply_message_ids\":[],\"target_message_ids\":[1],\"reason\":\"no_reply\"}",
+        "{\"replied\":false,\"reply_message_id\":null,\"reply_message_ids\":[],\"target_message_ids\":[1],\"reason\":\"no_reply_repair\"}",
+        "{\"next_review_after_seconds\":120,\"reason\":\"timer_settled\"}"
+      ],
+      "inputTokens": 4,
+      "outputTokens": 2,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "providers": [
+      {
+        "id": "stub-provider",
+        "type": "openai",
+        "displayName": "Stub Provider"
+      }
+    ],
+    "models": [
+      {
+        "id": "stub-provider/stub-model",
+        "providerId": "stub-provider",
+        "litellmModel": "stub/stub-model",
+        "displayName": "Stub Model",
+        "enabled": true
+      }
+    ]
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [],
+    "bots": [
+      {
+        "id": "agent-bot",
+        "display_name": "Agent Bot",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["/"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["*"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "agent-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Agent Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "active chat should return idle",
+      "expectSentCount": 0
+    }
+  ],
+  "actions": [
+    {
+      "type": "agentReviewDue",
+      "sessionId": "sim-main:group:group-1",
+      "botId": "agent-bot",
+      "now": 9999999990.0
+    },
+    {
+      "type": "agentActiveChatTick",
+      "sessionId": "sim-main:group:group-1",
+      "botId": "agent-bot",
+      "now": 9999999995.0
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countExact": 1,
+      "roles": ["user"],
+      "senderIds": ["user-1"],
+      "senderNames": ["Alice"],
+      "platformMsgIds": ["msg-1"],
+      "isRead": [false],
+      "rawTexts": ["active chat should return idle"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "active chat should return idle"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched"],
+      "routingSkipReasons": [null]
+    },
+    "agentScheduler": {
+      "botId": "agent-bot",
+      "sessionId": "sim-main:group:group-1",
+      "state": "idle",
+      "unreadCount": 0,
+      "knownSessionIds": ["sim-main:group:group-1"],
+      "reviewPlan": {
+        "reason": "timer_settled"
+      },
+      "activeChatState": {
+        "exists": false
+      }
+    },
+    "modelRuntime": {
+      "providerId": "stub-provider",
+      "modelId": "stub-provider/stub-model",
+      "caller": "agent.review",
+      "success": true,
+      "countAtLeast": 4,
+      "purposes": [
+        "idle_review_planning",
+        "reply_decision",
+        "reply_decision",
+        "review_scan"
+      ]
+    }
+  }
+}

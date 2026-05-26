@@ -65,6 +65,20 @@
       "purpose": "A review-due timer signal moves a known session into review."
     },
     {
+      "name": "agent_runtime_active_chat_idle_planning",
+      "path": "fixtures/agent_runtime_active_chat_idle_planning.json",
+      "area": "agent-runtime",
+      "tags": ["agent", "runtime", "active-chat", "idle", "model-runtime"],
+      "purpose": "A real Agent runtime active-chat tick asks the model for the next idle review plan before returning idle."
+    },
+    {
+      "name": "agent_runtime_review_workflow",
+      "path": "fixtures/agent_runtime_review_workflow.json",
+      "area": "agent-runtime",
+      "tags": ["agent", "runtime", "review", "workflow", "model-runtime"],
+      "purpose": "A bound group message drives the real Agent runtime review workflow through model-backed stages."
+    },
+    {
       "name": "agent_scheduler_signal",
       "path": "fixtures/agent_scheduler_signal.json",
       "area": "agent-scheduler",

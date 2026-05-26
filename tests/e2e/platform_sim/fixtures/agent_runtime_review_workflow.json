@@ -1,0 +1,212 @@
+{
+  "name": "agent_runtime_review_workflow",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentRuntime": {
+    "enabled": true,
+    "waitForBootstraps": true,
+    "agentConfigsByBotId": {
+      "agent-bot": {
+        "agent": {
+          "id": "e2e-agent",
+          "mode": "full",
+          "defaults": {
+            "llm": "[model] stub-provider/stub-model"
+          },
+          "review": {
+            "active_chat_bootstrap_timeout_seconds": 0.2,
+            "active_chat_bootstrap": {
+              "enabled": true
+            },
+            "block_digest": {
+              "enabled": false
+            },
+            "idle_review_planning": {
+              "enabled": false
+            },
+            "overflow_compression": {
+              "enabled": false
+            },
+            "reply_decision": {
+              "enabled": true
+            },
+            "scan": {
+              "enabled": true
+            }
+          },
+          "active_chat": {
+            "initial_interest": 4.0,
+            "decay_half_life_seconds": 30.0
+          }
+        }
+      }
+    }
+  },
+  "modelRuntime": {
+    "fakeCompletion": {
+      "texts": [
+        "{\"candidate_message_ids\":[1],\"reason\":\"selected\"}",
+        "{\"replied\":false,\"reply_message_id\":null,\"reply_message_ids\":[],\"target_message_ids\":[1],\"reason\":\"no_reply\"}",
+        "{\"replied\":false,\"reply_message_id\":null,\"reply_message_ids\":[],\"target_message_ids\":[1],\"reason\":\"no_reply_repair\"}",
+        "{\"disposition\":\"watch\",\"reason\":\"observe\"}"
+      ],
+      "inputTokens": 4,
+      "outputTokens": 2,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "providers": [
+      {
+        "id": "stub-provider",
+        "type": "openai",
+        "displayName": "Stub Provider"
+      }
+    ],
+    "models": [
+      {
+        "id": "stub-provider/stub-model",
+        "providerId": "stub-provider",
+        "litellmModel": "stub/stub-model",
+        "displayName": "Stub Model",
+        "enabled": true
+      }
+    ]
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [],
+    "bots": [
+      {
+        "id": "agent-bot",
+        "display_name": "Agent Bot",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["/"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["*"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "agent-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Agent Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "real runtime should review this",
+      "expectSentCount": 0
+    }
+  ],
+  "actions": [
+    {
+      "type": "agentReviewDue",
+      "sessionId": "sim-main:group:group-1",
+      "botId": "agent-bot",
+      "now": 9999999990.0
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countExact": 1,
+      "roles": ["user"],
+      "senderIds": ["user-1"],
+      "senderNames": ["Alice"],
+      "platformMsgIds": ["msg-1"],
+      "isRead": [false],
+      "rawTexts": ["real runtime should review this"],
+      "contentElements": [
+        [
+          {
+            "type": "text",
+            "attrs": {
+              "content": "real runtime should review this"
+            },
+            "children": []
+          }
+        ]
+      ],
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched"],
+      "routingSkipReasons": [null]
+    },
+    "agentEntrySignals": [
+      {
+        "sessionId": "sim-main:group:group-1",
+        "botId": "agent-bot",
+        "botBindingId": "agent-group",
+        "botSessionId": "agent-bot:group:group-1",
+        "eventType": "message-created",
+        "senderId": "user-1",
+        "instanceId": "sim-main",
+        "platform": "sim",
+        "isPrivate": false,
+        "isMentioned": false,
+        "isMentionToOther": false,
+        "isReplyToBot": false,
+        "isPokeToBot": false,
+        "isPokeToOther": false,
+        "alreadyHandled": false,
+        "isStopped": false,
+        "messageLogId": true
+      }
+    ],
+    "agentScheduler": {
+      "botId": "agent-bot",
+      "sessionId": "sim-main:group:group-1",
+      "state": "active_chat",
+      "unreadCount": 0,
+      "knownSessionIds": ["sim-main:group:group-1"],
+      "reviewPlan": {
+        "reason": "default_idle_review_interval"
+      },
+      "activeChatState": {
+        "exists": true
+      }
+    },
+    "modelRuntime": {
+      "providerId": "stub-provider",
+      "modelId": "stub-provider/stub-model",
+      "caller": "agent.review",
+      "success": true,
+      "countAtLeast": 4,
+      "purposes": [
+        "active_chat_bootstrap",
+        "reply_decision",
+        "reply_decision",
+        "review_scan"
+      ]
+    }
+  }
+}

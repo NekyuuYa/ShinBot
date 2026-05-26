@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from shinbot.agent.runtime.services import AgentRuntime, install_agent_runtime
 from shinbot.agent.runtime.task_manager import AgentTaskManager
 from shinbot.agent.scheduler import (
     ActiveChatTimerService,
@@ -165,8 +166,9 @@ async def run_platform_scenario(
     register_agent_entry_probe(bot, scenario.get("agentEntryProbe"), adapter)
     register_agent_scheduler_probe(bot, scenario.get("agentSchedulerProbe"), adapter)
     register_event_bus_handlers(bot, scenario.get("eventBusHandlers", []), adapter)
-    register_commands(bot, scenario.get("commands", []), runtime_bot=bot)
     register_model_runtime_setup(bot, scenario.get("modelRuntime", {}))
+    register_agent_runtime(bot, scenario.get("agentRuntime"), adapter)
+    register_commands(bot, scenario.get("commands", []), runtime_bot=bot)
     configure_sessions(bot, scenario.get("sessions", []))
     if scenario.get("debugPlugin") or model_runtime.get("debugPlugin"):
         await load_debug_model_plugin(bot)
@@ -203,6 +205,7 @@ async def run_platform_scenario(
                     await assert_scenario_expectations(bot, adapter, step_expect)
             for action in scenario.get("actions", []):
                 await run_scenario_action(action, adapter)
+                await drain_agent_runtime(bot, scenario.get("agentRuntime"))
                 if media_task_manager is not None:
                     await drain_task_manager(media_task_manager, prefix="e2e:media_inspection")
         await assert_scenario_expectations(bot, adapter, scenario.get("expect", {}))
@@ -419,6 +422,31 @@ def register_agent_scheduler_probe(
     bot.set_agent_signal_handler(handle)
 
 
+def register_agent_runtime(
+    bot: ShinBot,
+    config: dict[str, Any] | None,
+    adapter: SimulatedPlatformAdapter,
+) -> AgentRuntime | None:
+    if not config or not bool(config.get("enabled", True)):
+        return None
+    runtime = install_agent_runtime(
+        bot,
+        agent_config=config.get("agentConfig"),
+        agent_configs_by_bot_id={
+            str(bot_id): dict(raw_config)
+            for bot_id, raw_config in dict(config.get("agentConfigsByBotId", {})).items()
+        },
+    )
+
+    async def handle(signal: AgentSignal) -> None:
+        adapter.agent_entry_signals.append(signal)
+        await runtime.handle_agent_signal(signal)
+
+    adapter.agent_signal_handler = handle
+    bot.set_agent_signal_handler(handle)
+    return runtime
+
+
 async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatformAdapter) -> None:
     action_type = str(action.get("type", ""))
     if action_type == "agentReviewDue":
@@ -427,6 +455,7 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
             AgentSignalKind.REVIEW_DUE,
             session_id=str(action["sessionId"]),
             now=float(action.get("now", time.time())),
+            bot_id=str(action.get("botId", "")),
         )
         return
     if action_type == "agentReviewDueTimerRunOnce":
@@ -454,6 +483,7 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
             AgentSignalKind.ACTIVE_CHAT_TICK,
             session_id=str(action["sessionId"]),
             now=float(action.get("now", time.time())),
+            bot_id=str(action.get("botId", "")),
         )
         return
     if action_type == "agentActiveChatTimerRunOnce":
@@ -524,16 +554,18 @@ async def _emit_agent_signal(
     *,
     session_id: str,
     now: float,
+    bot_id: str = "",
 ) -> None:
     handler = adapter.agent_signal_handler
     if handler is None:
-        raise RuntimeError(f"{kind.value} action requires agentSchedulerProbe")
+        raise RuntimeError(f"{kind.value} action requires an Agent signal handler")
     signal = AgentSignal(
         signal_id=f"e2e-{kind.value}:{session_id}:{int(now)}",
         kind=kind,
         source=AgentSignalSource.TIMER,
         session_id=session_id,
         occurred_at=now,
+        bot_id=bot_id,
         timer=AgentTimerSignal(
             trigger=kind.value,
             due_at=now,
@@ -543,6 +575,44 @@ async def _emit_agent_signal(
     result = handler(signal)
     if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
         await result
+
+
+async def drain_agent_runtime(
+    bot: ShinBot,
+    config: dict[str, Any] | None,
+    *,
+    timeout: float = 1.0,
+) -> None:
+    if not config or not bool(config.get("waitForBootstraps", False)):
+        return
+    runtime = getattr(bot, "agent_runtime", None)
+    if runtime is None:
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0)
+        pending = []
+        for profile in _agent_runtime_profiles(runtime):
+            coordinator = getattr(profile, "review_coordinator", None)
+            if coordinator is None:
+                continue
+            await coordinator.wait_pending_bootstraps()
+            pending.extend(
+                task
+                for task in getattr(coordinator, "_bootstrap_tasks", set())
+                if not task.done()
+            )
+        if not pending:
+            return
+    await asyncio.sleep(0)
+
+
+def _agent_runtime_profiles(runtime: Any) -> list[Any]:
+    profiles = getattr(runtime, "_unique_profiles", None)
+    if profiles is not None:
+        return list(profiles())
+    default_profile = getattr(runtime, "_default_profile", None)
+    return [default_profile] if default_profile is not None else []
 
 
 def _optional_float(value: Any) -> float | None:
@@ -622,13 +692,20 @@ def register_model_runtime_setup(bot: ShinBot, model_runtime: dict[str, Any]) ->
 
 def _build_fake_model_completion(fake_completion: dict[str, Any] | None):
     payload = fake_completion or {}
-    response_text = str(payload.get("text", "stubbed model response"))
+    response_texts = _fake_completion_texts(payload)
     input_tokens = int(payload.get("inputTokens", 4))
     output_tokens = int(payload.get("outputTokens", 2))
     cached_tokens = int(payload.get("cacheReadTokens", 1))
     cache_write_tokens = int(payload.get("cacheWriteTokens", 0))
+    call_index = 0
 
     def fake_completion(**_kwargs: Any) -> dict[str, Any]:
+        nonlocal call_index
+        if call_index < len(response_texts):
+            response_text = response_texts[call_index]
+        else:
+            response_text = response_texts[-1]
+        call_index += 1
         return {
             "choices": [{"message": {"content": response_text}}],
             "usage": {
@@ -640,6 +717,13 @@ def _build_fake_model_completion(fake_completion: dict[str, Any] | None):
         }
 
     return fake_completion
+
+
+def _fake_completion_texts(payload: dict[str, Any]) -> list[str]:
+    raw_sequence = payload.get("texts")
+    if isinstance(raw_sequence, list) and raw_sequence:
+        return [str(item) for item in raw_sequence]
+    return [str(payload.get("text", "stubbed model response"))]
 
 
 async def load_debug_model_plugin(bot: ShinBot) -> None:
@@ -1079,7 +1163,7 @@ def assert_agent_scheduler_state(
     adapter: SimulatedPlatformAdapter,
     expected: dict[str, Any],
 ) -> None:
-    scheduler = adapter.agent_scheduler
+    scheduler = _scheduler_for_expectation(bot, adapter, expected)
     assert scheduler is not None
     session_id = str(expected["sessionId"])
     if "state" in expected:
@@ -1101,6 +1185,19 @@ def assert_agent_scheduler_state(
     rows = bot.database.agent_scheduler.list_unread(session_id)
     if "unreadMessageLogIds" in expected:
         assert [row.message_log_id for row in rows] == list(expected["unreadMessageLogIds"])
+
+
+def _scheduler_for_expectation(
+    bot: ShinBot,
+    adapter: SimulatedPlatformAdapter,
+    expected: dict[str, Any],
+) -> AgentScheduler | None:
+    if adapter.agent_scheduler is not None:
+        return adapter.agent_scheduler
+    runtime = getattr(bot, "agent_runtime", None)
+    if runtime is None:
+        return None
+    return runtime.agent_profile_for_bot(str(expected.get("botId", ""))).agent_scheduler
 
 
 def assert_active_chat_state(
@@ -1141,6 +1238,10 @@ async def assert_model_runtime_expectations(bot: ShinBot, expected: dict[str, An
         assert record["model_id"] == expected["modelId"]
     if "caller" in expected:
         assert record["caller"] == expected["caller"]
+    if "purposes" in expected:
+        assert [item["purpose"] for item in records[: len(expected["purposes"])]] == list(
+            expected["purposes"]
+        )
     if "success" in expected:
         assert bool(record["success"]) is bool(expected["success"])
     if "promptSnapshotId" in expected:
