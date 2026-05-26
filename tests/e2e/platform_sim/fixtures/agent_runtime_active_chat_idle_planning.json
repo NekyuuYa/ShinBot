@@ -191,6 +191,14 @@
         "reply_decision",
         "review_scan"
       ]
+    },
+    "workflowRuns": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 1,
+      "batchSize": 1,
+      "replied": false,
+      "finishReason": "active_chat_started",
+      "responseSummaryContains": "scan=selected"
     }
   }
 }

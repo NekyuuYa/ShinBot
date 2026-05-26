@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
@@ -27,6 +28,8 @@ from shinbot.agent.services.summaries import (
 
 logger = logging.getLogger(__name__)
 
+ReviewRunRecorder = Callable[[str, Any, list[UnreadMessage]], None]
+
 if TYPE_CHECKING:
     from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
     from shinbot.agent.coordinators.review import ReviewCoordinator
@@ -49,12 +52,14 @@ class ActiveReplyDispatcher:
         summary_service: Any | None = None,
         review_config: ReviewWorkflowConfig | None = None,
         idle_review_planning_runner: IdleReviewPlanningStageRunner | None = None,
+        review_run_recorder: ReviewRunRecorder | None = None,
     ) -> None:
         self._review_coordinator = review_coordinator
         self._active_chat_workflow = active_chat_workflow
         self._summary_service = summary_service
         self._review_config = review_config or ReviewWorkflowConfig()
         self._idle_review_planning_runner = idle_review_planning_runner
+        self._review_run_recorder = review_run_recorder
         self._agent_scheduler: AgentScheduler | None = None
         self.last_review_result: ReviewWorkflowResult | None = None
         self.last_review_explanation: ReviewWorkflowExplanation | None = None
@@ -108,6 +113,7 @@ class ActiveReplyDispatcher:
         )
         self.last_review_result = result
         self.last_review_explanation = build_review_workflow_explanation(result)
+        self._record_review_run(session_id, result, unread_messages)
         if (
             self._active_chat_workflow is not None
             and result.completion is not None
@@ -128,6 +134,20 @@ class ActiveReplyDispatcher:
                     after=self._agent_scheduler.unread_messages(session_id),
                 ),
             )
+
+    def _record_review_run(
+        self,
+        session_id: str,
+        result: ReviewWorkflowResult,
+        unread_messages: list[UnreadMessage],
+    ) -> None:
+        recorder = self._review_run_recorder
+        if recorder is None:
+            return
+        try:
+            recorder(session_id, result, unread_messages)
+        except Exception:
+            logger.warning("Failed to record review run for %s", session_id, exc_info=True)
 
     async def start_active_chat(
         self,

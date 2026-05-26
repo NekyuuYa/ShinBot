@@ -171,6 +171,7 @@ class _ScenarioValidator:
         "noticeEvents",
         "sent",
         "sessions",
+        "workflowRuns",
     }
     EXPECT_SENT_KEYS = {
         "elements",
@@ -258,6 +259,14 @@ class _ScenarioValidator:
         "rawHash",
         "strictDhash",
         "verifiedByModel",
+    }
+    EXPECT_WORKFLOW_RUNS_KEYS = {
+        "batchSize",
+        "countAtLeast",
+        "finishReason",
+        "replied",
+        "responseSummaryContains",
+        "sessionId",
     }
     EXPECT_DEBUG_LOG_KEYS = {
         "lineCountAtLeast",
@@ -682,6 +691,8 @@ class _ScenarioValidator:
                 self._require_list(value["mediaSemantics"], f"{path}.mediaSemantics")
             ):
                 self._validate_media_semantics_expect(item, f"{path}.mediaSemantics[{index}]")
+        if "workflowRuns" in value:
+            self._validate_workflow_runs_expect(value["workflowRuns"], f"{path}.workflowRuns")
 
     def _validate_expect_sent(self, value: Any, path: str) -> None:
         self._require_object(value, path)
@@ -833,6 +844,19 @@ class _ScenarioValidator:
         self._require_optional_string(value.get("digest"), f"{path}.digest", "digest" in value)
         self._require_optional_bool(value, path, "verifiedByModel")
         self._require_optional_int(value, path, "countExact")
+
+    def _validate_workflow_runs_expect(self, value: Any, path: str) -> None:
+        self._require_object(value, path)
+        self._check_keys(value, path, self.EXPECT_WORKFLOW_RUNS_KEYS)
+        self._require_string(value.get("sessionId"), f"{path}.sessionId")
+        self._require_optional_int(value, path, "batchSize")
+        self._require_optional_int(value, path, "countAtLeast")
+        self._require_optional_bool(value, path, "replied")
+        self._require_optional_string_fields(
+            value,
+            path,
+            {"finishReason", "responseSummaryContains"},
+        )
 
     def _validate_elements(self, value: Any, path: str) -> None:
         elements = self._require_list(value, path)

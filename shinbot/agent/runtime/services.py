@@ -6,7 +6,9 @@ attach the Agent entry handler to message routing.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -184,6 +186,7 @@ class AgentRuntimeProfile:
             summary_service=owner.summary_service,
             review_config=self.review_workflow_config,
             idle_review_planning_runner=runner_factory.create_idle_review_planning_runner(),
+            review_run_recorder=owner._record_review_workflow_run,
         )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
         self.review_due_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
@@ -626,6 +629,50 @@ class AgentRuntime:
                 return RuntimeModelTarget(model_id=normalized)
         return RuntimeModelTarget(route_id=normalized)
 
+    def _record_review_workflow_run(
+        self,
+        session_id: str,
+        result: Any,
+        unread_messages: list[Any],
+    ) -> None:
+        if self.database is None:
+            return
+        message_ids = sorted(
+            int(message.message_log_id)
+            for message in unread_messages
+            if getattr(message, "message_log_id", None) is not None
+        )
+        started_at = float(getattr(result, "review_started_at", 0.0) or time.time())
+        finished_at = max(time.time(), started_at)
+        with self.database.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO workflow_runs (
+                    id, session_id, instance_id, response_profile,
+                    batch_start_msg_id, batch_end_msg_id, batch_size,
+                    trigger_attention, effective_threshold, tool_calls_json,
+                    replied, response_summary, finish_reason, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(getattr(result, "review_run_id", "")),
+                    session_id,
+                    _instance_id_from_session_id(session_id),
+                    _response_profile_from_unread(unread_messages),
+                    message_ids[0] if message_ids else None,
+                    message_ids[-1] if message_ids else None,
+                    len(message_ids),
+                    0.0,
+                    0.0,
+                    json.dumps([], ensure_ascii=False),
+                    1 if getattr(getattr(result, "reply", None), "replied", False) else 0,
+                    _review_response_summary(result),
+                    _review_finish_reason(result),
+                    started_at,
+                    finished_at,
+                ),
+            )
+
     def handle_ingress_message(self, context: Any) -> None:
         """Let Agent-owned media services observe accepted inbound messages."""
         self.media_ingress_hook(context)
@@ -699,6 +746,47 @@ def install_agent_runtime(
     )
     bot.mount_agent_runtime(runtime)
     return runtime
+
+
+def _instance_id_from_session_id(session_id: str) -> str:
+    return str(session_id or "").split(":", 1)[0]
+
+
+def _response_profile_from_unread(unread_messages: list[Any]) -> str:
+    for message in unread_messages:
+        value = str(getattr(message, "response_profile", "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _review_response_summary(result: Any) -> str:
+    scan = getattr(result, "scan", None)
+    reply = getattr(result, "reply", None)
+    bootstrap = getattr(result, "bootstrap", None)
+    parts = [
+        f"scan={getattr(scan, 'scan_reason', '') or 'unknown'}",
+        f"reply={getattr(reply, 'reply_reason', '') or 'unknown'}",
+        f"active_chat={getattr(bootstrap, 'reason', '') or 'unknown'}",
+    ]
+    return "; ".join(parts)
+
+
+def _review_finish_reason(result: Any) -> str:
+    if getattr(result, "failed", False):
+        return f"failed:{getattr(result, 'failure_reason', '') or 'unknown'}"
+    completion = getattr(result, "completion", None)
+    if completion is None:
+        return "completed_without_scheduler_decision"
+    skipped_reason = getattr(completion, "skipped_reason", None)
+    if skipped_reason:
+        return f"skipped:{skipped_reason}"
+    if getattr(completion, "active_chat_started", False):
+        return "active_chat_started"
+    if getattr(completion, "returned_to_idle", False):
+        return "returned_to_idle"
+    state = getattr(completion, "state", None)
+    return f"completed:{getattr(state, 'value', state) or 'unknown'}"
 
 
 def _coerce_agent_runtime_config(

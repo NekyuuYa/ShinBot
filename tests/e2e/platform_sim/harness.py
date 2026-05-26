@@ -997,6 +997,8 @@ async def assert_scenario_expectations(
         await assert_model_runtime_expectations(bot, expect["modelRuntime"])
     if "mediaSemantics" in expect:
         assert_media_semantics_expectations(bot, expect["mediaSemantics"])
+    if "workflowRuns" in expect:
+        assert_workflow_runs(bot, expect["workflowRuns"])
 
 
 def assert_sent_messages(
@@ -1266,6 +1268,30 @@ def assert_media_semantics_expectations(bot: ShinBot, expected: list[dict[str, A
             assert bool(row["verified_by_model"]) is bool(item["verifiedByModel"])
         if "countExact" in item:
             assert len(rows) == int(item["countExact"])
+
+
+def assert_workflow_runs(bot: ShinBot, expected: dict[str, Any]) -> None:
+    assert bot.database is not None
+    with bot.database.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM workflow_runs
+            WHERE session_id = ?
+            ORDER BY started_at DESC, id DESC
+            """,
+            (expected["sessionId"],),
+        ).fetchall()
+    assert len(rows) >= int(expected.get("countAtLeast", 0))
+    latest = rows[0]
+    if "batchSize" in expected:
+        assert int(latest["batch_size"] or 0) == int(expected["batchSize"])
+    if "replied" in expected:
+        assert bool(latest["replied"]) is bool(expected["replied"])
+    if "finishReason" in expected:
+        assert str(latest["finish_reason"] or "") == expected["finishReason"]
+    if "responseSummaryContains" in expected:
+        assert expected["responseSummaryContains"] in str(latest["response_summary"] or "")
 
 
 async def assert_debug_model_log(bot: ShinBot, expected: dict[str, Any]) -> None:
