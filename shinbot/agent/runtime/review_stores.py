@@ -15,6 +15,11 @@ class DatabaseReviewMessageStore:
     """SQLite-backed review message store using the existing message_logs table."""
 
     def __init__(self, database: Any) -> None:
+        """Initialize the message store with a database connection.
+
+        Args:
+            database: Database manager providing connection context.
+        """
         self._database = database
 
     def list_for_unread_range(
@@ -24,6 +29,16 @@ class DatabaseReviewMessageStore:
         limit: int,
         offset: int = 0,
     ) -> list[MessageLogPayload]:
+        """List messages within an unread range, ordered by time.
+
+        Args:
+            unread_range: The unread range defining session and message ID bounds.
+            limit: Maximum number of messages to return.
+            offset: Number of messages to skip for pagination.
+
+        Returns:
+            List of message log payloads within the range.
+        """
         with self._database.connect() as conn:
             rows = conn.execute(
                 """
@@ -52,6 +67,17 @@ class DatabaseReviewMessageStore:
         before: int,
         after: int,
     ) -> list[MessageLogPayload]:
+        """List messages around a specific message, including before and after context.
+
+        Args:
+            session_id: The session to query messages from.
+            message_log_id: The central message to center the window on.
+            before: Number of messages to fetch before the central message.
+            after: Number of messages to fetch after the central message.
+
+        Returns:
+            List of message log payloads centered on the given message.
+        """
         with self._database.connect() as conn:
             before_rows = conn.execute(
                 """
@@ -93,6 +119,17 @@ class DatabaseReviewMessageStore:
         end_at: float,
         limit: int,
     ) -> list[MessageLogPayload]:
+        """List messages within a time range.
+
+        Args:
+            session_id: The session to query messages from.
+            start_at: Start timestamp (epoch seconds) of the range.
+            end_at: End timestamp (epoch seconds) of the range.
+            limit: Maximum number of messages to return.
+
+        Returns:
+            List of message log payloads within the time range.
+        """
         return self._database.message_logs.get_by_time(
             session_id,
             start=start_at,
@@ -105,6 +142,11 @@ class DatabaseReviewSummaryStore:
     """SQLite-backed review summary store."""
 
     def __init__(self, database: Any) -> None:
+        """Initialize the summary store with a database connection.
+
+        Args:
+            database: Database manager providing connection context.
+        """
         self._database = database
 
     def save_summary(
@@ -113,6 +155,15 @@ class DatabaseReviewSummaryStore:
         *,
         created_at: float | None = None,
     ) -> int:
+        """Persist a review summary record and return its database ID.
+
+        Args:
+            record: The summary record to save.
+            created_at: Override timestamp; defaults to current time if not provided.
+
+        Returns:
+            The row ID of the newly inserted summary record.
+        """
         with self._database.connect() as conn:
             cursor = conn.execute(
                 """
@@ -142,6 +193,15 @@ class DatabaseReviewSummaryStore:
         *,
         limit: int = 50,
     ) -> list[UnreadRangeSummaryRecord]:
+        """List stored review summaries for a session, ordered by time.
+
+        Args:
+            session_id: The session to retrieve summaries for.
+            limit: Maximum number of summaries to return (default 50).
+
+        Returns:
+            List of summary records for the session.
+        """
         with self._database.connect() as conn:
             rows = conn.execute(
                 """

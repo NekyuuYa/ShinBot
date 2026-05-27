@@ -98,6 +98,15 @@ def batch_contains_media(
     msgs: list[dict[str, Any]],
     media_service: MediaService | None = None,
 ) -> bool:
+    """Check whether any message in the batch contains media attachments.
+
+    Args:
+        msgs: List of message dictionaries to inspect.
+        media_service: Optional media service used to summarize media content.
+
+    Returns:
+        True if at least one message contains media, False otherwise.
+    """
     if media_service is None:
         return False
     return any(media_service.summarize_message_media(msg) for msg in msgs)
@@ -109,6 +118,17 @@ def format_message_line(
     *,
     include_message_reference: bool = False,
 ) -> str:
+    """Format a single message into a display line with sender, text, and media info.
+
+    Args:
+        msg: Message dictionary containing sender and content fields.
+        media_service: Optional media service for attaching media summaries.
+        include_message_reference: When True, append message reference IDs
+            (media or platform) to the output line.
+
+    Returns:
+        Formatted string like ``"SenderName: text [media notes]"``.
+    """
     sender_name = str(msg.get("sender_name", "") or msg.get("sender_id", "unknown"))
     text = str(msg.get("raw_text", "") or "").strip() or "[无文本]"
     media_suffix = ""
@@ -126,6 +146,20 @@ def format_message_line(
 
 
 def format_relative_message_time(msg: dict[str, Any], *, now_ms: float | None = None) -> str:
+    """Return a human-readable relative time string for a message's timestamp.
+
+    Handles both second-level and millisecond-level timestamps. Output
+    examples: "刚刚", "5秒前", "3分钟前", "2小时前", "7天前".
+
+    Args:
+        msg: Message dictionary containing a ``created_at`` field.
+        now_ms: Optional current time in milliseconds since epoch. When
+            ``None``, the wall-clock time is used.
+
+    Returns:
+        Localized relative time string in Chinese, or "未知" if the
+        timestamp is missing or invalid.
+    """
     raw_created_at = msg.get("created_at")
     if raw_created_at is None:
         return "未知"
@@ -152,6 +186,19 @@ def format_relative_message_time(msg: dict[str, Any], *, now_ms: float | None = 
 
 
 def format_media_reference(msg: dict[str, Any]) -> str:
+    """Format media reference identifiers from a message.
+
+    Produces a bracketed string containing ``message_log_id`` and/or
+    ``platform_msg_id`` when present, prefixed with a media-reference label.
+
+    Args:
+        msg: Message dictionary that may contain ``id`` and/or
+            ``platform_msg_id`` fields.
+
+    Returns:
+        Formatted reference string like ``" [媒体引用: message_log_id=42]"``,
+        or an empty string if no references are available.
+    """
     refs = _message_reference_parts(msg)
     if not refs:
         return ""
@@ -159,6 +206,19 @@ def format_media_reference(msg: dict[str, Any]) -> str:
 
 
 def format_message_reference(msg: dict[str, Any]) -> str:
+    """Format message reference identifiers from a message.
+
+    Produces a bracketed string containing ``message_log_id`` and/or
+    ``platform_msg_id`` when present.
+
+    Args:
+        msg: Message dictionary that may contain ``id`` and/or
+            ``platform_msg_id`` fields.
+
+    Returns:
+        Formatted reference string like ``" [message_log_id=42]"``, or an
+        empty string if no references are available.
+    """
     refs = _message_reference_parts(msg)
     if not refs:
         return ""

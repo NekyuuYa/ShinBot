@@ -45,6 +45,11 @@ class ActiveChatTimerService:
     """Run one lightweight 5s tick loop for each active chat session."""
 
     def __init__(self, *, tick_interval_seconds: float = 5.0) -> None:
+        """Initialise the active chat timer service.
+
+        Args:
+            tick_interval_seconds: Seconds between idle-detection ticks.
+        """
         self._tick_interval_seconds = tick_interval_seconds
         self._runtime: AgentRuntime | None = None
         self._bot_id = ""
@@ -52,13 +57,37 @@ class ActiveChatTimerService:
         self._task_scope: AgentTaskScope | None = None
 
     def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
+        """Bind the runtime entry point used by timer ticks.
+
+        Args:
+            runtime: The agent runtime that will handle timer signals.
+            bot_id: Optional bot identifier used for log context.
+        """
         self._runtime = runtime
         self._bot_id = str(bot_id or "").strip()
 
     def bind_task_scope(self, scope: AgentTaskScope) -> None:
+        """Bind the task scope used to manage timer tasks.
+
+        When a task scope is bound, timer tasks are created through it
+        rather than directly on the event loop, allowing coordinated
+        cancellation during shutdown.
+
+        Args:
+            scope: The task scope that owns timer lifecycle management.
+        """
         self._task_scope = scope
 
     def start(self, session_id: str) -> None:
+        """Start a session-bound active chat timer if one is not running.
+
+        Creates an asyncio task that periodically fires idle-detection
+        ticks for the given session. If a timer is already running for
+        this session, the call is a no-op.
+
+        Args:
+            session_id: The conversation session to monitor.
+        """
         task = self._tasks.get(session_id)
         if task is not None and not task.done():
             return
@@ -89,6 +118,15 @@ class ActiveChatTimerService:
         )
 
     def cancel(self, session_id: str) -> None:
+        """Cancel one session-bound active chat timer.
+
+        Removes the timer task from internal tracking and requests
+        cancellation. No-op if no timer is running for the session
+        or if the timer task is the currently executing task.
+
+        Args:
+            session_id: The conversation session whose timer to cancel.
+        """
         task = self._tasks.pop(session_id, None)
         if task is None or task.done():
             return
@@ -104,6 +142,12 @@ class ActiveChatTimerService:
         )
 
     async def shutdown(self) -> None:
+        """Cancel all active chat timers and await their completion.
+
+        Clears internal task tracking, cancels every running timer
+        task, then gathers them to ensure clean shutdown. After this
+        call, no timer tasks will remain active.
+        """
         tasks = list(self._tasks.values())
         self._tasks.clear()
         for task in tasks:
