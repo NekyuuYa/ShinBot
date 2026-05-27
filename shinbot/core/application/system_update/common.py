@@ -32,6 +32,17 @@ class SystemUpdateError(RuntimeError):
 
 
 def normalize_allowed_branches(raw: Any) -> tuple[str, ...]:
+    """Normalize a raw config value into a tuple of allowed branch names.
+
+    Args:
+        raw: A value from configuration that may be a list, tuple, set, or
+            any other type. Non-iterable or empty values fall back to the
+            default branches.
+
+    Returns:
+        A tuple of stripped, non-empty branch name strings. Falls back to
+        ``DEFAULT_ALLOWED_BRANCHES`` when the input is empty or invalid.
+    """
     if isinstance(raw, (list, tuple, set)):
         branches = tuple(str(item).strip() for item in raw if str(item).strip())
         if branches:

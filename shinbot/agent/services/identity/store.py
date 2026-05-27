@@ -27,6 +27,7 @@ class IdentityStore:
 
     @property
     def file_path(self) -> Path:
+        """Return the path to the identities JSON file."""
         return self._file_path
 
     @staticmethod
@@ -40,6 +41,15 @@ class IdentityStore:
         return cleaned[:48]
 
     def get_identity(self, user_id: str, *, platform: str = "") -> dict[str, Any] | None:
+        """Look up a single user identity by ID.
+
+        Args:
+            user_id: Platform user identifier.
+            platform: Optional platform filter.
+
+        Returns:
+            The identity dict, or None if not found or platform mismatches.
+        """
         normalized_user_id = str(user_id).strip()
         if not normalized_user_id:
             return None
@@ -47,6 +57,15 @@ class IdentityStore:
         return identities.get(normalized_user_id)
 
     def list_identities(self, *, platform: str = "") -> dict[str, dict[str, Any]]:
+        """Return all stored identities keyed by user ID.
+
+        Args:
+            platform: Optional platform filter. Returns empty dict if the
+                stored platform does not match.
+
+        Returns:
+            Mapping of user_id to identity dict.
+        """
         payload = self._load_payload()
         stored_platform = str(payload.get("platform", "")).strip()
         normalized_platform = str(platform).strip()

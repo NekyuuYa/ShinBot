@@ -46,6 +46,14 @@ class DefaultReviewPolicy:
         self._config = config or ReviewPolicyConfig()
 
     def initial_plan(self, *, session_id: str, now: float) -> ReviewPlan:
+        """Return the initial review plan for one session.
+        Args:
+            session_id: The session to create a review plan for.
+            now: Current timestamp in seconds since epoch.
+
+        Returns:
+            A review plan with timing and sensitivity configuration.
+        """
         return self._build_plan(session_id=session_id, now=now)
 
     def plan_after_review(
@@ -55,6 +63,15 @@ class DefaultReviewPolicy:
         now: float,
         previous_plan: ReviewPlan | None = None,
     ) -> ReviewPlan:
+        """Return the next review plan after a review completes without active chat.
+        Args:
+            session_id: The session to plan the next review for.
+            now: Current timestamp in seconds since epoch.
+            previous_plan: The plan that was just reviewed, if any.
+
+        Returns:
+            A new review plan for the session.
+        """
         return self._build_plan(session_id=session_id, now=now)
 
     def _build_plan(self, *, session_id: str, now: float) -> ReviewPlan:

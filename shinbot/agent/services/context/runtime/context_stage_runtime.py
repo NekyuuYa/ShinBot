@@ -33,6 +33,18 @@ class ContextStageRuntime:
         alias_changed: bool = False,
         self_platform_id: str = "",
     ) -> list[dict[str, Any]]:
+        """Build context-stage prompt messages from timeline and compressed memories.
+
+        Args:
+            read_history: Chronological read message records.
+            alias_table: Session alias table for name resolution.
+            session_state: Current context session state.
+            alias_changed: When True, forces a full timeline rebuild.
+            self_platform_id: Platform ID of the bot itself.
+
+        Returns:
+            List of message dicts for the context prompt stage.
+        """
         existing_blocks = session_state.short_term_blocks()
         force_rebuild = alias_changed or not existing_blocks
         if force_rebuild:

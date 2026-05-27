@@ -58,6 +58,17 @@ class ReviewContextBuilderAdapter:
         purpose: str,
         options: ReviewContextBuildOptions | None = None,
     ) -> ReviewStageInput:
+        """Build structured review stage input from message records.
+
+        Args:
+            session_id: Conversation session identifier.
+            messages: Message log payloads to include.
+            purpose: Human-readable purpose for this context build.
+            options: Optional build controls.
+
+        Returns:
+            Structured input for one review workflow stage.
+        """
         resolved_options = options or ReviewContextBuildOptions()
         metadata = {"purpose": purpose, **resolved_options.metadata}
         return ReviewStageInput(

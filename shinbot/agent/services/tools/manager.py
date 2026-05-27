@@ -52,6 +52,19 @@ class ToolManager:
         include_private: bool = False,
         tags: set[str] | None = None,
     ) -> list[ToolDefinition]:
+        """Return tool definitions visible to the given caller context.
+
+        Args:
+            caller: Identifier of the calling component.
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            user_id: End-user identifier.
+            include_private: When True, include private-visibility tools.
+            tags: Optional registry tag filter.
+
+        Returns:
+            List of visible tool definitions.
+        """
         return self._schema_builder.list_visible_tools(
             caller=caller,
             instance_id=instance_id,
@@ -70,6 +83,18 @@ class ToolManager:
         user_id: str = "",
         tags: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Export visible tools as Chat Completions function schemas.
+
+        Args:
+            caller: Identifier of the calling component.
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            user_id: End-user identifier.
+            tags: Optional registry tag filter.
+
+        Returns:
+            List of tool schema dicts in Chat Completions format.
+        """
         return self._schema_builder.export_model_tools(
             caller=caller,
             instance_id=instance_id,
@@ -120,6 +145,14 @@ class ToolManager:
         self._schema_builder.clear_cache()
 
     async def execute(self, call: ToolCallRequest) -> ToolCallResult:
+        """Execute a single tool call with permission and argument validation.
+
+        Args:
+            call: The tool call request to execute.
+
+        Returns:
+            A result indicating success or failure with metadata.
+        """
         started = _utc_now()
         definition = self._registry.get_tool_by_name(call.tool_name)
         if definition is None:

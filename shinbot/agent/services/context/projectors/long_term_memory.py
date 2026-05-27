@@ -22,7 +22,16 @@ class LongTermMemoryItem:
 class LongTermMemoryProvider(Protocol):
     """Retrieve long-term memories relevant to the current prompt request."""
 
-    def retrieve(self, request: PromptMemoryProjectionRequest) -> list[LongTermMemoryItem]: ...
+    def retrieve(self, request: PromptMemoryProjectionRequest) -> list[LongTermMemoryItem]:
+        """Retrieve long-term memories relevant to the current request.
+
+        Args:
+            request: Projection request describing the retrieval context.
+
+        Returns:
+            List of relevant long-term memory items.
+        """
+        ...
 
 
 @dataclass(slots=True)
@@ -30,6 +39,14 @@ class NoopLongTermMemoryProvider:
     """No-op provider used until semantic memory retrieval is implemented."""
 
     def retrieve(self, request: PromptMemoryProjectionRequest) -> list[LongTermMemoryItem]:
+        """Return an empty list (no-op implementation).
+
+        Args:
+            request: Projection request (unused).
+
+        Returns:
+            An empty list.
+        """
         return []
 
 
@@ -38,6 +55,15 @@ class LongTermMemoryProjector:
     """Project long-term memory items into prompt context messages."""
 
     def build_messages(self, memories: list[LongTermMemoryItem]) -> list[dict[str, Any]]:
+        """Project long-term memory items into prompt user messages.
+
+        Args:
+            memories: List of long-term memory items.
+
+        Returns:
+            A single user-role message with bulleted memory lines,
+            or an empty list if no memories have content.
+        """
         lines = [item.text.strip() for item in memories if item.text.strip()]
         if not lines:
             return []

@@ -21,6 +21,14 @@ class ContextEvictionConfig:
 
 
 def extract_total_tokens(usage: dict[str, Any] | None) -> int:
+    """Extract the combined input and output token count from usage data.
+
+    Args:
+        usage: Token usage dict from the model runtime, or None.
+
+    Returns:
+        Total token count, floored at zero.
+    """
     payload = usage or {}
     input_tokens = int(payload.get("input_tokens", 0) or 0)
     output_tokens = int(payload.get("output_tokens", 0) or 0)
@@ -33,6 +41,16 @@ def select_blocks_for_eviction(
     total_tokens: int,
     config: ContextEvictionConfig,
 ) -> list[ContextBlockState]:
+    """Select head blocks eligible for eviction based on token budget.
+
+    Args:
+        state: Current context session state.
+        total_tokens: Current total token usage.
+        config: Eviction configuration (budget and ratio).
+
+    Returns:
+        List of blocks to evict, or empty if under budget.
+    """
     memory = state.short_term_memory()
     if total_tokens < config.max_context_tokens or not memory.has_blocks():
         return []
@@ -47,6 +65,21 @@ def evict_context_blocks(
     compressed_text: str = "",
     created_at_ms: int | None = None,
 ) -> dict[str, Any]:
+    """Evict head blocks from session state and optionally store compressed memory.
+
+    Selects blocks, removes them from the short-term memory ring buffer,
+    and appends a compressed memory entry when text is provided.
+
+    Args:
+        state: Mutable context session state.
+        total_tokens: Current total token usage.
+        config: Eviction configuration.
+        compressed_text: Summary text for the compressed memory entry.
+        created_at_ms: Timestamp in milliseconds for the compressed entry.
+
+    Returns:
+        Eviction result dict with trigger status and counts.
+    """
     evicted_blocks = select_blocks_for_eviction(
         state,
         total_tokens=total_tokens,

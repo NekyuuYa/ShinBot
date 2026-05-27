@@ -72,6 +72,13 @@ class MediaInspectionRunner:
         session_id: str,
         items: list[IngestedMediaItem],
     ) -> None:
+        """Schedule background media inspection tasks for ingested items.
+
+        Args:
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            items: Media items that were ingested and may need inspection.
+        """
         for item in items:
             if not item.should_request_inspection:
                 continue
@@ -108,6 +115,20 @@ class MediaInspectionRunner:
         raw_hash: str,
         prefer_sticker_model: bool = False,
     ) -> dict[str, Any] | None:
+        """Run LLM-based semantic inspection for a single media asset.
+
+        Checks for cached verified semantics first, then calls the
+        model to generate a description and persists the result.
+
+        Args:
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            raw_hash: SHA-256 hash of the media asset.
+            prefer_sticker_model: When True, use the sticker-specific model.
+
+        Returns:
+            The semantic record dict, or None on failure.
+        """
         semantics = self._database.media_semantics.get(raw_hash)
         if semantics is not None and bool(semantics.get("verified_by_model")):
             return semantics
@@ -242,6 +263,17 @@ class MediaInspectionRunner:
         raw_hash: str,
         question: str,
     ) -> dict[str, Any] | None:
+        """Answer a free-form question about a previously inspected media asset.
+
+        Args:
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            raw_hash: SHA-256 hash of the media asset.
+            question: User question about the image.
+
+        Returns:
+            Dict with the answer text, or None on failure.
+        """
         asset = self._database.media_assets.get(raw_hash)
         if asset is None:
             logger.warning("Media reanalysis skipped: asset %s not found", raw_hash)
@@ -310,6 +342,7 @@ class MediaInspectionRunner:
         }
 
     async def shutdown(self) -> None:
+        """Cancel all in-flight inspection tasks and wait for them to finish."""
         tasks = list(self._inflight.values())
         for task in tasks:
             task.cancel()

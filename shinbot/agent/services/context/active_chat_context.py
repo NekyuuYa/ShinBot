@@ -74,6 +74,20 @@ class ActiveChatContextBuilderAdapter:
         purpose: str,
         options: ActiveChatContextBuildOptions | None = None,
     ) -> ActiveChatStageInput:
+        """Build structured stage input from selected message records.
+
+        Formats messages through the message formatter and collects
+        context-manager stage messages when available.
+
+        Args:
+            session_id: Conversation session identifier.
+            messages: Raw message records to include.
+            purpose: Human-readable purpose for this context build.
+            options: Optional build controls.
+
+        Returns:
+            Structured input for one active chat stage.
+        """
         resolved_options = options or ActiveChatContextBuildOptions()
         metadata = {"purpose": purpose, **resolved_options.metadata}
         instruction_content = []

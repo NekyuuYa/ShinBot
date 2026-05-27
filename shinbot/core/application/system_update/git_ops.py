@@ -27,6 +27,11 @@ class GitCommandResult:
 
 
 def default_git_executable() -> str | None:
+    """Locate the ``git`` executable on the system PATH.
+
+    Returns:
+        The absolute path to the ``git`` binary, or ``None`` if not found.
+    """
     return shutil.which("git")
 
 
@@ -38,6 +43,28 @@ async def run_git(
     args: tuple[str, ...],
     timeout: float = DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> GitCommandResult:
+    """Run a git command asynchronously with timeout and error handling.
+
+    Disables interactive prompts and SSH agent forwarding to ensure
+    non-interactive execution.
+
+    Args:
+        repo_root: Working directory for the command. Pass ``None`` to
+            return an error immediately with *unavailable_message*.
+        git_executable: Path to the git binary. Pass ``None`` to return
+            an error immediately.
+        unavailable_message: Error message used when *repo_root* or
+            *git_executable* is ``None``.
+        args: Command-line arguments passed after ``git``.
+        timeout: Maximum seconds to wait for the command to complete.
+
+    Returns:
+        A ``GitCommandResult`` containing the return code, stdout, and
+        stderr.
+
+    Raises:
+        SystemUpdateError: If the command times out.
+    """
     if repo_root is None:
         return GitCommandResult(returncode=1, stderr=unavailable_message)
     if not git_executable:
@@ -78,6 +105,16 @@ async def run_git(
 
 
 def find_git_root(start: Path) -> Path | None:
+    """Walk up from *start* to find the enclosing git repository root.
+
+    Args:
+        start: The path to begin searching from. If a file is given, its
+            parent directory is used.
+
+    Returns:
+        The directory containing a ``.git`` entry, or ``None`` if no
+        repository is found.
+    """
     current = start
     if current.is_file():
         current = current.parent
@@ -89,6 +126,19 @@ def find_git_root(start: Path) -> Path | None:
 
 
 def parse_ahead_behind(raw: str) -> tuple[int, int]:
+    """Parse the ``ahead`` and ``behind`` counts from a git status line.
+
+    Expects a string with at least two whitespace-separated integers,
+    e.g. ``"0 3"``.
+
+    Args:
+        raw: The raw output string from ``git rev-list --count
+            --left-right``.
+
+    Returns:
+        A tuple of ``(ahead, behind)`` integers. Defaults to ``(0, 0)``
+        if parsing fails.
+    """
     parts = raw.strip().split()
     if len(parts) < 2:
         return 0, 0

@@ -51,6 +51,7 @@ class InstructionStageBuilder:
 
     @property
     def image_registry(self) -> ContextImageRegistry:
+        """Return the image registry used for reference resolution."""
         return self._image_registry
 
     def build_content_blocks(
@@ -63,6 +64,19 @@ class InstructionStageBuilder:
         self_platform_id: str = "",
         now_ms: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Render unread messages into content blocks for the instruction stage.
+
+        Args:
+            unread_records: Message records not yet consumed.
+            alias_table: Session alias table for name resolution.
+            projection_state: Projection state for message ID assignment.
+            previous_summary: Summary text from the previous turn.
+            self_platform_id: Platform ID of the bot itself.
+            now_ms: Current timestamp in milliseconds.
+
+        Returns:
+            List of content block dicts (text and optional image_url).
+        """
         content_blocks: list[dict[str, Any]] = []
         if self._config.include_summary_header:
             header_lines: list[str] = []
@@ -128,11 +142,13 @@ class InstructionStageBuilder:
         inline_fragments: list[str] = []
         requires_closure = False
 
-        def append_inline(fragment: str) -> None:
+        def append_inline(fragment: str) -> None:  # noqa: D402
+            """Accumulate a text fragment for the current message."""
             if fragment:
                 inline_fragments.append(fragment)
 
-        def flush_inline() -> None:
+        def flush_inline() -> None:  # noqa: D402
+            """Flush accumulated inline fragments into a content block."""
             if not inline_fragments:
                 return
             text = "".join(inline_fragments)

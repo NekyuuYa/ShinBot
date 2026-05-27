@@ -31,6 +31,16 @@ def json_schema_response_format(
     properties: dict[str, Any],
     required: list[str],
 ) -> dict[str, Any]:
+    """Build a JSON schema response format configuration for structured output.
+
+    Args:
+        name: The schema name used by the model provider.
+        properties: JSON Schema property definitions.
+        required: List of required property names.
+
+    Returns:
+        A dict suitable for passing as a ``response_format`` parameter.
+    """
     return {
         "type": "json_schema",
         "json_schema": {
@@ -46,10 +56,25 @@ def json_schema_response_format(
 
 
 def instance_id_from_session(session_id: str) -> str:
+    """Extract the instance ID prefix from a colon-separated session ID.
+
+    Args:
+        session_id: A session ID in the form ``"instance_id:..."``.
+
+    Returns:
+        The instance ID portion, or an empty string if no colon separator exists.
+    """
     return session_id.split(":", 1)[0] if ":" in session_id else ""
 
 
 def int_list(value: Any) -> list[int]:
+    """Convert a list of values to a list of integers, ignoring non-convertible items.
+    Args:
+        value: A list of values to convert.
+
+    Returns:
+        A list of successfully converted integers.
+    """
     if not isinstance(value, list):
         return []
     result: list[int] = []
@@ -61,6 +86,15 @@ def int_list(value: Any) -> list[int]:
 
 
 def optional_int(value: Any) -> int | None:
+    """Attempt to convert a value to an integer, returning ``None`` if not possible.
+    Booleans are explicitly excluded (``isinstance(True, int)`` is ``True`` in
+    Python, but ``True``/``False`` are not considered valid integer values here.
+    Args:
+        value: The value to convert.
+
+    Returns:
+        The integer value, or ``None`` if conversion is not applicable.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, int):

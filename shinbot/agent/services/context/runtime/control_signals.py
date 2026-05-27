@@ -29,6 +29,15 @@ class CacheReleaseSignal:
         total_tokens: int = 0,
         remaining_count: int = 0,
     ) -> CacheReleaseSignal:
+        """Create an inactive (non-triggered) cache release signal.
+
+        Args:
+            total_tokens: Current total token count.
+            remaining_count: Number of blocks remaining after potential eviction.
+
+        Returns:
+            A CacheReleaseSignal with triggered set to False.
+        """
         return cls(
             triggered=False,
             total_tokens=total_tokens,
@@ -36,6 +45,11 @@ class CacheReleaseSignal:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the signal to a plain dictionary.
+
+        Returns:
+            Dictionary representation suitable for logging or transport.
+        """
         return {
             "type": "cache_release",
             "triggered": self.triggered,

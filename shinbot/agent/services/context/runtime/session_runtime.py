@@ -17,9 +17,25 @@ class ContextSessionRuntime:
 
     @classmethod
     def from_data_dir(cls, data_dir: Path | str | None = "data") -> ContextSessionRuntime:
+        """Create a runtime instance backed by the given data directory.
+
+        Args:
+            data_dir: Path to the data directory for state persistence.
+
+        Returns:
+            A new ContextSessionRuntime instance.
+        """
         return cls(state_store=ContextStateStore(data_dir=data_dir))
 
     def get_state(self, session_id: str) -> ContextSessionState:
+        """Retrieve or lazily load the session state for the given session.
+
+        Args:
+            session_id: Conversation session identifier.
+
+        Returns:
+            The ContextSessionState, loaded from disk or created fresh.
+        """
         state = self.session_states.get(session_id)
         if state is not None:
             return state
@@ -34,6 +50,14 @@ class ContextSessionRuntime:
         return state
 
     def save(self, session_id: str) -> bool:
+        """Persist the in-memory session state to disk.
+
+        Args:
+            session_id: Conversation session identifier.
+
+        Returns:
+            True if the state was saved, False if not found.
+        """
         state = self.session_states.get(session_id)
         if state is None:
             return False

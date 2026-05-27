@@ -17,10 +17,33 @@ from .dist_files import ensure_no_symlinks
 
 
 def is_url(raw: str) -> bool:
+    """Check whether a string is an HTTP or HTTPS URL.
+
+    Args:
+        raw: The string to test.
+
+    Returns:
+        ``True`` if the string parses as an HTTP or HTTPS URL.
+    """
     return urllib.parse.urlparse(raw).scheme in {"http", "https"}
 
 
 def normalize_sha256(raw: str) -> str:
+    """Normalize and validate a SHA-256 hex digest string.
+
+    Accepts a string that may contain leading/trailing whitespace or extra
+    text after the hex token (e.g. from a ``sha256sum`` output).
+
+    Args:
+        raw: The raw string containing a SHA-256 hex digest.
+
+    Returns:
+        The lowercase 64-character hex digest.
+
+    Raises:
+        SystemUpdateError: If the input does not contain a valid 64-character
+            hex token.
+    """
     token = raw.strip().split()[0] if raw.strip() else ""
     if len(token) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in token):
         raise SystemUpdateError(
@@ -38,6 +61,28 @@ def resolve_expected_package_sha256(
     allow_insecure_http: bool,
     resolve_path: Callable[[object], Path],
 ) -> str:
+    """Resolve the expected SHA-256 digest for a dist package.
+
+    If an explicit digest is provided it is returned directly. Otherwise the
+    function fetches the digest from a remote URL or local file path.
+
+    Args:
+        expected_sha256: An explicit 64-character hex digest, or empty.
+        expected_sha256_source: A URL or file path to fetch the digest from
+            when *expected_sha256* is empty.
+        allow_insecure_http: Whether plain HTTP is permitted for remote
+            SHA-256 sources.
+        resolve_path: Callable that resolves a relative path to an absolute
+            ``Path``.
+
+    Returns:
+        The normalized lowercase SHA-256 hex digest, or an empty string if
+        no source is configured.
+
+    Raises:
+        SystemUpdateError: If the source is unreachable, uses insecure HTTP,
+            or contains an invalid digest.
+    """
     if expected_sha256:
         return normalize_sha256(expected_sha256)
     if not expected_sha256_source:
@@ -80,6 +125,27 @@ def stage_package_zip(
     allow_insecure_http: bool,
     resolve_path: Callable[[object], Path],
 ) -> Path:
+    """Stage a zip package for deployment by downloading or copying it.
+
+    Downloads the package from a remote URL or copies it from a local path
+    into a temporary zip file under *target_parent*, then validates it.
+
+    Args:
+        package_source: A URL or file path to the zip package.
+        target_parent: Directory where the temporary zip will be created.
+        package_max_bytes: Maximum allowed size of the zip in bytes.
+        allow_insecure_http: Whether plain HTTP is permitted for remote
+            package sources.
+        resolve_path: Callable that resolves a relative path to an absolute
+            ``Path``.
+
+    Returns:
+        Path to the staged temporary zip file.
+
+    Raises:
+        SystemUpdateError: If the source is missing, exceeds the size limit,
+            or the zip fails validation.
+    """
     fd, tmp_name = tempfile.mkstemp(prefix=".webui-dist-package-", suffix=".zip", dir=target_parent)
     os.close(fd)
     tmp_zip = Path(tmp_name)
@@ -123,6 +189,20 @@ def download_package(
     package_max_bytes: int,
     allow_insecure_http: bool,
 ) -> None:
+    """Download a zip package from a remote URL to a local file.
+
+    Args:
+        url: HTTP or HTTPS URL of the zip package.
+        target: Local file path to write the downloaded content to.
+        package_max_bytes: Maximum allowed download size in bytes. The
+            download is aborted if the response exceeds this limit.
+        allow_insecure_http: Whether plain HTTP is permitted.
+
+    Raises:
+        SystemUpdateError: If the URL scheme is unsupported, insecure HTTP is
+            not allowed, the download exceeds the size limit, or the request
+            fails.
+    """
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise SystemUpdateError(
@@ -165,6 +245,19 @@ def download_package(
 
 
 def validate_zip_package(package_path: Path) -> None:
+    """Validate the structure and safety of a zip package for deployment.
+
+    Checks that the archive is not empty, contains no unsafe entries, and
+    includes an ``index.html`` at the root or inside a single top-level
+    directory.
+
+    Args:
+        package_path: Path to the zip file to validate.
+
+    Raises:
+        SystemUpdateError: If the zip is invalid, empty, contains unsafe
+            paths, or is missing a ``dist/index.html``.
+    """
     try:
         with zipfile.ZipFile(package_path) as archive:
             entries = archive.infolist()
@@ -194,6 +287,17 @@ def validate_zip_package(package_path: Path) -> None:
 
 
 def zip_contains_dist_index(entries: list[zipfile.ZipInfo]) -> bool:
+    """Check whether a zip archive contains a ``dist/index.html`` entry.
+
+    The ``index.html`` may be at the archive root or inside exactly one
+    top-level directory. ``__MACOSX`` entries are ignored.
+
+    Args:
+        entries: List of ``ZipInfo`` entries from the archive.
+
+    Returns:
+        ``True`` if a valid ``index.html`` location is found.
+    """
     names = [info.filename.strip("/") for info in entries if not info.is_dir()]
     names = [name for name in names if name and not name.startswith("__MACOSX/")]
     if "index.html" in names:
@@ -204,6 +308,19 @@ def zip_contains_dist_index(entries: list[zipfile.ZipInfo]) -> bool:
 
 
 def extract_zip_package(package_path: Path, extract_root: Path) -> None:
+    """Extract a validated zip package to a target directory.
+
+    Each entry is validated for safety before extraction. Path traversal
+    and symlink attacks are rejected.
+
+    Args:
+        package_path: Path to the zip file to extract.
+        extract_root: Directory to extract the archive contents into.
+
+    Raises:
+        SystemUpdateError: If any entry contains unsafe paths (absolute
+            paths, parent-directory traversal, or symlinks).
+    """
     with zipfile.ZipFile(package_path) as archive:
         for info in archive.infolist():
             validate_zip_entry(info)
@@ -218,6 +335,17 @@ def extract_zip_package(package_path: Path, extract_root: Path) -> None:
 
 
 def validate_zip_entry(info: zipfile.ZipInfo) -> None:
+    """Validate that a single zip entry is safe for extraction.
+
+    Rejects absolute paths, parent-directory traversal, and symlinks.
+
+    Args:
+        info: The ``ZipInfo`` entry to validate.
+
+    Raises:
+        SystemUpdateError: If the entry is an absolute path, contains
+            ``..`` traversal, or is a symlink.
+    """
     name = info.filename
     if not name or name.startswith(("/", "\\")):
         raise SystemUpdateError(
@@ -243,6 +371,21 @@ def validate_zip_entry(info: zipfile.ZipInfo) -> None:
 
 
 def resolve_extracted_dist(extract_root: Path) -> Path:
+    """Locate the actual dist directory inside an extracted zip package.
+
+    Handles two layouts: ``index.html`` at the extraction root, or
+    ``index.html`` inside exactly one non-``__MACOSX`` subdirectory.
+
+    Args:
+        extract_root: Root directory of the extracted zip contents.
+
+    Returns:
+        The resolved path to the directory containing ``index.html``.
+
+    Raises:
+        SystemUpdateError: If no valid ``index.html`` location is found or
+            the resolved directory contains symlinks.
+    """
     if (extract_root / "index.html").is_file():
         ensure_no_symlinks(extract_root)
         return extract_root

@@ -152,6 +152,11 @@ class _ActionState:
     no_reply_intensity: ActiveChatNoReplyIntensity = ActiveChatNoReplyIntensity.NORMAL
 
     def observe(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        """Record a successful tool call and update the highest-priority action.
+        Args:
+            tool_name: The name of the tool that was executed.
+            arguments: The arguments passed to the tool call.
+        """
         if tool_name == "exit_active":
             self._promote(ActiveChatActionKind.EXIT_ACTIVE)
             self.reason = _reason_from(arguments)
@@ -187,6 +192,11 @@ class _ActionState:
                 self.reason = _reason_from(arguments)
 
     def to_round_result(self) -> ActiveChatRoundResult:
+        """Convert the accumulated action state into a round result.
+        Returns:
+            An ``ActiveChatRoundResult`` reflecting the strongest observed action,
+            its reason, and intensity levels.
+        """
         return ActiveChatRoundResult(
             success=True,
             reason=self.reason,

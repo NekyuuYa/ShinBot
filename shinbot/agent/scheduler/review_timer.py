@@ -38,13 +38,26 @@ class ReviewDueTimerService:
         self._task_scope: AgentTaskScope | None = None
 
     def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
+        """Bind the agent runtime used to dispatch review-due signals.
+        Args:
+            runtime: The agent runtime providing scheduler and signal dispatch.
+            bot_id: The bot identifier for routing signals to the correct profile.
+        """
         self._runtime = runtime
         self._bot_id = str(bot_id or "").strip()
 
     def bind_task_scope(self, scope: AgentTaskScope) -> None:
+        """Bind the task scope for managed asyncio task creation.
+        Args:
+            scope: The agent task scope that owns background task lifecycles.
+        """
         self._task_scope = scope
 
     def start(self) -> None:
+        """Start the background polling loop that dispatches due review plans.
+        The loop is a no-op if already running or if no asyncio event loop is
+        available. Tasks are created through the bound task scope when set.
+        """
         if self._task is not None and not self._task.done():
             return
         try:
@@ -70,6 +83,9 @@ class ReviewDueTimerService:
         )
 
     async def shutdown(self) -> None:
+        """Cancel the background polling loop and wait for it to finish.
+        Safe to call multiple times; subsequent calls are no-ops.
+        """
         task = self._task
         self._task = None
         if task is None or task.done():

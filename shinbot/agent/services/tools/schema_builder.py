@@ -56,6 +56,19 @@ class ToolSchemaBuilder:
         include_private: bool = False,
         tags: set[str] | None = None,
     ) -> list[ToolDefinition]:
+        """Return tool definitions visible to the given caller context.
+
+        Args:
+            caller: Identifier of the calling component.
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            user_id: End-user identifier.
+            include_private: When True, include private-visibility tools.
+            tags: Optional registry tag filter.
+
+        Returns:
+            List of visible tool definitions.
+        """
         definitions = self._registry.list_tools(enabled=True, tags=tags)
         visible: list[ToolDefinition] = []
         for definition in definitions:
@@ -80,6 +93,21 @@ class ToolSchemaBuilder:
         user_id: str = "",
         tags: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Export visible tools as Chat Completions function schemas.
+
+        Filters out private-visibility tools and projects each definition
+        into the ``{"type": "function", "function": {...}}`` format.
+
+        Args:
+            caller: Identifier of the calling component.
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            user_id: End-user identifier.
+            tags: Optional registry tag filter.
+
+        Returns:
+            List of tool schema dicts in Chat Completions format.
+        """
         return [
             self._schema_for_definition(definition)
             for definition in self.list_visible_tools(
