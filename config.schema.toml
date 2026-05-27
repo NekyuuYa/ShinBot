@@ -1,0 +1,161 @@
+[provider]
+kind = "core"
+id = "shinbot_top_level"
+display_name = "ShinBot Top-Level Config"
+description = "Top-level configuration sections: logging, database, admin, and permissions."
+config_version = "1.0.0"
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+
+[[fields]]
+path = "logging.level"
+type = "enum"
+required = true
+default = "INFO"
+choices = ["DEBUG", "INFO", "WARNING", "ERROR"]
+description = "Global log level."
+
+[[fields]]
+path = "logging.third_party_noise"
+type = "enum"
+required = true
+default = "debug"
+choices = ["off", "debug", "on"]
+description = "Control third-party library log verbosity. \"debug\" shows low-level uvicorn/websockets logs only when level = \"DEBUG\"."
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+
+[[fields]]
+path = "database.url"
+type = "string"
+required = true
+default = "sqlite:///data/db/shinbot.sqlite3"
+description = "Database connection URL."
+
+[[fields]]
+path = "database.snapshot_ttl"
+type = "integer"
+required = true
+default = 10800
+min = 0
+description = "How long to retain prompt snapshots, in seconds."
+
+# ─── Admin / WebUI ────────────────────────────────────────────────────────────
+
+[[fields]]
+path = "admin.username"
+type = "string"
+required = true
+default = "admin"
+description = "Admin dashboard login username."
+
+[[fields]]
+path = "admin.password"
+type = "string"
+required = true
+default = "admin"
+secret = true
+description = "Admin dashboard login password. Change before deploying."
+
+[[fields]]
+path = "admin.jwt_expire_hours"
+type = "integer"
+required = true
+default = 24
+min = 1
+description = "JWT token lifetime in hours."
+
+[[fields]]
+path = "admin.jwt_secret"
+type = "string"
+default = ""
+secret = true
+description = "JWT signing secret. Empty means auto-generate data/admin_secret.key."
+
+[[fields]]
+path = "admin.dashboard_dist"
+type = "string"
+default = ""
+description = "Path to the built dashboard static files directory."
+
+[[fields]]
+path = "admin.cors_origins"
+type = "array"
+default = []
+description = "Allowed CORS origins for the management API."
+
+[[fields]]
+path = "admin.cors_allow_credentials"
+type = "boolean"
+default = true
+description = "Allow credentials in CORS requests."
+
+[[fields]]
+path = "admin.auth_cookie_name"
+type = "string"
+default = ""
+description = "Name of the authentication cookie."
+
+[[fields]]
+path = "admin.auth_cookie_samesite"
+type = "string"
+default = ""
+description = "SameSite attribute for the authentication cookie."
+
+[[fields]]
+path = "admin.auth_cookie_secure"
+type = "boolean"
+default = false
+description = "Secure flag for the authentication cookie."
+
+[[fields]]
+path = "admin.framework_update_dir"
+type = "string"
+default = ""
+description = "Working directory for framework_update_command."
+
+[[fields]]
+path = "admin.framework_update_command"
+type = "string"
+default = ""
+description = "Shell command to execute for framework updates."
+
+[[fields]]
+path = "admin.framework_update_timeout_seconds"
+type = "integer"
+default = 300
+min = 1
+description = "Timeout in seconds for the framework update command."
+
+[[fields]]
+path = "admin.framework_update_restart"
+type = "boolean"
+default = true
+description = "Restart the application after a successful framework update."
+
+[[fields]]
+path = "admin.dashboard_build_dir"
+type = "string"
+default = ""
+description = "Working directory for dashboard_build_command."
+
+[[fields]]
+path = "admin.dashboard_build_command"
+type = "string"
+default = ""
+description = "Shell command to build the dashboard frontend."
+
+[[fields]]
+path = "admin.dashboard_build_timeout_seconds"
+type = "integer"
+default = 180
+min = 1
+description = "Timeout in seconds for the dashboard build command."
+
+# ─── Permissions ──────────────────────────────────────────────────────────────
+
+[[fields]]
+path = "permissions"
+type = "object"
+default = {}
+description = "Map of group names (e.g. default, admin, owner) to lists of allowed permissions. Bindings map user identifiers to groups."
