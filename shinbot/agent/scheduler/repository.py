@@ -26,6 +26,16 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
     """Persistence-backed inbox and state store for AgentScheduler."""
 
     def get_state(self, session_id: str) -> AgentState:
+        """Return the current scheduler state for one session.
+        Falls back to ``AgentState.IDLE`` when the session has no persisted
+        state or the stored value cannot be mapped to a known state.
+
+        Args:
+            session_id: The session whose state to retrieve.
+
+        Returns:
+            The current :class:`AgentState` for the session.
+        """
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -43,6 +53,16 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             return AgentState.IDLE
 
     def get_review_plan(self, session_id: str) -> ReviewPlan | None:
+        """Return the current review plan for one session, if any.
+        A session may have no review plan if it has never been scheduled
+        for review or if the plan was cleared.
+
+        Args:
+            session_id: The session whose review plan to retrieve.
+
+        Returns:
+            The :class:`ReviewPlan`, or ``None`` if none exists.
+        """
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -58,6 +78,13 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return self._review_plan_from_row(row)
 
     def set_review_plan(self, plan: ReviewPlan) -> None:
+        """Persist a review plan for one session.
+        Creates or updates the row via upsert.  The current scheduler
+        state is preserved — only review-related columns are touched.
+
+        Args:
+            plan: The review plan to store.
+        """
         current_state = self.get_state(plan.session_id)
         threshold_json = json.dumps(
             {
@@ -91,7 +118,19 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 ),
             )
 
-    def list_due_review_plans(self, *, now: float, limit: int = 50) -> list[ReviewPlan]:
+    def list_due_review_plans(self, *, now: float, limit: int = 50) -> list[ReviewPlan]:  # noqa: E501
+        """Return review plans whose next review time has arrived.
+        Only plans whose ``next_review_at`` is at or before *now* **and**
+        whose session is currently in the ``IDLE`` state are returned.
+        Results are ordered by ``next_review_at`` ascending.
+
+        Args:
+            now: Current timestamp used to determine due plans.
+            limit: Maximum number of plans to return.
+
+        Returns:
+            A list of due :class:`ReviewPlan` instances.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -109,6 +148,14 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return [self._review_plan_from_row(row) for row in rows]
 
     def set_state(self, session_id: str, state: AgentState) -> None:
+        """Persist the current scheduler state for one session.
+        Creates the session row if it does not exist.  Only the ``state``
+        and ``updated_at`` columns are written via upsert.
+
+        Args:
+            session_id: The session whose state to update.
+            state: The new scheduler state.
+        """
         with self.connect() as conn:
             conn.execute(
                 """
@@ -122,6 +169,17 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             )
 
     def get_active_chat_state(self, session_id: str) -> ActiveChatState | None:
+        """Return active chat interest state for one session, if any.
+        The active chat state is stored as a JSON blob.  This method
+        deserialises it into an :class:`ActiveChatState` value object.
+
+        Args:
+            session_id: The session whose active chat state to retrieve.
+
+        Returns:
+            The :class:`ActiveChatState`, or ``None`` if the session has
+            no active chat state or the stored payload is corrupt.
+        """
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -161,6 +219,13 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         )
 
     def set_active_chat_state(self, state: ActiveChatState) -> None:
+        """Persist active chat interest state for one session.
+        The state is serialised to JSON and stored via upsert.  The
+        current scheduler state column is preserved.
+
+        Args:
+            state: The active chat state to store.
+        """
         payload = json.dumps(
             {
                 "interest_value": state.interest_value,
@@ -193,6 +258,13 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             )
 
     def clear_active_chat_state(self, session_id: str) -> None:
+        """Clear active chat interest state for one session.
+        Resets the ``active_chat_state_json`` column to an empty JSON
+        object and updates the ``updated_at`` timestamp.
+
+        Args:
+            session_id: The session whose active chat state to clear.
+        """
         with self.connect() as conn:
             conn.execute(
                 """
@@ -205,6 +277,17 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             )
 
     def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
+        """Return known session IDs, optionally filtered by prefix.
+        Session IDs are gathered from all scheduler-related tables
+        (states, unread ranges, and high-priority events).
+
+        Args:
+            prefix: If given, only session IDs starting with this value
+                are returned.
+
+        Returns:
+            A sorted list of session ID strings.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -222,6 +305,15 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return [session_id for session_id in session_ids if session_id.startswith(prefix)]
 
     def add_unread(self, message: UnreadMessage) -> None:
+        """Record one unread message in the inbox.
+        Duplicates (same ``message_log_id`` already within an unread
+        range) are silently ignored.  When the message is the immediate
+        successor of the latest unread range it extends that range;
+        otherwise a new range is created.
+
+        Args:
+            message: The unread message to enqueue.
+        """
         with self.connect() as conn:
             existing = conn.execute(
                 """
@@ -284,6 +376,16 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             )
 
     def list_unread(self, session_id: str) -> list[UnreadMessage]:
+        """List unread messages for one session.
+        Only messages belonging to ranges that have not been consumed by
+        review or active chat are returned, in chronological order.
+
+        Args:
+            session_id: The session whose unread messages to list.
+
+        Returns:
+            A list of :class:`UnreadMessage` instances.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -313,6 +415,17 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         ]
 
     def list_unread_ranges(self, session_id: str, *, limit: int = 50) -> list[UnreadRange]:
+        """List unread timeline ranges for one session.
+        Only ranges that have not been consumed by review or active chat
+        are included.  Ranges are ordered by start time ascending.
+
+        Args:
+            session_id: The session whose unread ranges to list.
+            limit: Maximum number of ranges to return.
+
+        Returns:
+            A list of :class:`UnreadRange` instances.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -330,6 +443,16 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return [self._unread_range_from_row(row) for row in rows]
 
     def count_unread_messages(self, session_id: str) -> int:
+        """Count unread messages for one session.
+        Sums the ``message_count`` of all ranges that have not been
+        consumed by review or active chat.
+
+        Args:
+            session_id: The session whose unread count to return.
+
+        Returns:
+            The total number of unread messages.
+        """
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -350,6 +473,17 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         consumed_start_msg_log_id: int,
         consumed_end_msg_log_id: int,
     ) -> None:
+        """Mark the middle of an unread range consumed, preserving remaining edges.
+        The original range is deleted and replaced with up to two
+        neighbour ranges covering the messages that were **not** consumed.
+        This allows partial review consumption without losing unread
+        messages outside the consumed window.
+
+        Args:
+            range_id: ID of the unread range to split.
+            consumed_start_msg_log_id: First message log ID consumed.
+            consumed_end_msg_log_id: Last message log ID consumed.
+        """
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -391,6 +525,13 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 )
 
     def mark_ranges_review_consumed(self, range_ids: list[int]) -> None:
+        """Mark whole unread ranges as consumed by review.
+        Sets ``review_consumed = 1`` for every range whose ID appears in
+        *range_ids*.  An empty list is a no-op.
+
+        Args:
+            range_ids: IDs of the ranges to mark consumed.
+        """
         if not range_ids:
             return
         placeholders = ",".join("?" for _ in range_ids)
@@ -410,6 +551,19 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         session_id: str,
         message_log_ids: list[int],
     ) -> list[UnreadMessage]:
+        """Mark messages consumed by active chat and return the consumed messages.
+        Each affected range is split so that the consumed sub-range is
+        marked ``chat_consumed`` while adjacent messages remain unread.
+        Overlapping ranges are handled individually.
+
+        Args:
+            session_id: The session whose messages to consume.
+            message_log_ids: Message log IDs to mark as consumed.
+
+        Returns:
+            The :class:`UnreadMessage` instances that were consumed, in
+            chronological order.
+        """
         if not message_log_ids:
             return []
         consumed: list[UnreadMessage] = []
@@ -519,6 +673,13 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return consumed
 
     def add_high_priority_events(self, events: list[HighPriorityEvent]) -> None:
+        """Record high-priority events.
+        Events are inserted in bulk with ``handled = 0``.  An empty list
+        is a no-op.
+
+        Args:
+            events: The high-priority events to record.
+        """
         if not events:
             return
         with self.connect() as conn:
@@ -542,6 +703,14 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             )
 
     def list_high_priority_events(self, session_id: str) -> list[HighPriorityEvent]:
+        """List unhandled high-priority events for one session.
+        Args:
+            session_id: The session whose events to list.
+
+        Returns:
+            A list of unhandled :class:`HighPriorityEvent` instances, in
+            creation order.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -556,6 +725,16 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return [self._high_priority_from_row(row) for row in rows]
 
     def mark_high_priority_events_handled(self, session_id: str) -> list[HighPriorityEvent]:
+        """Mark all pending high-priority events for one session as handled.
+        Returns the events that were marked so callers can process them
+        before they become invisible to future queries.
+
+        Args:
+            session_id: The session whose events to mark handled.
+
+        Returns:
+            The :class:`HighPriorityEvent` instances that were marked.
+        """
         events = self.list_high_priority_events(session_id)
         with self.connect() as conn:
             conn.execute(
@@ -570,6 +749,11 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return events
 
     def record_mention(self, session_id: str, timestamp: float) -> None:
+        """Record a mention timestamp for wake-threshold checks.
+        Args:
+            session_id: The session where the mention occurred.
+            timestamp: Unix timestamp of the mention.
+        """
         with self.connect() as conn:
             conn.execute(
                 """
@@ -580,6 +764,18 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             )
 
     def count_recent_mentions(self, session_id: str, *, now: float, window_seconds: float) -> int:
+        """Count mentions within the configured wake window.
+        Expired mentions (older than *window_seconds* before *now*) are
+        pruned as a side effect.
+
+        Args:
+            session_id: The session to count mentions for.
+            now: Current timestamp.
+            window_seconds: Width of the look-back window in seconds.
+
+        Returns:
+            The number of recent mentions within the window.
+        """
         cutoff = now - window_seconds
         with self.connect() as conn:
             conn.execute(

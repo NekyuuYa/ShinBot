@@ -484,26 +484,32 @@ class AgentRuntime:
 
     @property
     def prompt_file_config(self) -> PromptFileLoadConfig:
+        """Prompt file load configuration for the default profile."""
         return self._default_profile.prompt_file_config
 
     @property
     def review_runtime_config(self) -> ReviewRuntimeConfig:
+        """Review workflow runtime configuration for the default profile."""
         return self._default_profile.review_runtime_config
 
     @property
     def review_workflow_config(self) -> ReviewWorkflowConfig:
+        """Review workflow stage configuration for the default profile."""
         return self._default_profile.review_workflow_config
 
     @property
     def prompt_registry(self) -> PromptRegistry:
+        """Structured prompt component registry for the default profile."""
         return self._default_profile.prompt_registry
 
     @property
     def active_chat_timer(self) -> ActiveChatTimerService:
+        """Timer service that drives active-chat idle callbacks."""
         return self._default_profile.active_chat_timer
 
     @property
     def review_coordinator(self) -> ReviewCoordinator | None:
+        """Review coordinator, or ``None`` when no database is available."""
         return self._default_profile.review_coordinator
 
     @review_coordinator.setter
@@ -512,6 +518,7 @@ class AgentRuntime:
 
     @property
     def active_chat_workflow(self) -> ActiveChatCoordinator:
+        """Active chat workflow coordinator for the default profile."""
         return self._default_profile.active_chat_workflow
 
     @active_chat_workflow.setter
@@ -520,6 +527,7 @@ class AgentRuntime:
 
     @property
     def agent_scheduler(self) -> AgentScheduler:
+        """Agent task scheduler that dispatches workflow decisions."""
         return self._default_profile.agent_scheduler
 
     @agent_scheduler.setter
