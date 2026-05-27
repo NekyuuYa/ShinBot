@@ -39,12 +39,13 @@ from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 from shinbot.schema.routing import MessageRoutingSkipReason
+from shinbot.utils.logger import format_log_event, get_logger
 from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="dispatch", color="cyan")
 
 MAX_MESSAGE_AGE_SECONDS = 60
 
@@ -193,11 +194,26 @@ class MessageIngress:
                 session_id=session_id,
                 observed_at=observed_at,
             )
+            self._log_message_ingress(
+                event=event,
+                adapter=adapter,
+                session_id=session_id,
+                message_log_id=message_log_id,
+                bot_selection=None,
+                message=message,
+            )
             if not is_event_fresh(
                 event,
                 max_age_seconds=self._max_message_age_seconds,
             ):
                 self._mark_skipped(message_log_id, ROUTING_SKIP_EXPIRED_MESSAGE)
+                self._log_routing_result(
+                    event=event,
+                    adapter=adapter,
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    skipped_reason=ROUTING_SKIP_EXPIRED_MESSAGE,
+                )
                 return IngressResult(
                     dispatch_context=None,
                     matched_rules=[],
@@ -206,6 +222,13 @@ class MessageIngress:
                 )
             if self._waiting_registry.resolve(session_id, message.get_text(self_id=event.self_id)):
                 self._mark_skipped(message_log_id, ROUTING_SKIP_WAIT_FOR_INPUT)
+                self._log_routing_result(
+                    event=event,
+                    adapter=adapter,
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    skipped_reason=ROUTING_SKIP_WAIT_FOR_INPUT,
+                )
                 return IngressResult(
                     dispatch_context=None,
                     matched_rules=[],
@@ -263,6 +286,14 @@ class MessageIngress:
             observed_at=observed_at,
         )
         message_context._msg_log_id = message_log_id
+        self._log_message_ingress(
+            event=event,
+            adapter=adapter,
+            session_id=session.id,
+            message_log_id=message_log_id,
+            bot_selection=bot_selection,
+            message=message,
+        )
 
         dispatch_context = RouteDispatchContext(
             event=event,
@@ -277,6 +308,14 @@ class MessageIngress:
             max_age_seconds=self._max_message_age_seconds,
         ):
             self._mark_skipped(message_log_id, ROUTING_SKIP_EXPIRED_MESSAGE)
+            self._log_routing_result(
+                event=event,
+                adapter=adapter,
+                session_id=session.id,
+                message_log_id=message_log_id,
+                bot_selection=bot_selection,
+                skipped_reason=ROUTING_SKIP_EXPIRED_MESSAGE,
+            )
             self._session_manager.update(session)
             return IngressResult(
                 dispatch_context=dispatch_context,
@@ -287,6 +326,14 @@ class MessageIngress:
 
         if session.is_muted:
             self._mark_skipped(message_log_id, ROUTING_SKIP_SESSION_MUTED)
+            self._log_routing_result(
+                event=event,
+                adapter=adapter,
+                session_id=session.id,
+                message_log_id=message_log_id,
+                bot_selection=bot_selection,
+                skipped_reason=ROUTING_SKIP_SESSION_MUTED,
+            )
             self._session_manager.update(session)
             return IngressResult(
                 dispatch_context=dispatch_context,
@@ -297,6 +344,13 @@ class MessageIngress:
 
         if self._bot_router is not None and bot_selection is None:
             self._mark_skipped(message_log_id, ROUTING_SKIP_NO_ROUTE_MATCHED)
+            self._log_routing_result(
+                event=event,
+                adapter=adapter,
+                session_id=session.id,
+                message_log_id=message_log_id,
+                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
+            )
             self._session_manager.update(session)
             return IngressResult(
                 dispatch_context=dispatch_context,
@@ -308,6 +362,14 @@ class MessageIngress:
         blocked_reason = await self._run_interceptors(message_context)
         if blocked_reason is not None:
             self._mark_skipped(message_log_id, blocked_reason)
+            self._log_routing_result(
+                event=event,
+                adapter=adapter,
+                session_id=session.id,
+                message_log_id=message_log_id,
+                bot_selection=bot_selection,
+                skipped_reason=blocked_reason,
+            )
             self._session_manager.update(session)
             return IngressResult(
                 dispatch_context=dispatch_context,
@@ -331,6 +393,14 @@ class MessageIngress:
         )
         if not matched_rules:
             self._mark_skipped(message_log_id, ROUTING_SKIP_NO_ROUTE_MATCHED)
+            self._log_routing_result(
+                event=event,
+                adapter=adapter,
+                session_id=session.id,
+                message_log_id=message_log_id,
+                bot_selection=bot_selection,
+                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
+            )
             self._session_manager.update(session)
             return IngressResult(
                 dispatch_context=dispatch_context,
@@ -340,6 +410,14 @@ class MessageIngress:
             )
 
         self._mark_dispatched(message_log_id)
+        self._log_routing_result(
+            event=event,
+            adapter=adapter,
+            session_id=session.id,
+            message_log_id=message_log_id,
+            bot_selection=bot_selection,
+            matched_rules=matched_rules,
+        )
         self._schedule_targets(dispatch_context, matched_rules)
         self._session_manager.update(session)
         return IngressResult(
@@ -352,6 +430,63 @@ class MessageIngress:
         if self._bot_router is None:
             return None
         return self._bot_router.resolve(adapter_instance_id=adapter.instance_id, event=event)
+
+    def _log_message_ingress(
+        self,
+        *,
+        event: UnifiedEvent,
+        adapter: BaseAdapter,
+        session_id: str,
+        message_log_id: int | None,
+        bot_selection: Any | None,
+        message: Message,
+    ) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logger.debug(
+            format_log_event(
+                "message.ingress",
+                event_type=event.type,
+                platform=event.platform,
+                instance_id=adapter.instance_id,
+                session_id=session_id,
+                message_log_id=message_log_id,
+                platform_msg_id=event.message.id if event.message is not None else "",
+                sender_id=event.sender_id or "",
+                bot_id=getattr(getattr(bot_selection, "bot", None), "id", ""),
+                binding_id=getattr(getattr(bot_selection, "binding", None), "id", ""),
+                modality=summarize_message_modalities(message.elements),
+            )
+        )
+
+    def _log_routing_result(
+        self,
+        *,
+        event: UnifiedEvent,
+        adapter: BaseAdapter,
+        session_id: str,
+        message_log_id: int | None,
+        bot_selection: Any | None = None,
+        matched_rules: list[RouteRule] | None = None,
+        skipped_reason: str | None = None,
+    ) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logger.debug(
+            format_log_event(
+                "message.routing",
+                event_type=event.type,
+                instance_id=adapter.instance_id,
+                session_id=session_id,
+                message_log_id=message_log_id,
+                bot_id=getattr(getattr(bot_selection, "bot", None), "id", ""),
+                binding_id=getattr(getattr(bot_selection, "binding", None), "id", ""),
+                status="skipped" if skipped_reason else "dispatched",
+                skipped_reason=skipped_reason,
+                rules=[rule.id for rule in matched_rules or []],
+                targets=[rule.target for rule in matched_rules or []],
+            )
+        )
 
     def _process_notice_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         message = Message()
@@ -527,16 +662,38 @@ class MessageIngress:
         for rule in matched_rules:
             handler = self._route_targets.get(rule.target)
             if handler is None:
-                logger.error("route_target_missing: rule_id=%s target=%s", rule.id, rule.target)
+                logger.error(
+                    format_log_event(
+                        "route.target.missing",
+                        rule_id=rule.id,
+                        target=rule.target,
+                        message_log_id=dispatch_context.message_log_id,
+                    )
+                )
                 continue
 
             try:
                 result = handler(dispatch_context, rule)
             except Exception:
-                logger.exception("route_target_error: rule_id=%s target=%s", rule.id, rule.target)
+                logger.exception(
+                    format_log_event(
+                        "route.target.error",
+                        rule_id=rule.id,
+                        target=rule.target,
+                        message_log_id=dispatch_context.message_log_id,
+                    )
+                )
                 continue
 
             if inspect.isawaitable(result):
+                logger.debug(
+                    format_log_event(
+                        "route.target.scheduled",
+                        rule_id=rule.id,
+                        target=rule.target,
+                        message_log_id=dispatch_context.message_log_id,
+                    )
+                )
                 task = asyncio.create_task(result)
                 task.add_done_callback(
                     lambda done, matched_rule=rule: _log_route_target_task_result(
@@ -575,6 +732,18 @@ def _log_route_target_task_result(done: asyncio.Task[Any], rule: RouteRule) -> N
     try:
         done.result()
     except asyncio.CancelledError:
-        logger.debug("route_target_cancelled: rule_id=%s target=%s", rule.id, rule.target)
+        logger.debug(
+            format_log_event(
+                "route.target.cancelled",
+                rule_id=rule.id,
+                target=rule.target,
+            )
+        )
     except Exception:
-        logger.exception("route_target_error: rule_id=%s target=%s", rule.id, rule.target)
+        logger.exception(
+            format_log_event(
+                "route.target.error",
+                rule_id=rule.id,
+                target=rule.target,
+            )
+        )

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from typing import TYPE_CHECKING, Protocol
 
@@ -14,12 +13,13 @@ from shinbot.agent.signals import (
     AgentSignalSource,
     AgentTimerSignal,
 )
+from shinbot.utils.logger import format_log_event, get_logger
 
 if TYPE_CHECKING:
     from shinbot.agent.runtime.services import AgentRuntime
     from shinbot.agent.runtime.task_manager import AgentTaskScope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:timer", color="yellow")
 
 
 class ActiveChatTimer(Protocol):
@@ -79,6 +79,14 @@ class ActiveChatTimerService:
                 name=f"active-chat-timer:{session_id}",
             )
         self._tasks[session_id] = task
+        logger.debug(
+            format_log_event(
+                "agent.active_chat_timer.started",
+                bot_id=self._bot_id,
+                session_id=session_id,
+                tick_interval_seconds=self._tick_interval_seconds,
+            )
+        )
 
     def cancel(self, session_id: str) -> None:
         task = self._tasks.pop(session_id, None)
@@ -87,6 +95,13 @@ class ActiveChatTimerService:
         if task is asyncio.current_task():
             return
         task.cancel()
+        logger.debug(
+            format_log_event(
+                "agent.active_chat_timer.cancelled",
+                bot_id=self._bot_id,
+                session_id=session_id,
+            )
+        )
 
     async def shutdown(self) -> None:
         tasks = list(self._tasks.values())
@@ -96,6 +111,13 @@ class ActiveChatTimerService:
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        logger.debug(
+            format_log_event(
+                "agent.active_chat_timer.stopped_all",
+                bot_id=self._bot_id,
+                count=len(tasks),
+            )
+        )
 
     def active_sessions(self) -> list[str]:
         """Return sessions that currently have a live timer task."""
@@ -111,8 +133,24 @@ class ActiveChatTimerService:
 
         runtime = self._runtime
         if runtime is None:
+            logger.debug(
+                format_log_event(
+                    "agent.active_chat_timer.tick_skipped",
+                    bot_id=self._bot_id,
+                    session_id=session_id,
+                    reason="unbound",
+                )
+            )
             return
         now = time.time()
+        logger.debug(
+            format_log_event(
+                "agent.active_chat_timer.tick",
+                bot_id=self._bot_id,
+                session_id=session_id,
+                due_at=f"{now:.2f}",
+            )
+        )
         await runtime.handle_agent_signal(
             AgentSignal(
                 signal_id=f"active-chat-tick:{session_id}:{int(now)}",
@@ -137,6 +175,15 @@ class ActiveChatTimerService:
                     return
                 scheduler = self._runtime.agent_profile_for_bot(self._bot_id).agent_scheduler
                 if scheduler.state_for(session_id) != AgentState.ACTIVE_CHAT:
+                    logger.debug(
+                        format_log_event(
+                            "agent.active_chat_timer.exit",
+                            bot_id=self._bot_id,
+                            session_id=session_id,
+                            reason="state_changed",
+                            state=scheduler.state_for(session_id).value,
+                        )
+                    )
                     return
         except asyncio.CancelledError:
             raise

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import logging
 import random
 import uuid
 from collections.abc import Callable
@@ -14,6 +13,7 @@ from datetime import datetime
 from typing import Any, TypeVar
 
 from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecutionRecord
+from shinbot.utils.logger import format_log_event, get_logger
 
 from . import litellm_adapter
 from .audit_store import ModelAuditPayloadStore, sanitize_payload_for_audit
@@ -52,7 +52,7 @@ from .types import (
     VideoResult,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="model:runtime", color="blue")
 
 _ResultT = TypeVar("_ResultT")
 
@@ -222,6 +222,22 @@ class ModelRuntime:
                 timeout_override=attempt["timeout_override"],
                 mode=mode,
             )
+            logger.debug(
+                format_log_event(
+                    "model.call.start",
+                    operation=operation,
+                    mode=mode,
+                    execution_id=execution_id,
+                    route_id=route_id,
+                    provider_id=attempt["provider"]["id"],
+                    model_id=attempt["model"]["id"],
+                    caller=call.caller,
+                    purpose=call.purpose,
+                    session_id=call.session_id,
+                    instance_id=call.instance_id,
+                    fallback_from_model_id=previous_model_id,
+                )
+            )
             await self._notify_observers(
                 self._build_request_observer_payload(
                     mode=mode,
@@ -317,6 +333,30 @@ class ModelRuntime:
                             status="success",
                         )
                     )
+                logger.debug(
+                    format_log_event(
+                        "model.call.finish",
+                        status="success",
+                        operation=operation,
+                        mode=mode,
+                        execution_id=execution_id,
+                        route_id=route_id,
+                        provider_id=execution.provider_id,
+                        model_id=execution.model_id,
+                        caller=call.caller,
+                        purpose=call.purpose,
+                        session_id=call.session_id,
+                        latency_ms=f"{latency_ms:.2f}",
+                        input_tokens=usage["input_tokens"] if record_usage else 0,
+                        output_tokens=usage["output_tokens"] if record_usage else 0,
+                        cache_read_tokens=(
+                            usage["cache_read_tokens"] if record_cache_metrics else 0
+                        ),
+                        cache_write_tokens=(
+                            usage["cache_write_tokens"] if record_cache_metrics else 0
+                        ),
+                    )
+                )
                 return result
             except Exception as exc:  # noqa: BLE001
                 finished = utc_now()
@@ -375,7 +415,38 @@ class ModelRuntime:
                     )
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
+                logger.debug(
+                    format_log_event(
+                        "model.call.finish",
+                        status="error",
+                        operation=operation,
+                        mode=mode,
+                        execution_id=execution_id,
+                        route_id=route_id,
+                        provider_id=attempt["provider"]["id"],
+                        model_id=attempt["model"]["id"],
+                        caller=call.caller,
+                        purpose=call.purpose,
+                        session_id=call.session_id,
+                        latency_ms=f"{latency_ms:.2f}",
+                        error_code=type(exc).__name__,
+                    )
+                )
 
+        logger.warning(
+            format_log_event(
+                "model.call.failed",
+                operation=operation,
+                mode=mode,
+                caller=call.caller,
+                purpose=call.purpose,
+                session_id=call.session_id,
+                instance_id=call.instance_id,
+                route_id=call.route_id,
+                model_id=call.model_id,
+                error_code=type(last_error).__name__ if last_error is not None else "",
+            )
+        )
         raise ModelCallError(str(last_error) if last_error else failure_message)
 
     def _build_request_observer_payload(

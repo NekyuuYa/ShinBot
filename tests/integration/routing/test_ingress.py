@@ -248,7 +248,9 @@ async def test_ingress_missing_target_still_marks_dispatched(
 
     assert result.matched_rules == [rule]
     assert result.message_log_id is not None
-    assert "route_target_missing: rule_id=route.missing target=missing" in caplog.text
+    assert "route.target.missing" in caplog.text
+    assert "rule_id=route.missing" in caplog.text
+    assert "target=missing" in caplog.text
 
     row = db.message_logs.get(result.message_log_id)
     assert row is not None

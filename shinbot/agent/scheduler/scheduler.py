@@ -6,6 +6,8 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from enum import Enum
+from typing import Any
 
 from shinbot.agent.scheduler.active_chat_policy import (
     ActiveChatPolicy,
@@ -41,8 +43,9 @@ from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy, ReviewPol
 from shinbot.agent.scheduler.state_store import AgentStateStore, InMemoryAgentStateStore
 from shinbot.agent.scheduler.workflow_dispatcher import AgentWorkflowDispatcher
 from shinbot.agent.signals import AgentSignal, AgentSignalKind
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:scheduler", color="magenta")
 
 ResponseProfileResolver = Callable[[AgentSignal], str]
 AgentSignalDecision = (
@@ -104,13 +107,17 @@ class AgentScheduler:
 
     async def accept_signal(self, signal: AgentSignal) -> AgentSignalDecision | None:
         """Accept one unified Agent signal and decide scheduler-side action."""
+        self._log_signal_entry(signal)
         if signal.kind == AgentSignalKind.REVIEW_DUE:
-            return await self._accept_review_due_signal(signal)
-        if signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
-            return await self._accept_active_chat_tick_signal(signal)
-        if signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
-            return self._accept_active_chat_bootstrap_signal(signal)
-        return await self._accept_message_signal(signal)
+            decision = await self._accept_review_due_signal(signal)
+        elif signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK:
+            decision = await self._accept_active_chat_tick_signal(signal)
+        elif signal.kind == AgentSignalKind.ACTIVE_CHAT_BOOTSTRAP:
+            decision = self._accept_active_chat_bootstrap_signal(signal)
+        else:
+            decision = await self._accept_message_signal(signal)
+        self._log_signal_decision(signal, decision)
+        return decision
 
     async def _accept_message_signal(self, signal: AgentSignal) -> AgentScheduleDecision:
         """Accept one message signal and decide scheduler-side action."""
@@ -415,14 +422,17 @@ class AgentScheduler:
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
         logger.info(
-            "Active chat exited from interest adjustment session=%s force_exit=%s "
-            "delta=%.2f interest=%.2f reason=%s next_review_at=%.2f",
-            session_id,
-            force_exit,
-            delta,
-            adjusted_state.interest_value,
-            reason,
-            plan.next_review_at,
+            format_log_event(
+                "agent.active_chat.exit",
+                cause="interest_adjustment",
+                session_id=session_id,
+                force_exit=force_exit,
+                delta=f"{delta:.2f}",
+                interest=f"{adjusted_state.interest_value:.2f}",
+                reason=reason,
+                next_review_at=f"{plan.next_review_at:.2f}",
+                next_review_after_seconds=f"{max(0.0, plan.next_review_at - checked_at):.2f}",
+            )
         )
         self._stop_active_chat_runtime(session_id)
         return ActiveChatInterestAdjustDecision(
@@ -777,12 +787,15 @@ class AgentScheduler:
         self._state_store.clear_active_chat_state(session_id)
         self._state_store.set_review_plan(plan)
         logger.info(
-            "Active chat exited from decay tick session=%s interest=%.2f "
-            "tick_count=%s next_review_at=%.2f",
-            session_id,
-            decayed_state.interest_value,
-            decayed_state.tick_count,
-            plan.next_review_at,
+            format_log_event(
+                "agent.active_chat.exit",
+                cause="decay_tick",
+                session_id=session_id,
+                interest=f"{decayed_state.interest_value:.2f}",
+                tick_count=decayed_state.tick_count,
+                next_review_at=f"{plan.next_review_at:.2f}",
+                next_review_after_seconds=f"{max(0.0, plan.next_review_at - checked_at):.2f}",
+            )
         )
         self._stop_active_chat_runtime(session_id)
         return ActiveChatTickDecision(
@@ -947,8 +960,16 @@ class AgentScheduler:
     def _ensure_review_plan(self, session_id: str, now: float) -> None:
         if self._state_store.get_review_plan(session_id) is not None:
             return
-        self._state_store.set_review_plan(
-            self._review_policy.initial_plan(session_id=session_id, now=now)
+        plan = self._review_policy.initial_plan(session_id=session_id, now=now)
+        self._state_store.set_review_plan(plan)
+        logger.debug(
+            format_log_event(
+                "agent.review.plan.created",
+                session_id=session_id,
+                reason=plan.reason,
+                next_review_at=f"{plan.next_review_at:.2f}",
+                next_review_after_seconds=f"{max(0.0, plan.next_review_at - now):.2f}",
+            )
         )
 
     @staticmethod
@@ -971,6 +992,92 @@ class AgentScheduler:
             is_poke_to_bot=message.is_poke_to_bot or metadata.is_poke_to_bot,
             is_poke_to_other=message.is_poke_to_other or metadata.is_poke_to_other,
             self_platform_id=message.self_platform_id or metadata.self_platform_id,
+        )
+
+    def _log_signal_entry(self, signal: AgentSignal) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logger.debug(
+            format_log_event(
+                "agent.signal.entry",
+                kind=_enum_value(signal.kind),
+                source=_enum_value(signal.source),
+                signal_id=signal.signal_id,
+                session_id=signal.session_id,
+                bot_id=signal.bot_id,
+                state=_enum_value(self._state_store.get_state(signal.session_id)),
+                message_log_id=_signal_message_log_id(signal),
+                timer_trigger=(
+                    signal.timer.trigger if signal.timer is not None else ""
+                ),
+                timer_due_at=(
+                    f"{signal.timer.due_at:.2f}"
+                    if signal.timer is not None and signal.timer.due_at is not None
+                    else ""
+                ),
+            )
+        )
+
+    def _log_signal_decision(
+        self,
+        signal: AgentSignal,
+        decision: AgentSignalDecision | None,
+    ) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        if decision is None:
+            logger.debug(
+                format_log_event(
+                    "agent.signal.decision",
+                    kind=_enum_value(signal.kind),
+                    signal_id=signal.signal_id,
+                    session_id=signal.session_id,
+                    status="ignored",
+                )
+            )
+            return
+
+        review_plan = _decision_review_plan(decision)
+        active_chat_state = getattr(decision, "active_chat_state", None)
+        logger.debug(
+            format_log_event(
+                "agent.signal.decision",
+                kind=_enum_value(signal.kind),
+                signal_id=signal.signal_id,
+                session_id=signal.session_id,
+                bot_id=signal.bot_id,
+                state=_enum_value(getattr(decision, "state", "")),
+                skipped_reason=getattr(decision, "skipped_reason", ""),
+                accepted=getattr(decision, "accepted", None),
+                message_log_id=_signal_message_log_id(signal),
+                high_priority_count=len(getattr(decision, "high_priority_events", []) or []),
+                active_reply_started=getattr(decision, "active_reply_started", None),
+                active_reply_pending=getattr(decision, "active_reply_pending", None),
+                review_started=getattr(decision, "review_started", None),
+                review_workflow_started=getattr(
+                    decision,
+                    "review_workflow_started",
+                    None,
+                ),
+                active_chat_started=getattr(decision, "active_chat_started", None),
+                active_chat_observed=getattr(decision, "active_chat_observed", None),
+                active_chat_notified=getattr(
+                    decision,
+                    "active_chat_workflow_notified",
+                    None,
+                ),
+                returned_to_idle=getattr(decision, "returned_to_idle", None),
+                active_chat_interest=(
+                    f"{active_chat_state.interest_value:.2f}"
+                    if active_chat_state is not None
+                    else ""
+                ),
+                next_review_at=(
+                    f"{review_plan.next_review_at:.2f}"
+                    if review_plan is not None
+                    else ""
+                ),
+            )
         )
 
     @staticmethod
@@ -1004,3 +1111,22 @@ def _has_high_priority_kind(
 ) -> bool:
     kind_set = set(kinds)
     return any(event.kind in kind_set for event in events)
+
+
+def _enum_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def _signal_message_log_id(signal: AgentSignal) -> int | None:
+    if signal.message is None:
+        return None
+    return signal.message.message_log_id
+
+
+def _decision_review_plan(decision: Any) -> ReviewPlan | None:
+    plan = getattr(decision, "next_review_plan", None)
+    if plan is not None:
+        return plan
+    return getattr(decision, "review_plan", None)

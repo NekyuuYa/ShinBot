@@ -7,7 +7,6 @@ attach the Agent entry handler to message routing.
 from __future__ import annotations
 
 import json
-import logging
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -81,6 +80,7 @@ from shinbot.core.instance_config import (
     resolve_instance_runtime_config,
     select_response_profile,
 )
+from shinbot.utils.logger import format_log_event, get_logger
 
 if TYPE_CHECKING:
     from shinbot.core.application.app import ShinBot
@@ -89,7 +89,7 @@ if TYPE_CHECKING:
     from shinbot.core.security.permission import PermissionEngine
     from shinbot.persistence import DatabaseManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:runtime", color="magenta")
 
 
 class AgentRuntimeProfile:
@@ -257,12 +257,15 @@ class AgentRuntimeProfile:
         self.config = replace(self.config, active_chat_attention_config=next_config)
         self.active_chat_workflow.update_attention_config(next_config)
         logger.debug(
-            "Agent active chat threshold updated profile=%s source=%s base=%.3f delta=%.3f target=%.3f",
-            self.profile_id,
-            source,
-            self._base_active_chat_attention_config.base_threshold,
-            delta,
-            target_threshold,
+            format_log_event(
+                "agent.active_chat.threshold.updated",
+                profile_id=self.profile_id,
+                bot_id=self.bot_id,
+                source=source,
+                base=f"{self._base_active_chat_attention_config.base_threshold:.3f}",
+                delta=f"{delta:.3f}",
+                target=f"{target_threshold:.3f}",
+            )
         )
 
     def _create_agent_scheduler(self, workflow_dispatcher) -> AgentScheduler:
@@ -584,7 +587,38 @@ class AgentRuntime:
         """Receive a unified Agent signal and let Agent internals process it."""
         self.start_background_tasks()
         profile = self.agent_profile_for_bot(signal.bot_id)
+        logger.debug(
+            format_log_event(
+                "agent.runtime.signal",
+                kind=signal.kind.value,
+                source=signal.source.value,
+                signal_id=signal.signal_id,
+                session_id=signal.session_id,
+                bot_id=signal.bot_id,
+                profile_id=profile.profile_id,
+                selected_bot_id=profile.bot_id,
+                message_log_id=(
+                    signal.message.message_log_id if signal.message is not None else None
+                ),
+            )
+        )
         decision = await profile.agent_scheduler.accept_signal(signal)
+        logger.debug(
+            format_log_event(
+                "agent.runtime.decision",
+                kind=signal.kind.value,
+                signal_id=signal.signal_id,
+                session_id=signal.session_id,
+                profile_id=profile.profile_id,
+                decision_type=type(decision).__name__ if decision is not None else "",
+                skipped_reason=getattr(decision, "skipped_reason", ""),
+                state=(
+                    getattr(getattr(decision, "state", None), "value", "")
+                    if decision is not None
+                    else ""
+                ),
+            )
+        )
         if isinstance(decision, ActiveChatBootstrapApplyDecision):
             return decision
         return None

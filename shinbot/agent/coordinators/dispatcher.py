@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -25,8 +24,9 @@ from shinbot.agent.services.summaries import (
     ReviewHandoffContext,
     SummaryHandoffEntry,
 )
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:workflow", color="green")
 
 ReviewRunRecorder = Callable[[str, Any, list[UnreadMessage]], None]
 
@@ -87,10 +87,15 @@ class ActiveReplyDispatcher:
         let the scheduler continue to idle or the pending review flow.
         """
         logger.info(
-            "Active reply skipped until workflow is implemented session=%s msg=%s sender=%s",
-            session_id,
-            message_log_id,
-            sender_id,
+            format_log_event(
+                "agent.active_reply.skipped",
+                reason="workflow_not_implemented",
+                session_id=session_id,
+                message_log_id=message_log_id,
+                sender_id=sender_id,
+                response_profile=response_profile,
+                event_count=len(events),
+            )
         )
         if self._agent_scheduler is not None:
             await self._agent_scheduler.complete_active_reply(session_id)
@@ -105,6 +110,15 @@ class ActiveReplyDispatcher:
         if self._review_coordinator is None or self._agent_scheduler is None:
             return
 
+        logger.debug(
+            format_log_event(
+                "agent.review.workflow.start",
+                session_id=session_id,
+                next_review_at=f"{review_plan.next_review_at:.2f}",
+                reason=review_plan.reason,
+                unread_count=len(unread_messages),
+            )
+        )
         result = await self._review_coordinator.run(
             scheduler=self._agent_scheduler,
             session_id=session_id,
@@ -114,6 +128,22 @@ class ActiveReplyDispatcher:
         self.last_review_result = result
         self.last_review_explanation = build_review_workflow_explanation(result)
         self._record_review_run(session_id, result, unread_messages)
+        logger.debug(
+            format_log_event(
+                "agent.review.workflow.finish",
+                session_id=session_id,
+                review_run_id=result.review_run_id,
+                failed=result.failed,
+                reply_replied=(
+                    result.reply.replied if result.reply is not None else None
+                ),
+                active_chat_started=(
+                    result.completion.active_chat_started
+                    if result.completion is not None
+                    else None
+                ),
+            )
+        )
         if (
             self._active_chat_workflow is not None
             and result.completion is not None
@@ -160,6 +190,15 @@ class ActiveReplyDispatcher:
         if self._active_chat_workflow is None:
             return
 
+        logger.debug(
+            format_log_event(
+                "agent.active_chat.workflow.start",
+                session_id=session_id,
+                active_epoch=active_chat_state.active_epoch,
+                initial_interest=f"{active_chat_state.interest_value:.2f}",
+                initial_unread_count=len(initial_unread_messages or []),
+            )
+        )
         await self._active_chat_workflow.start_active_chat(
             session_id=session_id,
             active_chat_state=active_chat_state,
@@ -216,6 +255,19 @@ class ActiveReplyDispatcher:
         if self._active_chat_workflow is None or self._agent_scheduler is None:
             return
 
+        logger.debug(
+            format_log_event(
+                "agent.active_chat.workflow.message",
+                session_id=session_id,
+                message_log_id=message_log_id,
+                sender_id=sender_id,
+                response_profile=response_profile,
+                is_mentioned=is_mentioned,
+                is_reply_to_bot=is_reply_to_bot,
+                active_epoch=active_chat_state.active_epoch,
+                interest=f"{active_chat_state.interest_value:.2f}",
+            )
+        )
         await self._active_chat_workflow.notify_message(
             scheduler=self._agent_scheduler,
             session_id=session_id,
@@ -240,6 +292,17 @@ class ActiveReplyDispatcher:
             return None
         checked_at = time.time()
         previous_plan = self._agent_scheduler.review_plan_for(session_id)
+        logger.debug(
+            format_log_event(
+                "agent.idle_review_planning.start",
+                session_id=session_id,
+                previous_next_review_at=(
+                    f"{previous_plan.next_review_at:.2f}"
+                    if previous_plan is not None
+                    else ""
+                ),
+            )
+        )
         stage_input = self._build_idle_review_planning_input(
             session_id=session_id,
             now=checked_at,
@@ -251,6 +314,13 @@ class ActiveReplyDispatcher:
             return None
         seconds = output.next_review_after_seconds
         if seconds is None:
+            logger.debug(
+                format_log_event(
+                    "agent.idle_review_planning.skip",
+                    session_id=session_id,
+                    reason="missing_next_review_after_seconds",
+                )
+            )
             return None
         min_seconds = max(0.0, self._review_config.idle_review_planning_min_after_seconds)
         max_seconds = max(
@@ -261,7 +331,7 @@ class ActiveReplyDispatcher:
         previous_threshold = (
             previous_plan.active_reply_threshold if previous_plan is not None else None
         )
-        return ReviewPlan(
+        plan = ReviewPlan(
             session_id=session_id,
             next_review_at=checked_at + seconds,
             reason=output.reason or "idle_review_planning",
@@ -285,6 +355,19 @@ class ActiveReplyDispatcher:
             ),
             updated_at=checked_at,
         )
+        logger.debug(
+            format_log_event(
+                "agent.idle_review_planning.finish",
+                session_id=session_id,
+                next_review_after_seconds=f"{seconds:.2f}",
+                next_review_at=f"{plan.next_review_at:.2f}",
+                reason=plan.reason,
+                mention_sensitivity=plan.mention_sensitivity.value,
+                mention_wake_count=plan.active_reply_threshold.at_count,
+                mention_wake_window_seconds=plan.active_reply_threshold.window_seconds,
+            )
+        )
+        return plan
 
 
     def _save_active_chat_summary(self, session_id: str) -> None:

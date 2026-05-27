@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
@@ -19,8 +18,9 @@ from shinbot.core.dispatch.routing import RouteCondition, RouteMatchMode, RouteR
 from shinbot.core.message_analysis import iter_message_elements
 from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="dispatch", color="cyan")
 
 NOTICE_DISPATCHER_TARGET = "notice_dispatcher"
 AGENT_ENTRY_TARGET = "agent_entry"
@@ -111,10 +111,38 @@ class AgentEntryDispatcher:
             meta={"event_type": bot.event.type},
         )
 
-        if self._handler is not None:
-            result = self._handler(signal)
-            if isawaitable(result):
-                await result
+        logger.debug(
+            format_log_event(
+                "agent.signal.created",
+                signal_id=signal.signal_id,
+                session_id=signal.session_id,
+                bot_id=signal.bot_id,
+                binding_id=signal.bot_binding_id,
+                message_log_id=context.message_log_id,
+                is_private=signal.message.is_private if signal.message is not None else None,
+                is_mentioned=(
+                    signal.message.is_mentioned if signal.message is not None else None
+                ),
+                is_reply_to_bot=(
+                    signal.message.is_reply_to_bot if signal.message is not None else None
+                ),
+            )
+        )
+        if self._handler is None:
+            logger.warning(
+                format_log_event(
+                    "agent.signal.dropped",
+                    reason="handler_missing",
+                    signal_id=signal.signal_id,
+                    session_id=signal.session_id,
+                    bot_id=signal.bot_id,
+                    message_log_id=context.message_log_id,
+                )
+            )
+            return
+        result = self._handler(signal)
+        if isawaitable(result):
+            await result
 
 
 def _contains_mention_to_other(message: Message, self_id: str) -> bool:

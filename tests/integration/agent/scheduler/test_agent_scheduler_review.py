@@ -42,6 +42,37 @@ async def test_scheduler_records_ordinary_message_without_workflow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scheduler_emits_structured_signal_logs(caplog) -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    caplog.set_level("DEBUG", logger="shinbot.agent.scheduler.scheduler")
+
+    await scheduler.accept_signal(make_signal(message_log_id=9))
+
+    messages = [record.message for record in caplog.records]
+    assert any(
+        "agent.signal.entry" in message
+        and "session_id=bot:group:room" in message
+        and "message_log_id=9" in message
+        for message in messages
+    )
+    assert any(
+        "agent.review.plan.created" in message
+        and "next_review_after_seconds=42.00" in message
+        for message in messages
+    )
+    assert any(
+        "agent.signal.decision" in message
+        and "accepted=true" in message
+        and "state=idle" in message
+        for message in messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_scheduler_starts_active_reply_for_mention() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(
