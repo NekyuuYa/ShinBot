@@ -130,6 +130,7 @@ def _latest_summary_of_type(database: Any, session_id: str, summary_type: str) -
 
 @router.get("")
 def get_session_overview(bot=BotDep, boot=BootDep):
+    """Return full session overview with history, agent state, and audit logs."""
     database = getattr(bot, "database", None)
     if database is None:
         return ok([])

@@ -87,11 +87,13 @@ async def _rescan_plugins(bot: Any, boot: Any):
 
 @router.post("/reload")
 async def reload_plugins(bot=BotDep, boot=BootDep):
+    """Reload all plugins from disk."""
     return await _rescan_plugins(bot, boot)
 
 
 @router.post("/rescan")
 async def rescan_plugins_route(bot=BotDep, boot=BootDep):
+    """Rescan plugin directories and update the registry."""
     return await _rescan_plugins(bot, boot)
 
 

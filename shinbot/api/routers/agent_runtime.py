@@ -195,6 +195,7 @@ def _task_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
 
 @router.get("")
 def get_agent_runtime_overview(bot=BotDep, boot=BootDep):
+    """Return overview of all agent runtime profiles with bindings, tasks, and sessions."""
     profiles: list[AgentRuntimeProfile] = []
     for bot_config in getattr(boot, "bot_service_configs", ()):
         bindings = [
