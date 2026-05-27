@@ -77,14 +77,17 @@ class Session(BaseModel):
 
     @property
     def is_private(self) -> bool:
+        """Return True if this session is a private (DM) conversation."""
         return self.session_type == "private"
 
     @property
     def is_group(self) -> bool:
+        """Return True if this session is a group (multi-user) conversation."""
         return self.session_type == "group"
 
     @property
     def is_muted(self) -> bool:
+        """Return True if the session is currently muted."""
         return self.config.is_muted
 
 
@@ -155,6 +158,14 @@ class SessionManager:
         *,
         session_repo: SessionRepository | None = None,
     ) -> None:
+        """Initialise the session manager.
+
+        Args:
+            data_dir: Root directory for JSON file persistence.  Ignored when
+                *session_repo* is provided.
+            session_repo: Optional database repository for session persistence.
+                When supplied it takes precedence over file-based storage.
+        """
         self._sessions: dict[str, Session] = {}
         self._session_repo = session_repo
         self._data_dir: Path | None = Path(data_dir) / "sessions" if data_dir else None
@@ -222,6 +233,7 @@ class SessionManager:
             logger.exception("Failed to persist session %s", session.id)
 
     def get(self, session_id: str) -> Session | None:
+        """Return the in-memory session for *session_id*, or ``None``."""
         return self._sessions.get(session_id)
 
     def get_or_create(self, instance_id: str, event: UnifiedEvent) -> Session:
@@ -251,6 +263,14 @@ class SessionManager:
         self._save_to_disk(session)
 
     def remove(self, session_id: str) -> Session | None:
+        """Remove a session from memory (and persistence) and return it.
+
+        Args:
+            session_id: Full session URN to remove.
+
+        Returns:
+            The removed :class:`Session`, or ``None`` if it did not exist.
+        """
         removed = self._sessions.pop(session_id, None)
         if self._session_repo is not None:
             self._session_repo.delete(session_id)
@@ -258,12 +278,15 @@ class SessionManager:
 
     @property
     def all_sessions(self) -> list[Session]:
+        """Return a snapshot list of every session held in memory."""
         return list(self._sessions.values())
 
     def sessions_for_instance(self, instance_id: str) -> list[Session]:
+        """Return all sessions belonging to the given bot *instance_id*."""
         return [s for s in self._sessions.values() if s.instance_id == instance_id]
 
     def __len__(self) -> int:
+        """Return the number of sessions currently held in memory."""
         return len(self._sessions)
 
     def _load_from_storage(self, session_id: str) -> Session | None:

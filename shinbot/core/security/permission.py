@@ -29,9 +29,11 @@ class PermissionGroup(BaseModel):
     model_config = {"extra": "forbid"}
 
     def grant(self, permission: str) -> None:
+        """Add a permission node to the group."""
         self.permissions.add(permission)
 
     def revoke(self, permission: str) -> None:
+        """Remove a permission node from the group."""
         self.permissions.discard(permission)
 
     def deny(self, permission: str) -> None:
@@ -143,6 +145,7 @@ class PermissionEngine:
     """
 
     def __init__(self) -> None:
+        """Initialize the engine with built-in permission groups."""
         self._groups: dict[str, PermissionGroup] = {}
         self._bindings: dict[str, str] = {}  # binding_key → group_id
 
@@ -153,16 +156,35 @@ class PermissionEngine:
     # ── Group management ─────────────────────────────────────────────
 
     def add_group(self, group: PermissionGroup) -> None:
+        """Register a permission group.
+
+        Args:
+            group: The permission group to register.
+        """
         self._groups[group.id] = group
 
     def get_group(self, group_id: str) -> PermissionGroup | None:
+        """Look up a permission group by ID.
+
+        Args:
+            group_id: ID of the group to retrieve.
+
+        Returns:
+            The matching PermissionGroup, or None if not found.
+        """
         return self._groups.get(group_id)
 
     def remove_group(self, group_id: str) -> None:
+        """Delete a permission group.
+
+        Args:
+            group_id: ID of the group to remove. Silently ignored if missing.
+        """
         self._groups.pop(group_id, None)
 
     @property
     def all_groups(self) -> list[PermissionGroup]:
+        """Return all registered permission groups."""
         return list(self._groups.values())
 
     # ── Binding management ───────────────────────────────────────────
@@ -179,9 +201,22 @@ class PermissionEngine:
         self._bindings[key] = group_id
 
     def unbind(self, key: str) -> None:
+        """Remove a binding between a key and a permission group.
+
+        Args:
+            key: The binding key to remove. Silently ignored if missing.
+        """
         self._bindings.pop(key, None)
 
     def get_binding(self, key: str) -> str | None:
+        """Look up which group a binding key is mapped to.
+
+        Args:
+            key: The binding key to query.
+
+        Returns:
+            The group ID, or None if no binding exists.
+        """
         return self._bindings.get(key)
 
     # ── Resolution ───────────────────────────────────────────────────

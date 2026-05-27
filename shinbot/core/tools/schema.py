@@ -9,10 +9,13 @@ from typing import Any
 
 
 def utc_now_iso() -> str:
+    """Return the current UTC time as an ISO 8601 string."""
     return datetime.now(UTC).isoformat()
 
 
 class ToolOwnerType(StrEnum):
+    """Identifies the category of entity that owns a tool."""
+
     BUILTIN_MODULE = "builtin_module"
     PLUGIN = "plugin"
     ADAPTER_BRIDGE = "adapter_bridge"
@@ -21,12 +24,16 @@ class ToolOwnerType(StrEnum):
 
 
 class ToolVisibility(StrEnum):
+    """Controls who can see and invoke a tool."""
+
     PRIVATE = "private"
     SCOPED = "scoped"
     PUBLIC = "public"
 
 
 class ToolRiskLevel(StrEnum):
+    """Classifies the potential impact of a tool invocation."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
