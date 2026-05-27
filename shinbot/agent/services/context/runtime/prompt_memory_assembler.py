@@ -29,7 +29,18 @@ class PromptMemoryRuntime(Protocol):
         *,
         self_platform_id: str = "",
         now_ms: int | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[str, Any]]:
+        """Build the context-stage messages for a session.
+
+        Args:
+            session_id: The session identifier to build context for.
+            self_platform_id: Optional platform identifier for the bot itself.
+            now_ms: Optional current timestamp in milliseconds.
+
+        Returns:
+            A list of context-stage message dicts.
+        """
+        ...
 
     def build_inactive_alias_context_message(
         self,
@@ -37,9 +48,29 @@ class PromptMemoryRuntime(Protocol):
         *,
         unread_records: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
-    ) -> dict[str, Any] | None: ...
+    ) -> dict[str, Any] | None:
+        """Build a context message for inactive alias context.
 
-    def get_cacheable_context_message_count(self, session_id: str) -> int: ...
+        Args:
+            session_id: The session identifier to build context for.
+            unread_records: Optional list of unread message records.
+            now_ms: Optional current timestamp in milliseconds.
+
+        Returns:
+            A context message dict, or None if no inactive alias context exists.
+        """
+        ...
+
+    def get_cacheable_context_message_count(self, session_id: str) -> int:
+        """Return the number of context messages eligible for caching.
+
+        Args:
+            session_id: The session identifier to query.
+
+        Returns:
+            The count of cacheable context messages.
+        """
+        ...
 
     def build_active_alias_constraint_text(
         self,
@@ -47,7 +78,18 @@ class PromptMemoryRuntime(Protocol):
         *,
         unread_records: list[dict[str, Any]] | None = None,
         now_ms: int | None = None,
-    ) -> str: ...
+    ) -> str:
+        """Build constraint text for the active alias.
+
+        Args:
+            session_id: The session identifier to build constraints for.
+            unread_records: Optional list of unread message records.
+            now_ms: Optional current timestamp in milliseconds.
+
+        Returns:
+            A constraint text string for the active alias.
+        """
+        ...
 
 
 @dataclass(slots=True)
@@ -62,6 +104,19 @@ class PromptMemoryAssembler:
     long_term_projector: LongTermMemoryProjector = field(default_factory=LongTermMemoryProjector)
 
     def assemble(self, request: PromptMemoryProjectionRequest) -> PromptMemoryBundle:
+        """Assemble a complete prompt memory bundle from a projection request.
+
+        Combines long-term memory messages, context-stage messages, inactive
+        alias context, formatted instruction blocks, and active alias
+        constraint text into a single ``PromptMemoryBundle``.
+
+        Args:
+            request: The projection request containing session info,
+                unread records, and other parameters needed for assembly.
+
+        Returns:
+            A ``PromptMemoryBundle`` with all assembled context components.
+        """
         if not request.session_id:
             return PromptMemoryBundle()
 
