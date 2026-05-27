@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class ContextStageBuildConfig:
+    """Configuration thresholds for context-stage block packing."""
+
     min_tokens: int = 300
     max_tokens: int = 1500
     timeout_ms: int = 10 * 60 * 1000
@@ -35,6 +37,8 @@ class ContextStageBuildConfig:
 
 @dataclass(slots=True)
 class ContextRenderedRow:
+    """A single rendered message row ready to be packed into a context block."""
+
     sender_id: str
     sender_label: str
     text: str
@@ -48,6 +52,8 @@ class ContextRenderedRow:
 
 @dataclass(slots=True)
 class ContextRenderedRun:
+    """A contiguous run of rows from the same sender."""
+
     sender_id: str
     rows: list[ContextRenderedRow]
     token_estimate: int
@@ -65,12 +71,20 @@ class ContextStageBuilder:
         image_registry: ContextImageRegistry | None = None,
         config: ContextStageBuildConfig | None = None,
     ) -> None:
+        """Initialize the builder.
+
+        Args:
+            media_service: Optional media service for resolving image semantics.
+            image_registry: Shared image reference registry; created if omitted.
+            config: Block-packing thresholds; uses defaults if omitted.
+        """
         self._media_service = media_service
         self._image_registry = image_registry or ContextImageRegistry()
         self._config = config or ContextStageBuildConfig()
 
     @property
     def image_registry(self) -> ContextImageRegistry:
+        """Return the shared image reference registry."""
         return self._image_registry
 
     def build_blocks(
@@ -82,6 +96,23 @@ class ContextStageBuilder:
         self_platform_id: str = "",
         start_block_index: int = 0,
     ) -> list[ContextBlockState]:
+        """Pack message records into token-bounded context blocks.
+
+        Records are rendered into rows, grouped into sender runs, then
+        accumulated into blocks.  A new block is started whenever the
+        accumulated tokens would exceed ``max_tokens`` or the time gap
+        between runs exceeds ``timeout_ms``.
+
+        Args:
+            records: Raw message dicts from the chat history.
+            alias_table: Session alias table for resolving sender labels.
+            projection_state: Projection state for assigning message IDs.
+            self_platform_id: Platform ID of the bot itself.
+            start_block_index: Index offset for block IDs.
+
+        Returns:
+            List of sealed ``ContextBlockState`` objects.
+        """
         rows = [
             rendered
             for record in records
@@ -153,6 +184,21 @@ class ContextStageBuilder:
         session_state: ContextSessionState,
         self_platform_id: str = "",
     ) -> list[dict[str, Any]]:
+        """Build context blocks and return them as LLM prompt messages.
+
+        Convenience wrapper around :meth:`build_blocks` that also updates
+        the session state's short-term blocks and converts each block
+        into a prompt-ready message dict.
+
+        Args:
+            records: Raw message dicts from the chat history.
+            alias_table: Session alias table for resolving sender labels.
+            session_state: Session state to update with the new blocks.
+            self_platform_id: Platform ID of the bot itself.
+
+        Returns:
+            List of prompt message dicts suitable for an LLM API call.
+        """
         blocks = self.build_blocks(
             records,
             alias_table=alias_table,
@@ -174,6 +220,22 @@ class ContextStageBuilder:
         self_platform_id: str = "",
         start_block_index: int = 0,
     ) -> list[ContextBlockState]:
+        """Pack assistant-originated records into context blocks.
+
+        Similar to :meth:`build_blocks` but tailored for the bot's own
+        outgoing messages.  Each row is labelled with the "你" (you)
+        sender and rows are packed using the same token/gap thresholds.
+
+        Args:
+            records: Raw assistant message dicts.
+            alias_table: Session alias table for resolving sender labels.
+            projection_state: Projection state for assigning message IDs.
+            self_platform_id: Platform ID of the bot itself.
+            start_block_index: Index offset for block IDs.
+
+        Returns:
+            List of sealed ``ContextBlockState`` objects.
+        """
         rows = [
             rendered
             for record in records
@@ -242,6 +304,23 @@ class ContextStageBuilder:
         projection_state: ContextProjectionState,
         self_platform_id: str = "",
     ) -> ContextRenderedRow | None:
+        """Render a single chat record into a ``ContextRenderedRow``.
+
+        Handles text, mentions, quotes, pokes, and images.  Poke-only
+        messages are rendered as a special action line.  Images are
+        resolved through the media service and projection state to
+        produce reference tags.
+
+        Args:
+            record: Raw message dict.
+            alias_table: Session alias table for sender label resolution.
+            projection_state: Projection state for message-ID assignment
+                and image reference resolution.
+            self_platform_id: Platform ID of the bot itself.
+
+        Returns:
+            A rendered row, or ``None`` if the record has no usable content.
+        """
         sender_id = str(record.get("sender_id", "") or "").strip()
         sender_label = _resolve_sender_label(record, alias_table, self_platform_id)
         created_at_ms = _coerce_timestamp_ms(record.get("created_at"))
@@ -314,6 +393,20 @@ class ContextStageBuilder:
         projection_state: ContextProjectionState,
         self_platform_id: str = "",
     ) -> ContextRenderedRow | None:
+        """Render a single assistant record into a ``ContextRenderedRow``.
+
+        Behaves like :meth:`render_record` but always labels the sender
+        as "你" (you) and omits sender-level referencing metadata.
+
+        Args:
+            record: Raw assistant message dict.
+            alias_table: Session alias table for sender label resolution.
+            projection_state: Projection state for message-ID assignment.
+            self_platform_id: Platform ID of the bot itself.
+
+        Returns:
+            A rendered row, or ``None`` if the record has no usable content.
+        """
         created_at_ms = _coerce_timestamp_ms(record.get("created_at"))
         parts = parse_message_parts(record, self_platform_id=self_platform_id)
         if not parts:
