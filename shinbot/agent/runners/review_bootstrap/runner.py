@@ -38,6 +38,14 @@ class NoopActiveChatBootstrapStageRunner:
     """No-op bootstrap runner."""
 
     async def run(self, stage_input: ReviewStageInput) -> ActiveChatBootstrapStageOutput:
+        """Return a no-op bootstrap output with no disposition.
+
+        Args:
+            stage_input: Review stage input (ignored by the no-op runner).
+
+        Returns:
+            An output with no disposition and a noop reason.
+        """
         return ActiveChatBootstrapStageOutput(reason="noop_active_chat_bootstrap")
 
 
@@ -82,6 +90,15 @@ class LLMActiveChatBootstrapStageRunner:
         return self._template._config
 
     async def run(self, stage_input: ReviewStageInput) -> ActiveChatBootstrapStageOutput:
+        """Run the LLM-based active chat bootstrap and choose a disposition.
+
+        Args:
+            stage_input: Review stage input with conversation tail context.
+
+        Returns:
+            An output with the chosen active chat disposition, or a failed
+            output if the model response is invalid.
+        """
         payload = await self._template.run(stage_input)
         if payload is None:
             return ActiveChatBootstrapStageOutput(

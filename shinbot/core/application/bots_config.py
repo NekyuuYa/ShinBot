@@ -67,6 +67,11 @@ class BotServiceConfigError(ValueError):
     """Raised when configured bot service units are invalid."""
 
     def __init__(self, issues: list[ConfigValidationIssue]) -> None:
+        """Initialise the error with a list of validation issues.
+
+        Args:
+            issues: Validation issues that caused this error.
+        """
         self.issues = list(issues)
         super().__init__(_format_issues(self.issues))
 

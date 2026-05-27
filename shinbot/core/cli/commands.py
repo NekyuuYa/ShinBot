@@ -33,6 +33,7 @@ logger = get_logger(__name__, source="operator", color="magenta")
 
 @dataclass(slots=True)
 class CommandOutcome:
+    """Result of executing an operator CLI command."""
     message: str | None = None
     exit_requested: bool = False
     clear_screen: bool = False
@@ -42,12 +43,20 @@ class OperatorCommandRouter:
     """Parse and execute operator console commands against live runtime state."""
 
     def __init__(self, *, boot: Any, api_host: str, api_port: int) -> None:
+        """Initialize the command router.
+
+        Args:
+            boot: The BootController instance holding runtime state.
+            api_host: Hostname for the management API endpoint display.
+            api_port: Port number for the management API endpoint display.
+        """
         self._boot = boot
         self._api_host = api_host
         self._api_port = api_port
 
     @property
     def command_words(self) -> list[str]:
+        """Return all recognized command words (including slash-prefixed variants)."""
         words = [
             "help",
             "status",
@@ -77,6 +86,14 @@ class OperatorCommandRouter:
         return [*words, *(f"/{word}" for word in words)]
 
     async def execute(self, raw_line: str) -> CommandOutcome:
+        """Parse and execute a raw operator command line.
+
+        Args:
+            raw_line: The raw input string from the operator console.
+
+        Returns:
+            A CommandOutcome describing the result of execution.
+        """
         line = _normalize_operator_line(raw_line)
         if not line:
             return CommandOutcome()

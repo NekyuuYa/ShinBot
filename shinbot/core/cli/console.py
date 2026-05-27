@@ -41,6 +41,14 @@ class OperatorCliSession:
         api_port: int,
         server: Any,
     ) -> None:
+        """Initialize the operator CLI session.
+
+        Args:
+            boot: The BootController instance holding runtime state.
+            api_host: Hostname for the management API endpoint display.
+            api_port: Port number for the management API endpoint display.
+            server: The Uvicorn server instance for lifecycle control.
+        """
         self._boot = boot
         self._server = server
         self._router = OperatorCommandRouter(

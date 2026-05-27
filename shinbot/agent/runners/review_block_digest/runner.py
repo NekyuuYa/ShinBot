@@ -35,6 +35,14 @@ class NoopReviewBlockDigestStageRunner:
     """No-op block digest runner."""
 
     async def run(self, stage_input: ReviewStageInput) -> ReviewBlockDigestStageOutput:
+        """Return a no-op block digest output with an empty summary.
+
+        Args:
+            stage_input: Review stage input (ignored by the no-op runner).
+
+        Returns:
+            An output with no summary and default reason.
+        """
         return ReviewBlockDigestStageOutput()
 
 
@@ -77,6 +85,15 @@ class LLMReviewBlockDigestStageRunner:
         )
 
     async def run(self, stage_input: ReviewStageInput) -> ReviewBlockDigestStageOutput:
+        """Run the LLM-based block digest and return a summary.
+
+        Args:
+            stage_input: Review stage input with message block context.
+
+        Returns:
+            An output containing the block digest summary and metadata,
+            or a failed output on error.
+        """
         payload = await self._template.run(stage_input)
         if payload is None:
             return _output_with_metadata(

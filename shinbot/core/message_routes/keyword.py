@@ -56,9 +56,18 @@ class KeywordRegistry:
     """Registry for simple high-frequency keyword triggers."""
 
     def __init__(self) -> None:
+        """Initialize the registry with an empty keyword list."""
         self._keywords: list[KeywordDef] = []
 
     def register(self, keyword: KeywordDef) -> None:
+        """Register a keyword trigger, compiling its regex pattern if needed.
+
+        Args:
+            keyword: The keyword definition to register.
+
+        Raises:
+            ValueError: If the keyword pattern is empty.
+        """
         if not keyword.pattern:
             raise ValueError("Keyword pattern must not be empty")
         if keyword.regex and keyword.compiled_pattern is None:
@@ -68,20 +77,45 @@ class KeywordRegistry:
         self._keywords.sort(key=lambda item: item.priority)
 
     def unregister(self, keyword: KeywordDef) -> bool:
+        """Remove a specific keyword definition from the registry.
+
+        Args:
+            keyword: The keyword definition instance to remove.
+
+        Returns:
+            True if the keyword was found and removed, False otherwise.
+        """
         before = len(self._keywords)
         self._keywords = [item for item in self._keywords if item is not keyword]
         return len(self._keywords) != before
 
     def unregister_by_owner(self, owner: str) -> int:
+        """Remove all keywords registered by a specific owner.
+
+        Args:
+            owner: The owner identifier whose keywords should be removed.
+
+        Returns:
+            The number of keywords that were removed.
+        """
         before = len(self._keywords)
         self._keywords = [item for item in self._keywords if item.owner != owner]
         return before - len(self._keywords)
 
     @property
     def all_keywords(self) -> list[KeywordDef]:
+        """Return a snapshot list of all registered keyword definitions."""
         return list(self._keywords)
 
     def match(self, text: str) -> list[KeywordMatch]:
+        """Match the given text against all registered keywords.
+
+        Args:
+            text: The input text to search for keyword matches.
+
+        Returns:
+            A list of KeywordMatch results, sorted by keyword priority.
+        """
         if not text:
             return []
 
@@ -133,6 +167,12 @@ class KeywordDispatcher:
         *,
         session_manager: SessionManager | None = None,
     ) -> None:
+        """Initialize the dispatcher with a keyword registry.
+
+        Args:
+            keyword_registry: Registry containing registered keyword triggers.
+            session_manager: Optional session manager for persisting session state.
+        """
         self._keyword_registry = keyword_registry
         self._session_manager = session_manager
 
@@ -142,6 +182,16 @@ class KeywordDispatcher:
         message: Message,
         match_context: RouteMatchContext | None = None,
     ) -> bool:
+        """Check whether the message text matches any registered keyword.
+
+        Args:
+            event: The unified platform event.
+            message: The parsed message AST.
+            match_context: Optional routing match context with session data.
+
+        Returns:
+            True if at least one keyword matches and its owning plugin is enabled.
+        """
         if not event.is_message_event:
             return False
         message_context = match_context.message_context if match_context is not None else None
@@ -152,6 +202,15 @@ class KeywordDispatcher:
         )
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
+        """Execute all matching keyword handlers for the incoming message.
+
+        Iterates through matched keywords in priority order, invoking each
+        handler until the bot signals a stop.
+
+        Args:
+            context: The route dispatch context containing the message context.
+            _rule: The route rule that triggered this dispatcher (unused).
+        """
         bot = context.require_message_context()
         matches = [
             match
@@ -181,6 +240,16 @@ def make_keyword_route_rule(
     rule_id: str = "builtin.keyword_dispatcher",
     priority: int = 900,
 ) -> RouteRule:
+    """Build a route rule that delegates to the keyword dispatcher.
+
+    Args:
+        dispatcher: The KeywordDispatcher instance to use for matching.
+        rule_id: Unique identifier for the route rule.
+        priority: Numeric priority for route ordering (lower is higher priority).
+
+    Returns:
+        A RouteRule configured for message-created events with normal matching.
+    """
     return RouteRule(
         id=rule_id,
         priority=priority,

@@ -30,6 +30,7 @@ class BotRuntimeSelection:
 
     @property
     def priority(self) -> int:
+        """Return the priority of the underlying binding."""
         return self.binding.priority
 
 
@@ -45,10 +46,16 @@ class BotRuntimeRouter:
     """Resolve incoming events to configured bot service units."""
 
     def __init__(self, bots: tuple[BotServiceConfig, ...] | list[BotServiceConfig]) -> None:
+        """Initialise the router with a sequence of bot service configs.
+
+        Args:
+            bots: Bot service configurations to route events through.
+        """
         self._bots = tuple(bots)
 
     @property
     def bots(self) -> tuple[BotServiceConfig, ...]:
+        """Return the configured bot service units."""
         return self._bots
 
     def resolve(
@@ -57,6 +64,16 @@ class BotRuntimeRouter:
         adapter_instance_id: str,
         event: UnifiedEvent,
     ) -> BotRuntimeSelection | None:
+        """Resolve an incoming event to the highest-priority bot binding.
+
+        Args:
+            adapter_instance_id: The adapter instance that received the event.
+            event: The incoming unified event.
+
+        Returns:
+            The best-matching ``BotRuntimeSelection``, or ``None`` if no
+            enabled binding matches.
+        """
         candidates: list[BotRuntimeSelection] = []
         for bot_index, bot in enumerate(self._bots):
             if not bot.enabled:
@@ -216,4 +233,13 @@ def bot_route_rule_enabled_for_context(rule: RouteRule, message_context: Any) ->
 
 
 def selected_bot_service_config(message_context: Any) -> BotServiceConfig | None:
+    """Extract the ``BotServiceConfig`` from a message context, if present.
+
+    Args:
+        message_context: An object that may carry a ``bot_service_config``
+            attribute set by the bot runtime router.
+
+    Returns:
+        The attached ``BotServiceConfig``, or ``None`` when unavailable.
+    """
     return getattr(message_context, "bot_service_config", None)

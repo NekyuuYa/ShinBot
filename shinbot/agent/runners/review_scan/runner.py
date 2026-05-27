@@ -32,6 +32,14 @@ class NoopReviewScanStageRunner:
     """No-op scan runner that returns empty candidates."""
 
     async def run(self, stage_input: ReviewStageInput) -> ReviewScanStageOutput:
+        """Return a no-op scan output with no candidate messages.
+
+        Args:
+            stage_input: Review stage input (ignored by the no-op runner).
+
+        Returns:
+            An output with empty candidates and a noop reason.
+        """
         return ReviewScanStageOutput(reason="noop_review_scan")
 
 
@@ -76,6 +84,15 @@ class LLMReviewScanStageRunner:
         return self._template._config
 
     async def run(self, stage_input: ReviewStageInput) -> ReviewScanStageOutput:
+        """Run the LLM-based review scan and return candidate message ids.
+
+        Args:
+            stage_input: Review stage input with conversation context.
+
+        Returns:
+            An output containing candidate message ids selected by the model,
+            or an empty output on failure.
+        """
         payload = await self._template.run(stage_input)
         if payload is None:
             return ReviewScanStageOutput(reason="llm_review_scan_failed")
