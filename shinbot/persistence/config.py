@@ -58,6 +58,16 @@ class DatabaseConfig:
         url: str | None = None,
         snapshot_ttl: int | None = None,
     ) -> DatabaseConfig:
+        """Build a ``DatabaseConfig`` from high-level bootstrap parameters.
+
+        Args:
+            data_dir: Root data directory for runtime files.
+            url: Optional explicit SQLite URL override.
+            snapshot_ttl: Optional TTL in seconds for prompt snapshots.
+
+        Returns:
+            A normalised ``DatabaseConfig`` instance.
+        """
         resolved_url = (
             url.strip() if isinstance(url, str) and url.strip() else default_database_url(data_dir)
         )

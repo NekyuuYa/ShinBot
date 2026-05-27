@@ -26,34 +26,66 @@ class InstanceConfigRepository:
     """Per-instance runtime configuration stored as a single editable JSON file."""
 
     def __init__(self, source: DatabaseManager | Path | str) -> None:
+        """Initialise the repository.
+
+        Args:
+            source: A ``DatabaseManager``, ``Path``, or string path to the
+                JSON config file or its parent directory.
+        """
         self.path = _resolve_instance_configs_path(source)
 
     @classmethod
     def from_data_dir(cls, data_dir: Path | str) -> InstanceConfigRepository:
+        """Create a repository pointing at *data_dir*/instance-configs.json."""
         return cls(Path(data_dir) / INSTANCE_CONFIGS_FILENAME)
 
     def ensure_file(self) -> Path:
+        """Create the JSON file with an empty payload when it does not exist.
+
+        Returns:
+            Path to the instance configs file.
+        """
         if not self.path.exists():
             self._write_payload(_empty_payload())
         return self.path
 
     def list(self) -> list[dict[str, Any]]:
+        """Return all instance configurations sorted by (instance_id, uuid)."""
         payload = self._read_payload()
         configs = [_normalize_config(item) for item in payload["configs"]]
         configs.sort(key=lambda item: (item["instance_id"], item["uuid"]))
         return configs
 
     def get(self, config_uuid: str) -> dict[str, Any] | None:
+        """Return a configuration by UUID, or ``None`` if not found.
+
+        Args:
+            config_uuid: UUID of the instance configuration.
+        """
         payload = self._read_payload()
         item = _find_by_uuid(payload["configs"], config_uuid)
         return _normalize_config(item) if item is not None else None
 
     def get_by_instance_id(self, instance_id: str) -> dict[str, Any] | None:
+        """Return a configuration by instance ID, or ``None``.
+
+        Args:
+            instance_id: Platform-level instance identifier.
+        """
         payload = self._read_payload()
         item = _find_by_instance_id(payload["configs"], instance_id)
         return _normalize_config(item) if item is not None else None
 
     def upsert(self, record: InstanceConfigRecord) -> None:
+        """Insert or update an instance configuration.
+
+        Args:
+            record: The configuration record to persist.
+
+        Raises:
+            InstanceConfigRepositoryError: If the instance_id is already
+                claimed by a different UUID.
+        """
         payload = self._read_payload()
         incoming = _config_from_record(record)
         same_instance = _find_by_instance_id(payload["configs"], incoming["instance_id"])
@@ -72,6 +104,11 @@ class InstanceConfigRepository:
         self._write_payload(payload)
 
     def delete(self, config_uuid: str) -> None:
+        """Remove an instance configuration by UUID.
+
+        Args:
+            config_uuid: UUID of the configuration to delete.
+        """
         payload = self._read_payload()
         payload["configs"] = [
             item for item in payload["configs"] if str(item.get("uuid")) != config_uuid

@@ -14,6 +14,11 @@ class ModelExecutionRepository(ModelUsageHourlyRepositoryMixin):
     """Persistence adapter for per-call model execution records."""
 
     def insert(self, record: ModelExecutionRecord) -> None:
+        """Insert a model execution record and update hourly usage aggregates.
+
+        Args:
+            record: The execution record to persist.
+        """
         payload = asdict(record)
         with self.connect() as conn:
             conn.execute(
@@ -67,6 +72,11 @@ class ModelExecutionRepository(ModelUsageHourlyRepositoryMixin):
         }
 
     def list_recent(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the most recent execution records.
+
+        Args:
+            limit: Maximum number of records to return.
+        """
         return self.list_audit_records(limit=limit)["items"]
 
     def list_audit_records(
@@ -83,6 +93,23 @@ class ModelExecutionRepository(ModelUsageHourlyRepositoryMixin):
         success: bool | None = None,
         query: str | None = None,
     ) -> dict[str, Any]:
+        """Return paginated, filterable execution audit records.
+
+        Args:
+            limit: Page size.
+            offset: Number of records to skip.
+            provider_id: Filter by provider ID.
+            model_id: Filter by model ID.
+            route_id: Filter by route ID.
+            caller: Filter by caller identifier.
+            session_id: Filter by session ID.
+            instance_id: Filter by instance ID.
+            success: When ``True``/``False`` filter by success status.
+            query: Free-text search across multiple columns.
+
+        Returns:
+            Dictionary with ``items``, ``total``, ``limit``, and ``offset``.
+        """
         filters: list[str] = []
         params: list[Any] = []
 

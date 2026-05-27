@@ -32,6 +32,14 @@ class NormalizedInstanceConfigInput:
 
 
 def normalize_optional_string(value: Any) -> str | None:
+    """Normalise an optional string value, returning ``None`` for blank/empty.
+
+    Args:
+        value: The raw value to normalise.
+
+    Returns:
+        The stripped string, or ``None`` if empty.
+    """
     if value is None:
         return None
     normalized = str(value).strip()
@@ -39,6 +47,18 @@ def normalize_optional_string(value: Any) -> str | None:
 
 
 def normalize_optional_int(value: Any, *, field_name: str) -> int | None:
+    """Normalise an optional value to an integer, or ``None``.
+
+    Args:
+        value: The raw value to parse.
+        field_name: Name of the field (used in error messages).
+
+    Returns:
+        Parsed integer, or ``None`` if empty.
+
+    Raises:
+        InstanceConfigAdminError: If the value cannot be parsed as int.
+    """
     if value is None:
         return None
     if isinstance(value, str):
@@ -58,6 +78,18 @@ def normalize_optional_int(value: Any, *, field_name: str) -> int | None:
 
 
 def normalize_optional_float(value: Any, *, field_name: str) -> float | None:
+    """Normalise an optional value to a float, or ``None``.
+
+    Args:
+        value: The raw value to parse.
+        field_name: Name of the field (used in error messages).
+
+    Returns:
+        Parsed float, or ``None`` if empty.
+
+    Raises:
+        InstanceConfigAdminError: If the value cannot be parsed as float.
+    """
     if value is None:
         return None
     if isinstance(value, str):
@@ -77,6 +109,18 @@ def normalize_optional_float(value: Any, *, field_name: str) -> float | None:
 
 
 def normalize_optional_bool(value: Any, *, field_name: str) -> bool | None:
+    """Normalise an optional value to a boolean, or ``None``.
+
+    Args:
+        value: The raw value to parse.
+        field_name: Name of the field (used in error messages).
+
+    Returns:
+        Parsed boolean, or ``None`` if empty.
+
+    Raises:
+        InstanceConfigAdminError: If the value cannot be interpreted as bool.
+    """
     if value is None:
         return None
     if isinstance(value, bool):
@@ -99,6 +143,13 @@ def normalize_optional_bool(value: Any, *, field_name: str) -> bool | None:
 
 
 def assign_optional_profile(config: dict[str, Any], key: str, value: Any) -> None:
+    """Set a config key to a normalised optional string value.
+
+    Args:
+        config: The config dict to mutate.
+        key: The config key to set.
+        value: The raw value; skipped if ``None`` after normalisation.
+    """
     normalized = normalize_optional_string(value)
     if normalized is None:
         return
@@ -106,12 +157,26 @@ def assign_optional_profile(config: dict[str, Any], key: str, value: Any) -> Non
 
 
 def assign_optional_numeric(config: dict[str, Any], key: str, value: int | float | None) -> None:
+    """Set a config key to a numeric value if present.
+
+    Args:
+        config: The config dict to mutate.
+        key: The config key to set.
+        value: The numeric value; skipped if ``None``.
+    """
     if value is None:
         return
     config[key] = value
 
 
 def assign_optional_bool(config: dict[str, Any], key: str, value: bool | None) -> None:
+    """Set a config key to a boolean value, or remove it when false.
+
+    Args:
+        config: The config dict to mutate.
+        key: The config key to set or remove.
+        value: The boolean value; skipped if ``None``.
+    """
     if value is None:
         return
     if value:
@@ -121,6 +186,14 @@ def assign_optional_bool(config: dict[str, Any], key: str, value: bool | None) -
 
 
 def extract_response_profiles(config: dict[str, Any]) -> dict[str, str | None]:
+    """Extract response-profile fields from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        A dict with camelCase response-profile keys and their values.
+    """
     return {
         "responseProfile": normalize_optional_string(config.get("response_profile")),
         "responseProfilePrivate": normalize_optional_string(config.get("response_profile_private")),
@@ -132,6 +205,14 @@ def extract_response_profiles(config: dict[str, Any]) -> dict[str, str | None]:
 
 
 def extract_explicit_prompt_cache_enabled(config: dict[str, Any]) -> bool:
+    """Extract the explicit-prompt-cache-enabled flag from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        ``True`` if the flag is set and truthy, ``False`` otherwise.
+    """
     return bool(normalize_optional_bool(
         config.get("explicit_prompt_cache_enabled"),
         field_name="explicit_prompt_cache_enabled",
@@ -139,6 +220,14 @@ def extract_explicit_prompt_cache_enabled(config: dict[str, Any]) -> bool:
 
 
 def strip_response_profiles(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of config with response-profile keys removed.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        A new dict without response-profile keys.
+    """
     cleaned = dict(config)
     cleaned.pop("response_profile", None)
     cleaned.pop("response_profile_private", None)
@@ -148,30 +237,86 @@ def strip_response_profiles(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_media_inspection_llm(config: dict[str, Any]) -> str:
+    """Extract the media-inspection LLM target from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The LLM target string, or empty string if not set.
+    """
     return str(config.get("media_inspection_llm") or "").strip()
 
 
 def extract_media_inspection_prompt(config: dict[str, Any]) -> str:
+    """Extract the media-inspection prompt from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The prompt string, or empty string if not set.
+    """
     return str(config.get("media_inspection_prompt") or "").strip()
 
 
 def extract_sticker_summary_llm(config: dict[str, Any]) -> str:
+    """Extract the sticker-summary LLM target from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The LLM target string, or empty string if not set.
+    """
     return str(config.get("sticker_summary_llm") or "").strip()
 
 
 def extract_sticker_summary_prompt(config: dict[str, Any]) -> str:
+    """Extract the sticker-summary prompt from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The prompt string, or empty string if not set.
+    """
     return str(config.get("sticker_summary_prompt") or "").strip()
 
 
 def extract_context_compression_llm(config: dict[str, Any]) -> str:
+    """Extract the context-compression LLM target from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The LLM target string, or empty string if not set.
+    """
     return str(config.get("context_compression_llm") or "").strip()
 
 
 def extract_max_context_tokens(config: dict[str, Any]) -> int | None:
+    """Extract the max-context-tokens value from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The integer value, or ``None`` if not set.
+    """
     return normalize_optional_int(config.get("max_context_tokens"), field_name="max_context_tokens")
 
 
 def extract_context_evict_ratio(config: dict[str, Any]) -> float | None:
+    """Extract the context-evict-ratio from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The float ratio, or ``None`` if not set.
+    """
     return normalize_optional_float(
         config.get("context_evict_ratio"),
         field_name="context_evict_ratio",
@@ -179,6 +324,14 @@ def extract_context_evict_ratio(config: dict[str, Any]) -> float | None:
 
 
 def extract_context_compression_max_chars(config: dict[str, Any]) -> int | None:
+    """Extract the context-compression-max-chars from a config dict.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        The integer value, or ``None`` if not set.
+    """
     return normalize_optional_int(
         config.get("context_compression_max_chars"),
         field_name="context_compression_max_chars",
@@ -186,12 +339,31 @@ def extract_context_compression_max_chars(config: dict[str, Any]) -> int | None:
 
 
 def strip_media_inspection_llm(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of config with the media-inspection LLM key removed.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        A new dict without the media_inspection_llm key.
+    """
     cleaned = dict(config)
     cleaned.pop("media_inspection_llm", None)
     return cleaned
 
 
 def strip_explicit_context_fields(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of config with all explicit context fields removed.
+
+    Removes media inspection, sticker summary, context compression,
+    cache, and evict ratio keys.
+
+    Args:
+        config: The instance config dict.
+
+    Returns:
+        A new dict with explicit context keys stripped.
+    """
     cleaned = strip_media_inspection_llm(config)
     cleaned.pop("explicit_prompt_cache_enabled", None)
     cleaned.pop("media_inspection_prompt", None)
@@ -205,6 +377,14 @@ def strip_explicit_context_fields(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def serialize_instance_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """Serialise an instance-config record to the camelCase API shape.
+
+    Args:
+        payload: Internal instance-config dict with snake_case keys.
+
+    Returns:
+        A dict with camelCase keys for the front-end.
+    """
     config = dict(payload["config"])
     return {
         "uuid": payload["uuid"],
@@ -228,6 +408,15 @@ def serialize_instance_config(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def known_instance_ids(bot: Any, boot: Any) -> set[str]:
+    """Collect all known instance IDs from persisted config and live adapters.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+
+    Returns:
+        A set of known instance ID strings.
+    """
     ids = {str(item.get("id")) for item in iter_adapter_instance_records(boot.config) if item.get("id")}
     ids.update(adapter.instance_id for adapter in bot.adapter_manager.all_instances)
     return ids
@@ -253,6 +442,33 @@ def normalize_instance_config_input(
     config: dict[str, Any],
     tags: list[str],
 ) -> NormalizedInstanceConfigInput:
+    """Normalise and validate raw instance-config input fields.
+
+    Args:
+        instance_id: The instance identifier.
+        main_llm: The main LLM target string.
+        explicit_prompt_cache_enabled: Optional explicit cache flag.
+        response_profile: Optional response profile name.
+        response_profile_private: Optional private response profile.
+        response_profile_priority: Optional priority response profile.
+        response_profile_group: Optional group response profile.
+        media_inspection_llm: Optional media inspection LLM target.
+        media_inspection_prompt: Optional media inspection prompt.
+        sticker_summary_llm: Optional sticker summary LLM target.
+        sticker_summary_prompt: Optional sticker summary prompt.
+        context_compression_llm: Optional context compression LLM target.
+        max_context_tokens: Optional max context token count.
+        context_evict_ratio: Optional context eviction ratio.
+        context_compression_max_chars: Optional compression max chars.
+        config: The raw config dict.
+        tags: Raw list of tag strings.
+
+    Returns:
+        A normalised instance config input dataclass.
+
+    Raises:
+        InstanceConfigAdminError: On validation failures.
+    """
     normalized_instance_id = instance_id.strip()
     normalized_main_llm = main_llm.strip()
     normalized_tags = [tag.strip() for tag in tags if tag.strip()]
@@ -390,6 +606,18 @@ def validate_instance_config_references(
     main_llm: str = "",
     config: dict[str, Any] | None = None,
 ) -> None:
+    """Validate that all LLM references in an instance config exist.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+        instance_id: The instance identifier.
+        main_llm: The main LLM target to validate.
+        config: Optional config dict with additional LLM targets.
+
+    Raises:
+        InstanceConfigAdminError: If the instance or any LLM target is not found.
+    """
     if instance_id not in known_instance_ids(bot, boot):
         raise InstanceConfigAdminError(
             status_code=404,
@@ -408,6 +636,16 @@ def validate_instance_config_references(
 
 
 def validate_model_runtime_target(database: Any, field_name: str, target: str) -> None:
+    """Validate that a single LLM target reference exists in the model registry.
+
+    Args:
+        database: The application database handle.
+        field_name: Config field name (used in error messages).
+        target: The LLM target string to validate.
+
+    Raises:
+        InstanceConfigAdminError: If the target is not found.
+    """
     normalized = str(target or "").strip()
     if not normalized:
         return
@@ -470,6 +708,18 @@ def validate_model_runtime_target(database: Any, field_name: str, target: str) -
 
 
 def get_instance_config_or_raise(database: Any, config_uuid: str) -> dict[str, Any]:
+    """Retrieve an instance config by UUID, or raise a 404 error.
+
+    Args:
+        database: The application database handle.
+        config_uuid: The config UUID to look up.
+
+    Returns:
+        The instance config record dict.
+
+    Raises:
+        InstanceConfigAdminError: If the config is not found.
+    """
     payload = database.instance_configs.get(config_uuid)
     if payload is None:
         raise InstanceConfigAdminError(
@@ -483,6 +733,16 @@ def get_instance_config_or_raise(database: Any, config_uuid: str) -> dict[str, A
 def assert_instance_config_available(
     database: Any, instance_id: str, *, current_uuid: str | None
 ) -> None:
+    """Assert that no other config already exists for the given instance.
+
+    Args:
+        database: The application database handle.
+        instance_id: The instance identifier.
+        current_uuid: UUID of the config being updated, or ``None`` for creation.
+
+    Raises:
+        InstanceConfigAdminError: If a different config already references the instance.
+    """
     existing = database.instance_configs.get_by_instance_id(instance_id)
     if existing is not None and existing["uuid"] != current_uuid:
         raise InstanceConfigAdminError(
@@ -498,6 +758,16 @@ def build_instance_config_record(
     input_data: NormalizedInstanceConfigInput,
     created_at: str | None = None,
 ) -> InstanceConfigRecord:
+    """Build an ``InstanceConfigRecord`` from normalised input.
+
+    Args:
+        config_uuid: Optional UUID; a new one is generated if omitted.
+        input_data: Normalised instance config input.
+        created_at: Optional override for creation timestamp.
+
+    Returns:
+        A new ``InstanceConfigRecord`` instance.
+    """
     now = utc_now_iso()
     return InstanceConfigRecord(
         uuid=config_uuid or str(uuid4()),

@@ -408,6 +408,7 @@ def import_astrbot_export(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser for the AstrBot import command."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", required=True, type=Path, help="AstrBot 导出的 JSON 文件")
     parser.add_argument(
@@ -425,6 +426,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for importing AstrBot message history."""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

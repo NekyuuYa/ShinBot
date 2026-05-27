@@ -26,11 +26,18 @@ class Repository:
     _MISSING = object()
 
     def __init__(self, db: Any, **dependencies: Any) -> None:
+        """Initialise the repository with a database handle and optional dependencies.
+
+        Args:
+            db: A ``DatabaseManager`` or compatible connection provider.
+            **dependencies: Arbitrary named dependencies injected at construction.
+        """
         self._db = db
         self._dependencies = dict(dependencies)
 
     @contextmanager
     def connect(self) -> Iterator[Connection]:
+        """Yield a transaction-scoped SQLite connection."""
         with self._db.connect() as conn:
             yield conn
 
@@ -52,9 +59,11 @@ class Repository:
         raise RuntimeError(f"Database config value {name!r} was not provided")
 
     def json_dumps(self, value: Any) -> str:
+        """Serialise *value* to a JSON string."""
         return _json_dumps(value)
 
     def json_loads(self, value: str | None, default: Any) -> Any:
+        """Deserialise a JSON string, returning *default* when empty or ``None``."""
         return _json_loads(value, default)
 
     def row_to_dict(
@@ -87,6 +96,7 @@ class Repository:
         return payload
 
     def rows_to_dicts(self, rows: Iterable[Any], **kwargs: Any) -> list[dict[str, Any]]:
+        """Map multiple SQLite rows into dictionaries using :meth:`row_to_dict`."""
         return [self.row_to_dict(row, **kwargs) for row in rows]
 
 

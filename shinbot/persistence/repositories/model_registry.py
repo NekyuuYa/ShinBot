@@ -38,6 +38,12 @@ class ModelRegistryRepository:
     """
 
     def __init__(self, source: DatabaseManager | Path | str) -> None:
+        """Initialise the registry.
+
+        Args:
+            source: A ``DatabaseManager``, ``Path``, or string path to the
+                JSON registry file or its parent directory.
+        """
         self.path = _resolve_registry_path(source)
 
     @classmethod

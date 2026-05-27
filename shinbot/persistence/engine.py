@@ -30,6 +30,11 @@ class DatabaseManager:
     """Database bootstrap and repository access for the runtime data store."""
 
     def __init__(self, config: DatabaseConfig) -> None:
+        """Initialize the database manager and all repository accessors.
+
+        Args:
+            config: Normalised database bootstrap settings.
+        """
         self.config = config
         self.sessions = SessionRepository(self)
         self.audit = AuditRepository(self)
@@ -59,6 +64,16 @@ class DatabaseManager:
         url: str | None = None,
         snapshot_ttl: int | None = None,
     ) -> DatabaseManager:
+        """Create a ``DatabaseManager`` from high-level bootstrap parameters.
+
+        Args:
+            data_dir: Root data directory for runtime files.
+            url: Optional explicit SQLite URL override.
+            snapshot_ttl: Optional TTL in seconds for prompt snapshots.
+
+        Returns:
+            A fully-initialised ``DatabaseManager`` instance.
+        """
         return cls(
             DatabaseConfig.from_bootstrap(data_dir=data_dir, url=url, snapshot_ttl=snapshot_ttl)
         )

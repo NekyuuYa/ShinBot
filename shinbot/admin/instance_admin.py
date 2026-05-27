@@ -30,6 +30,12 @@ class InstanceAdminError(RuntimeError):
 
 
 def persist_instance_record(boot: Any, record: dict[str, Any]) -> None:
+    """Persist or replace an adapter instance record in the boot config.
+
+    Args:
+        boot: The application boot controller.
+        record: The instance record dict to persist.
+    """
     _section, instances = adapter_instance_store(boot.config, create=True)
     for index, item in enumerate(instances):
         if item.get("id") == record["id"]:
@@ -42,6 +48,15 @@ def persist_instance_record(boot: Any, record: dict[str, Any]) -> None:
 def find_instance_record(
     boot: Any, instance_id: str
 ) -> tuple[int, dict[str, Any]] | tuple[None, None]:
+    """Find an adapter instance record by its ID.
+
+    Args:
+        boot: The application boot controller.
+        instance_id: The instance identifier to search for.
+
+    Returns:
+        A tuple of (index, record) if found, or (None, None) otherwise.
+    """
     _section, instances = adapter_instance_store(boot.config)
     for index, item in enumerate(instances):
         if not isinstance(item, dict):
@@ -52,12 +67,28 @@ def find_instance_record(
 
 
 def resolve_instance_config(body: Any) -> dict[str, Any]:
+    """Extract the config dict from a request body, defaulting to empty.
+
+    Args:
+        body: The request body object.
+
+    Returns:
+        The config dict, or an empty dict if not present.
+    """
     if body.config:
         return dict(body.config)
     return {}
 
 
 def runtime_config(adapter: Any) -> dict[str, Any]:
+    """Extract a serialisable config dict from a running adapter.
+
+    Args:
+        adapter: The adapter instance.
+
+    Returns:
+        A dict representation of the adapter's config, or empty dict.
+    """
     config = getattr(adapter, "config", None)
     if hasattr(config, "model_dump"):
         return config.model_dump()
@@ -69,6 +100,14 @@ def runtime_config(adapter: Any) -> dict[str, Any]:
 
 
 def serialize_instance_config_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Build a condensed instance-config summary for API responses.
+
+    Args:
+        payload: The full instance config payload, or ``None``.
+
+    Returns:
+        A summary dict, or ``None`` if the input is ``None``.
+    """
     if payload is None:
         return None
     serialized = serialize_instance_config(payload)
@@ -93,6 +132,14 @@ def serialize_instance_config_summary(payload: dict[str, Any] | None) -> dict[st
 
 
 def instance_config_by_instance_id(database: Any) -> dict[str, dict[str, Any]]:
+    """Return a mapping of instance_id to instance-config record.
+
+    Args:
+        database: The application database handle.
+
+    Returns:
+        A dict keyed by instance ID.
+    """
     return {item["instance_id"]: item for item in database.instance_configs.list()}
 
 
@@ -101,6 +148,16 @@ def serialize_instance_record(
     mgr: Any,
     instance_configs_by_instance_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    """Serialise a persisted adapter instance record for the API.
+
+    Args:
+        item: Raw adapter instance record from config.
+        mgr: The adapter manager for runtime status lookups.
+        instance_configs_by_instance_id: Mapping of instance IDs to configs.
+
+    Returns:
+        A serialised instance dict.
+    """
     normalized = normalize_adapter_instance_record(item)
     instance_id = normalized["id"]
     adapter = mgr.get_instance(instance_id) if instance_id else None
@@ -132,6 +189,16 @@ def serialize_runtime_instance(
     mgr: Any,
     instance_configs_by_instance_id: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    """Serialise a live adapter that has no persisted config record.
+
+    Args:
+        adapter: The running adapter instance.
+        mgr: The adapter manager.
+        instance_configs_by_instance_id: Mapping of instance IDs to configs.
+
+    Returns:
+        A serialised instance dict with zeroed timestamps.
+    """
     return {
         "id": adapter.instance_id,
         "name": adapter.instance_id,
@@ -147,6 +214,17 @@ def serialize_runtime_instance(
 
 
 def list_instance_payloads(*, bot: Any, boot: Any) -> list[dict[str, Any]]:
+    """Build the full list of instance payloads for the API.
+
+    Combines persisted config records with live adapter instances.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+
+    Returns:
+        A list of serialised instance dicts.
+    """
     mgr = bot.adapter_manager
     instance_configs = instance_config_by_instance_id(bot.database)
     records: list[dict[str, Any]] = []
@@ -170,6 +248,18 @@ def validate_new_instance(
     instance_id: str,
     platform: str,
 ) -> None:
+    """Validate that a new instance can be created.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+        instance_id: The desired instance ID.
+        platform: The platform type for the adapter.
+
+    Raises:
+        InstanceAdminError: If the ID is empty, already exists, or the
+            platform is not registered.
+    """
     if not instance_id:
         raise InstanceAdminError(
             status_code=400,
@@ -201,6 +291,18 @@ def build_instance_record(
     config: dict[str, Any],
     created_at: int | None = None,
 ) -> dict[str, Any]:
+    """Construct a new adapter instance record dict.
+
+    Args:
+        instance_id: The instance identifier.
+        name: Human-readable name.
+        platform: The adapter platform type.
+        config: Adapter configuration dict.
+        created_at: Optional creation timestamp; defaults to now.
+
+    Returns:
+        A new instance record dict.
+    """
     now = created_at if created_at is not None else timestamp_now()
     return {
         "id": instance_id,
@@ -215,6 +317,16 @@ def build_instance_record(
 def get_instance_for_update(
     *, bot: Any, boot: Any, instance_id: str
 ) -> tuple[Any | None, int | None, dict[str, Any] | None]:
+    """Retrieve the adapter, config index, and record for an update operation.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+        instance_id: The instance identifier.
+
+    Returns:
+        A tuple of (adapter_or_None, index_or_None, record_or_None).
+    """
     adapter = bot.adapter_manager.get_instance(instance_id)
     index, inst = find_instance_record(boot, instance_id)
     return adapter, index, inst
@@ -223,6 +335,16 @@ def get_instance_for_update(
 def ensure_persisted_instance_record(
     *, boot: Any, instance_id: str, adapter: Any
 ) -> tuple[int, dict[str, Any]]:
+    """Create and persist an instance record for a runtime-only adapter.
+
+    Args:
+        boot: The application boot controller.
+        instance_id: The instance identifier.
+        adapter: The live adapter instance.
+
+    Returns:
+        A tuple of (index, record) after persistence.
+    """
     inst = build_instance_record(
         instance_id=instance_id,
         name=instance_id,
@@ -234,6 +356,15 @@ def ensure_persisted_instance_record(
 
 
 def apply_instance_patch(*, inst: dict[str, Any], body: Any) -> dict[str, Any]:
+    """Apply an API request patch to an instance record in-place.
+
+    Args:
+        inst: The instance record to modify.
+        body: The API request body with optional fields.
+
+    Returns:
+        The config patch dict that was applied.
+    """
     if body.name is not None:
         inst["name"] = body.name
     adapter = body.adapter
@@ -252,6 +383,12 @@ def apply_instance_patch(*, inst: dict[str, Any], body: Any) -> dict[str, Any]:
 
 
 def apply_runtime_config_patch(*, adapter: Any, config_patch: dict[str, Any]) -> None:
+    """Push a config patch into a running adapter's config object.
+
+    Args:
+        adapter: The running adapter instance.
+        config_patch: Dict of config keys/values to apply.
+    """
     if not config_patch or not hasattr(adapter, "config"):
         return
     if hasattr(adapter.config, "model_copy"):
@@ -264,6 +401,18 @@ def apply_runtime_config_patch(*, adapter: Any, config_patch: dict[str, Any]) ->
 
 
 def get_runtime_instance_or_raise(mgr: Any, instance_id: str) -> Any:
+    """Retrieve a running adapter or raise a 404 error.
+
+    Args:
+        mgr: The adapter manager.
+        instance_id: The instance identifier.
+
+    Returns:
+        The adapter instance.
+
+    Raises:
+        InstanceAdminError: If the instance is not found.
+    """
     adapter = mgr.get_instance(instance_id)
     if adapter is None:
         raise InstanceAdminError(
@@ -283,6 +432,22 @@ def create_instance_runtime(
     name: str,
     config: dict[str, Any],
 ) -> dict[str, Any]:
+    """Validate, create, and persist a new adapter instance.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+        instance_id: The desired instance ID.
+        platform: The adapter platform type.
+        name: Human-readable name.
+        config: Adapter configuration dict.
+
+    Returns:
+        The persisted instance record.
+
+    Raises:
+        InstanceAdminError: On validation failure or duplicate ID.
+    """
     validate_new_instance(
         bot=bot,
         boot=boot,
@@ -311,6 +476,20 @@ def update_instance_runtime(
     instance_id: str,
     body: Any,
 ) -> dict[str, Any]:
+    """Update an existing adapter instance's persisted config and runtime state.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+        instance_id: The instance identifier.
+        body: The API request body with update fields.
+
+    Returns:
+        The updated instance record.
+
+    Raises:
+        InstanceAdminError: If the instance is not found.
+    """
     adapter, index, inst = get_instance_for_update(bot=bot, boot=boot, instance_id=instance_id)
     if adapter is None and inst is None:
         raise InstanceAdminError(
@@ -339,6 +518,16 @@ def update_instance_runtime(
 
 
 async def delete_instance_runtime(*, bot: Any, boot: Any, instance_id: str) -> None:
+    """Stop and remove an adapter instance from runtime and persisted config.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+        instance_id: The instance identifier to delete.
+
+    Raises:
+        InstanceAdminError: If the instance is not found.
+    """
     mgr = bot.adapter_manager
     adapter = mgr.get_instance(instance_id)
     index, _inst = find_instance_record(boot, instance_id)
@@ -359,6 +548,19 @@ async def delete_instance_runtime(*, bot: Any, boot: Any, instance_id: str) -> N
 
 
 async def control_instance_runtime(*, mgr: Any, instance_id: str, action: str) -> str:
+    """Start or stop an adapter instance.
+
+    Args:
+        mgr: The adapter manager.
+        instance_id: The instance identifier.
+        action: Either ``"start"`` or ``"stop"``.
+
+    Returns:
+        The resulting status string (``"running"`` or ``"stopped"``).
+
+    Raises:
+        InstanceAdminError: If the instance is already in the requested state.
+    """
     get_runtime_instance_or_raise(mgr, instance_id)
 
     if action == "start":
