@@ -1,161 +1,133 @@
-[provider]
-kind = "core"
-id = "shinbot_top_level"
-display_name = "ShinBot Top-Level Config"
-description = "Top-level configuration sections: logging, database, admin, and permissions."
-config_version = "1.0.0"
+# ShinBot Configuration Schema
+#
+# This file defines the schema for data/config.toml.
+# It documents types, defaults, and constraints for each configuration section.
+# This is a reference file — the actual config is data/config.toml.
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
+# ─── [logging] ──────────────────────────────────────────────────────────────
 
-[[fields]]
-path = "logging.level"
-type = "enum"
-required = true
-default = "INFO"
-choices = ["DEBUG", "INFO", "WARNING", "ERROR"]
-description = "Global log level."
+[logging]
 
-[[fields]]
-path = "logging.third_party_noise"
-type = "enum"
-required = true
-default = "debug"
-choices = ["off", "debug", "on"]
-description = "Control third-party library log verbosity. \"debug\" shows low-level uvicorn/websockets logs only when level = \"DEBUG\"."
+# Log level for the application.
+# Values: "DEBUG" | "INFO" | "WARNING" | "ERROR"
+# Default: "INFO"
+level = "INFO"
 
-# ─── Database ─────────────────────────────────────────────────────────────────
+# Controls visibility of third-party library logs (uvicorn, websockets, etc.).
+# "off"   — suppress all third-party logs
+# "debug" — show third-party logs only when level = "DEBUG"
+# "on"    — always show third-party logs
+# Default: "debug"
+third_party_noise = "debug"
 
-[[fields]]
-path = "database.url"
-type = "string"
-required = true
-default = "sqlite:///data/db/shinbot.sqlite3"
-description = "Database connection URL."
 
-[[fields]]
-path = "database.snapshot_ttl"
-type = "integer"
-required = true
-default = 10800
-min = 0
-description = "How long to retain prompt snapshots, in seconds."
+# ─── [database] ─────────────────────────────────────────────────────────────
 
-# ─── Admin / WebUI ────────────────────────────────────────────────────────────
+[database]
 
-[[fields]]
-path = "admin.username"
-type = "string"
-required = true
-default = "admin"
-description = "Admin dashboard login username."
+# SQLAlchemy database URL.
+# Supported: "sqlite:///data/db/shinbot.sqlite3"
+# Default: "sqlite:///data/db/shinbot.sqlite3"
+url = "sqlite:///data/db/shinbot.sqlite3"
 
-[[fields]]
-path = "admin.password"
-type = "string"
-required = true
-default = "admin"
-secret = true
-description = "Admin dashboard login password. Change before deploying."
+# How long (in seconds) to keep prompt snapshots before cleanup.
+# Set to 0 to disable cleanup.
+# Default: 10800 (3 hours)
+snapshot_ttl = 10800
 
-[[fields]]
-path = "admin.jwt_expire_hours"
-type = "integer"
-required = true
-default = 24
-min = 1
-description = "JWT token lifetime in hours."
 
-[[fields]]
-path = "admin.jwt_secret"
-type = "string"
-default = ""
-secret = true
-description = "JWT signing secret. Empty means auto-generate data/admin_secret.key."
+# ─── [admin] ────────────────────────────────────────────────────────────────
 
-[[fields]]
-path = "admin.dashboard_dist"
-type = "string"
-default = ""
-description = "Path to the built dashboard static files directory."
+[admin]
 
-[[fields]]
-path = "admin.cors_origins"
-type = "array"
-default = []
-description = "Allowed CORS origins for the management API."
+# Admin username for the management dashboard.
+# Default: "admin"
+username = "admin"
 
-[[fields]]
-path = "admin.cors_allow_credentials"
-type = "boolean"
-default = true
-description = "Allow credentials in CORS requests."
+# Admin password for the management dashboard.
+# IMPORTANT: Change before deploying to production.
+# Default: "admin" (auto-replaced on first boot with a random password)
+password = "admin"
 
-[[fields]]
-path = "admin.auth_cookie_name"
-type = "string"
-default = ""
-description = "Name of the authentication cookie."
+# JWT token lifetime in hours.
+# Default: 24
+jwt_expire_hours = 24
 
-[[fields]]
-path = "admin.auth_cookie_samesite"
-type = "string"
-default = ""
-description = "SameSite attribute for the authentication cookie."
+# JWT signing secret. Leave empty to auto-generate data/admin_secret.key.
+# Default: "" (auto-generate)
+# jwt_secret = ""
 
-[[fields]]
-path = "admin.auth_cookie_secure"
-type = "boolean"
-default = false
-description = "Secure flag for the authentication cookie."
+# Path to the built dashboard dist folder.
+# Default: "dashboard/dist"
+# dashboard_dist = "dashboard/dist"
 
-[[fields]]
-path = "admin.framework_update_dir"
-type = "string"
-default = ""
-description = "Working directory for framework_update_command."
+# Allowed CORS origins for the management API.
+# Default: ["*"]
+# cors_origins = ["http://localhost:5173"]
 
-[[fields]]
-path = "admin.framework_update_command"
-type = "string"
-default = ""
-description = "Shell command to execute for framework updates."
+# Whether to allow CORS credentials (cookies).
+# Note: Browsers reject wildcard ACAO when credentials are allowed.
+# Default: false
+# cors_allow_credentials = true
 
-[[fields]]
-path = "admin.framework_update_timeout_seconds"
-type = "integer"
-default = 300
-min = 1
-description = "Timeout in seconds for the framework update command."
+# Name of the session cookie.
+# Default: "shinbot_session"
+# auth_cookie_name = "shinbot_session"
 
-[[fields]]
-path = "admin.framework_update_restart"
-type = "boolean"
-default = true
-description = "Restart the application after a successful framework update."
+# SameSite attribute for the session cookie.
+# Values: "strict" | "lax" | "none"
+# Default: "strict"
+# auth_cookie_samesite = "strict"
 
-[[fields]]
-path = "admin.dashboard_build_dir"
-type = "string"
-default = ""
-description = "Working directory for dashboard_build_command."
+# Secure attribute for the session cookie.
+# null = auto-detect from request scheme (https/wss → true)
+# Default: null (auto-detect)
+# auth_cookie_secure = true
 
-[[fields]]
-path = "admin.dashboard_build_command"
-type = "string"
-default = ""
-description = "Shell command to build the dashboard frontend."
+# Working directory for the framework update command.
+# Default: "."
+# framework_update_dir = "."
 
-[[fields]]
-path = "admin.dashboard_build_timeout_seconds"
-type = "integer"
-default = 180
-min = 1
-description = "Timeout in seconds for the dashboard build command."
+# Shell command to execute for framework updates.
+# Default: "./deploy/update-framework.sh"
+# framework_update_command = "./deploy/update-framework.sh"
 
-# ─── Permissions ──────────────────────────────────────────────────────────────
+# Timeout in seconds for the framework update command.
+# Default: 300
+# framework_update_timeout_seconds = 300
 
-[[fields]]
-path = "permissions"
-type = "object"
-default = {}
-description = "Map of group names (e.g. default, admin, owner) to lists of allowed permissions. Bindings map user identifiers to groups."
+# Whether to restart the process after a successful framework update.
+# Default: true
+# framework_update_restart = true
+
+# Working directory for the dashboard build command.
+# Default: "dashboard"
+# dashboard_build_dir = "dashboard"
+
+# Shell command to build the dashboard.
+# Default: "pnpm build"
+# dashboard_build_command = "pnpm build"
+
+# Timeout in seconds for the dashboard build command.
+# Default: 180
+# dashboard_build_timeout_seconds = 180
+
+
+# ─── [permissions] ──────────────────────────────────────────────────────────
+
+[permissions]
+
+# Permission bindings map user/session keys to permission groups.
+# Built-in groups: "default", "admin", "owner"
+#
+# Binding key formats:
+#   Global:    "{bot_id}:{platform_user_id}"
+#   Session:   "{bot_id}:{session_id}.{platform_user_id}"
+#
+# [[permissions.bindings]]
+# key = "full-agent:123456789"
+# group = "owner"
+#
+# [[permissions.bindings]]
+# key = "full-agent:group:20001.123456789"
+# group = "admin"
