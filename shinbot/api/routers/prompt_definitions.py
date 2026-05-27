@@ -84,6 +84,7 @@ def _prompt_repository(boot) -> PromptDefinitionFileRepository:
 
 @router.get("")
 def list_prompt_definitions(boot=BootDep):
+    """List all prompt definitions stored on disk."""
     try:
         return ok([serialize_prompt_definition(item) for item in _prompt_repository(boot).list()])
     except PromptDefinitionAdminError as exc:
@@ -92,6 +93,7 @@ def list_prompt_definitions(boot=BootDep):
 
 @router.post("", status_code=201)
 def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
+    """Create a new prompt definition after normalising and validating input."""
     try:
         repository = _prompt_repository(boot)
         normalized = normalize_prompt_definition_input(
@@ -126,6 +128,7 @@ def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
 
 @router.get("/{prompt_uuid}")
 def get_prompt_definition(prompt_uuid: str, boot=BootDep):
+    """Retrieve a single prompt definition by its UUID."""
     try:
         payload = get_prompt_definition_or_raise(_prompt_repository(boot), prompt_uuid)
     except PromptDefinitionAdminError as exc:
@@ -135,6 +138,7 @@ def get_prompt_definition(prompt_uuid: str, boot=BootDep):
 
 @router.patch("/{prompt_uuid}")
 def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest, boot=BootDep):
+    """Partially update an existing prompt definition."""
     try:
         repository = _prompt_repository(boot)
         current = get_prompt_definition_or_raise(repository, prompt_uuid)
@@ -190,6 +194,7 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
 
 @router.delete("/{prompt_uuid}")
 def delete_prompt_definition(prompt_uuid: str, boot=BootDep):
+    """Delete a prompt definition by its UUID."""
     try:
         _prompt_repository(boot).delete(prompt_uuid)
     except PromptDefinitionAdminError as exc:

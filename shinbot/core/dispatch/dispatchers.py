@@ -35,6 +35,7 @@ class NoticeDispatcher:
         self._event_bus = event_bus
 
     def matches(self, event: UnifiedEvent, _message: Message) -> bool:
+        """Return True if this dispatcher should handle the given event."""
         return event.is_notice_event and self._event_bus.has_handlers(event.type)
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
@@ -47,6 +48,16 @@ def make_notice_route_rule(
     rule_id: str = "builtin.notice_dispatcher",
     priority: int = 1000,
 ) -> RouteRule:
+    """Create a built-in route rule that forwards notice events to the EventBus.
+
+    Args:
+        dispatcher: The ``NoticeDispatcher`` instance used as the custom matcher.
+        rule_id: Unique identifier for the generated route rule.
+        priority: Evaluation priority (lower wins when competing rules match).
+
+    Returns:
+        A ``RouteRule`` targeting the notice dispatcher.
+    """
     return RouteRule(
         id=rule_id,
         priority=priority,
@@ -190,6 +201,16 @@ def make_agent_entry_fallback_route_rule(
     rule_id: str = "builtin.agent_entry_fallback",
     priority: int = -1000,
 ) -> RouteRule:
+    """Create a fallback route rule that sends unmatched messages to the agent.
+
+    Args:
+        rule_id: Unique identifier for the generated route rule.
+        priority: Evaluation priority.  The default is deliberately low so that
+            this rule only fires when no normal or exclusive rule matched.
+
+    Returns:
+        A ``RouteRule`` targeting the agent entry dispatcher.
+    """
     return RouteRule(
         id=rule_id,
         priority=priority,

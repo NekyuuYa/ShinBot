@@ -68,11 +68,13 @@ def _raise_admin_http_error(exc: InstanceAdminError) -> None:
 
 @router.get("")
 async def list_instances(bot=BotDep, boot=BootDep):
+    """List all managed bot instances and their current state."""
     return ok(list_instance_payloads(bot=bot, boot=boot))
 
 
 @router.post("", status_code=201)
 async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep):
+    """Create a new bot instance from the provided configuration."""
     adapter = body.adapter or body.adapterType or ""
     instance_id = body.id or body.name or adapter
     try:
@@ -102,6 +104,7 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
 
 @router.patch("/{instance_id}")
 async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotDep, boot=BootDep):
+    """Update an existing bot instance's configuration fields."""
     try:
         inst = update_instance_runtime(
             bot=bot,
@@ -128,6 +131,7 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
 
 @router.delete("/{instance_id}")
 async def delete_instance(instance_id: str, bot=BotDep, boot=BootDep):
+    """Delete a bot instance by its identifier."""
     try:
         await delete_instance_runtime(bot=bot, boot=boot, instance_id=instance_id)
     except InstanceAdminError as exc:
@@ -143,6 +147,7 @@ async def delete_instance(instance_id: str, bot=BotDep, boot=BootDep):
 
 @router.post("/{instance_id}/control")
 async def control_instance(instance_id: str, body: ControlRequest, bot=BotDep):
+    """Start or stop a running bot instance."""
     try:
         state = await control_instance_runtime(
             mgr=bot.adapter_manager,

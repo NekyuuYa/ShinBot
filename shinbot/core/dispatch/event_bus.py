@@ -175,6 +175,15 @@ class EventBus:
         return results
 
     def handler_count(self, event_type: str | None = None) -> int:
+        """Return the number of registered handlers.
+
+        Args:
+            event_type: If provided, count only handlers for this specific
+                event type.  When *None*, counts handlers across all types.
+
+        Returns:
+            The number of matching handler entries.
+        """
         if event_type is not None:
             return len(self._handlers.get(event_type, []))
         return sum(len(h) for h in self._handlers.values())

@@ -32,6 +32,7 @@ class WaitingInputRegistry:
         self._waiting: dict[str, asyncio.Future[str]] = {}
 
     def is_waiting(self, session_id: str) -> bool:
+        """Return whether a session is currently waiting for user input."""
         return session_id in self._waiting
 
     def register(self, session_id: str) -> asyncio.Future[str]:

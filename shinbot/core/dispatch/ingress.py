@@ -69,6 +69,11 @@ class RouteDispatchContext:
     trace_id: str = ""
 
     def require_message_context(self) -> MessageContext:
+        """Return the message context or raise if it was not attached.
+
+        Raises:
+            RuntimeError: When ``message_context`` is ``None``.
+        """
         if self.message_context is None:
             raise RuntimeError("Route target requires a message context")
         return self.message_context
@@ -106,6 +111,16 @@ class RouteTargetRegistry:
         *,
         owner: str | None = None,
     ) -> None:
+        """Register a dispatcher handler for a named route target.
+
+        Args:
+            target: Unique target name referenced by ``RouteRule.target``.
+            handler: Callable that will be invoked when the rule matches.
+            owner: Optional owner ID for bulk unregistration on plugin unload.
+
+        Raises:
+            ValueError: If *target* is empty or already registered.
+        """
         if not target:
             raise ValueError("route target must not be empty")
         if target in self._handlers:
@@ -114,16 +129,40 @@ class RouteTargetRegistry:
         self._owners[target] = owner
 
     def unregister(self, target: str) -> RouteTargetHandler | None:
+        """Remove a dispatcher handler by target name.
+
+        Args:
+            target: The target name previously registered.
+
+        Returns:
+            The removed handler, or ``None`` if the target was not found.
+        """
         self._owners.pop(target, None)
         return self._handlers.pop(target, None)
 
     def unregister_by_owner(self, owner: str) -> int:
+        """Remove all dispatcher handlers registered by a specific owner.
+
+        Args:
+            owner: Owner identifier (typically a plugin ID).
+
+        Returns:
+            The number of handlers that were removed.
+        """
         targets = [target for target, target_owner in self._owners.items() if target_owner == owner]
         for target in targets:
             self.unregister(target)
         return len(targets)
 
     def get(self, target: str) -> RouteTargetHandler | None:
+        """Look up a dispatcher handler by target name.
+
+        Args:
+            target: The target name to look up.
+
+        Returns:
+            The registered handler, or ``None`` if not found.
+        """
         return self._handlers.get(target)
 
 
@@ -156,6 +195,17 @@ class MessageIngress:
         self._pre_route_hooks: list[PreRouteHook] = []
 
     def add_interceptor(self, interceptor: Interceptor, priority: int = 100) -> None:
+        """Register an interceptor that can block events before routing.
+
+        Interceptors are evaluated in ascending priority order.  The first
+        interceptor that returns ``False`` prevents the event from reaching
+        any route target.
+
+        Args:
+            interceptor: Async callable that receives a ``MessageContext`` and
+                returns ``True`` to allow or ``False`` to block.
+            priority: Evaluation order (lower runs first).
+        """
         self._interceptors.append((priority, interceptor))
         self._interceptors.sort(key=lambda x: x[0])
 

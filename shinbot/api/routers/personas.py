@@ -48,6 +48,7 @@ def _raise_admin_http_error(exc: PersonaFileError) -> None:
 
 @router.get("")
 def list_personas(boot=BootDep):
+    """List all saved personas."""
     try:
         return ok([serialize_persona(item) for item in _persona_repository(boot).list()])
     except PersonaFileError as exc:
@@ -56,6 +57,7 @@ def list_personas(boot=BootDep):
 
 @router.post("", status_code=201)
 def create_persona(body: PersonaRequest, boot=BootDep):
+    """Create a new persona from the request payload."""
     try:
         payload = _persona_repository(boot).create(
             persona_id=body.id,
@@ -72,6 +74,7 @@ def create_persona(body: PersonaRequest, boot=BootDep):
 
 @router.get("/{persona_uuid}")
 def get_persona(persona_uuid: str, boot=BootDep):
+    """Retrieve a single persona by its UUID."""
     try:
         payload = _persona_repository(boot).get(persona_uuid)
         if payload is None:
@@ -87,6 +90,7 @@ def get_persona(persona_uuid: str, boot=BootDep):
 
 @router.patch("/{persona_uuid}")
 def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot=BootDep):
+    """Partially update an existing persona's fields."""
     try:
         repository = _persona_repository(boot)
         current = repository.get(persona_uuid)
@@ -116,6 +120,7 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot=BootDep):
 
 @router.delete("/{persona_uuid}")
 def delete_persona(persona_uuid: str, boot=BootDep):
+    """Delete a persona by its UUID."""
     try:
         _persona_repository(boot).delete(persona_uuid)
     except PersonaFileError as exc:
