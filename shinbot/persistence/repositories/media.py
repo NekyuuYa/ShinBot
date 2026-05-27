@@ -15,11 +15,17 @@ from .base import Repository
 
 
 class MediaAssetRepository(Repository):
-    """Persistence adapter for raw media asset cache entries."""
+    """Persistence adapter for raw media asset cache entries.
+
+    Stores media files (images, audio, etc.) keyed by their content hash
+    for deduplication across the system. Each asset tracks storage location,
+    dimensions, MIME type, and arbitrary metadata.
+    """
 
     _JSON_FIELDS = {"metadata": ("metadata_json", {})}
 
     def get(self, raw_hash: str) -> dict[str, Any] | None:
+        """Return the asset entry for *raw_hash*, or ``None`` if absent."""
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM media_assets WHERE raw_hash = ?",
@@ -28,6 +34,11 @@ class MediaAssetRepository(Repository):
         return self._row_to_payload(row) if row is not None else None
 
     def upsert(self, record: MediaAssetRecord) -> None:
+        """Insert or update a media asset record.
+
+        When an entry with the same ``raw_hash`` already exists the metadata
+        dictionaries are merged (new values win) and timestamps are updated.
+        """
         payload = asdict(record)
         with self.connect() as conn:
             row = conn.execute(
@@ -77,6 +88,7 @@ class MediaAssetRepository(Repository):
             )
 
     def update_metadata(self, raw_hash: str, metadata: dict[str, Any]) -> None:
+        """Replace the JSON metadata blob for the asset identified by *raw_hash*."""
         with self.connect() as conn:
             conn.execute(
                 """
@@ -88,6 +100,10 @@ class MediaAssetRepository(Repository):
             )
 
     def list_expired(self, now: float) -> list[dict[str, Any]]:
+        """Return all assets whose ``expire_at`` timestamp is before *now*.
+
+        Results are ordered oldest-first by expiry time.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -100,6 +116,7 @@ class MediaAssetRepository(Repository):
         return [self._row_to_payload(row) for row in rows]
 
     def delete(self, raw_hash: str) -> None:
+        """Delete the asset entry identified by *raw_hash*."""
         with self.connect() as conn:
             conn.execute("DELETE FROM media_assets WHERE raw_hash = ?", (raw_hash,))
 
@@ -108,7 +125,11 @@ class MediaAssetRepository(Repository):
 
 
 class MessageMediaLinkRepository(Repository):
-    """Persistence adapter for message-log to media-asset relations."""
+    """Persistence adapter for message-log to media-asset relations.
+
+    Maps individual media assets (by hash) to the message-log entries they
+    belong to, preserving the original ordering and platform identifiers.
+    """
 
     def replace_for_message(
         self,
@@ -119,6 +140,11 @@ class MessageMediaLinkRepository(Repository):
         raw_hashes: list[str],
         created_at: float,
     ) -> None:
+        """Replace all media links for a message-log entry.
+
+        Removes every existing link for *message_log_id* and inserts fresh
+        entries for each *raw_hashes* value in order.
+        """
         with self.connect() as conn:
             conn.execute(
                 "DELETE FROM message_media_links WHERE message_log_id = ?",
@@ -142,6 +168,10 @@ class MessageMediaLinkRepository(Repository):
                 )
 
     def list_by_message_log_id(self, message_log_id: int) -> list[dict[str, Any]]:
+        """Return all media links associated with *message_log_id*.
+
+        Results are ordered by ``media_index`` ascending.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -158,6 +188,11 @@ class MessageMediaLinkRepository(Repository):
         session_id: str,
         platform_msg_id: str,
     ) -> list[dict[str, Any]]:
+        """Return all media links for a platform message within a session.
+
+        Results are ordered by ``message_log_id`` descending (newest first),
+        then by ``media_index`` ascending.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -170,6 +205,7 @@ class MessageMediaLinkRepository(Repository):
         return [self._row_to_payload(row) for row in rows]
 
     def get_latest_by_session(self, session_id: str) -> dict[str, Any] | None:
+        """Return the most-recent media link in *session_id*, or ``None``."""
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -187,11 +223,16 @@ class MessageMediaLinkRepository(Repository):
 
 
 class SessionMediaOccurrenceRepository(Repository):
-    """Persistence adapter for per-session image repeat tracking."""
+    """Persistence adapter for per-session image repeat tracking.
+
+    Tracks how many times a particular media asset (by hash) has appeared
+    within a chat session, including sender identity and recent timestamps.
+    """
 
     _JSON_FIELDS = {"recent_timestamps": ("recent_timestamps_json", [])}
 
     def get(self, session_id: str, raw_hash: str) -> dict[str, Any] | None:
+        """Return the occurrence record for a session/asset pair, or ``None``."""
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -203,6 +244,12 @@ class SessionMediaOccurrenceRepository(Repository):
         return self._row_to_payload(row) if row is not None else None
 
     def upsert(self, record: SessionMediaOccurrenceRecord) -> None:
+        """Insert or update an occurrence record.
+
+        When an entry already exists for the (session_id, raw_hash) pair the
+        occurrence count and recent timestamps are overwritten; the original
+        ``first_seen_at`` is preserved.
+        """
         payload = asdict(record)
         with self.connect() as conn:
             row = conn.execute(
@@ -244,6 +291,10 @@ class SessionMediaOccurrenceRepository(Repository):
             )
 
     def delete_expired(self, now: float) -> int:
+        """Delete all occurrence records whose ``expire_at`` is before *now*.
+
+        Returns the number of rows removed.
+        """
         with self.connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM session_media_occurrences WHERE expire_at < ?",
@@ -256,11 +307,17 @@ class SessionMediaOccurrenceRepository(Repository):
 
 
 class MediaSemanticRepository(Repository):
-    """Persistence adapter for verified media semantics cache."""
+    """Persistence adapter for verified media semantics cache.
+
+    Stores the result of LLM-based or agent-based inspection of media
+    assets (e.g. image content classification). Entries are keyed by
+    content hash and also indexable by perceptual hash (strict dhash).
+    """
 
     _JSON_FIELDS = {"metadata": ("metadata_json", {})}
 
     def get(self, raw_hash: str) -> dict[str, Any] | None:
+        """Return the semantic record for *raw_hash*, or ``None``."""
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM media_semantics WHERE raw_hash = ?",
@@ -269,6 +326,11 @@ class MediaSemanticRepository(Repository):
         return self._row_to_payload(row) if row is not None else None
 
     def get_by_strict_dhash(self, strict_dhash: str) -> dict[str, Any] | None:
+        """Return the first semantic record matching a perceptual hash.
+
+        *strict_dhash* is stripped before lookup; returns ``None`` when
+        empty or when no match is found.
+        """
         normalized = strict_dhash.strip()
         if not normalized:
             return None
@@ -280,6 +342,11 @@ class MediaSemanticRepository(Repository):
         return self._row_to_payload(row) if row is not None else None
 
     def upsert(self, record: MediaSemanticRecord) -> None:
+        """Insert or update a semantic record.
+
+        On conflict the original ``first_seen_at`` is preserved while all
+        other fields are replaced with the values from *record*.
+        """
         payload = asdict(record)
         with self.connect() as conn:
             row = conn.execute(
@@ -320,6 +387,11 @@ class MediaSemanticRepository(Repository):
             )
 
     def touch(self, raw_hash: str, *, last_seen_at: float, expire_at: float) -> None:
+        """Refresh the timestamp fields of an existing semantic record.
+
+        Updates ``last_seen_at`` and ``expire_at`` without touching any
+        other columns.
+        """
         with self.connect() as conn:
             conn.execute(
                 """
@@ -331,6 +403,10 @@ class MediaSemanticRepository(Repository):
             )
 
     def delete_expired(self, now: float) -> int:
+        """Delete all semantic records whose ``expire_at`` is before *now*.
+
+        Returns the number of rows removed.
+        """
         with self.connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM media_semantics WHERE expire_at < ?",
@@ -339,6 +415,7 @@ class MediaSemanticRepository(Repository):
             return int(cursor.rowcount or 0)
 
     def list_recent(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Return up to *limit* semantic records ordered by most recently seen."""
         with self.connect() as conn:
             rows = conn.execute(
                 """
