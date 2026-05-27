@@ -175,6 +175,7 @@ class AdapterManager:
 
     @property
     def registered_platforms(self) -> list[str]:
+        """Platform names that have a registered adapter factory."""
         return list(self._factories.keys())
 
     # ── Instance management ──────────────────────────────────────────
@@ -219,9 +220,22 @@ class AdapterManager:
         return adapter
 
     def get_instance(self, instance_id: str) -> BaseAdapter | None:
+        """Retrieve an adapter instance by its unique ID.
+
+        Args:
+            instance_id: Unique identifier for the adapter instance.
+
+        Returns:
+            The adapter, or None if no instance with that ID exists.
+        """
         return self._instances.get(instance_id)
 
     def get_instances_by_platform(self, platform: str) -> list[BaseAdapter]:
+        """Return all adapter instances for a given platform name.
+
+        Args:
+            platform: Platform name (e.g. ``onebot_v11``).
+        """
         return [a for a in self._instances.values() if a.platform == platform]
 
     def get_instance_by_session(self, session_id: str) -> BaseAdapter | None:
@@ -235,9 +249,18 @@ class AdapterManager:
 
     @property
     def all_instances(self) -> list[BaseAdapter]:
+        """List of every registered adapter instance."""
         return list(self._instances.values())
 
     def remove_instance(self, instance_id: str) -> BaseAdapter | None:
+        """Remove an adapter instance without stopping it.
+
+        Args:
+            instance_id: Unique identifier for the adapter instance.
+
+        Returns:
+            The removed adapter, or None if not found.
+        """
         return self._instances.pop(instance_id, None)
 
     # ── Lifecycle ────────────────────────────────────────────────────
@@ -333,6 +356,14 @@ class AdapterManager:
     # ── Capability queries ───────────────────────────────────────────
 
     async def get_capabilities(self, instance_id: str) -> dict[str, Any] | None:
+        """Query the capability manifest of a running adapter instance.
+
+        Args:
+            instance_id: Unique identifier for the adapter instance.
+
+        Returns:
+            Capability dict from the adapter, or None if instance not found.
+        """
         adapter = self.get_instance(instance_id)
         if adapter is None:
             return None
