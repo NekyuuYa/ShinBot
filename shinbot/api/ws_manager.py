@@ -27,16 +27,40 @@ class ConnectionManager:
         self._connections: set[WebSocket] = set()
 
     async def connect(self, ws: WebSocket) -> None:
+        """Accept and register a new WebSocket client.
+
+        If the socket is still in the CONNECTING state it is accepted first.
+        The client is then added to the tracked connection set.
+
+        Args:
+            ws: The incoming WebSocket connection to register.
+        """
         if ws.application_state == WebSocketState.CONNECTING:
             await ws.accept()
         self._connections.add(ws)
         logger.debug("WS client connected (%d total)", len(self._connections))
 
     def disconnect(self, ws: WebSocket) -> None:
+        """Remove a WebSocket client from the tracked connection set.
+
+        If the client is not currently tracked the call is a safe no-op.
+
+        Args:
+            ws: The WebSocket connection to unregister.
+        """
         self._connections.discard(ws)
         logger.debug("WS client disconnected (%d total)", len(self._connections))
 
     async def broadcast(self, data: Any) -> None:
+        """Send a JSON-serialisable payload to every connected client.
+
+        Clients are notified concurrently so a slow or failed connection
+        does not block delivery to healthy ones.  Any client that errors
+        during send is automatically disconnected.
+
+        Args:
+            data: JSON-serialisable payload (dict, list, str, etc.) to send.
+        """
         connections = list(self._connections)
         if not connections:
             return
@@ -52,6 +76,7 @@ class ConnectionManager:
 
     @property
     def count(self) -> int:
+        """Return the number of currently connected WebSocket clients."""
         return len(self._connections)
 
 
@@ -98,6 +123,15 @@ _log_queue_loop: asyncio.AbstractEventLoop | None = None
 
 
 def get_log_queue() -> asyncio.Queue:  # type: ignore[type-arg]
+    """Return the module-level async log queue, creating it if needed.
+
+    The queue is scoped to the running event loop.  If called from a
+    different loop the previous queue is replaced so that handlers always
+    target the correct loop.
+
+    Returns:
+        An ``asyncio.Queue`` of log payloads (max size 1000).
+    """
     global _log_queue, _log_queue_loop
     current_loop = asyncio.get_running_loop()
     if _log_queue is None or _log_queue_loop is not current_loop:
