@@ -92,6 +92,7 @@ class UnreadMessage:
     is_poke_to_bot: bool = False
     is_poke_to_other: bool = False
     self_platform_id: str = ""
+    trace_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)

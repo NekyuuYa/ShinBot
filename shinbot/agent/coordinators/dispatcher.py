@@ -176,8 +176,16 @@ class ActiveReplyDispatcher:
             return
         try:
             recorder(session_id, result, unread_messages)
-        except Exception:
-            logger.warning("Failed to record review run for %s", session_id, exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                format_log_event(
+                    "agent.review.run_record.failed",
+                    session_id=session_id,
+                    review_run_id=getattr(result, "review_run_id", ""),
+                    error_code=type(exc).__name__,
+                ),
+                exc_info=True,
+            )
 
     async def start_active_chat(
         self,
@@ -221,6 +229,7 @@ class ActiveReplyDispatcher:
                 is_poke_to_other=message.is_poke_to_other,
                 self_platform_id=message.self_platform_id,
                 active_chat_state=active_chat_state,
+                trace_id=message.trace_id,
             )
 
     def stop_active_chat(self, session_id: str) -> None:
@@ -251,6 +260,7 @@ class ActiveReplyDispatcher:
         is_poke_to_other: bool,
         self_platform_id: str,
         active_chat_state: ActiveChatState,
+        trace_id: str = "",
     ) -> None:
         if self._active_chat_workflow is None or self._agent_scheduler is None:
             return
@@ -266,6 +276,7 @@ class ActiveReplyDispatcher:
                 is_reply_to_bot=is_reply_to_bot,
                 active_epoch=active_chat_state.active_epoch,
                 interest=f"{active_chat_state.interest_value:.2f}",
+                trace_id=trace_id,
             )
         )
         await self._active_chat_workflow.notify_message(
@@ -281,6 +292,7 @@ class ActiveReplyDispatcher:
             is_poke_to_other=is_poke_to_other,
             self_platform_id=self_platform_id,
             active_chat_state=active_chat_state,
+            trace_id=trace_id,
         )
 
     async def plan_idle_review_after_active_chat(
@@ -309,8 +321,14 @@ class ActiveReplyDispatcher:
         )
         try:
             output = await self._idle_review_planning_runner.run(stage_input)
-        except Exception:
-            logger.exception("Idle review planning failed for session %s", session_id)
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.idle_review_planning.failed",
+                    session_id=session_id,
+                    error_code=type(exc).__name__,
+                )
+            )
             return None
         seconds = output.next_review_after_seconds
         if seconds is None:
@@ -395,9 +413,14 @@ class ActiveReplyDispatcher:
                     "covered_message_log_ids": list(snapshot.message_log_ids),
                 },
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "Failed to save active_chat summary for %s", session_id, exc_info=True,
+                format_log_event(
+                    "agent.active_chat.summary.persist_failed",
+                    session_id=session_id,
+                    error_code=type(exc).__name__,
+                ),
+                exc_info=True,
             )
 
     def _build_idle_review_planning_input(
@@ -503,9 +526,15 @@ class ActiveReplyDispatcher:
                     if created_at > 0 and (time.time() - created_at) <= max_age:
                         content = str(getattr(active_record, "content", "") or "").strip()
                         recent_active_chat_summary = content or None
-            except Exception:
+            except Exception as exc:
                 logger.debug(
-                    "Failed to build handoff context for %s", session_id, exc_info=True,
+                    format_log_event(
+                        "agent.review.handoff_context.build_failed",
+                        session_id=session_id,
+                        review_run_id=result.review_run_id,
+                        error_code=type(exc).__name__,
+                    ),
+                    exc_info=True,
                 )
 
         return ReviewHandoffContext(

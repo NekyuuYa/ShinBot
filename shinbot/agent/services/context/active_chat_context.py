@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
@@ -11,8 +10,9 @@ from shinbot.agent.services.message_formatter import (
     MessageFormatConfig,
     MessageFormatterService,
 )
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:context", color="cyan")
 
 
 @dataclass(slots=True, frozen=True)
@@ -88,11 +88,16 @@ class ActiveChatContextBuilderAdapter:
                     ),
                     previous_summary=resolved_options.previous_summary,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
-                    "Active chat message formatter failed for stage %s session %s",
-                    purpose,
-                    session_id,
+                    format_log_event(
+                        "agent.active_chat.context.format_failed",
+                        session_id=session_id,
+                        purpose=purpose,
+                        message_count=len(messages),
+                        error_code=type(exc).__name__,
+                        trace_id=str(metadata.get("trace_id") or ""),
+                    )
                 )
 
         now_ms = resolved_options.now_ms

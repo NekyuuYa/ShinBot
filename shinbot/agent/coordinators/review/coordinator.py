@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import math
 import time
 import uuid
@@ -69,11 +68,12 @@ from shinbot.agent.signals import (
     AgentSignalKind,
     AgentSignalSource,
 )
+from shinbot.utils.logger import format_log_event, get_logger
 
 if False:
     from shinbot.agent.runtime.task_manager import AgentTaskScope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:review", color="green")
 
 
 @dataclass(slots=True)
@@ -213,6 +213,7 @@ class ReviewCoordinator:
         review_run_id = uuid.uuid4().hex
         started_at = self._now()
         stage_traces: list[ReviewStageTrace] = []
+        trace_by_message_id = _trace_by_message_id(unread_messages)
         try:
             current_unread_ranges = scheduler.unread_ranges(session_id, limit=10_000)
             unread_ranges = _freeze_unread_ranges(
@@ -234,6 +235,7 @@ class ReviewCoordinator:
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
                 review_run_id=review_run_id,
+                trace_by_message_id=trace_by_message_id,
                 use_partial_consumption=use_partial_consumption,
                 stage_traces=stage_traces,
             )
@@ -242,6 +244,7 @@ class ReviewCoordinator:
                 scan=scan,
                 block_digests=block_digests,
                 review_run_id=review_run_id,
+                trace_by_message_id=trace_by_message_id,
                 stage_traces=stage_traces,
             )
             completion = scheduler.complete_review(
@@ -262,10 +265,15 @@ class ReviewCoordinator:
                     scheduler,
                     consumed_ranges,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
-                    "Review consumed range writeback failed for session %s",
-                    session_id,
+                    format_log_event(
+                        "agent.review.consume.failed",
+                        session_id=session_id,
+                        review_run_id=review_run_id,
+                        error_code=type(exc).__name__,
+                        trace_id=_first_trace_id(trace_by_message_id),
+                    )
                 )
                 applied_consumed_ranges = []
             bootstrap = self._schedule_active_chat_bootstrap(
@@ -276,6 +284,7 @@ class ReviewCoordinator:
                 reply=reply,
                 active_epoch=active_epoch,
                 review_run_id=review_run_id,
+                trace_by_message_id=trace_by_message_id,
                 stage_traces=stage_traces,
             )
             return ReviewWorkflowResult(
@@ -293,9 +302,14 @@ class ReviewCoordinator:
             )
         except Exception as exc:
             logger.exception(
-                "Review workflow failed for session %s with plan %s",
-                session_id,
-                review_plan.reason,
+                format_log_event(
+                    "agent.review.workflow.failed",
+                    session_id=session_id,
+                    review_run_id=review_run_id,
+                    plan_reason=review_plan.reason,
+                    error_code=type(exc).__name__,
+                    trace_id=_first_trace_id(trace_by_message_id),
+                )
             )
             completion = scheduler.complete_review(
                 session_id,
@@ -358,6 +372,7 @@ class ReviewCoordinator:
         unread_ranges: list[UnreadRange],
         review_run_id: str,
         stage_traces: list[ReviewStageTrace],
+        trace_by_message_id: dict[int, str],
         use_partial_consumption: bool = False,
     ) -> tuple[ReviewScanResult, list[ConsumedUnreadRange], list[ReviewBlockDigestStageOutput]]:
         scanned_count = min(unread_count, self._config.overflow_threshold_messages)
@@ -371,6 +386,7 @@ class ReviewCoordinator:
             unread_count=unread_count,
             unread_ranges=unread_ranges,
             review_run_id=review_run_id,
+            trace_by_message_id=trace_by_message_id,
             stage_traces=stage_traces,
         )
         (
@@ -387,6 +403,7 @@ class ReviewCoordinator:
             prefer_tail=unread_count > self._config.overflow_threshold_messages,
             summaries=compressed_ranges,
             review_run_id=review_run_id,
+            trace_by_message_id=trace_by_message_id,
             use_partial_consumption=use_partial_consumption,
             stage_traces=stage_traces,
         )
@@ -422,6 +439,7 @@ class ReviewCoordinator:
         scan: ReviewScanResult,
         block_digests: list[ReviewBlockDigestStageOutput] | None = None,
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         stage_traces: list[ReviewStageTrace],
     ) -> ReplyDecisionResult:
         if not scan.candidate_message_ids:
@@ -467,6 +485,7 @@ class ReviewCoordinator:
                     **_summary_metadata_payload(scan.compressed_ranges),
                     **_block_digest_metadata_payload(selected_block_digests),
                     **_active_chat_summary_metadata(active_chat_summary),
+                    **_trace_metadata_for_messages(window.messages, trace_by_message_id),
                 },
                 previous_summary=_format_reply_previous_summary(
                     overflow=_format_overflow_summaries(scan.compressed_ranges),
@@ -535,6 +554,7 @@ class ReviewCoordinator:
         unread_count: int,
         unread_ranges: list[UnreadRange],
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         stage_traces: list[ReviewStageTrace],
     ) -> list[UnreadRangeSummaryRecord]:
         summaries: list[UnreadRangeSummaryRecord] = []
@@ -569,6 +589,7 @@ class ReviewCoordinator:
                     session_id=session_id,
                     messages=messages,
                     review_run_id=review_run_id,
+                    trace_by_message_id=trace_by_message_id,
                     stage_traces=stage_traces,
                 )
                 if summary is not None:
@@ -585,6 +606,7 @@ class ReviewCoordinator:
         session_id: str,
         messages: list[dict],
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         stage_traces: list[ReviewStageTrace],
     ) -> UnreadRangeSummaryRecord | None:
         actual_start_msg_log_id = int(messages[0]["id"])
@@ -601,6 +623,7 @@ class ReviewCoordinator:
                 "end_msg_log_id": actual_end_msg_log_id,
                 "message_count": len(messages),
                 "reason": "overflow_pending_compression",
+                **_trace_metadata_for_messages(messages, trace_by_message_id),
             },
         )
         if stage_input is None:
@@ -630,6 +653,7 @@ class ReviewCoordinator:
         reply: ReplyDecisionResult,
         active_epoch: int | None,
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         coro = self._run_active_chat_bootstrap_with_timeout(
@@ -640,6 +664,7 @@ class ReviewCoordinator:
             reply=reply,
             active_epoch=active_epoch,
             review_run_id=review_run_id,
+            trace_by_message_id=trace_by_message_id,
             stage_traces=list(stage_traces),
         )
         if self._bootstrap_task_scope is not None:
@@ -676,8 +701,14 @@ class ReviewCoordinator:
             result = task.result()
         except asyncio.CancelledError:
             return
-        except Exception:
-            logger.exception("Active chat bootstrap task crashed for session %s", session_id)
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.review.bootstrap.task_failed",
+                    session_id=session_id,
+                    error_code=type(exc).__name__,
+                )
+            )
             return
         self._last_bootstrap_results[session_id] = result
 
@@ -691,6 +722,7 @@ class ReviewCoordinator:
         reply: ReplyDecisionResult,
         active_epoch: int | None,
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         try:
@@ -703,6 +735,7 @@ class ReviewCoordinator:
                     reply=reply,
                     active_epoch=active_epoch,
                     review_run_id=review_run_id,
+                    trace_by_message_id=trace_by_message_id,
                     stage_traces=stage_traces,
                 ),
                 timeout=self._config.active_chat_bootstrap_timeout_seconds,
@@ -711,10 +744,15 @@ class ReviewCoordinator:
             return ActiveChatBootstrapResult(
                 reason="active_chat_bootstrap_timeout",
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "Active chat bootstrap failed for session %s after active chat started",
-                session_id,
+                format_log_event(
+                    "agent.review.bootstrap.failed",
+                    session_id=session_id,
+                    review_run_id=review_run_id,
+                    error_code=type(exc).__name__,
+                    trace_id=_first_trace_id(trace_by_message_id),
+                )
             )
             return ActiveChatBootstrapResult(
                 reason="active_chat_bootstrap_failed",
@@ -730,6 +768,7 @@ class ReviewCoordinator:
         reply: ReplyDecisionResult,
         active_epoch: int | None,
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
@@ -744,6 +783,7 @@ class ReviewCoordinator:
             summaries=summaries,
             reply=reply,
             review_run_id=review_run_id,
+            trace_by_message_id=trace_by_message_id,
             stage_traces=stage_traces,
         )
         apply_decision = None
@@ -824,6 +864,7 @@ class ReviewCoordinator:
         summaries: list[UnreadRangeSummaryRecord],
         review_run_id: str,
         stage_traces: list[ReviewStageTrace],
+        trace_by_message_id: dict[int, str],
         use_partial_consumption: bool = False,
     ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange], list[asyncio.Task[ReviewBlockDigestStageOutput]]]:
         if self._message_store is None or max_messages <= 0:
@@ -886,6 +927,7 @@ class ReviewCoordinator:
                         "range_end_msg_log_id": unread_range.end_msg_log_id,
                         "offset": offset,
                         **_summary_metadata_payload(summaries),
+                        **_trace_metadata_for_messages(batch, trace_by_message_id),
                     },
                     previous_summary=_format_overflow_summaries(summaries),
                 )
@@ -900,6 +942,7 @@ class ReviewCoordinator:
                             range_start=unread_range.start_msg_log_id,
                             range_end=unread_range.end_msg_log_id,
                             review_run_id=review_run_id,
+                            trace_by_message_id=trace_by_message_id,
                             semaphore=block_digest_semaphore,
                         )
                     )
@@ -931,6 +974,7 @@ class ReviewCoordinator:
         summaries: list[UnreadRangeSummaryRecord],
         reply: ReplyDecisionResult,
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         stage_traces: list[ReviewStageTrace],
     ) -> tuple[int, bool, ActiveChatBootstrapStageOutput]:
         if self._message_store is None:
@@ -963,6 +1007,7 @@ class ReviewCoordinator:
                 "reply_target_message_ids": reply.target_message_ids,
                 "reply_reason": reply.reply_reason,
                 **_summary_metadata_payload(summaries),
+                **_trace_metadata_for_messages(tail_history, trace_by_message_id),
             },
             previous_summary=_format_overflow_summaries(summaries),
         )
@@ -1069,8 +1114,15 @@ class ReviewCoordinator:
                     return None
             content = str(getattr(record, "content", "") or "").strip()
             return content or None
-        except Exception:
-            logger.debug("Failed to query recent active_chat summary for %s", session_id)
+        except Exception as exc:
+            logger.debug(
+                format_log_event(
+                    "agent.review.active_chat_summary.query_failed",
+                    session_id=session_id,
+                    error_code=type(exc).__name__,
+                ),
+                exc_info=True,
+            )
             return None
 
     def _schedule_block_digest(
@@ -1083,6 +1135,7 @@ class ReviewCoordinator:
         range_start: int,
         range_end: int,
         review_run_id: str,
+        trace_by_message_id: dict[int, str],
         semaphore: asyncio.Semaphore,
     ) -> asyncio.Task[ReviewBlockDigestStageOutput]:
         start_msg_log_id = _message_id(messages[0]) if messages else None
@@ -1100,6 +1153,7 @@ class ReviewCoordinator:
                 "start_msg_log_id": start_msg_log_id,
                 "end_msg_log_id": end_msg_log_id,
                 "message_count": len(messages),
+                **_trace_metadata_for_messages(messages, trace_by_message_id),
             },
         )
         if stage_input is None:
@@ -1151,7 +1205,17 @@ class ReviewCoordinator:
         digests: list[ReviewBlockDigestStageOutput] = []
         for result in results:
             if isinstance(result, BaseException):
-                logger.debug("Block digest task failed: %s", result)
+                logger.debug(
+                    format_log_event(
+                        "agent.review.block_digest.task_failed",
+                        error_code=type(result).__name__,
+                    ),
+                    exc_info=(
+                        type(result),
+                        result,
+                        result.__traceback__,
+                    ),
+                )
                 continue
             digests.append(result)
         return digests
@@ -1161,12 +1225,15 @@ class ReviewCoordinator:
             return
         try:
             self._summary_store.save_summary(record, created_at=self._now())
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "Failed to persist review summary for session %s range %s-%s",
-                record.session_id,
-                record.start_msg_log_id,
-                record.end_msg_log_id,
+                format_log_event(
+                    "agent.review.summary.persist_failed",
+                    session_id=record.session_id,
+                    start_msg_log_id=record.start_msg_log_id,
+                    end_msg_log_id=record.end_msg_log_id,
+                    error_code=type(exc).__name__,
+                )
             )
 
     def _consume_review_ranges(
@@ -1378,6 +1445,45 @@ def _message_id(message: dict) -> int | None:
 
 def _message_ids(messages: list[dict]) -> list[int]:
     return [message_id for message in messages if (message_id := _message_id(message)) is not None]
+
+
+def _trace_by_message_id(unread_messages: list[UnreadMessage]) -> dict[int, str]:
+    result: dict[int, str] = {}
+    for message in unread_messages:
+        trace_id = str(message.trace_id or "").strip()
+        if not trace_id:
+            continue
+        result[message.message_log_id] = trace_id
+    return result
+
+
+def _trace_metadata_for_messages(
+    messages: list[dict],
+    trace_by_message_id: dict[int, str],
+) -> dict[str, object]:
+    trace_ids = _dedupe_preserve_order(
+        [
+            trace_id
+            for message in messages
+            if (message_id := _message_id(message)) is not None
+            if (trace_id := trace_by_message_id.get(message_id))
+        ]
+    )
+    if not trace_ids:
+        return {}
+    if len(trace_ids) == 1:
+        return {"trace_id": trace_ids[0]}
+    return {
+        "trace_id": trace_ids[0],
+        "trace_ids": trace_ids,
+    }
+
+
+def _first_trace_id(trace_by_message_id: dict[int, str]) -> str:
+    for trace_id in trace_by_message_id.values():
+        if trace_id:
+            return trace_id
+    return ""
 
 
 def _freeze_unread_ranges(

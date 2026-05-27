@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from enum import Enum
@@ -55,8 +54,9 @@ from shinbot.agent.workflows.active_chat.tool_loop import (
     ActiveChatToolLoopResult,
 )
 from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:active-chat", color="green")
 
 class ActiveChatMessageStore(Protocol):
     """Read message logs needed by active chat context building."""
@@ -122,8 +122,16 @@ class ActiveChatFastRunner:
         """Execute one active chat fast-mode round."""
         try:
             messages, metadata = self._build_model_call_parts(batch)
-        except Exception:
-            logger.exception("Active chat prompt build failed for session %s", batch.session_id)
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.active_chat.prompt_build.failed",
+                    session_id=batch.session_id,
+                    message_log_ids=batch.message_log_ids,
+                    error_code=type(exc).__name__,
+                    trace_id=_trace_id_from_batch(batch),
+                )
+            )
             return ActiveChatRoundResult(
                 success=False,
                 action=ActiveChatActionKind.RETRY_FAILED,
@@ -243,6 +251,7 @@ class ActiveChatFastRunner:
             "active_chat_instruction_content": instruction_content,
             "active_chat_source_messages": source_messages,
             "active_chat_source_messages_text": source_messages_text,
+            **_trace_metadata_for_batch(batch),
             **dict(getattr(context, "metadata", {}) or {}),
         }
         metadata = apply_instance_runtime_config_to_metadata(metadata, instance_config)
@@ -322,6 +331,7 @@ class ActiveChatFastRunner:
                     "message_log_ids": batch.message_log_ids,
                     "active_epoch": batch.active_chat_state.active_epoch,
                     "interest_value": batch.active_chat_state.interest_value,
+                    **_trace_metadata_for_batch(batch),
                 },
             ),
         )
@@ -498,8 +508,14 @@ class ActiveChatFastRunner:
                 self._config.message_format_config
                 or MessageFormatConfig(inject_record_id=True),
             )
-        except Exception:
-            logger.exception("Active chat message formatting failed")
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.active_chat.message_format.failed",
+                    message_count=len(source_messages),
+                    error_code=type(exc).__name__,
+                )
+            )
             return ""
 
     def _active_chat_tools(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
@@ -582,8 +598,17 @@ class ActiveChatFastRunner:
                     model_target_resolver=self._config.model_target_resolver,
                 )
             )
-        except ModelCallError:
-            logger.exception("Active chat fast-mode model call failed for %s", batch.session_id)
+        except ModelCallError as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.active_chat.model_call.failed",
+                    session_id=batch.session_id,
+                    message_log_ids=batch.message_log_ids,
+                    repair_attempt=repair_attempt,
+                    error_code=type(exc).__name__,
+                    trace_id=_trace_id_from_batch(batch),
+                )
+            )
             return None
 
     async def _execute_tool_loop(
@@ -605,8 +630,14 @@ class ActiveChatFastRunner:
             return None
         try:
             return resolver(instance_id)
-        except Exception:
-            logger.exception("Active chat instance runtime config resolution failed for %s", instance_id)
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.active_chat.instance_config.resolve_failed",
+                    instance_id=instance_id,
+                    error_code=type(exc).__name__,
+                )
+            )
             return None
 
     async def _repair_toolless_round(
@@ -622,10 +653,16 @@ class ActiveChatFastRunner:
         if repair_batch.message_log_ids != batch.message_log_ids:
             try:
                 repair_messages, metadata = self._build_model_call_parts(repair_batch)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
-                    "Active chat repair prompt rebuild failed for session %s",
-                    batch.session_id,
+                    format_log_event(
+                        "agent.active_chat.prompt_build.failed",
+                        session_id=batch.session_id,
+                        message_log_ids=repair_batch.message_log_ids,
+                        phase="toolless_repair",
+                        error_code=type(exc).__name__,
+                        trace_id=_trace_id_from_batch(repair_batch),
+                    )
                 )
                 return repair_batch, None
         else:
@@ -668,10 +705,16 @@ class ActiveChatFastRunner:
         if repair_batch.message_log_ids != batch.message_log_ids:
             try:
                 repair_messages, metadata = self._build_model_call_parts(repair_batch)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
-                    "Active chat tool-failure repair prompt rebuild failed for session %s",
-                    batch.session_id,
+                    format_log_event(
+                        "agent.active_chat.prompt_build.failed",
+                        session_id=batch.session_id,
+                        message_log_ids=repair_batch.message_log_ids,
+                        phase="tool_failure_repair",
+                        error_code=type(exc).__name__,
+                        trace_id=_trace_id_from_batch(repair_batch),
+                    )
                 )
                 return repair_batch, None
         else:
@@ -840,6 +883,27 @@ def _self_platform_id_from_batch(batch: ActiveChatBatch) -> str:
         if message.self_platform_id:
             return message.self_platform_id
     return ""
+
+
+def _trace_metadata_for_batch(batch: ActiveChatBatch) -> dict[str, object]:
+    trace_ids = []
+    for message in batch.messages:
+        trace_id = str(message.trace_id or "").strip()
+        if trace_id and trace_id not in trace_ids:
+            trace_ids.append(trace_id)
+    if not trace_ids:
+        return {}
+    if len(trace_ids) == 1:
+        return {"trace_id": trace_ids[0]}
+    return {
+        "trace_id": trace_ids[0],
+        "trace_ids": trace_ids,
+    }
+
+
+def _trace_id_from_batch(batch: ActiveChatBatch) -> str:
+    trace_id = _trace_metadata_for_batch(batch).get("trace_id", "")
+    return str(trace_id or "")
 
 
 def _jsonable(value: Any) -> Any:

@@ -1014,6 +1014,7 @@ def _workflow_active_chat_message_from_coordinator(
         self_platform_id=message.self_platform_id,
         active_chat_state=message.active_chat_state,
         created_at=message.created_at,
+        trace_id=message.trace_id,
     )
 
 
@@ -1033,6 +1034,7 @@ def _coordinator_active_chat_message_from_workflow(
         self_platform_id=message.self_platform_id,
         active_chat_state=message.active_chat_state,
         created_at=message.created_at,
+        trace_id=message.trace_id,
     )
 
 

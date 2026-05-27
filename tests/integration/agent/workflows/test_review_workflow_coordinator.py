@@ -102,6 +102,7 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
                 message_log_id=message_id,
                 sender_id="user-1",
                 created_at=float(message_id),
+                trace_id=f"ingress:bot:{message_id}",
             )
         )
     review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
@@ -114,6 +115,16 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         now=lambda: 10.0,
     )
     scheduler.prepare_due_review("bot:group:room", now=10.0)
+    unread_snapshot = [
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=float(message_id),
+            trace_id=f"ingress:bot:{message_id}",
+        )
+        for message_id in message_ids
+    ]
     context_builder = RecordingReviewContextBuilder()
     workflow = ReviewCoordinator(
         ReviewWorkflowConfig(review_scan_batch_size=2),
@@ -126,7 +137,7 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         scheduler=scheduler,
         session_id="bot:group:room",
         review_plan=review_plan,
-        unread_messages=scheduler.unread_messages("bot:group:room"),
+        unread_messages=unread_snapshot,
     )
 
     assert result.scan.scanned_message_count == 5
@@ -159,6 +170,12 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         "review_scan",
         "review_block_digest",
         "active_chat_bootstrap",
+    ]
+    first_scan_metadata = context_builder.calls[0]["metadata"]
+    assert first_scan_metadata["trace_id"] == f"ingress:bot:{message_ids[0]}"
+    assert first_scan_metadata["trace_ids"] == [
+        f"ingress:bot:{message_ids[0]}",
+        f"ingress:bot:{message_ids[1]}",
     ]
 
 

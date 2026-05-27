@@ -21,7 +21,9 @@ async def test_task_manager_logs_failed_background_task(caplog) -> None:
         await asyncio.sleep(0)
 
     assert manager.task("agent:test:failing") is None
-    assert "Agent background task failed: agent:test:failing" in caplog.text
+    assert "agent.task.failed" in caplog.text
+    assert "key=agent:test:failing" in caplog.text
+    assert "error_code=RuntimeError" in caplog.text
     assert "RuntimeError: task exploded" in caplog.text
 
 
@@ -38,7 +40,7 @@ async def test_task_manager_does_not_log_cancelled_background_task(caplog) -> No
         await asyncio.sleep(0)
 
     assert manager.task("agent:test:cancelled") is None
-    assert "Agent background task failed" not in caplog.text
+    assert "agent.task.failed" not in caplog.text
 
 
 @pytest.mark.asyncio

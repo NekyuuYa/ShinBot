@@ -150,6 +150,25 @@ async def test_active_chat_fast_runner_applies_instance_runtime_config() -> None
 
 
 @pytest.mark.asyncio
+async def test_active_chat_fast_runner_preserves_trace_in_model_metadata() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [make_result(tool_calls=[make_tool_call("no_reply", {"internal_summary": "skip"})])]
+    )
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=FakeMessageStore(),
+    )
+
+    await runner.run(make_batch(trace_id="ingress:bot:msg-101"))
+
+    assert model_runtime.calls[0].metadata["trace_id"] == "ingress:bot:msg-101"
+
+
+@pytest.mark.asyncio
 async def test_active_chat_fast_runner_injects_previous_conversation_trace() -> None:
     prompt_registry = PromptRegistry()
     register_active_chat_prompt_components(prompt_registry)

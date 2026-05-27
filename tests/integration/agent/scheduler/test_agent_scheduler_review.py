@@ -42,6 +42,21 @@ async def test_scheduler_records_ordinary_message_without_workflow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scheduler_preserves_ingress_trace_on_unread_messages() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+    )
+    signal = make_signal(message_log_id=7)
+    signal.meta["trace_id"] = "ingress:bot:msg-7"
+
+    await scheduler.accept_signal(signal)
+
+    unread = scheduler.unread_messages("bot:group:room")
+    assert [message.message_log_id for message in unread] == [7]
+    assert unread[0].trace_id == "ingress:bot:msg-7"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_emits_structured_signal_logs(caplog) -> None:
     scheduler = AgentScheduler(
         response_profile_resolver=lambda _signal: "balanced",

@@ -58,6 +58,7 @@ class ActiveChatMessageSignal:
     self_platform_id: str = ""
     active_chat_state: ActiveChatState | None = None
     created_at: float = 0.0
+    trace_id: str = ""
 
 
 @dataclass(slots=True)

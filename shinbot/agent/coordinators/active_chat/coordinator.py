@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -33,8 +32,9 @@ from shinbot.agent.coordinators.active_chat.trace import (
     ActiveChatTraceConfig,
 )
 from shinbot.agent.scheduler.models import ActiveChatState
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:active-chat", color="green")
 
 if TYPE_CHECKING:
     from shinbot.agent.runtime.task_manager import AgentTaskScope
@@ -105,10 +105,12 @@ class ActiveChatCoordinator:
             )
             self._states[session_id] = state
         logger.info(
-            "Active chat session started for %s epoch=%s interest=%.2f",
-            session_id,
-            active_chat_state.active_epoch,
-            active_chat_state.interest_value,
+            format_log_event(
+                "agent.active_chat.session.started",
+                session_id=session_id,
+                active_epoch=active_chat_state.active_epoch,
+                interest=f"{active_chat_state.interest_value:.2f}",
+            )
         )
         return ActiveChatStartResult(
             accepted=True,
@@ -140,6 +142,7 @@ class ActiveChatCoordinator:
         is_poke_to_other: bool,
         self_platform_id: str,
         active_chat_state: ActiveChatState,
+        trace_id: str = "",
     ) -> ActiveChatNotifyResult:
         """Accept one active chat message signal and maybe arm semantic wait."""
         if message_log_id is None:
@@ -150,9 +153,13 @@ class ActiveChatCoordinator:
             )
         if sender_id and self_platform_id and sender_id == self_platform_id:
             logger.debug(
-                "Active chat ignored self message session=%s message_log_id=%s",
-                session_id,
-                message_log_id,
+                format_log_event(
+                    "agent.active_chat.message.skip",
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    reason="self_message",
+                    trace_id=trace_id,
+                )
             )
             return ActiveChatNotifyResult(
                 accepted=False,
@@ -175,16 +182,20 @@ class ActiveChatCoordinator:
             self_platform_id=self_platform_id,
             active_chat_state=active_chat_state,
             created_at=now,
+            trace_id=trace_id,
         )
 
         async with self._get_lock(session_id):
             state = self._states.get(session_id)
             if state is None:
                 logger.debug(
-                    "Active chat ignored message before session start session=%s "
-                    "message_log_id=%s",
-                    session_id,
-                    message_log_id,
+                    format_log_event(
+                        "agent.active_chat.message.skip",
+                        session_id=session_id,
+                        message_log_id=message_log_id,
+                        reason="inactive_session",
+                        trace_id=trace_id,
+                    )
                 )
                 return ActiveChatNotifyResult(
                     accepted=False,
@@ -194,12 +205,15 @@ class ActiveChatCoordinator:
                 )
             elif state.active_epoch != active_chat_state.active_epoch:
                 logger.debug(
-                    "Active chat ignored stale epoch message session=%s message_log_id=%s "
-                    "state_epoch=%s signal_epoch=%s",
-                    session_id,
-                    message_log_id,
-                    state.active_epoch,
-                    active_chat_state.active_epoch,
+                    format_log_event(
+                        "agent.active_chat.message.skip",
+                        session_id=session_id,
+                        message_log_id=message_log_id,
+                        reason="active_epoch_mismatch",
+                        state_epoch=state.active_epoch,
+                        signal_epoch=active_chat_state.active_epoch,
+                        trace_id=trace_id,
+                    )
                 )
                 return ActiveChatNotifyResult(
                     accepted=False,
@@ -213,13 +227,15 @@ class ActiveChatCoordinator:
             threshold = self._attention.effective_threshold(active_chat_state.interest_value)
             triggered = state.accumulated >= threshold
             logger.debug(
-                "Active chat observed message session=%s message_log_id=%s "
-                "accumulated=%.3f threshold=%.3f triggered=%s",
-                session_id,
-                message_log_id,
-                state.accumulated,
-                threshold,
-                triggered,
+                format_log_event(
+                    "agent.active_chat.message.observed",
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    accumulated=f"{state.accumulated:.3f}",
+                    threshold=f"{threshold:.3f}",
+                    triggered=triggered,
+                    trace_id=trace_id,
+                )
             )
             if not triggered:
                 return ActiveChatNotifyResult(
@@ -233,12 +249,15 @@ class ActiveChatCoordinator:
 
             if self._is_round_running(session_id):
                 logger.debug(
-                    "Active chat buffered message while round is running session=%s "
-                    "message_log_id=%s accumulated=%.3f threshold=%.3f",
-                    session_id,
-                    message_log_id,
-                    state.accumulated,
-                    threshold,
+                    format_log_event(
+                        "agent.active_chat.message.buffered",
+                        session_id=session_id,
+                        message_log_id=message_log_id,
+                        accumulated=f"{state.accumulated:.3f}",
+                        threshold=f"{threshold:.3f}",
+                        reason="round_running",
+                        trace_id=trace_id,
+                    )
                 )
                 return ActiveChatNotifyResult(
                     accepted=True,
@@ -286,9 +305,11 @@ class ActiveChatCoordinator:
         self._states.pop(session_id, None)
         self.last_batches.pop(session_id, None)
         logger.info(
-            "Active chat session stopped session=%s pending_count=%s",
-            session_id,
-            pending_count,
+            format_log_event(
+                "agent.active_chat.session.stopped",
+                session_id=session_id,
+                pending_count=pending_count,
+            )
         )
 
     def attention_state_for(self, session_id: str) -> ActiveChatAttentionState | None:
@@ -349,17 +370,21 @@ class ActiveChatCoordinator:
                 self._cancel_semantic_wait_locked(session_id)
                 timer_reset = True
                 logger.debug(
-                    "Active chat semantic wait reset session=%s sender_id=%s",
-                    session_id,
-                    sender_id,
+                    format_log_event(
+                        "agent.active_chat.semantic_wait.reset",
+                        session_id=session_id,
+                        sender_id=sender_id,
+                    )
                 )
             else:
                 logger.debug(
-                    "Active chat semantic wait already running session=%s sender_id=%s "
-                    "previous_sender_id=%s",
-                    session_id,
-                    sender_id,
-                    previous_sender_id,
+                    format_log_event(
+                        "agent.active_chat.semantic_wait.skip",
+                        session_id=session_id,
+                        sender_id=sender_id,
+                        previous_sender_id=previous_sender_id,
+                        reason="already_running_for_other_sender",
+                    )
                 )
                 return False, False
 
@@ -382,9 +407,11 @@ class ActiveChatCoordinator:
             )
         self._semantic_wait_tasks[session_id] = task
         logger.debug(
-            "Active chat semantic wait started session=%s wait_seconds=%.3f",
-            session_id,
-            wait_seconds,
+            format_log_event(
+                "agent.active_chat.semantic_wait.started",
+                session_id=session_id,
+                wait_seconds=f"{wait_seconds:.3f}",
+            )
         )
         return True, timer_reset
 
@@ -392,13 +419,23 @@ class ActiveChatCoordinator:
         task = self._semantic_wait_tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
-            logger.debug("Active chat semantic wait cancelled session=%s", session_id)
+            logger.debug(
+                format_log_event(
+                    "agent.active_chat.semantic_wait.cancelled",
+                    session_id=session_id,
+                )
+            )
 
     def _cancel_running_round_locked(self, session_id: str) -> None:
         task = self._running_rounds.pop(session_id, None)
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
-            logger.debug("Active chat running round cancelled session=%s", session_id)
+            logger.debug(
+                format_log_event(
+                    "agent.active_chat.round.cancelled",
+                    session_id=session_id,
+                )
+            )
 
     async def _semantic_wait_then_flush(
         self,
@@ -419,8 +456,11 @@ class ActiveChatCoordinator:
         async with self._get_lock(session_id):
             if self._is_round_running(session_id):
                 logger.debug(
-                    "Active chat skipped semantic flush because round is running session=%s",
-                    session_id,
+                    format_log_event(
+                        "agent.active_chat.flush.skip",
+                        session_id=session_id,
+                        reason="round_running",
+                    )
                 )
                 return
             coro = self._flush(session_id=session_id, scheduler=scheduler)
@@ -436,7 +476,12 @@ class ActiveChatCoordinator:
                     name=f"active-chat-round-{session_id}",
                 )
             self._running_rounds[session_id] = task
-            logger.debug("Active chat semantic wait flushed session=%s", session_id)
+            logger.debug(
+                format_log_event(
+                    "agent.active_chat.semantic_wait.flushed",
+                    session_id=session_id,
+                )
+            )
 
     async def _flush(self, *, session_id: str, scheduler) -> None:
         try:
@@ -444,9 +489,11 @@ class ActiveChatCoordinator:
                 state = self._states.get(session_id)
                 if state is None or not state.pending_buffer:
                     logger.debug(
-                        "Active chat flush skipped session=%s reason=%s",
-                        session_id,
-                        "missing_state" if state is None else "empty_pending",
+                        format_log_event(
+                            "agent.active_chat.flush.skip",
+                            session_id=session_id,
+                            reason="missing_state" if state is None else "empty_pending",
+                        )
                     )
                     return
                 messages = list(state.pending_buffer)
@@ -461,9 +508,13 @@ class ActiveChatCoordinator:
             active_chat_state = latest_signal.active_chat_state
             if active_chat_state is None:
                 logger.warning(
-                    "Active chat batch missing active state session=%s message_log_ids=%s",
-                    session_id,
-                    _message_ids(messages),
+                    format_log_event(
+                        "agent.active_chat.batch.invalid",
+                        session_id=session_id,
+                        reason="missing_active_state",
+                        message_log_ids=_message_ids(messages),
+                        trace_id=_trace_id_from_messages(messages),
+                    )
                 )
                 self._restore_pending(
                     session_id,
@@ -483,10 +534,13 @@ class ActiveChatCoordinator:
             )
             if self._round_handler is None:
                 logger.warning(
-                    "Active chat batch restored because no round handler is configured "
-                    "session=%s message_log_ids=%s",
-                    session_id,
-                    batch.message_log_ids,
+                    format_log_event(
+                        "agent.active_chat.batch.restored",
+                        session_id=session_id,
+                        reason="missing_round_handler",
+                        message_log_ids=batch.message_log_ids,
+                        trace_id=_trace_id_from_messages(messages),
+                    )
                 )
                 self._restore_pending(
                     session_id,
@@ -496,10 +550,13 @@ class ActiveChatCoordinator:
                 return
 
             logger.info(
-                "Active chat round started session=%s message_log_ids=%s accumulated=%.3f",
-                session_id,
-                batch.message_log_ids,
-                handled_accumulated,
+                format_log_event(
+                    "agent.active_chat.round.started",
+                    session_id=session_id,
+                    message_log_ids=batch.message_log_ids,
+                    accumulated=f"{handled_accumulated:.3f}",
+                    trace_id=_trace_id_from_messages(messages),
+                )
             )
             result = self._round_handler(batch)
             if isawaitable(result):
@@ -507,11 +564,13 @@ class ActiveChatCoordinator:
             if not result.success:
                 restored_messages = result.restored_messages or messages
                 logger.warning(
-                    "Active chat round restored pending session=%s reason=%s "
-                    "message_log_ids=%s",
-                    session_id,
-                    result.reason,
-                    _message_ids(restored_messages),
+                    format_log_event(
+                        "agent.active_chat.round.restored",
+                        session_id=session_id,
+                        reason=result.reason,
+                        message_log_ids=_message_ids(restored_messages),
+                        trace_id=_trace_id_from_messages(restored_messages),
+                    )
                 )
                 self._restore_pending(
                     session_id,
@@ -526,18 +585,24 @@ class ActiveChatCoordinator:
                     or current_state.active_epoch != batch.active_chat_state.active_epoch
                 ):
                     logger.warning(
-                        "Active chat round result discarded for stale runtime session=%s "
-                        "message_log_ids=%s",
-                        session_id,
-                        batch.message_log_ids,
+                        format_log_event(
+                            "agent.active_chat.round.discarded",
+                            session_id=session_id,
+                            reason="stale_runtime",
+                            message_log_ids=batch.message_log_ids,
+                            trace_id=_trace_id_from_messages(batch.messages),
+                        )
                     )
                     return
                 if result.action == ActiveChatActionKind.EXIT_ACTIVE and not result.reason.strip():
                     logger.warning(
-                        "Active chat exit_active without reason restored session=%s "
-                        "message_log_ids=%s",
-                        session_id,
-                        batch.message_log_ids,
+                        format_log_event(
+                            "agent.active_chat.round.restored",
+                            session_id=session_id,
+                            reason="exit_active_missing_reason",
+                            message_log_ids=batch.message_log_ids,
+                            trace_id=_trace_id_from_messages(batch.messages),
+                        )
                     )
                     self._restore_pending(
                         session_id,
@@ -557,14 +622,16 @@ class ActiveChatCoordinator:
             effect = interest_effect_for_round(result, self._interest_effect_config)
             self.last_batches[session_id] = batch
             logger.info(
-                "Active chat round completed session=%s action=%s consumed_message_log_ids=%s "
-                "interest_delta=%.2f force_exit=%s reason=%s",
-                session_id,
-                result.action.value,
-                consumed_message_log_ids,
-                effect.delta,
-                effect.force_exit,
-                effect.reason,
+                format_log_event(
+                    "agent.active_chat.round.finished",
+                    session_id=session_id,
+                    action=result.action.value,
+                    consumed_message_log_ids=consumed_message_log_ids,
+                    interest_delta=f"{effect.delta:.2f}",
+                    force_exit=effect.force_exit,
+                    reason=effect.reason,
+                    trace_id=_trace_id_from_messages(batch.messages),
+                )
             )
             next_review_plan = None
             preview_adjustment = getattr(
@@ -601,8 +668,22 @@ class ActiveChatCoordinator:
                         session_id=session_id,
                         state=state,
                     )
-        except Exception:
-            logger.exception("Active chat round failed for session %s", session_id)
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.active_chat.round.failed",
+                    session_id=session_id,
+                    error_code=type(exc).__name__,
+                    message_log_ids=(
+                        _message_ids(messages) if "messages" in locals() else []
+                    ),
+                    trace_id=(
+                        _trace_id_from_messages(messages)
+                        if "messages" in locals()
+                        else ""
+                    ),
+                )
+            )
             self._restore_pending(
                 session_id,
                 messages if "messages" in locals() else [],
@@ -627,10 +708,13 @@ class ActiveChatCoordinator:
         state.pending_buffer = messages + state.pending_buffer
         state.accumulated += accumulated
         logger.debug(
-            "Active chat pending restored session=%s message_log_ids=%s accumulated=%.3f",
-            session_id,
-            _message_ids(messages),
-            state.accumulated,
+            format_log_event(
+                "agent.active_chat.pending.restored",
+                session_id=session_id,
+                message_log_ids=_message_ids(messages),
+                accumulated=f"{state.accumulated:.3f}",
+                trace_id=_trace_id_from_messages(messages),
+            )
         )
 
     def _append_conversation_messages_locked(
@@ -657,11 +741,13 @@ class ActiveChatCoordinator:
         if state.accumulated < threshold:
             return
         logger.debug(
-            "Active chat pending still over threshold session=%s accumulated=%.3f "
-            "threshold=%.3f",
-            session_id,
-            state.accumulated,
-            threshold,
+            format_log_event(
+                "agent.active_chat.pending.over_threshold",
+                session_id=session_id,
+                accumulated=f"{state.accumulated:.3f}",
+                threshold=f"{threshold:.3f}",
+                trace_id=_trace_id_from_messages(state.pending_buffer),
+            )
         )
         self._arm_semantic_wait_locked(
             scheduler=scheduler,
@@ -677,6 +763,14 @@ class ActiveChatCoordinator:
 
 def _message_ids(messages: list[ActiveChatMessageSignal]) -> list[int]:
     return [message.message_log_id for message in messages]
+
+
+def _trace_id_from_messages(messages: list[ActiveChatMessageSignal]) -> str:
+    for message in messages:
+        trace_id = str(message.trace_id or "").strip()
+        if trace_id:
+            return trace_id
+    return ""
 
 
 __all__ = ["ActiveChatCoordinator", "ActiveChatRoundHandler"]

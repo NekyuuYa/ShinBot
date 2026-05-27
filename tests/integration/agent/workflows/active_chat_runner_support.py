@@ -250,6 +250,7 @@ def make_batch(
     self_platform_id: str = "",
     conversation_summary: str = "",
     conversation_messages: list[dict[str, Any]] | None = None,
+    trace_id: str = "",
 ) -> ActiveChatBatch:
     active_state = ActiveChatState(
         session_id="bot:group:room",
@@ -267,6 +268,7 @@ def make_batch(
                 sender_id="alice",
                 response_profile="balanced",
                 self_platform_id=self_platform_id,
+                trace_id=trace_id,
             )
         ],
         active_chat_state=active_state,

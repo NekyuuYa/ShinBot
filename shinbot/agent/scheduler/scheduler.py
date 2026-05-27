@@ -169,6 +169,7 @@ class AgentScheduler:
             is_poke_to_bot=message.is_poke_to_bot,
             is_poke_to_other=message.is_poke_to_other,
             self_platform_id=message.self_id,
+            trace_id=_signal_trace_id(signal),
         )
         self._unread_metadata[(unread.session_id, unread.message_log_id)] = unread
         self._inbox.add_unread(unread)
@@ -240,6 +241,7 @@ class AgentScheduler:
                     is_poke_to_other=message.is_poke_to_other,
                     self_platform_id=message.self_id,
                     active_chat_state=active_chat_state,
+                    trace_id=unread.trace_id,
                 )
                 active_chat_workflow_notified = True
 
@@ -992,6 +994,7 @@ class AgentScheduler:
             is_poke_to_bot=message.is_poke_to_bot or metadata.is_poke_to_bot,
             is_poke_to_other=message.is_poke_to_other or metadata.is_poke_to_other,
             self_platform_id=message.self_platform_id or metadata.self_platform_id,
+            trace_id=message.trace_id or metadata.trace_id,
         )
 
     def _log_signal_entry(self, signal: AgentSignal) -> None:
