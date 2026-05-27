@@ -5,15 +5,35 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from shinbot.api.deps import AuthRequired, BotDep
-from shinbot.api.models import ok
+from shinbot.api.models import Envelope, ok
 
 router = APIRouter(
     prefix="/tools",
     tags=["tools"],
     dependencies=AuthRequired,
 )
+
+
+class ToolData(BaseModel):
+    id: str
+    name: str
+    displayName: str
+    description: str
+    inputSchema: dict[str, Any]
+    outputSchema: dict[str, Any] | None = None
+    ownerType: str
+    ownerId: str
+    ownerModule: str
+    permission: str
+    enabled: bool
+    visibility: str
+    timeoutSeconds: float
+    riskLevel: str
+    tags: list[str]
+    metadata: dict[str, Any]
 
 
 def _tool_dict(definition: Any) -> dict[str, Any]:
@@ -37,7 +57,7 @@ def _tool_dict(definition: Any) -> dict[str, Any]:
     }
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[ToolData]])
 async def list_tools(bot=BotDep):
     """List all registered tools for dashboard management."""
     tool_registry = getattr(bot, "tool_registry", None)

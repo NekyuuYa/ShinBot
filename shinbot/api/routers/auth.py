@@ -9,7 +9,8 @@ from pydantic import BaseModel
 
 from shinbot.api.auth import AuthConfig
 from shinbot.api.deps import AuthRequired, BootDep, _auth_config
-from shinbot.api.models import EC, ok
+from shinbot.api.models import EC, Envelope, ok
+from shinbot.api.schemas import LoginPayload, LogoutPayload, ProfilePayload
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 AuthConfigDep = Annotated[object, Depends(_auth_config)]
@@ -72,7 +73,7 @@ async def login_method_not_allowed():
     )
 
 
-@router.post("/login")
+@router.post("/login", response_model=Envelope[LoginPayload])
 async def login(
     body: LoginRequest,
     request: Request,
@@ -94,14 +95,16 @@ async def login(
     return ok(_login_payload(auth_config, subject=body.username))
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=Envelope[LogoutPayload])
 async def logout(response: Response, auth_config: AuthConfigDep):
+    """Clear the session cookie to log the user out."""
     _clear_session_cookie(response, auth_config)
     return ok({"logged_out": True})
 
 
-@router.get("/profile", dependencies=AuthRequired)
+@router.get("/profile", dependencies=AuthRequired, response_model=Envelope[ProfilePayload])
 async def get_profile(auth_config: AuthConfigDep):
+    """Return the current authenticated user's profile."""
     return ok(
         {
             "username": auth_config.username,
@@ -110,7 +113,7 @@ async def get_profile(auth_config: AuthConfigDep):
     )
 
 
-@router.patch("/profile", dependencies=AuthRequired)
+@router.patch("/profile", dependencies=AuthRequired, response_model=Envelope[LoginPayload])
 async def update_profile(
     body: UpdateProfileRequest,
     request: Request,
@@ -118,6 +121,7 @@ async def update_profile(
     auth_config: AuthConfigDep,
     boot=BootDep,
 ):
+    """Update username and/or password, re-issue session cookie."""
     username = body.username.strip()
     if not username:
         raise HTTPException(

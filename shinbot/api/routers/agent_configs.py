@@ -15,7 +15,7 @@ from shinbot.admin.persona_files import PersonaFileRepository
 from shinbot.agent.runtime.config import validate_agent_runtime_config_references
 from shinbot.agent.runtime.config_provider import AGENT_RUNTIME_CONFIG_PROVIDER_ID
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import EC, ok
+from shinbot.api.models import EC, Envelope, ok
 from shinbot.core.config_provider import ConfigProviderKind, ConfigValidationIssue
 
 router = APIRouter(
@@ -31,6 +31,34 @@ class SaveAgentConfigRequest(BaseModel):
     fileName: str = ""
     config: dict[str, Any] = Field(default_factory=dict)
     validateBeforeSave: bool = True
+
+
+class AgentConfigIssue(BaseModel):
+    """Validation issue attached to an agent config profile."""
+
+    path: str = ""
+    message: str = ""
+    code: str = ""
+
+
+class AgentConfigProfile(BaseModel):
+    """An agent configuration profile loaded from a TOML file."""
+
+    fileName: str = ""
+    path: str = ""
+    agentId: str = ""
+    mode: str = ""
+    personaId: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    lastModified: int = 0
+    issues: list[AgentConfigIssue] = Field(default_factory=list)
+
+
+class AgentConfigDeleteResult(BaseModel):
+    """Result returned after successfully deleting an agent config."""
+
+    deleted: bool = True
+    fileName: str = ""
 
 
 def _agents_dir(boot: Any) -> Path:
@@ -138,8 +166,9 @@ def _write_profile(path: Path, config: dict[str, Any]) -> None:
         tomli_w.dump(config, file_obj)
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[AgentConfigProfile]])
 async def list_agent_configs(bot=BotDep, boot=BootDep):
+    """List all agent configuration profiles from the agents directory."""
     directory = _agents_dir(boot)
     if not directory.is_dir():
         return ok([])
@@ -151,8 +180,9 @@ async def list_agent_configs(bot=BotDep, boot=BootDep):
     return ok(profiles)
 
 
-@router.get("/{file_name}")
+@router.get("/{file_name}", response_model=Envelope[AgentConfigProfile])
 async def get_agent_config(file_name: str, bot=BotDep, boot=BootDep):
+    """Retrieve a single agent configuration profile by file name."""
     path = _profile_path(boot, file_name)
     if not path.is_file():
         raise HTTPException(
@@ -165,8 +195,9 @@ async def get_agent_config(file_name: str, bot=BotDep, boot=BootDep):
     return ok(_load_profile(path, bot))
 
 
-@router.post("")
+@router.post("", response_model=Envelope[AgentConfigProfile])
 async def create_agent_config(body: SaveAgentConfigRequest, bot=BotDep, boot=BootDep):
+    """Create a new agent configuration profile from a TOML config."""
     file_name = _normalize_file_name(body.fileName, body.config)
     path = _agents_dir(boot) / file_name
     if path.exists():
@@ -193,13 +224,14 @@ async def create_agent_config(body: SaveAgentConfigRequest, bot=BotDep, boot=Boo
     return ok(_load_profile(path, bot))
 
 
-@router.put("/{file_name}")
+@router.put("/{file_name}", response_model=Envelope[AgentConfigProfile])
 async def update_agent_config(
     file_name: str,
     body: SaveAgentConfigRequest,
     bot=BotDep,
     boot=BootDep,
 ):
+    """Update an existing agent configuration profile."""
     path = _profile_path(boot, file_name)
     if not path.is_file():
         raise HTTPException(
@@ -225,8 +257,9 @@ async def update_agent_config(
     return ok(_load_profile(path, bot))
 
 
-@router.delete("/{file_name}")
+@router.delete("/{file_name}", response_model=Envelope[AgentConfigDeleteResult])
 async def delete_agent_config(file_name: str, boot=BootDep):
+    """Delete an agent configuration profile by file name."""
     path = _profile_path(boot, file_name)
     if not path.is_file():
         raise HTTPException(
