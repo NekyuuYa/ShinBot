@@ -22,6 +22,11 @@ Every scenario fixture must be registered in
 records the scenario area, tags, and purpose, and tests fail if a fixture is not
 registered.
 
+Each run also writes a structured trace to `data-dir/e2e-traces/<scenario>.json`
+with step/action events, state snapshots, and expectation analysis results.
+This makes failures easier to inspect without re-running the scenario in a
+debugger.
+
 ## Running
 
 ```bash
@@ -50,6 +55,14 @@ In GitHub Actions, run `Python CI` manually and set `e2e_scenario` or
 
 Use this layer for full message-path behavior. Keep pure parser, policy,
 repository, and workflow edge cases in unit or integration tests.
+
+For state-machine scenarios, prefer real message steps plus fake model responses.
+Message steps may use `actionsBefore` or `actionsAfter` to interleave timer
+signals with platform events, for example `message -> review_due -> message`.
+`modelRuntime.fakeCompletion` can provide `texts` and per-call `toolCalls` so
+workflow runners exercise the same model-runtime path without paid API calls.
+Use `waitAfterSeconds` when the scenario should prove that a real background
+timer, rather than a manually injected signal, advances the state machine.
 
 ## Startup Smoke
 

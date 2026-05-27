@@ -72,6 +72,20 @@
       "purpose": "A real Agent runtime active-chat tick asks the model for the next idle review plan before returning idle."
     },
     {
+      "name": "agent_runtime_background_review_timer",
+      "path": "fixtures/agent_runtime_background_review_timer.json",
+      "area": "agent-runtime",
+      "tags": ["agent", "runtime", "review", "timer", "model-runtime"],
+      "purpose": "A real message creates a due review plan that the background review timer picks up without a manual signal."
+    },
+    {
+      "name": "agent_runtime_message_active_chat_exit",
+      "path": "fixtures/agent_runtime_message_active_chat_exit.json",
+      "area": "agent-runtime",
+      "tags": ["agent", "runtime", "active-chat", "message", "model-runtime"],
+      "purpose": "A real message entering active chat triggers fake-model active-chat fast mode and exits back to idle."
+    },
+    {
       "name": "agent_runtime_review_workflow",
       "path": "fixtures/agent_runtime_review_workflow.json",
       "area": "agent-runtime",

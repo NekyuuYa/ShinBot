@@ -1,0 +1,235 @@
+{
+  "name": "agent_runtime_message_active_chat_exit",
+  "adapter": {
+    "instanceId": "sim-main",
+    "platform": "sim",
+    "selfId": "bot-self"
+  },
+  "agentRuntime": {
+    "enabled": true,
+    "waitForBootstraps": true,
+    "waitForActiveChat": true,
+    "agentConfigsByBotId": {
+      "agent-bot": {
+        "agent": {
+          "id": "e2e-agent",
+          "mode": "full",
+          "defaults": {
+            "llm": "[model] stub-provider/stub-model"
+          },
+          "review": {
+            "default_review_after_seconds": 0.0,
+            "default_review_reason": "e2e_immediate_review",
+            "active_chat_bootstrap_timeout_seconds": 0.2,
+            "active_chat_bootstrap": {
+              "enabled": true
+            },
+            "block_digest": {
+              "enabled": false
+            },
+            "idle_review_planning": {
+              "enabled": true
+            },
+            "overflow_compression": {
+              "enabled": false
+            },
+            "reply_decision": {
+              "enabled": true
+            },
+            "scan": {
+              "enabled": true
+            }
+          },
+          "active_chat": {
+            "initial_interest": 20.0,
+            "half_life_seconds": 30.0,
+            "idle_interest_threshold": 5.0,
+            "attention": {
+              "base_contribution": 2.0,
+              "threshold": 1.0,
+              "threshold_min": 0.5,
+              "semantic_wait_ms": 1.0
+            }
+          }
+        }
+      }
+    }
+  },
+  "modelRuntime": {
+    "fakeCompletion": {
+      "texts": [
+        "{\"candidate_message_ids\":[1],\"reason\":\"selected\"}",
+        "{\"replied\":false,\"reply_message_id\":null,\"reply_message_ids\":[],\"target_message_ids\":[1],\"reason\":\"no_reply\"}",
+        "{\"replied\":false,\"reply_message_id\":null,\"reply_message_ids\":[],\"target_message_ids\":[1],\"reason\":\"no_reply_repair\"}",
+        "{\"disposition\":\"engaged\",\"reason\":\"enter_active\"}",
+        "",
+        "{\"next_review_after_seconds\":90,\"reason\":\"e2e_exit_after_followup\"}"
+      ],
+      "toolCalls": [
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "id": "call-exit-active",
+            "type": "function",
+            "function": {
+              "name": "exit_active",
+              "arguments": "{\"reason\":\"followup_resolved\"}"
+            }
+          }
+        ],
+        []
+      ],
+      "inputTokens": 4,
+      "outputTokens": 2,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "providers": [
+      {
+        "id": "stub-provider",
+        "type": "openai",
+        "displayName": "Stub Provider"
+      }
+    ],
+    "models": [
+      {
+        "id": "stub-provider/stub-model",
+        "providerId": "stub-provider",
+        "litellmModel": "stub/stub-model",
+        "displayName": "Stub Model",
+        "enabled": true
+      }
+    ]
+  },
+  "config": {
+    "adapter_instances": [
+      {
+        "id": "sim-main",
+        "platform": "sim"
+      }
+    ],
+    "plugins": [],
+    "bots": [
+      {
+        "id": "agent-bot",
+        "display_name": "Agent Bot",
+        "commands": {
+          "enabled": true,
+          "prefixes": ["/"]
+        },
+        "plugins": {
+          "enabled": true,
+          "enabled_plugins": ["*"]
+        },
+        "agent": {
+          "mode": "full",
+          "config": "agents/default.toml"
+        },
+        "bindings": [
+          {
+            "id": "agent-group",
+            "adapter_instance_id": "sim-main",
+            "session_patterns": ["group:group-1"],
+            "priority": 10
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "message",
+      "id": "msg-1",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Agent Group"
+      },
+      "sender": {
+        "id": "user-1",
+        "name": "Alice"
+      },
+      "content": "please keep an eye on this topic",
+      "expectSentCount": 0,
+      "actionsAfter": [
+        {
+          "type": "agentReviewDueTimerRunOnce",
+          "sessionId": "sim-main:group:group-1",
+          "botId": "agent-bot"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg-2",
+      "session": {
+        "type": "group",
+        "channelId": "group-1",
+        "channelName": "Agent Group"
+      },
+      "sender": {
+        "id": "user-2",
+        "name": "Bob"
+      },
+      "content": "the follow-up is resolved now",
+      "expectSentCount": 0
+    }
+  ],
+  "expect": {
+    "sent": [],
+    "messageLogs": {
+      "sessionId": "sim-main:group:group-1",
+      "countExact": 2,
+      "roles": ["user", "user"],
+      "senderIds": ["user-1", "user-2"],
+      "senderNames": ["Alice", "Bob"],
+      "platformMsgIds": ["msg-1", "msg-2"],
+      "rawTexts": [
+        "please keep an eye on this topic",
+        "the follow-up is resolved now"
+      ],
+      "incomingRoutingStatus": "dispatched",
+      "routingStatuses": ["dispatched", "dispatched"],
+      "routingSkipReasons": [null, null]
+    },
+    "agentScheduler": {
+      "botId": "agent-bot",
+      "sessionId": "sim-main:group:group-1",
+      "state": "idle",
+      "unreadCount": 0,
+      "knownSessionIds": ["sim-main:group:group-1"],
+      "reviewPlan": {
+        "reason": "e2e_exit_after_followup"
+      },
+      "activeChatState": {
+        "exists": false
+      }
+    },
+    "modelRuntime": {
+      "providerId": "stub-provider",
+      "modelId": "stub-provider/stub-model",
+      "caller": "agent.review",
+      "success": true,
+      "countAtLeast": 6,
+      "purposes": [
+        "idle_review_planning",
+        "active_chat_fast",
+        "active_chat_bootstrap",
+        "reply_decision",
+        "reply_decision",
+        "review_scan"
+      ]
+    },
+    "workflowRuns": {
+      "sessionId": "sim-main:group:group-1",
+      "countAtLeast": 1,
+      "batchSize": 1,
+      "replied": false,
+      "finishReason": "active_chat_started",
+      "responseSummaryContains": "scan=selected"
+    }
+  }
+}

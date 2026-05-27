@@ -46,6 +46,12 @@ from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
 from tests.e2e.platform_sim.fixture_schema import validate_scenario
+from tests.e2e.platform_sim.trace import (
+    PlatformScenarioTraceRecorder,
+    ScenarioAnalysisReport,
+    ScenarioCheck,
+    analyze_expectations,
+)
 
 
 @dataclass(slots=True)
@@ -141,6 +147,9 @@ async def run_platform_scenario(
     *,
     data_dir: Path,
 ) -> tuple[ShinBot, SimulatedPlatformAdapter]:
+    scenario_name = str(scenario.get("name", "scenario"))
+    trace = PlatformScenarioTraceRecorder(scenario_name, data_dir=data_dir)
+    trace.record_event("scenario-started", {"scenario": scenario_name})
     materialize_media_assets(scenario, data_dir=data_dir)
     bot = ShinBot(data_dir=data_dir)
     bot.adapter_manager.register_adapter("sim", SimulatedPlatformAdapter)
@@ -188,10 +197,21 @@ async def run_platform_scenario(
         media_runner.bind_task_scope(media_task_manager.scope("e2e:media_inspection"))
         bot.message_ingress.add_pre_route_hook(MediaIngressHook(media_service, media_runner))
     fake_completion = model_runtime.get("fakeCompletion") or scenario.get("fakeCompletion")
-    await bot.start()
     try:
+        await bot.start()
+        trace.record_snapshot("booted", bot, adapter)
         with patch("shinbot.agent.services.model_runtime.litellm_adapter.completion", side_effect=_build_fake_model_completion(fake_completion)):
-            for step in scenario.get("steps", []):
+            for index, step in enumerate(scenario.get("steps", [])):
+                trace.record_event("step-started", {"index": index, "step": step})
+                await run_scenario_actions(
+                    step.get("actionsBefore", []),
+                    adapter,
+                    bot=bot,
+                    agent_runtime_config=scenario.get("agentRuntime"),
+                    media_task_manager=media_task_manager,
+                    trace=trace,
+                    label=f"step[{index}].actionsBefore",
+                )
                 await adapter.emit_step(step)
                 step_expect = step.get("expect")
                 await drain_route_tasks(
@@ -201,18 +221,74 @@ async def run_platform_scenario(
                 )
                 if media_task_manager is not None:
                     await drain_task_manager(media_task_manager, prefix="e2e:media_inspection")
+                await drain_agent_runtime(bot, scenario.get("agentRuntime"))
                 if step_expect is not None:
-                    await assert_scenario_expectations(bot, adapter, step_expect)
-            for action in scenario.get("actions", []):
-                await run_scenario_action(action, adapter)
+                    analysis = await analyze_scenario_expectations(
+                        bot,
+                        adapter,
+                        step_expect,
+                        label=f"step[{index}]",
+                    )
+                    trace.record_analysis(analysis)
+                    analysis.raise_for_failures()
+                trace.record_snapshot(
+                    f"after-step[{index}]",
+                    bot,
+                    adapter,
+                    payload={"step": step},
+                )
+                await run_scenario_actions(
+                    step.get("actionsAfter", []),
+                    adapter,
+                    bot=bot,
+                    agent_runtime_config=scenario.get("agentRuntime"),
+                    media_task_manager=media_task_manager,
+                    trace=trace,
+                    label=f"step[{index}].actionsAfter",
+                )
+                wait_after = float(step.get("waitAfterSeconds") or 0.0)
+                if wait_after > 0:
+                    trace.record_event(
+                        "wait-started",
+                        {"index": index, "seconds": wait_after},
+                    )
+                    await asyncio.sleep(wait_after)
+                    await drain_agent_runtime(bot, scenario.get("agentRuntime"))
+                    trace.record_snapshot(
+                        f"after-step[{index}].wait",
+                        bot,
+                        adapter,
+                        payload={"seconds": wait_after},
+                    )
+            for index, action in enumerate(scenario.get("actions", [])):
+                trace.record_event("action-started", {"index": index, "action": action})
+                await run_scenario_action(action, adapter, bot=bot)
                 await drain_agent_runtime(bot, scenario.get("agentRuntime"))
                 if media_task_manager is not None:
                     await drain_task_manager(media_task_manager, prefix="e2e:media_inspection")
-        await assert_scenario_expectations(bot, adapter, scenario.get("expect", {}))
+                trace.record_snapshot(
+                    f"after-action[{index}]",
+                    bot,
+                    adapter,
+                    payload={"action": action},
+                )
+        final_expect = scenario.get("expect", {})
+        final_analysis = await analyze_scenario_expectations(
+            bot,
+            adapter,
+            final_expect,
+            label="scenario-final",
+        )
+        trace.record_analysis(final_analysis)
+        final_analysis.raise_for_failures()
     finally:
-        if debug_model_plugin_loaded:
-            await bot.plugin_manager.unload_plugin_async("shinbot_debug_model")
-        await bot.shutdown()
+        try:
+            if debug_model_plugin_loaded:
+                await bot.plugin_manager.unload_plugin_async("shinbot_debug_model")
+            await bot.shutdown()
+        finally:
+            trace.record_snapshot("shutdown", bot, adapter)
+            trace.write()
     return bot, adapter
 
 
@@ -447,7 +523,12 @@ def register_agent_runtime(
     return runtime
 
 
-async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatformAdapter) -> None:
+async def run_scenario_action(
+    action: dict[str, Any],
+    adapter: SimulatedPlatformAdapter,
+    *,
+    bot: ShinBot | None = None,
+) -> None:
     action_type = str(action.get("type", ""))
     if action_type == "agentReviewDue":
         await _emit_agent_signal(
@@ -459,7 +540,7 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
         )
         return
     if action_type == "agentReviewDueTimerRunOnce":
-        await _run_review_due_timer_once(action, adapter)
+        await _run_review_due_timer_once(action, adapter, bot=bot)
         return
     if action_type == "agentCompleteReview":
         scheduler = adapter.agent_scheduler
@@ -492,13 +573,46 @@ async def run_scenario_action(action: dict[str, Any], adapter: SimulatedPlatform
     raise ValueError(f"unsupported scenario action type: {action_type!r}")
 
 
+async def run_scenario_actions(
+    actions: list[dict[str, Any]],
+    adapter: SimulatedPlatformAdapter,
+    *,
+    bot: ShinBot,
+    agent_runtime_config: dict[str, Any] | None,
+    media_task_manager: AgentTaskManager | None,
+    trace: PlatformScenarioTraceRecorder,
+    label: str,
+) -> None:
+    for index, action in enumerate(actions):
+        trace.record_event("action-started", {"index": index, "label": label, "action": action})
+        await run_scenario_action(action, adapter, bot=bot)
+        await drain_agent_runtime(bot, agent_runtime_config)
+        if media_task_manager is not None:
+            await drain_task_manager(media_task_manager, prefix="e2e:media_inspection")
+        trace.record_snapshot(
+            f"after-{label}[{index}]",
+            bot,
+            adapter,
+            payload={"action": action},
+        )
+
+
 async def _run_review_due_timer_once(
     action: dict[str, Any],
     adapter: SimulatedPlatformAdapter,
+    *,
+    bot: ShinBot | None = None,
 ) -> None:
     scheduler = adapter.agent_scheduler
     if scheduler is None or adapter.agent_signal_handler is None:
-        raise RuntimeError("agentReviewDueTimerRunOnce action requires agentSchedulerProbe")
+        runtime = getattr(bot, "agent_runtime", None) if bot is not None else None
+        if runtime is None:
+            raise RuntimeError(
+                "agentReviewDueTimerRunOnce action requires agentSchedulerProbe or agentRuntime"
+            )
+        profile = runtime.agent_profile_for_bot(str(action.get("botId", "")))
+        await profile.review_due_timer.run_once()
+        return
     adapter.agent_scheduler_now = float(action.get("now", time.time()))
     timer = ReviewDueTimerService(batch_limit=int(action.get("batchLimit", 50)))
     timer.bind_agent_runtime(
@@ -583,7 +697,11 @@ async def drain_agent_runtime(
     *,
     timeout: float = 1.0,
 ) -> None:
-    if not config or not bool(config.get("waitForBootstraps", False)):
+    if not config:
+        return
+    wait_for_bootstraps = bool(config.get("waitForBootstraps", False))
+    wait_for_active_chat = bool(config.get("waitForActiveChat", False))
+    if not wait_for_bootstraps and not wait_for_active_chat:
         return
     runtime = getattr(bot, "agent_runtime", None)
     if runtime is None:
@@ -593,15 +711,17 @@ async def drain_agent_runtime(
         await asyncio.sleep(0)
         pending = []
         for profile in _agent_runtime_profiles(runtime):
-            coordinator = getattr(profile, "review_coordinator", None)
-            if coordinator is None:
-                continue
-            await coordinator.wait_pending_bootstraps()
-            pending.extend(
-                task
-                for task in getattr(coordinator, "_bootstrap_tasks", set())
-                if not task.done()
-            )
+            if wait_for_bootstraps:
+                coordinator = getattr(profile, "review_coordinator", None)
+                if coordinator is not None:
+                    await coordinator.wait_pending_bootstraps()
+                    pending.extend(
+                        task
+                        for task in getattr(coordinator, "_bootstrap_tasks", set())
+                        if not task.done()
+                    )
+            if wait_for_active_chat:
+                pending.extend(_active_chat_workflow_tasks(runtime, profile))
         if not pending:
             return
     await asyncio.sleep(0)
@@ -613,6 +733,14 @@ def _agent_runtime_profiles(runtime: Any) -> list[Any]:
         return list(profiles())
     default_profile = getattr(runtime, "_default_profile", None)
     return [default_profile] if default_profile is not None else []
+
+
+def _active_chat_workflow_tasks(runtime: Any, profile: Any) -> list[asyncio.Task[Any]]:
+    task_manager = getattr(runtime, "task_manager", None)
+    if task_manager is None:
+        return []
+    bot_part = str(getattr(profile, "bot_id", "") or getattr(profile, "profile_id", ""))
+    return list(task_manager.tasks(prefix=f"agent:{bot_part}:active_chat_workflow"))
 
 
 def _optional_float(value: Any) -> float | None:
@@ -693,6 +821,7 @@ def register_model_runtime_setup(bot: ShinBot, model_runtime: dict[str, Any]) ->
 def _build_fake_model_completion(fake_completion: dict[str, Any] | None):
     payload = fake_completion or {}
     response_texts = _fake_completion_texts(payload)
+    response_tool_calls = _fake_completion_tool_calls(payload)
     input_tokens = int(payload.get("inputTokens", 4))
     output_tokens = int(payload.get("outputTokens", 2))
     cached_tokens = int(payload.get("cacheReadTokens", 1))
@@ -705,9 +834,13 @@ def _build_fake_model_completion(fake_completion: dict[str, Any] | None):
             response_text = response_texts[call_index]
         else:
             response_text = response_texts[-1]
+        if call_index < len(response_tool_calls):
+            tool_calls = response_tool_calls[call_index]
+        else:
+            tool_calls = []
         call_index += 1
         return {
-            "choices": [{"message": {"content": response_text}}],
+            "choices": [{"message": {"content": response_text, "tool_calls": tool_calls}}],
             "usage": {
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
@@ -724,6 +857,19 @@ def _fake_completion_texts(payload: dict[str, Any]) -> list[str]:
     if isinstance(raw_sequence, list) and raw_sequence:
         return [str(item) for item in raw_sequence]
     return [str(payload.get("text", "stubbed model response"))]
+
+
+def _fake_completion_tool_calls(payload: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    raw_sequence = payload.get("toolCalls")
+    if not isinstance(raw_sequence, list):
+        return []
+    result: list[list[dict[str, Any]]] = []
+    for item in raw_sequence:
+        if not isinstance(item, list):
+            result.append([])
+            continue
+        result.append([dict(tool_call) for tool_call in item if isinstance(tool_call, dict)])
+    return result
 
 
 async def load_debug_model_plugin(bot: ShinBot) -> None:
@@ -974,31 +1120,64 @@ async def drain_route_tasks(
     await asyncio.sleep(0)
 
 
-async def assert_scenario_expectations(
+async def analyze_scenario_expectations(
     bot: ShinBot,
     adapter: SimulatedPlatformAdapter,
     expect: dict[str, Any],
-) -> None:
-    assert_sent_messages(adapter, expect.get("sent", []))
-    assert_sessions(bot, expect.get("sessions", []))
-    if "messageLogs" in expect:
-        assert_message_logs(bot, expect["messageLogs"])
+    *,
+    label: str,
+) -> ScenarioAnalysisReport:
+    hooks: dict[str, Any] = {
+        "sent": lambda: assert_sent_messages(adapter, expect.get("sent", [])),
+        "sessions": lambda: assert_sessions(bot, expect.get("sessions", [])),
+        "messageLogs": lambda: assert_message_logs(bot, expect["messageLogs"]),
+        "noticeEvents": lambda: assert_notice_events(adapter, expect["noticeEvents"]),
+        "apiCalls": lambda: assert_api_calls(adapter, expect["apiCalls"]),
+        "agentEntrySignals": lambda: assert_agent_entry_signals(
+            adapter, expect["agentEntrySignals"]
+        ),
+        "agentScheduler": lambda: assert_agent_scheduler_state(
+            bot, adapter, expect["agentScheduler"]
+        ),
+        "modelRuntime": lambda: assert_model_runtime_expectations(bot, expect["modelRuntime"]),
+        "mediaSemantics": lambda: assert_media_semantics_expectations(
+            bot, expect["mediaSemantics"]
+        ),
+        "workflowRuns": lambda: assert_workflow_runs(bot, expect["workflowRuns"]),
+    }
+    report = await analyze_expectations(
+        bot,
+        adapter,
+        expect,
+        label=label,
+        hooks=hooks,
+    )
     for expected_logs in expect.get("messageLogsBySession", []):
-        assert_message_logs(bot, expected_logs)
-    if "noticeEvents" in expect:
-        assert adapter.notice_events == list(expect["noticeEvents"])
-    if "apiCalls" in expect:
-        assert_api_calls(adapter, expect["apiCalls"])
-    if "agentEntrySignals" in expect:
-        assert_agent_entry_signals(adapter, expect["agentEntrySignals"])
-    if "agentScheduler" in expect:
-        assert_agent_scheduler_state(bot, adapter, expect["agentScheduler"])
-    if "modelRuntime" in expect:
-        await assert_model_runtime_expectations(bot, expect["modelRuntime"])
-    if "mediaSemantics" in expect:
-        assert_media_semantics_expectations(bot, expect["mediaSemantics"])
-    if "workflowRuns" in expect:
-        assert_workflow_runs(bot, expect["workflowRuns"])
+        try:
+            assert_message_logs(bot, expected_logs)
+        except AssertionError as exc:
+            report.checks.append(
+                ScenarioCheck(
+                    name=f"messageLogsBySession:{expected_logs['sessionId']}",
+                    passed=False,
+                    detail=str(exc),
+                )
+            )
+        else:
+            report.checks.append(
+                ScenarioCheck(
+                    name=f"messageLogsBySession:{expected_logs['sessionId']}",
+                    passed=True,
+                )
+            )
+    return report
+
+
+def assert_notice_events(
+    adapter: SimulatedPlatformAdapter,
+    expected: list[Any],
+) -> None:
+    assert adapter.notice_events == list(expected)
 
 
 def assert_sent_messages(

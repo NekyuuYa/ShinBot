@@ -38,6 +38,7 @@ class _ScenarioValidator:
         "agentConfig",
         "agentConfigsByBotId",
         "enabled",
+        "waitForActiveChat",
         "waitForBootstraps",
     }
     ADAPTER_KEYS = {"instanceId", "platform", "selfId"}
@@ -75,6 +76,8 @@ class _ScenarioValidator:
         "routeId",
     }
     STEP_KEYS = {
+        "actionsAfter",
+        "actionsBefore",
         "content",
         "elements",
         "eventType",
@@ -88,6 +91,7 @@ class _ScenarioValidator:
         "session",
         "timestamp",
         "type",
+        "waitAfterSeconds",
     }
     STEP_TYPES = {"message", "notice"}
     STEP_SESSION_KEYS = {"channelId", "channelName", "guildId", "guildName", "type"}
@@ -121,6 +125,7 @@ class _ScenarioValidator:
         "outputTokens",
         "text",
         "texts",
+        "toolCalls",
     }
     MODEL_PROVIDER_KEYS = {
         "auth",
@@ -418,6 +423,7 @@ class _ScenarioValidator:
                 {"content", "eventType", "id", "noticeType"},
             )
             self._require_optional_number(item, item_path, "timestamp")
+            self._require_optional_number(item, item_path, "waitAfterSeconds")
             self._require_optional_int(item, item_path, "expectSentCount")
             if "session" in item:
                 self._validate_step_session(item["session"], f"{item_path}.session")
@@ -429,6 +435,10 @@ class _ScenarioValidator:
                 self._validate_member(item["member"], f"{item_path}.member")
             if "elements" in item:
                 self._validate_elements(item["elements"], f"{item_path}.elements")
+            if "actionsBefore" in item:
+                self._validate_actions(item["actionsBefore"], f"{item_path}.actionsBefore")
+            if "actionsAfter" in item:
+                self._validate_actions(item["actionsAfter"], f"{item_path}.actionsAfter")
             if "expect" in item:
                 self._validate_expect(item["expect"], f"{item_path}.expect")
 
@@ -507,8 +517,17 @@ class _ScenarioValidator:
             )
             if "texts" in fake:
                 self._require_string_list(fake["texts"], f"{fake_path}.texts")
+            if "toolCalls" in fake:
+                for call_index, tool_calls in enumerate(
+                    self._require_list(fake["toolCalls"], f"{fake_path}.toolCalls")
+                ):
+                    call_path = f"{fake_path}.toolCalls[{call_index}]"
+                    for tool_index, tool_call in enumerate(
+                        self._require_list(tool_calls, call_path)
+                    ):
+                        self._require_object(tool_call, f"{call_path}[{tool_index}]")
             for field in self.FAKE_COMPLETION_KEYS - {"text"}:
-                if field == "texts":
+                if field in {"texts", "toolCalls"}:
                     continue
                 self._require_optional_int(fake, fake_path, field)
         if "providers" in value:
@@ -576,6 +595,7 @@ class _ScenarioValidator:
         self._require_object(value, path)
         self._check_keys(value, path, self.AGENT_RUNTIME_KEYS)
         self._require_optional_bool(value, path, "enabled")
+        self._require_optional_bool(value, path, "waitForActiveChat")
         self._require_optional_bool(value, path, "waitForBootstraps")
         if "agentConfig" in value:
             self._require_object(value["agentConfig"], f"{path}.agentConfig")
