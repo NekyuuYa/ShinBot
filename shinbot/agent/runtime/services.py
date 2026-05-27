@@ -595,6 +595,7 @@ class AgentRuntime:
                 signal_id=signal.signal_id,
                 session_id=signal.session_id,
                 bot_id=signal.bot_id,
+                trace_id=str(signal.meta.get("trace_id") or ""),
                 profile_id=profile.profile_id,
                 selected_bot_id=profile.bot_id,
                 message_log_id=(
@@ -609,6 +610,7 @@ class AgentRuntime:
                 kind=signal.kind.value,
                 signal_id=signal.signal_id,
                 session_id=signal.session_id,
+                trace_id=str(signal.meta.get("trace_id") or ""),
                 profile_id=profile.profile_id,
                 decision_type=type(decision).__name__ if decision is not None else "",
                 skipped_reason=getattr(decision, "skipped_reason", ""),

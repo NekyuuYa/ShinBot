@@ -30,7 +30,7 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
-from shinbot.utils.logger import get_logger
+from shinbot.utils.logger import format_log_event, get_logger
 from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES, download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
@@ -333,9 +333,13 @@ class OneBotV11Adapter(BaseAdapter):
                 self._connection_loop(), name=f"onebot-v11-{self.instance_id}"
             )
             logger.info(
-                "OneBot v11 adapter %s starting forward connection to %s",
-                self.instance_id,
-                self.config.url,
+                format_log_event(
+                    "adapter.connection.starting",
+                    adapter="onebot_v11",
+                    mode="forward",
+                    instance_id=self.instance_id,
+                    endpoint=self.config.url,
+                )
             )
         else:
             host, port, path = self._resolve_reverse_listener_target()
@@ -343,11 +347,13 @@ class OneBotV11Adapter(BaseAdapter):
             self._registered_port = port
             await _GATEWAY.register(self, host, port, path)
             logger.info(
-                "OneBot v11 adapter %s waiting for reverse connection on ws://%s:%d%s",
-                self.instance_id,
-                host,
-                port,
-                path,
+                format_log_event(
+                    "adapter.connection.waiting",
+                    adapter="onebot_v11",
+                    mode="reverse",
+                    instance_id=self.instance_id,
+                    endpoint=f"ws://{host}:{port}{path}",
+                )
             )
 
     async def shutdown(self) -> None:
@@ -394,10 +400,14 @@ class OneBotV11Adapter(BaseAdapter):
         self._detected_platform = "qq"
         self._ws = websocket
         logger.info(
-            "OneBot v11 %s connected via reverse WebSocket (self_id=%s role=%s)",
-            self.instance_id,
-            self._self_id,
-            client_role,
+            format_log_event(
+                "adapter.connection.connected",
+                adapter="onebot_v11",
+                mode="reverse",
+                instance_id=self.instance_id,
+                self_id=self._self_id,
+                client_role=client_role,
+            )
         )
 
         try:
@@ -409,7 +419,14 @@ class OneBotV11Adapter(BaseAdapter):
             logger.warning("OneBot v11 %s connection error: %s", self.instance_id, exc)
         finally:
             self._ws = None
-            logger.info("OneBot v11 %s reverse connection closed", self.instance_id)
+            logger.info(
+                format_log_event(
+                    "adapter.connection.closed",
+                    adapter="onebot_v11",
+                    mode="reverse",
+                    instance_id=self.instance_id,
+                )
+            )
 
     async def send(self, target_session: str, elements: list[MessageElement]) -> MessageHandle:
         message: list[dict[str, Any]] = []
@@ -640,7 +657,15 @@ class OneBotV11Adapter(BaseAdapter):
             try:
                 await self._connect_and_receive()
                 if attempts > 0:
-                    logger.info("OneBot v11 %s reconnected successfully", self.instance_id)
+                    logger.info(
+                        format_log_event(
+                            "adapter.connection.reconnected",
+                            adapter="onebot_v11",
+                            mode="forward",
+                            instance_id=self.instance_id,
+                            attempts=attempts,
+                        )
+                    )
                 attempts = 0
             except asyncio.CancelledError:
                 break
@@ -656,15 +681,28 @@ class OneBotV11Adapter(BaseAdapter):
                 )
                 if should_log:
                     logger.warning(
-                        "OneBot v11 %s forward connection failed; retrying in %.1fs (attempt %d): %s",
-                        self.instance_id,
-                        self.config.reconnect_delay,
-                        attempts,
-                        e,
+                        format_log_event(
+                            "adapter.connection.retry",
+                            adapter="onebot_v11",
+                            mode="forward",
+                            instance_id=self.instance_id,
+                            retry_after_seconds=f"{self.config.reconnect_delay:.1f}",
+                            attempt=attempts,
+                            error_code=type(e).__name__,
+                        )
                     )
                     last_log_ts = now
                 if self.config.max_reconnects >= 0 and attempts > self.config.max_reconnects:
-                    logger.error("OneBot v11 %s reached max reconnect attempts", self.instance_id)
+                    logger.error(
+                        format_log_event(
+                            "adapter.connection.failed",
+                            adapter="onebot_v11",
+                            mode="forward",
+                            instance_id=self.instance_id,
+                            reason="max_reconnects_reached",
+                            attempts=attempts,
+                        )
+                    )
                     break
                 await asyncio.sleep(self.config.reconnect_delay)
 
@@ -675,7 +713,15 @@ class OneBotV11Adapter(BaseAdapter):
 
         async with websockets.connect(self.config.url, additional_headers=headers) as ws:
             self._ws = ws
-            logger.info("OneBot v11 %s connected to %s", self.instance_id, self.config.url)
+            logger.info(
+                format_log_event(
+                    "adapter.connection.connected",
+                    adapter="onebot_v11",
+                    mode="forward",
+                    instance_id=self.instance_id,
+                    endpoint=self.config.url,
+                )
+            )
             async for raw in ws:
                 await self._handle_raw(raw)
 

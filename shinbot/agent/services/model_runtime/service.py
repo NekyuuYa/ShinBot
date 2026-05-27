@@ -235,6 +235,7 @@ class ModelRuntime:
                     purpose=call.purpose,
                     session_id=call.session_id,
                     instance_id=call.instance_id,
+                    trace_id=call.metadata.get("trace_id"),
                     fallback_from_model_id=previous_model_id,
                 )
             )
@@ -346,6 +347,7 @@ class ModelRuntime:
                         caller=call.caller,
                         purpose=call.purpose,
                         session_id=call.session_id,
+                        trace_id=call.metadata.get("trace_id"),
                         latency_ms=f"{latency_ms:.2f}",
                         input_tokens=usage["input_tokens"] if record_usage else 0,
                         output_tokens=usage["output_tokens"] if record_usage else 0,
@@ -428,6 +430,7 @@ class ModelRuntime:
                         caller=call.caller,
                         purpose=call.purpose,
                         session_id=call.session_id,
+                        trace_id=call.metadata.get("trace_id"),
                         latency_ms=f"{latency_ms:.2f}",
                         error_code=type(exc).__name__,
                     )
@@ -442,6 +445,7 @@ class ModelRuntime:
                 purpose=call.purpose,
                 session_id=call.session_id,
                 instance_id=call.instance_id,
+                trace_id=call.metadata.get("trace_id"),
                 route_id=call.route_id,
                 model_id=call.model_id,
                 error_code=type(last_error).__name__ if last_error is not None else "",

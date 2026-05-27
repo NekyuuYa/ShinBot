@@ -10,14 +10,14 @@ interaction goes through the BaseAdapter interface.
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
 from shinbot.schema.elements import MessageElement
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="adapter", color="green")
 
 
 class MessageHandle:
@@ -160,9 +160,14 @@ class AdapterManager:
         if not callable(factory):
             raise TypeError(f"{factory!r} must be a callable factory")
         if platform in self._factories:
-            logger.warning("Overriding adapter factory for platform %r", platform)
+            logger.warning(
+                format_log_event(
+                    "adapter.factory.override",
+                    platform=platform,
+                )
+            )
         self._factories[platform] = factory
-        logger.info("Registered adapter factory for platform: %s", platform)
+        logger.info(format_log_event("adapter.factory.registered", platform=platform))
 
     def unregister_adapter(self, platform: str) -> None:
         """Remove a registered adapter factory."""
@@ -204,7 +209,13 @@ class AdapterManager:
             adapter.set_event_callback(event_callback)
 
         self._instances[instance_id] = adapter
-        logger.info("Created adapter instance: %s (platform=%s)", instance_id, platform)
+        logger.info(
+            format_log_event(
+                "adapter.instance.created",
+                instance_id=instance_id,
+                platform=platform,
+            )
+        )
         return adapter
 
     def get_instance(self, instance_id: str) -> BaseAdapter | None:
@@ -240,18 +251,44 @@ class AdapterManager:
         adapter = self._instances.get(instance_id)
         if adapter is None:
             raise ValueError(f"No instance registered with id {instance_id!r}")
+        logger.info(
+            format_log_event(
+                "adapter.instance.starting",
+                instance_id=instance_id,
+                platform=adapter.platform,
+            )
+        )
         await adapter.start()
         self._running.add(instance_id)
-        logger.info("Started adapter: %s", instance_id)
+        logger.info(
+            format_log_event(
+                "adapter.instance.started",
+                instance_id=instance_id,
+                platform=adapter.platform,
+            )
+        )
 
     async def stop_instance(self, instance_id: str) -> None:
         """Stop a single adapter instance by ID."""
         adapter = self._instances.get(instance_id)
         if adapter is None:
             raise ValueError(f"No instance registered with id {instance_id!r}")
+        logger.info(
+            format_log_event(
+                "adapter.instance.stopping",
+                instance_id=instance_id,
+                platform=adapter.platform,
+            )
+        )
         await adapter.shutdown()
         self._running.discard(instance_id)
-        logger.info("Stopped adapter: %s", instance_id)
+        logger.info(
+            format_log_event(
+                "adapter.instance.stopped",
+                instance_id=instance_id,
+                platform=adapter.platform,
+            )
+        )
 
     async def delete_instance(self, instance_id: str) -> bool:
         """Stop (if running) and remove an adapter instance."""
@@ -264,16 +301,32 @@ class AdapterManager:
         for instance_id in list(self._instances):
             try:
                 await self.start_instance(instance_id)
-            except Exception:
-                logger.exception("Failed to start adapter: %s", instance_id)
+            except Exception as exc:
+                adapter = self._instances.get(instance_id)
+                logger.exception(
+                    format_log_event(
+                        "adapter.instance.start_failed",
+                        instance_id=instance_id,
+                        platform=adapter.platform if adapter is not None else "",
+                        error_code=type(exc).__name__,
+                    )
+                )
 
     async def shutdown_all(self) -> None:
         """Shutdown all adapter instances gracefully."""
         for instance_id in list(self._instances):
             try:
                 await self.stop_instance(instance_id)
-            except Exception:
-                logger.exception("Error shutting down adapter: %s", instance_id)
+            except Exception as exc:
+                adapter = self._instances.get(instance_id)
+                logger.exception(
+                    format_log_event(
+                        "adapter.instance.stop_failed",
+                        instance_id=instance_id,
+                        platform=adapter.platform if adapter is not None else "",
+                        error_code=type(exc).__name__,
+                    )
+                )
         self._instances.clear()
         self._running.clear()
 

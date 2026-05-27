@@ -37,6 +37,7 @@
 
     <monitoring-terminal-shell
       v-model:enabled-log-levels="enabledLogLevels"
+      v-model:log-search-query="logSearchQuery"
       :terminal-title="$t('pages.monitoring.terminalTitle')"
       :terminal-subtitle="$t('pages.monitoring.terminalSubtitle')"
       :status-label="$t('pages.monitoring.status')"
@@ -44,6 +45,7 @@
       :system-memory-label="$t('pages.monitoring.systemMemory')"
       :process-memory-label="$t('pages.monitoring.processMemory')"
       :logs-label="$t('pages.monitoring.logs')"
+      :log-search-label="$t('pages.monitoring.logSearch')"
       :stream-connected-label="$t('pages.monitoring.streamConnected')"
       :stream-disconnected-label="$t('pages.monitoring.streamDisconnected')"
       :pause-follow-label="$t('pages.monitoring.pauseFollow')"
@@ -77,7 +79,7 @@ import MonitoringTerminalShell from '@/components/monitoring/MonitoringTerminalS
 import { useMonitoringStore } from '@/stores/monitoring'
 
 const monitoringStore = useMonitoringStore()
-const { filteredLogs, enabledLogLevels, isOnline, logConnected, status } =
+const { filteredLogs, enabledLogLevels, logSearchQuery, isOnline, logConnected, status } =
   storeToRefs(monitoringStore)
 
 const terminalLogs = computed(() => filteredLogs.value.slice().reverse())

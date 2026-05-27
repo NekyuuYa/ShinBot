@@ -659,6 +659,7 @@ async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path)
 
     assert result.matched_rules == [fallback_rule]
     assert result.message_log_id is not None
+    assert result.trace_id.startswith("ingress:test-bot:")
     assert len(agent_handler.signals) == 1
 
     signal = agent_handler.signals[0]
@@ -666,6 +667,7 @@ async def test_agent_entry_fallback_notifies_agent_with_minimal_signal(tmp_path)
     assert signal.message is not None
     assert signal.message.message_log_id == result.message_log_id
     assert signal.meta["event_type"] == "message-created"
+    assert signal.meta["trace_id"] == result.trace_id
     assert signal.message.sender_id == "user-1"
     assert signal.message.instance_id == "test-bot"
     assert signal.message.platform == "mock"

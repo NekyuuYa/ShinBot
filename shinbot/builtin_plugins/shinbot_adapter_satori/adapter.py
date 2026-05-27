@@ -39,7 +39,7 @@ import websockets
 from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import UnifiedEvent
-from shinbot.utils.logger import get_logger
+from shinbot.utils.logger import format_log_event, get_logger
 from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES, download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
@@ -133,7 +133,14 @@ class SatoriAdapter(BaseAdapter):
         self._recv_task = asyncio.create_task(
             self._connection_loop(), name=f"satori-{self.instance_id}"
         )
-        logger.info("Satori adapter %s starting connection to %s", self.instance_id, self.config.host)
+        logger.info(
+            format_log_event(
+                "adapter.connection.starting",
+                adapter="satori",
+                instance_id=self.instance_id,
+                endpoint=self.config.host,
+            )
+        )
 
     async def shutdown(self) -> None:
         """Gracefully close the WebSocket and cancel background tasks."""
@@ -286,7 +293,14 @@ class SatoriAdapter(BaseAdapter):
             try:
                 await self._connect_and_receive()
                 if attempt > 0:
-                    logger.info("Satori %s reconnected successfully", self.instance_id)
+                    logger.info(
+                        format_log_event(
+                            "adapter.connection.reconnected",
+                            adapter="satori",
+                            instance_id=self.instance_id,
+                            attempts=attempt,
+                        )
+                    )
                 attempt = 0
             except asyncio.CancelledError:
                 break
@@ -302,16 +316,25 @@ class SatoriAdapter(BaseAdapter):
                 )
                 if should_log:
                     logger.warning(
-                        "Satori %s connection failed; retrying in %.1fs (attempt %d): %s",
-                        self.instance_id,
-                        self.config.reconnect_delay,
-                        attempt,
-                        e,
+                        format_log_event(
+                            "adapter.connection.retry",
+                            adapter="satori",
+                            instance_id=self.instance_id,
+                            retry_after_seconds=f"{self.config.reconnect_delay:.1f}",
+                            attempt=attempt,
+                            error_code=type(e).__name__,
+                        )
                     )
                     last_log_ts = now
                 if self.config.max_reconnects >= 0 and attempt > self.config.max_reconnects:
                     logger.error(
-                        "Satori %s: max reconnect attempts reached, giving up", self.instance_id
+                        format_log_event(
+                            "adapter.connection.failed",
+                            adapter="satori",
+                            instance_id=self.instance_id,
+                            reason="max_reconnects_reached",
+                            attempts=attempt,
+                        )
                     )
                     break
                 await asyncio.sleep(self.config.reconnect_delay)
@@ -334,7 +357,14 @@ class SatoriAdapter(BaseAdapter):
 
         async with websockets.connect(ws_url, additional_headers=headers) as ws:
             self._ws = ws
-            logger.info("Satori %s connected to %s", self.instance_id, ws_url)
+            logger.info(
+                format_log_event(
+                    "adapter.connection.connected",
+                    adapter="satori",
+                    instance_id=self.instance_id,
+                    endpoint=ws_url,
+                )
+            )
 
             # IDENTIFY: send authentication + optional sequence number for
             # session recovery on reconnect.
@@ -416,10 +446,13 @@ class SatoriAdapter(BaseAdapter):
             self._self_id = user.get("id", "")
             self._detected_platform = login.get("platform", self.platform)
             logger.info(
-                "Satori %s READY: platform=%s self_id=%s",
-                self.instance_id,
-                self._detected_platform,
-                self._self_id,
+                format_log_event(
+                    "adapter.connection.ready",
+                    adapter="satori",
+                    instance_id=self.instance_id,
+                    platform=self._detected_platform,
+                    self_id=self._self_id,
+                )
             )
 
     async def _handle_event(self, body: dict[str, Any]) -> None:

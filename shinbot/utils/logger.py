@@ -149,6 +149,40 @@ def format_log_event(event: str, /, **fields: Any) -> str:
     return " | ".join(parts)
 
 
+def parse_log_event(message: str) -> dict[str, Any]:
+    """Parse a compact ``format_log_event`` message for log stream filters."""
+
+    text = str(message or "").strip()
+    if not text:
+        return {}
+    parts = [part.strip() for part in text.split(" | ") if part.strip()]
+    if not parts:
+        return {}
+    fields: dict[str, Any] = {}
+    for part in parts[1:]:
+        key, separator, value = part.partition("=")
+        if not separator:
+            continue
+        normalized_key = key.strip()
+        if not normalized_key:
+            continue
+        fields[normalized_key] = _parse_log_field_value(value.strip())
+    return {"event": parts[0], "fields": fields}
+
+
+def _parse_log_field_value(value: str) -> Any:
+    if value in {"true", "false"}:
+        return value == "true"
+    if not value:
+        return ""
+    if value[0] in "[{\"":
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
 def is_third_party_noise(record: logging.LogRecord) -> bool:
     """Return whether a record is low-level transport/library chatter."""
 

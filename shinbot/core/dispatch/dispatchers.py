@@ -108,7 +108,10 @@ class AgentEntryDispatcher:
                 already_handled=bool(bot._sent_messages),
                 is_stopped=bot.is_stopped,
             ),
-            meta={"event_type": bot.event.type},
+            meta={
+                "event_type": bot.event.type,
+                "trace_id": context.trace_id,
+            },
         )
 
         logger.debug(
@@ -119,6 +122,7 @@ class AgentEntryDispatcher:
                 bot_id=signal.bot_id,
                 binding_id=signal.bot_binding_id,
                 message_log_id=context.message_log_id,
+                trace_id=context.trace_id,
                 is_private=signal.message.is_private if signal.message is not None else None,
                 is_mentioned=(
                     signal.message.is_mentioned if signal.message is not None else None
@@ -137,6 +141,7 @@ class AgentEntryDispatcher:
                     session_id=signal.session_id,
                     bot_id=signal.bot_id,
                     message_log_id=context.message_log_id,
+                    trace_id=context.trace_id,
                 )
             )
             return

@@ -284,3 +284,25 @@ def test_format_log_event_omits_empty_fields_and_serializes_collections():
     assert 'tags=["core","health"]' in message
     assert "empty=" not in message
     assert "missing=" not in message
+
+
+def test_parse_log_event_extracts_event_and_fields():
+    message = logger_utils.format_log_event(
+        "agent.signal.decision",
+        trace_id="ingress:bot:msg-1",
+        session_id="bot:group:room",
+        accepted=True,
+        targets=["agent_entry"],
+    )
+
+    parsed = logger_utils.parse_log_event(message)
+
+    assert parsed == {
+        "event": "agent.signal.decision",
+        "fields": {
+            "trace_id": "ingress:bot:msg-1",
+            "session_id": "bot:group:room",
+            "accepted": True,
+            "targets": ["agent_entry"],
+        },
+    }

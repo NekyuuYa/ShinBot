@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from shinbot.utils.logger import format_log_event, get_logger
+
 T = TypeVar("T")
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="agent:task", color="yellow")
 
 
 @dataclass(slots=True, frozen=True)
@@ -44,6 +45,13 @@ class AgentTaskManager:
         loop = asyncio.get_running_loop()
         task = loop.create_task(coro, name=name or qualified_key)
         self._tasks[qualified_key] = task
+        logger.debug(
+            format_log_event(
+                "agent.task.started",
+                key=qualified_key,
+                name=task.get_name(),
+            )
+        )
         task.add_done_callback(
             lambda completed, task_key=qualified_key: self._finish(task_key, completed)
         )
@@ -86,6 +94,13 @@ class AgentTaskManager:
         if task is None or task.done() or task is asyncio.current_task():
             return
         task.cancel()
+        logger.debug(
+            format_log_event(
+                "agent.task.cancelled",
+                key=qualified_key,
+                name=task.get_name(),
+            )
+        )
 
     async def shutdown(self, *, prefix: str | None = None) -> None:
         """Cancel all tracked tasks, or all matching a prefix."""
@@ -104,6 +119,13 @@ class AgentTaskManager:
                     self._tasks.pop(key, None)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+            logger.debug(
+                format_log_event(
+                    "agent.task.shutdown",
+                    prefix=qualified_prefix or "",
+                    count=len(tasks),
+                )
+            )
 
     def scope(self, namespace: str) -> AgentTaskScope:
         """Create a namespaced task scope."""
@@ -114,10 +136,35 @@ class AgentTaskManager:
         if self._tasks.get(key) is task:
             self._tasks.pop(key, None)
         if task.cancelled():
+            logger.debug(
+                format_log_event(
+                    "agent.task.finished",
+                    key=key,
+                    name=task.get_name(),
+                    status="cancelled",
+                )
+            )
             return
         error = task.exception()
         if error is not None:
-            logger.exception("Agent background task failed: %s", key, exc_info=error)
+            logger.error(
+                format_log_event(
+                    "agent.task.failed",
+                    key=key,
+                    name=task.get_name(),
+                    error_code=type(error).__name__,
+                ),
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            return
+        logger.debug(
+            format_log_event(
+                "agent.task.finished",
+                key=key,
+                name=task.get_name(),
+                status="success",
+            )
+        )
 
     @staticmethod
     def _snapshot_task(key: str, task: asyncio.Task[Any]) -> AgentTaskSnapshot:

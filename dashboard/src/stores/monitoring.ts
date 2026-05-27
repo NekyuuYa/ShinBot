@@ -11,6 +11,12 @@ export interface MonitoringLogEntry {
   message: string
   timestamp: number
   source?: string
+  event?: string
+  fields: Record<string, unknown>
+  traceId?: string
+  sessionId?: string
+  messageLogId?: string
+  executionId?: string
 }
 
 export interface SystemStatus {
@@ -43,6 +49,8 @@ interface LogWsPayload {
   message?: string
   timestamp?: number
   source?: string
+  event?: string
+  fields?: Record<string, unknown>
 }
 
 interface StatusWsPayload {
@@ -84,6 +92,17 @@ function makeLogId(entry: Pick<MonitoringLogEntry, 'timestamp' | 'level' | 'mess
   return `${entry.timestamp}-${entry.level}-${entry.message.slice(0, 24)}`
 }
 
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  if (typeof value === 'string') {
+    return value
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  return undefined
+}
+
 function numberField(record: Record<string, unknown>, key: string, fallback = 0): number {
   const value = record[key]
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -121,6 +140,11 @@ function extractLogEntries(payload: unknown): MonitoringLogEntry[] {
       : typeof record.logger === 'string'
         ? record.logger
         : undefined
+  const event = typeof record.event === 'string' ? record.event : undefined
+  const fields =
+    record.fields && typeof record.fields === 'object' && !Array.isArray(record.fields)
+      ? (record.fields as Record<string, unknown>)
+      : {}
 
   if (!message) {
     return []
@@ -133,8 +157,39 @@ function extractLogEntries(payload: unknown): MonitoringLogEntry[] {
       message,
       timestamp,
       source,
+      event,
+      fields,
+      traceId: stringField(fields, 'trace_id'),
+      sessionId: stringField(fields, 'session_id'),
+      messageLogId: stringField(fields, 'message_log_id'),
+      executionId: stringField(fields, 'execution_id'),
     },
   ]
+}
+
+function logMatchesSearch(entry: MonitoringLogEntry, rawQuery: string): boolean {
+  const query = rawQuery.trim().toLowerCase()
+  if (!query) {
+    return true
+  }
+  const fieldsText = Object.entries(entry.fields)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(' ')
+  const haystack = [
+    entry.level,
+    entry.source,
+    entry.event,
+    entry.traceId,
+    entry.sessionId,
+    entry.messageLogId,
+    entry.executionId,
+    entry.message,
+    fieldsText,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  return haystack.includes(query)
 }
 
 function extractStatus(payload: unknown): SystemStatus | null {
@@ -210,6 +265,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
   const instancesStore = useInstancesStore()
   const logs = ref<MonitoringLogEntry[]>([])
   const enabledLogLevels = ref<LogLevel[]>([...LOG_LEVEL_ORDER])
+  const logSearchQuery = ref('')
   const status = ref<SystemStatus>({
     totalInstances: 0,
     runningInstances: 0,
@@ -237,7 +293,9 @@ export const useMonitoringStore = defineStore('monitoring', () => {
       return []
     }
 
-    return logs.value.filter((entry) => activeLevels.has(entry.level))
+    return logs.value.filter(
+      (entry) => activeLevels.has(entry.level) && logMatchesSearch(entry, logSearchQuery.value)
+    )
   })
 
   const MAX_LOG_ENTRIES = 100
@@ -320,6 +378,7 @@ export const useMonitoringStore = defineStore('monitoring', () => {
     logs,
     filteredLogs,
     enabledLogLevels,
+    logSearchQuery,
     status,
     isOnline,
     logConnected,

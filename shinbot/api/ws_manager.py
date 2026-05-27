@@ -13,6 +13,7 @@ from shinbot.utils.logger import (
     display_log_level,
     get_logger,
     log_record_source,
+    parse_log_event,
     should_emit_log_record,
 )
 
@@ -75,6 +76,9 @@ class _AsyncLogHandler(logging.Handler):
                 "source": log_record_source(record),
                 "message": msg,
             }
+            structured = parse_log_event(msg)
+            if structured:
+                payload.update(structured)
             try:
                 self._queue.put_nowait(payload)
             except asyncio.QueueFull:

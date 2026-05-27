@@ -30,7 +30,7 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Guild, Member, User
-from shinbot.utils.logger import get_logger
+from shinbot.utils.logger import format_log_event, get_logger
 from shinbot.utils.resource_ingress import DEFAULT_MAX_RESOURCE_BYTES, download_resource_elements
 from shinbot.utils.satori_parser import elements_to_xml
 
@@ -161,7 +161,13 @@ class QQOfficialAdapter(BaseAdapter):
             self._connection_loop(),
             name=f"qqofficial-{self.instance_id}",
         )
-        logger.info("QQOfficial adapter %s started", self.instance_id)
+        logger.info(
+            format_log_event(
+                "adapter.connection.starting",
+                adapter="qq_official",
+                instance_id=self.instance_id,
+            )
+        )
 
     async def shutdown(self) -> None:
         self._running = False
@@ -330,7 +336,14 @@ class QQOfficialAdapter(BaseAdapter):
             try:
                 await self._connect_and_receive()
                 if attempts > 0:
-                    logger.info("QQOfficial %s reconnected successfully", self.instance_id)
+                    logger.info(
+                        format_log_event(
+                            "adapter.connection.reconnected",
+                            adapter="qq_official",
+                            instance_id=self.instance_id,
+                            attempts=attempts,
+                        )
+                    )
                 attempts = 0
             except asyncio.CancelledError:
                 break
@@ -339,14 +352,25 @@ class QQOfficialAdapter(BaseAdapter):
                     break
                 attempts += 1
                 logger.warning(
-                    "QQOfficial %s reconnecting in %.1fs (attempt %d): %s",
-                    self.instance_id,
-                    self.config.reconnect_delay,
-                    attempts,
-                    exc,
+                    format_log_event(
+                        "adapter.connection.retry",
+                        adapter="qq_official",
+                        instance_id=self.instance_id,
+                        retry_after_seconds=f"{self.config.reconnect_delay:.1f}",
+                        attempt=attempts,
+                        error_code=type(exc).__name__,
+                    )
                 )
                 if self.config.max_reconnects >= 0 and attempts > self.config.max_reconnects:
-                    logger.error("QQOfficial %s reached max reconnect attempts", self.instance_id)
+                    logger.error(
+                        format_log_event(
+                            "adapter.connection.failed",
+                            adapter="qq_official",
+                            instance_id=self.instance_id,
+                            reason="max_reconnects_reached",
+                            attempts=attempts,
+                        )
+                    )
                     break
                 await asyncio.sleep(self.config.reconnect_delay)
 
@@ -354,7 +378,14 @@ class QQOfficialAdapter(BaseAdapter):
         ws_url = await self._resolve_ws_url()
         async with websockets.connect(ws_url) as ws:
             self._ws = ws
-            logger.info("QQOfficial %s connected to %s", self.instance_id, ws_url)
+            logger.info(
+                format_log_event(
+                    "adapter.connection.connected",
+                    adapter="qq_official",
+                    instance_id=self.instance_id,
+                    endpoint=ws_url,
+                )
+            )
             try:
                 async for raw in ws:
                     await self._handle_gateway_raw(raw)
@@ -481,10 +512,13 @@ class QQOfficialAdapter(BaseAdapter):
             user = data.get("user", {}) if isinstance(data.get("user"), dict) else {}
             self._self_id = str(user.get("id", ""))
             logger.info(
-                "QQOfficial %s READY: self_id=%s session_id=%s",
-                self.instance_id,
-                self._self_id,
-                self._session_id,
+                format_log_event(
+                    "adapter.connection.ready",
+                    adapter="qq_official",
+                    instance_id=self.instance_id,
+                    self_id=self._self_id,
+                    gateway_session_id=self._session_id,
+                )
             )
             return
 

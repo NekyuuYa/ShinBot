@@ -71,6 +71,17 @@
       </v-btn-toggle>
 
       <div class="terminal-toolbar__actions">
+        <v-text-field
+          v-model="logSearchQuery"
+          :label="logSearchLabel"
+          density="compact"
+          variant="outlined"
+          hide-details
+          clearable
+          prepend-inner-icon="mdi-magnify"
+          class="terminal-search"
+        />
+
         <v-chip
           size="small"
           variant="flat"
@@ -124,7 +135,10 @@
             <span class="terminal-line__source">
               {{ item.source ?? systemSourceLabel }}
             </span>
-            <span class="terminal-line__message">{{ item.message }}</span>
+            <span class="terminal-line__message">
+              <span v-if="item.event" class="terminal-line__event">{{ item.event }}</span>
+              {{ item.message }}
+            </span>
           </div>
         </div>
 
@@ -165,6 +179,7 @@ import { nextTick, ref, watch } from 'vue'
 import type { LogLevel, MonitoringLogEntry, SystemStatus } from '@/stores/monitoring'
 
 const enabledLogLevels = defineModel<LogLevel[]>('enabledLogLevels', { required: true })
+const logSearchQuery = defineModel<string>('logSearchQuery', { required: true })
 
 interface Props {
   terminalTitle: string
@@ -174,6 +189,7 @@ interface Props {
   systemMemoryLabel: string
   processMemoryLabel: string
   logsLabel: string
+  logSearchLabel: string
   streamConnectedLabel: string
   streamDisconnectedLabel: string
   pauseFollowLabel: string
@@ -402,6 +418,10 @@ $term-font: 'Roboto Mono', monospace, sans-serif;
   flex-wrap: wrap;
 }
 
+.terminal-search {
+  width: min(360px, 42vw);
+}
+
 .terminal-stream-chip {
   font-family: $term-font;
 }
@@ -510,6 +530,13 @@ $term-font: 'Roboto Mono', monospace, sans-serif;
   word-break: break-word;
 }
 
+.terminal-line__event {
+  display: inline-block;
+  margin-right: 8px;
+  color: rgba(var(--v-theme-primary), 0.88);
+  font-weight: 700;
+}
+
 .terminal-empty-state {
   min-height: 100%;
 }
@@ -546,6 +573,10 @@ $term-font: 'Roboto Mono', monospace, sans-serif;
   .terminal-toolbar__actions,
   .terminal-footer__meta {
     justify-content: flex-start;
+  }
+
+  .terminal-search {
+    width: min(100%, 420px);
   }
 }
 </style>

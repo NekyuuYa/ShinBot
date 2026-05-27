@@ -4,6 +4,7 @@
   "subtitle": "Inspect service health, resource metrics, and live logs from a single operational view.",
   "connectLogs": "Connect Logs",
   "logs": "Logs",
+  "logSearch": "Search event/source/trace/session/message/execution",
   "terminalTitle": "Live Log Terminal",
   "terminalSubtitle": "A time-ordered rolling stream built for watching runtime output directly.",
   "status": "System Status",

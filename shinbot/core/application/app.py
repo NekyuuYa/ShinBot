@@ -6,7 +6,6 @@ for starting the bot framework.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +42,9 @@ from shinbot.core.state.session import SessionManager
 from shinbot.core.tools import ToolRegistry
 from shinbot.persistence import DatabaseManager
 from shinbot.schema.events import UnifiedEvent
+from shinbot.utils.logger import format_log_event, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, source="app", color="cyan")
 
 
 class ShinBot:
@@ -157,9 +157,27 @@ class ShinBot:
         via adapter.set_event_callback().
         """
         try:
+            logger.debug(
+                format_log_event(
+                    "adapter.event.received",
+                    event_type=event.type,
+                    platform=event.platform,
+                    instance_id=adapter.instance_id,
+                    platform_msg_id=event.message.id if event.message is not None else "",
+                    sender_id=event.sender_id or "",
+                )
+            )
             await self.message_ingress.process_event(event, adapter)
-        except Exception:
-            logger.exception("Unhandled error processing event: %s", event.type)
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "adapter.event.error",
+                    event_type=event.type,
+                    platform=event.platform,
+                    instance_id=adapter.instance_id,
+                    error_code=type(exc).__name__,
+                )
+            )
 
     def set_agent_signal_handler(self, handler: AgentSignalHandler | None) -> None:
         """Attach the Agent-side handler for unmatched user-message signals."""

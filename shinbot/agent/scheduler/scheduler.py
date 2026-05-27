@@ -1005,6 +1005,7 @@ class AgentScheduler:
                 signal_id=signal.signal_id,
                 session_id=signal.session_id,
                 bot_id=signal.bot_id,
+                trace_id=_signal_trace_id(signal),
                 state=_enum_value(self._state_store.get_state(signal.session_id)),
                 message_log_id=_signal_message_log_id(signal),
                 timer_trigger=(
@@ -1032,6 +1033,7 @@ class AgentScheduler:
                     kind=_enum_value(signal.kind),
                     signal_id=signal.signal_id,
                     session_id=signal.session_id,
+                    trace_id=_signal_trace_id(signal),
                     status="ignored",
                 )
             )
@@ -1046,6 +1048,7 @@ class AgentScheduler:
                 signal_id=signal.signal_id,
                 session_id=signal.session_id,
                 bot_id=signal.bot_id,
+                trace_id=_signal_trace_id(signal),
                 state=_enum_value(getattr(decision, "state", "")),
                 skipped_reason=getattr(decision, "skipped_reason", ""),
                 accepted=getattr(decision, "accepted", None),
@@ -1123,6 +1126,10 @@ def _signal_message_log_id(signal: AgentSignal) -> int | None:
     if signal.message is None:
         return None
     return signal.message.message_log_id
+
+
+def _signal_trace_id(signal: AgentSignal) -> str:
+    return str(signal.meta.get("trace_id") or "").strip()
 
 
 def _decision_review_plan(decision: Any) -> ReviewPlan | None:
