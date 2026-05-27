@@ -263,6 +263,26 @@ min = 0.0
 description = "Mention wake rolling window in seconds."
 
 [[fields]]
+path = "agent.review.default_review_after_seconds"
+type = "float"
+default = 900.0
+min = 0.0
+description = "Initial and fallback review delay after a normal message or completed review."
+
+[[fields]]
+path = "agent.review.default_review_reason"
+type = "string"
+default = "default_idle_review_interval"
+description = "Reason stored on static review plans before LLM idle planning overrides them."
+
+[[fields]]
+path = "agent.review.review_due_tick_interval_seconds"
+type = "float"
+default = 5.0
+min = 0.0
+description = "Background polling interval for due review plans."
+
+[[fields]]
 path = "agent.review.nearby_candidate_merge_gap"
 type = "integer"
 default = 10

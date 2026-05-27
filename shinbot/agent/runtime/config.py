@@ -106,6 +106,7 @@ class AgentRuntimeConfig:
     agent_scheduler_config: AgentSchedulerConfig = field(default_factory=AgentSchedulerConfig)
     priority_policy_config: PriorityPolicyConfig = field(default_factory=PriorityPolicyConfig)
     review_policy_config: ReviewPolicyConfig = field(default_factory=ReviewPolicyConfig)
+    review_due_tick_interval_seconds: float = 5.0
     active_chat_policy_config: ActiveChatPolicyConfig = field(
         default_factory=ActiveChatPolicyConfig
     )
@@ -189,7 +190,11 @@ def agent_runtime_config_from_mapping(
 
     scheduler_config = _agent_scheduler_config(review)
     priority_policy_config = scheduler_config.to_priority_policy_config()
-    review_policy_config = _review_policy_config(scheduler_config)
+    review_policy_config = _review_policy_config(review, scheduler_config)
+    review_due_tick_interval_seconds = _float(
+        review.get("review_due_tick_interval_seconds"),
+        5.0,
+    )
     active_chat_policy_config = _active_chat_policy_config(active_chat)
     active_chat_attention_config = _active_chat_attention_config(active_chat)
     interest_effect_config = _active_chat_interest_effect_config(active_chat)
@@ -212,6 +217,7 @@ def agent_runtime_config_from_mapping(
         agent_scheduler_config=scheduler_config,
         priority_policy_config=priority_policy_config,
         review_policy_config=review_policy_config,
+        review_due_tick_interval_seconds=review_due_tick_interval_seconds,
         active_chat_policy_config=active_chat_policy_config,
         active_chat_attention_config=active_chat_attention_config,
         active_chat_interest_effect_config=interest_effect_config,
@@ -418,8 +424,15 @@ def _agent_scheduler_config(review: dict[str, Any]) -> AgentSchedulerConfig:
     )
 
 
-def _review_policy_config(scheduler_config: AgentSchedulerConfig) -> ReviewPolicyConfig:
+def _review_policy_config(
+    review: dict[str, Any],
+    scheduler_config: AgentSchedulerConfig,
+) -> ReviewPolicyConfig:
     return ReviewPolicyConfig(
+        default_review_after_seconds=_float(review.get("default_review_after_seconds"), 900.0),
+        default_reason=str(
+            review.get("default_review_reason") or "default_idle_review_interval"
+        ),
         mention_wake_count=scheduler_config.mention_wake_count,
         mention_wake_window_seconds=scheduler_config.mention_wake_window_seconds,
     )

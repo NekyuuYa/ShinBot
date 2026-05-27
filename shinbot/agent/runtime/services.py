@@ -121,12 +121,16 @@ class AgentRuntimeProfile:
             )
         self.review_runtime_config = self.config.review_runtime_config
         self.review_workflow_config = self.config.review_workflow_config
-        self.active_chat_timer = ActiveChatTimerService()
+        self.active_chat_timer = ActiveChatTimerService(
+            tick_interval_seconds=self.config.active_chat_policy_config.tick_interval_seconds
+        )
         self.active_chat_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
         self.active_chat_timer.bind_task_scope(
             self._owner.task_manager.scope(self._task_namespace("active_chat_timer"))
         )
-        self.review_due_timer = ReviewDueTimerService()
+        self.review_due_timer = ReviewDueTimerService(
+            tick_interval_seconds=self.config.review_due_tick_interval_seconds
+        )
         self.review_coordinator: ReviewCoordinator | None = None
         self.active_chat_workflow = self._create_active_chat_workflow()
         self.active_chat_workflow.bind_task_scope(

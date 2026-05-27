@@ -142,6 +142,18 @@ description = "触发主动回复唤醒所需的提及次数。"
 label = "提及唤醒窗口"
 description = "统计提及唤醒次数的滚动时间窗口。"
 
+[fields."agent.review.default_review_after_seconds"]
+label = "默认审阅延迟"
+description = "普通消息创建首次审阅计划、以及审阅结束后的静态回退延迟。"
+
+[fields."agent.review.default_review_reason"]
+label = "默认审阅原因"
+description = "LLM 空闲规划覆盖前，静态审阅计划记录的原因。"
+
+[fields."agent.review.review_due_tick_interval_seconds"]
+label = "审阅到期轮询间隔"
+description = "后台检查到期审阅计划的轮询间隔。"
+
 [fields."agent.review.nearby_candidate_merge_gap"]
 label = "邻近候选合并间隔"
 description = "预留的审阅候选合并间隔。"

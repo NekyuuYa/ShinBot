@@ -51,6 +51,9 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                 "review": {
                     "scan_batch_size": 7,
                     "mention_wake_count": 3,
+                    "default_review_after_seconds": 12,
+                    "default_review_reason": "e2e_fast_review",
+                    "review_due_tick_interval_seconds": 0.5,
                     "scan": {
                         "llm": "[model]model-scan",
                         "prompts": {
@@ -113,6 +116,9 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.summary_markdown_config.enabled is True
     assert config.summary_markdown_config.directory == tmp_path / "summary-docs"
     assert config.agent_scheduler_config.mention_wake_count == 3
+    assert config.review_policy_config.default_review_after_seconds == 12
+    assert config.review_policy_config.default_reason == "e2e_fast_review"
+    assert config.review_due_tick_interval_seconds == 0.5
     assert config.review_runtime_config.review_scan.llm == "[model]model-scan"
     assert config.review_runtime_config.review_scan.default_llm == "[route]route-default"
     assert config.review_runtime_config.review_scan.max_model_retries == 2
