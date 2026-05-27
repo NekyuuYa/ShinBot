@@ -20,6 +20,7 @@ class GitCommandResult:
 
     @property
     def output(self) -> str:
+        """Return a combined, truncated representation of stdout and stderr."""
         text = "\n".join(part for part in (self.stdout.strip(), self.stderr.strip()) if part).strip()
         if len(text) > MAX_OUTPUT_CHARS:
             return f"{text[: MAX_OUTPUT_CHARS - 3]}..."

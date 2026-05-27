@@ -46,9 +46,16 @@ class SystemUpdateService:
 
     @property
     def update_in_progress(self) -> bool:
+        """Return ``True`` while a pull-and-restart operation is running."""
         return self._lock.locked()
 
     async def inspect(self) -> dict[str, Any]:
+        """Inspect the repository and return a detailed status payload.
+
+        Returns:
+            A dictionary describing the current repo state, upstream
+            tracking, and whether an update can be applied.
+        """
         return await self._inspect(ignore_lock=False)
 
     async def pull_and_request_restart(
@@ -57,6 +64,21 @@ class SystemUpdateService:
         runtime_control: RuntimeControl,
         requested_by: str = "",
     ) -> dict[str, Any]:
+        """Pull latest changes from upstream and request a process restart.
+
+        Args:
+            runtime_control: The runtime control instance used to signal
+                a restart after a successful pull.
+            requested_by: Identifier of the user or system that requested
+                the update.
+
+        Returns:
+            A dictionary describing the outcome of the pull operation.
+
+        Raises:
+            SystemUpdateError: If an update is already running, the repo
+                is in a blocked state, or the pull itself fails.
+        """
         if self._lock.locked():
             raise SystemUpdateError(
                 code="UPDATE_ALREADY_RUNNING",

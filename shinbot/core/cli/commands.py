@@ -460,6 +460,7 @@ class OperatorCommandRouter:
                 widths[index] = max(widths[index], len(str(cell)))
 
         def render_row(row: list[str]) -> str:
+            """Format a single table row by padding cells to column widths."""
             return "  ".join(str(cell).ljust(widths[index]) for index, cell in enumerate(row))
 
         divider = "  ".join("-" * width for width in widths)

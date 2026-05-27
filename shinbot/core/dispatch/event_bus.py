@@ -52,6 +52,7 @@ class _CircuitState:
         return True
 
     def on_success(self) -> None:
+        """Reset the circuit breaker after a successful handler invocation."""
         self.consecutive_failures = 0
         self.tripped_at = None
 

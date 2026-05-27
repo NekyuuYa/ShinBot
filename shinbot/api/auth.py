@@ -90,9 +90,19 @@ class AuthConfig:
 
     @property
     def session_cookie_max_age(self) -> int:
+        """Return the session cookie max-age in seconds, derived from the JWT expiry."""
         return max(self.jwt_expire_hours, 1) * 3600
 
     def is_secure_cookie(self, scheme: str | None = None) -> bool:
+        """Determine whether the session cookie should be flagged as ``Secure``.
+
+        If an explicit override was set via configuration it is honoured
+        directly.  Otherwise the decision is inferred from the request
+        scheme — ``True`` for HTTPS/WSS, ``False`` otherwise.
+
+        Args:
+            scheme: The request URL scheme (e.g. ``"https"``).
+        """
         if self._session_cookie_secure is not None:
             return self._session_cookie_secure
         return (scheme or "").lower() in {"https", "wss"}

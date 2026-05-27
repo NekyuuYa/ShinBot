@@ -78,6 +78,12 @@ class _GatewayEntry:
     # ── Adapter registry ──────────────────────────────────────────────
 
     def add(self, adapter: OneBotV11Adapter, path: str) -> None:
+        """Register an adapter instance for a given WebSocket path.
+
+        Args:
+            adapter: The OneBotV11Adapter instance to register.
+            path: The WebSocket path this adapter listens on.
+        """
         self._adapters.append(adapter)
         norm = _norm_path(path)
         self._paths.add(norm)
@@ -86,6 +92,11 @@ class _GatewayEntry:
             self._self_id_map[adapter.config.self_id] = adapter
 
     def remove(self, adapter: OneBotV11Adapter) -> None:
+        """Unregister an adapter instance from this gateway entry.
+
+        Args:
+            adapter: The OneBotV11Adapter instance to remove.
+        """
         self._adapters = [a for a in self._adapters if a is not adapter]
         self._self_id_map = {k: v for k, v in self._self_id_map.items() if v is not adapter}
         for path, lst in list(self._path_map.items()):
@@ -97,6 +108,7 @@ class _GatewayEntry:
                 self._paths.discard(path)
 
     def is_empty(self) -> bool:
+        """Return True if no adapters are registered on this entry."""
         return not self._adapters
 
     def resolve(self, self_id: str, path: str) -> OneBotV11Adapter | None:
@@ -124,6 +136,11 @@ class _GatewayEntry:
     # ── Server lifecycle ──────────────────────────────────────────────
 
     async def start(self) -> None:
+        """Start the WebSocket server and begin accepting connections.
+
+        Raises:
+            OSError: If the server fails to bind to the host/port.
+        """
         entry = self  # captured by closures below
 
         async def _check_request(connection: Any, request: Any) -> Any | None:
@@ -202,6 +219,7 @@ class _GatewayEntry:
         logger.info("OneBotGateway listening on %s:%d", self.host, self.port)
 
     async def stop(self) -> None:
+        """Stop the WebSocket server and release the port binding."""
         if self._server is not None:
             self._server.close()
             try:
@@ -268,6 +286,21 @@ class OneBotGateway:
         return self._lock
 
     async def register(self, adapter: OneBotV11Adapter, host: str, port: int, path: str) -> None:
+        """Register an adapter with the gateway, starting a server if needed.
+
+        If no server exists for the given host/port pair, a new WebSocket
+        server is created. Otherwise the adapter is added to the existing
+        entry for port sharing.
+
+        Args:
+            adapter: The OneBotV11Adapter instance to register.
+            host: The hostname to bind to.
+            port: The port number to bind to.
+            path: The WebSocket path this adapter listens on.
+
+        Raises:
+            OSError: If the server fails to bind to the host/port.
+        """
         async with self._get_lock():
             key = (host, port)
             if key not in self._entries:
@@ -286,6 +319,13 @@ class OneBotGateway:
                 )
 
     async def unregister(self, adapter: OneBotV11Adapter, host: str, port: int) -> None:
+        """Unregister an adapter and stop the server if it was the last one.
+
+        Args:
+            adapter: The OneBotV11Adapter instance to remove.
+            host: The hostname the server is bound to.
+            port: The port number the server is bound to.
+        """
         async with self._get_lock():
             key = (host, port)
             entry = self._entries.get(key)
@@ -297,6 +337,7 @@ class OneBotGateway:
                 del self._entries[key]
 
     async def shutdown_all(self) -> None:
+        """Stop all gateway entries and release all port bindings."""
         async with self._get_lock():
             for entry in list(self._entries.values()):
                 await entry.stop()
@@ -311,8 +352,9 @@ _GATEWAY = OneBotGateway()
 
 
 class OneBotV11Adapter(BaseAdapter):
+    """OneBot v11 adapter supporting forward (client) and reverse (server) modes."""
+
     def __init__(self, instance_id: str, platform: str, config: OneBotV11Config):
-        super().__init__(instance_id=instance_id, platform=platform)
         self.config = config
         self._running = False
         self._ws: Any | None = None
@@ -327,6 +369,12 @@ class OneBotV11Adapter(BaseAdapter):
         self._resource_cache_dir.mkdir(parents=True, exist_ok=True)
 
     async def start(self) -> None:
+        """Start the adapter by connecting or listening for WebSocket connections.
+
+        In forward mode, connects to the configured OB11 server as a client.
+        In reverse mode, registers with the OneBotGateway to accept incoming
+        connections from the OB11 server.
+        """
         self._running = True
         if self.config.mode == "forward":
             self._recv_task = asyncio.create_task(
@@ -357,6 +405,7 @@ class OneBotV11Adapter(BaseAdapter):
             )
 
     async def shutdown(self) -> None:
+        """Shut down the adapter, closing connections and cancelling tasks."""
         self._running = False
 
         if self._recv_task and not self._recv_task.done():
@@ -429,6 +478,15 @@ class OneBotV11Adapter(BaseAdapter):
             )
 
     async def send(self, target_session: str, elements: list[MessageElement]) -> MessageHandle:
+        """Send a message to a target session via the OneBot v11 protocol.
+
+        Args:
+            target_session: The session ID identifying the target user or group.
+            elements: List of MessageElement objects representing the message content.
+
+        Returns:
+            A MessageHandle containing the platform-assigned message ID.
+        """
         message: list[dict[str, Any]] = []
         for el in elements:
             converted = self._element_to_ob11(el)
@@ -458,6 +516,18 @@ class OneBotV11Adapter(BaseAdapter):
         )
 
     async def call_api(self, method: str, params: dict[str, Any]) -> Any:
+        """Execute a platform-specific API call through the OneBot v11 adapter.
+
+        Supports standard methods (channel.message.create, message.delete, etc.)
+        as well as internal and raw OneBot action passthrough.
+
+        Args:
+            method: The API method name (e.g. 'channel.message.create').
+            params: A dictionary of parameters for the API call.
+
+        Returns:
+            The API response data, or None on failure.
+        """
         if method == "channel.message.create":
             channel_id = str(params.get("channel_id", ""))
             content = str(params.get("content", ""))
@@ -614,6 +684,11 @@ class OneBotV11Adapter(BaseAdapter):
         return await self._call_ob11_api(method.replace(".", "_"), params)
 
     async def get_capabilities(self) -> dict[str, Any]:
+        """Return the capabilities descriptor for this adapter instance.
+
+        Returns:
+            A dict describing supported elements, actions, and platform info.
+        """
         return {
             "modes": ["forward", "reverse"],
             "mode": self.config.mode,

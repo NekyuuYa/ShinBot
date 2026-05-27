@@ -514,6 +514,7 @@ class AgentRuntime:
 
     @review_coordinator.setter
     def review_coordinator(self, value: ReviewCoordinator | None) -> None:
+        """Set the review coordinator on the default profile."""
         self._default_profile.review_coordinator = value
 
     @property
@@ -523,6 +524,7 @@ class AgentRuntime:
 
     @active_chat_workflow.setter
     def active_chat_workflow(self, value: ActiveChatCoordinator) -> None:
+        """Set the active-chat workflow coordinator on the default profile."""
         self._default_profile.active_chat_workflow = value
 
     @property
@@ -532,6 +534,7 @@ class AgentRuntime:
 
     @agent_scheduler.setter
     def agent_scheduler(self, value: AgentScheduler) -> None:
+        """Set the agent scheduler on the default profile."""
         self._default_profile.agent_scheduler = value
 
     def agent_profile_for_bot(self, bot_id: str) -> AgentRuntimeProfile:

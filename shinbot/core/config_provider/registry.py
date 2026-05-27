@@ -256,6 +256,7 @@ def _validate_unknown_fields(
     issues: list[ConfigValidationIssue] = []
 
     def walk(value: Any, path: tuple[str, ...]) -> None:
+        """Recursively walk a nested dict to detect unknown fields."""
         if path in opaque_paths:
             return
         if not isinstance(value, dict):

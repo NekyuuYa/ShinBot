@@ -44,6 +44,7 @@ def _topo_sort(
     result: list[tuple[Path, dict[str, Any]]] = []
 
     def visit(pid: str) -> None:
+        """Recursively visit a plugin and its dependencies for topological sort."""
         if pid in visited or pid not in id_to_item:
             return
         if pid in in_stack:

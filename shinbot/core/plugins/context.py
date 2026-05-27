@@ -139,6 +139,7 @@ class Plugin:
         import re as _re
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as a text command handler."""
             compiled_pattern = _re.compile(pattern) if pattern else None
             cmd = CommandDef(
                 name=name,
@@ -199,6 +200,7 @@ class Plugin:
             )
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as a keyword trigger handler."""
             keyword = KeywordDef(
                 pattern=pattern,
                 handler=func,
@@ -261,11 +263,13 @@ class Plugin:
             )
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as a custom route handler."""
             seq = len(self._registered_routes) + 1
             resolved_target = target or f"plugin.{self.plugin_id}.{func.__name__}.{seq}"
             resolved_rule_id = rule_id or f"plugin.{self.plugin_id}.{func.__name__}.{seq}"
 
             async def handler(context: RouteDispatchContext, rule: RouteRule) -> None:
+                """Invoke the registered route handler, awaiting if necessary."""
                 result = func(context, rule)
                 if inspect.isawaitable(result):
                     await result
@@ -324,6 +328,7 @@ class Plugin:
         _ensure_non_message_event(event_type)
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as an event bus handler."""
             self._event_bus.on(event_type, func, priority=priority, owner=self.plugin_id)
             self._registered_events.append(event_type)
             return func
@@ -463,6 +468,7 @@ class Plugin:
             )
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as an agent tool definition."""
             tool_id = f"{self.plugin_id}.{name}"
             definition = ToolDefinition(
                 id=tool_id,

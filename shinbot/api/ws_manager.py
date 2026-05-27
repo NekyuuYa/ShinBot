@@ -89,6 +89,13 @@ class _AsyncLogHandler(logging.Handler):
         self.formatter = logging.Formatter("%(message)s")
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Process a log record and enqueue a structured payload for broadcast.
+
+        Records that should not be emitted are silently dropped.  The
+        formatted message is enriched with timing and source metadata before
+        being placed on the async queue.  If the queue is full the record
+        is discarded to avoid back-pressure on the logging subsystem.
+        """
         if not should_emit_log_record(record):
             return
         try:

@@ -96,6 +96,14 @@ def create_api_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        """FastAPI lifespan context manager.
+
+        On startup the async log handler is installed and the log
+        broadcaster background task is started.  Agent-side background
+        tasks are also kicked off when an ``agent_runtime`` is attached
+        to the bot.  On shutdown the broadcaster task is cancelled and
+        awaited.
+        """
         install_log_handler()
         broadcaster_task = asyncio.create_task(log_broadcaster())
         agent_runtime = getattr(bot, "agent_runtime", None)

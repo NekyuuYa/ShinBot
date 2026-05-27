@@ -36,6 +36,14 @@ class MessageHandle:
         self._platform_data = platform_data or {}
 
     async def edit(self, elements: list[MessageElement]) -> None:
+        """Edit this message by replacing its content with new elements.
+
+        Args:
+            elements: New message element list to replace the current content.
+
+        Raises:
+            RuntimeError: If no adapter reference is available.
+        """
         if self.adapter_ref is None:
             raise RuntimeError("No adapter reference for edit operation")
         params: dict[str, Any] = {"message_id": self.message_id, "elements": elements}
@@ -47,6 +55,11 @@ class MessageHandle:
         )
 
     async def recall(self) -> None:
+        """Recall (delete) this message from the platform.
+
+        Raises:
+            RuntimeError: If no adapter reference is available.
+        """
         if self.adapter_ref is None:
             raise RuntimeError("No adapter reference for recall operation")
         await self.adapter_ref.call_api(

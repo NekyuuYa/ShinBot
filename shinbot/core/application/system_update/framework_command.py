@@ -35,9 +35,16 @@ class FrameworkUpdateCommandService:
 
     @property
     def update_in_progress(self) -> bool:
+        """Return ``True`` while a framework update command is running."""
         return self._lock.locked()
 
     async def inspect(self) -> dict[str, Any]:
+        """Inspect the framework update configuration and return a status payload.
+
+        Returns:
+            A dictionary describing the configured command, working
+            directory, and whether an update can be started.
+        """
         return self._inspect(ignore_lock=False)
 
     async def run_and_request_restart(
@@ -46,6 +53,21 @@ class FrameworkUpdateCommandService:
         runtime_control: RuntimeControl,
         requested_by: str = "",
     ) -> dict[str, Any]:
+        """Execute the framework update command and request a process restart.
+
+        Args:
+            runtime_control: The runtime control instance used to signal
+                a restart after a successful update.
+            requested_by: Identifier of the user or system that requested
+                the update.
+
+        Returns:
+            A dictionary describing the outcome of the command execution.
+
+        Raises:
+            SystemUpdateError: If an update is already running, prerequisites
+                are not met, or the command fails.
+        """
         if self._lock.locked():
             raise SystemUpdateError(
                 code="UPDATE_ALREADY_RUNNING",

@@ -101,14 +101,33 @@ class DashboardDistUpdateService:
 
     @property
     def update_in_progress(self) -> bool:
+        """Return ``True`` while a WebUI dist update operation is running."""
         return self._lock.locked()
 
     async def inspect(self) -> dict[str, Any]:
+        """Inspect the WebUI dist source and return a detailed status payload.
+
+        Returns:
+            A dictionary describing the current dist state, upstream
+            tracking, and whether an update can be applied.
+        """
         if self._mode == "zip":
             return await self._inspect_zip(ignore_lock=False)
         return await self._inspect(ignore_lock=False)
 
     async def update_dist(self) -> dict[str, Any]:
+        """Update the served WebUI dist from the configured source.
+
+        Depending on the configured mode, this either pulls from a git
+        repository or downloads and extracts a zip package.
+
+        Returns:
+            A dictionary describing the outcome of the update operation.
+
+        Raises:
+            SystemUpdateError: If an update is already running, the source
+                is in a blocked state, or the update fails.
+        """
         if self._lock.locked():
             raise SystemUpdateError(
                 code="UPDATE_ALREADY_RUNNING",
