@@ -43,6 +43,7 @@ class PromptBlockProjection:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_content_blocks(self) -> list[dict[str, Any]]:
+        """Convert text parts into Chat Completions content block dicts."""
         return [{"type": "text", "text": text} for text in self.text_parts]
 
 
@@ -54,6 +55,7 @@ class ContextBlockAdapter:
 
     @classmethod
     def from_projection(cls, projection: PromptBlockProjection) -> ContextBlockState:
+        """Create a ContextBlockState from a PromptBlockProjection."""
         return ContextBlockState(
             block_id=projection.block_id,
             kind=projection.kind,
@@ -64,9 +66,11 @@ class ContextBlockAdapter:
         )
 
     def content_blocks(self) -> list[dict[str, Any]]:
+        """Return raw content block dicts stored on the underlying block."""
         return [dict(item) for item in getattr(self.block, "contents", []) if isinstance(item, dict)]
 
     def text_parts(self) -> list[str]:
+        """Extract non-empty text strings from text-type content blocks."""
         parts: list[str] = []
         for content_block in self.content_blocks():
             if str(content_block.get("type") or "") != "text":
@@ -77,23 +81,28 @@ class ContextBlockAdapter:
         return parts
 
     def to_prompt_message(self) -> dict[str, Any]:
+        """Format the block as a role/content message dict for the prompt."""
         role = "assistant" if getattr(self.block, "kind", "") == "assistant" else "user"
         return {"role": role, "content": self.content_blocks()}
 
 
 def projection_to_context_block(projection: PromptBlockProjection) -> ContextBlockState:
+    """Convert a PromptBlockProjection into a ContextBlockState via ContextBlockAdapter."""
     return ContextBlockAdapter.from_projection(projection)
 
 
 def block_content_blocks(block: Any) -> list[dict[str, Any]]:
+    """Return content block dicts from a context block using ContextBlockAdapter."""
     return ContextBlockAdapter(block).content_blocks()
 
 
 def block_text_parts(block: Any) -> list[str]:
+    """Return text parts from a context block using ContextBlockAdapter."""
     return ContextBlockAdapter(block).text_parts()
 
 
 def block_to_prompt_message(block: Any) -> dict[str, Any]:
+    """Convert a context block into a prompt message dict using ContextBlockAdapter."""
     return ContextBlockAdapter(block).to_prompt_message()
 
 
@@ -104,6 +113,7 @@ class MessageIdProjector:
     allocator: Any
 
     def assign(self, record: dict[str, Any]) -> str:
+        """Assign a stable 4-digit short ID to a message record."""
         numeric_id = self.allocator.assign(make_record_key(record))
         return f"{numeric_id:04d}"
 
@@ -125,6 +135,7 @@ class ImageReferenceProjector:
         is_custom_emoji: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> Any:
+        """Resolve or create a session-scoped image reference for the given image."""
         return self.image_registry.get_or_create_reference(
             session_state=self.session_state,
             raw_hash=raw_hash,
@@ -150,6 +161,7 @@ class ContextProjectionState:
         session_state: Any,
         image_registry: Any,
     ) -> ContextProjectionState:
+        """Construct a ContextProjectionState from an existing session state."""
         return cls(
             message_ids=MessageIdProjector(session_state.message_ids),
             image_refs=ImageReferenceProjector(
@@ -159,6 +171,7 @@ class ContextProjectionState:
         )
 
     def assign_message_id(self, record: dict[str, Any]) -> str:
+        """Assign a short message ID to a record via the internal projector."""
         return self.message_ids.assign(record)
 
     def resolve_image_reference(
@@ -171,6 +184,7 @@ class ContextProjectionState:
         is_custom_emoji: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> Any:
+        """Resolve an image reference by delegating to the internal image projector."""
         return self.image_refs.resolve(
             raw_hash=raw_hash,
             strict_dhash=strict_dhash,
@@ -182,6 +196,11 @@ class ContextProjectionState:
 
 
 def make_record_key(record: dict[str, Any]) -> str:
+    """Build a deterministic key string for a message record.
+
+    Uses the numeric id, platform_msg_id, or a synthetic SHA-1 digest of
+    sender/created_at/raw_text as a fallback.
+    """
     record_id = record.get("id")
     if isinstance(record_id, int):
         return f"record:{record_id}"
