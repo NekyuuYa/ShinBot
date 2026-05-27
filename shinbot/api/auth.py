@@ -56,21 +56,25 @@ class AuthConfig:
     # ── Credential verification ──────────────────────────────────────
 
     def verify_password(self, username: str, password: str) -> bool:
+        """Verify username and password using constant-time comparison."""
         # Use constant-time comparison to prevent timing attacks.
         username_ok = secrets.compare_digest(username, self.username)
         password_ok = secrets.compare_digest(password, self._password)
         return username_ok and password_ok
 
     def is_using_default_credentials(self) -> bool:
+        """Check if credentials are still factory defaults (admin/admin)."""
         return self.username == self.DEFAULT_USERNAME and self._password == self.DEFAULT_PASSWORD
 
     def set_credentials(self, username: str, password: str) -> None:
+        """Update the in-memory admin credentials."""
         self.username = username
         self._password = password
 
     # ── Token lifecycle ──────────────────────────────────────────────
 
     def create_token(self, subject: str | None = None) -> str:
+        """Create a JWT token for the given subject."""
         now = int(time.time())
         payload = {
             "sub": subject or self.username,

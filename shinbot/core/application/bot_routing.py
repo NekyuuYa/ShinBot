@@ -166,11 +166,13 @@ def command_prefixes_for_context(message_context: Any, fallback_prefixes: list[s
 
 
 def bot_commands_enabled_for_context(message_context: Any) -> bool:
+    """Check if text commands are enabled for this message context."""
     bot_service_config = selected_bot_service_config(message_context)
     return bot_service_config is None or bot_service_config.commands.enabled
 
 
 def bot_plugin_enabled_for_context(message_context: Any, plugin_id: str | None) -> bool:
+    """Check if a specific plugin is enabled for this message context."""
     return bot_plugin_enabled(selected_bot_service_config(message_context), plugin_id)
 
 
@@ -197,6 +199,7 @@ def bot_plugin_enabled(
 
 
 def bot_agent_enabled_for_context(message_context: Any) -> bool:
+    """Check if the agent runtime is enabled for this message context."""
     bot_service_config = selected_bot_service_config(message_context)
     return bot_service_config is None or bot_service_config.agent.mode != "none"
 

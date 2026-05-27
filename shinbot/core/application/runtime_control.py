@@ -27,6 +27,7 @@ class RestartRequest:
     source: str = ""
 
     def to_payload(self) -> dict[str, object]:
+        """Serialize restart request to API-friendly dict."""
         return asdict(self)
 
 
@@ -44,6 +45,7 @@ class RuntimeControl:
         requested_by: str = "",
         source: str = "",
     ) -> RestartRequest:
+        """Request a process restart with the given reason."""
         if self._restart_request is not None:
             raise RuntimeError("A restart request is already pending")
 
