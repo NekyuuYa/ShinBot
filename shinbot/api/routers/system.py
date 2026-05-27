@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from shinbot import __version__
 from shinbot.api.deps import (
     AuthConfigDep,
     AuthRequired,
@@ -61,6 +63,16 @@ def _apply_update_guards(
         guarded["blockMessage"] = "A restart request is already pending"
 
     return guarded
+
+
+@router.get("/health", dependencies=[])
+async def health_check():
+    """Return service health status (unauthenticated)."""
+    return ok({
+        "status": "healthy",
+        "version": __version__,
+        "timestamp": int(time.time()),
+    })
 
 
 @router.get("/runtime")
