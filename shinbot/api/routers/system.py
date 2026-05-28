@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -15,7 +15,7 @@ from shinbot.api.deps import (
     FrameworkUpdateDep,
     RuntimeControlDep,
 )
-from shinbot.api.models import EC, ok
+from shinbot.api.models import EC, Envelope, ok
 from shinbot.core.application.runtime_control import RestartReason
 from shinbot.core.application.system_update import SystemUpdateError
 from shinbot.utils.logger import apply_logging_runtime_config, logging_runtime_snapshot
@@ -36,6 +36,36 @@ class UpdateLoggingRuntimeRequest(BaseModel):
     level: str | None = None
     thirdPartyNoise: str | None = None
     persist: bool = False
+
+
+class RestartRequestData(BaseModel):
+    reason: str
+    requested_at: int
+    requested_by: str
+    source: str
+
+
+class RuntimeStateData(BaseModel):
+    restartRequested: bool
+    restartRequest: RestartRequestData | None = None
+
+
+class LoggingStateData(BaseModel):
+    level: str
+    effectiveLevel: str
+    thirdPartyNoise: str
+    sourceWidth: int
+    availableLevels: list[str]
+    availableThirdPartyNoise: list[str]
+    availableColors: list[str]
+    sources: list[dict[str, Any]]
+    handlers: list[dict[str, Any]]
+
+
+class RestartAcceptedData(BaseModel):
+    accepted: bool
+    restartRequested: bool
+    restartRequest: RestartRequestData | None = None
 
 
 def _apply_update_guards(
@@ -63,8 +93,9 @@ def _apply_update_guards(
     return guarded
 
 
-@router.get("/runtime")
+@router.get("/runtime", response_model=Envelope[RuntimeStateData])
 async def get_runtime_state(runtime_control=RuntimeControlDep):
+    """Get current runtime state including pending restart requests."""
     return ok(
         {
             "restartRequested": runtime_control.restart_requested,
@@ -73,13 +104,15 @@ async def get_runtime_state(runtime_control=RuntimeControlDep):
     )
 
 
-@router.get("/logging")
+@router.get("/logging", response_model=Envelope[LoggingStateData])
 async def get_logging_state():
+    """Get current logging configuration including level, handlers, and source settings."""
     return ok(logging_runtime_snapshot())
 
 
-@router.patch("/logging")
+@router.patch("/logging", response_model=Envelope[LoggingStateData])
 async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot=BootDep):
+    """Update logging configuration at runtime, optionally persisting to config file."""
     try:
         state = apply_logging_runtime_config(
             level_name=body.level,
@@ -115,12 +148,13 @@ async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot=BootDep):
     return ok(state)
 
 
-@router.get("/update")
+@router.get("/update", response_model=Envelope[dict[str, Any]])
 async def get_update_state(
     auth_config: AuthConfigDep,
     runtime_control=RuntimeControlDep,
     framework_update=FrameworkUpdateDep,
 ):
+    """Inspect available updates and return status with guard conditions."""
     try:
         status = await framework_update.inspect()
     except SystemUpdateError as exc:
@@ -140,8 +174,9 @@ async def get_update_state(
     return ok(guarded)
 
 
-@router.post("/restart")
+@router.post("/restart", response_model=Envelope[RestartAcceptedData])
 async def request_restart(body: RestartRuntimeRequest, runtime_control=RuntimeControlDep):
+    """Request a manual or update-driven restart of the bot process."""
     try:
         request = runtime_control.request_restart(
             reason=RestartReason(body.reason),
@@ -166,12 +201,13 @@ async def request_restart(body: RestartRuntimeRequest, runtime_control=RuntimeCo
     )
 
 
-@router.post("/update")
+@router.post("/update", response_model=Envelope[dict[str, Any]])
 async def pull_update_and_restart(
     auth_config: AuthConfigDep,
     runtime_control=RuntimeControlDep,
     framework_update=FrameworkUpdateDep,
 ):
+    """Pull the latest framework update and schedule a restart."""
     if auth_config.is_using_default_credentials():
         raise HTTPException(
             status_code=403,
@@ -208,11 +244,12 @@ async def pull_update_and_restart(
     return ok(result)
 
 
-@router.get("/dashboard-build")
+@router.get("/dashboard-build", response_model=Envelope[dict[str, Any]])
 async def get_dashboard_build_state(
     auth_config: AuthConfigDep,
     dashboard_build=DashboardBuildDep,
 ):
+    """Get the current dashboard build status including guard conditions."""
     status = await dashboard_build.inspect()
 
     guarded = dict(status)
@@ -224,11 +261,12 @@ async def get_dashboard_build_state(
     return ok(guarded)
 
 
-@router.post("/dashboard-build")
+@router.post("/dashboard-build", response_model=Envelope[dict[str, Any]])
 async def build_dashboard(
     auth_config: AuthConfigDep,
     dashboard_build=DashboardBuildDep,
 ):
+    """Trigger a dashboard production build and return the result."""
     if auth_config.is_using_default_credentials():
         raise HTTPException(
             status_code=403,

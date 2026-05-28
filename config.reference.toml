@@ -1,0 +1,140 @@
+# ShinBot main configuration reference
+#
+# This file is human-oriented reference TOML for data/config.toml. It is not a
+# machine-readable schema. Provider-owned config schemas live next to each
+# adapter/plugin/agent provider as config.schema.toml files.
+
+[logging]
+level = "INFO"
+third_party_noise = "debug"
+
+[database]
+url = "sqlite:///data/db/shinbot.sqlite3"
+snapshot_ttl = 10800
+
+[runtime]
+model = true
+agent = true
+
+[admin]
+username = "admin"
+password = "admin"
+jwt_expire_hours = 24
+jwt_secret = ""
+dashboard_dist = "dashboard/dist"
+cors_origins = ["*"]
+cors_allow_credentials = false
+auth_cookie_name = "shinbot_session"
+auth_cookie_samesite = "strict"
+auth_cookie_secure = false
+framework_update_dir = "."
+framework_update_command = "./deploy/update-framework.sh"
+framework_update_timeout_seconds = 300
+framework_update_restart = true
+dashboard_build_dir = "dashboard"
+dashboard_build_command = "pnpm build"
+dashboard_build_timeout_seconds = 180
+
+[[adapter_instances]]
+id = "qq-main"
+adapter = "onebot_v11"
+enabled = true
+
+[adapter_instances.config]
+# Adapter-specific options are documented by the adapter provider schema.
+mode = "reverse"
+reverse_port = 8082
+reverse_path = "/onebot/v11"
+access_token = ""
+
+[[adapter_instances]]
+id = "satori-main"
+adapter = "satori"
+enabled = false
+
+[adapter_instances.config]
+# Adapter-specific options are documented by the adapter provider schema.
+host = "localhost:5140"
+token = ""
+path = "/v1/events"
+
+[[plugins]]
+id = "shinbot_plugin_search"
+module = "shinbot.builtin_plugins.shinbot_plugin_search"
+enabled = false
+
+[[plugins]]
+id = "shinbot_debug_message"
+module = "shinbot.builtin_plugins.shinbot_debug_message"
+enabled = false
+
+[[plugins]]
+id = "shinbot_debug_model"
+module = "shinbot.builtin_plugins.shinbot_debug_model"
+enabled = false
+
+[[bots]]
+id = "command-bot"
+display_name = "Command Bot"
+enabled = true
+
+[bots.commands]
+enabled = true
+prefixes = ["/", "!"]
+
+[bots.plugins]
+enabled = true
+enabled_plugins = ["shinbot_debug_message"]
+disabled_plugins = []
+
+[bots.agent]
+mode = "none"
+
+[[bots.bindings]]
+id = "command-bot-admin-group"
+adapter_instance_id = "qq-main"
+session_patterns = ["group:10001"]
+enabled = true
+priority = 100
+
+[[bots]]
+id = "full-agent"
+display_name = "Full Agent Bot"
+enabled = true
+
+[bots.commands]
+enabled = true
+prefixes = ["/"]
+
+[bots.plugins]
+enabled = true
+enabled_plugins = ["*"]
+disabled_plugins = ["shinbot_debug_message"]
+
+[bots.agent]
+mode = "full"
+config = "agents/full-agent.toml"
+
+[[bots.bindings]]
+id = "full-agent-main-group"
+adapter_instance_id = "qq-main"
+session_patterns = ["group:20001", "group:20002"]
+enabled = true
+priority = 10
+
+[[bots.bindings]]
+id = "full-agent-private"
+adapter_instance_id = "qq-main"
+session_patterns = ["private:*"]
+enabled = true
+priority = 20
+
+[permissions]
+
+[[permissions.bindings]]
+key = "full-agent:123456789"
+group = "owner"
+
+[[permissions.bindings]]
+key = "full-agent:group:20001.123456789"
+group = "admin"
