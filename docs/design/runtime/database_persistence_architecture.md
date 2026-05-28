@@ -71,7 +71,7 @@
 
 以下数据默认继续使用文件系统：
 
-- 用户可编辑配置，例如 `config.toml`、`data/agents/*.toml`
+- 用户可编辑配置，例如 `data/config.toml`、`data/agents/*.toml`
 - 模型接入配置，例如 `data/models.json`
 - 实例运行配置，例如 `data/instance-configs.json`
 - 人格与可编辑 prompt，例如 `data/personas/*.md`、`data/prompts/custom/*.md`
@@ -190,7 +190,7 @@
 
 结论：
 
-- `config.toml` 不会立即消失。
+- `data/config.toml` 不会立即消失。
 - 但它应逐步收敛为 bootstrap config，而不是长期承载全部业务配置。
 - 若使用默认 SQLite，bootstrap 配置中的数据库连接串应默认指向 `data/db/shinbot.sqlite3`。
 
@@ -247,9 +247,9 @@
 
 插件、适配器和实例配置属于用户可编辑配置，当前应保存在文件系统：
 
-- 主配置：`config.toml`
-- 适配器实例：`config.toml` 中的 `adapter_instances`
-- 插件配置：`config.toml` 中的 plugin blocks
+- 主配置：`data/config.toml`
+- 适配器实例：`data/config.toml` 中的 `adapter_instances`
+- 插件配置：`data/config.toml` 中的 plugin blocks
 - 实例运行配置：`data/instance-configs.json`
 
 数据库只保存这些配置驱动出来的运行数据，例如会话、消息、审计和 Agent 状态。
@@ -473,7 +473,7 @@
   - 从“纯内存或临时文件思路”演进为“内存缓存 + 数据库主存”
 - `AuditLogger`
   - 从“JSONL 旁路”演进为“数据库主写 + JSONL 可选旁路”
-- `config.toml`
+- `data/config.toml`
   - 从“主配置中心”收敛为“bootstrap 配置”
 - `shinbot_debug_message`
   - 继续保留文件输出，不强行数据库化

@@ -20,6 +20,7 @@ from shinbot.core.application.config_sections import (
     normalize_adapter_instance_record,
 )
 from shinbot.core.application.data_initializer import DataInitializer
+from shinbot.core.application.paths import resolve_project_path
 from shinbot.core.application.provider_config_validation import (
     ProviderConfigValidationError,
     validate_adapter_instance_configs,
@@ -253,12 +254,12 @@ class BootController:
         if isinstance(configured_dist, str) and configured_dist.strip():
             configured_path = Path(configured_dist)
             if not configured_path.is_absolute():
-                configured_path = (self.config_path.parent / configured_path).resolve()
+                configured_path = resolve_project_path(configured_path, config_path=self.config_path)
             candidates.append(configured_path)
 
         candidates.extend(
             [
-                (self.config_path.parent / "dashboard" / "dist").resolve(),
+                resolve_project_path("dashboard/dist", config_path=self.config_path),
                 (Path(__file__).resolve().parents[2] / "dashboard" / "dist").resolve(),
                 (Path.cwd() / "dashboard" / "dist").resolve(),
             ]
@@ -450,7 +451,7 @@ class BootController:
         On first run (no password configured), a cryptographically random
         password is generated and printed to the terminal so the operator
         can log in and change it via the Dashboard.  The generated password
-        is persisted to config.toml and is NOT the well-known "admin/admin"
+        is persisted to the configured main config file and is NOT the well-known "admin/admin"
         default, so the system is safe from the moment it starts.
         """
         admin_cfg = self.config.get("admin")

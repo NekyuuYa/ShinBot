@@ -6,6 +6,7 @@ import pytest
 
 import shinbot.builtin_plugins.shinbot_plugin_search as search_plugin
 from shinbot.agent.services.tools import ToolCallRequest, ToolManager, ToolRegistry
+from shinbot.core.application.paths import DEFAULT_CONFIG_PATH
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.message_routes.command import CommandRegistry
 from shinbot.core.plugins.context import Plugin
@@ -23,7 +24,7 @@ def _build_plugin(tool_registry: ToolRegistry) -> Plugin:
 def test_resolve_config_path_supports_cli_flag_styles():
     assert search_plugin._resolve_config_path(["--config", "custom.toml"]) == Path("custom.toml")
     assert search_plugin._resolve_config_path(["--config=runtime.toml"]) == Path("runtime.toml")
-    assert search_plugin._resolve_config_path([]) == Path("config.toml")
+    assert search_plugin._resolve_config_path([]) == DEFAULT_CONFIG_PATH
 
 
 def test_load_plugin_config_defaults_when_no_plugin_entry_exists(tmp_path: Path):

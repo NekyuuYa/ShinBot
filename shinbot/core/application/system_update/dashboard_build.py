@@ -8,6 +8,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.application.paths import resolve_project_path
+
 from .common import DEFAULT_DASHBOARD_BUILD_TIMEOUT_SECONDS, MAX_OUTPUT_CHARS, SystemUpdateError
 
 
@@ -171,11 +173,11 @@ class DashboardBuildService:
         if isinstance(configured_dir, str) and configured_dir.strip():
             path = Path(configured_dir.strip())
             if not path.is_absolute() and self._config_path is not None:
-                path = self._config_path.parent / path
+                path = resolve_project_path(path, config_path=self._config_path)
             return path.resolve()
 
         if self._config_path is not None:
-            return (self._config_path.parent / "dashboard").resolve()
+            return resolve_project_path("dashboard", config_path=self._config_path)
         return (Path.cwd() / "dashboard").resolve()
 
     @staticmethod

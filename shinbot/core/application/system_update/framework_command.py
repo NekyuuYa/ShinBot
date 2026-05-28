@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.application.paths import project_root_from_config, resolve_project_path
 from shinbot.core.application.runtime_control import RestartReason, RuntimeControl
 
 from .common import DEFAULT_FRAMEWORK_UPDATE_TIMEOUT_SECONDS, MAX_OUTPUT_CHARS, SystemUpdateError
@@ -172,10 +173,10 @@ class FrameworkUpdateCommandService:
         if isinstance(raw, str) and raw.strip():
             path = Path(raw.strip())
             if not path.is_absolute() and self._config_path is not None:
-                path = self._config_path.parent / path
+                path = resolve_project_path(path, config_path=self._config_path)
             return path.resolve()
         if self._config_path is not None:
-            return self._config_path.parent.resolve()
+            return project_root_from_config(self._config_path)
         return Path.cwd().resolve()
 
     @staticmethod

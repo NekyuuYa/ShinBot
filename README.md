@@ -24,9 +24,9 @@ uv sync
 
 # 复制配置文件
 mkdir -p data/agents
-cp config.example.toml config.toml
+cp config.example.toml data/config.toml
 cp agent.example.toml data/agents/full-agent.toml
-# 编辑 config.toml 和 data/agents/full-agent.toml 填入你的配置
+# 编辑 data/config.toml 和 data/agents/full-agent.toml 填入你的配置
 
 # 启动 Bot
 uv run main.py
@@ -61,8 +61,8 @@ ShinBot/
 ├── dashboard/                   # Vue 3 + Vuetify 可视化面板
 ├── docs/                        # 文档、设计说明与参考资料
 ├── tests/                       # 测试集
-├── agent.example.toml           # Agent 配置模板
-├── config.example.toml          # 配置模板
+├── agent.example.toml           # Agent 配置模板，复制到 data/agents/
+├── config.example.toml          # 主配置模板，复制到 data/config.toml
 └── main.py                      # 启动入口
 ```
 

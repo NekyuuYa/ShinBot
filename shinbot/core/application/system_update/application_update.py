@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.application.paths import project_root_from_config, resolve_project_path
 from shinbot.core.application.runtime_control import RestartReason, RuntimeControl
 
 from .common import (
@@ -368,11 +369,11 @@ class SystemUpdateService:
         if isinstance(configured_repo, str) and configured_repo.strip():
             candidate = Path(configured_repo.strip())
             if not candidate.is_absolute() and self._config_path is not None:
-                candidate = self._config_path.parent / candidate
+                candidate = resolve_project_path(candidate, config_path=self._config_path)
             candidates.append(candidate)
 
         if self._config_path is not None:
-            candidates.append(self._config_path.parent)
+            candidates.append(project_root_from_config(self._config_path))
 
         candidates.extend(
             [

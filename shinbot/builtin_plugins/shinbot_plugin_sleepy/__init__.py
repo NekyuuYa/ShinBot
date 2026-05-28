@@ -23,6 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from shinbot.core.application.paths import DEFAULT_CONFIG_PATH
 from shinbot.core.plugins.config import plugin_config_block
 from shinbot.core.plugins.context import Plugin
 from shinbot.utils.logger import get_logger
@@ -92,7 +93,7 @@ def _resolve_config_path(argv: Sequence[str] | None = None) -> Path:
             return Path(args[index + 1])
         if value.startswith("--config="):
             return Path(value.split("=", 1)[1])
-    return Path("config.toml")
+    return DEFAULT_CONFIG_PATH
 
 
 def _load_plugin_config(plugin_id: str) -> SleepyPluginConfig:

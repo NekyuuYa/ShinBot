@@ -9,6 +9,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from shinbot.core.application.paths import resolve_project_path
+
 from .common import (
     DEFAULT_ALLOWED_BRANCHES,
     DEFAULT_DASHBOARD_DIST_PACKAGE_MAX_BYTES,
@@ -595,13 +597,13 @@ class DashboardDistUpdateService:
             return self._resolve_path(configured_dist)
 
         if self._config_path is not None:
-            return (self._config_path.parent / "dashboard" / "dist").resolve()
+            return resolve_project_path("dashboard/dist", config_path=self._config_path)
         return (Path.cwd() / "dashboard" / "dist").resolve()
 
     def _resolve_path(self, raw: Any) -> Path:
         path = Path(str(raw).strip())
         if not path.is_absolute() and self._config_path is not None:
-            path = self._config_path.parent / path
+            path = resolve_project_path(path, config_path=self._config_path)
         return path.resolve()
 
     @staticmethod

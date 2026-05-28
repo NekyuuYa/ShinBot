@@ -1,8 +1,9 @@
 # ShinBot main configuration reference
 #
-# This file is human-oriented reference TOML for data/config.toml. It is not a
-# machine-readable schema. Provider-owned config schemas live next to each
-# adapter/plugin/agent provider as config.schema.toml files.
+# This file is human-oriented reference TOML for the main runtime config,
+# data/config.toml. It is not a machine-readable schema. Provider-owned config
+# schemas live next to each adapter/plugin/agent provider as config.schema.toml
+# files.
 
 [logging]
 level = "INFO"

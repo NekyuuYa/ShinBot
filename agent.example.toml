@@ -3,7 +3,7 @@
 # Copy this file to:
 #   data/agents/full-agent.toml
 #
-# The main data/config.toml chooses which bot uses this agent config:
+# The main config file, data/config.toml, chooses which bot uses this agent config:
 #
 #   [bots.agent]
 #   mode = "full"

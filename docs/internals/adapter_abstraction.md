@@ -16,7 +16,7 @@
 
 ### 2.1 实现方法
 - **动态注册**: 采用工厂模式 (`register_adapter`)。驱动插件在加载时注入自己的类，而不是由核心 import。
-- **多实例管理**: 通过 `create_instance` 方法，用户可以在 `config.toml` 的 `[[instances]]` 中为同一驱动开启多个具有独立 `instance_id` 的连接实例。
+- **多实例管理**: 通过 `create_instance` 方法，用户可以在 `data/config.toml` 的 `[[instances]]` 中为同一驱动开启多个具有独立 `instance_id` 的连接实例。
 
 ---
 

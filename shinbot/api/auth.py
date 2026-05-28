@@ -15,7 +15,7 @@ class AuthConfig:
     """Holds admin credentials and JWT configuration.
 
     JWT secret priority:
-      1. ``[admin].jwt_secret`` in config.toml
+      1. ``[admin].jwt_secret`` in data/config.toml
       2. ``data/admin_secret.key`` auto-generated on first start
     """
 

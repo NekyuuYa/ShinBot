@@ -10,6 +10,7 @@ import sys
 import uvicorn
 
 from shinbot.core.application.boot import BootController
+from shinbot.core.application.paths import DEFAULT_CONFIG_PATH, DEFAULT_DATA_DIR
 from shinbot.core.application.runtime_control import ProcessExitCode, RuntimeControl
 from shinbot.core.cli import serve_with_operator_cli
 from shinbot.utils.logger import get_logger
@@ -93,15 +94,15 @@ def main() -> None:
     # Default: run the server
     parser.add_argument(
         "--config",
-        default="config.toml",
+        default=str(DEFAULT_CONFIG_PATH),
         metavar="FILE",
-        help="Path to the TOML config file (default: config.toml)",
+        help=f"Path to the TOML config file (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
         "--data-dir",
-        default="data",
+        default=str(DEFAULT_DATA_DIR),
         metavar="DIR",
-        help="Path to the ShinBot data directory (default: data)",
+        help=f"Path to the ShinBot data directory (default: {DEFAULT_DATA_DIR})",
     )
     parser.add_argument(
         "--log-level",
