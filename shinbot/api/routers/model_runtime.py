@@ -182,8 +182,8 @@ class ExecutionData(BaseModel):
     instanceId: str
     purpose: str
     startedAt: str
-    firstTokenAt: str
-    finishedAt: str
+    firstTokenAt: str | None = None
+    finishedAt: str | None = None
     latencyMs: float | None = None
     timeToFirstTokenMs: float | None = None
     inputTokens: int

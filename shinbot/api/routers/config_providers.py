@@ -27,14 +27,18 @@ class ValidateConfigRequest(BaseModel):
 class ConfigProviderSummary(BaseModel):
     """Compact representation of a registered config provider."""
 
+    model_config = {"extra": "allow"}
+
     kind: str = ""
     id: str = ""
-    name: str = ""
-    schemaRef: str = ""
-    defaultsRef: str = ""
-    validateRef: str = ""
-    defaults: dict[str, Any] = Field(default_factory=dict)
-    properties: dict[str, Any] = Field(default_factory=dict)
+    display_name: str = ""
+    description: str = ""
+    config_version: str = ""
+    fields: list[dict[str, Any]] = Field(default_factory=list)
+    example_toml: str = ""
+    owner_module: str = ""
+    source_path: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConfigProviderDefaults(BaseModel):
@@ -97,7 +101,7 @@ async def get_config_provider(kind: str, provider_id: str, bot=BotDep):
     return ok(_provider_or_404(bot, kind, provider_id).to_dict())
 
 
-@router.get("/{kind}/{provider_id}/defaults", response_model=Envelope[ConfigProviderDefaults])
+@router.get("/{kind}/{provider_id}/defaults", response_model=Envelope[dict[str, Any]])
 async def get_config_provider_defaults(kind: str, provider_id: str, bot=BotDep):
     """Return the default configuration for a config provider."""
     _provider_or_404(bot, kind, provider_id)
