@@ -1675,7 +1675,7 @@ def _format_overflow_summaries(records: list[UnreadRangeSummaryRecord]) -> str:
 def _block_digest_metadata_payload(
     digests: list[ReviewBlockDigestStageOutput],
 ) -> dict[str, list[dict[str, object]]]:
-    entries = [
+    entries: list[dict[str, object]] = [
         {
             "block_index": digest.block_index,
             "msg_log_start": digest.msg_log_start,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -73,7 +74,7 @@ class StableRingIdAllocator:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object] | None) -> StableRingIdAllocator:
+    def from_dict(cls, payload: dict[str, Any] | None) -> StableRingIdAllocator:
         """Reconstruct an allocator from a dictionary previously created by :meth:`to_dict`."""
         data = payload or {}
         allocator = cls(

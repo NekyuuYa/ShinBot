@@ -20,6 +20,11 @@ from shinbot.core.application.runtime_control import RestartReason
 from shinbot.core.application.system_update import SystemUpdateError
 from shinbot.utils.logger import apply_logging_runtime_config, logging_runtime_snapshot
 
+public_router = APIRouter(
+    prefix="/system",
+    tags=["system"],
+)
+
 router = APIRouter(
     prefix="/system",
     tags=["system"],
@@ -60,6 +65,16 @@ class LoggingStateData(BaseModel):
     availableColors: list[str]
     sources: list[dict[str, Any]]
     handlers: list[dict[str, Any]]
+
+
+class HealthData(BaseModel):
+    status: str
+
+
+@public_router.get("/health", response_model=Envelope[HealthData])
+async def get_health():
+    """Return a public health check for process liveness."""
+    return ok({"status": "healthy"})
 
 
 class RestartAcceptedData(BaseModel):

@@ -170,8 +170,9 @@ class MediaService:
             if is_custom_emoji:
                 should_request_inspection = not already_verified
             else:
+                occurrence_count = int(occurrence["occurrence_count"])
                 should_request_inspection = (
-                    occurrence["occurrence_count"] >= MEME_VERIFICATION_THRESHOLD
+                    occurrence_count >= MEME_VERIFICATION_THRESHOLD
                     and not already_verified
                 )
 

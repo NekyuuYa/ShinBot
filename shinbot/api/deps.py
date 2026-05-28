@@ -8,6 +8,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from shinbot.api.auth import AuthConfig
 from shinbot.api.models import EC
 
 _bearer = HTTPBearer(auto_error=False)
@@ -16,7 +17,7 @@ _bearer = HTTPBearer(auto_error=False)
 # ── State accessors ──────────────────────────────────────────────────
 
 
-async def _auth_config(request: Request):
+async def _auth_config(request: Request) -> AuthConfig:
     return request.app.state.auth_config
 
 
@@ -43,7 +44,7 @@ async def _framework_update_service(request: Request):
 # ── Auth dependency ──────────────────────────────────────────────────
 
 
-AuthConfigDep = Annotated[object, Depends(_auth_config)]
+AuthConfigDep = Annotated[AuthConfig, Depends(_auth_config)]
 CredentialsDep = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
 
 

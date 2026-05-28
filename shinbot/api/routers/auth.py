@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from shinbot.api.auth import AuthConfig
-from shinbot.api.deps import AuthRequired, BootDep, _auth_config
+from shinbot.api.deps import AuthConfigDep, AuthRequired, BootDep
 from shinbot.api.models import EC, Envelope, ok
 from shinbot.api.schemas import LoginPayload, LogoutPayload, ProfilePayload
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-AuthConfigDep = Annotated[object, Depends(_auth_config)]
 
 
 class LoginRequest(BaseModel):
@@ -27,7 +26,7 @@ class UpdateProfileRequest(BaseModel):
     new_password: str
 
 
-def _login_payload(auth_config: AuthConfig, subject: str | None = None) -> dict:
+def _login_payload(auth_config: AuthConfig, subject: str | None = None) -> dict[str, Any]:
     return {
         "expires_in_hours": auth_config.jwt_expire_hours,
         "username": subject or auth_config.username,

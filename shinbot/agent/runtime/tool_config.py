@@ -107,7 +107,7 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     if isinstance(value, str):
         values = (value,)
     elif isinstance(value, (list, tuple)):
-        values = value
+        values = tuple(value)
     else:
         return ()
     result: list[str] = []

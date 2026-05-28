@@ -124,7 +124,7 @@ def plugin_config_schema(plugin_manager: Any, plugin_id: str) -> dict[str, Any] 
     cfg_cls = plugin_config_class(plugin_manager, plugin_id)
     if cfg_cls is None or not hasattr(cfg_cls, "model_json_schema"):
         return None
-    schema = cfg_cls.model_json_schema()
+    schema = dict(cfg_cls.model_json_schema())
     return _resolve_refs(schema)
 
 
@@ -187,16 +187,16 @@ def plugin_config_entry(
         plugins = []
         config["plugins"] = plugins
 
-    for item in plugins:
-        if isinstance(item, dict) and item.get("id") == plugin_id:
-            return item
+    for plugin_item in plugins:
+        if isinstance(plugin_item, dict) and plugin_item.get("id") == plugin_id:
+            return plugin_item
 
     if not create:
         return None
 
-    item: dict[str, Any] = {"id": plugin_id, "enabled": True, "config": {}}
-    plugins.append(item)
-    return item
+    created: dict[str, Any] = {"id": plugin_id, "enabled": True, "config": {}}
+    plugins.append(created)
+    return created
 
 
 def plugin_config_block(
@@ -441,7 +441,7 @@ def normalize_plugin_config(
         return expanded
 
     validated = cfg_cls.model_validate(expanded)
-    return validated.model_dump(exclude_none=True)
+    return dict(validated.model_dump(exclude_none=True))
 
 
 def _translate_schema_properties(

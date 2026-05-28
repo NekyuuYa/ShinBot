@@ -6,7 +6,7 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import jwt
 
@@ -41,7 +41,7 @@ class AuthConfig:
         )
         session_cookie_domain = str(admin_cfg.get("auth_cookie_domain", "")).strip()
         self.session_cookie_domain: str | None = session_cookie_domain or None
-        self.session_cookie_samesite: str = self._normalize_samesite(
+        self.session_cookie_samesite: Literal["lax", "strict", "none"] = self._normalize_samesite(
             admin_cfg.get("auth_cookie_samesite", "strict")
         )
         self._session_cookie_secure = self._coerce_optional_bool(
@@ -84,7 +84,7 @@ class AuthConfig:
         }
         return jwt.encode(payload, self.jwt_secret, algorithm=self.ALGORITHM)
 
-    def decode_token(self, token: str) -> dict:
+    def decode_token(self, token: str) -> dict[str, Any]:
         """Decode and validate a JWT.  Raises jwt.InvalidTokenError on failure."""
         return jwt.decode(token, self.jwt_secret, algorithms=[self.ALGORITHM])
 
@@ -124,10 +124,10 @@ class AuthConfig:
         return bool(value)
 
     @staticmethod
-    def _normalize_samesite(value: Any) -> str:
+    def _normalize_samesite(value: Any) -> Literal["lax", "strict", "none"]:
         normalized = str(value or "strict").strip().lower()
         if normalized in {"lax", "strict", "none"}:
-            return normalized
+            return cast(Literal["lax", "strict", "none"], normalized)
         return "strict"
 
     def _load_or_create_secret(self, data_dir: Path) -> str:
