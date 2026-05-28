@@ -108,6 +108,7 @@ class AgentRuntimeProfile:
         self.bot_id = bot_id
         self.config = config
         self._base_active_chat_attention_config = replace(config.active_chat_attention_config)
+        self._background_tasks_started = False
         self.prompt_file_config = config.prompt_file_config or PromptFileLoadConfig.from_data_dir(
             owner.runtime_data_dir
         )
@@ -233,10 +234,21 @@ class AgentRuntimeProfile:
         await self.review_due_timer.shutdown()
         await self._owner.task_manager.shutdown(prefix=self._task_namespace(""))
 
-    def start_background_tasks(self) -> None:
+    def start_background_tasks(self, *, start_timers: bool = True) -> None:
         """Start profile-owned timers after the main event loop is running."""
 
+        if self._background_tasks_started:
+            return
+        self._background_tasks_started = True
+        if not start_timers:
+            return
         self.review_due_timer.start()
+        reconcile = getattr(self.agent_scheduler, "reconcile_active_chat_sessions", None)
+        if reconcile is not None:
+            reconcile(
+                prefix=self._session_id_prefix(),
+                exclude_session_ids=set(self.active_chat_workflow.active_session_ids()),
+            )
 
     def _create_active_chat_workflow(self) -> ActiveChatCoordinator:
         workflow = ActiveChatCoordinator(
@@ -304,6 +316,9 @@ class AgentRuntimeProfile:
     def _task_namespace(self, suffix: str) -> str:
         bot_part = self.bot_id or self.profile_id
         return f"agent:{bot_part}:{suffix}"
+
+    def _session_id_prefix(self) -> str | None:
+        return f"{self.bot_id}:" if self.bot_id else None
 
     def _create_review_runner_factory(self) -> ReviewRunnerFactory:
         return ReviewRunnerFactory(
@@ -596,7 +611,6 @@ class AgentRuntime:
         signal: AgentSignal,
     ) -> ActiveChatBootstrapApplyDecision | None:
         """Receive a unified Agent signal and let Agent internals process it."""
-        self.start_background_tasks()
         profile = self.agent_profile_for_bot(signal.bot_id)
         logger.debug(
             format_log_event(
@@ -639,8 +653,11 @@ class AgentRuntime:
     def start_background_tasks(self) -> None:
         """Start Agent background services once an event loop is available."""
 
+        start_default_timers = not self._profiles_by_bot_id
         for profile in self._unique_profiles():
-            profile.start_background_tasks()
+            profile.start_background_tasks(
+                start_timers=start_default_timers or profile.bot_id != ""
+            )
 
     def _resolve_response_profile(self, signal: AgentSignal) -> str:
         message = signal.message

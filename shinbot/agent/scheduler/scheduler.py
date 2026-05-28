@@ -808,6 +808,54 @@ class AgentScheduler:
             returned_to_idle=True,
         )
 
+    def reconcile_active_chat_sessions(
+        self,
+        *,
+        now: float | None = None,
+        prefix: str | None = None,
+        exclude_session_ids: set[str] | None = None,
+    ) -> list[ActiveChatTickDecision]:
+        """Reconcile persisted active-chat states with runtime timer state.
+
+        This is intended for process startup after scheduler state has been
+        restored from persistence. Active-chat timers are in-memory only, so any
+        persisted active-chat session must either be settled back to idle or have
+        its timer re-armed.
+        """
+        checked_at = self._now() if now is None else now
+        decisions: list[ActiveChatTickDecision] = []
+        excluded = exclude_session_ids or set()
+        for session_id in self._state_store.list_session_ids(prefix=prefix):
+            if session_id in excluded:
+                continue
+            if self._state_store.get_state(session_id) != AgentState.ACTIVE_CHAT:
+                continue
+            decision = self.tick_active_chat(session_id, now=checked_at)
+            decisions.append(decision)
+            if decision.state == AgentState.ACTIVE_CHAT:
+                self._start_active_chat_timer(session_id)
+                logger.info(
+                    format_log_event(
+                        "agent.active_chat.reconciled",
+                        session_id=session_id,
+                        action="timer_started",
+                        interest=(
+                            f"{decision.active_chat_state.interest_value:.2f}"
+                            if decision.active_chat_state is not None
+                            else "-"
+                        ),
+                    )
+                )
+            elif decision.returned_to_idle:
+                logger.info(
+                    format_log_event(
+                        "agent.active_chat.reconciled",
+                        session_id=session_id,
+                        action="returned_idle",
+                    )
+                )
+        return decisions
+
     def preview_active_chat_tick(
         self,
         session_id: str,

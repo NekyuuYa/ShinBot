@@ -74,6 +74,31 @@ async def test_agent_runtime_selects_profile_by_bot_id(tmp_path: Path) -> None:
     assert [signal.bot_id for signal in default_scheduler.calls] == ["bot-b"]
 
 
+@pytest.mark.asyncio
+async def test_agent_runtime_starts_background_timers_only_for_bot_profiles(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        agent_configs_by_bot_id={
+            "bot-a": {
+                "agent": {
+                    "id": "agent-a",
+                }
+            }
+        },
+    )
+
+    runtime.start_background_tasks()
+
+    default_tasks = runtime.task_manager.tasks(prefix="agent:default:review_due_timer")
+    bot_tasks = runtime.task_manager.tasks(prefix="agent:bot-a:review_due_timer")
+    assert default_tasks == []
+    assert bot_tasks != []
+    await runtime.shutdown()
+
+
 def test_agent_runtime_syncs_builtin_prompt_files_to_data_dir(tmp_path: Path) -> None:
     bot = ShinBot(data_dir=tmp_path)
     runtime = install_agent_runtime(bot)
