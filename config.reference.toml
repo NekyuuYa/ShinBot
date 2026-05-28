@@ -7,7 +7,7 @@
 
 [logging]
 level = "INFO"
-third_party_noise = "debug"
+third_party_noise = "off"
 
 [logging.file]
 enabled = true
@@ -15,6 +15,7 @@ path = "logs/shinbot.log"
 when = "midnight"
 interval = 1
 backup_count = 14
+max_bytes = 10485760
 
 [database]
 url = "sqlite:///data/db/shinbot.sqlite3"

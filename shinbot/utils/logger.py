@@ -43,6 +43,7 @@ _CONSOLE_DATE_FORMAT = "%H:%M:%S"
 _LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _THIRD_PARTY_NOISE_POLICIES = ("off", "debug", "on")
 ThirdPartyNoisePolicy = Literal["off", "debug", "on"]
+DEFAULT_THIRD_PARTY_NOISE_POLICY: ThirdPartyNoisePolicy = "off"
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,13 +224,13 @@ class RuntimeLogManager:
     def __init__(self) -> None:
         self._configured = False
         self._source_by_logger_name: dict[str, LogSourceRegistration] = {}
-        self._third_party_noise_policy: ThirdPartyNoisePolicy = "debug"
+        self._third_party_noise_policy: ThirdPartyNoisePolicy = DEFAULT_THIRD_PARTY_NOISE_POLICY
 
     def setup_logging(
         self,
         level_name: str = "INFO",
         *,
-        third_party_noise: str = "debug",
+        third_party_noise: str = DEFAULT_THIRD_PARTY_NOISE_POLICY,
         file_config: FileLogConfig | None = None,
         data_dir: Path | str = "data",
     ) -> None:
@@ -654,7 +655,7 @@ def log_record_source(record: logging.LogRecord) -> str:
 def setup_logging(
     level_name: str = "INFO",
     *,
-    third_party_noise: str = "debug",
+    third_party_noise: str = DEFAULT_THIRD_PARTY_NOISE_POLICY,
     file_config: FileLogConfig | None = None,
     data_dir: Path | str = "data",
 ) -> None:
@@ -746,16 +747,16 @@ def normalize_third_party_noise_policy(
     Args:
         policy: The policy string to normalize.
         strict: If True, raise ValueError on unsupported policies.
-            Otherwise fall back to 'debug'.
+            Otherwise fall back to the default policy.
 
     Returns:
         A valid ThirdPartyNoisePolicy value.
     """
-    normalized = str(policy or "debug").strip().lower()
+    normalized = str(policy or DEFAULT_THIRD_PARTY_NOISE_POLICY).strip().lower()
     if normalized not in _THIRD_PARTY_NOISE_POLICIES:
         if strict:
             raise ValueError(f"Unsupported third-party noise policy: {policy}")
-        normalized = "debug"
+        normalized = DEFAULT_THIRD_PARTY_NOISE_POLICY
     return normalized  # type: ignore[return-value]
 
 

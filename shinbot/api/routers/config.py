@@ -316,13 +316,14 @@ def _config_templates() -> dict[str, Any]:
         "runtime": {"agent": True},
         "logging": {
             "level": "INFO",
-            "third_party_noise": "debug",
+            "third_party_noise": "off",
             "file": {
                 "enabled": True,
                 "path": "logs/shinbot.log",
                 "when": "midnight",
                 "interval": 1,
                 "backup_count": 14,
+                "max_bytes": 10485760,
             },
         },
         "database": {"url": "sqlite:///data/db/shinbot.sqlite3", "snapshot_ttl": 10800},

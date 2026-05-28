@@ -30,7 +30,7 @@ from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
 from shinbot.utils.log_file import parse_file_log_config
-from shinbot.utils.logger import get_logger, setup_logging
+from shinbot.utils.logger import DEFAULT_THIRD_PARTY_NOISE_POLICY, get_logger, setup_logging
 
 logger = get_logger(__name__, source="boot", color="cyan")
 
@@ -117,7 +117,7 @@ class BootController:
             raise
         logging_cfg = self.config.get("logging", {})
         cfg_level = logging_cfg.get("level", self.log_level)
-        third_party_noise = logging_cfg.get("third_party_noise", "debug")
+        third_party_noise = logging_cfg.get("third_party_noise", DEFAULT_THIRD_PARTY_NOISE_POLICY)
         self._configure_logging(
             cfg_level,
             third_party_noise=third_party_noise,
@@ -459,7 +459,7 @@ class BootController:
         self,
         level_name: str = "INFO",
         *,
-        third_party_noise: str = "debug",
+        third_party_noise: str = DEFAULT_THIRD_PARTY_NOISE_POLICY,
         file_config_raw: Any = None,
     ) -> None:
         setup_logging(

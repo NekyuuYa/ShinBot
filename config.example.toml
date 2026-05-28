@@ -17,7 +17,7 @@
 
 [logging]
 level = "INFO" # DEBUG | INFO | WARNING | ERROR
-third_party_noise = "debug" # off | debug | on; "debug" shows low-level uvicorn/websockets logs only when level = "DEBUG"
+third_party_noise = "off" # off | debug | on; keep low-level uvicorn/websockets chatter hidden by default.
 
 [logging.file]
 enabled = true
@@ -25,6 +25,7 @@ path = "logs/shinbot.log" # Relative to data_dir by default.
 when = "midnight" # midnight/daily, H/hourly, or any TimedRotatingFileHandler value.
 interval = 1
 backup_count = 14
+max_bytes = 10485760 # Rotate by size first; set 0 to use time-only rotation.
 
 [database]
 url = "sqlite:///data/db/shinbot.sqlite3"

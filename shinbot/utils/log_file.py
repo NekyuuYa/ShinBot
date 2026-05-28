@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 DEFAULT_LOG_FILE = Path("logs") / "shinbot.log"
 DEFAULT_ROTATION_WHEN = "midnight"
 DEFAULT_BACKUP_COUNT = 14
+DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 _ROTATION_ALIASES = {
     "daily": "midnight",
     "day": "midnight",
@@ -30,6 +31,7 @@ class FileLogConfig:
     when: str = DEFAULT_ROTATION_WHEN
     interval: int = 1
     backup_count: int = DEFAULT_BACKUP_COUNT
+    max_bytes: int = DEFAULT_MAX_BYTES
     utc: bool = False
     encoding: str = "utf-8"
 
@@ -44,7 +46,7 @@ class FileLogConfig:
 def parse_file_log_config(raw: Any) -> FileLogConfig:
     """Normalize a ``[logging.file]`` config table.
 
-    Missing config enables persistent runtime logs with conservative daily
+    Missing config enables persistent runtime logs with conservative size-based
     rotation. ``false`` can be used as a shorthand for disabling file logs.
     """
     if raw is False:
@@ -59,6 +61,7 @@ def parse_file_log_config(raw: Any) -> FileLogConfig:
     when = _normalize_rotation_when(raw.get("when", DEFAULT_ROTATION_WHEN))
     interval = max(1, _as_int(raw.get("interval"), default=1))
     backup_count = max(0, _as_int(raw.get("backup_count"), default=DEFAULT_BACKUP_COUNT))
+    max_bytes = max(0, _as_int(raw.get("max_bytes"), default=DEFAULT_MAX_BYTES))
     utc = _as_bool(raw.get("utc"), default=False)
     encoding = str(raw.get("encoding") or "utf-8")
     return FileLogConfig(
@@ -67,6 +70,7 @@ def parse_file_log_config(raw: Any) -> FileLogConfig:
         when=when,
         interval=interval,
         backup_count=backup_count,
+        max_bytes=max_bytes,
         utc=utc,
         encoding=encoding,
     )
@@ -86,14 +90,22 @@ def build_file_log_handler(
 
     path = config.resolved_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    handler = TimedRotatingFileHandler(
-        path,
-        when=config.when,
-        interval=config.interval,
-        backupCount=config.backup_count,
-        encoding=config.encoding,
-        utc=config.utc,
-    )
+    if config.max_bytes > 0:
+        handler: logging.Handler = RotatingFileHandler(
+            path,
+            maxBytes=config.max_bytes,
+            backupCount=config.backup_count,
+            encoding=config.encoding,
+        )
+    else:
+        handler = TimedRotatingFileHandler(
+            path,
+            when=config.when,
+            interval=config.interval,
+            backupCount=config.backup_count,
+            encoding=config.encoding,
+            utc=config.utc,
+        )
     handler.setLevel(level)
     handler.addFilter(record_filter)
     handler.setFormatter(formatter)
