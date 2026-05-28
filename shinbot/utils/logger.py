@@ -36,6 +36,15 @@ _NOISY_THIRD_PARTY_LOGGERS = (
     "websockets.legacy.client",
     "websockets.legacy.server",
     "websockets.protocol",
+    "LiteLLM",
+    "litellm",
+    "httpcore",
+    "httpx",
+    "openai",
+)
+_NOISY_THIRD_PARTY_WARNING_SNIPPETS = (
+    "could not pre-load bedrock-runtime response stream shape",
+    "could not pre-load sagemaker-runtime response stream shape",
 )
 _CONSOLE_SOURCE_WIDTH = 20
 _CONSOLE_LOG_FORMAT = "%(asctime)s %(level_tag)-5s %(source_tag)s | %(message)s"
@@ -193,7 +202,8 @@ def is_third_party_noise(record: logging.LogRecord) -> bool:
     """Return whether a record is low-level transport/library chatter."""
 
     if record.levelno >= logging.WARNING:
-        return False
+        message = record.getMessage()
+        return any(snippet in message for snippet in _NOISY_THIRD_PARTY_WARNING_SNIPPETS)
     return any(_logger_matches(record.name, name) for name in _NOISY_THIRD_PARTY_LOGGERS)
 
 

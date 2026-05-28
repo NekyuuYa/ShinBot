@@ -65,6 +65,38 @@ def test_third_party_warning_is_not_treated_as_noise():
     assert manager.should_emit(record) is True
 
 
+def test_known_low_value_third_party_warning_can_be_suppressed():
+    manager = logger_utils.RuntimeLogManager()
+    manager.set_third_party_noise_policy("off")
+    record = logging.LogRecord(
+        name="LiteLLM",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=1,
+        msg="litellm: could not pre-load bedrock-runtime response stream shape",
+        args=(),
+        exc_info=None,
+    )
+
+    assert manager.should_emit(record) is False
+
+
+def test_openai_transport_info_is_treated_as_noise():
+    manager = logger_utils.RuntimeLogManager()
+    manager.set_third_party_noise_policy("off")
+    record = logging.LogRecord(
+        name="httpcore.connection",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="connect_tcp.started",
+        args=(),
+        exc_info=None,
+    )
+
+    assert manager.should_emit(record) is False
+
+
 def test_runtime_log_manager_snapshot_exposes_state_and_sources():
     manager = logger_utils.RuntimeLogManager()
     manager.register_source("tests.snapshot", "测试源", color="bright-blue")
