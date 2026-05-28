@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-_PLUGIN_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_PLUGIN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _validate_name(name: str) -> str:
@@ -81,8 +81,6 @@ def generate_plugin_scaffold(
         "\n"
         "from __future__ import annotations\n"
         "\n"
-        "from typing import Any\n"
-        "\n"
         "from shinbot.core.plugins.context import Plugin\n"
         "\n"
         "\n"
@@ -102,8 +100,12 @@ def generate_plugin_scaffold(
 
     # config.schema.toml
     (plugin_path / "config.schema.toml").write_text(
-        "# Plugin configuration schema\n"
-        "\n",
+        "[provider]\n"
+        'kind = "plugin"\n'
+        f'id = "{module_id}"\n'
+        f'display_name = "{module_id}"\n'
+        'description = ""\n'
+        'config_version = "1.0.0"\n',
         encoding="utf-8",
     )
 
