@@ -324,14 +324,21 @@ class BootController:
 
         for plugin_cfg in configured_plugins:
             if not isinstance(plugin_cfg, dict):
-                logger.warning("Invalid plugin config entry: %s", plugin_cfg)
+                logger.warning("Invalid plugin config entry: expected table, got %s", type(plugin_cfg).__name__)
                 continue
             plugin_id = plugin_cfg.get("id")
             module_path = plugin_cfg.get("module")
-            if not plugin_id or not module_path:
-                logger.warning("Invalid plugin config entry: %s", plugin_cfg)
+            if not plugin_id:
+                logger.warning("Invalid plugin config entry: missing id")
                 continue
-            if self._configured_plugin_is_already_loaded(str(plugin_id), str(module_path)):
+            plugin_id = str(plugin_id)
+            if self._configured_plugin_id_is_already_loaded(plugin_id):
+                continue
+            if not module_path:
+                logger.warning("Plugin %r is configured but not loaded and has no module path", plugin_id)
+                continue
+            module_path = str(module_path)
+            if self._configured_plugin_module_is_already_loaded(module_path):
                 continue
             try:
                 await self.bot.load_plugin_async(plugin_id, module_path)
@@ -358,11 +365,19 @@ class BootController:
             except Exception:
                 logger.exception("Failed to apply persisted state for plugin %s", meta.id)
 
-    def _configured_plugin_is_already_loaded(self, plugin_id: str, module_path: str) -> bool:
+    def _configured_plugin_id_is_already_loaded(self, plugin_id: str) -> bool:
         if self.bot is None:
             return False
         for meta in self.bot.plugin_manager.all_plugins:
-            if meta.id == plugin_id or meta.module_path == module_path:
+            if meta.id == plugin_id:
+                return True
+        return False
+
+    def _configured_plugin_module_is_already_loaded(self, module_path: str) -> bool:
+        if self.bot is None:
+            return False
+        for meta in self.bot.plugin_manager.all_plugins:
+            if meta.module_path == module_path:
                 return True
         return False
 

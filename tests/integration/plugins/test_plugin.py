@@ -368,6 +368,38 @@ def test_boot_plugin_enabled_lookup_uses_plugin_entry(tmp_path: Path) -> None:
     assert boot._configured_plugin_enabled("shinbot_plugin_search") is False
 
 
+@pytest.mark.asyncio
+async def test_boot_accepts_loaded_plugin_entries_without_module(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path)
+    boot.config = {
+        "plugins": [
+            {
+                "id": "demo-plugin",
+                "enabled": True,
+                "config": {"api_key": "secret-value"},
+            }
+        ]
+    }
+    bot = ShinBot(data_dir=tmp_path)
+    module_name = "test_boot_loaded_plugin_no_module"
+    sys.modules.pop(module_name, None)
+    _make_plugin_module(module_name, setup_fn=lambda plg: None)
+    await bot.load_plugin_async("demo-plugin", module_name)
+    boot.bot = bot
+
+    try:
+        with caplog.at_level("WARNING"):
+            await boot._phase4_plugin_loading()
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert "Invalid plugin config entry" not in caplog.text
+    assert "secret-value" not in caplog.text
+
+
 class TestPluginManager:
     def setup_method(self):
         self.cmd_reg = CommandRegistry()
