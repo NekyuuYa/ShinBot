@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import io
 import logging
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 
 from shinbot.utils import logger as logger_utils
+from shinbot.utils.log_file import parse_file_log_config
 
 
 def test_third_party_noise_policy_does_not_mutate_dependency_logger_levels():
@@ -79,6 +82,63 @@ def test_runtime_log_manager_snapshot_exposes_state_and_sources():
         "source": "测试源",
         "color": "bright_blue",
     } in snapshot["sources"]
+
+
+def test_parse_file_log_config_defaults_to_daily_data_log():
+    config = parse_file_log_config(None)
+
+    assert config.enabled is True
+    assert config.path == Path("logs/shinbot.log")
+    assert config.when == "midnight"
+    assert config.backup_count == 14
+
+
+def test_parse_file_log_config_accepts_hourly_alias_and_disable():
+    config = parse_file_log_config(
+        {
+            "enabled": "true",
+            "path": "logs/debug.log",
+            "when": "hourly",
+            "interval": "2",
+            "backup_count": "3",
+        }
+    )
+
+    assert config.enabled is True
+    assert config.path == Path("logs/debug.log")
+    assert config.when == "H"
+    assert config.interval == 2
+    assert config.backup_count == 3
+    assert parse_file_log_config(False).enabled is False
+
+
+def test_runtime_log_manager_configures_rotating_file_handler(tmp_path: Path):
+    manager = logger_utils.RuntimeLogManager()
+    root = logging.getLogger()
+    previous_handlers = list(root.handlers)
+    previous_level = root.level
+    root.handlers = []
+    root.setLevel(logging.INFO)
+    try:
+        manager.configure_file_handler(parse_file_log_config(None), data_dir=tmp_path)
+        handlers = list(manager.iter_file_handlers(root))
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], TimedRotatingFileHandler)
+        assert Path(handlers[0].baseFilename) == tmp_path / "logs" / "shinbot.log"
+
+        logging.getLogger("test.file-log").info("persist me")
+        handlers[0].flush()
+        assert "persist me" in (tmp_path / "logs" / "shinbot.log").read_text(encoding="utf-8")
+
+        manager.configure_file_handler(parse_file_log_config(False), data_dir=tmp_path)
+        assert list(manager.iter_file_handlers(root)) == []
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            handler.close()
+        root.handlers = previous_handlers
+        root.setLevel(previous_level)
 
 
 def test_runtime_log_manager_apply_runtime_config_validates_values():

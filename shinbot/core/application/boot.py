@@ -29,6 +29,7 @@ from shinbot.core.application.provider_config_validation import (
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
+from shinbot.utils.log_file import parse_file_log_config
 from shinbot.utils.logger import get_logger, setup_logging
 
 logger = get_logger(__name__, source="boot", color="cyan")
@@ -117,7 +118,11 @@ class BootController:
         logging_cfg = self.config.get("logging", {})
         cfg_level = logging_cfg.get("level", self.log_level)
         third_party_noise = logging_cfg.get("third_party_noise", "debug")
-        self._configure_logging(cfg_level, third_party_noise=third_party_noise)
+        self._configure_logging(
+            cfg_level,
+            third_party_noise=third_party_noise,
+            file_config_raw=logging_cfg.get("file"),
+        )
         self.bot_service_configs = preflight.bot_service_configs
         self._ensure_admin_defaults()
         DataInitializer(self.data_dir).initialize()
@@ -450,8 +455,19 @@ class BootController:
             except ValueError as exc:
                 logger.warning("Permission binding error: %s", exc)
 
-    def _configure_logging(self, level_name: str = "INFO", *, third_party_noise: str = "debug") -> None:
-        setup_logging(level_name, third_party_noise=third_party_noise)
+    def _configure_logging(
+        self,
+        level_name: str = "INFO",
+        *,
+        third_party_noise: str = "debug",
+        file_config_raw: Any = None,
+    ) -> None:
+        setup_logging(
+            level_name,
+            third_party_noise=third_party_noise,
+            file_config=parse_file_log_config(file_config_raw),
+            data_dir=self.data_dir,
+        )
 
     def _load_config(self, config_path: Path) -> dict[str, Any]:
         if not config_path.exists():

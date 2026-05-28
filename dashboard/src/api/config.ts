@@ -162,6 +162,13 @@ export interface ConfigRuntimeTemplate {
 export interface ConfigLoggingTemplate {
   level: string
   third_party_noise: string
+  file: {
+    enabled: boolean
+    path: string
+    when: string
+    interval: number
+    backup_count: number
+  }
 }
 
 export interface ConfigDatabaseTemplate {

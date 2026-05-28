@@ -12,8 +12,11 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, TextIO
 from unicodedata import combining, east_asian_width
+
+from shinbot.utils.log_file import FileLogConfig, build_file_log_handler
 
 _log_handler_installer: Callable[[], None] | None = None
 _LOGGER_PREFIX = "shinbot."
@@ -227,18 +230,22 @@ class RuntimeLogManager:
         level_name: str = "INFO",
         *,
         third_party_noise: str = "debug",
+        file_config: FileLogConfig | None = None,
+        data_dir: Path | str = "data",
     ) -> None:
         """Configure root logging with console and optional WebSocket handlers."""
 
         self.set_third_party_noise_policy(third_party_noise)
         if self._configured:
             self.set_root_log_level(level_name)
+            self.configure_file_handler(file_config, data_dir=data_dir)
             return
 
         level = _level_from_name(level_name, default=logging.INFO)
         root = logging.getLogger()
         root.setLevel(level)
         root.addHandler(self.build_console_handler(level))
+        self.configure_file_handler(file_config, data_dir=data_dir)
 
         if _log_handler_installer is not None:
             try:
@@ -292,7 +299,7 @@ class RuntimeLogManager:
         root.addHandler(self.build_console_handler(root.level, stream=stream, use_color=use_color))
 
     def set_root_log_level(self, level_name: str) -> str:
-        """Update root and console handler levels."""
+        """Update root and ShinBot-owned handler levels."""
 
         normalized = normalize_root_log_level(level_name)
         level = getattr(logging, normalized, None)
@@ -302,9 +309,41 @@ class RuntimeLogManager:
         root = logging.getLogger()
         root.setLevel(level)
         for handler in root.handlers:
-            if getattr(handler, "_shinbot_console_handler", False):
+            if getattr(handler, "_shinbot_console_handler", False) or getattr(
+                handler,
+                "_shinbot_file_handler",
+                False,
+            ):
                 handler.setLevel(level)
         return normalized
+
+    def configure_file_handler(
+        self,
+        config: FileLogConfig | None,
+        *,
+        data_dir: Path | str = "data",
+    ) -> None:
+        """Replace the ShinBot file handler according to the given config."""
+        root = logging.getLogger()
+        for handler in list(self.iter_file_handlers(root)):
+            root.removeHandler(handler)
+            handler.close()
+
+        if config is None or not config.enabled:
+            return
+
+        handler = build_file_log_handler(
+            config,
+            data_dir=data_dir,
+            level=root.level,
+            record_filter=_ReadableContextFilter(self),
+            formatter=_PlainFormatter(
+                _CONSOLE_LOG_FORMAT,
+                datefmt=_CONSOLE_DATE_FORMAT,
+            ),
+        )
+        if handler is not None:
+            root.addHandler(handler)
 
     def set_third_party_noise_policy(
         self,
@@ -376,6 +415,8 @@ class RuntimeLogManager:
                     "type": type(handler).__name__,
                     "level": logging.getLevelName(handler.level),
                     "console": bool(getattr(handler, "_shinbot_console_handler", False)),
+                    "file": bool(getattr(handler, "_shinbot_file_handler", False)),
+                    "path": str(getattr(handler, "_shinbot_file_path", "")),
                 }
             )
         return handlers
@@ -441,6 +482,13 @@ class RuntimeLogManager:
         """Yield only ShinBot-marked console handlers from the root logger."""
         for handler in root.handlers:
             if getattr(handler, "_shinbot_console_handler", False):
+                yield handler
+
+    @staticmethod
+    def iter_file_handlers(root: logging.Logger) -> Iterator[logging.Handler]:
+        """Yield only ShinBot-marked file handlers from the root logger."""
+        for handler in root.handlers:
+            if getattr(handler, "_shinbot_file_handler", False):
                 yield handler
 
 
@@ -603,9 +651,20 @@ def log_record_source(record: logging.LogRecord) -> str:
     return runtime_log_manager.record_source(record)
 
 
-def setup_logging(level_name: str = "INFO", *, third_party_noise: str = "debug") -> None:
+def setup_logging(
+    level_name: str = "INFO",
+    *,
+    third_party_noise: str = "debug",
+    file_config: FileLogConfig | None = None,
+    data_dir: Path | str = "data",
+) -> None:
     """Configure root logging once with console + websocket handlers."""
-    runtime_log_manager.setup_logging(level_name, third_party_noise=third_party_noise)
+    runtime_log_manager.setup_logging(
+        level_name,
+        third_party_noise=third_party_noise,
+        file_config=file_config,
+        data_dir=data_dir,
+    )
 
 
 def set_third_party_noise_policy(policy: str) -> ThirdPartyNoisePolicy:

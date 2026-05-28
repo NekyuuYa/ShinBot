@@ -9,6 +9,13 @@
 level = "INFO"
 third_party_noise = "debug"
 
+[logging.file]
+enabled = true
+path = "logs/shinbot.log"
+when = "midnight"
+interval = 1
+backup_count = 14
+
 [database]
 url = "sqlite:///data/db/shinbot.sqlite3"
 snapshot_ttl = 10800

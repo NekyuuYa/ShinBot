@@ -314,7 +314,17 @@ def _plugin_catalog(bot: Any) -> list[dict[str, Any]]:
 def _config_templates() -> dict[str, Any]:
     return {
         "runtime": {"agent": True},
-        "logging": {"level": "INFO", "third_party_noise": "debug"},
+        "logging": {
+            "level": "INFO",
+            "third_party_noise": "debug",
+            "file": {
+                "enabled": True,
+                "path": "logs/shinbot.log",
+                "when": "midnight",
+                "interval": 1,
+                "backup_count": 14,
+            },
+        },
         "database": {"url": "sqlite:///data/db/shinbot.sqlite3", "snapshot_ttl": 10800},
         "adapterInstance": {
             "id": "",

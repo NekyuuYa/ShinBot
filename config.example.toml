@@ -19,6 +19,13 @@
 level = "INFO" # DEBUG | INFO | WARNING | ERROR
 third_party_noise = "debug" # off | debug | on; "debug" shows low-level uvicorn/websockets logs only when level = "DEBUG"
 
+[logging.file]
+enabled = true
+path = "logs/shinbot.log" # Relative to data_dir by default.
+when = "midnight" # midnight/daily, H/hourly, or any TimedRotatingFileHandler value.
+interval = 1
+backup_count = 14
+
 [database]
 url = "sqlite:///data/db/shinbot.sqlite3"
 snapshot_ttl = 10800
