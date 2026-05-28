@@ -355,6 +355,7 @@ class OneBotV11Adapter(BaseAdapter):
     """OneBot v11 adapter supporting forward (client) and reverse (server) modes."""
 
     def __init__(self, instance_id: str, platform: str, config: OneBotV11Config):
+        super().__init__(instance_id=instance_id, platform=platform)
         self.config = config
         self._running = False
         self._ws: Any | None = None
