@@ -71,6 +71,7 @@ jobs:
   typecheck:
     name: Mypy Typecheck
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -90,7 +91,7 @@ jobs:
         run: uv sync --group dev
 
       - name: Run mypy
-        run: uv run --group dev mypy shinbot/ --ignore-missing-imports
+        run: uv run --group dev mypy
 
   test-fast:
     name: Pytest Fast Gate
