@@ -13,6 +13,15 @@ class SessionRepository(Repository):
     """Persistence adapter for structured session state."""
 
     def list(self, *, instance_id: str | None = None) -> list[dict[str, Any]]:
+        """Return all sessions, optionally filtered by instance.
+
+        Args:
+            instance_id: When provided only sessions belonging to this instance
+                are returned.
+
+        Returns:
+            List of session dictionaries ordered by most recently active.
+        """
         with self.connect() as conn:
             if instance_id:
                 rows = conn.execute(
@@ -69,6 +78,11 @@ class SessionRepository(Repository):
         return [self._row_to_dict(row) for row in rows]
 
     def get(self, session_id: str) -> dict[str, Any] | None:
+        """Return a single session by ID, or ``None`` if not found.
+
+        Args:
+            session_id: Unique session identifier.
+        """
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -147,6 +161,12 @@ class SessionRepository(Repository):
         }
 
     def upsert(self, payload: dict[str, Any]) -> None:
+        """Insert or update a session and its configuration.
+
+        Args:
+            payload: Session dictionary containing at least ``id``,
+                ``instance_id``, and ``session_type``.
+        """
         config = dict(payload.get("config") or {})
         now = time.time()
         with self.connect() as conn:
@@ -207,6 +227,11 @@ class SessionRepository(Repository):
             )
 
     def delete(self, session_id: str) -> None:
+        """Delete a session and all cascaded rows.
+
+        Args:
+            session_id: Unique session identifier.
+        """
         with self.connect() as conn:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
@@ -215,6 +240,12 @@ class AuditRepository(Repository):
     """Persistence adapter for structured audit logs."""
 
     def list_by_session(self, session_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent audit log entries for a session.
+
+        Args:
+            session_id: Session to query.
+            limit: Maximum number of entries to return.
+        """
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -229,10 +260,20 @@ class AuditRepository(Repository):
         return [self._row_to_dict(row) for row in rows]
 
     def get_latest_by_session(self, session_id: str) -> dict[str, Any] | None:
+        """Return the most recent audit entry for a session, or ``None``."""
         rows = self.list_by_session(session_id, limit=1)
         return rows[0] if rows else None
 
     def insert(self, payload: dict[str, Any]) -> int:
+        """Insert an audit log entry.
+
+        Args:
+            payload: Audit entry dictionary with fields such as ``timestamp``,
+                ``entry_type``, ``command_name``, etc.
+
+        Returns:
+            The auto-incremented row id.
+        """
         with self.connect() as conn:
             cursor = conn.execute(
                 """

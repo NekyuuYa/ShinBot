@@ -32,6 +32,7 @@ class WaitingInputRegistry:
         self._waiting: dict[str, asyncio.Future[str]] = {}
 
     def is_waiting(self, session_id: str) -> bool:
+        """Return whether a session is currently waiting for user input."""
         return session_id in self._waiting
 
     def register(self, session_id: str) -> asyncio.Future[str]:
@@ -95,34 +96,42 @@ class MessageContext:
 
     @property
     def elements(self) -> list[MessageElement]:
+        """MessageElement AST nodes contained in this message."""
         return self.message.elements
 
     @property
     def user_id(self) -> str:
+        """Sender's platform user ID."""
         return self.event.sender_id or ""
 
     @property
     def session_id(self) -> str:
+        """Session identifier for the current conversation."""
         return self.session.id
 
     @property
     def platform(self) -> str:
+        """Platform name (e.g. ``onebot_v11``, ``satori``)."""
         return self.event.platform
 
     @property
     def bot_id(self) -> str:
+        """Bot service config ID, or empty string if not set."""
         return self.bot_service_config.id if self.bot_service_config is not None else ""
 
     @property
     def bot_binding_id(self) -> str:
+        """Bot binding config ID, or empty string if not set."""
         return self.bot_binding_config.id if self.bot_binding_config is not None else ""
 
     @property
     def is_private(self) -> bool:
+        """True when the message originates from a private (DM) session."""
         return self.session.is_private
 
     @property
     def is_mentioned(self) -> bool:
+        """True when the bot was @-mentioned in this message."""
         return is_self_mentioned(self.message, self.event.self_id)
 
     def _quoted_message_ids(self) -> list[str]:
@@ -156,6 +165,14 @@ class MessageContext:
         return False
 
     def has_permission(self, permission: str) -> bool:
+        """Check whether the sender holds a specific permission.
+
+        Args:
+            permission: Permission identifier to verify (e.g. ``admin``).
+
+        Returns:
+            True if the sender's permission set includes *permission*.
+        """
         return check_permission(permission, self.permissions)
 
     async def send(
@@ -339,14 +356,17 @@ class MessageContext:
 
     @property
     def is_stopped(self) -> bool:
+        """True if ``stop()`` has been called on this context."""
         return self._stopped
 
     @property
     def elapsed_ms(self) -> float:
+        """Milliseconds elapsed since handler start."""
         return (time.monotonic() - self.start_time) * 1000
 
     @property
     def last_response_log_id(self) -> int | None:
+        """Row ID of the last assistant message logged, or None."""
         if not self._assistant_log_ids:
             return None
         return self._assistant_log_ids[-1]

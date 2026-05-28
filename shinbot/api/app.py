@@ -96,6 +96,14 @@ def create_api_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        """FastAPI lifespan context manager.
+
+        On startup the async log handler is installed and the log
+        broadcaster background task is started.  Agent-side background
+        tasks are also kicked off when an ``agent_runtime`` is attached
+        to the bot.  On shutdown the broadcaster task is cancelled and
+        awaited.
+        """
         install_log_handler()
         broadcaster_task = asyncio.create_task(log_broadcaster())
         agent_runtime = getattr(bot, "agent_runtime", None)
@@ -246,6 +254,18 @@ def create_api_app(
         websocket: WebSocket,
         token: str | None = Query(default=None),
     ) -> None:
+        """WebSocket endpoint for real-time log streaming.
+
+        Authenticates via session cookie or query-token, then registers
+        the connection with the log manager. The ``log_broadcaster``
+        background task pushes queued log records to all connected
+        clients. Incoming messages from the client are ignored; the
+        receive loop exists solely to detect disconnection.
+
+        Args:
+            websocket: The WebSocket connection from the client.
+            token: Optional JWT token passed as a query parameter.
+        """
         if not await _require_ws_auth(websocket, token):
             return
         # Note: ConnectionManager.connect also calls accept(), which is idempotent if already accepted.
@@ -299,6 +319,17 @@ def create_api_app(
         websocket: WebSocket,
         token: str | None = Query(default=None),
     ) -> None:
+        """WebSocket endpoint for periodic system-status broadcasting.
+
+        Authenticates via session cookie or query-token, then pushes a
+        ``_build_system_status`` snapshot to the client every 3 seconds.
+        A background keep-alive receiver monitors the socket for
+        client-side disconnection.
+
+        Args:
+            websocket: The WebSocket connection from the client.
+            token: Optional JWT token passed as a query parameter.
+        """
         await _serve_status_socket(websocket, token)
 
     # ── Static dashboard hosting + SPA fallback ──────────────────────
@@ -311,11 +342,23 @@ def create_api_app(
 
         @app.get("/", include_in_schema=False)
         async def dashboard_root() -> FileResponse:
+            """Serve the dashboard ``index.html`` at the application root."""
             assert boot.dashboard_index_file is not None
             return FileResponse(boot.dashboard_index_file)
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def dashboard_spa_fallback(full_path: str) -> FileResponse:
+            """SPA catch-all route that serves static files or falls back to ``index.html``.
+
+            Requests whose path starts with ``api/`` or ``ws/`` are
+            excluded and return a 404. For all other paths, an
+            on-disk file is returned when it exists; otherwise the
+            dashboard ``index.html`` is served so that the Vue
+            router can handle client-side routing.
+
+            Args:
+                full_path: The URL path after the root (e.g. ``assets/app.js``).
+            """
             # Keep API and WS paths isolated from SPA fallback.
             if full_path.startswith("api/") or full_path.startswith("ws/"):
                 from fastapi import HTTPException

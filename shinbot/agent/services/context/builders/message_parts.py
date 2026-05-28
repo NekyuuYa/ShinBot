@@ -31,6 +31,19 @@ def parse_message_parts(
     *,
     self_platform_id: str = "",
 ) -> list[NormalizedMessagePart]:
+    """Normalize a stored message record into formatter-friendly parts.
+
+    Parses the ``content_json`` AST payload into typed parts (text,
+    mention, quote, image, poke). Falls back to plain ``raw_text``
+    when no JSON content is available.
+
+    Args:
+        record: Message record dict from the persistence layer.
+        self_platform_id: Platform ID of the bot itself.
+
+    Returns:
+        List of normalized message parts.
+    """
     content_json = str(record.get("content_json", "") or "").strip()
     if not content_json:
         text = str(record.get("raw_text", "") or "").strip()

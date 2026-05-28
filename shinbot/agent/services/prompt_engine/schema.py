@@ -85,6 +85,14 @@ class PromptComponent(BaseModel):
 
     @model_validator(mode="after")
     def validate_component_shape(self) -> PromptComponent:
+        """Validate that component fields are consistent with its kind.
+
+        Returns:
+            The validated component instance.
+
+        Raises:
+            ValueError: If required fields are missing or incompatible.
+        """
         if not self.id.strip():
             raise ValueError("PromptComponent.id must not be empty")
 
@@ -137,6 +145,14 @@ class PromptInjection(BaseModel):
 
     @model_validator(mode="after")
     def validate_injection_shape(self) -> PromptInjection:
+        """Validate that injection fields are well-formed.
+
+        Returns:
+            The validated injection instance.
+
+        Raises:
+            ValueError: If component_id is empty.
+        """
         if not self.component_id.strip():
             raise ValueError("PromptInjection.component_id must not be empty")
         return self
@@ -300,8 +316,21 @@ class PromptLoggerRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_json(self) -> str:
+        """Serialize the record to a JSON string.
+
+        Returns:
+            JSON-encoded string representation.
+        """
         return json.dumps(self.model_dump(mode="json"), ensure_ascii=False)
 
 
 def stable_text_hash(text: str) -> str:
+    """Compute a deterministic SHA-256 hex digest for the given text.
+
+    Args:
+        text: Input string to hash.
+
+    Returns:
+        Lowercase hex-encoded SHA-256 hash.
+    """
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

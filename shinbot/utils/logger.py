@@ -48,6 +48,7 @@ class LogSourceRegistration:
     color: str = ""
 
     def to_payload(self, logger_name: str) -> dict[str, str]:
+        """Serialize the registration to a JSON-friendly dict."""
         return {
             "loggerName": logger_name,
             "source": self.source,
@@ -56,6 +57,7 @@ class LogSourceRegistration:
 
 
 def display_log_level(record: logging.LogRecord) -> str:
+    """Return the normalized level name for display from a log record."""
     return normalize_log_level(record.levelname)
 
 
@@ -253,6 +255,16 @@ class RuntimeLogManager:
         stream: TextIO | None = None,
         use_color: bool = True,
     ) -> logging.Handler:
+        """Build a console logging handler with optional color support.
+
+        Args:
+            level: Minimum log level for the handler.
+            stream: Output stream (defaults to stderr).
+            use_color: Whether to emit ANSI color codes.
+
+        Returns:
+            A configured logging.Handler instance.
+        """
         console = logging.StreamHandler(stream)
         console.setLevel(level)
         console.addFilter(_ReadableContextFilter(self))
@@ -307,6 +319,7 @@ class RuntimeLogManager:
         return self._third_party_noise_policy
 
     def third_party_noise_policy(self) -> ThirdPartyNoisePolicy:
+        """Return the current third-party noise policy."""
         return self._third_party_noise_policy
 
     def apply_runtime_config(
@@ -315,6 +328,15 @@ class RuntimeLogManager:
         level_name: str | None = None,
         third_party_noise: str | None = None,
     ) -> dict[str, Any]:
+        """Apply partial logging configuration and return the updated snapshot.
+
+        Args:
+            level_name: New root log level, or None to leave unchanged.
+            third_party_noise: New noise policy, or None to leave unchanged.
+
+        Returns:
+            The current logging state after applying changes.
+        """
         if level_name is not None:
             self.set_root_log_level(level_name)
         if third_party_noise is not None:
@@ -338,6 +360,7 @@ class RuntimeLogManager:
         }
 
     def source_payloads(self) -> list[dict[str, str]]:
+        """Return all registered source payloads for API responses."""
         return [
             registration.to_payload(logger_name)
             for logger_name, registration in sorted(self._source_by_logger_name.items())
@@ -345,6 +368,7 @@ class RuntimeLogManager:
 
     @staticmethod
     def handler_payloads(root: logging.Logger) -> list[dict[str, Any]]:
+        """Return a summary of all handlers attached to the root logger."""
         handlers: list[dict[str, Any]] = []
         for handler in root.handlers:
             handlers.append(
@@ -414,6 +438,7 @@ class RuntimeLogManager:
 
     @staticmethod
     def iter_console_handlers(root: logging.Logger) -> Iterator[logging.Handler]:
+        """Yield only ShinBot-marked console handlers from the root logger."""
         for handler in root.handlers:
             if getattr(handler, "_shinbot_console_handler", False):
                 yield handler
@@ -549,6 +574,16 @@ def build_console_handler(
     stream: TextIO | None = None,
     use_color: bool = True,
 ) -> logging.Handler:
+    """Build a console handler using the global runtime log manager.
+
+    Args:
+        level: Minimum log level for the handler.
+        stream: Output stream (defaults to stderr).
+        use_color: Whether to emit ANSI color codes.
+
+    Returns:
+        A configured logging.Handler instance.
+    """
     return runtime_log_manager.build_console_handler(
         level,
         stream=stream,
@@ -606,16 +641,34 @@ def set_root_log_level(level_name: str) -> str:
 
 
 def get_logger(name: str, *, source: str = "", color: str = "") -> logging.Logger:
+    """Return a namespaced logger with an optional compact display source.
+
+    Args:
+        name: Logger name (typically a dotted namespace).
+        source: Short display label for console output.
+        color: ANSI color name for the source label.
+    """
     if source:
         register_log_source(name, source, color=color)
     return logging.getLogger(name)
 
 
 def get_plugin_logger(plugin_id: str, *, color: str = "") -> logging.Logger:
+    """Return a logger pre-configured for a specific plugin.
+
+    Args:
+        plugin_id: The plugin's unique identifier.
+        color: ANSI color name for the console source label.
+    """
     return get_logger(f"shinbot.plugin.{plugin_id}", source=f"plugin:{plugin_id}", color=color)
 
 
 def normalize_root_log_level(level_name: str) -> str:
+    """Normalize and validate a log level name for use with the root logger.
+
+    Raises:
+        ValueError: If the level name is not a supported log level.
+    """
     normalized = str(level_name or "").strip().upper()
     if normalized == "WARN":
         normalized = "WARNING"
@@ -629,6 +682,16 @@ def normalize_third_party_noise_policy(
     *,
     strict: bool = False,
 ) -> ThirdPartyNoisePolicy:
+    """Normalize a third-party noise policy string.
+
+    Args:
+        policy: The policy string to normalize.
+        strict: If True, raise ValueError on unsupported policies.
+            Otherwise fall back to 'debug'.
+
+    Returns:
+        A valid ThirdPartyNoisePolicy value.
+    """
     normalized = str(policy or "debug").strip().lower()
     if normalized not in _THIRD_PARTY_NOISE_POLICIES:
         if strict:

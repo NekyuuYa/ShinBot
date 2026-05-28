@@ -9,10 +9,34 @@ from typing import Any
 
 
 def plugin_module(plugin_manager: Any, plugin_id: str) -> Any | None:
+    """Resolve a plugin's Python module by its identifier.
+
+    Args:
+        plugin_manager: The plugin manager instance that owns loaded modules.
+        plugin_id: The unique identifier of the plugin.
+
+    Returns:
+        The plugin's Python module, or ``None`` if not loaded.
+    """
     return plugin_manager._modules.get(plugin_id)
 
 
 def plugin_locales(plugin_manager: Any, plugin_id: str) -> dict[str, dict[str, str]]:
+    """Collect locale translation maps for a plugin.
+
+    Locale entries are gathered from on-disk ``locales/*.json`` files next to
+    the module first; falling back to the module's ``__plugin_locales__``
+    attribute when no files are found.
+
+    Args:
+        plugin_manager: The plugin manager instance.
+        plugin_id: The unique identifier of the plugin.
+
+    Returns:
+        A mapping of locale codes (e.g. ``"en-US"``) to key/value translation
+        dictionaries.  An empty dict is returned when the module is unknown or
+        has no locale data.
+    """
     module = plugin_module(plugin_manager, plugin_id)
     if module is None:
         return {}
@@ -63,6 +87,19 @@ def _plugin_file_locales(module: Any) -> dict[str, dict[str, str]]:
 
 
 def plugin_config_class(plugin_manager: Any, plugin_id: str) -> type[Any] | None:
+    """Retrieve the Pydantic configuration class declared by a plugin.
+
+    The plugin module must expose a ``__plugin_config_class__`` attribute whose
+    value implements ``model_validate`` (i.e. is a Pydantic ``BaseModel``
+    subclass).
+
+    Args:
+        plugin_manager: The plugin manager instance.
+        plugin_id: The unique identifier of the plugin.
+
+    Returns:
+        The Pydantic model class, or ``None`` if the plugin has no config class.
+    """
     module = plugin_module(plugin_manager, plugin_id)
     if module is None:
         return None
@@ -71,6 +108,19 @@ def plugin_config_class(plugin_manager: Any, plugin_id: str) -> type[Any] | None
 
 
 def plugin_config_schema(plugin_manager: Any, plugin_id: str) -> dict[str, Any] | None:
+    """Return the JSON Schema for a plugin's configuration.
+
+    ``$ref`` and ``$defs`` definitions are inlined so that frontend consumers
+    receive a self-contained schema.
+
+    Args:
+        plugin_manager: The plugin manager instance.
+        plugin_id: The unique identifier of the plugin.
+
+    Returns:
+        An inlined JSON Schema dict, or ``None`` when the plugin has no
+        config class.
+    """
     cfg_cls = plugin_config_class(plugin_manager, plugin_id)
     if cfg_cls is None or not hasattr(cfg_cls, "model_json_schema"):
         return None
@@ -115,6 +165,21 @@ def plugin_config_entry(
     *,
     create: bool = False,
 ) -> dict[str, Any] | None:
+    """Look up (and optionally create) a plugin's entry in the main config dict.
+
+    Plugins are stored as a list under the ``"plugins"`` key.  Each entry is a
+    dict containing at least ``"id"``.
+
+    Args:
+        config: The top-level bot configuration dictionary.
+        plugin_id: The unique identifier of the plugin.
+        create: When ``True`` and no entry exists, a new one is appended with
+            default ``enabled=True`` and an empty ``config`` block.
+
+    Returns:
+        The existing or newly created config entry, or ``None`` when not found
+        and *create* is ``False``.
+    """
     plugins = config.setdefault("plugins", []) if create else config.get("plugins", [])
     if not isinstance(plugins, list):
         if not create:
@@ -138,6 +203,19 @@ def plugin_config_block(
     config: dict[str, Any],
     plugin_id: str,
 ) -> dict[str, Any]:
+    """Return a plugin's config block from the main configuration.
+
+    This is a convenience wrapper around :func:`plugin_config_entry` that
+    extracts the ``"config"`` sub-dict.
+
+    Args:
+        config: The top-level bot configuration dictionary.
+        plugin_id: The unique identifier of the plugin.
+
+    Returns:
+        A **copy** of the plugin's config block, or an empty dict when the
+        plugin entry or its config sub-dict is missing.
+    """
     item = plugin_config_entry(config, plugin_id)
     if item is not None:
         block = item.get("config", {})
@@ -150,6 +228,15 @@ def plugin_saved_config(
     boot: Any,
     plugin_id: str,
 ) -> dict[str, Any]:
+    """Retrieve the persisted config block for a plugin from the boot context.
+
+    Args:
+        boot: The ``BootController`` (or equivalent) holding ``boot.config``.
+        plugin_id: The unique identifier of the plugin.
+
+    Returns:
+        A copy of the plugin's config block, or an empty dict.
+    """
     return plugin_config_block(boot.config, plugin_id)
 
 
@@ -157,6 +244,16 @@ def plugin_saved_enabled(
     boot: Any,
     plugin_id: str,
 ) -> bool | None:
+    """Check whether a plugin is enabled in the persisted configuration.
+
+    Args:
+        boot: The ``BootController`` (or equivalent) holding ``boot.config``.
+        plugin_id: The unique identifier of the plugin.
+
+    Returns:
+        ``True`` if enabled, ``False`` if explicitly disabled, or ``None`` when
+        the plugin entry has no ``enabled`` field.
+    """
     item = plugin_config_entry(boot.config, plugin_id)
     if item is not None and "enabled" in item:
         return normalize_plugin_enabled(item.get("enabled"))
@@ -164,12 +261,33 @@ def plugin_saved_enabled(
 
 
 def set_plugin_saved_enabled(boot: Any, plugin_id: str, enabled: bool) -> None:
+    """Persist the enabled/disabled state for a plugin.
+
+    If the plugin entry does not yet exist it will be created.
+
+    Args:
+        boot: The ``BootController`` (or equivalent) holding ``boot.config``.
+        plugin_id: The unique identifier of the plugin.
+        enabled: ``True`` to enable, ``False`` to disable.
+    """
     item = plugin_config_entry(boot.config, plugin_id, create=True)
     assert item is not None
     item["enabled"] = bool(enabled)
 
 
 def normalize_plugin_enabled(value: Any) -> bool | None:
+    """Coerce a raw enabled value to a boolean or ``None``.
+
+    Accepts booleans, numeric values (0 → ``False``), and common string
+    representations (``"true"``, ``"yes"``, ``"on"``, ``"enabled"``, etc.).
+
+    Args:
+        value: The raw value from configuration.
+
+    Returns:
+        ``True`` / ``False`` for recognised truthy/falsy values, or ``None``
+        when the value cannot be interpreted.
+    """
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
@@ -186,6 +304,18 @@ def normalize_plugin_enabled(value: Any) -> bool | None:
 
 
 def request_locales(header: str) -> list[str]:
+    """Parse an HTTP ``Accept-Language`` header into an ordered locale list.
+
+    ``zh-CN`` and ``en-US`` are always appended as fallbacks so that at least
+    one common locale is present.
+
+    Args:
+        header: The raw ``Accept-Language`` header value.
+
+    Returns:
+        A list of locale codes ordered by client preference with fallbacks at
+        the end.
+    """
     locales: list[str] = []
     for chunk in header.split(","):
         code = chunk.split(";")[0].strip()
@@ -198,6 +328,20 @@ def request_locales(header: str) -> list[str]:
 def resolve_translations(
     locales: dict[str, dict[str, str]], requested: list[str]
 ) -> dict[str, str]:
+    """Select the best matching translation map from available locales.
+
+    Matching proceeds in *requested* order.  An exact match is preferred; if
+    none is found, a language-only prefix match (e.g. ``"en"`` for ``"en-GB"``)
+    is attempted.
+
+    Args:
+        locales: Available locale → translation mappings.
+        requested: Ordered list of preferred locale codes (highest priority
+            first).
+
+    Returns:
+        The matched translation dict, or an empty dict when no locale matches.
+    """
     for locale in requested:
         if locale in locales:
             return locales[locale]
@@ -212,6 +356,20 @@ def translate_plugin_schema(
     schema: dict[str, Any] | None,
     translations: dict[str, str],
 ) -> dict[str, Any] | None:
+    """Apply translations to a JSON Schema used by the plugin config UI.
+
+    Supported translation keys: ``config.title``, ``config.description``, and
+    ``config.fields.<path>.label``, ``config.fields.<path>.description``,
+    ``config.fields.<path>.options.<value>`` for nested properties.
+
+    Args:
+        schema: The original JSON Schema dict, or ``None``.
+        translations: A flat mapping of translation keys to translated strings.
+
+    Returns:
+        A deep copy of *schema* with translated strings injected, or ``None``
+        when *schema* is ``None``.
+    """
     if schema is None:
         return None
 
@@ -225,6 +383,16 @@ def translate_plugin_schema(
 
 
 def unflatten_config(raw: dict[str, Any]) -> dict[str, Any]:
+    """Expand dot-separated flat keys into a nested dictionary.
+
+    For example, ``{"a.b.c": 1}`` becomes ``{"a": {"b": {"c": 1}}}``.
+
+    Args:
+        raw: A flat configuration mapping with dot-separated keys.
+
+    Returns:
+        A new nested dictionary.
+    """
     nested: dict[str, Any] = {}
     for key, value in raw.items():
         if not isinstance(key, str) or not key:
@@ -252,6 +420,21 @@ def normalize_plugin_config(
     plugin_id: str,
     config: dict[str, Any],
 ) -> dict[str, Any]:
+    """Expand and validate a plugin's raw config through its Pydantic model.
+
+    Flat dot-separated keys are first expanded via :func:`unflatten_config`.
+    If the plugin declares a config class, the expanded dict is validated and
+    ``None``-valued fields are stripped.  When no config class exists the
+    expanded dict is returned as-is.
+
+    Args:
+        plugin_manager: The plugin manager instance.
+        plugin_id: The unique identifier of the plugin.
+        config: Raw plugin configuration with flat or nested keys.
+
+    Returns:
+        The validated and cleaned configuration dictionary.
+    """
     cfg_cls = plugin_config_class(plugin_manager, plugin_id)
     expanded = unflatten_config(config)
     if cfg_cls is None:

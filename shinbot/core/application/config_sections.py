@@ -80,6 +80,7 @@ def adapter_instance_storage_record(
 
 
 def set_adapter_instance_platform(record: dict[str, Any], platform: str) -> None:
+    """Set the adapter platform name on an instance record."""
     record["adapter"] = platform
 
 
@@ -87,6 +88,15 @@ def append_adapter_instance_record(
     config: dict[str, Any],
     record: dict[str, Any],
 ) -> tuple[int, dict[str, Any]]:
+    """Append a new adapter-instance record to the config.
+
+    Args:
+        config: The top-level configuration dict.
+        record: The adapter-instance record to append.
+
+    Returns:
+        A tuple of the new record's index and its storage representation.
+    """
     section, records = adapter_instance_store(config, create=True)
     stored = adapter_instance_storage_record(record, section=section)
     records.append(stored)
@@ -98,6 +108,16 @@ def replace_adapter_instance_record(
     index: int,
     record: dict[str, Any],
 ) -> dict[str, Any]:
+    """Replace an existing adapter-instance record at the given index.
+
+    Args:
+        config: The top-level configuration dict.
+        index: The zero-based index of the record to replace.
+        record: The new adapter-instance record.
+
+    Returns:
+        The storage representation of the replaced record.
+    """
     section, records = adapter_instance_store(config, create=True)
     stored = adapter_instance_storage_record(record, section=section)
     records[index] = stored
@@ -105,6 +125,19 @@ def replace_adapter_instance_record(
 
 
 def normalize_enabled(value: Any, *, default: bool = True) -> bool:
+    """Normalize a boolean-like value to a Python bool.
+
+    Accepts booleans, truthy/falsy strings (``"true"``, ``"yes"``, ``"1"``,
+    ``"on"``, ``"enabled"`` and their negatives), and numeric values.  Falls
+    back to *default* when the value is ``None`` or an unrecognized string.
+
+    Args:
+        value: The raw value to normalize.
+        default: Fallback boolean when the value cannot be interpreted.
+
+    Returns:
+        The normalized boolean value.
+    """
     if value is None:
         return default
     if isinstance(value, bool):
@@ -120,4 +153,5 @@ def normalize_enabled(value: Any, *, default: bool = True) -> bool:
 
 
 def timestamp_now() -> int:
+    """Return the current Unix timestamp as an integer."""
     return int(time.time())

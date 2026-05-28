@@ -55,10 +55,23 @@ class PersonaFileRepository:
     """Repository for user-editable persona Markdown files."""
 
     def __init__(self, root: Path | str) -> None:
+        """Initialize the repository with a root directory for persona files.
+
+        Args:
+            root: Path to the directory containing persona Markdown files.
+        """
         self.root = Path(root)
 
     @classmethod
     def from_data_dir(cls, data_dir: Path | str) -> PersonaFileRepository:
+        """Create a repository rooted at ``<data_dir>/personas``.
+
+        Args:
+            data_dir: Application data directory.
+
+        Returns:
+            A new PersonaFileRepository instance.
+        """
         return cls(Path(data_dir) / "personas")
 
     def ensure_default_persona(self) -> Path:
@@ -72,12 +85,25 @@ class PersonaFileRepository:
         return target
 
     def list(self) -> list[dict[str, object]]:
+        """Return all persona records as serialised dictionaries.
+
+        Returns:
+            A list of persona payload dicts sorted by default-first, then name.
+        """
         if not self.root.is_dir():
             return []
         records = [self._load_file(path) for path in sorted(self.root.glob("*.md"))]
         return [serialize_persona_record(record) for record in sorted(records, key=_sort_key)]
 
     def get(self, persona_id: str) -> dict[str, object] | None:
+        """Look up a persona by its normalised ID.
+
+        Args:
+            persona_id: The persona identifier.
+
+        Returns:
+            Serialised persona dict, or ``None`` if not found.
+        """
         normalized = normalize_persona_id(persona_id)
         path = self.root / f"{normalized}.md"
         if not path.is_file():
@@ -85,6 +111,14 @@ class PersonaFileRepository:
         return serialize_persona_record(self._load_file(path))
 
     def get_by_name(self, name: str) -> dict[str, object] | None:
+        """Look up a persona by display name.
+
+        Args:
+            name: The persona display name to search for.
+
+        Returns:
+            Serialised persona dict, or ``None`` if not found.
+        """
         normalized = name.strip()
         if not normalized:
             return None
@@ -102,6 +136,21 @@ class PersonaFileRepository:
         tags: list[str],
         enabled: bool,
     ) -> dict[str, object]:
+        """Create a new persona file on disk.
+
+        Args:
+            persona_id: Optional explicit persona ID; derived from name if omitted.
+            name: Display name for the persona.
+            prompt_text: The prompt body text.
+            tags: List of tags.
+            enabled: Whether the persona is enabled.
+
+        Returns:
+            Serialised payload of the newly created persona.
+
+        Raises:
+            PersonaFileError: If a persona with the same ID or name already exists.
+        """
         normalized_name, normalized_prompt = normalize_persona_input(name, prompt_text)
         normalized_tags = normalize_persona_tags(tags)
         normalized_id = normalize_persona_id(persona_id or _derive_persona_id(normalized_name))
@@ -142,6 +191,21 @@ class PersonaFileRepository:
         tags: list[str],
         enabled: bool,
     ) -> dict[str, object]:
+        """Update an existing persona file on disk.
+
+        Args:
+            persona_id: The persona identifier to update.
+            name: New display name.
+            prompt_text: New prompt body text.
+            tags: New list of tags.
+            enabled: New enabled state.
+
+        Returns:
+            Serialised payload of the updated persona.
+
+        Raises:
+            PersonaFileError: If the persona does not exist or name conflicts.
+        """
         normalized_id = normalize_persona_id(persona_id)
         current = self.get(normalized_id)
         if current is None:
@@ -176,6 +240,14 @@ class PersonaFileRepository:
         return payload
 
     def delete(self, persona_id: str) -> None:
+        """Delete a persona file by its normalised ID.
+
+        Args:
+            persona_id: The persona identifier.
+
+        Raises:
+            PersonaFileError: If the persona does not exist.
+        """
         normalized = normalize_persona_id(persona_id)
         path = self.root / f"{normalized}.md"
         if not path.is_file():
@@ -258,6 +330,14 @@ class PersonaFileRepository:
 
 
 def serialize_persona_record(record: PersonaFileRecord) -> dict[str, object]:
+    """Convert a ``PersonaFileRecord`` to a plain dictionary.
+
+    Args:
+        record: The persona file record to serialise.
+
+    Returns:
+        A dict suitable for API responses.
+    """
     return {
         "uuid": record.uuid,
         "name": record.name,
@@ -273,6 +353,14 @@ def serialize_persona_record(record: PersonaFileRecord) -> dict[str, object]:
 
 
 def serialize_persona(payload: dict[str, object]) -> dict[str, object]:
+    """Map an internal persona payload to the camelCase API shape.
+
+    Args:
+        payload: Internal persona dict with snake_case keys.
+
+    Returns:
+        A dict with camelCase keys for the front-end.
+    """
     return {
         "uuid": payload["uuid"],
         "name": payload["name"],
@@ -285,10 +373,26 @@ def serialize_persona(payload: dict[str, object]) -> dict[str, object]:
 
 
 def persona_component_id(persona_id: str) -> str:
+    """Return the prompt component ID for a given persona.
+
+    Args:
+        persona_id: The persona identifier.
+
+    Returns:
+        A component ID string in the form ``persona.<id>``.
+    """
     return f"persona.{normalize_persona_id(persona_id)}"
 
 
 def persona_prompt_component(payload: dict[str, object]) -> PromptComponent:
+    """Build a ``PromptComponent`` from a serialised persona payload.
+
+    Args:
+        payload: Serialised persona dict (snake_case keys).
+
+    Returns:
+        A PromptComponent placed in the ``IDENTITY`` stage.
+    """
     persona_id = normalize_persona_id(str(payload["uuid"]))
     return PromptComponent(
         id=persona_component_id(persona_id),
@@ -310,6 +414,17 @@ def persona_prompt_component(payload: dict[str, object]) -> PromptComponent:
 
 
 def normalize_persona_id(value: str) -> str:
+    """Validate and normalise a persona identifier.
+
+    Args:
+        value: Raw persona ID string.
+
+    Returns:
+        The stripped, validated persona ID.
+
+    Raises:
+        PersonaFileError: If the ID is empty or contains invalid characters.
+    """
     normalized = value.strip()
     if not normalized or not PERSONA_ID_RE.fullmatch(normalized):
         raise PersonaFileError(
@@ -321,6 +436,18 @@ def normalize_persona_id(value: str) -> str:
 
 
 def normalize_persona_input(name: str, prompt_text: str) -> tuple[str, str]:
+    """Validate and strip a persona name and prompt text pair.
+
+    Args:
+        name: Raw persona name.
+        prompt_text: Raw prompt text.
+
+    Returns:
+        A tuple of (stripped name, stripped prompt text).
+
+    Raises:
+        PersonaFileError: If either field is empty after stripping.
+    """
     normalized_name = name.strip()
     normalized_prompt = prompt_text.strip()
     if not normalized_name:
@@ -339,6 +466,14 @@ def normalize_persona_input(name: str, prompt_text: str) -> tuple[str, str]:
 
 
 def normalize_persona_tags(tags: list[str]) -> list[str]:
+    """Deduplicate and strip a list of persona tags.
+
+    Args:
+        tags: Raw tag strings.
+
+    Returns:
+        Deduplicated list of stripped, non-empty tags.
+    """
     seen: set[str] = set()
     normalized: list[str] = []
     for tag in tags:
@@ -362,6 +497,22 @@ def render_persona_markdown(
     version: str = "1.0.0",
     description: str = "",
 ) -> str:
+    """Render a persona as a Markdown file with YAML front-matter.
+
+    Args:
+        persona_id: The persona identifier.
+        name: Display name.
+        prompt_text: The prompt body text.
+        tags: List of tags.
+        enabled: Whether the persona is enabled.
+        created_at: ISO timestamp of creation.
+        updated_at: ISO timestamp of last update.
+        version: Semantic version string.
+        description: Optional human-readable description.
+
+    Returns:
+        A complete Markdown string with YAML front-matter.
+    """
     lines = [
         "---",
         f"id: {_yaml_string(persona_id)}",

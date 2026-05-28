@@ -107,6 +107,12 @@ class ActiveReplyDispatcher:
         review_plan: ReviewPlan,
         unread_messages: list[UnreadMessage],
     ) -> None:
+        """Run the review workflow for a session and hand off to active chat if needed.
+        Args:
+            session_id: The session to review.
+            review_plan: The current review plan with timing metadata.
+            unread_messages: Messages accumulated since the last review.
+        """
         if self._review_coordinator is None or self._agent_scheduler is None:
             return
 
@@ -195,6 +201,13 @@ class ActiveReplyDispatcher:
         review_result_summary=None,
         initial_unread_messages: list[UnreadMessage] | None = None,
     ) -> None:
+        """Start an active chat workflow session for the given session.
+        Args:
+            session_id: The session to start active chat for.
+            active_chat_state: The initial active chat state with interest values.
+            review_result_summary: Optional review handoff context for bootstrap.
+            initial_unread_messages: Messages to forward to the active chat workflow.
+        """
         if self._active_chat_workflow is None:
             return
 
@@ -233,6 +246,10 @@ class ActiveReplyDispatcher:
             )
 
     def stop_active_chat(self, session_id: str) -> None:
+        """Stop the active chat workflow and persist conversation summaries.
+        Args:
+            session_id: The session whose active chat workflow to stop.
+        """
         if self._active_chat_workflow is None:
             return
 
@@ -262,6 +279,21 @@ class ActiveReplyDispatcher:
         active_chat_state: ActiveChatState,
         trace_id: str = "",
     ) -> None:
+        """Notify the active chat workflow of a new incoming message.
+        Args:
+            session_id: The session receiving the message.
+            message_log_id: The persisted message log identifier.
+            sender_id: Platform ID of the message sender.
+            response_profile: Response profile label (e.g. ``"balanced"``).
+            is_mentioned: Whether the bot was mentioned in this message.
+            is_reply_to_bot: Whether this message replies to the bot.
+            is_mention_to_other: Whether the message mentions another user.
+            is_poke_to_bot: Whether this is a poke directed at the bot.
+            is_poke_to_other: Whether this is a poke directed at another user.
+            self_platform_id: The bot's own platform identifier.
+            active_chat_state: The current active chat state.
+            trace_id: Optional distributed trace identifier.
+        """
         if self._active_chat_workflow is None or self._agent_scheduler is None:
             return
 

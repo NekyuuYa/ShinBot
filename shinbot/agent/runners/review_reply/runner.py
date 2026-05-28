@@ -46,6 +46,14 @@ class NoopReplyDecisionStageRunner:
     """No-op reply decision runner."""
 
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
+        """Return a no-op reply decision with candidate ids as targets.
+
+        Args:
+            stage_input: Review stage input (used to extract candidate ids).
+
+        Returns:
+            An output with no reply and a noop reason.
+        """
         candidate_ids = _candidate_message_ids_from_stage(stage_input)
         return ReplyDecisionStageOutput(target_message_ids=candidate_ids)
 
@@ -101,6 +109,18 @@ class LLMReplyDecisionStageRunner:
         )
 
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
+        """Run the LLM-based reply decision stage.
+
+        Executes tool calls produced by the model (e.g. send_reply, no_reply)
+        and returns a typed decision output.
+
+        Args:
+            stage_input: Review stage input with conversation context.
+
+        Returns:
+            A reply decision indicating whether a reply was sent, along with
+            the target message ids and reason.
+        """
         plan = await self._template.run(stage_input)
         if plan.reason in ("tool_call_plan_build_failed", "tool_call_plan_llm_failed"):
             return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")

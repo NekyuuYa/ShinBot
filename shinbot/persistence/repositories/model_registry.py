@@ -29,21 +29,44 @@ class ModelRegistryError(ValueError):
 
 
 class ModelRegistryRepository:
-    """Provider/model/route registry stored as a single editable JSON file."""
+    """Provider/model/route registry stored as a single editable JSON file.
+
+    The registry file (``models.json``) contains three top-level arrays:
+    ``providers``, ``models``, and ``routes``, each normalised to a
+    consistent schema on read. All mutations are atomic (write-to-temp then
+    rename) to avoid corruption.
+    """
 
     def __init__(self, source: DatabaseManager | Path | str) -> None:
+        """Initialise the registry.
+
+        Args:
+            source: A ``DatabaseManager``, ``Path``, or string path to the
+                JSON registry file or its parent directory.
+        """
         self.path = _resolve_registry_path(source)
 
     @classmethod
     def from_data_dir(cls, data_dir: Path | str) -> ModelRegistryRepository:
+        """Create a repository instance pointing at *data_dir*/models.json."""
         return cls(Path(data_dir) / MODEL_REGISTRY_FILENAME)
 
     def ensure_file(self) -> Path:
+        """Create the registry JSON file with an empty payload if it does not exist.
+
+        Returns the path to the registry file.
+        """
         if not self.path.exists():
             self._write_payload(_empty_payload())
         return self.path
 
     def upsert_provider(self, record: ModelProviderRecord) -> None:
+        """Add or update a provider entry.
+
+        If a provider with the same ID already exists it is replaced in
+        place (preserving ``created_at``). Otherwise it is appended.
+        Raises :class:`ModelRegistryError` on serialisation failures.
+        """
         payload = self._read_payload()
         provider = _provider_from_record(record)
         existing = _find_by_id(payload["providers"], provider["id"])
@@ -56,17 +79,24 @@ class ModelRegistryRepository:
         self._write_payload(payload)
 
     def list_providers(self) -> list[dict[str, Any]]:
+        """Return all providers sorted by ID."""
         payload = self._read_payload()
         providers = [_normalize_provider(item) for item in payload["providers"]]
         providers.sort(key=lambda item: item["id"])
         return providers
 
     def get_provider(self, provider_id: str) -> dict[str, Any] | None:
+        """Return the provider with *provider_id*, or ``None`` if not found."""
         payload = self._read_payload()
         provider = _find_by_id(payload["providers"], provider_id)
         return _normalize_provider(provider) if provider is not None else None
 
     def delete_provider(self, provider_id: str) -> int:
+        """Delete a provider and all its models and route-member references.
+
+        Returns ``1`` if the provider was found and removed, ``0`` otherwise.
+        Model memberships in routes are automatically cleaned up.
+        """
         payload = self._read_payload()
         providers = payload["providers"]
         provider = _find_by_id(providers, provider_id)
@@ -89,6 +119,11 @@ class ModelRegistryRepository:
         return 1
 
     def rename_provider(self, provider_id: str, new_provider_id: str) -> None:
+        """Rename a provider ID and cascade the change to all its models.
+
+        No-op if the IDs are identical. Raises :class:`ModelRegistryError`
+        if *new_provider_id* is already taken.
+        """
         if provider_id == new_provider_id:
             return
         payload = self._read_payload()
@@ -107,6 +142,12 @@ class ModelRegistryRepository:
         self._write_payload(payload)
 
     def upsert_model(self, record: ModelDefinitionRecord) -> None:
+        """Add or update a model definition.
+
+        The model's ``provider_id`` must reference an existing provider,
+        otherwise :class:`ModelRegistryError` is raised. Existing entries
+        are replaced in place (preserving ``created_at``).
+        """
         payload = self._read_payload()
         model = _model_from_record(record)
         if _find_by_id(payload["providers"], model["provider_id"]) is None:
@@ -122,6 +163,11 @@ class ModelRegistryRepository:
         self._write_payload(payload)
 
     def list_models(self, *, provider_id: str | None = None) -> list[dict[str, Any]]:
+        """Return all models whose parent provider still exists.
+
+        When *provider_id* is given only models belonging to that provider
+        are returned. Results are sorted by (provider_id, model_id).
+        """
         payload = self._read_payload()
         provider_ids = {str(item.get("id")) for item in payload["providers"]}
         models: list[dict[str, Any]] = []
@@ -136,6 +182,11 @@ class ModelRegistryRepository:
         return models
 
     def get_model(self, model_id: str) -> dict[str, Any] | None:
+        """Return the model with *model_id*, or ``None`` if not found.
+
+        Returns ``None`` also when the model exists but its parent
+        provider has been deleted.
+        """
         payload = self._read_payload()
         model = _find_by_id(payload["models"], model_id)
         if model is None:
@@ -146,6 +197,10 @@ class ModelRegistryRepository:
         return normalized
 
     def delete_model(self, model_id: str) -> int:
+        """Delete a model and remove it from all route memberships.
+
+        Returns ``1`` if the model was found and removed, ``0`` otherwise.
+        """
         payload = self._read_payload()
         model = _find_by_id(payload["models"], model_id)
         if model is None:
@@ -162,6 +217,14 @@ class ModelRegistryRepository:
         *,
         members: list[ModelRouteMemberRecord] | None = None,
     ) -> None:
+        """Add or update a model route.
+
+        When *members* is provided all existing members are replaced with
+        the new list. Each member's ``model_id`` must reference an existing
+        model, otherwise :class:`ModelRegistryError` is raised. Existing
+        routes are replaced in place (preserving ``created_at`` and members
+        when *members* is ``None``).
+        """
         payload = self._read_payload()
         route = _route_from_record(record)
         if members is not None:
@@ -186,17 +249,23 @@ class ModelRegistryRepository:
         self._write_payload(payload)
 
     def list_routes(self) -> list[dict[str, Any]]:
+        """Return all routes sorted by ID."""
         payload = self._read_payload()
         routes = [_normalize_route(item) for item in payload["routes"]]
         routes.sort(key=lambda item: item["id"])
         return routes
 
     def get_route(self, route_id: str) -> dict[str, Any] | None:
+        """Return the route with *route_id*, or ``None`` if not found."""
         payload = self._read_payload()
         route = _find_by_id(payload["routes"], route_id)
         return _normalize_route(route) if route is not None else None
 
     def delete_route(self, route_id: str) -> int:
+        """Delete a route by ID.
+
+        Returns ``1`` if the route was found and removed, ``0`` otherwise.
+        """
         payload = self._read_payload()
         route = _find_by_id(payload["routes"], route_id)
         if route is None:
@@ -206,6 +275,11 @@ class ModelRegistryRepository:
         return 1
 
     def rename_route(self, route_id: str, new_route_id: str) -> None:
+        """Rename a route ID.
+
+        No-op if the IDs are identical. Raises :class:`ModelRegistryError`
+        if *new_route_id* is already taken.
+        """
         if route_id == new_route_id:
             return
         payload = self._read_payload()
@@ -219,6 +293,10 @@ class ModelRegistryRepository:
         self._write_payload(payload)
 
     def list_route_members(self, route_id: str) -> list[dict[str, Any]]:
+        """Return the members of a route sorted by priority then insertion order.
+
+        Returns an empty list when the route does not exist.
+        """
         payload = self._read_payload()
         route = _find_by_id(payload["routes"], route_id)
         if route is None:

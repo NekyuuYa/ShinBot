@@ -47,6 +47,11 @@ class AIInteractionRepository(Repository):
             return cursor.lastrowid  # type: ignore[return-value]
 
     def get_by_execution(self, execution_id: str) -> dict[str, Any] | None:
+        """Return an AI interaction record by execution ID, or ``None``.
+
+        Args:
+            execution_id: Unique execution identifier.
+        """
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM ai_interactions WHERE execution_id = ?",
@@ -63,6 +68,16 @@ class AIInteractionRepository(Repository):
         trigger_id: int | None = None,
         response_id: int | None = None,
     ) -> bool:
+        """Link an AI interaction to its trigger/response message log entries.
+
+        Args:
+            execution_id: Execution identifier to update.
+            trigger_id: Message log id of the triggering user message.
+            response_id: Message log id of the assistant response.
+
+        Returns:
+            ``True`` if a row was updated, ``False`` otherwise.
+        """
         with self.connect() as conn:
             cursor = conn.execute(
                 """
@@ -104,6 +119,11 @@ class PromptSnapshotRepository(Repository):
     SNAPSHOT_TTL_SECONDS = 10800  # 3 hours
 
     def insert(self, record: PromptSnapshotRecord) -> None:
+        """Persist a prompt snapshot and purge expired entries.
+
+        Args:
+            record: The snapshot record to store.
+        """
         expires_at = record.expires_at
         if expires_at is None:
             expires_at = record.created_at + self.dependency(
@@ -144,6 +164,11 @@ class PromptSnapshotRepository(Repository):
             )
 
     def get(self, snapshot_id: str) -> dict[str, Any] | None:
+        """Return a non-expired snapshot by ID, or ``None``.
+
+        Args:
+            snapshot_id: Unique snapshot identifier.
+        """
         now = time.time()
         with self.connect() as conn:
             row = conn.execute(

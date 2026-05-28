@@ -97,14 +97,14 @@ async def login(
 
 @router.post("/logout", response_model=Envelope[LogoutPayload])
 async def logout(response: Response, auth_config: AuthConfigDep):
-    """Clear the session cookie to log the user out."""
+    """Clear the session cookie and log out."""
     _clear_session_cookie(response, auth_config)
     return ok({"logged_out": True})
 
 
 @router.get("/profile", dependencies=AuthRequired, response_model=Envelope[ProfilePayload])
 async def get_profile(auth_config: AuthConfigDep):
-    """Return the current authenticated user's profile."""
+    """Return the current admin profile."""
     return ok(
         {
             "username": auth_config.username,
@@ -121,7 +121,7 @@ async def update_profile(
     auth_config: AuthConfigDep,
     boot=BootDep,
 ):
-    """Update username and/or password, re-issue session cookie."""
+    """Update admin username and/or password."""
     username = body.username.strip()
     if not username:
         raise HTTPException(

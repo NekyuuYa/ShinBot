@@ -24,6 +24,18 @@ class ContextPoolRuntime:
     pools: dict[str, ActiveContextPool] = field(default_factory=dict)
 
     def get_pool(self, session_id: str) -> ActiveContextPool:
+        """Get the message pool for a session, loading recent history if needed.
+
+        If the pool already exists in memory it is returned directly.
+        Otherwise, recent messages are fetched from the provider, converted
+        into pool payloads, and loaded into a fresh pool before returning.
+
+        Args:
+            session_id: The session identifier to retrieve a pool for.
+
+        Returns:
+            The active context pool for the given session.
+        """
         pool = self.pools.get(session_id)
         if pool is not None:
             return pool
@@ -34,6 +46,16 @@ class ContextPoolRuntime:
         return pool
 
     def append_record(self, record: MessageLogRecord, *, platform: str = "") -> None:
+        """Append a message log record to its session pool.
+
+        Converts the record into a normalised pool payload and adds it to the
+        pool for the record's session.  Records with an empty session ID are
+        silently ignored.
+
+        Args:
+            record: The message log record to append.
+            platform: Optional platform identifier to include in the payload.
+        """
         if not record.session_id:
             return
         pool = self.get_pool(record.session_id)
@@ -56,6 +78,18 @@ class ContextPoolRuntime:
         )
 
     def build_pool_payload(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Build a normalised pool payload from a raw message dictionary.
+
+        Extracts known fields with sensible defaults, composes the readable
+        content (merging text with media summaries), and returns a dictionary
+        suitable for storage in an active context pool.
+
+        Args:
+            item: A raw message dictionary (from the database or a record).
+
+        Returns:
+            A normalised payload dictionary with standardised keys.
+        """
         payload = {
             "id": item.get("id"),
             "session_id": item.get("session_id", ""),
@@ -75,6 +109,19 @@ class ContextPoolRuntime:
         return payload
 
     def compose_content(self, item: dict[str, Any]) -> str:
+        """Compose a single readable content string from message elements.
+
+        Combines the raw text of a message with any media notes produced by
+        the media service.  When no media service is configured, only the
+        raw text is returned.
+
+        Args:
+            item: A pool-payload dictionary containing ``raw_text`` and
+                ``content_json`` fields.
+
+        Returns:
+            The merged content string.
+        """
         text = str(item.get("raw_text") or "").strip()
         if self.media_service is None:
             return text
@@ -93,6 +140,19 @@ class ContextPoolRuntime:
         limit: int | None = None,
         read_only: bool = True,
     ) -> list[dict[str, Any]]:
+        """Return recent message payloads from the session pool.
+
+        Args:
+            session_id: The session to retrieve messages for.
+            limit: Maximum number of recent messages to return.  ``None``
+                returns all messages in the pool.
+            read_only: When ``True`` (default), only messages already marked
+                as read are returned.
+
+        Returns:
+            A list of normalised message dictionaries, ordered
+            oldest-to-newest.
+        """
         pool = self.get_pool(session_id)
         items = pool.export_records(read_only=read_only)
         if limit is not None:
@@ -106,6 +166,23 @@ class ContextPoolRuntime:
         fallback: dict[str, Any] | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
+        """Build a context-input dictionary for an LLM prompt.
+
+        Merges optional fallback values with live data from the session pool,
+        including conversation turns, a summary, and a token estimate.
+
+        Args:
+            session_id: The session to build context inputs for.  An empty
+                string causes only the fallback dictionary to be returned.
+            fallback: Optional base dictionary whose values are carried
+                through (and may be overridden by pool data).
+            limit: Maximum number of recent turns to include.  ``None``
+                includes all available turns.
+
+        Returns:
+            A dictionary containing ``history_turns``, ``summary``,
+            ``current_tokens``, ``context_source``, and any fallback keys.
+        """
         payload = dict(fallback or {})
         if not session_id:
             return payload
@@ -120,4 +197,11 @@ class ContextPoolRuntime:
         return payload
 
     def mark_read_until(self, session_id: str, msg_id: int) -> None:
+        """Mark all messages up to ``msg_id`` as read in the session pool.
+
+        Args:
+            session_id: The session whose pool should be updated.
+            msg_id: The message ID threshold; messages with an ID less than
+                or equal to this value are marked as read.
+        """
         self.get_pool(session_id).mark_read_until(msg_id)

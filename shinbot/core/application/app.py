@@ -239,9 +239,27 @@ class ShinBot:
     # ── Plugin management shortcuts ──────────────────────────────────
 
     def load_plugin(self, plugin_id: str, module_path: str) -> Any:
+        """Load a plugin synchronously via the plugin manager.
+
+        Args:
+            plugin_id:  Unique identifier for the plugin.
+            module_path: Dotted Python module path.
+
+        Returns:
+            Metadata describing the loaded plugin.
+        """
         return self.plugin_manager.load_plugin(plugin_id, module_path)
 
     async def load_plugin_async(self, plugin_id: str, module_path: str) -> Any:
+        """Load a plugin asynchronously via the plugin manager.
+
+        Args:
+            plugin_id:  Unique identifier for the plugin.
+            module_path: Dotted Python module path.
+
+        Returns:
+            Metadata describing the loaded plugin.
+        """
         return await self.plugin_manager.load_plugin_async(plugin_id, module_path)
 
     # ── Lifecycle ────────────────────────────────────────────────────

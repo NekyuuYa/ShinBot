@@ -37,6 +37,14 @@ class NoopOverflowCompressionStageRunner:
     """No-op compression runner."""
 
     async def run(self, stage_input: ReviewStageInput) -> OverflowCompressionStageOutput:
+        """Return a no-op compression output with no summary.
+
+        Args:
+            stage_input: Review stage input (ignored by the no-op runner).
+
+        Returns:
+            An output with an empty summary and a noop reason.
+        """
         return OverflowCompressionStageOutput(reason="noop_overflow_compression")
 
 
@@ -83,6 +91,15 @@ class LLMOverflowCompressionStageRunner:
         return self._template._config
 
     async def run(self, stage_input: ReviewStageInput) -> OverflowCompressionStageOutput:
+        """Run the LLM-based overflow compression and return a summary.
+
+        Args:
+            stage_input: Review stage input with overflow message context.
+
+        Returns:
+            An output containing the compressed summary and candidate message ids,
+            or a failed output on error.
+        """
         payload = await self._template.run(stage_input)
         if payload is None:
             return OverflowCompressionStageOutput(reason="llm_overflow_compression_failed")

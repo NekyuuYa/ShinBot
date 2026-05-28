@@ -120,6 +120,8 @@ class MessageRoute:
 
 
 class QQOfficialAdapter(BaseAdapter):
+    """QQ Official Bot adapter using direct API calls and WebSocket gateway."""
+
     def __init__(self, instance_id: str, platform: str, config: QQOfficialConfig):
         super().__init__(instance_id=instance_id, platform=platform)
         self.config = config
@@ -150,6 +152,11 @@ class QQOfficialAdapter(BaseAdapter):
     # ── BaseAdapter interface ────────────────────────────────────────
 
     async def start(self) -> None:
+        """Start the adapter by establishing the gateway WebSocket connection.
+
+        Initialises the HTTP client, event queue, and spawns the connection
+        and event worker tasks.
+        """
         self._running = True
         self._http = httpx.AsyncClient(timeout=self.config.request_timeout)
         self._event_queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAXSIZE)
@@ -170,6 +177,7 @@ class QQOfficialAdapter(BaseAdapter):
         )
 
     async def shutdown(self) -> None:
+        """Shut down the adapter, cancelling tasks and closing connections."""
         self._running = False
 
         if self._heartbeat_task and not self._heartbeat_task.done():
@@ -205,6 +213,18 @@ class QQOfficialAdapter(BaseAdapter):
         logger.info("QQOfficial adapter %s shut down", self.instance_id)
 
     async def send(self, target_session: str, elements: list[MessageElement]) -> MessageHandle:
+        """Send a message to a target session via the QQ Official API.
+
+        Resolves the session route, builds the payload, and dispatches to
+        the appropriate endpoint (group, C2C, direct, or channel).
+
+        Args:
+            target_session: The session ID identifying the target conversation.
+            elements: List of MessageElement objects representing the message content.
+
+        Returns:
+            A MessageHandle containing the platform-assigned message ID.
+        """
         route = self._resolve_route(target_session)
         response = await self._send_with_route(route, elements)
 
@@ -233,6 +253,18 @@ class QQOfficialAdapter(BaseAdapter):
         )
 
     async def call_api(self, method: str, params: dict[str, Any]) -> Any:
+        """Execute a platform-specific API call through the QQ Official adapter.
+
+        Supports standard methods (channel.message.create, message.delete, etc.)
+        as well as internal QQ Official API passthrough.
+
+        Args:
+            method: The API method name (e.g. 'channel.message.create').
+            params: A dictionary of parameters for the API call.
+
+        Returns:
+            The API response data, or None on failure.
+        """
         if method == "channel.message.create":
             channel_id = str(params.get("channel_id", ""))
             content = str(params.get("content", ""))
@@ -303,6 +335,11 @@ class QQOfficialAdapter(BaseAdapter):
         )
 
     async def get_capabilities(self) -> dict[str, Any]:
+        """Return the capabilities descriptor for this adapter instance.
+
+        Returns:
+            A dict describing supported elements, actions, and platform info.
+        """
         return {
             "elements": [
                 "text",

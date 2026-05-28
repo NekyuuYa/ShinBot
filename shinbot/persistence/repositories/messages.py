@@ -49,6 +49,11 @@ class MessageLogRepository(Repository, ContextProvider):
             return cursor.lastrowid  # type: ignore[return-value]
 
     def mark_read(self, msg_id: int) -> None:
+        """Mark a message log entry as read.
+
+        Args:
+            msg_id: Primary key of the message log row.
+        """
         with self.connect() as conn:
             conn.execute("UPDATE message_logs SET is_read = 1 WHERE id = ?", (msg_id,))
 
@@ -96,6 +101,11 @@ class MessageLogRepository(Repository, ContextProvider):
             )
 
     def get(self, msg_id: int) -> dict[str, Any] | None:
+        """Return a message log entry by primary key, or ``None``.
+
+        Args:
+            msg_id: Primary key of the message log row.
+        """
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM message_logs WHERE id = ?", (msg_id,)).fetchone()
         if row is None:
@@ -107,6 +117,12 @@ class MessageLogRepository(Repository, ContextProvider):
         session_id: str,
         platform_msg_id: str,
     ) -> dict[str, Any] | None:
+        """Return the latest message log entry matching a platform message ID.
+
+        Args:
+            session_id: Session that owns the message.
+            platform_msg_id: Platform-specific message identifier.
+        """
         if not session_id or not platform_msg_id:
             return None
         with self.connect() as conn:
@@ -130,6 +146,14 @@ class MessageLogRepository(Repository, ContextProvider):
         limit: int = 50,
         before_id: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Return recent message log entries for a session.
+
+        Args:
+            session_id: Session to query.
+            limit: Maximum number of entries to return.
+            before_id: When given, only entries with ``id < before_id`` are
+                returned (cursor-based pagination).
+        """
         with self.connect() as conn:
             if before_id is not None:
                 rows = conn.execute(

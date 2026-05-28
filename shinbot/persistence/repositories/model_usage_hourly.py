@@ -190,6 +190,16 @@ class ModelUsageHourlyRepositoryMixin(Repository):
         since: str | None = None,
         top_model_limit: int = 5,
     ) -> dict[str, Any]:
+        """Aggregate token usage across all execution records.
+
+        Args:
+            since: ISO-8601 timestamp; only records on or after this time are
+                included. ``None`` means no lower bound.
+            top_model_limit: Maximum number of per-model breakdown entries.
+
+        Returns:
+            Summary dictionary with aggregate totals and per-model breakdown.
+        """
         where_clause = "WHERE started_at >= ?" if since else ""
         params: tuple[Any, ...] = (since,) if since else ()
 
@@ -267,6 +277,17 @@ class ModelUsageHourlyRepositoryMixin(Repository):
         hourly_since: str,
         model_limit: int = 8,
     ) -> dict[str, Any]:
+        """Produce a detailed cost analysis with daily and hourly timelines.
+
+        Args:
+            since: ISO-8601 lower bound for the daily timeline.
+            hourly_since: ISO-8601 lower bound for the hourly timeline.
+            model_limit: Maximum number of focus models with granular data.
+
+        Returns:
+            Cost analysis dictionary containing summary, timeline, and
+            per-model breakdowns with estimated costs.
+        """
         daily_start = _parse_utc_datetime(since)
         daily_end = datetime.now(UTC)
         hourly_start = _parse_utc_datetime(hourly_since)

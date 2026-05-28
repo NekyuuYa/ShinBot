@@ -52,6 +52,16 @@ class DefaultPriorityPolicy:
         now: float,
         inbox: AgentInbox,
     ) -> PriorityPolicyDecision:
+        """Evaluate one signal against high-priority policy.
+        Args:
+            signal: The incoming agent signal to evaluate.
+            now: Current timestamp in seconds since epoch.
+            inbox: The agent inbox for tracking mention counts.
+
+        Returns:
+            A decision containing detected high-priority events and whether
+            active reply should be woken.
+        """
         events = self._detect_events(signal, now)
         if not events:
             return PriorityPolicyDecision(events=[], should_start_active_reply=False)

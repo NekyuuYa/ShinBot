@@ -18,6 +18,27 @@ router = APIRouter(
 )
 
 
+class PromptCatalogItem(BaseModel):
+    id: str
+    displayName: str
+    description: str
+    stage: str
+    type: str
+    version: str
+    priority: int
+    enabled: bool
+    resolverRef: str
+    templateVars: list[str]
+    bundleRefs: list[str]
+    tags: list[str]
+    sourceType: str
+    sourceId: str
+    ownerPluginId: str
+    ownerModule: str
+    modulePath: str
+    metadata: dict[str, Any]
+
+
 def _prompt_dict(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": payload["id"],
@@ -65,27 +86,6 @@ def _prompt_definition_dict(payload: dict[str, Any]) -> dict[str, Any]:
         "modulePath": payload["module_path"],
         "metadata": metadata,
     }
-
-
-class PromptCatalogItem(BaseModel):
-    id: str
-    displayName: str
-    description: str
-    stage: str
-    type: str
-    version: str
-    priority: int
-    enabled: bool
-    resolverRef: str
-    templateVars: list[str]
-    bundleRefs: list[str]
-    tags: list[str]
-    sourceType: str
-    sourceId: str
-    ownerPluginId: str
-    ownerModule: str
-    modulePath: str
-    metadata: dict[str, Any]
 
 
 @router.get("", response_model=Envelope[list[PromptCatalogItem]])

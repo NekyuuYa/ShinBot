@@ -168,7 +168,16 @@ def _write_profile(path: Path, config: dict[str, Any]) -> None:
 
 @router.get("", response_model=Envelope[list[AgentConfigProfile]])
 async def list_agent_configs(bot=BotDep, boot=BootDep):
-    """List all agent configuration profiles from the agents directory."""
+    """List all agent profile configurations.
+
+    Scans the agents directory for ``.toml`` profile files and returns
+    them sorted by file name. Each profile includes its parsed config,
+    extracted metadata, and any validation issues.
+
+    Returns:
+        ``Envelope[list]`` containing agent profile payloads, or an
+        empty list when the directory does not yet exist.
+    """
     directory = _agents_dir(boot)
     if not directory.is_dir():
         return ok([])
@@ -182,7 +191,17 @@ async def list_agent_configs(bot=BotDep, boot=BootDep):
 
 @router.get("/{file_name}", response_model=Envelope[AgentConfigProfile])
 async def get_agent_config(file_name: str, bot=BotDep, boot=BootDep):
-    """Retrieve a single agent configuration profile by file name."""
+    """Retrieve a single agent profile by file name.
+
+    Loads and validates the requested ``.toml`` file and returns its
+    full profile payload including metadata and validation issues.
+
+    Raises:
+        HTTPException: 404 if the profile file does not exist.
+
+    Returns:
+        ``Envelope[dict]`` with the agent profile payload.
+    """
     path = _profile_path(boot, file_name)
     if not path.is_file():
         raise HTTPException(
@@ -197,7 +216,22 @@ async def get_agent_config(file_name: str, bot=BotDep, boot=BootDep):
 
 @router.post("", response_model=Envelope[AgentConfigProfile])
 async def create_agent_config(body: SaveAgentConfigRequest, bot=BotDep, boot=BootDep):
-    """Create a new agent configuration profile from a TOML config."""
+    """Create a new agent profile configuration.
+
+    Writes a new ``.toml`` file to the agents directory. The file name
+    is derived from the request body or inferred from the ``agent.id``
+    field in the config. When ``validateBeforeSave`` is ``True`` and
+    validation issues are found, the save is rejected.
+
+    Raises:
+        HTTPException: 409 if a profile with the same name already
+            exists.
+        HTTPException: 422 if validation fails and
+            ``validateBeforeSave`` is enabled.
+
+    Returns:
+        ``Envelope[dict]`` with the newly created agent profile payload.
+    """
     file_name = _normalize_file_name(body.fileName, body.config)
     path = _agents_dir(boot) / file_name
     if path.exists():
@@ -231,7 +265,20 @@ async def update_agent_config(
     bot=BotDep,
     boot=BootDep,
 ):
-    """Update an existing agent configuration profile."""
+    """Update an existing agent profile configuration.
+
+    Overwrites the ``.toml`` file for the given profile with the new
+    config. When ``validateBeforeSave`` is ``True`` and validation
+    issues are found, the update is rejected.
+
+    Raises:
+        HTTPException: 404 if the profile file does not exist.
+        HTTPException: 422 if validation fails and
+            ``validateBeforeSave`` is enabled.
+
+    Returns:
+        ``Envelope[dict]`` with the updated agent profile payload.
+    """
     path = _profile_path(boot, file_name)
     if not path.is_file():
         raise HTTPException(
@@ -259,7 +306,16 @@ async def update_agent_config(
 
 @router.delete("/{file_name}", response_model=Envelope[AgentConfigDeleteResult])
 async def delete_agent_config(file_name: str, boot=BootDep):
-    """Delete an agent configuration profile by file name."""
+    """Delete an agent profile configuration.
+
+    Removes the ``.toml`` file for the given profile from disk.
+
+    Raises:
+        HTTPException: 404 if the profile file does not exist.
+
+    Returns:
+        ``Envelope[dict]`` confirming the deletion with the file name.
+    """
     path = _profile_path(boot, file_name)
     if not path.is_file():
         raise HTTPException(

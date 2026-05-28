@@ -38,6 +38,7 @@ class ToolCallPlanResult:
 
     @property
     def has_tool_calls(self) -> bool:
+        """Return ``True`` if the plan contains any tool calls."""
         return bool(self.tool_calls)
 
 
@@ -221,6 +222,17 @@ class ToolCallPlanRunner(RunnerTemplateBase):
 
 
 def parse_tool_call_payload(tool_call: dict[str, Any]) -> ParsedToolCall:
+    """Parse a raw Chat Completions tool call payload into a ParsedToolCall.
+
+    Args:
+        tool_call: A dict from the ``tool_calls`` array of a chat completion
+            response, containing a ``function`` sub-dict with ``name`` and
+            ``arguments``.
+
+    Returns:
+        A normalised ``ParsedToolCall`` with name, parsed arguments, and the
+        original raw payload.
+    """
     function = tool_call.get("function") if isinstance(tool_call, dict) else None
     if not isinstance(function, dict):
         return ParsedToolCall(name="", raw=dict(tool_call) if isinstance(tool_call, dict) else {})

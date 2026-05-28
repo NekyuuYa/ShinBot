@@ -21,6 +21,11 @@ class ImageSummaryEntry:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the entry to a plain dictionary.
+
+        Returns:
+            Dictionary representation for persistence or transport.
+        """
         return {
             "raw_hash": self.raw_hash,
             "strict_dhash": self.strict_dhash,
@@ -32,6 +37,14 @@ class ImageSummaryEntry:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ImageSummaryEntry:
+        """Reconstruct an entry from a dictionary payload.
+
+        Args:
+            payload: Dictionary previously produced by :meth:`to_dict`.
+
+        Returns:
+            A new ImageSummaryEntry instance.
+        """
         return cls(
             raw_hash=str(payload.get("raw_hash", "") or ""),
             strict_dhash=str(payload.get("strict_dhash", "") or ""),
@@ -74,6 +87,23 @@ class ContextImageRegistry:
         is_custom_emoji: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> ResolvedImageReference:
+        """Retrieve an existing image reference or create a new one.
+
+        Updates summary text and kind when new non-empty values are
+        provided for an already-known image.
+
+        Args:
+            session_state: Current session state for ID assignment.
+            raw_hash: SHA-256 hash of the image data.
+            strict_dhash: Perceptual difference hash for similarity.
+            summary_text: LLM-generated description of the image.
+            kind: Classification label (e.g. ``"image"``, ``"custom_emoji"``).
+            is_custom_emoji: Whether this image is a custom emoji.
+            metadata: Extra metadata to merge into the entry.
+
+        Returns:
+            A resolved reference with a session-local numeric ID.
+        """
         key = self.make_key(raw_hash=raw_hash, strict_dhash=strict_dhash)
         if not key:
             key = self.make_key(raw_hash=summary_text.strip(), strict_dhash=kind.strip())
@@ -125,6 +155,15 @@ class ContextImageRegistry:
 
     @staticmethod
     def make_key(*, raw_hash: str, strict_dhash: str) -> str:
+        """Build a composite lookup key from the two hash components.
+
+        Args:
+            raw_hash: SHA-256 hash of the image data.
+            strict_dhash: Perceptual difference hash.
+
+        Returns:
+            A composite key string, or whichever hash is non-empty.
+        """
         left = raw_hash.strip()
         right = strict_dhash.strip()
         if left and right:

@@ -54,12 +54,32 @@ def _strict_dhash(image: Image.Image, *, hash_size: int = 16) -> str:
 
 
 def hamming_distance(hash1: str, hash2: str) -> int:
+    """Compute the Hamming distance between two hex-encoded hashes.
+
+    Args:
+        hash1: First hex-encoded hash string.
+        hash2: Second hex-encoded hash string.
+
+    Returns:
+        Number of differing bits, or 999 for invalid input.
+    """
     if not hash1 or not hash2 or len(hash1) != len(hash2):
         return 999
     return bin(int(hash1, 16) ^ int(hash2, 16)).count("1")
 
 
 def fingerprint_image_file(path: str | Path) -> MediaFingerprint | None:
+    """Compute a full fingerprint for an image file.
+
+    Produces a SHA-256 raw hash and a perceptual strict dhash,
+    along with basic file metadata.
+
+    Args:
+        path: Path to the image file.
+
+    Returns:
+        A MediaFingerprint, or None if the file cannot be read.
+    """
     file_path = Path(path).expanduser()
     if not file_path.is_file():
         return None

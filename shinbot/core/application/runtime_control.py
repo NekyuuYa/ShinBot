@@ -27,6 +27,7 @@ class RestartRequest:
     source: str = ""
 
     def to_payload(self) -> dict[str, object]:
+        """Serialize restart request to API-friendly dict."""
         return asdict(self)
 
 
@@ -44,6 +45,7 @@ class RuntimeControl:
         requested_by: str = "",
         source: str = "",
     ) -> RestartRequest:
+        """Request a process restart with the given reason."""
         if self._restart_request is not None:
             raise RuntimeError("A restart request is already pending")
 
@@ -59,18 +61,30 @@ class RuntimeControl:
 
     @property
     def restart_request(self) -> RestartRequest | None:
+        """Return the pending restart request, or ``None`` if none exists."""
         return self._restart_request
 
     @property
     def restart_requested(self) -> bool:
+        """Return ``True`` if a restart has been requested."""
         return self._restart_request is not None
 
     async def wait_for_restart(self) -> RestartRequest:
+        """Block until a restart is requested, then return the request.
+
+        Returns:
+            The ``RestartRequest`` that triggered the wake-up.
+        """
         await self._restart_event.wait()
         assert self._restart_request is not None
         return self._restart_request
 
     def exit_code(self) -> int:
+        """Return the process exit code corresponding to the current state.
+
+        Returns:
+            An integer exit code from :class:`ProcessExitCode`.
+        """
         request = self._restart_request
         if request is None:
             return int(ProcessExitCode.OK)
@@ -79,6 +93,12 @@ class RuntimeControl:
         return int(ProcessExitCode.RESTART_MANUAL)
 
     def snapshot(self) -> dict[str, object] | None:
+        """Return a serialisable snapshot of the pending restart request.
+
+        Returns:
+            A dictionary payload of the request, or ``None`` if no request
+            is pending.
+        """
         request = self._restart_request
         if request is None:
             return None

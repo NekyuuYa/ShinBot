@@ -26,6 +26,14 @@ class CompressedMemoryProjector:
     """Project compressed memories and compression candidates into prompt text."""
 
     def build_messages(self, memories: list[CompressedMemoryState]) -> list[dict[str, Any]]:
+        """Project compressed memories into prompt user messages.
+
+        Args:
+            memories: List of compressed memory state entries.
+
+        Returns:
+            List of user-role message dicts with heading-prefixed text.
+        """
         messages: list[dict[str, Any]] = []
         for item in memories:
             if not item.text.strip():
@@ -49,6 +57,18 @@ class CompressedMemoryProjector:
         alias_table: SessionAliasTable,
         blocks: list[ContextBlockState],
     ) -> str:
+        """Build the source text for compressed memory from evicted blocks.
+
+        Expands aliases and assembles alias mapping and source lines
+        under their respective headings.
+
+        Args:
+            alias_table: Session alias table for name resolution.
+            blocks: Context blocks being evicted.
+
+        Returns:
+            Assembled source text for LLM compression.
+        """
         alias_lines = self._build_alias_lines(alias_table)
         context_lines: list[str] = []
         for block in blocks:
@@ -63,6 +83,18 @@ class CompressedMemoryProjector:
         return "\n\n".join(sections).strip()
 
     def expand_aliases(self, text: str, alias_table: SessionAliasTable) -> str:
+        """Replace short aliases in text with their display names.
+
+        Handles both message-prefix aliases (``[msgid: N]A01:``) and
+        inline slash-delimited aliases (``A01/someone``).
+
+        Args:
+            text: Text potentially containing alias tokens.
+            alias_table: Session alias table for name resolution.
+
+        Returns:
+            Text with aliases expanded to display names.
+        """
         alias_map = {
             entry.alias: (entry.display_name or entry.platform_id or entry.alias)
             for entry in alias_table.entries.values()

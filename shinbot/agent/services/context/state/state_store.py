@@ -23,6 +23,7 @@ class ContextBlockState:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the block state to a JSON-safe dictionary."""
         return {
             "block_id": self.block_id,
             "kind": self.kind,
@@ -34,6 +35,7 @@ class ContextBlockState:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ContextBlockState:
+        """Reconstruct a ``ContextBlockState`` from a serialized dictionary."""
         return cls(
             block_id=str(payload.get("block_id", "") or ""),
             kind=str(payload.get("kind", "context") or "context"),
@@ -52,6 +54,7 @@ class CompressedMemoryState:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the compressed memory to a JSON-safe dictionary."""
         return {
             "text": self.text,
             "created_at_ms": self.created_at_ms,
@@ -61,6 +64,7 @@ class CompressedMemoryState:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> CompressedMemoryState:
+        """Reconstruct a ``CompressedMemoryState`` from a serialized dictionary."""
         return cls(
             text=str(payload.get("text", "") or ""),
             created_at_ms=int(payload.get("created_at_ms", 0) or 0),
@@ -76,16 +80,19 @@ class OpenBlockState:
     block: ContextBlockState | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the open block to a JSON-safe dictionary."""
         return {"block": self.block.to_dict() if self.block is not None else None}
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> OpenBlockState:
+        """Reconstruct an ``OpenBlockState`` from a serialized dictionary."""
         data = payload or {}
         block_payload = data.get("block")
         block = ContextBlockState.from_dict(block_payload) if isinstance(block_payload, dict) else None
         return cls(block=block)
 
     def to_block(self) -> ContextBlockState | None:
+        """Return the underlying ``ContextBlockState``, or ``None`` if empty."""
         return self.block
 
 
@@ -96,19 +103,23 @@ class SealedBlockDequeState:
     blocks: list[ContextBlockState] = field(default_factory=list)
 
     def append(self, block: ContextBlockState) -> None:
+        """Append a sealed block to the tail of the deque."""
         self.blocks.append(block)
 
     def popleft(self) -> ContextBlockState | None:
+        """Remove and return the oldest sealed block, or ``None`` if empty."""
         if not self.blocks:
             return None
         return self.blocks.pop(0)
 
     def head(self, count: int) -> list[ContextBlockState]:
+        """Return up to *count* blocks from the front without removing them."""
         if count <= 0:
             return []
         return list(self.blocks[:count])
 
     def drop_head(self, count: int) -> list[ContextBlockState]:
+        """Remove and return up to *count* blocks from the front."""
         if count <= 0:
             return []
         removed = self.head(count)
@@ -116,13 +127,16 @@ class SealedBlockDequeState:
         return removed
 
     def to_blocks(self) -> list[ContextBlockState]:
+        """Return a copy of all sealed blocks in time order."""
         return list(self.blocks)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the deque to a JSON-safe dictionary."""
         return {"blocks": [block.to_dict() for block in self.blocks]}
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> SealedBlockDequeState:
+        """Reconstruct a ``SealedBlockDequeState`` from a serialized dictionary."""
         data = payload or {}
         return cls(
             blocks=[
@@ -141,6 +155,7 @@ class ShortTermMemoryState:
     open_block: OpenBlockState = field(default_factory=OpenBlockState)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize short-term memory to a JSON-safe dictionary."""
         return {
             "sealed_blocks": self.sealed_blocks.to_dict(),
             "open_block": self.open_block.to_dict(),
@@ -148,6 +163,7 @@ class ShortTermMemoryState:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> ShortTermMemoryState:
+        """Reconstruct a ``ShortTermMemoryState`` from a serialized dictionary."""
         data = payload or {}
         return cls(
             sealed_blocks=SealedBlockDequeState.from_dict(data.get("sealed_blocks")),
@@ -156,6 +172,11 @@ class ShortTermMemoryState:
 
     @classmethod
     def from_short_term_blocks(cls, blocks: list[ContextBlockState]) -> ShortTermMemoryState:
+        """Build short-term memory from a flat list of context blocks.
+
+        The last block is treated as the open (mutable) block unless it is
+        already sealed, in which case all blocks become sealed.
+        """
         if not blocks:
             return cls()
         if blocks[-1].sealed:
@@ -168,6 +189,7 @@ class ShortTermMemoryState:
         )
 
     def to_short_term_blocks(self) -> list[ContextBlockState]:
+        """Flatten sealed and open blocks into a single ordered list."""
         blocks = self.sealed_blocks.to_blocks()
         open_block = self.open_block.to_block()
         if open_block is not None:
@@ -175,21 +197,34 @@ class ShortTermMemoryState:
         return blocks
 
     def has_blocks(self) -> bool:
+        """Return ``True`` if any sealed or open block is present."""
         return bool(self.sealed_blocks.blocks or self.open_block.block is not None)
 
     def block_count(self) -> int:
+        """Return the total number of sealed and open blocks."""
         return len(self.to_short_term_blocks())
 
     def cacheable_prefix_count(self) -> int:
+        """Return how many leading sealed blocks are safe to cache.
+
+        When an open block exists, the last sealed block is excluded because
+        it may still be mutated during packing.
+        """
         sealed_count = len(self.sealed_blocks.blocks)
         if self.open_block.block is None:
             return max(0, sealed_count - 1)
         return sealed_count
 
     def cacheable_prefix_blocks(self) -> list[ContextBlockState]:
+        """Return the cacheable prefix of sealed blocks."""
         return self.sealed_blocks.head(self.cacheable_prefix_count())
 
     def select_head_for_eviction(self, evict_ratio: float) -> list[ContextBlockState]:
+        """Select blocks from the head to evict based on *evict_ratio*.
+
+        Returns at least one sealed block when available, otherwise falls
+        back to the single open block.
+        """
         sealed_count = len(self.sealed_blocks.blocks)
         if sealed_count:
             evict_count = max(1, int(math.ceil(sealed_count * evict_ratio)))
@@ -198,6 +233,10 @@ class ShortTermMemoryState:
         return [open_block] if open_block is not None else []
 
     def evict_head(self, evict_ratio: float) -> list[ContextBlockState]:
+        """Remove and return blocks from the head proportionate to *evict_ratio*.
+
+        Falls back to evicting the open block when no sealed blocks remain.
+        """
         sealed_count = len(self.sealed_blocks.blocks)
         if sealed_count:
             evict_count = max(1, int(math.ceil(sealed_count * evict_ratio)))
@@ -209,6 +248,11 @@ class ShortTermMemoryState:
         return [open_block]
 
     def evict_selected_head(self, selected_blocks: list[ContextBlockState]) -> list[ContextBlockState]:
+        """Remove exactly the previously-selected blocks from memory.
+
+        Validates that the *selected_blocks* match the current head before
+        performing the mutation.  Returns the actually removed blocks.
+        """
         if not selected_blocks:
             return []
 
@@ -256,15 +300,19 @@ class ContextSessionState:
         self.set_short_term_memory(ShortTermMemoryState.from_short_term_blocks(list(blocks)))
 
     def has_short_term_blocks(self) -> bool:
+        """Return ``True`` if any short-term block is present."""
         return self.short_term_memory_state.has_blocks()
 
     def short_term_memory(self) -> ShortTermMemoryState:
+        """Return the current short-term memory state."""
         return self.short_term_memory_state
 
     def set_short_term_memory(self, memory: ShortTermMemoryState) -> None:
+        """Replace the current short-term memory state."""
         self.short_term_memory_state = memory
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the full session state to a JSON-safe dictionary."""
         return {
             "session_id": self.session_id,
             "alias_table": self.alias_table.to_dict(),
@@ -280,6 +328,7 @@ class ContextSessionState:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> ContextSessionState:
+        """Reconstruct a ``ContextSessionState`` from a serialized dictionary."""
         data = payload or {}
         session_id = str(data.get("session_id", "") or "")
         return cls(
@@ -314,6 +363,12 @@ class ContextStateStore:
     """Persist per-session context packing state as JSON files."""
 
     def __init__(self, data_dir: Path | str | None = "data") -> None:
+        """Initialise the store, creating the persistence directory if needed.
+
+        Args:
+            data_dir: Root data directory.  When ``None``, persistence is
+                disabled and all load/save calls become no-ops.
+        """
         self._base_dir: Path | None = None
         if data_dir is not None:
             self._base_dir = Path(data_dir) / "temp" / "context_state"
@@ -326,6 +381,7 @@ class ContextStateStore:
         return self._base_dir / f"{sanitized}.json"
 
     def load(self, session_id: str) -> ContextSessionState | None:
+        """Load persisted session state, or ``None`` if not found."""
         path = self._state_path(session_id)
         if path is None or not path.exists():
             return None
@@ -336,6 +392,7 @@ class ContextStateStore:
         return ContextSessionState.from_dict(payload)
 
     def save(self, state: ContextSessionState) -> None:
+        """Persist session state atomically via a temporary file swap."""
         path = self._state_path(state.session_id)
         if path is None:
             return
@@ -345,6 +402,7 @@ class ContextStateStore:
         os.replace(tmp, path)
 
     def delete(self, session_id: str) -> None:
+        """Delete the persisted state file for *session_id*, if it exists."""
         path = self._state_path(session_id)
         if path is not None and path.exists():
             path.unlink()

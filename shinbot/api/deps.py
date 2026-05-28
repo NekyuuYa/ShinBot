@@ -68,6 +68,13 @@ def require_auth(
     auth_config: AuthConfigDep,
     credentials: CredentialsDep,
 ) -> None:
+    """Verify the caller carries a valid JWT session.
+
+    Resolves the token from the session cookie first, then falls back to
+    the ``Authorization: Bearer`` header.  Raises ``HTTPException`` with
+    the appropriate error code if the token is missing, expired, or
+    malformed.
+    """
     token = _resolve_auth_token(request, auth_config, credentials)
     if token is None:
         raise HTTPException(

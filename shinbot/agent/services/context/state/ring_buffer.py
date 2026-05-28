@@ -29,12 +29,20 @@ class StableRingIdAllocator:
 
     @property
     def stop(self) -> int:
+        """Return the last valid ID value in the ring (inclusive)."""
         return self.start + self.capacity - 1
 
     def get(self, key: str) -> int | None:
+        """Look up the current ID assigned to *key*, or ``None`` if unassigned."""
         return self._key_to_value.get(key)
 
     def assign(self, key: str) -> int:
+        """Assign a stable ID to *key* and return it.
+
+        If the key already has an assignment the existing value is returned.
+        Otherwise the next free slot is used; if the ring is full the oldest
+        entry is displaced silently.
+        """
         existing = self._key_to_value.get(key)
         if existing is not None:
             return existing
@@ -50,11 +58,13 @@ class StableRingIdAllocator:
         return value
 
     def drop(self, key: str) -> None:
+        """Remove *key* from the allocator, freeing its slot."""
         value = self._key_to_value.pop(key, None)
         if value is not None:
             self._value_to_key.pop(value, None)
 
     def to_dict(self) -> dict[str, object]:
+        """Serialise the allocator state to a plain dictionary."""
         return {
             "capacity": self.capacity,
             "start": self.start,
@@ -64,6 +74,7 @@ class StableRingIdAllocator:
 
     @classmethod
     def from_dict(cls, payload: dict[str, object] | None) -> StableRingIdAllocator:
+        """Reconstruct an allocator from a dictionary previously created by :meth:`to_dict`."""
         data = payload or {}
         allocator = cls(
             capacity=int(data.get("capacity", 1)),

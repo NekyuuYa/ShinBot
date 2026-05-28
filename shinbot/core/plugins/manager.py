@@ -44,6 +44,7 @@ def _topo_sort(
     result: list[tuple[Path, dict[str, Any]]] = []
 
     def visit(pid: str) -> None:
+        """Recursively visit a plugin and its dependencies for topological sort."""
         if pid in visited or pid not in id_to_item:
             return
         if pid in in_stack:
@@ -67,7 +68,15 @@ def _topo_sort(
 
 
 class PluginManager:
-    """Manages plugin lifecycle: load, unload, reload."""
+    """Manages plugin lifecycle: load, unload, reload.
+
+    Provides both synchronous and asynchronous APIs for discovering,
+    loading, unloading, enabling, disabling, and reloading plugins.
+    Each loaded plugin is backed by a :class:`Plugin` context object
+    that is passed to its ``setup(plg)`` entry-point, giving the
+    plugin access to commands, events, keywords, routes, tools, and
+    configuration.
+    """
 
     def __init__(
         self,
@@ -84,7 +93,27 @@ class PluginManager:
         agent_runtime: Any | None = None,
         database: Any | None = None,
         config_provider_registry: ConfigProviderRegistry | None = None,
-    ):
+    ) -> None:
+        """Initialize the plugin manager.
+
+        Args:
+            command_registry: Registry for text command handlers.
+            event_bus: Event bus for framework and lifecycle signals.
+            data_dir: Root data directory. Plugin-specific data is stored
+                under ``<data_dir>/plugin_data/<plugin_id>``.
+            keyword_registry: Registry for keyword-matching handlers.
+                Creates a new empty registry if *None*.
+            route_table: Custom route table for plugin-defined routes.
+            route_targets: Registry of route targets for dispatch.
+            adapter_manager: Manages platform adapter instances.
+            tool_registry: Registry of agent tools. Tools registered by
+                plugins are tracked here with ownership metadata.
+            model_runtime: Registry for model runtime observers.
+            agent_runtime: Runtime object exposed to the agent system.
+            database: Shared database handle passed to plugins.
+            config_provider_registry: Registry of plugin configuration
+                providers. Creates a new empty registry if *None*.
+        """
         self._command_registry = command_registry
         self._event_bus = event_bus
         self._keyword_registry = keyword_registry or KeywordRegistry()
@@ -138,12 +167,38 @@ class PluginManager:
 
     @property
     def all_plugins(self) -> list[PluginMeta]:
+        """Return a snapshot list of all currently loaded plugin metadata."""
         return list(self._plugins.values())
 
     def get_plugin(self, plugin_id: str) -> PluginMeta | None:
+        """Look up a loaded plugin by its ID.
+
+        Args:
+            plugin_id: Unique identifier of the plugin.
+
+        Returns:
+            The plugin's metadata, or *None* if no plugin with that ID
+            is currently loaded.
+        """
         return self._plugins.get(plugin_id)
 
     def load_plugin(self, plugin_id: str, module_path: str) -> PluginMeta:
+        """Synchronously load a single plugin.
+
+        This is a blocking wrapper around :meth:`load_plugin_async`.
+
+        Args:
+            plugin_id: Unique identifier assigned to the plugin.
+            module_path: Dotted Python module path (e.g.
+                ``"shinbot_plugin_foo"``).
+
+        Returns:
+            Metadata describing the loaded plugin.
+
+        Raises:
+            ValueError: If a plugin with *plugin_id* is already loaded.
+            RuntimeError: If called from within a running event loop.
+        """
         return self._run_sync(self.load_plugin_async(plugin_id, module_path))
 
     async def load_plugin_async(
@@ -153,6 +208,29 @@ class PluginManager:
         *,
         declared_metadata: dict[str, Any] | None = None,
     ) -> PluginMeta:
+        """Asynchronously load a single plugin.
+
+        Imports the module, calls its ``setup(plg)`` function, then
+        registers any declared configuration provider. On failure the
+        module is marked :attr:`PluginState.LOAD_FAILED` and all
+        handlers registered so far are cleaned up.
+
+        Args:
+            plugin_id: Unique identifier assigned to the plugin.
+            module_path: Dotted Python module path.
+            declared_metadata: Optional pre-parsed metadata dict (e.g.
+                from a ``metadata.json``). When provided, identity
+                fields are resolved from this dict.
+
+        Returns:
+            Metadata describing the loaded plugin.
+
+        Raises:
+            ValueError: If a plugin with *plugin_id* is already loaded.
+            AttributeError: If the module lacks a ``setup`` function.
+            Exception: Re-raises any error from module import or setup,
+                after cleaning up partial registrations.
+        """
         if plugin_id in self._plugins:
             raise ValueError(f"Plugin {plugin_id!r} is already loaded")
 
@@ -205,6 +283,20 @@ class PluginManager:
         return meta
 
     def unload_plugin(self, plugin_id: str) -> bool:
+        """Synchronously unload a plugin.
+
+        This is a blocking wrapper around :meth:`unload_plugin_async`.
+
+        Args:
+            plugin_id: ID of the plugin to unload.
+
+        Returns:
+            *True* if the plugin was found and unloaded, *False* if it
+            was not loaded.
+
+        Raises:
+            RuntimeError: If called from within a running event loop.
+        """
         return self._run_sync(self.unload_plugin_async(plugin_id))
 
     async def unload_plugin_async(
@@ -214,6 +306,23 @@ class PluginManager:
         remove_module: bool = True,
         remove_declared_metadata: bool = True,
     ) -> bool:
+        """Asynchronously unload a plugin.
+
+        Calls the plugin's ``on_disable`` and ``teardown`` hooks, then
+        removes all handlers (commands, events, keywords, routes, tools)
+        registered by the plugin.
+
+        Args:
+            plugin_id: ID of the plugin to unload.
+            remove_module: When *True*, removes the module from
+                ``sys.modules`` so re-importing picks up changes.
+            remove_declared_metadata: When *True*, discards the
+                stored declared metadata for the plugin.
+
+        Returns:
+            *True* if the plugin was found and unloaded, *False* if it
+            was not loaded.
+        """
         meta = self._plugins.pop(plugin_id, None)
         if meta is None:
             return False
@@ -233,13 +342,45 @@ class PluginManager:
         return True
 
     async def unload_all_plugins_async(self) -> None:
+        """Unload every currently loaded plugin."""
         for plugin_id in list(self._plugins.keys()):
             await self.unload_plugin_async(plugin_id)
 
     def disable_plugin(self, plugin_id: str) -> PluginMeta:
+        """Synchronously disable a plugin without fully unloading it.
+
+        This is a blocking wrapper around :meth:`disable_plugin_async`.
+
+        Args:
+            plugin_id: ID of the plugin to disable.
+
+        Returns:
+            The plugin's metadata with state set to
+            :attr:`PluginState.DISABLED`.
+
+        Raises:
+            ValueError: If the plugin is not loaded.
+            RuntimeError: If called from within a running event loop.
+        """
         return self._run_sync(self.disable_plugin_async(plugin_id))
 
     async def disable_plugin_async(self, plugin_id: str) -> PluginMeta:
+        """Asynchronously disable a plugin.
+
+        Deactivates all runtime registrations (commands, events, etc.)
+        but retains the module reference so the plugin can be
+        re-enabled later without a full re-import.
+
+        Args:
+            plugin_id: ID of the plugin to disable.
+
+        Returns:
+            The plugin's metadata with state set to
+            :attr:`PluginState.DISABLED`.
+
+        Raises:
+            ValueError: If the plugin is not loaded.
+        """
         meta = self._plugins.get(plugin_id)
         if meta is None:
             raise ValueError(f"Plugin {plugin_id!r} is not loaded")
@@ -261,9 +402,43 @@ class PluginManager:
         return meta
 
     def enable_plugin(self, plugin_id: str) -> PluginMeta:
+        """Synchronously re-enable a previously disabled plugin.
+
+        This is a blocking wrapper around :meth:`enable_plugin_async`.
+
+        Args:
+            plugin_id: ID of the plugin to enable.
+
+        Returns:
+            The plugin's metadata with state set to
+            :attr:`PluginState.ACTIVE`.
+
+        Raises:
+            ValueError: If the plugin is not loaded.
+            RuntimeError: If called from within a running event loop.
+        """
         return self._run_sync(self.enable_plugin_async(plugin_id))
 
     async def enable_plugin_async(self, plugin_id: str) -> PluginMeta:
+        """Asynchronously re-enable a previously disabled plugin.
+
+        Re-imports (or reloads) the module, calls ``setup(plg)`` and
+        ``on_enable`` again. If setup fails, all partially registered
+        handlers are rolled back.
+
+        Args:
+            plugin_id: ID of the plugin to enable.
+
+        Returns:
+            The plugin's metadata with state set to
+            :attr:`PluginState.ACTIVE`.
+
+        Raises:
+            ValueError: If the plugin is not loaded.
+            AttributeError: If the module lacks a ``setup`` function.
+            Exception: Re-raises any error from module import or setup,
+                after cleaning up partial registrations.
+        """
         meta = self._plugins.get(plugin_id)
         if meta is None:
             raise ValueError(f"Plugin {plugin_id!r} is not loaded")
@@ -321,6 +496,24 @@ class PluginManager:
         return meta
 
     def load_plugins_from_dir(self, directory: Path | str, *, prefix: str = "") -> list[PluginMeta]:
+        """Load all plugins discovered in a directory.
+
+        Scans *directory* for ``.py`` files and sub-packages (directories
+        containing ``__init__.py``). Entries starting with ``_`` are
+        skipped. Already-loaded plugins are skipped with a debug log.
+
+        Args:
+            directory: Path to scan for plugin modules.
+            prefix: Module prefix used when constructing dotted import
+                paths. If empty, defaults to the directory name.
+
+        Returns:
+            A list of metadata for each plugin that was successfully
+            loaded.
+
+        Raises:
+            NotADirectoryError: If *directory* does not exist.
+        """
         directory = Path(directory)
         if not directory.is_dir():
             raise NotADirectoryError(f"Plugin directory not found: {directory}")
@@ -359,12 +552,56 @@ class PluginManager:
         return loaded
 
     def load_plugins_from_metadata_dir(self, directory: Path | str) -> list[PluginMeta]:
+        """Synchronously load plugins from a metadata-driven directory.
+
+        This is a blocking wrapper around
+        :meth:`load_plugins_from_metadata_dir_async`.
+
+        Args:
+            directory: Path containing plugin sub-directories, each with
+                a ``metadata.json`` file.
+
+        Returns:
+            A list of metadata for each successfully loaded plugin.
+
+        Raises:
+            RuntimeError: If called from within a running event loop.
+        """
         return self._run_sync(self.load_plugins_from_metadata_dir_async(directory))
 
     async def load_plugins_from_metadata_dir_async(self, directory: Path | str) -> list[PluginMeta]:
+        """Asynchronously load plugins from a metadata-driven directory.
+
+        Each sub-directory must contain a ``metadata.json`` with at
+        minimum ``id`` and ``entry`` fields. Plugins are topologically
+        sorted by declared dependencies before loading.
+
+        Args:
+            directory: Path containing plugin sub-directories, each with
+                a ``metadata.json`` file.
+
+        Returns:
+            A list of metadata for each successfully loaded plugin.
+
+        Raises:
+            NotADirectoryError: If *directory* does not exist.
+        """
         return await self._load_from_metadata_dir_async(Path(directory), is_builtin=False)
 
     async def load_all_async(self, user_dir: Path | str | None = None) -> list[PluginMeta]:
+        """Asynchronously load built-in and user plugins.
+
+        Loads built-in plugins first from the repository's
+        ``builtin_plugins`` directory, then user plugins from
+        *user_dir* (defaults to ``<data_dir>/plugins``).
+
+        Args:
+            user_dir: Override path for user plugins. When *None*,
+                ``<root_data_dir>/plugins`` is used.
+
+        Returns:
+            Combined list of metadata from all loaded plugins.
+        """
         results: list[PluginMeta] = []
 
         if _BUILTIN_PLUGINS_DIR.is_dir():
@@ -498,9 +735,45 @@ class PluginManager:
                 )
 
     def reload_plugin(self, plugin_id: str) -> PluginMeta:
+        """Synchronously reload a plugin.
+
+        Unloads and immediately re-imports/reloads the plugin module,
+        calling ``setup(plg)`` again. The module is kept in
+        ``sys.modules`` so ``importlib.reload`` can detect changes.
+
+        This is a blocking wrapper around :meth:`reload_plugin_async`.
+
+        Args:
+            plugin_id: ID of the plugin to reload.
+
+        Returns:
+            Fresh metadata describing the reloaded plugin.
+
+        Raises:
+            ValueError: If the plugin is not loaded.
+            RuntimeError: If called from within a running event loop.
+        """
         return self._run_sync(self.reload_plugin_async(plugin_id))
 
     async def reload_plugin_async(self, plugin_id: str) -> PluginMeta:
+        """Asynchronously reload a plugin.
+
+        Unloads the plugin's runtime registrations (without removing
+        the module from ``sys.modules``), reloads the module, and
+        calls ``setup(plg)`` again. Declared metadata is preserved
+        across the reload.
+
+        Args:
+            plugin_id: ID of the plugin to reload.
+
+        Returns:
+            Fresh metadata describing the reloaded plugin.
+
+        Raises:
+            ValueError: If the plugin is not loaded.
+            Exception: Re-raises any error from module reload or setup,
+                after cleaning up partial registrations.
+        """
         meta = self._plugins.get(plugin_id)
         if meta is None:
             raise ValueError(f"Plugin {plugin_id!r} is not loaded")

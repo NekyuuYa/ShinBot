@@ -24,15 +24,40 @@ class ConfigProviderRegistry:
         self._providers: dict[tuple[ConfigProviderKind, str], ConfigProviderDefinition] = {}
 
     def register(self, provider: ConfigProviderDefinition) -> None:
+        """Register a config provider definition.
+
+        Args:
+            provider: The provider definition to register.
+
+        Raises:
+            ValueError: If a provider with the same kind and ID is already
+                registered.
+        """
         key = provider.key()
         if key in self._providers:
             raise ValueError(f"Config provider {provider.kind.value}:{provider.id} is registered")
         self._providers[key] = provider
 
     def upsert(self, provider: ConfigProviderDefinition) -> None:
+        """Register or replace a config provider definition.
+
+        Unlike :meth:`register`, this silently overwrites an existing entry
+        with the same kind and ID.
+
+        Args:
+            provider: The provider definition to upsert.
+        """
         self._providers[provider.key()] = provider
 
     def load_from_module(self, module: str) -> ConfigProviderDefinition:
+        """Load a provider schema from a Python module path and register it.
+
+        Args:
+            module: Dotted module path (e.g. ``"my_plugin.config"``).
+
+        Returns:
+            The loaded ``ConfigProviderDefinition``.
+        """
         provider = load_provider_schema_from_module(module)
         self.register(provider)
         return provider
@@ -42,12 +67,29 @@ class ConfigProviderRegistry:
         kind: ConfigProviderKind | str,
         provider_id: str,
     ) -> ConfigProviderDefinition | None:
+        """Look up a registered provider by kind and ID.
+
+        Args:
+            kind: Provider kind (adapter, plugin, agent, etc.).
+            provider_id: The unique ID of the provider within its kind.
+
+        Returns:
+            The matching definition, or ``None`` if not registered.
+        """
         return self._providers.get((_coerce_kind(kind), provider_id))
 
     def list(
         self,
         kind: ConfigProviderKind | str | None = None,
     ) -> list[ConfigProviderDefinition]:
+        """Return registered providers, optionally filtered by kind.
+
+        Args:
+            kind: If provided, only return providers of this kind.
+
+        Returns:
+            Sorted list of ``ConfigProviderDefinition`` instances.
+        """
         providers = list(self._providers.values())
         if kind is not None:
             coerced = _coerce_kind(kind)
@@ -55,6 +97,14 @@ class ConfigProviderRegistry:
         return sorted(providers, key=lambda item: (item.kind.value, item.id))
 
     def catalog(self, kind: ConfigProviderKind | str | None = None) -> list[dict[str, Any]]:
+        """Return serialised provider definitions, optionally filtered by kind.
+
+        Args:
+            kind: If provided, only include providers of this kind.
+
+        Returns:
+            List of dictionaries produced by ``ConfigProviderDefinition.to_dict``.
+        """
         return [provider.to_dict() for provider in self.list(kind)]
 
     def default_config(
@@ -62,6 +112,20 @@ class ConfigProviderRegistry:
         kind: ConfigProviderKind | str,
         provider_id: str,
     ) -> dict[str, Any]:
+        """Build a default configuration dict for a registered provider.
+
+        Only fields with explicit defaults are included.
+
+        Args:
+            kind: Provider kind.
+            provider_id: The unique ID of the provider.
+
+        Returns:
+            Dictionary of field-path keys to their default values.
+
+        Raises:
+            KeyError: If the provider is not registered.
+        """
         provider = self._require(kind, provider_id)
         result: dict[str, Any] = {}
         for field in provider.fields:
@@ -78,6 +142,22 @@ class ConfigProviderRegistry:
         path_prefix: str = "",
         strict: bool = False,
     ) -> list[ConfigValidationIssue]:
+        """Validate a configuration dict against a registered provider schema.
+
+        Args:
+            kind: Provider kind.
+            provider_id: The unique ID of the provider.
+            config: Configuration payload to validate.
+            path_prefix: Optional prefix prepended to issue paths (useful when
+                validating nested structures).
+            strict: When ``True``, unknown fields are reported as issues.
+
+        Returns:
+            List of ``ConfigValidationIssue`` (empty when valid).
+
+        Raises:
+            KeyError: If the provider is not registered.
+        """
         provider = self._require(kind, provider_id)
         payload = config or {}
         issues: list[ConfigValidationIssue] = []
@@ -176,6 +256,7 @@ def _validate_unknown_fields(
     issues: list[ConfigValidationIssue] = []
 
     def walk(value: Any, path: tuple[str, ...]) -> None:
+        """Recursively walk a nested dict to detect unknown fields."""
         if path in opaque_paths:
             return
         if not isinstance(value, dict):

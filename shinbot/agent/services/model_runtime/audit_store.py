@@ -66,6 +66,17 @@ class ModelAuditPayloadStore:
         created_at: datetime,
         payload: dict[str, Any],
     ) -> dict[str, str] | None:
+        """Write a sanitized audit payload to disk.
+
+        Args:
+            execution_id: Unique execution identifier used as the filename stem.
+            created_at: Timestamp when the execution was created.
+            payload: Raw request/response payload to persist.
+
+        Returns:
+            A dict with ``audit_payload_ref`` and ``audit_payload_expires_at``
+            keys on success, or ``None`` if the id is unsafe.
+        """
         if not _is_safe_execution_id(execution_id):
             logger.warning("Skip model audit payload with unsafe execution id %r", execution_id)
             return None
@@ -93,6 +104,14 @@ class ModelAuditPayloadStore:
         }
 
     def read(self, execution_id: str) -> dict[str, Any] | None:
+        """Read a previously written audit payload by execution id.
+
+        Args:
+            execution_id: The execution identifier to look up.
+
+        Returns:
+            The parsed payload dict, or ``None`` if missing, expired, or unreadable.
+        """
         if not _is_safe_execution_id(execution_id):
             return None
         path = self._path_for(execution_id)
@@ -109,6 +128,15 @@ class ModelAuditPayloadStore:
         return payload if isinstance(payload, dict) else None
 
     def cleanup_expired(self, *, now: datetime | None = None) -> int:
+        """Remove expired audit payload files from disk.
+
+        Args:
+            now: Reference timestamp for expiry comparison. Defaults to the
+                current UTC time when ``None``.
+
+        Returns:
+            The number of expired files deleted.
+        """
         if not self.root.exists():
             return 0
         current = now or datetime.now(UTC)

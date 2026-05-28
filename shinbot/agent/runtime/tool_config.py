@@ -19,6 +19,18 @@ class StageToolConfig:
 
 
 def stage_tool_config_from_mapping(value: dict[str, Any] | None) -> StageToolConfig:
+    """Build a ``StageToolConfig`` from an arbitrary mapping.
+
+    Accepts legacy key aliases (``extra_names`` / ``names``,
+    ``extra_tags``) and normalises them into the canonical
+    ``extra_names`` and ``extra_tags`` tuple fields.
+
+    Args:
+        value: Raw configuration mapping, or ``None`` for defaults.
+
+    Returns:
+        A frozen ``StageToolConfig`` with deduplicated string tuples.
+    """
     mapping = value if isinstance(value, dict) else {}
     return StageToolConfig(
         extra_names=_string_tuple(

@@ -113,7 +113,7 @@ def _patch_value(body: InstanceConfigPatchRequest, field_name: str, current_valu
 
 @router.get("", response_model=Envelope[list[InstanceConfigData]])
 def list_instance_configs(bot=BotDep):
-    """List all instance configurations."""
+    """List all instance configuration records."""
     return ok(
         [serialize_instance_config(item) for item in bot.database.instance_configs.list()]
     )
@@ -121,7 +121,7 @@ def list_instance_configs(bot=BotDep):
 
 @router.post("", status_code=201, response_model=Envelope[InstanceConfigData])
 def create_instance_config(body: InstanceConfigRequest, bot=BotDep, boot=BootDep):
-    """Create a new instance configuration after validating references."""
+    """Create a new instance configuration, validating references beforehand."""
     try:
         normalized = normalize_instance_config_input(
             instance_id=body.instanceId,
@@ -166,7 +166,7 @@ def create_instance_config(body: InstanceConfigRequest, bot=BotDep, boot=BootDep
 
 @router.get("/{config_uuid}", response_model=Envelope[InstanceConfigData])
 def get_instance_config(config_uuid: str, bot=BotDep):
-    """Retrieve a single instance configuration by UUID."""
+    """Retrieve a single instance configuration by its UUID."""
     try:
         payload = get_instance_config_or_raise(bot.database, config_uuid)
     except InstanceConfigAdminError as exc:
@@ -285,7 +285,7 @@ def patch_instance_config(
 
 @router.delete("/{config_uuid}", response_model=Envelope[InstanceConfigDeletedData])
 def delete_instance_config(config_uuid: str, bot=BotDep):
-    """Delete an instance configuration by UUID."""
+    """Delete an instance configuration by its UUID."""
     try:
         get_instance_config_or_raise(bot.database, config_uuid)
     except InstanceConfigAdminError as exc:

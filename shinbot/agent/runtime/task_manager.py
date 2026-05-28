@@ -194,6 +194,7 @@ class AgentTaskScope:
     namespace: str
 
     def key(self, suffix: str) -> str:
+        """Build a fully-qualified task key by appending *suffix* to the namespace."""
         suffix = str(suffix or "").strip()
         base = str(self.namespace or "").strip()
         return f"{base}:{suffix}" if base else suffix

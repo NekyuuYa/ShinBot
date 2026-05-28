@@ -35,12 +35,29 @@ class DashboardBuildService:
 
     @property
     def build_in_progress(self) -> bool:
+        """Return ``True`` while a Dashboard build operation is running."""
         return self._lock.locked()
 
     async def inspect(self) -> dict[str, Any]:
+        """Inspect the Dashboard build environment and return a status payload.
+
+        Returns:
+            A dictionary describing the dashboard source directory, build
+            command, and whether a build can be started.
+        """
         return self._inspect(ignore_lock=False)
 
     async def build(self) -> dict[str, Any]:
+        """Run the configured Dashboard build command.
+
+        Returns:
+            A dictionary describing the outcome of the build, including
+            the command output.
+
+        Raises:
+            SystemUpdateError: If a build is already running, prerequisites
+                are not met, or the build command fails.
+        """
         if self._lock.locked():
             raise SystemUpdateError(
                 code="UPDATE_ALREADY_RUNNING",

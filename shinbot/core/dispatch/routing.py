@@ -70,6 +70,7 @@ class _RouteEntry:
 
     @property
     def sort_key(self) -> tuple[int, int, str]:
+        """Return a comparable sort key: highest priority first, then insertion order."""
         return (-self.rule.priority, self.registered_seq, self.rule.id)
 
 

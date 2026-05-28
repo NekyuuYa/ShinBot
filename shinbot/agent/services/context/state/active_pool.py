@@ -86,6 +86,14 @@ class ActiveContextPool:
         self.token_estimate = sum(self._per_turn_tokens)
 
     def append(self, item: dict[str, Any]) -> None:
+        """Append a single message record to the active context pool.
+
+        Deduplicates against the tail entry and maintains the
+        incremental token estimate.
+
+        Args:
+            item: Raw message record dict to append.
+        """
         turn = record_to_turn(item)
         if turn is None:
             return

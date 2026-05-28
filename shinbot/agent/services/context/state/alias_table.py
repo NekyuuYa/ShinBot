@@ -25,6 +25,12 @@ def _coerce_timestamp_ms(value: Any) -> int:
 
 @dataclass(slots=True)
 class AliasEntry:
+    """A single alias mapping for a platform user.
+
+    Tracks the user's display name, short alias, message count, and
+    last-seen timestamp for context-building and alias allocation.
+    """
+
     alias: str = ""
     platform_id: str = ""
     display_name: str = ""
@@ -32,6 +38,7 @@ class AliasEntry:
     last_seen_ms: int = 0
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the entry to a plain dictionary."""
         return {
             "alias": self.alias,
             "platform_id": self.platform_id,
@@ -42,6 +49,10 @@ class AliasEntry:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> AliasEntry:
+        """Deserialize an AliasEntry from a dictionary.
+
+        Missing or malformed fields fall back to their default values.
+        """
         return cls(
             alias=str(payload.get("alias", "") or ""),
             platform_id=str(payload.get("platform_id", "") or ""),
@@ -53,6 +64,14 @@ class AliasEntry:
 
 @dataclass(slots=True)
 class SessionAliasTable:
+    """Session-scoped alias table that maps platform user IDs to short aliases.
+
+    Users are sorted by message frequency and recency, then assigned
+    single-letter aliases (``A``-prefixed for frequent senders,
+    ``P``-prefixed for other active participants) to keep context
+    messages compact.
+    """
+
     session_id: str
     entries: dict[str, AliasEntry] = field(default_factory=dict)
     last_activity_ms: int = 0
@@ -61,6 +80,13 @@ class SessionAliasTable:
     pending_rebuild: bool = False
 
     def note_activity(self, created_at: Any) -> None:
+        """Record the timestamp of the latest activity in this session.
+
+        Args:
+            created_at: Timestamp to coerce (epoch seconds or milliseconds,
+                or an object that can be cast to float). Silently ignored if
+                the coerced value is non-positive.
+        """
         activity_ms = _coerce_timestamp_ms(created_at)
         if activity_ms <= 0:
             return
@@ -69,6 +95,20 @@ class SessionAliasTable:
             self.rebuilt_since_activity = False
 
     def should_rebuild(self, now_ms: int, *, idle_ms: int = ALIAS_REBUILD_IDLE_MS) -> bool:
+        """Determine whether the alias table needs a rebuild.
+
+        A rebuild is triggered when a pending rebuild has been requested,
+        the table has never been rebuilt after the first activity, or the
+        specified idle period has elapsed since the last activity.
+
+        Args:
+            now_ms: Current time in milliseconds since epoch.
+            idle_ms: Minimum idle duration in ms before triggering a
+                rebuild. Defaults to :data:`ALIAS_REBUILD_IDLE_MS`.
+
+        Returns:
+            ``True`` if the table should be rebuilt.
+        """
         if self.pending_rebuild:
             return True
         if self.last_activity_ms <= 0:
@@ -78,11 +118,17 @@ class SessionAliasTable:
         return now_ms - self.last_activity_ms >= idle_ms
 
     def mark_rebuilt(self, now_ms: int) -> None:
+        """Mark the table as successfully rebuilt at the given timestamp.
+
+        Args:
+            now_ms: Current time in milliseconds since epoch.
+        """
         self.last_rebuild_ms = now_ms
         self.rebuilt_since_activity = True
         self.pending_rebuild = False
 
     def request_rebuild(self) -> None:
+        """Request an immediate rebuild, bypassing idle-period checks."""
         self.pending_rebuild = True
 
     def rebuild_from_messages(
@@ -94,6 +140,31 @@ class SessionAliasTable:
         active_window_ms: int = ALIAS_ACTIVE_WINDOW_MS,
         frequent_limit: int = ALIAS_FREQUENT_LIMIT,
     ) -> bool:
+        """Rebuild the alias table from a list of messages.
+
+        Scans non-assistant messages to compute per-user frequency and
+        recency statistics, then assigns short aliases. Frequent senders
+        receive ``A``-prefixed aliases; other recently-active users
+        receive ``P``-prefixed aliases.
+
+        Args:
+            messages: Ordered list of message dicts (must include
+                ``role``, ``sender_id``, ``sender_name``, ``platform``,
+                and ``created_at`` keys).
+            now_ms: Current time in milliseconds since epoch.
+            identity_store: Optional identity store used to overlay
+                canonical display names onto entries.
+            active_window_ms: Duration in ms within which a user is
+                considered active. Defaults to
+                :data:`ALIAS_ACTIVE_WINDOW_MS`.
+            frequent_limit: Number of top senders (by message count)
+                that receive ``A``-prefixed aliases. Defaults to
+                :data:`ALIAS_FREQUENT_LIMIT`.
+
+        Returns:
+            ``True`` if the semantic signature of the table changed
+            compared to the previous state.
+        """
         previous_entries = {
             platform_id: AliasEntry(
                 alias=entry.alias,
@@ -190,6 +261,23 @@ class SessionAliasTable:
         now_ms: int,
         active_window_ms: int = ALIAS_ACTIVE_WINDOW_MS,
     ) -> bool:
+        """Update a single entry's display name from an identity store.
+
+        The update only applies if the platform ID exists in the table,
+        the entry is still within the active window, and the new name
+        differs from the current one.
+
+        Args:
+            platform_id: Platform-specific user identifier.
+            display_name: Canonical display name to apply.
+            now_ms: Current time in milliseconds since epoch.
+            active_window_ms: Maximum age in ms for the entry to be
+                eligible for update. Defaults to
+                :data:`ALIAS_ACTIVE_WINDOW_MS`.
+
+        Returns:
+            ``True`` if the display name was updated.
+        """
         normalized_platform_id = str(platform_id or "").strip()
         normalized_display_name = str(display_name or "").strip()
         if not normalized_platform_id or not normalized_display_name:
@@ -207,9 +295,28 @@ class SessionAliasTable:
         return True
 
     def resolve(self, platform_id: str) -> AliasEntry | None:
+        """Look up an alias entry by platform user ID.
+
+        Args:
+            platform_id: Platform-specific user identifier.
+
+        Returns:
+            The matching :class:`AliasEntry`, or ``None`` if not found.
+        """
         return self.entries.get(platform_id)
 
     def format_sender(self, platform_id: str) -> str:
+        """Return the short alias for a platform user ID.
+
+        Falls back to the raw ``platform_id`` when no matching entry
+        exists or the entry has no assigned alias.
+
+        Args:
+            platform_id: Platform-specific user identifier.
+
+        Returns:
+            The alias string (e.g. ``"A0"``) or the original ID.
+        """
         entry = self.resolve(platform_id)
         if entry is None:
             return platform_id
@@ -221,6 +328,20 @@ class SessionAliasTable:
         now_ms: int,
         active_window_ms: int = ALIAS_ACTIVE_WINDOW_MS,
     ) -> tuple[list[AliasEntry], list[AliasEntry]]:
+        """Split entries into inactive and active lists.
+
+        Entries whose last-seen timestamp is within the active window
+        are placed in the active list; the rest go into inactive.
+        Both lists are sorted by alias then platform ID.
+
+        Args:
+            now_ms: Current time in milliseconds since epoch.
+            active_window_ms: Duration in ms that defines the active
+                window. Defaults to :data:`ALIAS_ACTIVE_WINDOW_MS`.
+
+        Returns:
+            A tuple of ``(inactive_entries, active_entries)``.
+        """
         inactive: list[AliasEntry] = []
         active: list[AliasEntry] = []
         for entry in self.entries.values():
@@ -240,6 +361,12 @@ class SessionAliasTable:
         prefix: str,
         previous_entries: dict[str, AliasEntry],
     ) -> None:
+        """Assign prefixed aliases to a group of users.
+
+        Members that already hold a valid alias with the given prefix
+        retain it when the slot is free. Remaining members receive the
+        lowest available slot numbers.
+        """
         claimed: set[int] = set()
         remaining: list[str] = []
 
@@ -278,6 +405,11 @@ class SessionAliasTable:
         now_ms: int,
         active_window_ms: int,
     ) -> tuple[tuple[str, str, str, bool], ...]:
+        """Compute a hashable snapshot of the table's semantic state.
+
+        Two tables are considered equivalent when their signatures
+        match, avoiding unnecessary re-packing of context.
+        """
         return tuple(
             sorted(
                 (
@@ -297,6 +429,12 @@ class SessionAliasTable:
         identity_store: IdentityStore,
         sender_platforms: dict[str, str],
     ) -> None:
+        """Overlay canonical display names from the identity store.
+
+        For each entry, looks up the identity by platform ID (and
+        optional platform hint) and replaces the display name if a
+        non-empty name is found.
+        """
         for platform_id, entry in entries.items():
             identity = identity_store.get_identity(
                 platform_id,
@@ -309,6 +447,7 @@ class SessionAliasTable:
                 entry.display_name = identity_name
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the session alias table to a plain dictionary."""
         return {
             "session_id": self.session_id,
             "last_activity_ms": self.last_activity_ms,
@@ -320,6 +459,12 @@ class SessionAliasTable:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> SessionAliasTable:
+        """Deserialize a SessionAliasTable from a dictionary payload.
+
+        Args:
+            payload: Dictionary produced by :meth:`to_dict`. A ``None``
+                or empty dict yields an empty table with default values.
+        """
         data = payload or {}
         entries = {
             entry.platform_id: entry

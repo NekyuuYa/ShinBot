@@ -17,6 +17,18 @@ class PromptMessageBuilder:
         self,
         stage_assembly: PromptStageAssembly,
     ) -> list[dict[str, Any]]:
+        """Project 7-stage prompt assembly into Chat Completions messages.
+
+        Maps the structured stage blocks into a ``system`` message
+        (base, identity, abilities), context messages, and a final
+        ``user`` message (compatibility, instructions, constraints).
+
+        Args:
+            stage_assembly: Intermediate stage material to project.
+
+        Returns:
+            List of message dicts suitable for a Chat Completions request.
+        """
         stage_by_name = {block.stage: block for block in stage_assembly.stages}
 
         system_content: list[dict[str, Any]] = []

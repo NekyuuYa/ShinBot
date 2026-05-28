@@ -53,9 +53,22 @@ class MediaService:
     """Stores media fingerprints and session-local repeat state."""
 
     def __init__(self, database: DatabaseManager) -> None:
+        """Initialise the media service with a database handle.
+
+        Args:
+            database: Shared database manager used for persistence.
+        """
         self._database = database
 
     def resolve_inspection_config(self, instance_id: str) -> ResolvedMediaInspectionConfig:
+        """Resolve the media inspection configuration for a bot instance.
+
+        Args:
+            instance_id: Unique identifier of the bot instance.
+
+        Returns:
+            Fully-resolved inspection configuration with defaults applied.
+        """
         instance_config = self._database.instance_configs.get_by_instance_id(instance_id)
         return resolve_media_inspection_config(instance_config)
 
@@ -69,6 +82,25 @@ class MediaService:
         message_log_id: int | None = None,
         seen_at: float | None = None,
     ) -> list[IngestedMediaItem]:
+        """Ingest image media elements from an incoming message.
+
+        Fingerprints each local image, upserts the asset record, tracks
+        session-level occurrence counts, and attempts to attach known
+        semantic metadata. Returns an item per processed image so the
+        caller can decide whether to request LLM inspection.
+
+        Args:
+            session_id: Conversation session identifier.
+            sender_id: Identifier of the message sender.
+            platform_msg_id: Platform-specific message identifier.
+            elements: Message element tree containing ``img`` elements.
+            message_log_id: Optional database ID of the persisted message
+                log entry. When provided, media links are written back.
+            seen_at: Timestamp override; defaults to ``time.time()``.
+
+        Returns:
+            One ``IngestedMediaItem`` per successfully fingerprinted image.
+        """
         observed_at = seen_at if seen_at is not None else time.time()
         results: list[IngestedMediaItem] = []
         linked_raw_hashes: list[str] = []
@@ -168,6 +200,20 @@ class MediaService:
         return results
 
     def cleanup_expired(self, *, now: float | None = None) -> dict[str, int]:
+        """Remove expired media assets, occurrences, and semantic records.
+
+        Deletes the backing files for expired assets, then purges the
+        corresponding database rows. Expired session occurrences and
+        semantic records are also cleaned up.
+
+        Args:
+            now: Reference timestamp for expiry comparison; defaults to
+                ``time.time()``.
+
+        Returns:
+            A summary dict with counts of deleted assets, files,
+            occurrences, and semantic records.
+        """
         cutoff = now if now is not None else time.time()
         deleted_files = 0
         expired_assets = self._database.media_assets.list_expired(cutoff)
@@ -201,6 +247,27 @@ class MediaService:
         platform_msg_id: str = "",
         fallback_to_latest: bool = True,
     ) -> str | None:
+        """Resolve the ``raw_hash`` of a media asset linked to a message.
+
+        Lookup order:
+
+        1. Direct *raw_hash* if the asset exists.
+        2. Media links by *message_log_id*.
+        3. Media links by *platform_msg_id*.
+        4. Latest media link in the session (when *fallback_to_latest*).
+
+        Args:
+            session_id: Conversation session identifier.
+            raw_hash: Known raw hash to verify first.
+            message_log_id: Database ID of the message log entry.
+            platform_msg_id: Platform-specific message identifier.
+            fallback_to_latest: When ``True``, fall back to the most
+                recent media in the session if no direct match is found.
+
+        Returns:
+            The resolved ``raw_hash`` string, or ``None`` if nothing
+            could be found.
+        """
         if raw_hash:
             asset = self._database.media_assets.get(raw_hash)
             if asset is not None:
@@ -240,6 +307,19 @@ class MediaService:
         self,
         record: dict[str, object] | None,
     ) -> list[str]:
+        """Build human-readable summaries of media attached to a message.
+
+        Semantic digests are preferred (e.g. ``[表情: some description]``).
+        Falls back to a generic ``[图片]`` tag when only the asset record
+        is available.
+
+        Args:
+            record: Message log record dict (must contain ``id`` or
+                ``session_id`` + ``platform_msg_id``).
+
+        Returns:
+            A list of formatted label strings, one per linked media asset.
+        """
         raw_hashes = self._resolve_record_raw_hashes(record)
         parts: list[str] = []
         for raw_hash in raw_hashes:
@@ -266,6 +346,21 @@ class MediaService:
         *,
         strict_dhash: str = "",
     ) -> dict[str, object] | None:
+        """Retrieve semantic metadata for a media asset.
+
+        Lookup order:
+
+        1. Exact match by *raw_hash*.
+        2. Exact match by *strict_dhash* (when provided).
+        3. Fuzzy match by hamming distance on *strict_dhash* (threshold ≤ 6).
+
+        Args:
+            raw_hash: Content hash of the media asset.
+            strict_dhash: Perceptual hash used for fuzzy matching.
+
+        Returns:
+            The semantic record dict, or ``None`` if no match was found.
+        """
         normalized = raw_hash.strip()
         if not normalized:
             return None

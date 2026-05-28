@@ -61,10 +61,18 @@ class MessageElement(BaseModel):
 
     @classmethod
     def text(cls, content: str) -> Self:
+        """Create a text element with the given content string."""
         return cls(type="text", attrs={"content": content})
 
     @classmethod
     def at(cls, *, id: str | None = None, name: str | None = None, type: str | None = None) -> Self:
+        """Create an @-mention element targeting a user.
+
+        Args:
+            id: Target user ID.
+            name: Display name of the target user.
+            type: Mention type (e.g., 'all' for @everyone).
+        """
         attrs: dict[str, Any] = {}
         if id is not None:
             attrs["id"] = id
@@ -76,6 +84,12 @@ class MessageElement(BaseModel):
 
     @classmethod
     def sharp(cls, *, id: str, name: str | None = None) -> Self:
+        """Create a #channel-mention element.
+
+        Args:
+            id: Target channel ID.
+            name: Display name of the target channel.
+        """
         attrs: dict[str, Any] = {"id": id}
         if name is not None:
             attrs["name"] = name
@@ -83,10 +97,22 @@ class MessageElement(BaseModel):
 
     @classmethod
     def img(cls, src: str, **kwargs: Any) -> Self:
+        """Create an image element with the given source URL.
+
+        Args:
+            src: URL or local path to the image.
+            **kwargs: Additional attributes (alt, width, height, etc.).
+        """
         return cls(type="img", attrs={"src": src, **kwargs})
 
     @classmethod
     def emoji(cls, *, id: str | None = None, name: str | None = None) -> Self:
+        """Create an emoji element.
+
+        Args:
+            id: Platform emoji ID.
+            name: Emoji short-code or display name.
+        """
         attrs: dict[str, Any] = {}
         if id is not None:
             attrs["id"] = id
@@ -96,28 +122,54 @@ class MessageElement(BaseModel):
 
     @classmethod
     def quote(cls, id: str, children: list[MessageElement] | None = None) -> Self:
+        """Create a quote (reply) element referencing a message by ID.
+
+        Args:
+            id: ID of the message being quoted.
+            children: Optional child elements for the quoted content.
+        """
         return cls(type="quote", attrs={"id": id}, children=children or [])
 
     @classmethod
     def audio(cls, src: str, **kwargs: Any) -> Self:
+        """Create an audio element with the given source URL.
+
+        Args:
+            src: URL or local path to the audio file.
+            **kwargs: Additional attributes.
+        """
         return cls(type="audio", attrs={"src": src, **kwargs})
 
     @classmethod
     def video(cls, src: str, **kwargs: Any) -> Self:
+        """Create a video element with the given source URL.
+
+        Args:
+            src: URL or local path to the video file.
+            **kwargs: Additional attributes.
+        """
         return cls(type="video", attrs={"src": src, **kwargs})
 
     @classmethod
     def file(cls, src: str, **kwargs: Any) -> Self:
+        """Create a file attachment element with the given source URL.
+
+        Args:
+            src: URL or local path to the file.
+            **kwargs: Additional attributes (filename, size, etc.).
+        """
         return cls(type="file", attrs={"src": src, **kwargs})
 
     @classmethod
     def br(cls) -> Self:
+        """Create a line-break element."""
         return cls(type="br")
 
     # ── Helpers ──────────────────────────────────────────────────────
 
     @property
     def is_text(self) -> bool:
+        """Check whether this element is a text element."""
         return self.type == "text"
 
     @property
@@ -158,6 +210,7 @@ class Message(BaseModel):
 
     @classmethod
     def from_elements(cls, *elements: MessageElement) -> Self:
+        """Create a Message from a sequence of MessageElement nodes."""
         return cls(elements=list(elements))
 
     @classmethod
@@ -207,9 +260,11 @@ class Message(BaseModel):
         return len(self.elements) > 0
 
     def append(self, element: MessageElement) -> None:
+        """Append a single element to the message."""
         self.elements.append(element)
 
     def extend(self, elements: list[MessageElement]) -> None:
+        """Extend the message with a list of elements."""
         self.elements.extend(elements)
 
     def __add__(self, other: Message) -> Message:

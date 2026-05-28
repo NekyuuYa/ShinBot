@@ -58,6 +58,26 @@ class Plugin:
         agent_runtime: Any | None = None,
         database: DatabaseManager | None = None,
     ):
+        """Initialize the plugin capability object.
+
+        Args:
+            plugin_id:        Unique identifier for this plugin (e.g. ``"shinbot_plugin_foo"``).
+            command_registry: Shared registry for text command definitions.
+            event_bus:        Shared event bus for non-message events.
+            data_dir:         Base directory for plugin-scoped persistent data.
+                            Defaults to ``data/plugin_data/{plugin_id}``.
+            keyword_registry: Registry for keyword trigger definitions.  ``None``
+                            disables keyword registration.
+            route_table:      Shared route table for custom routing rules.  ``None``
+                            disables route registration.
+            route_targets:    Target registry used alongside *route_table*.
+            adapter_manager:  Manages platform adapter instances.  Required for
+                            proactive sends and adapter factory registration.
+            tool_registry:    Shared registry for agent tool definitions.
+            model_runtime:    Observer registry for model-runtime events.
+            agent_runtime:    Reference to the agent runtime, if any.
+            database:         Shared database manager instance.
+        """
         self.plugin_id = plugin_id
         self._command_registry = command_registry
         self._event_bus = event_bus
@@ -92,9 +112,34 @@ class Plugin:
         priority: CommandPriority = CommandPriority.P0_PREFIX,
         pattern: str | None = None,
     ) -> Callable:
+        """Register a text command triggered by a ``!name`` prefix or alias.
+
+        Can be used as a decorator::
+
+            @plg.on_command("ping", description="Pong!")
+            async def handle_ping(ctx: MessageContext) -> None:
+                await ctx.send([MessageElement.text("Pong!")])
+
+        Args:
+            name:        Primary command name (without the ``!`` prefix).
+            aliases:     Alternative names that also trigger this command.
+            description: Human-readable command description (shown in help).
+            usage:       Usage hint string (e.g. ``"!weather <city>"``).
+            permission:  Required permission node (e.g. ``"cmd.weather"``).
+            mode:        ``DELEGATED`` for simple prefix commands, ``MANAGED``
+                        for commands that need full control over routing.
+            priority:    Match priority — ``P0_PREFIX`` (default) matches first,
+                        ``P1_EXACT`` matches after exact-match checks,
+                        ``P2_REGEX`` matches last.
+            pattern:     Optional regex pattern for advanced argument matching.
+
+        Returns:
+            A decorator that can wrap the handler function.
+        """
         import re as _re
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as a text command handler."""
             compiled_pattern = _re.compile(pattern) if pattern else None
             cmd = CommandDef(
                 name=name,
@@ -122,6 +167,32 @@ class Plugin:
         ignore_case: bool = True,
         regex: bool = False,
     ) -> Callable:
+        """Register a keyword trigger that fires when a message matches *pattern*.
+
+        Keywords are matched against incoming message text independently of
+        the command prefix.  Use this for ambient triggers that respond to
+        natural-language phrases rather than explicit ``!command`` syntax.
+
+        Can be used as a decorator::
+
+            @plg.on_keyword("good morning", priority=50)
+            async def handle_greeting(ctx: MessageContext) -> None:
+                await ctx.send([MessageElement.text("Good morning!")])
+
+        Args:
+            pattern:     Text or regex pattern to match against message content.
+            priority:    Lower numbers are evaluated first (default ``100``).
+            ignore_case: Perform case-insensitive matching (default ``True``).
+            regex:       Treat *pattern* as a regular expression instead of a
+                        plain substring match.
+
+        Returns:
+            A decorator that can wrap the handler function.
+
+        Raises:
+            RuntimeError: If no ``KeywordRegistry`` is available in this
+                ``Plugin`` instance.
+        """
         if self._keyword_registry is None:
             raise RuntimeError(
                 f"Plugin {self.plugin_id!r} cannot register keyword handlers: "
@@ -129,6 +200,7 @@ class Plugin:
             )
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as a keyword trigger handler."""
             keyword = KeywordDef(
                 pattern=pattern,
                 handler=func,
@@ -153,6 +225,37 @@ class Plugin:
         match_mode: RouteMatchMode = RouteMatchMode.NORMAL,
         enabled: bool = True,
     ) -> Callable:
+        """Register a custom routing rule matched by a :class:`RouteCondition`.
+
+        Use this for fine-grained control over which messages reach a handler.
+        Conditions can filter on event types, element types, platform, privacy
+        status, or a custom matcher callable.
+
+        Can be used as a decorator::
+
+            cond = RouteCondition(platforms=frozenset({"telegram"}))
+            @plg.on_route(cond, priority=80)
+            async def on_telegram(ctx: RouteDispatchContext, rule: RouteRule) -> None:
+                ...
+
+        Args:
+            condition:  Structured route condition (event types, element types,
+                        platform filters, privacy, custom matcher).
+            target:     Explicit target identifier.  Auto-generated if omitted.
+            rule_id:    Explicit rule identifier.  Auto-generated if omitted.
+            priority:   Higher values are evaluated first (default ``100``).
+            match_mode: ``NORMAL`` for standard matching, ``EXCLUSIVE`` to
+                        consume the event exclusively, ``FALLBACK`` for
+                        catch-all routes, or ``OBSERVE`` for passive monitoring.
+            enabled:    Whether this rule is active (default ``True``).
+
+        Returns:
+            A decorator that can wrap the handler function.
+
+        Raises:
+            RuntimeError: If no ``RouteTable`` or ``RouteTargetRegistry`` is
+                available in this ``Plugin`` instance.
+        """
         if self._route_table is None or self._route_targets is None:
             raise RuntimeError(
                 f"Plugin {self.plugin_id!r} cannot register route handlers: "
@@ -160,11 +263,13 @@ class Plugin:
             )
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as a custom route handler."""
             seq = len(self._registered_routes) + 1
             resolved_target = target or f"plugin.{self.plugin_id}.{func.__name__}.{seq}"
             resolved_rule_id = rule_id or f"plugin.{self.plugin_id}.{func.__name__}.{seq}"
 
             async def handler(context: RouteDispatchContext, rule: RouteRule) -> None:
+                """Invoke the registered route handler, awaiting if necessary."""
                 result = func(context, rule)
                 if inspect.isawaitable(result):
                     await result
@@ -197,9 +302,33 @@ class Plugin:
         *,
         priority: int = 100,
     ) -> Callable:
+        """Register a handler for a non-message event on the shared :class:`EventBus`.
+
+        Message-prefixed events (starting with ``"message-"``) are routed via
+        :class:`RouteTable` instead.  Use this decorator for framework,
+        notice, and lifecycle signals.
+
+        Can be used as a decorator::
+
+            @plg.on_event("plugin.loaded")
+            async def on_loaded(event: dict[str, Any]) -> None:
+                print("Another plugin loaded:", event)
+
+        Args:
+            event_type: The event name to listen for (must **not** start with
+                        ``"message-"``).
+            priority:   Lower numbers are evaluated first (default ``100``).
+
+        Returns:
+            A decorator that can wrap the handler function.
+
+        Raises:
+            ValueError: If *event_type* starts with ``"message-"``.
+        """
         _ensure_non_message_event(event_type)
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as an event bus handler."""
             self._event_bus.on(event_type, func, priority=priority, owner=self.plugin_id)
             self._registered_events.append(event_type)
             return func
@@ -234,6 +363,20 @@ class Plugin:
         return await adapter.send(session_id, elements)
 
     def register_adapter_factory(self, name: str, factory: Callable) -> None:
+        """Register a platform adapter factory with the :class:`AdapterManager`.
+
+        Adapter factories create :class:`BaseAdapter` instances for a given
+        platform type.  This allows plugins to supply their own adapter
+        implementations at runtime.
+
+        Args:
+            name:    Unique adapter name (e.g. ``"onebot_v11"``).
+            factory: Callable that returns a new adapter instance when invoked.
+
+        Raises:
+            RuntimeError: If no ``AdapterManager`` is available in this
+                ``Plugin`` instance.
+        """
         if self._adapter_manager is None:
             raise RuntimeError(
                 f"Plugin {self.plugin_id!r} cannot register an adapter factory: "
@@ -243,9 +386,24 @@ class Plugin:
 
     @property
     def has_model_runtime(self) -> bool:
+        """Return ``True`` if a ``ModelRuntimeObserverRegistry`` is available."""
         return self._model_runtime is not None
 
     def register_model_runtime_observer(self, observer: ModelRuntimeObserver) -> None:
+        """Register an observer that receives model-runtime lifecycle events.
+
+        Observers are called with a ``dict[str, Any]`` payload whenever a
+        model call starts, succeeds, or fails.  The callback may be sync or
+        async.
+
+        Args:
+            observer: A callable ``(event: dict[str, Any]) -> None`` to invoke
+                     on model-runtime events.
+
+        Raises:
+            RuntimeError: If no ``ModelRuntimeObserverRegistry`` is available
+                in this ``Plugin`` instance.
+        """
         if self._model_runtime is None:
             raise RuntimeError(
                 f"Plugin {self.plugin_id!r} cannot register a model runtime observer: "
@@ -269,12 +427,48 @@ class Plugin:
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Callable:
+        """Register an agent tool that the LLM can invoke during a workflow.
+
+        Tools are the primary mechanism for giving the model access to
+        external capabilities (sending messages, querying databases, calling
+        APIs, etc.).  Each tool receives its declared input schema and is
+        executed by the :class:`ToolManager` during the model workflow loop.
+
+        Can be used as a decorator::
+
+            @plg.tool(name="get_weather", description="Get current weather", ...)
+            async def get_weather(city: str) -> str:
+                return f"Weather for {city}: sunny"
+
+        Args:
+            name:            Unique tool name within this plugin.  The full tool
+                            ID is ``"{plugin_id}.{name}"``.
+            description:     Human-readable description of what the tool does.
+            input_schema:    JSON Schema dict describing the tool's input parameters.
+            display_name:    Friendly name shown to users (defaults to *name*).
+            output_schema:   Optional JSON Schema for the tool's return value.
+            permission:      Required permission node for access control.
+            enabled:         Whether the tool is active (default ``True``).
+            visibility:      ``PRIVATE`` (only this plugin), ``SCOPED``
+                            (same owner), or ``PUBLIC`` (all plugins).
+            timeout_seconds: Maximum execution time in seconds (default ``30.0``).
+            tags:            Optional categorisation tags for tool discovery.
+            metadata:        Arbitrary key-value metadata attached to the tool.
+
+        Returns:
+            A decorator that can wrap the handler function.
+
+        Raises:
+            RuntimeError: If no ``ToolRegistry`` is available in this
+                ``Plugin`` instance.
+        """
         if self._tool_registry is None:
             raise RuntimeError(
                 f"Plugin {self.plugin_id!r} cannot register tools: no ToolRegistry is available."
             )
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as an agent tool definition."""
             tool_id = f"{self.plugin_id}.{name}"
             definition = ToolDefinition(
                 id=tool_id,

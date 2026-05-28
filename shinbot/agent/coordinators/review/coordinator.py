@@ -83,13 +83,28 @@ class _ReplyDecisionWindow:
 
     @property
     def message_ids(self) -> list[int]:
+        """Return extracted message IDs from the loaded messages in this window."""
         return _message_ids(self.messages)
 
     def overlaps(self, messages: list[dict]) -> bool:
+        """Check whether any of the given messages overlap with this window.
+        Args:
+            messages: Messages to check for overlap.
+
+        Returns:
+            ``True`` if any message ID is already present in the window.
+        """
         own_ids = set(self.message_ids)
         return any(_message_id(message) in own_ids for message in messages)
 
     def extend(self, *, candidate_message_id: int, messages: list[dict]) -> None:
+        """Extend the window with a new candidate and merge additional messages.
+        Messages are deduplicated by ID and sorted by creation time.
+
+        Args:
+            candidate_message_id: The message log ID of the new candidate.
+            messages: Additional context messages to merge into the window.
+        """
         self.candidate_message_ids.append(candidate_message_id)
         merged: dict[int, dict] = {
             message_id: message

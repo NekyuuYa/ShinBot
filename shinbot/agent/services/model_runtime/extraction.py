@@ -14,6 +14,18 @@ MEDIA_SHA256_REF_PREFIX = "media:sha256:"
 
 
 def provider_type_for_litellm(provider_type: str) -> str | None:
+    """Map a ShinBot provider name to the LiteLLM ``custom_llm_provider`` type.
+    Native LiteLLM providers (anthropic, gemini, deepseek, xiaomi_mimo) are
+    auto-detected from the model prefix and need no explicit mapping, so this
+    returns ``None`` for them.
+
+    Args:
+        provider_type: Internal provider identifier (e.g. ``"custom_openai"``).
+
+    Returns:
+        The corresponding LiteLLM provider string, or ``None`` if the provider
+        is natively supported and requires no override.
+    """
     if provider_type == "custom_openai":
         return "openai"
     if provider_type == "dashscope":
@@ -28,14 +40,31 @@ def provider_type_for_litellm(provider_type: str) -> str | None:
 
 
 def utc_now() -> datetime:
+    """Return the current UTC date and time as a timezone-aware datetime."""
     return datetime.now(UTC)
 
 
 def utc_now_iso() -> str:
+    """Return the current UTC date and time as an ISO-8601 formatted string."""
     return utc_now().isoformat()
 
 
 def maybe_get(mapping: Any, key: str, default: Any = None) -> Any:
+    """Safely retrieve a value from a dict-like or attribute-based object.
+    Works with plain ``dict`` instances (via ``.get``) and arbitrary objects
+    (via ``getattr``), returning *default* when the key is absent or
+    *mapping* is ``None``.
+
+    Args:
+        mapping: A ``dict``, Pydantic model, or any object with attribute
+            access.  ``None`` is treated as an empty container.
+        key: The attribute or dictionary key to look up.
+        default: Value returned when *key* is not found.  Defaults to
+            ``None``.
+
+    Returns:
+        The resolved value, or *default* if missing.
+    """
     if mapping is None:
         return default
     if isinstance(mapping, dict):
@@ -44,6 +73,17 @@ def maybe_get(mapping: Any, key: str, default: Any = None) -> Any:
 
 
 def response_to_dict(response: Any) -> dict[str, Any]:
+    """Coerce a model response object into a plain dictionary.
+    Supports Pydantic v2 models (``model_dump``), raw ``dict`` instances,
+    and objects with a ``__dict__`` attribute.  Returns an empty dictionary
+    for unsupported types.
+
+    Args:
+        response: An LLM response object of any supported shape.
+
+    Returns:
+        A dictionary representation of *response*.
+    """
     if hasattr(response, "model_dump"):
         return response.model_dump()  # type: ignore[no-any-return]
     if isinstance(response, dict):
@@ -54,6 +94,17 @@ def response_to_dict(response: Any) -> dict[str, Any]:
 
 
 def extract_text(response: Any) -> str:
+    """Extract the plain-text content from an LLM chat completion response.
+    Handles both ``str`` and ``list[dict]`` content formats.  When the
+    content is a list of blocks, only ``text``-typed blocks are concatenated.
+
+    Args:
+        response: A model response object (dict, Pydantic model, or raw
+            object with ``choices``).
+
+    Returns:
+        The concatenated text content, or an empty string if unavailable.
+    """
     payload = response_to_dict(response)
     choices = payload.get("choices") or []
     if not choices:
@@ -75,6 +126,15 @@ def extract_text(response: Any) -> str:
 
 
 def extract_embedding(response: Any) -> list[float]:
+    """Extract the embedding vector from an embedding model response.
+    Args:
+        response: A model response object containing a ``data`` list with an
+            ``embedding`` field.
+
+    Returns:
+        A list of floats representing the embedding, or an empty list if
+        unavailable.
+    """
     payload = response_to_dict(response)
     data = payload.get("data") or []
     if not data:
@@ -86,6 +146,17 @@ def extract_embedding(response: Any) -> list[float]:
 
 
 def extract_rerank_results(response: Any) -> list[dict[str, Any]]:
+    """Extract and normalize reranking results from a reranker response.
+    Each result is normalised to contain ``index``, ``relevance_score``, and
+    ``document`` keys regardless of the original response shape.
+
+    Args:
+        response: A model response object containing a ``results`` list.
+
+    Returns:
+        A list of normalised result dictionaries sorted by the provider's
+        original ordering.
+    """
     payload = response_to_dict(response)
     results = payload.get("results") or []
     normalized = []
@@ -101,6 +172,16 @@ def extract_rerank_results(response: Any) -> list[dict[str, Any]]:
 
 
 def extract_speech_bytes(response: Any) -> bytes:
+    """Extract raw audio bytes from a speech synthesis (TTS) response.
+    Checks for a ``read`` method (file-like objects), a ``content`` bytes
+    attribute (HTTPX-style), or a bare ``bytes`` instance.
+
+    Args:
+        response: A TTS model response in any supported shape.
+
+    Returns:
+        The audio payload as bytes, or an empty bytestring if unavailable.
+    """
     if hasattr(response, "read"):
         return bytes(response.read())
     if hasattr(response, "content") and isinstance(response.content, bytes):
@@ -111,6 +192,16 @@ def extract_speech_bytes(response: Any) -> bytes:
 
 
 def extract_transcription_text(response: Any) -> str:
+    """Extract transcribed text from a speech-to-text (STT) response.
+    Supports responses with a ``text`` attribute (file-like) and dict-style
+    responses with a ``text`` key.
+
+    Args:
+        response: An STT model response object.
+
+    Returns:
+        The transcribed text, or an empty string if unavailable.
+    """
     if hasattr(response, "text"):
         return str(response.text)
     payload = response_to_dict(response)
@@ -121,6 +212,16 @@ def extract_transcription_text(response: Any) -> str:
 
 
 def extract_image_urls(response: Any) -> list[str]:
+    """Extract image URLs or base64 data strings from an image generation response.
+    Iterates over the ``data`` list and collects either ``url`` or
+    ``b64_json`` fields from each item.
+
+    Args:
+        response: An image generation model response object.
+
+    Returns:
+        A list of URL strings or base64-encoded image data strings.
+    """
     payload = response_to_dict(response)
     data = payload.get("data") or []
     urls = []
@@ -133,6 +234,18 @@ def extract_image_urls(response: Any) -> list[str]:
 
 
 def extract_usage(response: Any) -> dict[str, Any]:
+    """Extract token usage statistics from a model response.
+    Normalises provider-specific field names (OpenAI ``prompt_tokens`` /
+    ``completion_tokens`` vs. Anthropic ``input_tokens`` / ``output_tokens``)
+    and includes prompt-caching metrics when available.
+
+    Args:
+        response: A model response object with a ``usage`` section.
+
+    Returns:
+        A dictionary with keys ``input_tokens``, ``output_tokens``,
+        ``cache_read_tokens``, and ``cache_write_tokens`` (all ``int``).
+    """
     payload = response_to_dict(response)
     usage = payload.get("usage") or {}
     prompt_details = usage.get("prompt_tokens_details") or {}
@@ -156,6 +269,19 @@ def extract_usage(response: Any) -> dict[str, Any]:
 
 
 def extract_estimated_cost(response: Any) -> float | None:
+    """Extract the estimated response cost from a model response.
+    Checks ``response_cost`` on the top-level payload and in
+    ``_hidden_params``, falling back to attribute access on the original
+    response object for Pydantic model compatibility.
+
+    Args:
+        response: A model response object, potentially containing LiteLLM
+            cost metadata.
+
+    Returns:
+        The estimated cost as a float, or ``None`` if cost information is
+        not available.
+    """
     payload = response_to_dict(response)
     if isinstance(payload.get("response_cost"), (int, float)):
         return float(payload["response_cost"])

@@ -23,6 +23,18 @@ class ModelRuntimeAdminError(RuntimeError):
 
 
 def get_provider_or_raise(database: Any, provider_id: str) -> dict[str, Any]:
+    """Look up a provider by ID or raise a 404 error.
+
+    Args:
+        database: Application database handle with a ``model_registry`` accessor.
+        provider_id: Unique identifier of the provider to retrieve.
+
+    Returns:
+        Provider payload dictionary from the registry.
+
+    Raises:
+        ModelRuntimeAdminError: If the provider does not exist.
+    """
     payload = database.model_registry.get_provider(provider_id)
     if payload is None:
         raise ModelRuntimeAdminError(
@@ -34,6 +46,18 @@ def get_provider_or_raise(database: Any, provider_id: str) -> dict[str, Any]:
 
 
 def get_model_or_raise(database: Any, model_id: str) -> dict[str, Any]:
+    """Look up a model by ID or raise a 404 error.
+
+    Args:
+        database: Application database handle with a ``model_registry`` accessor.
+        model_id: Unique identifier of the model to retrieve.
+
+    Returns:
+        Model payload dictionary from the registry.
+
+    Raises:
+        ModelRuntimeAdminError: If the model does not exist.
+    """
     payload = database.model_registry.get_model(model_id)
     if payload is None:
         raise ModelRuntimeAdminError(
@@ -45,6 +69,18 @@ def get_model_or_raise(database: Any, model_id: str) -> dict[str, Any]:
 
 
 def get_route_or_raise(database: Any, route_id: str) -> dict[str, Any]:
+    """Look up a route by ID or raise a 404 error.
+
+    Args:
+        database: Application database handle with a ``model_registry`` accessor.
+        route_id: Unique identifier of the route to retrieve.
+
+    Returns:
+        Route payload dictionary from the registry.
+
+    Raises:
+        ModelRuntimeAdminError: If the route does not exist.
+    """
     payload = database.model_registry.get_route(route_id)
     if payload is None:
         raise ModelRuntimeAdminError(
@@ -56,11 +92,34 @@ def get_route_or_raise(database: Any, route_id: str) -> dict[str, Any]:
 
 
 def validate_route_member_ids(database: Any, model_ids: list[str]) -> None:
+    """Validate that every model ID in a route actually exists.
+
+    Args:
+        database: Application database handle with a ``model_registry`` accessor.
+        model_ids: List of model IDs referenced by a route.
+
+    Raises:
+        ModelRuntimeAdminError: If any model ID is not found.
+    """
     for model_id in model_ids:
         get_model_or_raise(database, model_id)
 
 
 def provider_request_headers(payload: dict[str, Any]) -> dict[str, str]:
+    """Build HTTP headers required for outgoing provider API calls.
+
+    Sets the appropriate authentication header based on provider type
+    (Azure ``api-key``, Anthropic ``x-api-key``, Gemini ``x-goog-api-key``,
+    or standard ``Authorization: Bearer``).  Custom headers from
+    ``payload["default_params"]["requestHeaders"]`` are merged on top.
+
+    Args:
+        payload: Provider configuration dictionary containing at least
+            ``type`` and optionally ``auth`` and ``default_params``.
+
+    Returns:
+        Dictionary of HTTP header name/value pairs.
+    """
     headers: dict[str, str] = {}
     auth = payload.get("auth") or {}
     default_params = payload.get("default_params") or {}
@@ -85,6 +144,19 @@ def provider_request_headers(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def provider_type_for_model_info(provider_type: str) -> str | None:
+    """Map an internal provider type to its LiteLLM ``custom_llm_provider`` value.
+
+    Some providers require an explicit mapping (e.g. ``custom_openai`` →
+    ``openai``), while native LiteLLM providers are auto-detected from the
+    model prefix and return ``None``.
+
+    Args:
+        provider_type: Internal provider type string from the database.
+
+    Returns:
+        LiteLLM provider type string, or ``None`` when no explicit override
+        is needed.
+    """
     if provider_type == "custom_openai":
         return "openai"
     if provider_type == "dashscope":
@@ -103,6 +175,21 @@ def provider_type_for_model_info(provider_type: str) -> str | None:
 
 
 def infer_context_window(provider: dict[str, Any], litellm_model: str) -> int | None:
+    """Infer the context window size for a model via LiteLLM metadata.
+
+    Queries ``litellm_adapter.get_model_info`` and returns the larger of
+    ``max_input_tokens`` and ``max_tokens``.  Returns ``None`` when the
+    information is unavailable or the adapter raises.
+
+    Args:
+        provider: Provider configuration dictionary (used for the custom
+            provider type override).
+        litellm_model: Fully-qualified LiteLLM model identifier.
+
+    Returns:
+        Context window size in tokens, or ``None`` if it could not be
+        determined.
+    """
     try:
         model_info = litellm_adapter.get_model_info(
             litellm_model,
@@ -124,6 +211,22 @@ def infer_context_window(provider: dict[str, Any], litellm_model: str) -> int | 
 
 
 def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[str, Any]]:
+    """Normalize a raw provider API response into a standard catalog format.
+
+    Handles the differing response schemas of Ollama (``models`` list with
+    ``name`` keys), Gemini (``models`` list with ``name``/``displayName``),
+    and OpenAI-compatible providers (``data`` list with ``id`` keys).
+
+    Args:
+        payload: Provider configuration dictionary (used for type detection
+            and context window inference).
+        body: Parsed JSON response body from the provider's list-models
+            endpoint.
+
+    Returns:
+        List of model catalog entries, each containing ``id``,
+        ``displayName``, ``litellmModel``, and ``contextWindow`` keys.
+    """
     provider_type = payload["type"]
     if provider_type == "ollama":
         models = []
@@ -186,6 +289,24 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
 
 
 async def fetch_provider_catalog(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Asynchronously fetch the available model catalog from a provider.
+
+    Determines the correct listing endpoint based on provider type, issues
+    an HTTP GET with the provider's request headers, and normalizes the
+    response through :func:`normalize_provider_catalog`.
+
+    Args:
+        payload: Provider configuration dictionary containing ``type``,
+            ``base_url``, ``auth``, and ``default_params``.
+
+    Returns:
+        Normalized list of model catalog entries.
+
+    Raises:
+        ModelRuntimeAdminError: If the provider has no base URL, the
+            provider type does not support catalog fetching, or the HTTP
+            request fails.
+    """
     provider_type = payload["type"]
     base_url = (payload.get("base_url") or "").rstrip("/")
     if not base_url:
@@ -228,6 +349,30 @@ async def probe_provider_runtime(
     model_id: str | None = None,
     checked_at: str,
 ) -> dict[str, Any]:
+    """Probe a provider's runtime to verify connectivity and capability.
+
+    Selects an appropriate model (explicitly requested or the first enabled
+    one), then dispatches a minimal test call appropriate for the model's
+    capability type (embedding, completion, or catalog fetch).  When no
+    models are registered, falls back to a catalog-only probe.
+
+    Args:
+        database: Application database handle with a ``model_registry`` accessor.
+        model_runtime: Model runtime instance for executing test calls.
+        provider_id: ID of the provider to probe.
+        model_id: Optional specific model ID to test.  When ``None``, the
+            first enabled model for the provider is used.
+        checked_at: ISO-8601 timestamp recorded in the probe result.
+
+    Returns:
+        Probe result dictionary containing ``success``, ``providerId``,
+        ``mode`` (``"chat"``, ``"embedding"``, ``"catalog"``, or
+        ``"skipped"``), and other diagnostic fields.
+
+    Raises:
+        ModelRuntimeAdminError: If the provider or model is not found, the
+            model does not belong to the provider, or a runtime call fails.
+    """
     provider = get_provider_or_raise(database, provider_id)
 
     if model_id:

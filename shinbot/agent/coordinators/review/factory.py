@@ -76,6 +76,16 @@ class ReviewStageRuntimeConfig:
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any] | None) -> ReviewStageRuntimeConfig:
+        """Create a ``ReviewStageRuntimeConfig`` from a raw mapping.
+
+        Args:
+            value: Dictionary of configuration values. ``None`` or empty
+                dicts return a default instance.
+
+        Returns:
+            A populated ``ReviewStageRuntimeConfig`` with values taken from
+            *value*, falling back to class defaults for missing keys.
+        """
         if not value:
             return cls()
         return cls(
@@ -112,6 +122,18 @@ class ReviewStageRuntimeConfig:
         instance_config_resolver: InstanceRuntimeConfigResolver | None = None,
         model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None,
     ) -> ReviewLLMRunnerConfig:
+        """Convert this stage config into a ``ReviewLLMRunnerConfig``.
+
+        Args:
+            instance_config_resolver: Optional resolver for instance-level
+                runtime configuration.
+            model_target_resolver: Optional callable that maps a model
+                identifier to a ``RuntimeModelTarget``.
+
+        Returns:
+            A ``ReviewLLMRunnerConfig`` populated from this instance's
+            fields and the supplied resolvers.
+        """
         kwargs: dict[str, Any] = {
             "caller": self.caller,
             "llm": self.llm,
@@ -152,6 +174,19 @@ class ReviewRuntimeConfig:
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any] | None) -> ReviewRuntimeConfig:
+        """Create a ``ReviewRuntimeConfig`` from a raw mapping.
+
+        Each recognised stage key is delegated to
+        ``ReviewStageRuntimeConfig.from_mapping``.
+
+        Args:
+            value: Dictionary whose keys correspond to review stage names
+                (e.g. ``"overflow_compression"``, ``"review_scan"``).
+                ``None`` or empty dicts return a default instance.
+
+        Returns:
+            A populated ``ReviewRuntimeConfig``.
+        """
         if not value:
             return cls()
         return cls(
@@ -191,6 +226,23 @@ class ReviewRunnerFactory:
         instance_config_resolver: InstanceRuntimeConfigResolver | None = None,
         model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None,
     ) -> None:
+        """Initialise the factory with shared runtime dependencies.
+
+        Args:
+            model_runtime: Model runtime used for LLM calls. When
+                ``None`` all stages fall back to noop runners.
+            config: Review runtime configuration controlling which
+                stages are enabled and their LLM settings. Defaults
+                to an all-defaults ``ReviewRuntimeConfig``.
+            prompt_registry: Registry for structured prompt components.
+            tool_manager: Manager providing tool definitions to runners.
+            summary_service: Optional service for conversation summaries.
+            message_formatter: Formatter for message rendering.
+            instance_config_resolver: Optional resolver for instance-level
+                runtime configuration.
+            model_target_resolver: Optional callable that maps a model
+                identifier to a ``RuntimeModelTarget``.
+        """
         self._model_runtime = model_runtime
         self._config = config or ReviewRuntimeConfig()
         self._prompt_registry = prompt_registry
@@ -201,6 +253,12 @@ class ReviewRunnerFactory:
         self._model_target_resolver = model_target_resolver
 
     def create_overflow_compression_runner(self) -> OverflowCompressionStageRunner:
+        """Create the overflow compression stage runner.
+
+        Returns:
+            An ``LLMOverflowCompressionStageRunner`` when the stage is
+            enabled, otherwise a ``NoopOverflowCompressionStageRunner``.
+        """
         stage_config = self._config.overflow_compression
         if self._enabled(stage_config):
             return LLMOverflowCompressionStageRunner(
@@ -213,6 +271,12 @@ class ReviewRunnerFactory:
         return NoopOverflowCompressionStageRunner()
 
     def create_review_scan_runner(self) -> ReviewScanStageRunner:
+        """Create the review scan stage runner.
+
+        Returns:
+            An ``LLMReviewScanStageRunner`` when the stage is enabled,
+            otherwise a ``NoopReviewScanStageRunner``.
+        """
         stage_config = self._config.review_scan
         if self._enabled(stage_config):
             return LLMReviewScanStageRunner(
@@ -224,6 +288,12 @@ class ReviewRunnerFactory:
         return NoopReviewScanStageRunner()
 
     def create_reply_decision_runner(self) -> ReplyDecisionStageRunner:
+        """Create the reply decision stage runner.
+
+        Returns:
+            An ``LLMReplyDecisionStageRunner`` when the stage is enabled,
+            otherwise a ``NoopReplyDecisionStageRunner``.
+        """
         stage_config = self._config.reply_decision
         if self._enabled(stage_config):
             return LLMReplyDecisionStageRunner(
@@ -236,6 +306,12 @@ class ReviewRunnerFactory:
         return NoopReplyDecisionStageRunner()
 
     def create_active_chat_bootstrap_runner(self) -> ActiveChatBootstrapStageRunner:
+        """Create the active-chat bootstrap stage runner.
+
+        Returns:
+            An ``LLMActiveChatBootstrapStageRunner`` when the stage is
+            enabled, otherwise a ``NoopActiveChatBootstrapStageRunner``.
+        """
         stage_config = self._config.active_chat_bootstrap
         if self._enabled(stage_config):
             return LLMActiveChatBootstrapStageRunner(
@@ -247,6 +323,12 @@ class ReviewRunnerFactory:
         return NoopActiveChatBootstrapStageRunner()
 
     def create_review_block_digest_runner(self) -> ReviewBlockDigestStageRunner:
+        """Create the review block digest stage runner.
+
+        Returns:
+            An ``LLMReviewBlockDigestStageRunner`` when the stage is
+            enabled, otherwise a ``NoopReviewBlockDigestStageRunner``.
+        """
         stage_config = self._config.review_block_digest
         if self._enabled(stage_config):
             return LLMReviewBlockDigestStageRunner(
@@ -259,6 +341,12 @@ class ReviewRunnerFactory:
         return NoopReviewBlockDigestStageRunner()
 
     def create_idle_review_planning_runner(self) -> IdleReviewPlanningStageRunner:
+        """Create the idle review planning stage runner.
+
+        Returns:
+            An ``LLMIdleReviewPlanningStageRunner`` when the stage is
+            enabled, otherwise a ``NoopIdleReviewPlanningStageRunner``.
+        """
         stage_config = self._config.idle_review_planning
         if self._enabled(stage_config):
             return LLMIdleReviewPlanningStageRunner(

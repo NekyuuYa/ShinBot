@@ -195,6 +195,7 @@ class AgentSummaryRepository(Repository):
         *,
         summary_type: SummaryType | None = None,
     ) -> SummaryRecord | None:
+        """Alias for get_latest_by_session for backward compatibility."""
         return self.get_latest_by_session(session_id, summary_type=summary_type)
 
 

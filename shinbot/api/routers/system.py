@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from shinbot import __version__
 from shinbot.api.deps import (
     AuthConfigDep,
     AuthRequired,
     BootDep,
-    BotDep,
     DashboardBuildDep,
     FrameworkUpdateDep,
     RuntimeControlDep,
@@ -22,8 +19,6 @@ from shinbot.api.models import EC, Envelope, ok
 from shinbot.core.application.runtime_control import RestartReason
 from shinbot.core.application.system_update import SystemUpdateError
 from shinbot.utils.logger import apply_logging_runtime_config, logging_runtime_snapshot
-
-public_router = APIRouter(prefix="/system", tags=["system"])
 
 router = APIRouter(
     prefix="/system",
@@ -73,34 +68,6 @@ class RestartAcceptedData(BaseModel):
     restartRequest: RestartRequestData | None = None
 
 
-class HealthCheckData(BaseModel):
-    """Unauthenticated health-check payload for service probes."""
-
-    status: Literal["healthy", "degraded"]
-    version: str
-    timestamp: int
-    checks: dict[str, bool]
-
-
-def _boot_is_running(boot: Any, bot: Any) -> bool:
-    state = getattr(getattr(boot, "state", None), "value", None)
-    if state is not None:
-        return state == "RUNNING" and getattr(boot, "bot", None) is bot
-    return bot is not None
-
-
-def _database_is_available(bot: Any) -> bool:
-    database = getattr(bot, "database", None)
-    if database is None or not hasattr(database, "connect"):
-        return False
-    try:
-        with database.connect() as conn:
-            conn.execute("SELECT 1").fetchone()
-    except Exception:
-        return False
-    return True
-
-
 def _apply_update_guards(
     status: dict[str, object],
     *,
@@ -126,27 +93,9 @@ def _apply_update_guards(
     return guarded
 
 
-@public_router.get("/health", response_model=Envelope[HealthCheckData])
-async def health_check(bot=BotDep, boot=BootDep):
-    """Return unauthenticated service health status for probes."""
-    checks = {
-        "boot": _boot_is_running(boot, bot),
-        "database": _database_is_available(bot),
-    }
-    status: Literal["healthy", "degraded"] = "healthy" if all(checks.values()) else "degraded"
-    return ok(
-        {
-            "status": status,
-            "version": __version__,
-            "timestamp": int(time.time()),
-            "checks": checks,
-        }
-    )
-
-
 @router.get("/runtime", response_model=Envelope[RuntimeStateData])
 async def get_runtime_state(runtime_control=RuntimeControlDep):
-    """Get current runtime state including pending restart requests."""
+    """Return the current runtime state including pending restart requests."""
     return ok(
         {
             "restartRequested": runtime_control.restart_requested,
@@ -157,13 +106,18 @@ async def get_runtime_state(runtime_control=RuntimeControlDep):
 
 @router.get("/logging", response_model=Envelope[LoggingStateData])
 async def get_logging_state():
-    """Get current logging configuration including level, handlers, and source settings."""
+    """Return the current logging runtime configuration snapshot."""
     return ok(logging_runtime_snapshot())
 
 
 @router.patch("/logging", response_model=Envelope[LoggingStateData])
 async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot=BootDep):
-    """Update logging configuration at runtime, optionally persisting to config file."""
+    """Update the live logging configuration.
+
+    Args:
+        body: Logging configuration update request.
+        boot: Application boot context.
+    """
     try:
         state = apply_logging_runtime_config(
             level_name=body.level,
@@ -205,7 +159,13 @@ async def get_update_state(
     runtime_control=RuntimeControlDep,
     framework_update=FrameworkUpdateDep,
 ):
-    """Inspect available updates and return status with guard conditions."""
+    """Return the current framework update state with guard checks.
+
+    Args:
+        auth_config: Authentication configuration dependency.
+        runtime_control: Runtime control service dependency.
+        framework_update: Framework update service dependency.
+    """
     try:
         status = await framework_update.inspect()
     except SystemUpdateError as exc:
@@ -227,7 +187,12 @@ async def get_update_state(
 
 @router.post("/restart", response_model=Envelope[RestartAcceptedData])
 async def request_restart(body: RestartRuntimeRequest, runtime_control=RuntimeControlDep):
-    """Request a manual or update-driven restart of the bot process."""
+    """Request a runtime restart.
+
+    Args:
+        body: Restart request with reason and requester info.
+        runtime_control: Runtime control service dependency.
+    """
     try:
         request = runtime_control.request_restart(
             reason=RestartReason(body.reason),
@@ -258,7 +223,13 @@ async def pull_update_and_restart(
     runtime_control=RuntimeControlDep,
     framework_update=FrameworkUpdateDep,
 ):
-    """Pull the latest framework update and schedule a restart."""
+    """Pull a framework update and schedule a restart.
+
+    Args:
+        auth_config: Authentication configuration dependency.
+        runtime_control: Runtime control service dependency.
+        framework_update: Framework update service dependency.
+    """
     if auth_config.is_using_default_credentials():
         raise HTTPException(
             status_code=403,
@@ -300,7 +271,7 @@ async def get_dashboard_build_state(
     auth_config: AuthConfigDep,
     dashboard_build=DashboardBuildDep,
 ):
-    """Get the current dashboard build status including guard conditions."""
+    """Return the current dashboard build state."""
     status = await dashboard_build.inspect()
 
     guarded = dict(status)
@@ -317,7 +288,12 @@ async def build_dashboard(
     auth_config: AuthConfigDep,
     dashboard_build=DashboardBuildDep,
 ):
-    """Trigger a dashboard production build and return the result."""
+    """Trigger a dashboard build.
+
+    Args:
+        auth_config: Authentication configuration dependency.
+        dashboard_build: Dashboard build service dependency.
+    """
     if auth_config.is_using_default_credentials():
         raise HTTPException(
             status_code=403,

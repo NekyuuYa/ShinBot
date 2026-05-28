@@ -38,6 +38,23 @@ class ContextEvictionRuntime:
         compressed_text: str = "",
         now_ms: int | None = None,
     ) -> dict[str, Any]:
+        """Apply context eviction and emit control signals.
+
+        Selects head blocks for eviction when the token budget is exceeded,
+        removes them from the session state, optionally stores compressed
+        memory, and resets the alias snapshot.
+
+        Args:
+            state: Mutable session state to evict from.
+            usage: Token usage dict from the model runtime.
+            max_context_tokens: Maximum token budget before eviction.
+            evict_ratio: Fraction of budget that triggers eviction.
+            compressed_text: Summary text to persist as compressed memory.
+            now_ms: Current timestamp in milliseconds.
+
+        Returns:
+            Eviction result dict including a ``control_signal`` entry.
+        """
         result = evict_context_blocks(
             state,
             total_tokens=extract_total_tokens(usage),
@@ -78,6 +95,17 @@ class ContextEvictionRuntime:
         max_context_tokens: int = 32_000,
         evict_ratio: float = 0.6,
     ) -> dict[str, Any]:
+        """Preview what blocks would be evicted without mutating state.
+
+        Args:
+            state: Session state to inspect.
+            usage: Token usage dict from the model runtime.
+            max_context_tokens: Maximum token budget before eviction.
+            evict_ratio: Fraction of budget that triggers eviction.
+
+        Returns:
+            Preview dict with eviction counts and source text.
+        """
         total_tokens = extract_total_tokens(usage)
         config = ContextEvictionConfig(
             max_context_tokens=max_context_tokens,

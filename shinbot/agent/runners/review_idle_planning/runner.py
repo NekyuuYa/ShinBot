@@ -42,6 +42,14 @@ class NoopIdleReviewPlanningStageRunner:
     """No-op planner that lets the scheduler fallback policy decide."""
 
     async def run(self, stage_input: ReviewStageInput) -> IdleReviewPlanningStageOutput:
+        """Return a no-op planning output with no timing override.
+
+        Args:
+            stage_input: Review stage input (ignored by the no-op runner).
+
+        Returns:
+            An output with no timing and a noop reason.
+        """
         return IdleReviewPlanningStageOutput(reason="noop_idle_review_planning")
 
 
@@ -86,6 +94,15 @@ class LLMIdleReviewPlanningStageRunner:
         return self._template._config
 
     async def run(self, stage_input: ReviewStageInput) -> IdleReviewPlanningStageOutput:
+        """Run the LLM-based idle review planner and choose timing parameters.
+
+        Args:
+            stage_input: Review stage input with active-chat context.
+
+        Returns:
+            An output with the next review interval and mention sensitivity
+            settings, or a failed output on error.
+        """
         payload = await self._template.run(stage_input)
         if payload is None:
             return IdleReviewPlanningStageOutput(

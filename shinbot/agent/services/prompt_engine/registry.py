@@ -91,44 +91,107 @@ class PromptRegistry:
     # ── Registration ────────────────────────────────────────────────────
 
     def register_component(self, component: PromptComponent) -> None:
+        """Register a prompt component by its unique id.
+
+        Args:
+            component: The prompt component to register.
+
+        Raises:
+            ValueError: If a component with the same id is already registered.
+        """
         if component.id in self._components:
             raise ValueError(f"Prompt component {component.id!r} is already registered")
         self._components[component.id] = component
 
     def upsert_component(self, component: PromptComponent) -> None:
+        """Insert or replace a prompt component by its unique id.
+
+        Unlike :meth:`register_component`, this does not raise when the
+        component already exists — the existing entry is overwritten.
+
+        Args:
+            component: The prompt component to insert or replace.
+        """
         self._components[component.id] = component
 
     def register_profile(self, profile: PromptProfile) -> None:
+        """Register a prompt profile by its unique id.
+
+        Profiles define ordered component sets and default constraints that
+        are used during assembly.
+
+        Args:
+            profile: The prompt profile to register.
+
+        Raises:
+            ValueError: If a profile with the same id is already registered.
+        """
         if profile.id in self._profiles:
             raise ValueError(f"Prompt profile {profile.id!r} is already registered")
         self._profiles[profile.id] = profile
 
     def register_resolver(self, name: str, fn: Resolver) -> None:
+        """Register a named resolver function for dynamic prompt components.
+
+        Resolvers are callables that generate prompt content at assembly
+        time. Each resolver is identified by a unique ``name`` that
+        components reference via ``resolver_ref``.
+
+        Args:
+            name: Unique name used to look up this resolver.
+            fn: The resolver callable.
+
+        Raises:
+            ValueError: If a resolver with the same name is already registered.
+        """
         if name in self._resolvers:
             raise ValueError(f"Prompt resolver {name!r} is already registered")
         self._resolvers[name] = fn
 
     def attach_context_manager(self, context_manager: ContextManager | None) -> None:
+        """Attach (or detach) the context manager used for memory assembly.
+
+        Args:
+            context_manager: The context manager instance, or ``None`` to
+                detach.
+        """
         self._context_manager = context_manager
 
     # ── Lookup / list ───────────────────────────────────────────────────
 
     def get_component(self, component_id: str) -> PromptComponent | None:
+        """Return a component by its id, or ``None`` if not found."""
         return self._components.get(component_id)
 
     def get_profile(self, profile_id: str) -> PromptProfile | None:
+        """Return a profile by its id, or ``None`` if not found."""
         return self._profiles.get(profile_id)
 
     def list_components(self, stage: PromptStage | None = None) -> list[PromptComponent]:
+        """Return all registered components, optionally filtered by stage.
+
+        Components are sorted by ``(priority, id, version)``.
+
+        Args:
+            stage: If provided, only components belonging to this stage
+                are returned.
+        """
         components = list(self._components.values())
         if stage is not None:
             components = [component for component in components if component.stage == stage]
         return sorted(components, key=lambda item: (item.priority, item.id, item.version))
 
     def list_profiles(self) -> list[PromptProfile]:
+        """Return all registered prompt profiles."""
         return list(self._profiles.values())
 
     def list_component_catalog(self) -> list[dict[str, Any]]:
+        """Return a serialisable catalog of all registered components.
+
+        Each entry is a dictionary containing the component's id, display
+        name, stage, type, source information, and metadata — suitable
+        for API responses or dashboard rendering.
+        """
         catalog: list[dict[str, Any]] = []
         for component in self.list_components():
             source = infer_component_source(component)
@@ -429,16 +492,19 @@ class PromptRegistry:
     def create_snapshot(
         self, result: PromptAssemblyResult, request: PromptAssemblyRequest
     ) -> PromptSnapshot:
+        """Create a :class:`PromptSnapshot` from an assembly result."""
         return create_prompt_snapshot(result, request)
 
     def create_build_snapshot(
         self, result: PromptBuildResult, request: PromptBuildRequest
     ) -> PromptSnapshot:
+        """Create a :class:`PromptSnapshot` from a build result."""
         return create_prompt_build_snapshot(result, request)
 
     def build_log_record(
         self, result: PromptAssemblyResult, request: PromptAssemblyRequest
     ) -> PromptLoggerRecord:
+        """Build a :class:`PromptLoggerRecord` for persistence and auditing."""
         return build_prompt_log_record(result, request)
 
     def _inject_identity_prompts(
@@ -709,6 +775,11 @@ class PromptRegistry:
         component: PromptComponent,
         source: PromptSource,
     ) -> dict[str, Any]:
+        """Resolve the built-in identity map prompt component.
+
+        Delegates to the identity prompt runtime to generate identity-aware
+        instruction content.
+        """
         from shinbot.agent.services.identity.prompt_runtime import resolve_identity_map_prompt
 
         return resolve_identity_map_prompt(
@@ -724,6 +795,7 @@ class PromptRegistry:
         component: PromptComponent,
         source: PromptSource,
     ) -> dict[str, Any]:
+        """Resolve the built-in current-time constraint component."""
         return resolve_current_time_prompt(
             request=request,
             _component=component,
@@ -736,6 +808,7 @@ class PromptRegistry:
         component: PromptComponent,
         source: PromptSource,
     ) -> dict[str, Any]:
+        """Resolve the built-in user message-text instruction component."""
         return resolve_message_text_prompt(
             request=request,
             _component=component,

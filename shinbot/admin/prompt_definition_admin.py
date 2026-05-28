@@ -53,6 +53,14 @@ class PromptDefinitionDraft:
     updated_at: str = ""
 
     def to_payload(self, *, path: Path | None = None) -> dict[str, Any]:
+        """Convert the draft to a serialisable payload dict.
+
+        Args:
+            path: Optional file path to include in the payload.
+
+        Returns:
+            A dict representation of the draft.
+        """
         payload = asdict(self)
         payload["template_vars"] = list(self.template_vars or [])
         payload["bundle_refs"] = list(self.bundle_refs or [])
@@ -68,22 +76,57 @@ class PromptDefinitionFileRepository:
     """Repository for user-editable prompt definitions under ``data/prompts/custom``."""
 
     def __init__(self, root: Path | str) -> None:
+        """Initialize the repository with a root directory for prompt files.
+
+        Args:
+            root: Path to the directory containing prompt Markdown files.
+        """
         self.root = Path(root)
 
     @classmethod
     def from_data_dir(cls, data_dir: Path | str) -> PromptDefinitionFileRepository:
+        """Create a repository rooted at ``<data_dir>/prompts/custom``.
+
+        Args:
+            data_dir: Application data directory.
+
+        Returns:
+            A new PromptDefinitionFileRepository instance.
+        """
         return cls(Path(data_dir) / "prompts" / "custom")
 
     def list(self) -> list[dict[str, Any]]:
+        """Return all prompt definition records as serialised dictionaries.
+
+        Returns:
+            A list of prompt definition payload dicts sorted by stage, then
+            priority, then prompt ID.
+        """
         if not self.root.is_dir():
             return []
         payloads = [self._load_file(path) for path in sorted(self.root.glob("*.md"))]
         return sorted(payloads, key=lambda item: (str(item["stage"]), int(item["priority"]), str(item["prompt_id"])))
 
     def get(self, prompt_uuid: str) -> dict[str, Any] | None:
+        """Look up a prompt definition by UUID (delegates to prompt ID lookup).
+
+        Args:
+            prompt_uuid: The prompt UUID to search for.
+
+        Returns:
+            Serialised prompt dict, or ``None`` if not found.
+        """
         return self.get_by_prompt_id(prompt_uuid)
 
     def get_by_prompt_id(self, prompt_id: str) -> dict[str, Any] | None:
+        """Look up a prompt definition by its normalised prompt ID.
+
+        Args:
+            prompt_id: The prompt identifier.
+
+        Returns:
+            Serialised prompt dict, or ``None`` if not found.
+        """
         normalized = normalize_prompt_id(prompt_id)
         path = self._path_for_prompt_id(normalized)
         if not path.is_file():
@@ -91,6 +134,17 @@ class PromptDefinitionFileRepository:
         return self._load_file(path)
 
     def create(self, draft: PromptDefinitionDraft) -> dict[str, Any]:
+        """Create a new prompt definition file on disk.
+
+        Args:
+            draft: The prompt definition draft to persist.
+
+        Returns:
+            Serialised payload of the newly created prompt.
+
+        Raises:
+            PromptDefinitionAdminError: If the prompt ID already exists.
+        """
         prompt_id = normalize_prompt_id(draft.prompt_id)
         if self.get_by_prompt_id(prompt_id) is not None:
             raise PromptDefinitionAdminError(
@@ -113,6 +167,19 @@ class PromptDefinitionFileRepository:
         return payload
 
     def update(self, prompt_uuid: str, draft: PromptDefinitionDraft) -> dict[str, Any]:
+        """Update an existing prompt definition file on disk.
+
+        Args:
+            prompt_uuid: The UUID of the prompt to update.
+            draft: The new prompt definition draft.
+
+        Returns:
+            Serialised payload of the updated prompt.
+
+        Raises:
+            PromptDefinitionAdminError: If the prompt does not exist or
+                the new ID conflicts.
+        """
         current_id = normalize_prompt_id(prompt_uuid)
         current = self.get_by_prompt_id(current_id)
         if current is None:
@@ -146,6 +213,14 @@ class PromptDefinitionFileRepository:
         return payload
 
     def delete(self, prompt_uuid: str) -> None:
+        """Delete a prompt definition file by UUID.
+
+        Args:
+            prompt_uuid: The prompt UUID to delete.
+
+        Raises:
+            PromptDefinitionAdminError: If the prompt does not exist.
+        """
         prompt_id = normalize_prompt_id(prompt_uuid)
         path = self._path_for_prompt_id(prompt_id)
         if not path.is_file():
@@ -247,6 +322,14 @@ class PromptDefinitionFileRepository:
 
 
 def serialize_prompt_definition(payload: dict[str, Any]) -> dict[str, Any]:
+    """Serialise a prompt definition payload to the camelCase API shape.
+
+    Args:
+        payload: Internal prompt definition dict with snake_case keys.
+
+    Returns:
+        A dict with camelCase keys for the front-end.
+    """
     return {
         "uuid": payload["uuid"],
         "promptId": payload["prompt_id"],
@@ -277,6 +360,18 @@ def serialize_prompt_definition(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_prompt_id(value: str) -> str:
+    """Validate and normalise a prompt identifier.
+
+    Args:
+        value: Raw prompt ID string.
+
+    Returns:
+        The stripped, validated prompt ID.
+
+    Raises:
+        PromptDefinitionAdminError: If the ID is empty or contains
+            invalid characters.
+    """
     normalized = value.strip()
     if not normalized or not PROMPT_ID_RE.fullmatch(normalized):
         raise PromptDefinitionAdminError(
@@ -288,6 +383,14 @@ def normalize_prompt_id(value: str) -> str:
 
 
 def normalize_prompt_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Remove reserved top-level keys from a metadata dict.
+
+    Args:
+        metadata: The raw metadata dict from a prompt front-matter.
+
+    Returns:
+        A new dict containing only non-reserved metadata keys.
+    """
     reserved_keys = {
         "prompt_id",
         "promptId",
@@ -353,6 +456,36 @@ def normalize_prompt_definition_input(
     tags: list[str],
     metadata: dict[str, Any],
 ) -> PromptDefinitionDraft:
+    """Normalise and validate raw prompt-definition input fields.
+
+    Args:
+        prompt_id: The prompt identifier.
+        name: Human-readable prompt name.
+        source_type: Source type string.
+        source_id: Source identifier.
+        owner_plugin_id: Plugin that owns this prompt.
+        owner_module: Module that owns this prompt.
+        module_path: Module file path.
+        stage: Prompt stage string.
+        type: Prompt component kind string.
+        priority: Numeric priority.
+        version: Semantic version string.
+        description: Human-readable description.
+        enabled: Whether the prompt is enabled.
+        content: The prompt body text.
+        template_vars: List of template variable names.
+        resolver_ref: Optional resolver reference.
+        bundle_refs: List of bundle reference IDs.
+        config: Additional config dict.
+        tags: List of tag strings.
+        metadata: Additional metadata dict.
+
+    Returns:
+        A normalised ``PromptDefinitionDraft`` dataclass.
+
+    Raises:
+        PromptDefinitionAdminError: On validation failures.
+    """
     normalized_prompt_id = normalize_prompt_id(prompt_id)
     normalized_name = name.strip()
     normalized_source_type = source_type.strip() or "unknown_source"
@@ -440,6 +573,18 @@ def get_prompt_definition_or_raise(
     repository: PromptDefinitionFileRepository,
     prompt_uuid: str,
 ) -> dict[str, Any]:
+    """Retrieve a prompt definition by UUID, or raise a 404 error.
+
+    Args:
+        repository: The prompt definition file repository.
+        prompt_uuid: The prompt UUID to look up.
+
+    Returns:
+        Serialised prompt definition dict.
+
+    Raises:
+        PromptDefinitionAdminError: If the prompt is not found.
+    """
     payload = repository.get(prompt_uuid)
     if payload is None:
         raise PromptDefinitionAdminError(
@@ -456,6 +601,16 @@ def assert_prompt_id_available(
     *,
     current_uuid: str | None,
 ) -> None:
+    """Assert that no other prompt definition uses the given prompt ID.
+
+    Args:
+        repository: The prompt definition file repository.
+        prompt_id: The prompt ID to check.
+        current_uuid: UUID of the prompt being updated, or ``None`` for creation.
+
+    Raises:
+        PromptDefinitionAdminError: If the ID is already taken by another prompt.
+    """
     existing = repository.get_by_prompt_id(prompt_id)
     if existing is not None and existing["uuid"] != current_uuid:
         raise PromptDefinitionAdminError(
@@ -466,6 +621,14 @@ def assert_prompt_id_available(
 
 
 def render_prompt_definition_markdown(draft: PromptDefinitionDraft) -> str:
+    """Render a prompt definition draft as Markdown with YAML front-matter.
+
+    Args:
+        draft: The prompt definition draft to render.
+
+    Returns:
+        A complete Markdown string with YAML front-matter.
+    """
     import yaml
 
     front_matter: dict[str, Any] = {

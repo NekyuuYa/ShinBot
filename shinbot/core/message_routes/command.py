@@ -36,11 +36,13 @@ TEXT_COMMAND_DISPATCHER_TARGET = "text_command_dispatcher"
 
 
 class CommandMode(Enum):
+    """Determine how a command handler is invoked by the dispatcher."""
     DELEGATED = "delegated"
     MANAGED = "managed"
 
 
 class CommandPriority(Enum):
+    """Resolution priority tiers for command matching."""
     P0_PREFIX = 0
     P1_EXACT = 1
     P2_REGEX = 2
@@ -84,6 +86,7 @@ class CommandRegistry:
     """
 
     def __init__(self) -> None:
+        """Initialize the registry with empty command and index structures."""
         self._commands: dict[str, CommandDef] = {}  # name -> CommandDef
         self._alias_map: dict[str, str] = {}  # alias -> command name
         self._regex_commands: list[CommandDef] = []  # P2 pattern commands
@@ -140,6 +143,7 @@ class CommandRegistry:
 
     @property
     def all_commands(self) -> list[CommandDef]:
+        """Return a snapshot list of all registered command definitions."""
         return list(self._commands.values())
 
     def resolve(self, text: str, prefixes: list[str]) -> CommandMatch | None:
@@ -199,6 +203,13 @@ class TextCommandDispatcher:
         audit_logger: AuditLogger | None = None,
         session_manager: SessionManager | None = None,
     ) -> None:
+        """Initialize the dispatcher with backing registries and services.
+
+        Args:
+            command_registry: Registry to resolve incoming text commands.
+            audit_logger: Optional audit logger for command execution tracking.
+            session_manager: Optional session manager for persisting session state.
+        """
         self._command_registry = command_registry
         self._audit_logger = audit_logger
         self._session_manager = session_manager
@@ -209,6 +220,16 @@ class TextCommandDispatcher:
         message: Message,
         match_context: RouteMatchContext | None = None,
     ) -> bool:
+        """Check whether the message matches a registered text command.
+
+        Args:
+            event: The unified platform event.
+            message: The parsed message AST.
+            match_context: Optional routing match context with session data.
+
+        Returns:
+            True if a command match is found and its owning plugin is enabled.
+        """
         message_context = match_context.message_context if match_context is not None else None
         if not bot_commands_enabled_for_context(message_context):
             return False
@@ -224,6 +245,15 @@ class TextCommandDispatcher:
         return bot_plugin_enabled_for_context(message_context, match.command.owner)
 
     async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
+        """Resolve and execute the matched text command.
+
+        Performs permission checks, invokes the handler with timing, logs
+        audit results, and updates the session state.
+
+        Args:
+            context: The route dispatch context containing the message context.
+            _rule: The route rule that triggered this dispatcher (unused).
+        """
         bot = context.require_message_context()
         if not bot_commands_enabled_for_context(bot):
             return
@@ -340,6 +370,16 @@ def make_text_command_route_rule(
     rule_id: str = "builtin.text_command_dispatcher",
     priority: int = 1000,
 ) -> RouteRule:
+    """Build a route rule that delegates to the text command dispatcher.
+
+    Args:
+        dispatcher: The TextCommandDispatcher instance to use for matching.
+        rule_id: Unique identifier for the route rule.
+        priority: Numeric priority for route ordering (lower is higher priority).
+
+    Returns:
+        A RouteRule configured for message-created events with exclusive matching.
+    """
     return RouteRule(
         id=rule_id,
         priority=priority,

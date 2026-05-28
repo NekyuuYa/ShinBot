@@ -1,134 +1,198 @@
 # ShinBot
 
-面向多平台交互的拟人 Agent Bot 框架。
+> 面向 多平台交互的 拟人 Agent Bot 框架。
 
-ShinBot 通过结构化的 Prompt 编排、统一的 Tool 治理体系和注意力驱动的工作流，让 Bot 具备主动决策能力，而非传统的「艾特才回复」模式。
+## ShinBot 想解决什么
 
-## 快速开始
+在基于 Agent 框架的开源聊天 Bot 生态中，我们似乎已经有了许多选择，那么为什么还需要 ShinBot？
 
-### 环境依赖
+在开发 ShinBot 之前，我曾是 AstrBot 的重度用户，也为其开发过一些有趣的个人插件。但随着使用深入，我越来越难以对它的表现感到满意。
 
-- Python >= 3.12
-- [uv](https://docs.astral.sh/uv/) (Python 包管理器)
-- [pnpm](https://pnpm.io/) (前端包管理器，仅 Dashboard 开发/构建需要)
+在我的设想中，一个理想的 Bot 应该兼顾**实用性**与**灵活性**：既能通过指令提供稳定可靠的功能，又能在日常交流中进行灵活的决策与主动发言，而不是像传统 Bot 那样“艾特一下才回复一下”的机械式交互。
 
-### 安装与启动
+不仅如此，AstrBot 虽然拥有丰富的生态（如赋予 Bot 主动发言能力的插件、丰富 AI 记忆的插件等），但当这些插件组合使用时，协作体验却大打折扣。一旦插件数量增多，LLM 的响应速度与智能程度都会出现明显的下降。
 
-```bash
-# 克隆仓库
-git clone https://github.com/NekyuuYa/Shinbot.git
-cd Shinbot
+与此同时，这也带来了另一个痛点：**高昂的 Token 开销**。
 
-# 安装依赖
-uv sync
+如果抓包查看请求体，你会发现 Message 列表中塞满了各种冗杂的信息，大量重复的 Prompt 层层堆叠，不仅造成了巨大的 Token 浪费，也让 LLM 的上下文缓存命中率变得极低。
 
-# 复制配置文件
-mkdir -p data/agents
-cp config.example.toml config.toml
-cp agent.example.toml data/agents/full-agent.toml
-# 编辑 config.toml 和 data/agents/full-agent.toml 填入你的配置
+正是为了解决这些痛点，ShinBot 诞生了。
 
-# 启动 Bot
-uv run main.py
-# API: http://localhost:3945
-```
+在 ShinBot 的设计哲学中，Prompt 不再是可以被随意篡改或插入的字符串。所有的插件都必须遵循统一的规范，将特定的约束信息放置在规定的区域。
 
-### Dashboard 开发
+**这便是 ShinBot 的一大核心特点：一套强大且高度结构化的提示词编排与管理系统，让你能够精确控制给 LLM 施加的约束条件。**
 
-```bash
-cd dashboard
-pnpm install
-pnpm dev
-```
+另外，在 ShinBot 的工作流中，也不再是死板的“收到一条消息，输出一次回复”。我们精心编排的 Workflow 赋予了 Bot 类似真人的“聚合阅读”能力，让它能够结合上下文综合判断，而不是逐行决定是否响应。
 
-## 架构
+更为重要的是，我们把回复的选择权交给了 LLM：如果它认为需要回复，就会调用相应的工具进行表达；如果认为当前无需介入，则可以选择保持沉默，不作回应。
+
+**这也是 ShinBot 的另一大核心思想：任何操作本质上都是一种 Tool。**
+
+## ShinBot 能为你做什么
+
+### 1. 拒绝黑盒：结构化的 Prompt 编排
+
+在 ShinBot 中，Prompt 不再是运行时东拼西凑出的一大串文本，而是被提升为系统的“一等公民”。
+
+- **模块化管理**：通过内建的 Prompt Registry，系统约束、角色设定、上下文、可用工具等信息都被明确区分，井井有条。
+- **严防“隐式加料”**：任何插件或 Agent 都必须通过统一的编排层注入信息，彻底杜绝了“谁都能偷偷修改系统提示词”的乱象。
+- **高度可调试**：每一次请求的结构都清晰可见。当 AI 表现不佳时，你可以轻松追踪并复现“模型究竟看到了什么”，为后续的 Prompt 调优提供坚实的数据支持。
+
+### 2. 交互即 Tool：让智能行为真正可控
+
+ShinBot 没有使用传统的 `if/else` 来硬编码交互限制，也没有任由模型漫无边际地自由发挥，而是将所有的交互行为显式地抽象为了 **Tool (工具)**。
+
+无论是发送消息、解析多媒体、修改内部状态，还是调用外部 API，全都被纳入了统一的工具体系中。
+- **清晰的边界**：模型能做且只能做你暴露给它的事情。
+- **完善的治理**：每一次 Tool 调用都是可记录、可审计和可复现的，其权限、可见性与风险等级都可以被独立配置。
+
+这套设计的初衷，并不是单纯为了炫技“让模型调用函数”，而是为了让 Bot 的交互行为真正具备工程层面的约束与安全性。
+
+### 3. 与 LLM 互补的强大指令系统
+
+在大模型的灵活交互之外，ShinBot 依然内建了一套强大且独立的指令系统，用来兜底那些**高确定性、强操作性**的任务。
+
+插件可以非常自然地注册自己的指令、事件处理器和能力入口，拥有清晰的解析匹配优先级。并且这套系统与会话状态、权限模块深度联动，让你兼得“大模型的智能”与“传统指令的精准”。
+
+### 4. 面向未来的扎实基础设施
+
+ShinBot 的目标从来不是做一个简单的“套壳脚本”，除了核心的运转逻辑，它为你准备了开发一款硬核 Bot 所需的基础设施：
+
+- **统一的消息抽象**：基于 AST（抽象语法树）的统一消息定义，结合可扩展的 AdapterManager，轻松抹平多平台差异。
+- **完善的控制中心**：标配 FastAPI 驱动的后台管理 API 以及现代化的 Vue 3 可视化面板（Dashboard）。
+- **健壮的运行环境**：支持插件热重载机制，并采用 SQLite 优先的设计，提供稳妥的模块数据持久化、会话状态保持与审查日志存储。
+
+ShinBot 不追求堆砌长长的“功能列表”，而是致力于提供一个**骨架足够稳固、能力上限足够高**的开发框架。
+
+### 5. 极致的降本提速：把每一分钱都花在刀刃上
+
+针对复杂 Agent 普遍存在的“开销大、响应慢”等痛点，ShinBot 在底层机制上做了大量有针对性的优化，只为让你能以极低的成本运行高智能的 Bot：
+
+- **让缓存机制真正发挥作用**：得益于结构化的 Prompt 编排与稳健的显式缓存管理机制，ShinBot 能让 60% 以上的上下文内容正确转化为大模型厂商的缓存计费，极大地压减了 Token 账单。
+- **本地图片与表情去重**：内置了多媒体资产的本地去重逻辑。对于在群聊中重复出现的同一张图片或表情包，系统不会反复将其塞给多模态模型进行解析与“翻译”，直接砍掉了一大块多模态调用的隐形开销。
+- **更短的决策链路**：通过精简模型决策与回复执行的工作流，大幅减少了对模型的无意义反复调用。这不仅在保证 AI 智能性的前提下带来了极速的响应体验，更能帮你节省一笔相当客观的费用。
+
+## ShinBot 适合谁
+
+ShinBot 并不是为了满足所有人的需求而诞生的。它更适合拥有以下痛点或场景的开发者：
+
+- **致力于打造长期的陪伴级 Agent**：你想构建一个可持续迭代、能力不断成长的智能 Bot，而不是糊弄两天的短效 Demo。
+- **需要对模型拥有极致的掌控力**：你受够了将所有规则粗暴地塞进 System Prompt；而是希望通过结构化的方式，精确控制各种阶段、工具与角色的上下文。
+- **深挖交互边界的工程师**：你希望能把大语言模型的交互下沉到 Tool（工具）的维度，借此获得严谨的权限控制体系与执行边界。
+- **插件生态的建设者**：你打算开发属于自己的插件，无缝接入到各个平台、不同通信实例或定制化的复杂工作流当中。
+
+反之，如果你只是想“十分钟光速起个能说话的聊天机器人的空壳”，那么 ShinBot 偏硬核的工程架构对你来说可能会显得有些重。但只要你追求的是**高可维护性、高可控性以及后期不设限的演进空间**，ShinBot 将是不二之选。
+
+## 核心架构大纲
 
 ```text
 ShinBot/
+├── docs/                        # 详尽的框架设计、运行机制与插件开发指南
+├── dashboard/                   # 基于 Vue 3 + Vite 的现代可视化配置面板
 ├── shinbot/
-│   ├── agent/                   # Agent 决策引擎、Prompt Registry、Tool 系统
-│   ├── api/                     # FastAPI 管理接口
-│   ├── builtin_plugins/         # 内置插件与平台适配层
+│   ├── agent/                   # Agent 决策引擎、Prompt Registry、强大可控的 Tool 系统
+│   ├── api/                     # 暴露给前端面板与外部调用的 FastAPI 接口
+│   ├── builtin_plugins/         # 开箱即用的内置核心插件与各交互平台适配层
 │   ├── core/
-│   │   ├── application/         # 应用生命周期 (BootController)
-│   │   ├── dispatch/            # 消息分发管线
-│   │   ├── platform/            # 平台适配管理 (AdapterManager)
-│   │   ├── plugins/             # 插件管理 (PluginManager)
-│   │   ├── security/            # 权限控制与审计
-│   │   └── state/               # 会话状态管理
-│   ├── persistence/             # SQLite 数据持久化
-│   └── utils/                   # 工具函数
-├── dashboard/                   # Vue 3 + Vuetify 可视化面板
-├── docs/                        # 文档、设计说明与参考资料
-├── tests/                       # 测试集
-├── agent.example.toml           # Agent 配置模板
-├── config.example.toml          # 配置模板
-└── main.py                      # 启动入口
+│   │   ├── application/         # 整个应用生命周期的驱动轴心 (BootController)
+│   │   ├── dispatch/            # 高效的消息指令分发管线 (Command/Event/Pipeline)
+│   │   ├── platform/            # 灵活隔离平台的管理器 (AdapterManager & BaseAdapter)
+│   │   ├── plugins/             # 健壮的插件大脑与挂载机制 (PluginManager & Plugin)
+│   │   ├── security/            # 护航工具权限控制与行为审计追踪 (PermissionEngine & AuditLogger)
+│   │   └── state/               # 用户对话隔离与长期心智记忆保持区 (SessionManager)
+│   ├── persistence/             # 首选 SQLite 的高性能数据持久化仓库
+│   └── utils/                   # 通用且不失优雅的辅助工具箱
+├── tests/                       # 对项目质量保驾护航的测试集
+├── config.example.toml          # 开箱即配的基础环境模板
+└── main.py                      # 进程的主启动入口
 ```
 
-### 启动流程
+## 里程碑与发布状态
 
-`main.py` → `BootController` → 5 阶段启动：环境校验 → 基础设施初始化 → 内核加载 → 插件加载 → 适配器激活。
+**以 `v1.0.0` 为起点**，标志着 ShinBot 的底层建构已完成首轮打磨与收敛。项目正式步入“可上生产部署、可长期迭代”的坚实阶段：
 
-### 核心设计理念
+- **核心地基落成**：结构化 Prompt 编排、Tool 治理体系、内建指令系统、插件管理、API 接口与 Dashboard 操作面板全链路闭环，稳定协同。
+- **平滑演进承诺**：不仅后续版本具备旺盛的成长性，我们也会极力保证公开 API 接口、配置结构及数据模型的升级遵循清晰、可预期的演进规范。
+- *Tips：由于完善的架构特性，如果要在生产环境跨大版本迭代，仍推荐您养成“先备份配置与数据目录，再阅读 Release Notes 升级”的好习惯。*
 
-- 结构化 Prompt：插件通过 PromptRegistry 注入内容，禁止直接修改系统提示词
-- 交互即 Tool：Agent 可调用行为通过 ToolRegistry 暴露为工具，支持权限、审计和风险等级控制
-- 注意力驱动：基于对话活跃度衰减决策是否响应，支持批量聚合阅读
+## 极速起步
 
-## 文档
+**环境依赖：**
+- Python `>= 3.12`
+- `uv` (现代化的极速 Python 包管理器)
+- `pnpm` (前端包管理器，用于 Dashboard 的开发与构建)
 
-- [文档索引](docs/README.md)
-- [架构设计](docs/architecture/README.md)
-- [插件开发](docs/plugins/README.md)
-- [运行时设计](docs/design/runtime/agent_runtime_index.md)
-
-## 命令
-
-### 测试
-
-```bash
-# 运行全部测试
-uv run --group dev python -m pytest
-
-# 运行快速单元测试（CI 使用）
-uv run --group dev python -m pytest -m "not integration and not slow and not e2e"
-
-# 运行单个测试文件
-uv run --group dev python -m pytest tests/unit/agent/workflows/test_agent_active_chat_tool_loop.py
-```
-
-### 代码检查
-
-```bash
-# 代码检查
-uv run --group dev ruff check .
-
-# 代码检查并自动修复
-uv run --group dev ruff check . --fix
-```
-
-### 启动
-
-```bash
-# 启动 Bot
-uv run main.py
-# API: http://localhost:3945
-
-# 启动 Bot（带 Operator CLI）
-uv run main.py --operator-cli
-```
-
-### Dashboard
+**初始化与启动：**
 
 ```bash
 # 安装依赖
-cd dashboard
-pnpm install
+uv sync
 
-# Dashboard 开发服务器
-pnpm dev
+# 准备运行配置
+mkdir -p data/agents
+cp config.example.toml data/config.toml
+cp agent.example.toml data/agents/full-agent.toml
 
-# Dashboard 生产构建
-pnpm build
+# 编辑 data/config.toml 和 data/agents/full-agent.toml，填入平台、模型与 Bot 配置
+
+# 一键发射！
+uv run main.py --config data/config.toml
+
+# 静态代码质量检查
+uv run --group dev ruff check .
+
+# 运行测试
+uv run --group dev python -m pytest
+
+# 编译前端
+cd dashboard && pnpm build
 ```
+
+*(温馨提示：默认参考配置请查阅 [config.example.toml](config.example.toml) 与 [agent.example.toml](agent.example.toml) )*
+
+## 探索文档
+
+所有的底层思想理念与开发入门指南皆已筹备妥当，欢迎查阅：
+- **启程引路**：[项目基础文档 (docs/README.md)](docs/README.md)
+- **底层思考**：[设计图纸与分层说明 (docs/design/README.md)](docs/design/README.md)
+- **动手实战**：[插件能力规范与接入手册 (docs/plugins/capabilities.md)](docs/plugins/capabilities.md)
+
+## 大饼环节
+
+- [ ] 设计更加完备的缓存控制系统，当前上下文的构建方法为了缓存稳定性，暂未开放，后续将提供长期记忆的设计接口规范
+- [ ] 支持更多模态的消息
+- [ ] Agent系统编排
+- [ ] CLI的交互页面（初步开发阶段）
+- [ ] 更方便的打包方式，让你便携安装
+- [ ] 沙盒，帮你编程，然后不打开电脑就能设计自己的插件?
+- [ ] 插件市场，高效的插件分发管理
+- [ ] 更拟人的交互体验？！
+- [ ] ~~是时候让ai反过来了解你了！接入穿戴设备，成为最关心你的人……~~
+
+
+## 致谢
+
+本项目的诞生离不开来自以下开源项目的启发：
+
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) - 本项目架构设计的最好的老师，没有 AstrBot 就不会有这套框架
+- [satori](https://github.com/satorijs/satori) - 本项目的底层消息结构设计
+- [nonebot2](https://github.com/nonebot/nonebot2) - 启发设计了本项目高解耦的架构，将所有外置组件视作插件
+- [NapCat](https://github.com/NapNeko/NapCatQQ) - 广泛的api功能支持，是本项目适配的目标
+
+## Tips：
+
+建议部署时选择同时支持工具调用与多模态输入的主模型；具体模型名称请以当前模型供应商文档与项目实际测试结果为准。
+
+---
+
+BTW，如果你也对构建一个面向未来、可持续迭代的智能 Bot 框架充满热情，欢迎加入我们的开发旅程！无论是提交 Pull Request、提出 Issue 还是参与讨论，我们都非常期待你的声音。
+
+---
+
+
+
+<div align="center">
+
+$Forever\ Shining\ ShinBot\ for\ Shinku$
+
+</div>

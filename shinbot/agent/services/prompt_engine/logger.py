@@ -22,6 +22,14 @@ class PromptLogger:
             self._data_dir.mkdir(parents=True, exist_ok=True)
 
     def log(self, entry: PromptLoggerRecord) -> PromptLoggerRecord:
+        """Log a prompt assembly record and optionally persist it.
+
+        Args:
+            entry: The prompt logger record to emit.
+
+        Returns:
+            The same entry that was passed in, for chaining convenience.
+        """
         prompt_logger.info(
             format_log_event(
                 "prompt.assembly",

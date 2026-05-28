@@ -37,6 +37,16 @@ def register_identity_prompt_components(
             component: PromptComponent,
             source: PromptSource,
         ) -> dict[str, Any]:
+            """Resolve the identity map prompt for the current assembly request.
+
+            Args:
+                request: The prompt assembly request.
+                component: The prompt component being resolved.
+                source: Source metadata for the component.
+
+            Returns:
+                Dict containing the resolved prompt template variables.
+            """
             return resolve_identity_map_prompt(
                 identity_store=store,
                 request=request,

@@ -25,6 +25,23 @@ class AliasContextProjector:
         blocks: list[ContextBlockState],
         unread_records: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
+        """Build a prompt context message summarising inactive (silent) users.
+
+        Uses the cached snapshot when the inactive alias table is already
+        frozen in *state*; otherwise collects current platform IDs, selects
+        inactive entries, caches them, and builds the message.
+
+        Args:
+            state: Session-level context state whose inactive alias cache
+                may be updated.
+            blocks: All context blocks for the current session.
+            unread_records: Optional unread message records whose senders
+                are considered active.
+
+        Returns:
+            A ``{"role": "user", "content": [...]}`` message dict listing
+            inactive aliases, or ``None`` when there are no inactive entries.
+        """
         if state.inactive_alias_table_frozen:
             return self._build_inactive_context_message(state.inactive_alias_entries)
 
@@ -47,6 +64,21 @@ class AliasContextProjector:
         blocks: list[ContextBlockState],
         unread_records: list[dict[str, Any]] | None = None,
     ) -> str:
+        """Build a text block listing currently active user aliases.
+
+        Active users are those with ``A``-prefixed aliases or whose platform
+        IDs appear in the current (unsealed) context blocks or unread records.
+
+        Args:
+            alias_table: The session alias table to draw entries from.
+            blocks: All context blocks for the current session.
+            unread_records: Optional unread message records whose senders
+                are considered active.
+
+        Returns:
+            A newline-separated string with a heading followed by alias
+            mapping lines, or an empty string when no active entries exist.
+        """
         active_entries = self.select_active_entries(
             alias_table,
             current_platform_ids=self.collect_current_platform_ids(blocks, unread_records or []),
@@ -64,6 +96,16 @@ class AliasContextProjector:
         return "\n".join(lines)
 
     def reset_inactive_snapshot(self, state: ContextSessionState) -> None:
+        """Clear the cached inactive alias snapshot in *state*.
+
+        This unfreezes the inactive alias table so the next call to
+        :meth:`build_inactive_context_message` will recompute the entries
+        from the current blocks.
+
+        Args:
+            state: Session-level context state whose inactive alias cache
+                should be cleared.
+        """
         state.inactive_alias_entries = []
         state.inactive_alias_table_frozen = False
 
@@ -72,6 +114,21 @@ class AliasContextProjector:
         blocks: list[ContextBlockState],
         unread_records: list[dict[str, Any]],
     ) -> set[str]:
+        """Gather platform IDs of users active in the current session window.
+
+        Scans unsealed context blocks for alias entries and unread message
+        records for sender / part platform IDs.
+
+        Args:
+            blocks: All context blocks for the current session. Sealed
+                blocks are skipped.
+            unread_records: Unread message records whose senders and
+                message-part participants are considered active.
+
+        Returns:
+            A set of non-empty platform ID strings found in the active
+            context.
+        """
         current_platform_ids: set[str] = set()
 
         for block in blocks:
@@ -99,6 +156,22 @@ class AliasContextProjector:
         *,
         current_platform_ids: set[str],
     ) -> list[dict[str, str]]:
+        """Select alias entries from sealed blocks whose users are silent.
+
+        An entry is considered *inactive* when it has a ``P``-prefixed alias,
+        a non-empty platform ID, and that platform ID is absent from
+        *current_platform_ids*.
+
+        Args:
+            blocks: All context blocks for the current session. Only sealed
+                (archived) blocks are inspected.
+            current_platform_ids: Platform IDs of users currently active in
+                the session; these are excluded from the result.
+
+        Returns:
+            A sorted list of dicts with ``alias``, ``platform_id``, and
+            ``display_name`` keys.
+        """
         archived_by_platform_id: dict[str, dict[str, str]] = {}
         for block in blocks:
             if not block.sealed:
@@ -132,6 +205,20 @@ class AliasContextProjector:
         *,
         current_platform_ids: set[str],
     ) -> list[Any]:
+        """Select alias entries for users who are currently active.
+
+        An entry is considered *active* when it has an ``A``-prefixed alias
+        or its platform ID is present in *current_platform_ids*.
+
+        Args:
+            alias_table: The session alias table to draw entries from.
+            current_platform_ids: Platform IDs of users currently active in
+                the session.
+
+        Returns:
+            A sorted list of alias-entry objects, ordered with ``P``-prefixed
+            aliases last, then by alias and platform ID.
+        """
         active_entries = []
         for entry in alias_table.entries.values():
             alias = entry.alias.strip()
@@ -144,6 +231,18 @@ class AliasContextProjector:
         return active_entries
 
     def extract_block_alias_entries(self, block: ContextBlockState) -> list[dict[str, Any]]:
+        """Extract alias-entry dicts from a context block's metadata.
+
+        Looks for the ``alias_entries`` key in the block metadata and returns
+        only the items that are dicts.
+
+        Args:
+            block: The context block whose metadata is inspected.
+
+        Returns:
+            A list of alias-entry dicts, or an empty list if the metadata
+            key is missing or not a list.
+        """
         raw_entries = block.metadata.get("alias_entries", [])
         if not isinstance(raw_entries, list):
             return []

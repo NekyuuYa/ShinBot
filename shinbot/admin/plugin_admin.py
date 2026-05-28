@@ -43,6 +43,17 @@ def plugin_dict(
     *,
     translations: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """Build a serialised plugin dict for the API.
+
+    Args:
+        bot: The running application.
+        plugin_meta: The plugin metadata object.
+        boot: Optional boot controller for reading saved config.
+        translations: Optional locale translations to apply.
+
+    Returns:
+        A dict with plugin details suitable for API responses.
+    """
     module = plugin_module(bot.plugin_manager, plugin_meta.id)
     cfg_schema = None
     try:
@@ -77,6 +88,18 @@ def plugin_dict(
 
 
 def get_plugin_or_raise(plugin_manager: Any, plugin_id: str) -> Any:
+    """Retrieve a plugin by ID, or raise a 404 error.
+
+    Args:
+        plugin_manager: The plugin manager.
+        plugin_id: The plugin identifier.
+
+    Returns:
+        The plugin metadata object.
+
+    Raises:
+        PluginAdminError: If the plugin is not found.
+    """
     plugin = plugin_manager.get_plugin(plugin_id)
     if plugin is None:
         raise PluginAdminError(
@@ -90,6 +113,19 @@ def get_plugin_or_raise(plugin_manager: Any, plugin_id: str) -> Any:
 def get_plugin_schema_or_raise(
     bot: Any, plugin_id: str, translations: dict[str, str]
 ) -> dict[str, Any]:
+    """Retrieve a plugin's translated config schema, or raise an error.
+
+    Args:
+        bot: The running application.
+        plugin_id: The plugin identifier.
+        translations: Locale translations for the schema.
+
+    Returns:
+        Translated config schema dict.
+
+    Raises:
+        PluginAdminError: If the plugin has no config schema.
+    """
     plugin = get_plugin_or_raise(bot.plugin_manager, plugin_id)
     if plugin.role.value == "adapter":
         raise PluginAdminError(
@@ -113,6 +149,18 @@ def get_plugin_schema_or_raise(
 
 
 async def rescan_plugins(bot: Any, boot: Any) -> list[dict[str, Any]]:
+    """Rescan the plugins directory and reload discovered plugins.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+
+    Returns:
+        A list of serialised plugin dicts for newly loaded plugins.
+
+    Raises:
+        PluginAdminError: If the plugins directory is missing or rescan fails.
+    """
     plugins_dir = (Path(boot.data_dir) / "plugins").resolve()
     if not plugins_dir.exists():
         raise PluginAdminError(
@@ -135,6 +183,20 @@ async def rescan_plugins(bot: Any, boot: Any) -> list[dict[str, Any]]:
 def update_plugin_config_or_raise(
     bot: Any, boot: Any, plugin_id: str, config: dict[str, Any]
 ) -> Any:
+    """Validate and persist an updated plugin configuration.
+
+    Args:
+        bot: The running application.
+        boot: The application boot controller.
+        plugin_id: The plugin identifier.
+        config: The new config dict.
+
+    Returns:
+        The plugin metadata object.
+
+    Raises:
+        PluginAdminError: On validation failure or config write error.
+    """
     plugin = get_plugin_or_raise(bot.plugin_manager, plugin_id)
     if plugin.role.value == "adapter":
         raise PluginAdminError(
@@ -188,6 +250,19 @@ async def disable_plugin_or_raise(
     plugin_id: str,
     boot: Any | None = None,
 ) -> Any:
+    """Disable a plugin and persist its disabled state.
+
+    Args:
+        bot: The running application.
+        plugin_id: The plugin identifier.
+        boot: Optional boot controller for config persistence.
+
+    Returns:
+        The plugin metadata after disabling.
+
+    Raises:
+        PluginAdminError: If the plugin is not found or disable fails.
+    """
     try:
         meta = await bot.plugin_manager.disable_plugin_async(plugin_id)
     except ValueError as exc:
@@ -213,6 +288,19 @@ async def enable_plugin_or_raise(
     plugin_id: str,
     boot: Any | None = None,
 ) -> Any:
+    """Enable a plugin and persist its enabled state.
+
+    Args:
+        bot: The running application.
+        plugin_id: The plugin identifier.
+        boot: Optional boot controller for config persistence.
+
+    Returns:
+        The plugin metadata after enabling.
+
+    Raises:
+        PluginAdminError: If the plugin is not found or enable fails.
+    """
     try:
         meta = await bot.plugin_manager.enable_plugin_async(plugin_id)
     except ValueError as exc:
@@ -234,6 +322,16 @@ async def enable_plugin_or_raise(
 
 
 def plugin_translations(bot: Any, plugin_id: str, requested_locales: list[str]) -> dict[str, str]:
+    """Resolve locale translations for a plugin.
+
+    Args:
+        bot: The running application.
+        plugin_id: The plugin identifier.
+        requested_locales: List of locale codes to resolve.
+
+    Returns:
+        A dict mapping translation keys to translated strings.
+    """
     return resolve_translations(
         plugin_locales(bot.plugin_manager, plugin_id),
         requested_locales,

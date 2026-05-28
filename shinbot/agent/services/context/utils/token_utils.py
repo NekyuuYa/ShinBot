@@ -41,5 +41,17 @@ def estimate_text_tokens(text: str) -> int:
 
 
 def estimate_role_content_tokens(role: str, content: str) -> int:
+    """Estimate tokens for a role-prefixed content string.
+
+    Prepends the role label to the content before calling the
+    text token estimator.
+
+    Args:
+        role: Message role label (e.g. ``"user"``, ``"assistant"``).
+        content: Message content text.
+
+    Returns:
+        Estimated token count.
+    """
     text = f"{role}: {content}" if role else content
     return estimate_text_tokens(text.strip())

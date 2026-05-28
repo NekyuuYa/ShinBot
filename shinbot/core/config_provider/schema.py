@@ -97,6 +97,7 @@ class ConfigProviderDefinition:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def key(self) -> tuple[ConfigProviderKind, str]:
+        """Return the unique registry key as a ``(kind, id)`` tuple."""
         return self.kind, self.id
 
     def to_dict(self) -> dict[str, Any]:
@@ -125,4 +126,5 @@ class ConfigValidationIssue:
     code: str = "invalid"
 
     def to_dict(self) -> dict[str, str]:
+        """Return a JSON-serialisable representation of this validation issue."""
         return {"path": self.path, "message": self.message, "code": self.code}

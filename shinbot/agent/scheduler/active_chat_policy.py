@@ -136,6 +136,12 @@ class DefaultActiveChatPolicy:
     """Exponential decay policy used until message-aware interest updates exist."""
 
     def __init__(self, config: ActiveChatPolicyConfig | None = None) -> None:
+        """Initialize the default active chat policy.
+
+        Args:
+            config: Policy configuration. Uses ``ActiveChatPolicyConfig``
+                defaults when *None*.
+        """
         self._config = config or ActiveChatPolicyConfig()
 
     def initial_state(
@@ -146,6 +152,22 @@ class DefaultActiveChatPolicy:
         initial_interest_value: float | None = None,
         decay_half_life_seconds: float | None = None,
     ) -> ActiveChatState:
+        """Create the initial active chat interest state.
+
+        The returned state is clamped to ``[0, max_interest_value]`` and
+        stamped with the current timestamp.
+
+        Args:
+            session_id: Unique identifier for the conversation session.
+            now: Current Unix timestamp in seconds.
+            initial_interest_value: Override for the starting interest
+                level.  Falls back to the configured default.
+            decay_half_life_seconds: Override for the decay half-life.
+                Falls back to the configured default.
+
+        Returns:
+            A new ``ActiveChatState`` with the initial interest curve.
+        """
         raw_interest_value = (
             self._config.initial_interest_value
             if initial_interest_value is None
@@ -174,6 +196,22 @@ class DefaultActiveChatPolicy:
         now: float,
         count_tick: bool = False,
     ) -> ActiveChatState:
+        """Apply exponential interest decay from the last update.
+
+        When *count_tick* is ``True`` the elapsed time is replaced by the
+        configured ``tick_interval_seconds`` so that fixed-interval
+        scheduler ticks produce deterministic decay regardless of wall
+        clock drift.
+
+        Args:
+            state: Current active chat state.
+            now: Current Unix timestamp in seconds.
+            count_tick: If ``True``, use the configured tick interval
+                instead of real elapsed time for the decay calculation.
+
+        Returns:
+            A new ``ActiveChatState`` with the decayed interest value.
+        """
         elapsed = max(0.0, now - state.updated_at)
         if elapsed == 0.0 and not count_tick:
             return state
@@ -208,6 +246,28 @@ class DefaultActiveChatPolicy:
         is_poke_to_bot: bool = False,
         is_poke_to_other: bool = False,
     ) -> ActiveChatState:
+        """Update interest based on an incoming message event.
+
+        The interest delta is determined by message features (mentions,
+        replies, pokes) and capped at ``max_interest_value``.  Messages
+        from the bot itself produce no interest change.
+
+        Args:
+            state: Current active chat state.
+            now: Current Unix timestamp in seconds.
+            is_from_bot: ``True`` if the message was sent by the bot.
+            is_mentioned: ``True`` if the bot is @-mentioned.
+            is_reply_to_bot: ``True`` if the message replies to a bot
+                message.
+            is_mention_to_other: ``True`` if the bot is @-mentioned
+                alongside another user.
+            is_poke_to_bot: ``True`` if the message pokes the bot.
+            is_poke_to_other: ``True`` if the message pokes another
+                user.
+
+        Returns:
+            A new ``ActiveChatState`` with the adjusted interest value.
+        """
         delta = self._message_interest_delta(
             is_from_bot=is_from_bot,
             is_mentioned=is_mentioned,
@@ -254,6 +314,18 @@ class DefaultActiveChatPolicy:
         return self._config.message_interest_delta
 
     def should_return_idle(self, state: ActiveChatState) -> bool:
+        """Check whether the session should transition to idle.
+
+        Returns ``True`` when the current interest value has fallen to
+        or below the configured ``idle_interest_threshold`` (with a
+        small floating-point tolerance).
+
+        Args:
+            state: Current active chat state.
+
+        Returns:
+            ``True`` if interest is low enough to leave active chat.
+        """
         return state.interest_value <= self._config.idle_interest_threshold + 1e-9
 
     def adjust_interest(
@@ -264,6 +336,21 @@ class DefaultActiveChatPolicy:
         now: float,
         force_exit: bool = False,
     ) -> ActiveChatState:
+        """Manually adjust interest level (e.g. from workflow actions).
+
+        When *force_exit* is ``True`` the interest is set to zero
+        regardless of *delta*.
+
+        Args:
+            state: Current active chat state.
+            delta: Amount to add to (or subtract from) the interest
+                value.  Ignored when *force_exit* is ``True``.
+            now: Current Unix timestamp in seconds.
+            force_exit: If ``True``, force interest to zero.
+
+        Returns:
+            A new ``ActiveChatState`` with the adjusted interest value.
+        """
         if force_exit:
             interest_value = 0.0
         else:
@@ -290,6 +377,23 @@ class DefaultActiveChatPolicy:
         disposition: ActiveChatDisposition,
         now: float,
     ) -> ActiveChatState:
+        """Apply a delayed bootstrap disposition as a curve correction.
+
+        The correction is calculated by comparing the interest that
+        would have resulted from the disposition preset versus the
+        default curve, preserving any runtime deltas accumulated
+        since session start.
+
+        Args:
+            state: Current active chat state.
+            disposition: Target disposition to bootstrap towards.
+            now: Current Unix timestamp in seconds.
+
+        Returns:
+            A new ``ActiveChatState`` with corrected interest and
+            decay parameters, and ``bootstrap_applied`` set to
+            ``True``.
+        """
         correction = calculate_bootstrap_correction(
             state,
             disposition=disposition,

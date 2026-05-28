@@ -56,21 +56,25 @@ class AuthConfig:
     # ── Credential verification ──────────────────────────────────────
 
     def verify_password(self, username: str, password: str) -> bool:
+        """Verify username and password using constant-time comparison."""
         # Use constant-time comparison to prevent timing attacks.
         username_ok = secrets.compare_digest(username, self.username)
         password_ok = secrets.compare_digest(password, self._password)
         return username_ok and password_ok
 
     def is_using_default_credentials(self) -> bool:
+        """Check if credentials are still factory defaults (admin/admin)."""
         return self.username == self.DEFAULT_USERNAME and self._password == self.DEFAULT_PASSWORD
 
     def set_credentials(self, username: str, password: str) -> None:
+        """Update the in-memory admin credentials."""
         self.username = username
         self._password = password
 
     # ── Token lifecycle ──────────────────────────────────────────────
 
     def create_token(self, subject: str | None = None) -> str:
+        """Create a JWT token for the given subject."""
         now = int(time.time())
         payload = {
             "sub": subject or self.username,
@@ -86,9 +90,19 @@ class AuthConfig:
 
     @property
     def session_cookie_max_age(self) -> int:
+        """Return the session cookie max-age in seconds, derived from the JWT expiry."""
         return max(self.jwt_expire_hours, 1) * 3600
 
     def is_secure_cookie(self, scheme: str | None = None) -> bool:
+        """Determine whether the session cookie should be flagged as ``Secure``.
+
+        If an explicit override was set via configuration it is honoured
+        directly.  Otherwise the decision is inferred from the request
+        scheme — ``True`` for HTTPS/WSS, ``False`` otherwise.
+
+        Args:
+            scheme: The request URL scheme (e.g. ``"https"``).
+        """
         if self._session_cookie_secure is not None:
             return self._session_cookie_secure
         return (scheme or "").lower() in {"https", "wss"}

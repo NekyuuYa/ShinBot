@@ -75,6 +75,14 @@ class ModelRuntime:
     """Unified runtime for route-based LiteLLM calls."""
 
     def __init__(self, database: DatabaseManager | None) -> None:
+        """Initialize the model runtime service.
+
+        Args:
+            database: Optional database manager for persisting execution
+                records and AI interactions. When provided, an audit
+                payload store is also initialised for request/response
+                logging.
+        """
         self._database = database
         data_dir = database.config.data_dir if database is not None else None
         self._audit_store = (
@@ -84,13 +92,49 @@ class ModelRuntime:
         self._observers: list[ModelRuntimeObserver] = []
 
     def register_observer(self, observer: ModelRuntimeObserver) -> None:
+        """Register an observer to receive model runtime events.
+
+        Observers are called with a payload dict for each request,
+        successful response, and error event emitted during model
+        execution.
+
+        Args:
+            observer: A callable (or async callable) that accepts a
+                single ``dict[str, Any]`` payload and optionally
+                returns an awaitable.
+        """
         if observer not in self._observers:
             self._observers.append(observer)
 
     def unregister_observer(self, observer: ModelRuntimeObserver) -> None:
+        """Unregister a previously registered observer.
+
+        If the observer is not currently registered the call is a
+        safe no-op.
+
+        Args:
+            observer: The observer instance to remove.
+        """
         self._observers = [item for item in self._observers if item is not observer]
 
     async def generate(self, call: ModelRuntimeCall) -> GenerateResult:
+        """Send a chat completion request through the model runtime.
+
+        Routes the call to the appropriate provider via LiteLLM,
+        handles retries and fallbacks, persists execution records,
+        and returns the parsed text and tool calls.
+
+        Args:
+            call: A ``ModelRuntimeCall`` describing the route, messages,
+                tools, and parameters for the completion request.
+
+        Returns:
+            A ``GenerateResult`` containing the response text, any
+                tool calls, token usage, and execution context.
+
+        Raises:
+            ModelCallError: If all retry/fallback attempts fail.
+        """
         return await self._execute_with_retry(
             call,
             operation="generate",
@@ -110,6 +154,22 @@ class ModelRuntime:
         )
 
     async def embed(self, call: ModelRuntimeCall) -> EmbedResult:
+        """Generate an embedding vector for the provided input.
+
+        Routes the request through the embedding mode of the model
+        runtime, handling retries, fallbacks, and execution persistence.
+
+        Args:
+            call: A ``ModelRuntimeCall`` with ``input_data`` set to the
+                text(s) to embed.
+
+        Returns:
+            An ``EmbedResult`` containing the embedding vector, token
+                usage, and execution context.
+
+        Raises:
+            ModelCallError: If all retry/fallback attempts fail.
+        """
         return await self._execute_with_retry(
             call,
             operation="embed",
@@ -123,6 +183,22 @@ class ModelRuntime:
         )
 
     async def rerank(self, call: ModelRuntimeCall) -> RerankResult:
+        """Rerank a set of documents against a query.
+
+        Sends a reranking request to the configured provider, returning
+        documents sorted by relevance score.
+
+        Args:
+            call: A ``ModelRuntimeCall`` with ``input_data`` containing
+                the query and document list to rerank.
+
+        Returns:
+            A ``RerankResult`` containing the scored document list, token
+                usage, and execution context.
+
+        Raises:
+            ModelCallError: If all retry/fallback attempts fail.
+        """
         return await self._execute_with_retry(
             call,
             operation="rerank",
@@ -134,7 +210,19 @@ class ModelRuntime:
         )
 
     async def speak(self, call: ModelRuntimeCall) -> SpeechResult:
-        """Text-to-speech via litellm.speech."""
+        """Generate speech audio from text via LiteLLM.
+
+        Args:
+            call: A ``ModelRuntimeCall`` with ``input_data`` set to the
+                text to synthesise.
+
+        Returns:
+            A ``SpeechResult`` containing the raw audio bytes and
+                execution context.
+
+        Raises:
+            ModelCallError: If all retry/fallback attempts fail.
+        """
         return await self._execute_with_retry(
             call,
             operation="speak",
@@ -146,7 +234,19 @@ class ModelRuntime:
         )
 
     async def transcribe(self, call: ModelRuntimeCall) -> TranscriptionResult:
-        """Speech-to-text via litellm.transcription."""
+        """Transcribe audio to text via LiteLLM.
+
+        Args:
+            call: A ``ModelRuntimeCall`` with ``input_data`` set to the
+                audio content to transcribe.
+
+        Returns:
+            A ``TranscriptionResult`` containing the transcribed text,
+                token usage, and execution context.
+
+        Raises:
+            ModelCallError: If all retry/fallback attempts fail.
+        """
         return await self._execute_with_retry(
             call,
             operation="transcribe",
@@ -158,7 +258,19 @@ class ModelRuntime:
         )
 
     async def generate_image(self, call: ModelRuntimeCall) -> ImageResult:
-        """Image generation via litellm.image_generation."""
+        """Generate images from a text prompt via LiteLLM.
+
+        Args:
+            call: A ``ModelRuntimeCall`` with ``input_data`` set to the
+                image generation prompt.
+
+        Returns:
+            An ``ImageResult`` containing the list of generated image
+                URLs and execution context.
+
+        Raises:
+            ModelCallError: If all retry/fallback attempts fail.
+        """
         return await self._execute_with_retry(
             call,
             operation="generate_image",
@@ -169,7 +281,19 @@ class ModelRuntime:
         )
 
     async def generate_video(self, call: ModelRuntimeCall) -> VideoResult:
-        """Video generation via litellm.video_generation."""
+        """Generate video from a text prompt via LiteLLM.
+
+        Args:
+            call: A ``ModelRuntimeCall`` with ``input_data`` set to the
+                video generation prompt.
+
+        Returns:
+            A ``VideoResult`` containing the list of generated video
+                URLs and execution context.
+
+        Raises:
+            ModelCallError: If all retry/fallback attempts fail.
+        """
         return await self._execute_with_retry(
             call,
             operation="generate_video",

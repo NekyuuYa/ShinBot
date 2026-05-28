@@ -29,6 +29,22 @@ class InstructionRuntime:
         self_platform_id: str = "",
         now_ms: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Project unread records into instruction-stage content blocks.
+
+        Delegates to the underlying :class:`InstructionStageBuilder`
+        after preparing a projection state from the session.
+
+        Args:
+            unread_records: Message records not yet consumed.
+            alias_table: Session alias table for name resolution.
+            session_state: Current context session state.
+            previous_summary: Summary text from the previous turn.
+            self_platform_id: Platform ID of the bot itself.
+            now_ms: Current timestamp in milliseconds.
+
+        Returns:
+            List of content block dicts for the instruction stage.
+        """
         return self.builder.build_content_blocks(
             unread_records,
             alias_table=alias_table,
