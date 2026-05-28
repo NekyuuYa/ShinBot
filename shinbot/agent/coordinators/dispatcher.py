@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.coordinators.active_chat.models import ActiveChatMessageSignal
 from shinbot.agent.coordinators.active_chat.trace import sanitize_conversation_trace_messages
 from shinbot.agent.coordinators.review.models import (
     ReviewWorkflowConfig,
@@ -82,14 +83,47 @@ class ActiveReplyDispatcher:
     ) -> None:
         """Handle a high-priority message in ACTIVE_REPLY state.
 
-        Active reply does not have its own LLM workflow yet. Keep the route
-        non-blocking for the first rollout: mark this no-op path complete and
-        let the scheduler continue to idle or the pending review flow.
+        Active reply reuses the active-chat fast workflow as a one-shot reply
+        path. It bypasses semantic waiting because mentions/replies already
+        passed the scheduler's high-priority policy.
         """
+        if self._active_chat_workflow is None or self._agent_scheduler is None:
+            logger.warning(
+                format_log_event(
+                    "agent.active_reply.skipped",
+                    reason=(
+                        "missing_active_chat_workflow"
+                        if self._active_chat_workflow is None
+                        else "missing_agent_scheduler"
+                    ),
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    sender_id=sender_id,
+                    response_profile=response_profile,
+                    event_count=len(events),
+                )
+            )
+            if self._agent_scheduler is not None:
+                await self._agent_scheduler.complete_active_reply(session_id)
+            return
+
+        now = time.time()
+        active_chat_state = ActiveChatState(
+            session_id=session_id,
+            interest_value=max(
+                self._review_config.provisional_active_chat_interest,
+                30.0,
+            ),
+            decay_half_life_seconds=(
+                self._review_config.provisional_active_chat_half_life_seconds
+            ),
+            entered_at=now,
+            updated_at=now,
+            active_epoch=int(now * 1000),
+        )
         logger.info(
             format_log_event(
-                "agent.active_reply.skipped",
-                reason="workflow_not_implemented",
+                "agent.active_reply.workflow.start",
                 session_id=session_id,
                 message_log_id=message_log_id,
                 sender_id=sender_id,
@@ -97,8 +131,68 @@ class ActiveReplyDispatcher:
                 event_count=len(events),
             )
         )
-        if self._agent_scheduler is not None:
-            await self._agent_scheduler.complete_active_reply(session_id)
+        try:
+            await self._active_chat_workflow.start_active_chat(
+                session_id=session_id,
+                active_chat_state=active_chat_state,
+            )
+            await self._active_chat_workflow.notify_message(
+                scheduler=self._agent_scheduler,
+                session_id=session_id,
+                message_log_id=message_log_id,
+                sender_id=sender_id,
+                response_profile=response_profile,
+                is_mentioned=is_mentioned,
+                is_reply_to_bot=is_reply_to_bot,
+                is_mention_to_other=False,
+                is_poke_to_bot=False,
+                is_poke_to_other=False,
+                self_platform_id=self_platform_id,
+                active_chat_state=active_chat_state,
+            )
+            state = self._active_chat_workflow.attention_state_for(session_id)
+            if state is not None and not state.pending_buffer:
+                state.pending_buffer.append(
+                    ActiveChatMessageSignal(
+                        session_id=session_id,
+                        message_log_id=message_log_id,
+                        sender_id=sender_id,
+                        response_profile=response_profile,
+                        is_mentioned=is_mentioned,
+                        is_reply_to_bot=is_reply_to_bot,
+                        self_platform_id=self_platform_id,
+                        active_chat_state=active_chat_state,
+                        created_at=now,
+                    )
+                )
+            await self._active_chat_workflow.flush_now(
+                scheduler=self._agent_scheduler,
+                session_id=session_id,
+            )
+            logger.info(
+                format_log_event(
+                    "agent.active_reply.workflow.finish",
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    sender_id=sender_id,
+                    event_count=len(events),
+                )
+            )
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.active_reply.workflow.failed",
+                    session_id=session_id,
+                    message_log_id=message_log_id,
+                    sender_id=sender_id,
+                    error_code=type(exc).__name__,
+                )
+            )
+        finally:
+            if self._active_chat_workflow is not None:
+                self._active_chat_workflow.stop_active_chat(session_id)
+            if self._agent_scheduler is not None:
+                await self._agent_scheduler.complete_active_reply(session_id)
 
     async def run_review(
         self,

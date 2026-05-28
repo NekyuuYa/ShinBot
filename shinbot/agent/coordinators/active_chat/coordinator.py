@@ -296,6 +296,31 @@ class ActiveChatCoordinator:
         self._running_rounds.clear()
         self._states.clear()
 
+    async def flush_now(self, *, scheduler, session_id: str) -> None:
+        """Immediately flush pending active-chat messages for a session."""
+        current_task = asyncio.current_task()
+        async with self._get_lock(session_id):
+            if self._is_round_running(session_id):
+                logger.debug(
+                    format_log_event(
+                        "agent.active_chat.flush.skip",
+                        session_id=session_id,
+                        reason="round_running",
+                    )
+                )
+                return
+            self._cancel_semantic_wait_locked(session_id)
+            if current_task is not None:
+                self._running_rounds[session_id] = current_task
+
+        logger.debug(
+            format_log_event(
+                "agent.active_chat.flush.now",
+                session_id=session_id,
+            )
+        )
+        await self._flush(session_id=session_id, scheduler=scheduler)
+
     def stop_active_chat(self, session_id: str) -> None:
         """Clear session-bound active chat workflow state after scheduler exit."""
         state = self._states.get(session_id)

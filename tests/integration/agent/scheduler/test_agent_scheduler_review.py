@@ -19,6 +19,11 @@ from agent_scheduler_support import (
     pytest,
 )
 
+from shinbot.agent.coordinators.active_chat import (
+    ActiveChatActionKind,
+    ActiveChatCoordinator,
+    ActiveChatRoundResult,
+)
 from shinbot.agent.signals import AgentSignal, AgentSignalKind, AgentSignalSource
 
 
@@ -108,8 +113,18 @@ async def test_scheduler_starts_active_reply_for_mention() -> None:
 
 
 @pytest.mark.asyncio
-async def test_concrete_active_reply_dispatcher_noops_back_to_idle() -> None:
-    dispatcher = ActiveReplyDispatcher()
+async def test_concrete_active_reply_dispatcher_runs_active_chat_round() -> None:
+    round_batches = []
+
+    async def round_handler(batch):
+        round_batches.append(batch)
+        return ActiveChatRoundResult(
+            action=ActiveChatActionKind.SEND_REPLY,
+            reason="test_reply",
+        )
+
+    active_chat = ActiveChatCoordinator(round_handler=round_handler)
+    dispatcher = ActiveReplyDispatcher(active_chat_workflow=active_chat)
     scheduler = AgentScheduler(
         workflow_dispatcher=dispatcher,
         response_profile_resolver=lambda _signal: "immediate",
@@ -123,6 +138,8 @@ async def test_concrete_active_reply_dispatcher_noops_back_to_idle() -> None:
     assert decision.state == AgentState.IDLE
     assert scheduler.state_for("bot:group:room") == AgentState.IDLE
     assert scheduler.high_priority_events("bot:group:room") == []
+    assert [batch.message_log_ids for batch in round_batches] == [[1]]
+    assert scheduler.unread_messages("bot:group:room") == []
 
 
 @pytest.mark.asyncio
