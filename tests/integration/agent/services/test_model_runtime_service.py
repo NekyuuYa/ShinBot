@@ -280,6 +280,9 @@ def test_build_litellm_kwargs_allows_tools_and_response_format_for_strict_litell
         "tool_choice",
         "response_format",
     ]
+    assert kwargs["custom_llm_provider"] == "openai"
+    assert kwargs["model"] == "mimo-v2.5"
+    assert kwargs["tools"] == [{"type": "function", "function": {"name": "send_reply"}}]
 
 
 @pytest.mark.asyncio

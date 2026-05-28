@@ -15,9 +15,11 @@ MEDIA_SHA256_REF_PREFIX = "media:sha256:"
 
 def provider_type_for_litellm(provider_type: str) -> str | None:
     """Map a ShinBot provider name to the LiteLLM ``custom_llm_provider`` type.
-    Native LiteLLM providers (anthropic, gemini, deepseek, xiaomi_mimo) are
-    auto-detected from the model prefix and need no explicit mapping, so this
-    returns ``None`` for them.
+    OpenAI-compatible providers that LiteLLM handles through dynamic provider
+    metadata should use the OpenAI transform when their API accepts the
+    Chat Completions wire format. This keeps unknown-but-compatible models from
+    losing standard OpenAI params such as ``tools`` because of LiteLLM's model
+    capability registry.
 
     Args:
         provider_type: Internal provider identifier (e.g. ``"custom_openai"``).
@@ -34,7 +36,9 @@ def provider_type_for_litellm(provider_type: str) -> str | None:
         return "azure"
     if provider_type == "siliconflow":
         return "openai"
-    # Native LiteLLM providers (anthropic, gemini, deepseek, xiaomi_mimo)
+    if provider_type == "xiaomi_mimo":
+        return "openai"
+    # Native LiteLLM providers (anthropic, gemini, deepseek)
     # are auto-detected from the litellm_model prefix; no custom_llm_provider needed.
     return None
 

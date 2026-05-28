@@ -260,3 +260,29 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
     assert call.metadata["review_stage"] == "review_scan"
     assert call.metadata["batch"] == 1
     assert "review.review_scan.instruction" in call.metadata["prompt_component_ids"]
+
+
+@pytest.mark.asyncio
+async def test_review_scan_runner_accepts_observed_candidate_id_aliases() -> None:
+    model_runtime = FakeModelRuntime(
+        [
+            '{"selected_msg_log_ids": [7], "reason": "selected"}',
+            '{"message_log_ids": [8], "reason": "selected"}',
+        ]
+    )
+    runner = LLMReviewScanStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[{"id": 7, "raw_text": "hello"}],
+    )
+
+    selected_result = await runner.run(stage_input)
+    message_log_result = await runner.run(stage_input)
+
+    assert selected_result.candidate_message_ids == [7]
+    assert message_log_result.candidate_message_ids == [8]

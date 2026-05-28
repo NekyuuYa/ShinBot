@@ -97,6 +97,15 @@ class LLMReviewScanStageRunner:
         if payload is None:
             return ReviewScanStageOutput(reason="llm_review_scan_failed")
         return ReviewScanStageOutput(
-            candidate_message_ids=int_list(payload.get("candidate_message_ids")),
+            candidate_message_ids=_candidate_message_ids_from_payload(payload),
             reason=str(payload.get("reason") or "llm_review_scan"),
         )
+
+
+def _candidate_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:
+    """Extract candidate ids from the scan payload, accepting observed aliases."""
+    for key in ("candidate_message_ids", "selected_msg_log_ids", "message_log_ids"):
+        values = int_list(payload.get(key))
+        if values:
+            return values
+    return []

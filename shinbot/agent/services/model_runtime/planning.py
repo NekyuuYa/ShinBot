@@ -118,7 +118,11 @@ def build_litellm_kwargs(
     kwargs.update(call.params)
     _normalize_openai_compatible_params(kwargs)
     _drop_empty_runtime_params(kwargs)
-    kwargs["model"] = model["litellm_model"]
+    kwargs["model"] = _litellm_request_model_name(
+        str(model["litellm_model"]),
+        custom_llm_provider=custom_llm_provider,
+        provider_type=str(provider.get("type", "")),
+    )
 
     if timeout_override is not None:
         kwargs["timeout"] = timeout_override
@@ -153,6 +157,23 @@ def _normalize_openai_compatible_params(kwargs: dict[str, Any]) -> None:
         if not isinstance(extra_headers, dict):
             extra_headers = {}
         kwargs["extra_headers"] = {**extra_headers, **request_headers}
+
+
+def _litellm_request_model_name(
+    litellm_model: str,
+    *,
+    custom_llm_provider: str | None,
+    provider_type: str,
+) -> str:
+    """Return the model name sent through LiteLLM for one request."""
+    if custom_llm_provider == "openai" and provider_type == "xiaomi_mimo":
+        return _strip_model_prefix(litellm_model, "xiaomi_mimo")
+    return litellm_model
+
+
+def _strip_model_prefix(model_name: str, prefix: str) -> str:
+    needle = f"{prefix}/"
+    return model_name[len(needle) :] if model_name.startswith(needle) else model_name
 
 
 def _normalize_allowed_openai_params(kwargs: dict[str, Any]) -> list[str]:
