@@ -5,15 +5,124 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import ok
+from shinbot.api.models import Envelope, ok
 
 router = APIRouter(
     prefix="/session-overview",
     tags=["session-overview"],
     dependencies=AuthRequired,
 )
+
+
+class SessionInfoData(BaseModel):
+    id: str
+    instanceId: str
+    sessionType: str
+    platform: str
+    guildId: Any = None
+    channelId: str
+    displayName: str
+    permissionGroup: str
+    createdAt: float
+    lastActive: float
+
+
+class SessionConfigData(BaseModel):
+    prefixes: list[str]
+    llmEnabled: bool
+    isMuted: bool
+    auditEnabled: bool
+    updatedAt: float
+
+
+class MessageLogData(BaseModel):
+    id: int
+    sessionId: str
+    platformMsgId: str
+    senderId: str
+    senderName: str
+    content: Any
+    rawText: str
+    role: str
+    isRead: bool
+    isMentioned: bool
+    createdAt: float
+    routingStatus: str
+    routedAt: Any = None
+    routingSkipReason: Any = None
+
+
+class AuditLogData(BaseModel):
+    id: int
+    timestamp: str
+    entryType: str
+    commandName: str
+    pluginId: str
+    userId: str
+    sessionId: str
+    instanceId: str
+    permissionRequired: str
+    permissionGranted: bool
+    executionTimeMs: float
+    success: bool
+    error: str
+    metadata: dict[str, Any]
+
+
+class ReviewSummaryData(BaseModel):
+    id: Any = None
+    sessionId: str
+    summaryType: str
+    startMsgLogId: Any = None
+    endMsgLogId: Any = None
+    messageCount: Any = None
+    summary: str
+    reason: str
+    createdAt: Any = None
+
+
+class WorkflowRunData(BaseModel):
+    id: str
+    sessionId: str
+    instanceId: str
+    responseProfile: str
+    batchStartMsgId: Any = None
+    batchEndMsgId: Any = None
+    batchSize: int
+    triggerAttention: float
+    effectiveThreshold: float
+    toolCalls: list[Any]
+    replied: bool
+    responseSummary: str
+    finishReason: str
+    startedAt: float
+    finishedAt: Any = None
+
+
+class AgentStateData(BaseModel):
+    state: str
+    reviewPlan: dict[str, Any] | None = None
+    activeChatState: dict[str, Any] | None = None
+    unreadCount: int
+    highPriorityCount: int
+
+
+class SessionOverviewItem(BaseModel):
+    session: SessionInfoData
+    config: SessionConfigData | None = None
+    history: list[MessageLogData]
+    latestMessage: MessageLogData | None = None
+    latestAudit: AuditLogData | None = None
+    latestReviewSummary: ReviewSummaryData | None = None
+    latestActiveChatSummary: ReviewSummaryData | None = None
+    latestOverflowSummary: ReviewSummaryData | None = None
+    latestWorkflowRun: WorkflowRunData | None = None
+    agent: AgentStateData | None = None
+    messageCount: int
+    auditCount: int
 
 
 def _parse_json(value: str | None, default: Any) -> Any:
@@ -128,8 +237,9 @@ def _latest_summary_of_type(database: Any, session_id: str, summary_type: str) -
         return None
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[SessionOverviewItem]])
 def get_session_overview(bot=BotDep, boot=BootDep):
+    """Get a full overview of all sessions including history, audit logs, agent state, and summaries."""
     database = getattr(bot, "database", None)
     if database is None:
         return ok([])
