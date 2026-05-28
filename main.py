@@ -88,6 +88,9 @@ async def _run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="ShinBot - modular bot framework")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # Default: run the server
     parser.add_argument(
         "--config",
         default="config.toml",
@@ -133,7 +136,31 @@ def main() -> None:
         dest="operator_cli",
         help="Run only the API server without the operator shell",
     )
+
+    # Subcommand: create-plugin
+    create_plugin_parser = subparsers.add_parser(
+        "create-plugin",
+        help="Generate a new plugin scaffold",
+    )
+    create_plugin_parser.add_argument(
+        "name",
+        help="Plugin name (e.g. 'my_tool' creates shinbot_plugin_my_tool/)",
+    )
+    create_plugin_parser.add_argument(
+        "-o",
+        "--output-dir",
+        default=".",
+        metavar="DIR",
+        help="Parent directory for the plugin (default: current directory)",
+    )
+
     args = parser.parse_args()
+
+    # Handle subcommands
+    if args.command == "create-plugin":
+        from shinbot.utils.plugin_scaffold import main as scaffold_main
+
+        raise SystemExit(scaffold_main([args.name, "-o", args.output_dir]))
 
     try:
         exit_code = asyncio.run(
