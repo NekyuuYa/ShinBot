@@ -67,7 +67,7 @@ def _raise_admin_http_error(exc: PersonaFileError) -> None:
 
 @router.get("", response_model=Envelope[list[PersonaData]])
 def list_personas(boot=BootDep):
-    """List all saved personas."""
+    """List all personas stored on disk."""
     try:
         return ok([serialize_persona(item) for item in _persona_repository(boot).list()])
     except PersonaFileError as exc:
@@ -76,7 +76,7 @@ def list_personas(boot=BootDep):
 
 @router.post("", status_code=201, response_model=Envelope[PersonaData])
 def create_persona(body: PersonaRequest, boot=BootDep):
-    """Create a new persona from the request payload."""
+    """Create a new persona with the given name, prompt text, and tags."""
     try:
         payload = _persona_repository(boot).create(
             persona_id=body.id,

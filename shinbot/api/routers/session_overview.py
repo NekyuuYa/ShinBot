@@ -239,7 +239,7 @@ def _latest_summary_of_type(database: Any, session_id: str, summary_type: str) -
 
 @router.get("", response_model=Envelope[list[SessionOverviewItem]])
 def get_session_overview(bot=BotDep, boot=BootDep):
-    """Return full session overview with history, agent state, and audit logs."""
+    """Get a full overview of all sessions including history, audit logs, agent state, and summaries."""
     database = getattr(bot, "database", None)
     if database is None:
         return ok([])

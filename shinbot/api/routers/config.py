@@ -371,19 +371,19 @@ def _model_runtime_effectively_enabled(
 
 @router.get("", response_model=Envelope[ConfigWorkspace])
 async def get_config_workspace(bot=BotDep, boot=BootDep):
-    """Return the full configuration workspace with runtime status and provider catalog."""
+    """Return the full configuration workspace for the dashboard."""
     return ok(_config_workspace(bot=bot, boot=boot))
 
 
 @router.post("/validate", response_model=Envelope[ConfigValidationResult])
 async def validate_config(body: ValidateConfigRequest, bot=BotDep, boot=BootDep):
-    """Validate a candidate configuration and return issues with normalized output."""
+    """Validate a configuration payload without persisting it."""
     return ok(_config_validation_result(config=body.config, bot=bot, boot=boot))
 
 
 @router.put("", response_model=Envelope[SaveConfigResult])
 async def save_config(body: SaveConfigRequest, bot=BotDep, boot=BootDep):
-    """Persist the full configuration, optionally validating before save."""
+    """Save the full configuration and return updated workspace."""
     return _save_config_payload(
         bot=bot,
         boot=boot,
@@ -398,7 +398,7 @@ async def save_adapter_instances(
     bot=BotDep,
     boot=BootDep,
 ):
-    """Replace the adapter instances list in the persisted configuration."""
+    """Replace adapter instances in config and save."""
     next_config = deepcopy(boot.config)
     next_config["adapter_instances"] = deepcopy(body.adapterInstances)
     return _save_config_payload(
@@ -411,7 +411,7 @@ async def save_adapter_instances(
 
 @router.put("/bots", response_model=Envelope[SaveConfigResult])
 async def save_bots(body: SaveBotsRequest, bot=BotDep, boot=BootDep):
-    """Replace the bots list in the persisted configuration."""
+    """Replace bot definitions in config and save."""
     next_config = deepcopy(boot.config)
     next_config["bots"] = deepcopy(body.bots)
     return _save_config_payload(

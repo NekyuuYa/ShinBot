@@ -90,32 +90,20 @@ def _provider_or_404(bot: Any, kind: str, provider_id: str) -> Any:
 
 @router.get("", response_model=Envelope[list[ConfigProviderSummary]])
 async def list_config_providers(kind: str | None = Query(default=None), bot=BotDep):
-    """List registered config providers.
-
-    Returns a catalog of all registered config providers, optionally
-    filtered by provider kind.
-    """
+    """List registered config providers, optionally filtered by kind."""
     provider_kind = _coerce_kind_or_404(kind) if kind else None
     return ok(bot.config_provider_registry.catalog(provider_kind))
 
 
 @router.get("/{kind}/{provider_id}", response_model=Envelope[ConfigProviderSummary])
 async def get_config_provider(kind: str, provider_id: str, bot=BotDep):
-    """Get a specific config provider.
-
-    Returns the configuration details for the identified provider,
-    or 404 if not found.
-    """
+    """Retrieve a single config provider definition by kind and id."""
     return ok(_provider_or_404(bot, kind, provider_id).to_dict())
 
 
 @router.get("/{kind}/{provider_id}/defaults", response_model=Envelope[dict[str, Any]])
 async def get_config_provider_defaults(kind: str, provider_id: str, bot=BotDep):
-    """Get default configuration for a config provider.
-
-    Returns the default configuration values defined by the identified
-    provider, or 404 if the provider is not found.
-    """
+    """Return the default configuration for a config provider."""
     _provider_or_404(bot, kind, provider_id)
     return ok(bot.config_provider_registry.default_config(kind, provider_id))
 
@@ -127,12 +115,7 @@ async def validate_config_provider(
     body: ValidateConfigRequest,
     bot=BotDep,
 ):
-    """Validate configuration against a config provider.
-
-    Submits a configuration payload for validation by the identified
-    provider. Returns a list of validation issues found, or 404 if the
-    provider is not found.
-    """
+    """Validate a configuration payload against a config provider's schema."""
     _provider_or_404(bot, kind, provider_id)
     issues = bot.config_provider_registry.validate(
         kind,

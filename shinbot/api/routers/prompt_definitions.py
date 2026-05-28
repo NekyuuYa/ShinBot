@@ -119,7 +119,7 @@ def _prompt_repository(boot) -> PromptDefinitionFileRepository:
 
 @router.get("", response_model=Envelope[list[PromptDefinitionData]])
 def list_prompt_definitions(boot=BootDep):
-    """List all prompt definitions stored on disk."""
+    """List all prompt definitions from the file-based repository."""
     try:
         return ok([serialize_prompt_definition(item) for item in _prompt_repository(boot).list()])
     except PromptDefinitionAdminError as exc:
@@ -128,7 +128,7 @@ def list_prompt_definitions(boot=BootDep):
 
 @router.post("", status_code=201, response_model=Envelope[PromptDefinitionData])
 def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
-    """Create a new prompt definition after normalising and validating input."""
+    """Create a new prompt definition and persist it to the file repository."""
     try:
         repository = _prompt_repository(boot)
         normalized = normalize_prompt_definition_input(
@@ -173,7 +173,7 @@ def get_prompt_definition(prompt_uuid: str, boot=BootDep):
 
 @router.patch("/{prompt_uuid}", response_model=Envelope[PromptDefinitionData])
 def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest, boot=BootDep):
-    """Partially update an existing prompt definition."""
+    """Partially update a prompt definition by its UUID."""
     try:
         repository = _prompt_repository(boot)
         current = get_prompt_definition_or_raise(repository, prompt_uuid)

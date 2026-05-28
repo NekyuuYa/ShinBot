@@ -116,13 +116,13 @@ def _raise_admin_http_error(exc: InstanceAdminError) -> None:
 
 @router.get("", response_model=Envelope[list[InstanceData]])
 async def list_instances(bot=BotDep, boot=BootDep):
-    """List all managed bot instances and their current state."""
+    """List all registered bot instances with their status."""
     return ok(list_instance_payloads(bot=bot, boot=boot))
 
 
 @router.post("", status_code=201, response_model=Envelope[InstanceData])
 async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep):
-    """Create a new bot instance from the provided configuration."""
+    """Create a new adapter instance and persist the configuration."""
     adapter = body.adapter or body.adapterType or ""
     instance_id = body.id or body.name or adapter
     try:
@@ -152,7 +152,7 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
 
 @router.patch("/{instance_id}", response_model=Envelope[InstanceData])
 async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotDep, boot=BootDep):
-    """Update an existing bot instance's configuration fields."""
+    """Update an existing adapter instance configuration."""
     try:
         inst = update_instance_runtime(
             bot=bot,
@@ -179,7 +179,7 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
 
 @router.delete("/{instance_id}", response_model=Envelope[InstanceDeletedData])
 async def delete_instance(instance_id: str, bot=BotDep, boot=BootDep):
-    """Delete a bot instance by its identifier."""
+    """Delete a bot instance and remove it from the configuration."""
     try:
         await delete_instance_runtime(bot=bot, boot=boot, instance_id=instance_id)
     except InstanceAdminError as exc:
@@ -195,7 +195,7 @@ async def delete_instance(instance_id: str, bot=BotDep, boot=BootDep):
 
 @router.post("/{instance_id}/control", response_model=Envelope[InstanceControlData])
 async def control_instance(instance_id: str, body: ControlRequest, bot=BotDep):
-    """Start or stop a running bot instance."""
+    """Start or stop a bot instance at runtime."""
     try:
         state = await control_instance_runtime(
             mgr=bot.adapter_manager,

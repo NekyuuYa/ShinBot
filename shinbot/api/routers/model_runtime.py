@@ -651,12 +651,7 @@ async def list_providers(bot=BotDep):
 
 @router.post("/providers", status_code=201, response_model=Envelope[ProviderData])
 async def create_provider(body: ProviderRequest, bot=BotDep):
-    """Create a new model provider.
-
-    Args:
-        body: Provider creation request payload.
-        bot: Bot dependency injection.
-    """
+    """Create a new model provider with authentication and default parameters."""
     if bot.database.model_registry.get_provider(body.id) is not None:
         raise HTTPException(
             status_code=409,
@@ -683,13 +678,7 @@ async def create_provider(body: ProviderRequest, bot=BotDep):
 
 @router.patch("/providers/{provider_id:path}", response_model=Envelope[ProviderData])
 async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotDep):
-    """Update an existing model provider.
-
-    Args:
-        provider_id: The provider identifier.
-        body: Provider patch request payload.
-        bot: Bot dependency injection.
-    """
+    """Partially update an existing model provider."""
     current = _require_provider(bot.database, provider_id)
     next_id = body.id if body.id is not None else provider_id
     if next_id != provider_id and bot.database.model_registry.get_provider(next_id) is not None:
@@ -732,12 +721,7 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
 
 @router.delete("/providers/{provider_id:path}", response_model=Envelope[DeletedData])
 async def delete_provider(provider_id: str, bot=BotDep):
-    """Delete a model provider by identifier.
-
-    Args:
-        provider_id: The provider identifier to delete.
-        bot: Bot dependency injection.
-    """
+    """Delete a model provider and all its associated models."""
     _require_provider(bot.database, provider_id)
     bot.database.model_registry.delete_provider(provider_id)
     return ok({"id": provider_id, "deleted": True})
@@ -745,25 +729,14 @@ async def delete_provider(provider_id: str, bot=BotDep):
 
 @router.get("/providers/{provider_id:path}/catalog", response_model=Envelope[list[dict[str, Any]]])
 async def get_provider_catalog(provider_id: str, bot=BotDep):
-    """Fetch the model catalog for a given provider.
-
-    Args:
-        provider_id: The provider identifier.
-        bot: Bot dependency injection.
-    """
+    """Fetch the model catalog from a provider's remote API."""
     catalog = await _fetch_provider_catalog(bot.database, provider_id)
     return ok(catalog)
 
 
 @router.post("/providers/{provider_id:path}/probe", response_model=Envelope[dict[str, Any]])
 async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDep):
-    """Probe a provider's runtime connectivity for a specific model.
-
-    Args:
-        provider_id: The provider identifier.
-        body: Probe request with optional model ID.
-        bot: Bot dependency injection.
-    """
+    """Probe a provider's connectivity by sending a test request."""
     try:
         return ok(
             await probe_provider_runtime(
@@ -780,35 +753,20 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
 
 @router.get("/providers/{provider_id:path}", response_model=Envelope[ProviderData])
 async def get_provider(provider_id: str, bot=BotDep):
-    """Get a single provider by identifier.
-
-    Args:
-        provider_id: The provider identifier.
-        bot: Bot dependency injection.
-    """
+    """Retrieve a single model provider by ID."""
     return ok(_serialize_provider(_require_provider(bot.database, provider_id)))
 
 
 @router.get("/models", response_model=Envelope[list[ModelData]])
 async def list_models(providerId: str | None = Query(default=None), bot=BotDep):
-    """List all registered models, optionally filtered by provider.
-
-    Args:
-        providerId: Optional provider ID to filter by.
-        bot: Bot dependency injection.
-    """
+    """List all model definitions, optionally filtered by provider."""
     models = bot.database.model_registry.list_models(provider_id=providerId)
     return ok([_serialize_model(item) for item in models])
 
 
 @router.post("/models", status_code=201, response_model=Envelope[ModelData])
 async def create_model(body: ModelRequest, bot=BotDep):
-    """Create a new model definition.
-
-    Args:
-        body: Model creation request payload.
-        bot: Bot dependency injection.
-    """
+    """Create a new model definition with cost metadata and capabilities."""
     if bot.database.model_registry.get_model(body.id) is not None:
         raise HTTPException(
             status_code=409,
@@ -841,24 +799,13 @@ async def create_model(body: ModelRequest, bot=BotDep):
 
 @router.get("/models/{model_id:path}", response_model=Envelope[ModelData])
 async def get_model(model_id: str, bot=BotDep):
-    """Get a single model by identifier.
-
-    Args:
-        model_id: The model identifier.
-        bot: Bot dependency injection.
-    """
+    """Retrieve a single model definition by ID."""
     return ok(_serialize_model(_require_model(bot.database, model_id)))
 
 
 @router.patch("/models/{model_id:path}", response_model=Envelope[ModelData])
 async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
-    """Update an existing model definition.
-
-    Args:
-        model_id: The model identifier.
-        body: Model patch request payload.
-        bot: Bot dependency injection.
-    """
+    """Partially update an existing model definition."""
     current = _require_model(bot.database, model_id)
     provider_id = body.providerId if body.providerId is not None else current["provider_id"]
     provider = _require_provider(bot.database, provider_id)
@@ -905,12 +852,7 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
 
 @router.delete("/models/{model_id:path}", response_model=Envelope[DeletedData])
 async def delete_model(model_id: str, bot=BotDep):
-    """Delete a model definition by identifier.
-
-    Args:
-        model_id: The model identifier to delete.
-        bot: Bot dependency injection.
-    """
+    """Delete a model definition by ID."""
     _require_model(bot.database, model_id)
     bot.database.model_registry.delete_model(model_id)
     return ok({"id": model_id, "deleted": True})
@@ -930,12 +872,7 @@ async def list_routes(bot=BotDep):
 
 @router.post("/routes", status_code=201, response_model=Envelope[RouteData])
 async def create_route(body: RouteRequest, bot=BotDep):
-    """Create a new model route with members.
-
-    Args:
-        body: Route creation request payload.
-        bot: Bot dependency injection.
-    """
+    """Create a new model routing configuration with member assignments."""
     if bot.database.model_registry.get_route(body.id) is not None:
         raise HTTPException(
             status_code=409,
@@ -976,12 +913,7 @@ async def create_route(body: RouteRequest, bot=BotDep):
 
 @router.get("/routes/{route_id:path}", response_model=Envelope[RouteData])
 async def get_route(route_id: str, bot=BotDep):
-    """Get a single route by identifier including its members.
-
-    Args:
-        route_id: The route identifier.
-        bot: Bot dependency injection.
-    """
+    """Retrieve a single model route with its members."""
     route = _require_route(bot.database, route_id)
     members = bot.database.model_registry.list_route_members(route_id)
     return ok(_serialize_route(route, members))
@@ -989,13 +921,7 @@ async def get_route(route_id: str, bot=BotDep):
 
 @router.patch("/routes/{route_id:path}", response_model=Envelope[RouteData])
 async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
-    """Update an existing model route and its members.
-
-    Args:
-        route_id: The route identifier.
-        body: Route patch request payload.
-        bot: Bot dependency injection.
-    """
+    """Partially update an existing model route and its members."""
     current = _require_route(bot.database, route_id)
     next_id = body.id if body.id is not None else route_id
     if next_id != route_id and bot.database.model_registry.get_route(next_id) is not None:
@@ -1051,12 +977,7 @@ async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
 
 @router.delete("/routes/{route_id:path}", response_model=Envelope[DeletedData])
 async def delete_route(route_id: str, bot=BotDep):
-    """Delete a model route by identifier.
-
-    Args:
-        route_id: The route identifier to delete.
-        bot: Bot dependency injection.
-    """
+    """Delete a model route by ID."""
     _require_route(bot.database, route_id)
     bot.database.model_registry.delete_route(route_id)
     return ok({"id": route_id, "deleted": True})
@@ -1064,12 +985,7 @@ async def delete_route(route_id: str, bot=BotDep):
 
 @router.get("/executions", response_model=Envelope[list[ExecutionData]])
 async def list_model_executions(limit: int = Query(default=50, ge=1, le=200), bot=BotDep):
-    """List recent model execution records.
-
-    Args:
-        limit: Maximum number of records to return.
-        bot: Bot dependency injection.
-    """
+    """List recent model execution records."""
     records = bot.database.model_executions.list_recent(limit=limit)
     return ok([_serialize_execution(item) for item in records])
 
@@ -1088,21 +1004,7 @@ async def list_model_execution_audit_records(
     query: str | None = Query(default=None, max_length=200),
     bot=BotDep,
 ):
-    """List model execution audit records with filtering and pagination.
-
-    Args:
-        limit: Maximum number of records to return.
-        offset: Number of records to skip.
-        providerId: Optional provider ID filter.
-        modelId: Optional model ID filter.
-        routeId: Optional route ID filter.
-        caller: Optional caller filter.
-        sessionId: Optional session ID filter.
-        instanceId: Optional instance ID filter.
-        success: Optional success status filter.
-        query: Optional text search query.
-        bot: Bot dependency injection.
-    """
+    """List execution audit records with filtering and pagination."""
     records = bot.database.model_executions.list_audit_records(
         limit=limit,
         offset=offset,
@@ -1120,12 +1022,7 @@ async def list_model_execution_audit_records(
 
 @router.get("/executions/{execution_id:path}/payload", response_model=Envelope[ExecutionPayloadData])
 async def get_model_execution_payload(execution_id: str, bot=BotDep):
-    """Retrieve the audit payload for a specific model execution.
-
-    Args:
-        execution_id: The execution identifier.
-        bot: Bot dependency injection.
-    """
+    """Retrieve the full audit payload for a specific execution."""
     store = ModelAuditPayloadStore(bot.database.config.data_dir)
     payload = store.read(execution_id)
     if payload is None:
@@ -1156,12 +1053,7 @@ async def get_model_execution_payload(execution_id: str, bot=BotDep):
 
 @router.get("/token-summary", response_model=Envelope[TokenSummaryData])
 async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotDep):
-    """Get a token usage summary over a rolling time window.
-
-    Args:
-        days: Number of days to include in the summary.
-        bot: Bot dependency injection.
-    """
+    """Get token usage summary over the specified number of days."""
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     summary = bot.database.model_executions.summarize_tokens(since=since)
     return ok(_serialize_token_summary(summary, days=days, since=since))
@@ -1173,13 +1065,7 @@ async def get_cost_analysis(
     modelLimit: int = Query(default=8, ge=1, le=16),
     bot=BotDep,
 ):
-    """Get a detailed cost analysis with per-model breakdowns.
-
-    Args:
-        days: Number of days to include in the analysis.
-        modelLimit: Maximum number of models to include in breakdowns.
-        bot: Bot dependency injection.
-    """
+    """Get detailed cost analysis with timeline and per-model breakdowns."""
     now = datetime.now(UTC)
     since_dt = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     hourly_since_dt = (now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=23))
