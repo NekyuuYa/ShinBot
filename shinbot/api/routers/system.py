@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from shinbot import __version__
 from shinbot.api.deps import (
     AuthConfigDep,
     AuthRequired,
     BootDep,
+    BotDep,
     DashboardBuildDep,
     FrameworkUpdateDep,
     RuntimeControlDep,
@@ -19,6 +22,8 @@ from shinbot.api.models import EC, Envelope, ok
 from shinbot.core.application.runtime_control import RestartReason
 from shinbot.core.application.system_update import SystemUpdateError
 from shinbot.utils.logger import apply_logging_runtime_config, logging_runtime_snapshot
+
+public_router = APIRouter(prefix="/system", tags=["system"])
 
 router = APIRouter(
     prefix="/system",
@@ -68,6 +73,34 @@ class RestartAcceptedData(BaseModel):
     restartRequest: RestartRequestData | None = None
 
 
+class HealthCheckData(BaseModel):
+    """Unauthenticated health-check payload for service probes."""
+
+    status: Literal["healthy", "degraded"]
+    version: str
+    timestamp: int
+    checks: dict[str, bool]
+
+
+def _boot_is_running(boot: Any, bot: Any) -> bool:
+    state = getattr(getattr(boot, "state", None), "value", None)
+    if state is not None:
+        return state == "RUNNING" and getattr(boot, "bot", None) is bot
+    return bot is not None
+
+
+def _database_is_available(bot: Any) -> bool:
+    database = getattr(bot, "database", None)
+    if database is None or not hasattr(database, "connect"):
+        return False
+    try:
+        with database.connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+    except Exception:
+        return False
+    return True
+
+
 def _apply_update_guards(
     status: dict[str, object],
     *,
@@ -91,6 +124,24 @@ def _apply_update_guards(
         guarded["blockMessage"] = "A restart request is already pending"
 
     return guarded
+
+
+@public_router.get("/health", response_model=Envelope[HealthCheckData])
+async def health_check(bot=BotDep, boot=BootDep):
+    """Return unauthenticated service health status for probes."""
+    checks = {
+        "boot": _boot_is_running(boot, bot),
+        "database": _database_is_available(bot),
+    }
+    status: Literal["healthy", "degraded"] = "healthy" if all(checks.values()) else "degraded"
+    return ok(
+        {
+            "status": status,
+            "version": __version__,
+            "timestamp": int(time.time()),
+            "checks": checks,
+        }
+    )
 
 
 @router.get("/runtime", response_model=Envelope[RuntimeStateData])
