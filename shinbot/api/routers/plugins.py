@@ -18,7 +18,8 @@ from shinbot.admin.plugin_admin import (
     update_plugin_config_or_raise,
 )
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import ok
+from shinbot.api.models import Envelope, ok
+from shinbot.api.schemas import PluginRescanResponse
 from shinbot.core.plugins.config import request_locales
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ def _raise_admin_http_error(exc: PluginAdminError) -> None:
 # ── Routes ───────────────────────────────────────────────────────────
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[dict[str, Any]]])
 async def list_plugins(request: Request, bot=BotDep, boot=BootDep):
     """List all loaded plugins with their metadata and config schema."""
     requested = request_locales(request.headers.get("accept-language", ""))
@@ -57,7 +58,7 @@ async def list_plugins(request: Request, bot=BotDep, boot=BootDep):
     )
 
 
-@router.get("/{plugin_id}/schema")
+@router.get("/{plugin_id}/schema", response_model=Envelope[dict[str, Any]])
 async def get_plugin_schema(plugin_id: str, request: Request, bot=BotDep):
     """Get config schema for a non-adapter plugin that declares __plugin_config_class__."""
     try:
@@ -85,17 +86,19 @@ async def _rescan_plugins(bot: Any, boot: Any):
         _raise_admin_http_error(exc)
 
 
-@router.post("/reload")
+@router.post("/reload", response_model=Envelope[PluginRescanResponse])
 async def reload_plugins(bot=BotDep, boot=BootDep):
+    """Hot-reload all plugins by rescanning the plugins directory."""
     return await _rescan_plugins(bot, boot)
 
 
-@router.post("/rescan")
+@router.post("/rescan", response_model=Envelope[PluginRescanResponse])
 async def rescan_plugins_route(bot=BotDep, boot=BootDep):
+    """Rescan plugins directory and load any newly discovered plugins."""
     return await _rescan_plugins(bot, boot)
 
 
-@router.patch("/{plugin_id}/config")
+@router.patch("/{plugin_id}/config", response_model=Envelope[dict[str, Any]])
 async def update_plugin_config(plugin_id: str, config: dict[str, Any], bot=BotDep, boot=BootDep):
     """Persist plugin configuration for a specific plugin by ID."""
     try:
@@ -105,7 +108,7 @@ async def update_plugin_config(plugin_id: str, config: dict[str, Any], bot=BotDe
     return ok(plugin_dict(bot, plugin, boot))
 
 
-@router.post("/{plugin_id}/disable")
+@router.post("/{plugin_id}/disable", response_model=Envelope[dict[str, Any]])
 async def disable_plugin(plugin_id: str, bot=BotDep, boot=BootDep):
     """Disable a specific plugin while keeping its metadata visible to the UI."""
     try:
@@ -115,7 +118,7 @@ async def disable_plugin(plugin_id: str, bot=BotDep, boot=BootDep):
     return ok(plugin_dict(bot, meta))
 
 
-@router.post("/{plugin_id}/enable")
+@router.post("/{plugin_id}/enable", response_model=Envelope[dict[str, Any]])
 async def enable_plugin(plugin_id: str, bot=BotDep, boot=BootDep):
     """Enable a previously disabled plugin."""
     try:

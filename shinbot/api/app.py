@@ -204,6 +204,7 @@ def create_api_app(
     app.include_router(prompts_router.router, prefix=api_prefix)
     app.include_router(session_overview_router.router, prefix=api_prefix)
     app.include_router(plugins_router.router, prefix=api_prefix)
+    app.include_router(system_router.public_router, prefix=api_prefix)
     app.include_router(system_router.router, prefix=api_prefix)
     app.include_router(tools_router.router, prefix=api_prefix)
 

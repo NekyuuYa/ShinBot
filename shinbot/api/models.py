@@ -13,9 +13,9 @@ class ErrorBody(BaseModel):
     message: str
 
 
-class Envelope(BaseModel):
+class Envelope[T](BaseModel):
     success: bool
-    data: Any = None
+    data: T | None = None
     error: ErrorBody | None = None
     timestamp: int = Field(default_factory=lambda: int(time.time()))
 
