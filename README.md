@@ -24,9 +24,9 @@ uv sync
 
 # 复制配置文件
 mkdir -p data/agents
-cp config.example.toml data/config.toml
+cp config.example.toml config.toml
 cp agent.example.toml data/agents/full-agent.toml
-# 编辑 data/config.toml 和 data/agents/full-agent.toml 填入你的配置
+# 编辑 config.toml 和 data/agents/full-agent.toml 填入你的配置
 
 # 启动 Bot
 uv run main.py
