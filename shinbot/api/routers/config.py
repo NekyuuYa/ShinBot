@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import EC, ok
+from shinbot.api.models import EC, Envelope, ok
 from shinbot.core.application.boot_preflight import run_boot_preflight
 from shinbot.core.application.config_sections import (
     iter_adapter_instance_records,
@@ -48,6 +48,57 @@ class SaveAdapterInstancesRequest(BaseModel):
 class SaveBotsRequest(BaseModel):
     bots: list[dict[str, Any]] = Field(default_factory=list)
     validateBeforeSave: bool = True
+
+
+class ConfigValidationIssuePayload(BaseModel):
+    """A single configuration validation issue."""
+
+    path: str = ""
+    message: str = ""
+    code: str = ""
+    source: str = ""
+
+
+class ConfigValidationResult(BaseModel):
+    """Result of a configuration validation pass."""
+
+    valid: bool = False
+    issues: list[ConfigValidationIssuePayload] = Field(default_factory=list)
+    normalized: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeStatus(BaseModel):
+    """Runtime mount and adapter status."""
+
+    modelMounted: bool = False
+    modelEnabled: bool = False
+    agentMounted: bool = False
+    adapterInstances: list[dict[str, Any]] = Field(default_factory=list)
+    requiresRestartAfterSave: bool = True
+
+
+class ConfigWorkspace(BaseModel):
+    """Full configuration workspace returned to the dashboard."""
+
+    version: int = 1
+    configPath: str = ""
+    dataDir: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    validation: ConfigValidationResult = Field(default_factory=ConfigValidationResult)
+    runtime: RuntimeStatus = Field(default_factory=RuntimeStatus)
+    templates: dict[str, Any] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
+    providers: dict[str, Any] = Field(default_factory=dict)
+    plugins: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SaveConfigResult(BaseModel):
+    """Result returned after saving configuration."""
+
+    saved: bool = True
+    requiresRestart: bool = True
+    validation: ConfigValidationResult = Field(default_factory=ConfigValidationResult)
+    workspace: ConfigWorkspace = Field(default_factory=ConfigWorkspace)
 
 
 def _config_validation_result(
@@ -318,19 +369,19 @@ def _model_runtime_effectively_enabled(
     return False
 
 
-@router.get("")
+@router.get("", response_model=Envelope[ConfigWorkspace])
 async def get_config_workspace(bot=BotDep, boot=BootDep):
     """Return the full configuration workspace with runtime status and provider catalog."""
     return ok(_config_workspace(bot=bot, boot=boot))
 
 
-@router.post("/validate")
+@router.post("/validate", response_model=Envelope[ConfigValidationResult])
 async def validate_config(body: ValidateConfigRequest, bot=BotDep, boot=BootDep):
     """Validate a candidate configuration and return issues with normalized output."""
     return ok(_config_validation_result(config=body.config, bot=bot, boot=boot))
 
 
-@router.put("")
+@router.put("", response_model=Envelope[SaveConfigResult])
 async def save_config(body: SaveConfigRequest, bot=BotDep, boot=BootDep):
     """Persist the full configuration, optionally validating before save."""
     return _save_config_payload(
@@ -341,7 +392,7 @@ async def save_config(body: SaveConfigRequest, bot=BotDep, boot=BootDep):
     )
 
 
-@router.put("/adapter-instances")
+@router.put("/adapter-instances", response_model=Envelope[SaveConfigResult])
 async def save_adapter_instances(
     body: SaveAdapterInstancesRequest,
     bot=BotDep,
@@ -358,7 +409,7 @@ async def save_adapter_instances(
     )
 
 
-@router.put("/bots")
+@router.put("/bots", response_model=Envelope[SaveConfigResult])
 async def save_bots(body: SaveBotsRequest, bot=BotDep, boot=BootDep):
     """Replace the bots list in the persisted configuration."""
     next_config = deepcopy(boot.config)

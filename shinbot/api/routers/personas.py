@@ -11,7 +11,7 @@ from shinbot.admin.persona_files import (
     serialize_persona,
 )
 from shinbot.api.deps import AuthRequired, BootDep
-from shinbot.api.models import ok
+from shinbot.api.models import Envelope, ok
 
 router = APIRouter(
     prefix="/personas",
@@ -35,6 +35,25 @@ class PersonaPatchRequest(BaseModel):
     enabled: bool | None = None
 
 
+class PersonaData(BaseModel):
+    """Response data model for a single persona."""
+
+    uuid: str
+    name: str
+    promptText: str
+    tags: list[str]
+    enabled: bool
+    createdAt: str
+    lastModified: str
+
+
+class PersonaDeletedData(BaseModel):
+    """Response data model for persona deletion confirmation."""
+
+    deleted: bool
+    uuid: str
+
+
 def _persona_repository(boot) -> PersonaFileRepository:
     return PersonaFileRepository.from_data_dir(boot.data_dir)
 
@@ -46,7 +65,7 @@ def _raise_admin_http_error(exc: PersonaFileError) -> None:
     ) from exc
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[PersonaData]])
 def list_personas(boot=BootDep):
     """List all saved personas."""
     try:
@@ -55,7 +74,7 @@ def list_personas(boot=BootDep):
         _raise_admin_http_error(exc)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=Envelope[PersonaData])
 def create_persona(body: PersonaRequest, boot=BootDep):
     """Create a new persona from the request payload."""
     try:
@@ -72,7 +91,7 @@ def create_persona(body: PersonaRequest, boot=BootDep):
     return ok(serialize_persona(payload))
 
 
-@router.get("/{persona_uuid}")
+@router.get("/{persona_uuid}", response_model=Envelope[PersonaData])
 def get_persona(persona_uuid: str, boot=BootDep):
     """Retrieve a single persona by its UUID."""
     try:
@@ -88,7 +107,7 @@ def get_persona(persona_uuid: str, boot=BootDep):
     return ok(serialize_persona(payload))
 
 
-@router.patch("/{persona_uuid}")
+@router.patch("/{persona_uuid}", response_model=Envelope[PersonaData])
 def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot=BootDep):
     """Partially update an existing persona's fields."""
     try:
@@ -118,7 +137,7 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot=BootDep):
     return ok(serialize_persona(payload))
 
 
-@router.delete("/{persona_uuid}")
+@router.delete("/{persona_uuid}", response_model=Envelope[PersonaDeletedData])
 def delete_persona(persona_uuid: str, boot=BootDep):
     """Delete a persona by its UUID."""
     try:

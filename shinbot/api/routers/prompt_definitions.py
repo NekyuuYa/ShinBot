@@ -16,7 +16,7 @@ from shinbot.admin.prompt_definition_admin import (
     serialize_prompt_definition,
 )
 from shinbot.api.deps import AuthRequired, BootDep
-from shinbot.api.models import ok
+from shinbot.api.models import Envelope, ok
 
 router = APIRouter(
     prefix="/prompt-definitions",
@@ -71,6 +71,41 @@ class PromptDefinitionPatchRequest(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class PromptDefinitionSource(BaseModel):
+    sourceType: str
+    sourceId: str
+    ownerPluginId: str
+    ownerModule: str
+    modulePath: str
+
+
+class PromptDefinitionData(BaseModel):
+    uuid: str
+    promptId: str
+    name: str
+    source: PromptDefinitionSource
+    stage: str
+    type: str
+    priority: int
+    version: str
+    description: str
+    enabled: bool
+    content: str
+    templateVars: list[str]
+    resolverRef: str
+    bundleRefs: list[str]
+    config: dict[str, Any]
+    tags: list[str]
+    metadata: dict[str, Any]
+    createdAt: str
+    lastModified: str
+
+
+class PromptDefinitionDeleted(BaseModel):
+    deleted: bool
+    uuid: str
+
+
 def _raise_admin_http_error(exc: PromptDefinitionAdminError) -> None:
     raise HTTPException(
         status_code=exc.status_code,
@@ -82,7 +117,7 @@ def _prompt_repository(boot) -> PromptDefinitionFileRepository:
     return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[PromptDefinitionData]])
 def list_prompt_definitions(boot=BootDep):
     """List all prompt definitions stored on disk."""
     try:
@@ -91,7 +126,7 @@ def list_prompt_definitions(boot=BootDep):
         _raise_admin_http_error(exc)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, response_model=Envelope[PromptDefinitionData])
 def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
     """Create a new prompt definition after normalising and validating input."""
     try:
@@ -126,7 +161,7 @@ def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
     return ok(serialize_prompt_definition(payload))
 
 
-@router.get("/{prompt_uuid}")
+@router.get("/{prompt_uuid}", response_model=Envelope[PromptDefinitionData])
 def get_prompt_definition(prompt_uuid: str, boot=BootDep):
     """Retrieve a single prompt definition by its UUID."""
     try:
@@ -136,7 +171,7 @@ def get_prompt_definition(prompt_uuid: str, boot=BootDep):
     return ok(serialize_prompt_definition(payload))
 
 
-@router.patch("/{prompt_uuid}")
+@router.patch("/{prompt_uuid}", response_model=Envelope[PromptDefinitionData])
 def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest, boot=BootDep):
     """Partially update an existing prompt definition."""
     try:
@@ -192,7 +227,7 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
     return ok(serialize_prompt_definition(payload))
 
 
-@router.delete("/{prompt_uuid}")
+@router.delete("/{prompt_uuid}", response_model=Envelope[PromptDefinitionDeleted])
 def delete_prompt_definition(prompt_uuid: str, boot=BootDep):
     """Delete a prompt definition by its UUID."""
     try:

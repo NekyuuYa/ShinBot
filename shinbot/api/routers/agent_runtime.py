@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import ok
+from shinbot.api.models import Envelope, ok
 
 router = APIRouter(
     prefix="/agent-runtime",
@@ -193,7 +193,7 @@ def _task_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
     ]
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[AgentRuntimeProfile]])
 def get_agent_runtime_overview(bot=BotDep, boot=BootDep):
     """Return overview of all agent runtime profiles with bindings, tasks, and sessions."""
     profiles: list[AgentRuntimeProfile] = []

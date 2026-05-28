@@ -5,16 +5,38 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from shinbot.admin.prompt_definition_admin import PromptDefinitionFileRepository
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
-from shinbot.api.models import ok
+from shinbot.api.models import Envelope, ok
 
 router = APIRouter(
     prefix="/prompts",
     tags=["prompts"],
     dependencies=AuthRequired,
 )
+
+
+class PromptCatalogItem(BaseModel):
+    id: str
+    displayName: str
+    description: str
+    stage: str
+    type: str
+    version: str
+    priority: int
+    enabled: bool
+    resolverRef: str
+    templateVars: list[str]
+    bundleRefs: list[str]
+    tags: list[str]
+    sourceType: str
+    sourceId: str
+    ownerPluginId: str
+    ownerModule: str
+    modulePath: str
+    metadata: dict[str, Any]
 
 
 def _prompt_dict(payload: dict[str, Any]) -> dict[str, Any]:
@@ -66,7 +88,7 @@ def _prompt_definition_dict(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@router.get("")
+@router.get("", response_model=Envelope[list[PromptCatalogItem]])
 async def list_prompts(bot=BotDep, boot=BootDep):
     """List all registered prompt components for dashboard selection."""
     agent_runtime = getattr(bot, "agent_runtime", None)

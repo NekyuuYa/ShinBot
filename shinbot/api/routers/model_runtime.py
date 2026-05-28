@@ -20,7 +20,7 @@ from shinbot.agent.services.model_runtime.admin import (
 )
 from shinbot.agent.services.model_runtime.audit_store import ModelAuditPayloadStore
 from shinbot.api.deps import AuthRequired, BotDep
-from shinbot.api.models import EC, ok
+from shinbot.api.models import EC, Envelope, ok
 from shinbot.persistence.records import (
     ModelDefinitionRecord,
     ModelProviderRecord,
@@ -112,6 +112,239 @@ class RoutePatchRequest(BaseModel):
 
 class ProviderProbeRequest(BaseModel):
     modelId: str | None = None
+
+
+class ProviderData(BaseModel):
+    """Response data model for a single model provider."""
+
+    id: str
+    type: str
+    displayName: str
+    capabilityType: str
+    baseUrl: str
+    hasAuth: bool
+    defaultParams: dict[str, Any]
+    enabled: bool
+    createdAt: str
+    lastModified: str
+
+
+class ModelData(BaseModel):
+    """Response data model for a single model definition."""
+
+    id: str
+    providerId: str
+    litellmModel: str
+    displayName: str
+    capabilities: list[str]
+    contextWindow: int | None = None
+    defaultParams: dict[str, Any]
+    costMetadata: dict[str, Any]
+    enabled: bool
+    createdAt: str
+    lastModified: str
+
+
+class RouteMemberData(BaseModel):
+    """Response data model for a single route member."""
+
+    modelId: str
+    priority: int
+    weight: float
+    conditions: dict[str, Any]
+    timeoutOverride: float | None = None
+    enabled: bool
+
+
+class RouteData(BaseModel):
+    """Response data model for a single model route."""
+
+    id: str
+    purpose: str
+    strategy: str
+    enabled: bool
+    stickySessions: bool
+    metadata: dict[str, Any]
+    members: list[RouteMemberData]
+    createdAt: str
+    lastModified: str
+
+
+class ExecutionData(BaseModel):
+    """Response data model for a single model execution record."""
+
+    id: str
+    routeId: str
+    providerId: str
+    modelId: str
+    caller: str
+    sessionId: str
+    instanceId: str
+    purpose: str
+    startedAt: str
+    firstTokenAt: str | None = None
+    finishedAt: str | None = None
+    latencyMs: float | None = None
+    timeToFirstTokenMs: float | None = None
+    inputTokens: int
+    outputTokens: int
+    cacheHit: bool
+    cacheReadTokens: int
+    cacheWriteTokens: int
+    success: bool
+    errorCode: str
+    errorMessage: str
+    fallbackFromModelId: str
+    fallbackReason: str
+    estimatedCost: float | None = None
+    currency: str
+    promptSnapshotId: str
+    metadata: dict[str, Any]
+    auditPayloadRef: str
+    auditPayloadExpiresAt: str
+    auditPayloadAvailable: bool
+
+
+class ExecutionAuditPageData(BaseModel):
+    """Paginated execution audit records."""
+
+    items: list[ExecutionData]
+    total: int
+    limit: int
+    offset: int
+
+
+class ExecutionPayloadData(BaseModel):
+    """Execution audit payload detail."""
+
+    model_config = {"populate_by_name": True}
+
+    available: bool
+    executionId: str
+    expired: bool
+    request: dict[str, Any] | None = None
+    response: dict[str, Any] | None = None
+    returnValue: dict[str, Any] | None = Field(default=None, alias="return")
+    error: dict[str, Any] | None = None
+    meta: dict[str, Any] | None = None
+
+
+class TokenSummaryTopModelData(BaseModel):
+    """Per-model token usage breakdown."""
+
+    providerId: str
+    modelId: str
+    totalCalls: int
+    inputTokens: int
+    outputTokens: int
+    totalTokens: int
+    cacheReadTokens: int
+    cacheWriteTokens: int
+
+
+class TokenSummaryData(BaseModel):
+    """Token usage summary over a time window."""
+
+    windowDays: int
+    since: str
+    totalCalls: int
+    successfulCalls: int
+    inputTokens: int
+    outputTokens: int
+    totalTokens: int
+    cacheReadTokens: int
+    cacheWriteTokens: int
+    estimatedCost: float
+    currency: str
+    topModels: list[TokenSummaryTopModelData]
+
+
+class CostBucketData(BaseModel):
+    """Single time bucket in cost analysis."""
+
+    bucketStart: str
+    totalCalls: int
+    successfulCalls: int
+    failedCalls: int
+    cacheHits: int
+    inputTokens: int
+    outputTokens: int
+    totalTokens: int
+    cacheReadTokens: int
+    cacheWriteTokens: int
+    estimatedCost: float
+
+
+class CostModelData(BaseModel):
+    """Per-model cost breakdown."""
+
+    providerId: str
+    providerDisplayName: str
+    modelId: str
+    modelDisplayName: str
+    totalCalls: int
+    successfulCalls: int
+    failedCalls: int
+    successRate: float
+    cacheHits: int
+    cacheHitRate: float
+    inputTokens: int
+    outputTokens: int
+    totalTokens: int
+    cacheReadTokens: int
+    cacheWriteTokens: int
+    estimatedCost: float
+    averageLatencyMs: float
+    averageTimeToFirstTokenMs: float
+    lastSeenAt: str
+    daily: list[CostBucketData] | None = None
+    hourly: list[CostBucketData] | None = None
+
+
+class CostAnalysisSummaryData(BaseModel):
+    """Aggregate cost analysis summary."""
+
+    totalCalls: int
+    successfulCalls: int
+    failedCalls: int
+    successRate: float
+    cacheHits: int
+    cacheHitRate: float
+    inputTokens: int
+    outputTokens: int
+    totalTokens: int
+    cacheReadTokens: int
+    cacheWriteTokens: int
+    estimatedCost: float
+    averageLatencyMs: float
+    averageTimeToFirstTokenMs: float
+
+
+class CostAnalysisTimelineData(BaseModel):
+    """Cost timeline with daily and hourly buckets."""
+
+    daily: list[CostBucketData]
+    hourly: list[CostBucketData]
+
+
+class CostAnalysisData(BaseModel):
+    """Full cost analysis response."""
+
+    windowDays: int
+    since: str
+    hourlySince: str
+    currency: str
+    summary: CostAnalysisSummaryData
+    timeline: CostAnalysisTimelineData
+    models: list[CostModelData]
+    focusModels: list[CostModelData]
+
+
+class DeletedData(BaseModel):
+    """Response data model for entity deletion confirmation."""
+
+    id: str
+    deleted: bool
 
 
 def _normalize_cost_metadata(cost_metadata: dict[str, Any]) -> dict[str, Any]:
@@ -409,14 +642,14 @@ async def _fetch_provider_catalog(database: Any, provider_id: str) -> list[dict[
         _raise_admin_http_error(exc)
 
 
-@router.get("/providers")
+@router.get("/providers", response_model=Envelope[list[ProviderData]])
 async def list_providers(bot=BotDep):
     """List all registered model providers."""
     providers = bot.database.model_registry.list_providers()
     return ok([_serialize_provider(item) for item in providers])
 
 
-@router.post("/providers", status_code=201)
+@router.post("/providers", status_code=201, response_model=Envelope[ProviderData])
 async def create_provider(body: ProviderRequest, bot=BotDep):
     """Create a new model provider.
 
@@ -448,7 +681,7 @@ async def create_provider(body: ProviderRequest, bot=BotDep):
     return ok(_serialize_provider(_require_provider(bot.database, body.id)))
 
 
-@router.patch("/providers/{provider_id:path}")
+@router.patch("/providers/{provider_id:path}", response_model=Envelope[ProviderData])
 async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotDep):
     """Update an existing model provider.
 
@@ -497,7 +730,7 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
     return ok(_serialize_provider(_require_provider(bot.database, provider_id)))
 
 
-@router.delete("/providers/{provider_id:path}")
+@router.delete("/providers/{provider_id:path}", response_model=Envelope[DeletedData])
 async def delete_provider(provider_id: str, bot=BotDep):
     """Delete a model provider by identifier.
 
@@ -510,7 +743,7 @@ async def delete_provider(provider_id: str, bot=BotDep):
     return ok({"id": provider_id, "deleted": True})
 
 
-@router.get("/providers/{provider_id:path}/catalog")
+@router.get("/providers/{provider_id:path}/catalog", response_model=Envelope[list[dict[str, Any]]])
 async def get_provider_catalog(provider_id: str, bot=BotDep):
     """Fetch the model catalog for a given provider.
 
@@ -522,7 +755,7 @@ async def get_provider_catalog(provider_id: str, bot=BotDep):
     return ok(catalog)
 
 
-@router.post("/providers/{provider_id:path}/probe")
+@router.post("/providers/{provider_id:path}/probe", response_model=Envelope[dict[str, Any]])
 async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDep):
     """Probe a provider's runtime connectivity for a specific model.
 
@@ -545,7 +778,7 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
         _raise_admin_http_error(exc)
 
 
-@router.get("/providers/{provider_id:path}")
+@router.get("/providers/{provider_id:path}", response_model=Envelope[ProviderData])
 async def get_provider(provider_id: str, bot=BotDep):
     """Get a single provider by identifier.
 
@@ -556,7 +789,7 @@ async def get_provider(provider_id: str, bot=BotDep):
     return ok(_serialize_provider(_require_provider(bot.database, provider_id)))
 
 
-@router.get("/models")
+@router.get("/models", response_model=Envelope[list[ModelData]])
 async def list_models(providerId: str | None = Query(default=None), bot=BotDep):
     """List all registered models, optionally filtered by provider.
 
@@ -568,7 +801,7 @@ async def list_models(providerId: str | None = Query(default=None), bot=BotDep):
     return ok([_serialize_model(item) for item in models])
 
 
-@router.post("/models", status_code=201)
+@router.post("/models", status_code=201, response_model=Envelope[ModelData])
 async def create_model(body: ModelRequest, bot=BotDep):
     """Create a new model definition.
 
@@ -606,7 +839,7 @@ async def create_model(body: ModelRequest, bot=BotDep):
     return ok(_serialize_model(_require_model(bot.database, body.id)))
 
 
-@router.get("/models/{model_id:path}")
+@router.get("/models/{model_id:path}", response_model=Envelope[ModelData])
 async def get_model(model_id: str, bot=BotDep):
     """Get a single model by identifier.
 
@@ -617,7 +850,7 @@ async def get_model(model_id: str, bot=BotDep):
     return ok(_serialize_model(_require_model(bot.database, model_id)))
 
 
-@router.patch("/models/{model_id:path}")
+@router.patch("/models/{model_id:path}", response_model=Envelope[ModelData])
 async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     """Update an existing model definition.
 
@@ -670,7 +903,7 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     return ok(_serialize_model(_require_model(bot.database, model_id)))
 
 
-@router.delete("/models/{model_id:path}")
+@router.delete("/models/{model_id:path}", response_model=Envelope[DeletedData])
 async def delete_model(model_id: str, bot=BotDep):
     """Delete a model definition by identifier.
 
@@ -683,7 +916,7 @@ async def delete_model(model_id: str, bot=BotDep):
     return ok({"id": model_id, "deleted": True})
 
 
-@router.get("/routes")
+@router.get("/routes", response_model=Envelope[list[RouteData]])
 async def list_routes(bot=BotDep):
     """List all model routes with their members."""
     routes = bot.database.model_registry.list_routes()
@@ -695,7 +928,7 @@ async def list_routes(bot=BotDep):
     )
 
 
-@router.post("/routes", status_code=201)
+@router.post("/routes", status_code=201, response_model=Envelope[RouteData])
 async def create_route(body: RouteRequest, bot=BotDep):
     """Create a new model route with members.
 
@@ -741,7 +974,7 @@ async def create_route(body: RouteRequest, bot=BotDep):
     return ok(_serialize_route(route, bot.database.model_registry.list_route_members(body.id)))
 
 
-@router.get("/routes/{route_id:path}")
+@router.get("/routes/{route_id:path}", response_model=Envelope[RouteData])
 async def get_route(route_id: str, bot=BotDep):
     """Get a single route by identifier including its members.
 
@@ -754,7 +987,7 @@ async def get_route(route_id: str, bot=BotDep):
     return ok(_serialize_route(route, members))
 
 
-@router.patch("/routes/{route_id:path}")
+@router.patch("/routes/{route_id:path}", response_model=Envelope[RouteData])
 async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
     """Update an existing model route and its members.
 
@@ -816,7 +1049,7 @@ async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
     return ok(_serialize_route(route, bot.database.model_registry.list_route_members(route_id)))
 
 
-@router.delete("/routes/{route_id:path}")
+@router.delete("/routes/{route_id:path}", response_model=Envelope[DeletedData])
 async def delete_route(route_id: str, bot=BotDep):
     """Delete a model route by identifier.
 
@@ -829,7 +1062,7 @@ async def delete_route(route_id: str, bot=BotDep):
     return ok({"id": route_id, "deleted": True})
 
 
-@router.get("/executions")
+@router.get("/executions", response_model=Envelope[list[ExecutionData]])
 async def list_model_executions(limit: int = Query(default=50, ge=1, le=200), bot=BotDep):
     """List recent model execution records.
 
@@ -841,7 +1074,7 @@ async def list_model_executions(limit: int = Query(default=50, ge=1, le=200), bo
     return ok([_serialize_execution(item) for item in records])
 
 
-@router.get("/executions/audit")
+@router.get("/executions/audit", response_model=Envelope[ExecutionAuditPageData])
 async def list_model_execution_audit_records(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -885,7 +1118,7 @@ async def list_model_execution_audit_records(
     return ok(_serialize_execution_audit_page(records))
 
 
-@router.get("/executions/{execution_id:path}/payload")
+@router.get("/executions/{execution_id:path}/payload", response_model=Envelope[ExecutionPayloadData])
 async def get_model_execution_payload(execution_id: str, bot=BotDep):
     """Retrieve the audit payload for a specific model execution.
 
@@ -921,7 +1154,7 @@ async def get_model_execution_payload(execution_id: str, bot=BotDep):
     )
 
 
-@router.get("/token-summary")
+@router.get("/token-summary", response_model=Envelope[TokenSummaryData])
 async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotDep):
     """Get a token usage summary over a rolling time window.
 
@@ -934,7 +1167,7 @@ async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotD
     return ok(_serialize_token_summary(summary, days=days, since=since))
 
 
-@router.get("/cost-analysis")
+@router.get("/cost-analysis", response_model=Envelope[CostAnalysisData])
 async def get_cost_analysis(
     days: int = Query(default=7, ge=1, le=30),
     modelLimit: int = Query(default=8, ge=1, le=16),

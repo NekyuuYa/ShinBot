@@ -122,23 +122,33 @@ ShinBot/
 - `uv` (现代化的极速 Python 包管理器)
 - `pnpm` (前端包管理器，用于 Dashboard 的开发与构建)
 
-**常用指令：**
+**初始化与启动：**
 
 ```bash
-# 运行单元测试
-uv run --group dev python -m pytest
+# 安装依赖
+uv sync
 
-# 静态代码质量检查与格式化
-uv run --group dev ruff check .
+# 准备运行配置
+mkdir -p data/agents
+cp config.example.toml data/config.toml
+cp agent.example.toml data/agents/full-agent.toml
+
+# 编辑 data/config.toml 和 data/agents/full-agent.toml，填入平台、模型与 Bot 配置
 
 # 一键发射！
-uv run main.py
+uv run main.py --config data/config.toml
+
+# 静态代码质量检查
+uv run --group dev ruff check .
+
+# 运行测试
+uv run --group dev python -m pytest
 
 # 编译前端
 cd dashboard && pnpm build
 ```
 
-*(温馨提示：默认参考配置请查阅 [config.example.toml](config.example.toml) )*
+*(温馨提示：默认参考配置请查阅 [config.example.toml](config.example.toml) 与 [agent.example.toml](agent.example.toml) )*
 
 ## 探索文档
 
@@ -171,7 +181,7 @@ cd dashboard && pnpm build
 
 ## Tips：
 
-建议部署时主模型用Qwen3.5-plus，支持多模态，以及工具使用(硬性要求)，在输入<128k token的情况下，价格相当便宜，在启用了显式缓存机制后，性能和价格表现尤为出色。
+建议部署时选择同时支持工具调用与多模态输入的主模型；具体模型名称请以当前模型供应商文档与项目实际测试结果为准。
 
 ---
 
