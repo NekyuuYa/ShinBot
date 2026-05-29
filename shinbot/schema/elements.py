@@ -285,10 +285,17 @@ def _collect_text(elements: list[MessageElement], parts: list[str], self_id: str
             parts.append(_format_at_text(el, self_id=self_id))
         elif el.type == "sb:poke":
             target = str(el.attrs.get("target", "") or "").strip()
+            sender = str(el.attrs.get("sender_id", "") or "").strip()
             if target and self_id and target == self_id:
-                parts.append("[戳一戳: 戳了你一下]")
+                if sender:
+                    parts.append(f"[戳一戳: {sender}戳了你一下]")
+                else:
+                    parts.append("[戳一戳: 戳了你一下]")
             elif target:
-                parts.append(f"[戳一戳: 戳了用户 {target} 一下]")
+                if sender:
+                    parts.append(f"[戳一戳: {sender}戳了 {target} 一下]")
+                else:
+                    parts.append(f"[戳一戳: 戳了 {target} 一下]")
             else:
                 parts.append("[戳一戳]")
         if el.children:

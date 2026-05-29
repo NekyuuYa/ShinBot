@@ -91,7 +91,7 @@ def _format_single_record(
             return None
         parts = [NormalizedMessagePart(kind="text", text=raw_text)]
 
-    text = _render_parts(parts, config=config, image_descriptions=image_descriptions)
+    text = _render_parts(parts, config=config, image_descriptions=image_descriptions, sender_label=sender_label)
     if not text.strip():
         return None
 
@@ -109,6 +109,7 @@ def _render_parts(
     *,
     config: MessageFormatConfig,
     image_descriptions: dict[str, str],
+    sender_label: str = "",
 ) -> str:
     fragments: list[str] = []
     for part in parts:
@@ -125,7 +126,7 @@ def _render_parts(
             continue
 
         if part.kind == "poke":
-            fragments.append(_format_poke(part, config.self_platform_id))
+            fragments.append(_format_poke(part, config.self_platform_id, sender_label=sender_label))
             continue
 
         if part.kind == "image" and part.image is not None:
@@ -203,10 +204,46 @@ def _format_quote(part: NormalizedMessagePart) -> str:
     return "[引用消息]"
 
 
-def _format_poke(part: NormalizedMessagePart, self_platform_id: str) -> str:
+def _format_poke(
+    part: NormalizedMessagePart,
+    self_platform_id: str,
+    *,
+    sender_label: str = "",
+) -> str:
+    """Render a poke (戳一戳) part into a text placeholder.
+
+    Resolution:
+    - Target is the bot → ``[戳一戳: {sender}戳了你一下]``
+    - Target is another user → ``[戳一戳: {sender}戳了 {target} 一下]``
+    - No target info → ``[戳一戳]``
+
+    When ``sender_label`` is empty (e.g. packed mode strips it), falls
+    back to ``part.sender_id`` (platform ID from element attrs), then
+    omits the sender entirely if neither is available.
+
+    Args:
+        part: A :class:`NormalizedMessagePart` with ``kind="poke"``.
+        self_platform_id: The bot's own platform ID for self-detection.
+        sender_label: Display name of the poke sender (from record level).
+
+    Returns:
+        Text placeholder string describing the poke action.
+    """
     target_id = part.platform_id.strip()
+    sender = sender_label.strip() if sender_label else ""
+    if not sender:
+        sender = part.sender_id.strip() if part.sender_id else ""
+
     if target_id and self_platform_id and target_id == self_platform_id:
+        if sender:
+            return f"[戳一戳: {sender}戳了你一下]"
         return "[戳一戳: 某人戳了你一下]"
+
+    if target_id:
+        if sender:
+            return f"[戳一戳: {sender}戳了 {target_id} 一下]"
+        return f"[戳一戳: 戳了 {target_id} 一下]"
+
     return "[戳一戳]"
 
 

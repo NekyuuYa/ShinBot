@@ -145,7 +145,7 @@ class TestMessage:
     def test_get_text_translates_poke(self):
         msg = Message.from_elements(MessageElement(type="sb:poke", attrs={"target": "bot-1"}))
         assert msg.get_text(self_id="bot-1") == "[戳一戳: 戳了你一下]"
-        assert msg.get_text(self_id="other") == "[戳一戳: 戳了用户 bot-1 一下]"
+        assert msg.get_text(self_id="other") == "[戳一戳: 戳了 bot-1 一下]"
 
     def test_get_text_recursive(self):
         """Text extraction should descend into children (e.g. quote)."""
