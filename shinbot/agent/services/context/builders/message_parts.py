@@ -23,6 +23,7 @@ class NormalizedMessagePart:
     platform_id: str = ""
     display_name: str = ""
     quote_id: str = ""
+    sender_id: str = ""
     image: NormalizedImagePart | None = None
 
 
@@ -95,11 +96,13 @@ def _walk_payload(
             )
         elif element_type == "sb:poke":
             target_id = str(attrs.get("target", "") or "").strip()
+            sender_id = str(attrs.get("sender_id", "") or "").strip()
             parts.append(
                 NormalizedMessagePart(
                     kind="poke",
                     platform_id=target_id,
                     display_name="你" if target_id and target_id == self_platform_id else "",
+                    sender_id=sender_id,
                 )
             )
         elif element_type == "quote":

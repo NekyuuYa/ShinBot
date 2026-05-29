@@ -985,6 +985,7 @@ class OneBotV11Adapter(BaseAdapter):
         if target_id:
             attrs["target"] = target_id
         attrs["type"] = "poke"
+        attrs["sender_id"] = user_id
         poke_xml = elements_to_xml([MessageElement(type="sb:poke", attrs=attrs)])
 
         channel: Channel
