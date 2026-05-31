@@ -434,7 +434,7 @@ def _normalize_model(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": model_id,
         "provider_id": _string(payload.get("provider_id")).strip(),
-        "litellm_model": _string(payload.get("litellm_model")).strip(),
+        "backend_model": _string(payload.get("backend_model")).strip(),
         "display_name": _string(payload.get("display_name"), model_id).strip(),
         "capabilities": [
             str(item)

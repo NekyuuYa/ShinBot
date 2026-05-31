@@ -33,7 +33,7 @@ class ModelProviderRecord:
 class ModelDefinitionRecord:
     id: str
     provider_id: str
-    litellm_model: str
+    backend_model: str
     display_name: str
     capabilities: list[str] = field(default_factory=list)
     context_window: int | None = None

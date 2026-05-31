@@ -731,7 +731,7 @@ class ModelRuntime:
             "provider_id": attempt["provider"]["id"],
             "provider_type": attempt["provider"]["type"],
             "model_id": attempt["model"]["id"],
-            "litellm_model": attempt["model"]["litellm_model"],
+            "backend_model": attempt["model"]["backend_model"],
             "strategy": attempt["strategy"],
         }
 

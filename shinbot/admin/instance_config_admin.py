@@ -686,11 +686,11 @@ def validate_model_runtime_target(database: Any, field_name: str, target: str) -
     if registry.get_model(normalized) is not None:
         return
 
-    matching_litellm_models = [
-        item for item in registry.list_models() if item.get("litellm_model") == normalized
+    matching_backend_models = [
+        item for item in registry.list_models() if item.get("backend_model") == normalized
     ]
-    if matching_litellm_models:
-        model_ids = ", ".join(str(item["id"]) for item in matching_litellm_models[:3])
+    if matching_backend_models:
+        model_ids = ", ".join(str(item["id"]) for item in matching_backend_models[:3])
         raise InstanceConfigAdminError(
             status_code=400,
             code="MODEL_TARGET_NOT_FOUND",

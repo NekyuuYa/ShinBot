@@ -174,7 +174,7 @@ def provider_type_for_model_info(provider_type: str) -> str | None:
     return None
 
 
-def infer_context_window(provider: dict[str, Any], litellm_model: str) -> int | None:
+def infer_context_window(provider: dict[str, Any], backend_model: str) -> int | None:
     """Infer the context window size for a model via LiteLLM metadata.
 
     Queries ``litellm_adapter.get_model_info`` and returns the larger of
@@ -184,7 +184,7 @@ def infer_context_window(provider: dict[str, Any], litellm_model: str) -> int | 
     Args:
         provider: Provider configuration dictionary (used for the custom
             provider type override).
-        litellm_model: Fully-qualified LiteLLM model identifier.
+        backend_model: Fully-qualified LiteLLM model identifier.
 
     Returns:
         Context window size in tokens, or ``None`` if it could not be
@@ -192,7 +192,7 @@ def infer_context_window(provider: dict[str, Any], litellm_model: str) -> int | 
     """
     try:
         model_info = litellm_adapter.get_model_info(
-            litellm_model,
+            backend_model,
             custom_llm_provider=provider_type_for_model_info(provider["type"]),
             api_base=provider.get("base_url") or None,
         )
@@ -251,13 +251,13 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
             model_id = raw_name.replace("models/", "")
             if not model_id:
                 continue
-            litellm_model = f"gemini/{model_id}"
+            backend_model = f"gemini/{model_id}"
             models.append(
                 {
                     "id": str(model_id),
                     "displayName": str(item.get("displayName") or model_id),
-                    "litellmModel": litellm_model,
-                    "contextWindow": infer_context_window(payload, litellm_model),
+                    "litellmModel": backend_model,
+                    "contextWindow": infer_context_window(payload, backend_model),
                 }
             )
         return models
@@ -268,21 +268,21 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
         model_id = item.get("id")
         if not model_id:
             continue
-        litellm_model = str(model_id)
+        backend_model = str(model_id)
         if provider_type == "openrouter":
-            litellm_model = f"openrouter/{model_id}"
+            backend_model = f"openrouter/{model_id}"
         elif provider_type == "deepseek":
-            litellm_model = f"deepseek/{model_id}"
+            backend_model = f"deepseek/{model_id}"
         elif provider_type == "xiaomi_mimo":
-            litellm_model = f"xiaomi_mimo/{model_id}"
+            backend_model = f"xiaomi_mimo/{model_id}"
         elif provider_type == "anthropic":
-            litellm_model = f"anthropic/{model_id}"
+            backend_model = f"anthropic/{model_id}"
         models.append(
             {
                 "id": str(model_id),
                 "displayName": str(item.get("name") or model_id),
-                "litellmModel": litellm_model,
-                "contextWindow": infer_context_window(payload, litellm_model),
+                "litellmModel": backend_model,
+                "contextWindow": infer_context_window(payload, backend_model),
             }
         )
     return models

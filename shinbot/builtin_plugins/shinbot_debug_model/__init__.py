@@ -143,7 +143,7 @@ def _build_model_record(payload: dict[str, Any]) -> dict[str, Any]:
         "provider_id": str(payload.get("provider_id", "")),
         "provider_type": str(payload.get("provider_type", "")),
         "model_id": str(payload.get("model_id", "")),
-        "litellm_model": str(payload.get("litellm_model", "")),
+        "backend_model": str(payload.get("backend_model", "")),
         "execution_id": str(payload.get("execution_id", "")),
         "strategy": str(payload.get("strategy", "")),
     }

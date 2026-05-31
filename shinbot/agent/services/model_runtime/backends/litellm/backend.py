@@ -109,7 +109,7 @@ class LiteLLMBackend:
             payload=payload,
             safe_payload=sanitize_litellm_kwargs(payload),
             backend_name=self.name,
-            backend_model=str(payload.get("model") or model.get("litellm_model") or ""),
+            backend_model=str(payload.get("model") or model.get("backend_model") or ""),
         )
 
     def invoke(self, plan: BackendRequestPlan) -> Any:

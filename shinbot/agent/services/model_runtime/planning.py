@@ -119,7 +119,7 @@ def build_litellm_kwargs(
     _normalize_openai_compatible_params(kwargs)
     _drop_empty_runtime_params(kwargs)
     kwargs["model"] = _litellm_request_model_name(
-        str(model["litellm_model"]),
+        str(model["backend_model"]),
         custom_llm_provider=custom_llm_provider,
         provider_type=str(provider.get("type", "")),
     )
@@ -160,15 +160,15 @@ def _normalize_openai_compatible_params(kwargs: dict[str, Any]) -> None:
 
 
 def _litellm_request_model_name(
-    litellm_model: str,
+    backend_model: str,
     *,
     custom_llm_provider: str | None,
     provider_type: str,
 ) -> str:
     """Return the model name sent through LiteLLM for one request."""
     if custom_llm_provider == "openai" and provider_type == "xiaomi_mimo":
-        return _strip_model_prefix(litellm_model, "xiaomi_mimo")
-    return litellm_model
+        return _strip_model_prefix(backend_model, "xiaomi_mimo")
+    return backend_model
 
 
 def _strip_model_prefix(model_name: str, prefix: str) -> str:
