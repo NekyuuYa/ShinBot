@@ -48,3 +48,12 @@ class ModelBackend(Protocol):
 
     def invoke(self, plan: BackendRequestPlan) -> Any:
         """Execute a prepared request plan and return the raw backend response."""
+
+    def normalize_response(
+        self,
+        *,
+        operation: BackendOperation,
+        response: Any,
+        usage: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Extract structured data from raw backend response."""
