@@ -7,6 +7,7 @@ import json
 import pytest
 
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
+from shinbot.agent.services.model_runtime.backends import BackendRequestPlan
 from shinbot.agent.services.model_runtime.planning import build_litellm_kwargs
 from shinbot.agent.services.model_runtime.service import ModelRuntime
 from shinbot.persistence import DatabaseManager
@@ -16,6 +17,46 @@ from shinbot.persistence.records import (
     ModelRouteMemberRecord,
     ModelRouteRecord,
 )
+
+
+class RecordingBackend:
+    """Test backend that records plans and returns OpenAI-compatible payloads."""
+
+    name = "recording"
+
+    def __init__(self) -> None:
+        self.plans: list[BackendRequestPlan] = []
+
+    def plan_request(
+        self,
+        *,
+        provider: dict[str, object],
+        model: dict[str, object],
+        call: ModelRuntimeCall,
+        timeout_override: float | None,
+        operation: str,
+    ) -> BackendRequestPlan:
+        payload = {
+            "model": model["litellm_model"],
+            "messages": list(call.messages),
+            "timeout": timeout_override,
+            **dict(call.params),
+        }
+        return BackendRequestPlan(
+            operation=operation,  # type: ignore[arg-type]
+            payload=payload,
+            safe_payload=dict(payload),
+            backend_name=self.name,
+            backend_model=str(payload["model"]),
+        )
+
+    def invoke(self, plan: BackendRequestPlan) -> dict[str, object]:
+        self.plans.append(plan)
+        return {
+            "model": plan.backend_model,
+            "choices": [{"message": {"content": "hello from backend"}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+        }
 
 
 def _seed_runtime(db: DatabaseManager) -> None:
@@ -338,6 +379,70 @@ async def test_generate_merges_provider_model_and_call_params(monkeypatch, tmp_p
     assert records[0]["cache_read_tokens"] == 3
     assert records[0]["cache_write_tokens"] == 4
     assert records[0]["metadata"]["trace_id"] == "trace-1"
+
+
+@pytest.mark.asyncio
+async def test_default_backend_delegates_to_litellm_adapter_after_construction(
+    monkeypatch,
+    tmp_path,
+):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db)
+    captured: dict[str, object] = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {
+            "model": kwargs["model"],
+            "choices": [{"message": {"content": "patched after construction"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+        }
+
+    monkeypatch.setattr("shinbot.agent.services.model_runtime.litellm_adapter.completion", fake_completion)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+    )
+
+    assert result.text == "patched after construction"
+    assert captured["model"] == "openai/gpt-4.1-mini"
+    assert captured["api_key"] == "secret-key"
+
+
+@pytest.mark.asyncio
+async def test_generate_uses_injected_backend(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    backend = RecordingBackend()
+    runtime = ModelRuntime(db, backend=backend)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "Hello"}],
+            params={"temperature": 0.7},
+        )
+    )
+
+    assert result.text == "hello from backend"
+    assert result.provider_id == "openai-main"
+    assert result.model_id == "openai-main/gpt-fast"
+    assert result.usage["input_tokens"] == 2
+    assert backend.plans[0].backend_name == "recording"
+    assert backend.plans[0].payload["temperature"] == 0.7
+
+    record = db.model_executions.list_recent(limit=1)[0]
+    assert record["success"] is True
+    assert record["input_tokens"] == 2
+    assert record["output_tokens"] == 3
 
 
 @pytest.mark.asyncio

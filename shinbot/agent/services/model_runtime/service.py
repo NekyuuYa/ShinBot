@@ -15,8 +15,8 @@ from typing import Any, TypeVar
 from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecutionRecord
 from shinbot.utils.logger import format_log_event, get_logger
 
-from . import litellm_adapter
 from .audit_store import ModelAuditPayloadStore, sanitize_payload_for_audit
+from .backends import BackendOperation, BackendRequestPlan, LiteLLMBackend, ModelBackend
 from .extraction import (
     extract_embedding,
     extract_estimated_cost,
@@ -34,11 +34,7 @@ from .extraction import (
     utc_now,
 )
 from .persistence import persist_ai_interaction, persist_model_execution
-from .planning import (
-    build_litellm_kwargs,
-    resolve_runtime_targets,
-    sanitize_litellm_kwargs,
-)
+from .planning import resolve_runtime_targets
 from .types import (
     EmbedResult,
     GenerateResult,
@@ -67,14 +63,20 @@ class _RuntimeExecution:
     response_payload: dict[str, Any]
     usage: dict[str, Any]
     return_payload: dict[str, Any]
+    backend_name: str
+    backend_model: str
     started_timestamp: float
     latency_ms: float
 
 
 class ModelRuntime:
-    """Unified runtime for route-based LiteLLM calls."""
+    """Unified runtime for route-based model backend calls."""
 
-    def __init__(self, database: DatabaseManager | None) -> None:
+    def __init__(
+        self,
+        database: DatabaseManager | None,
+        backend: ModelBackend | None = None,
+    ) -> None:
         """Initialize the model runtime service.
 
         Args:
@@ -82,8 +84,11 @@ class ModelRuntime:
                 records and AI interactions. When provided, an audit
                 payload store is also initialised for request/response
                 logging.
+            backend: Optional model backend implementation. Defaults to
+                the LiteLLM backend to preserve existing runtime behavior.
         """
         self._database = database
+        self._backend = backend or LiteLLMBackend()
         data_dir = database.config.data_dir if database is not None else None
         self._audit_store = (
             ModelAuditPayloadStore(data_dir) if data_dir is not None else None
@@ -139,7 +144,6 @@ class ModelRuntime:
             call,
             operation="generate",
             mode="completion",
-            invoke=litellm_adapter.completion,
             failure_message="Model call failed",
             build_result=self._build_generate_result,
             record_usage=True,
@@ -174,7 +178,6 @@ class ModelRuntime:
             call,
             operation="embed",
             mode="embedding",
-            invoke=litellm_adapter.embedding,
             failure_message="Embedding call failed",
             build_result=self._build_embed_result,
             record_usage=True,
@@ -203,7 +206,6 @@ class ModelRuntime:
             call,
             operation="rerank",
             mode="rerank",
-            invoke=litellm_adapter.rerank,
             failure_message="Rerank call failed",
             build_result=self._build_rerank_result,
             record_usage=True,
@@ -227,7 +229,6 @@ class ModelRuntime:
             call,
             operation="speak",
             mode="speech",
-            invoke=litellm_adapter.speech,
             failure_message="Speech call failed",
             build_result=self._build_speech_result,
             record_estimated_cost=False,
@@ -251,7 +252,6 @@ class ModelRuntime:
             call,
             operation="transcribe",
             mode="transcription",
-            invoke=litellm_adapter.transcription,
             failure_message="Transcription call failed",
             build_result=self._build_transcription_result,
             record_usage=True,
@@ -275,7 +275,6 @@ class ModelRuntime:
             call,
             operation="generate_image",
             mode="image",
-            invoke=litellm_adapter.image_generation,
             failure_message="Image generation call failed",
             build_result=self._build_image_result,
         )
@@ -298,7 +297,6 @@ class ModelRuntime:
             call,
             operation="generate_video",
             mode="video",
-            invoke=litellm_adapter.video_generation,
             failure_message="Video generation call failed",
             build_result=self._build_video_result,
         )
@@ -308,8 +306,7 @@ class ModelRuntime:
         call: ModelRuntimeCall,
         *,
         operation: str,
-        mode: str,
-        invoke: Callable[..., Any],
+        mode: BackendOperation,
         failure_message: str,
         build_result: Callable[[_RuntimeExecution], _ResultT],
         record_usage: bool = False,
@@ -339,12 +336,12 @@ class ModelRuntime:
             started = utc_now()
             started_at = started.isoformat()
             route_id = call.route_id or attempt["model"]["id"]
-            kwargs = build_litellm_kwargs(
+            plan = self._backend.plan_request(
                 provider=attempt["provider"],
                 model=attempt["model"],
                 call=call,
                 timeout_override=attempt["timeout_override"],
-                mode=mode,
+                operation=mode,
             )
             logger.debug(
                 format_log_event(
@@ -361,6 +358,7 @@ class ModelRuntime:
                     instance_id=call.instance_id,
                     trace_id=call.metadata.get("trace_id"),
                     fallback_from_model_id=previous_model_id,
+                    backend=plan.backend_name,
                 )
             )
             await self._notify_observers(
@@ -369,11 +367,11 @@ class ModelRuntime:
                     execution_id=execution_id,
                     call=call,
                     attempt=attempt,
-                    kwargs=kwargs,
+                    plan=plan,
                 )
             )
             try:
-                response = await asyncio.to_thread(invoke, **kwargs)
+                response = await asyncio.to_thread(self._backend.invoke, plan)
                 finished = utc_now()
                 finished_at = finished.isoformat()
                 latency_ms = (finished - started).total_seconds() * 1000
@@ -388,6 +386,8 @@ class ModelRuntime:
                     response_payload=response_payload,
                     usage=usage,
                     return_payload={},
+                    backend_name=plan.backend_name,
+                    backend_model=plan.backend_model,
                     started_timestamp=started.timestamp(),
                     latency_ms=latency_ms,
                 )
@@ -400,7 +400,7 @@ class ModelRuntime:
                     finished_at=finished,
                     call=call,
                     attempt=attempt,
-                    kwargs=kwargs,
+                    plan=plan,
                     response_payload=response_payload,
                     return_payload=execution.return_payload,
                     status="success",
@@ -473,6 +473,7 @@ class ModelRuntime:
                         session_id=call.session_id,
                         trace_id=call.metadata.get("trace_id"),
                         latency_ms=f"{latency_ms:.2f}",
+                        backend=execution.backend_name,
                         input_tokens=usage["input_tokens"] if record_usage else 0,
                         output_tokens=usage["output_tokens"] if record_usage else 0,
                         cache_read_tokens=(
@@ -494,7 +495,7 @@ class ModelRuntime:
                     finished_at=finished,
                     call=call,
                     attempt=attempt,
-                    kwargs=kwargs,
+                    plan=plan,
                     response_payload=None,
                     return_payload=None,
                     status="error",
@@ -556,6 +557,7 @@ class ModelRuntime:
                         session_id=call.session_id,
                         trace_id=call.metadata.get("trace_id"),
                         latency_ms=f"{latency_ms:.2f}",
+                        backend=plan.backend_name,
                         error_code=type(exc).__name__,
                     )
                 )
@@ -580,11 +582,11 @@ class ModelRuntime:
     def _build_request_observer_payload(
         self,
         *,
-        mode: str,
+        mode: BackendOperation,
         execution_id: str,
         call: ModelRuntimeCall,
         attempt: dict[str, Any],
-        kwargs: dict[str, Any],
+        plan: BackendRequestPlan,
     ) -> dict[str, Any]:
         payload = self._base_observer_payload(
             event="model_runtime.request",
@@ -607,7 +609,9 @@ class ModelRuntime:
             {
                 "params": dict(call.params),
                 "metadata": dict(call.metadata),
-                "kwargs": sanitize_litellm_kwargs(kwargs),
+                "kwargs": plan.safe_payload,
+                "backend": plan.backend_name,
+                "backend_model": plan.backend_model,
                 "prompt_snapshot_id": call.prompt_snapshot_id,
             }
         )
@@ -616,7 +620,7 @@ class ModelRuntime:
     def _build_response_observer_payload(
         self,
         *,
-        mode: str,
+        mode: BackendOperation,
         execution: _RuntimeExecution,
         call: ModelRuntimeCall,
         attempt: dict[str, Any],
@@ -639,6 +643,8 @@ class ModelRuntime:
                 "cache_write_tokens": execution.usage["cache_write_tokens"],
                 "return": execution.return_payload,
                 "response": execution.response_payload,
+                "backend": execution.backend_name,
+                "backend_model": execution.backend_model,
                 "metadata": dict(call.metadata),
                 "prompt_snapshot_id": call.prompt_snapshot_id,
             }
@@ -648,7 +654,7 @@ class ModelRuntime:
     def _build_error_observer_payload(
         self,
         *,
-        mode: str,
+        mode: BackendOperation,
         execution_id: str,
         call: ModelRuntimeCall,
         attempt: dict[str, Any],
@@ -671,6 +677,7 @@ class ModelRuntime:
                 "cache_hit": False,
                 "cache_read_tokens": 0,
                 "cache_write_tokens": 0,
+                "backend": getattr(self._backend, "name", ""),
                 "error": {
                     "code": type(exc).__name__,
                     "message": str(exc),
@@ -737,7 +744,7 @@ class ModelRuntime:
         finished_at: datetime,
         call: ModelRuntimeCall,
         attempt: dict[str, Any],
-        kwargs: dict[str, Any],
+        plan: BackendRequestPlan,
         response_payload: dict[str, Any] | None,
         return_payload: dict[str, Any] | None,
         status: str,
@@ -765,7 +772,9 @@ class ModelRuntime:
                     "response_format": sanitize_payload_for_audit(call.response_format),
                     "params": sanitize_payload_for_audit(call.params),
                     "metadata": sanitize_payload_for_audit(call.metadata),
-                    "kwargs": sanitize_payload_for_audit(kwargs),
+                    "kwargs": sanitize_payload_for_audit(plan.safe_payload),
+                    "backend": plan.backend_name,
+                    "backend_model": plan.backend_model,
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                     "started_at": started_at.isoformat(),
                 },
