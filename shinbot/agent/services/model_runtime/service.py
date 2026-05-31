@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any
 
 from shinbot.persistence import AIInteractionRecord, DatabaseManager, ModelExecutionRecord
 from shinbot.utils.logger import format_log_event, get_logger
@@ -18,16 +18,11 @@ from shinbot.utils.logger import format_log_event, get_logger
 from .audit_store import ModelAuditPayloadStore, sanitize_payload_for_audit
 from .backends import BackendOperation, BackendRequestPlan, LiteLLMBackend, ModelBackend
 from .extraction import (
-    extract_embedding,
     extract_estimated_cost,
-    extract_image_urls,
     extract_injected_context,
-    extract_rerank_results,
-    extract_speech_bytes,
     extract_text,
     extract_think_text,
     extract_tool_calls_list,
-    extract_transcription_text,
     extract_usage,
     maybe_get,
     response_to_dict,
@@ -49,8 +44,6 @@ from .types import (
 )
 
 logger = get_logger(__name__, source="model:runtime", color="blue")
-
-_ResultT = TypeVar("_ResultT")
 
 
 @dataclass(slots=True)
@@ -140,12 +133,11 @@ class ModelRuntime:
         Raises:
             ModelCallError: If all retry/fallback attempts fail.
         """
-        return await self._execute_with_retry(
+        execution, data = await self._execute_with_retry(
             call,
             operation="generate",
             mode="completion",
             failure_message="Model call failed",
-            build_result=self._build_generate_result,
             record_usage=True,
             record_cache_metrics=True,
             record_first_token=True,
@@ -155,6 +147,12 @@ class ModelRuntime:
             build_response_return=self._build_generate_return_payload,
             after_success=self._persist_generate_ai_interaction,
             notify_response=True,
+        )
+        return GenerateResult(
+            text=data["text"],
+            tool_calls=data["tool_calls"],
+            **self._result_context(execution),
+            usage=execution.usage,
         )
 
     async def embed(self, call: ModelRuntimeCall) -> EmbedResult:
@@ -174,15 +172,19 @@ class ModelRuntime:
         Raises:
             ModelCallError: If all retry/fallback attempts fail.
         """
-        return await self._execute_with_retry(
+        execution, data = await self._execute_with_retry(
             call,
             operation="embed",
             mode="embedding",
             failure_message="Embedding call failed",
-            build_result=self._build_embed_result,
             record_usage=True,
             record_cache_metrics=True,
             include_usage_raw_metadata=True,
+        )
+        return EmbedResult(
+            embedding=data["embedding"],
+            **self._result_context(execution),
+            usage=execution.usage,
         )
 
     async def rerank(self, call: ModelRuntimeCall) -> RerankResult:
@@ -202,13 +204,17 @@ class ModelRuntime:
         Raises:
             ModelCallError: If all retry/fallback attempts fail.
         """
-        return await self._execute_with_retry(
+        execution, data = await self._execute_with_retry(
             call,
             operation="rerank",
             mode="rerank",
             failure_message="Rerank call failed",
-            build_result=self._build_rerank_result,
             record_usage=True,
+        )
+        return RerankResult(
+            results=data["results"],
+            **self._result_context(execution),
+            usage=execution.usage,
         )
 
     async def speak(self, call: ModelRuntimeCall) -> SpeechResult:
@@ -225,13 +231,16 @@ class ModelRuntime:
         Raises:
             ModelCallError: If all retry/fallback attempts fail.
         """
-        return await self._execute_with_retry(
+        execution, data = await self._execute_with_retry(
             call,
             operation="speak",
             mode="speech",
             failure_message="Speech call failed",
-            build_result=self._build_speech_result,
             record_estimated_cost=False,
+        )
+        return SpeechResult(
+            audio_bytes=data["audio_bytes"],
+            **self._result_context(execution),
         )
 
     async def transcribe(self, call: ModelRuntimeCall) -> TranscriptionResult:
@@ -248,13 +257,17 @@ class ModelRuntime:
         Raises:
             ModelCallError: If all retry/fallback attempts fail.
         """
-        return await self._execute_with_retry(
+        execution, data = await self._execute_with_retry(
             call,
             operation="transcribe",
             mode="transcription",
             failure_message="Transcription call failed",
-            build_result=self._build_transcription_result,
             record_usage=True,
+        )
+        return TranscriptionResult(
+            text=data["text"],
+            **self._result_context(execution),
+            usage=execution.usage,
         )
 
     async def generate_image(self, call: ModelRuntimeCall) -> ImageResult:
@@ -271,12 +284,15 @@ class ModelRuntime:
         Raises:
             ModelCallError: If all retry/fallback attempts fail.
         """
-        return await self._execute_with_retry(
+        execution, data = await self._execute_with_retry(
             call,
             operation="generate_image",
             mode="image",
             failure_message="Image generation call failed",
-            build_result=self._build_image_result,
+        )
+        return ImageResult(
+            urls=data["urls"],
+            **self._result_context(execution),
         )
 
     async def generate_video(self, call: ModelRuntimeCall) -> VideoResult:
@@ -293,12 +309,15 @@ class ModelRuntime:
         Raises:
             ModelCallError: If all retry/fallback attempts fail.
         """
-        return await self._execute_with_retry(
+        execution, data = await self._execute_with_retry(
             call,
             operation="generate_video",
             mode="video",
             failure_message="Video generation call failed",
-            build_result=self._build_video_result,
+        )
+        return VideoResult(
+            urls=data["urls"],
+            **self._result_context(execution),
         )
 
     async def _execute_with_retry(
@@ -308,7 +327,6 @@ class ModelRuntime:
         operation: str,
         mode: BackendOperation,
         failure_message: str,
-        build_result: Callable[[_RuntimeExecution], _ResultT],
         record_usage: bool = False,
         record_cache_metrics: bool = False,
         record_first_token: bool = False,
@@ -319,7 +337,7 @@ class ModelRuntime:
         build_response_return: Callable[[_RuntimeExecution], dict[str, Any]] | None = None,
         after_success: Callable[[_RuntimeExecution, ModelRuntimeCall], None] | None = None,
         notify_response: bool = False,
-    ) -> _ResultT:
+    ) -> tuple[_RuntimeExecution, dict[str, Any]]:
         if not call.route_id and not call.model_id:
             raise ValueError(f"{operation}() requires route_id or model_id")
 
@@ -445,7 +463,11 @@ class ModelRuntime:
                 )
                 persist_model_execution(self._database, record)
 
-                result = build_result(execution)
+                data = self._backend.normalize_response(
+                    operation=mode,
+                    response=response,
+                    usage=usage,
+                )
                 if after_success is not None:
                     after_success(execution, call)
                 if notify_response:
@@ -484,7 +506,7 @@ class ModelRuntime:
                         ),
                     )
                 )
-                return result
+                return execution, data
             except Exception as exc:  # noqa: BLE001
                 finished = utc_now()
                 latency_ms = (finished - started).total_seconds() * 1000
@@ -853,53 +875,6 @@ class ModelRuntime:
             "provider_id": execution.provider_id,
             "model_id": execution.model_id,
         }
-
-    def _build_generate_result(self, execution: _RuntimeExecution) -> GenerateResult:
-        return GenerateResult(
-            text=execution.return_payload.get("text", ""),
-            tool_calls=execution.return_payload.get("tool_calls", []),
-            **self._result_context(execution),
-            usage=execution.usage,
-        )
-
-    def _build_embed_result(self, execution: _RuntimeExecution) -> EmbedResult:
-        return EmbedResult(
-            embedding=extract_embedding(execution.response),
-            **self._result_context(execution),
-            usage=execution.usage,
-        )
-
-    def _build_rerank_result(self, execution: _RuntimeExecution) -> RerankResult:
-        return RerankResult(
-            results=extract_rerank_results(execution.response),
-            **self._result_context(execution),
-            usage=execution.usage,
-        )
-
-    def _build_speech_result(self, execution: _RuntimeExecution) -> SpeechResult:
-        return SpeechResult(
-            audio_bytes=extract_speech_bytes(execution.response),
-            **self._result_context(execution),
-        )
-
-    def _build_transcription_result(self, execution: _RuntimeExecution) -> TranscriptionResult:
-        return TranscriptionResult(
-            text=extract_transcription_text(execution.response),
-            **self._result_context(execution),
-            usage=execution.usage,
-        )
-
-    def _build_image_result(self, execution: _RuntimeExecution) -> ImageResult:
-        return ImageResult(
-            urls=extract_image_urls(execution.response),
-            **self._result_context(execution),
-        )
-
-    def _build_video_result(self, execution: _RuntimeExecution) -> VideoResult:
-        return VideoResult(
-            urls=extract_image_urls(execution.response),
-            **self._result_context(execution),
-        )
 
     async def _notify_observers(self, payload: dict[str, Any]) -> None:
         if not self._observers:

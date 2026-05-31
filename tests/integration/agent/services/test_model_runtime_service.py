@@ -58,6 +58,23 @@ class RecordingBackend:
             "usage": {"prompt_tokens": 2, "completion_tokens": 3},
         }
 
+    def normalize_response(
+        self,
+        *,
+        operation: str,
+        response: object,
+        usage: dict[str, object],
+    ) -> dict[str, object]:
+        from shinbot.agent.services.model_runtime.extraction import (
+            extract_text,
+            extract_tool_calls_list,
+        )
+
+        return {
+            "text": extract_text(response),
+            "tool_calls": extract_tool_calls_list(response),
+        }
+
 
 def _seed_runtime(db: DatabaseManager) -> None:
     db.model_registry.upsert_provider(
