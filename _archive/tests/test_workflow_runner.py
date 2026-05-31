@@ -136,7 +136,7 @@ def _seed_workflow_runtime(
         ModelDefinitionRecord(
             id=model_id,
             provider_id=provider_id,
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="Workflow Test Model",
             capabilities=["chat"],
             context_window=32000,

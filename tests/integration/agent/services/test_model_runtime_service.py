@@ -37,7 +37,7 @@ class RecordingBackend:
         operation: str,
     ) -> BackendRequestPlan:
         payload = {
-            "model": model["litellm_model"],
+            "model": model["backend_model"],
             "messages": list(call.messages),
             "timeout": timeout_override,
             **dict(call.params),
@@ -91,7 +91,7 @@ def _seed_runtime(db: DatabaseManager) -> None:
         ModelDefinitionRecord(
             id="openai-main/gpt-fast",
             provider_id="openai-main",
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="GPT Fast",
             capabilities=["chat"],
             default_params={"max_tokens": 128},
@@ -101,7 +101,7 @@ def _seed_runtime(db: DatabaseManager) -> None:
         ModelDefinitionRecord(
             id="openai-main/gpt-backup",
             provider_id="openai-main",
-            litellm_model="openai/gpt-4.1",
+            backend_model="openai/gpt-4.1",
             display_name="GPT Backup",
             capabilities=["chat"],
         )
@@ -110,7 +110,7 @@ def _seed_runtime(db: DatabaseManager) -> None:
         ModelDefinitionRecord(
             id="openai-main/text-embedding",
             provider_id="openai-main",
-            litellm_model="openai/text-embedding-3-small",
+            backend_model="openai/text-embedding-3-small",
             display_name="Embedding",
             capabilities=["embedding"],
         )
@@ -153,7 +153,7 @@ def test_build_litellm_kwargs_drops_empty_thinking_param():
             "default_params": {"thinking": {}, "temperature": 0.2},
         },
         model={
-            "litellm_model": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+            "backend_model": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
             "default_params": {"max_tokens": 128},
         },
         call=ModelRuntimeCall(
@@ -178,7 +178,7 @@ def test_build_litellm_kwargs_normalizes_late_system_messages():
             "default_params": {},
         },
         model={
-            "litellm_model": "qwen3.5-plus",
+            "backend_model": "qwen3.5-plus",
             "default_params": {},
         },
         call=ModelRuntimeCall(
@@ -206,7 +206,7 @@ def test_build_litellm_kwargs_stringifies_uncached_dashscope_system_blocks():
             "default_params": {},
         },
         model={
-            "litellm_model": "qwen3.6-flash-2026-04-16",
+            "backend_model": "qwen3.6-flash-2026-04-16",
             "default_params": {},
         },
         call=ModelRuntimeCall(
@@ -252,7 +252,7 @@ def test_build_litellm_kwargs_preserves_dashscope_cached_system_blocks():
             "default_params": {},
         },
         model={
-            "litellm_model": "qwen3.5-plus",
+            "backend_model": "qwen3.5-plus",
             "default_params": {},
         },
         call=ModelRuntimeCall(
@@ -291,7 +291,7 @@ def test_build_litellm_kwargs_maps_request_headers_to_extra_headers():
             },
         },
         model={
-            "litellm_model": "openai/custom",
+            "backend_model": "openai/custom",
             "default_params": {"requestHeaders": {"X-Model": "model"}},
         },
         call=ModelRuntimeCall(
@@ -319,7 +319,7 @@ def test_build_litellm_kwargs_allows_tools_and_response_format_for_strict_litell
             "default_params": {"allowed_openai_params": ("temperature",)},
         },
         model={
-            "litellm_model": "xiaomi_mimo/mimo-v2.5",
+            "backend_model": "xiaomi_mimo/mimo-v2.5",
             "default_params": {},
         },
         call=ModelRuntimeCall(
@@ -688,7 +688,7 @@ async def test_generate_passes_custom_llm_provider_for_custom_openai(monkeypatch
         ModelDefinitionRecord(
             id="custom-openai-main/qwen",
             provider_id="custom-openai-main",
-            litellm_model="qwen3.5-plus-2026-02-15",
+            backend_model="qwen3.5-plus-2026-02-15",
             display_name="Qwen",
             capabilities=["chat"],
         )

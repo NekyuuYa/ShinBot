@@ -150,7 +150,7 @@ def test_provider_probe_embedding_type_uses_embed(
             json={
                 "id": "embed-provider/text-embedding-3-small",
                 "providerId": "embed-provider",
-                "litellmModel": "text-embedding-3-small",
+                "backendModel": "text-embedding-3-small",
                 "displayName": "Text Embedding 3 Small",
                 "capabilities": ["embedding"],
                 "enabled": True,
@@ -204,7 +204,7 @@ def test_provider_probe_non_completion_types_use_catalog_or_skip(
                 json={
                     "id": f"probe-{capability_type}/model-1",
                     "providerId": f"probe-{capability_type}",
-                    "litellmModel": "model-1",
+                    "backendModel": "model-1",
                     "displayName": "Model 1",
                     "capabilities": [capability_type],
                     "enabled": True,

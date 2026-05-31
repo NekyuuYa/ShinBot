@@ -56,7 +56,7 @@ def _seed_models(bot: ShinBot) -> None:
         ModelDefinitionRecord(
             id="openai-main/gpt-fast",
             provider_id="openai-main",
-            litellm_model="gpt-4.1-mini",
+            backend_model="gpt-4.1-mini",
             display_name="GPT Fast",
             capabilities=["chat"],
         )
@@ -65,7 +65,7 @@ def _seed_models(bot: ShinBot) -> None:
         ModelDefinitionRecord(
             id="openai-main/gpt-backup",
             provider_id="openai-main",
-            litellm_model="gpt-4.1",
+            backend_model="gpt-4.1",
             display_name="GPT Backup",
             capabilities=["chat"],
         )
@@ -201,7 +201,7 @@ def test_instance_config_validates_instance_and_uniqueness(tmp_path: Path):
         assert duplicate_resp.json()["error"]["code"] == "INSTANCE_CONFIG_ALREADY_EXISTS"
 
 
-def test_instance_config_rejects_litellm_model_target(tmp_path: Path):
+def test_instance_config_rejects_backend_model_target(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     _seed_models(bot)
     app = create_api_app(bot, _BootStub(tmp_path))

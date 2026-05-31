@@ -41,7 +41,7 @@ export function useModelForm({
   const modelForm = ref<ModelFormState>({
     id: '',
     displayName: '',
-    litellmModel: '',
+    backendModel: '',
     capabilities: [],
     contextWindow: null,
     inputPrice: '',
@@ -65,7 +65,7 @@ export function useModelForm({
       return !store.models.some(
         (model) =>
           model.providerId === selectedProvider.value!.id &&
-          (model.id === generatedId || model.litellmModel === item.litellmModel)
+          (model.id === generatedId || model.backendModel === item.backendModel)
       )
     })
   })
@@ -76,7 +76,7 @@ export function useModelForm({
       return availableCatalogItems.value
     }
     return availableCatalogItems.value.filter((item) =>
-      `${item.displayName} ${item.id} ${item.litellmModel}`.toLowerCase().includes(keyword)
+      `${item.displayName} ${item.id} ${item.backendModel}`.toLowerCase().includes(keyword)
     )
   })
 
@@ -120,7 +120,7 @@ export function useModelForm({
         >()
 
         for (const item of store.catalogItems[provider.id] || []) {
-          const value = item.litellmModel.trim()
+          const value = item.backendModel.trim()
           if (!value) {
             continue
           }
@@ -133,7 +133,7 @@ export function useModelForm({
         }
 
         for (const model of store.modelsByProvider[provider.id] || []) {
-          const value = model.litellmModel.trim()
+          const value = model.backendModel.trim()
           if (!value || items.has(value)) {
             continue
           }
@@ -181,7 +181,7 @@ export function useModelForm({
     Object.assign(modelForm.value, {
       id: providerId ? `${providerId}/` : '',
       displayName: '',
-      litellmModel: '',
+      backendModel: '',
       capabilities: [...defaultCapabilitiesForTab()],
       contextWindow: null,
       inputPrice: '',
@@ -274,7 +274,7 @@ export function useModelForm({
 
   const providerModelMeta = (model: ModelRuntimeModel) => {
     const lines = [`${t('pages.modelRuntime.fields.contextWindow')}: ${model.contextWindow || '-'}`]
-    if (model.id !== model.litellmModel) {
+    if (model.id !== model.backendModel) {
       lines.push(`${t('pages.modelRuntime.fields.id')}: ${model.id}`)
     }
     const inputPrice = extractPerMillionPrice(model.costMetadata, [
@@ -320,7 +320,7 @@ export function useModelForm({
     Object.assign(modelForm.value, {
       id: model.id,
       displayName: model.displayName,
-      litellmModel: model.litellmModel,
+      backendModel: model.backendModel,
       capabilities: [...model.capabilities],
       contextWindow: model.contextWindow,
       inputPrice: formatPriceInput(
@@ -371,7 +371,7 @@ export function useModelForm({
   }
 
   const applyPickedModelId = (value: string) => {
-    modelForm.value.litellmModel = value
+    modelForm.value.backendModel = value
     showModelIdPicker.value = false
   }
 
@@ -395,7 +395,7 @@ export function useModelForm({
     if (editingModelId.value) {
       saved = await store.updateModel(editingModelId.value, {
         displayName: modelForm.value.displayName,
-        litellmModel: modelForm.value.litellmModel,
+        backendModel: modelForm.value.backendModel,
         capabilities: modelForm.value.capabilities,
         enabled: modelForm.value.enabled,
         defaultParams: {},
@@ -406,7 +406,7 @@ export function useModelForm({
         id: modelForm.value.id.trim(),
         providerId: selectedProvider.value.id,
         displayName: modelForm.value.displayName.trim() || modelForm.value.id.trim(),
-        litellmModel: modelForm.value.litellmModel.trim(),
+        backendModel: modelForm.value.backendModel.trim(),
         capabilities: modelForm.value.capabilities,
         contextWindow: null,
         enabled: modelForm.value.enabled,
@@ -452,7 +452,7 @@ export function useModelForm({
       id: makeModelId(selectedProvider.value.id, item.id),
       providerId: selectedProvider.value.id,
       displayName: item.displayName,
-      litellmModel: item.litellmModel,
+      backendModel: item.backendModel,
       capabilities: [...defaultCapabilitiesForTab()],
       contextWindow: null,
       enabled: true,

@@ -78,7 +78,7 @@ def test_provider_rename_preserves_model_relationships(
             json={
                 "id": "openai-main/gpt-fast",
                 "providerId": "openai-main",
-                "litellmModel": "gpt-4.1-mini",
+                "backendModel": "gpt-4.1-mini",
                 "displayName": "GPT Fast",
                 "capabilities": ["chat"],
                 "enabled": True,
@@ -111,7 +111,7 @@ def test_create_model_auto_infers_context_window(
 
     monkeypatch.setattr(
         "shinbot.api.routers.model_runtime.infer_context_window",
-        lambda provider, litellm_model: 128000,
+        lambda provider, backend_model: 128000,
     )
 
     with TestClient(app) as client:
@@ -133,7 +133,7 @@ def test_create_model_auto_infers_context_window(
             json={
                 "id": "openai-main/gpt-fast",
                 "providerId": "openai-main",
-                "litellmModel": "gpt-4.1-mini",
+                "backendModel": "gpt-4.1-mini",
                 "displayName": "GPT Fast",
                 "capabilities": ["chat"],
                 "enabled": True,
@@ -167,7 +167,7 @@ def test_model_and_route_crud_roundtrip(tmp_path: Path, make_boot_stub, make_aut
             json={
                 "id": "openrouter-main/claude-sonnet",
                 "providerId": "openrouter-main",
-                "litellmModel": "openrouter/anthropic/claude-3.7-sonnet",
+                "backendModel": "openrouter/anthropic/claude-3.7-sonnet",
                 "displayName": "Claude Sonnet",
                 "capabilities": ["chat", "tool_calling"],
                 "contextWindow": 200000,
@@ -282,7 +282,7 @@ def test_model_pricing_fields_roundtrip_and_validation(
             json={
                 "id": "openai-main/gpt-priced",
                 "providerId": "openai-main",
-                "litellmModel": "openai/gpt-4.1-mini",
+                "backendModel": "openai/gpt-4.1-mini",
                 "displayName": "GPT Priced",
                 "capabilities": ["chat"],
                 "costMetadata": {

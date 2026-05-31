@@ -55,7 +55,7 @@
       <thead>
         <tr>
           <th>{{ $t("pages.modelRuntime.fields.model") }}</th>
-          <th>{{ $t("pages.modelRuntime.fields.litellmModel") }}</th>
+          <th>{{ $t("pages.modelRuntime.fields.backendModel") }}</th>
           <th>{{ $t("pages.modelRuntime.fields.capabilities") }}</th>
           <th>{{ $t("pages.modelRuntime.fields.details") }}</th>
           <th>{{ $t("pages.modelRuntime.fields.enabled") }}</th>
@@ -75,7 +75,7 @@
             </div>
           </td>
           <td class="litellm-cell">
-            <code>{{ model.litellmModel }}</code>
+            <code>{{ model.backendModel }}</code>
           </td>
           <td>
             <div class="model-capability-chips">
@@ -163,7 +163,7 @@
       <v-col v-for="model in filteredModels" :key="model.id" cols="12" lg="6">
         <model-member-card
           :title="model.displayName || model.id"
-          :subtitle="model.litellmModel"
+          :subtitle="model.backendModel"
           :enabled="model.enabled"
           :chips="model.capabilities"
           :meta-lines="providerModelMeta(model)"
@@ -217,7 +217,7 @@ const filteredModels = computed(() => {
     [
       model.id,
       model.displayName,
-      model.litellmModel,
+      model.backendModel,
       ...model.capabilities,
       ...props.providerModelMeta(model),
     ]

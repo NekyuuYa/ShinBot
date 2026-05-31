@@ -263,7 +263,7 @@ async def test_cost_analysis_endpoint_returns_timeline_and_focus_models(tmp_path
         ModelDefinitionRecord(
             id="openai-main/gpt-fast",
             provider_id="openai-main",
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="GPT Fast",
             cost_metadata={
                 "inputPer1kTokens": 1.0,
@@ -277,7 +277,7 @@ async def test_cost_analysis_endpoint_returns_timeline_and_focus_models(tmp_path
         ModelDefinitionRecord(
             id="anthropic-main/claude",
             provider_id="anthropic-main",
-            litellm_model="anthropic/claude-sonnet-4",
+            backend_model="anthropic/claude-sonnet-4",
             display_name="Claude",
             cost_metadata={
                 "inputPer1kTokens": 2.0,
@@ -393,7 +393,7 @@ async def test_cost_estimation_does_not_double_charge_cached_input(tmp_path: Pat
         ModelDefinitionRecord(
             id="openai-main/gpt-cached",
             provider_id="openai-main",
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="GPT Cached",
             cost_metadata={
                 "inputPer1kTokens": 1.0,

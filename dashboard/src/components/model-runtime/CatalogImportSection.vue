@@ -32,7 +32,7 @@
               {{ item.displayName }}
             </div>
             <div class="text-caption text-medium-emphasis">
-              {{ item.litellmModel }}
+              {{ item.backendModel }}
             </div>
             <div class="text-caption text-medium-emphasis mt-1">
               {{
@@ -78,7 +78,7 @@ const filteredItems = computed(() => {
     return props.items
   }
   return props.items.filter((item) =>
-    [item.id, item.displayName, item.litellmModel]
+    [item.id, item.displayName, item.backendModel]
       .join(" ")
       .toLowerCase()
       .includes(keyword),

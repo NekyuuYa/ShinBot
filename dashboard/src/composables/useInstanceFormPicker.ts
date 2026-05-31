@@ -128,8 +128,8 @@ export function useInstanceFormPicker(
             value: modelLlmRef(model.id),
             title: model.displayName || model.id,
             subtitle:
-              model.litellmModel && model.litellmModel !== model.id
-                ? `${modelLlmRef(model.id)} · ${model.litellmModel}`
+              model.backendModel && model.backendModel !== model.id
+                ? `${modelLlmRef(model.id)} · ${model.backendModel}`
                 : modelLlmRef(model.id),
             enabled: model.enabled,
           }))
@@ -249,8 +249,8 @@ export function useInstanceFormPicker(
       return {
         title: model.displayName || model.id,
         subtitle:
-          model.litellmModel && model.litellmModel !== model.id
-            ? `${modelLlmRef(model.id)} · ${model.litellmModel}`
+          model.backendModel && model.backendModel !== model.id
+            ? `${modelLlmRef(model.id)} · ${model.backendModel}`
             : modelLlmRef(model.id),
         icon: 'mdi-cube-outline',
         color: model.enabled ? 'secondary' : 'surface-variant',

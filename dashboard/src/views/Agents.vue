@@ -243,8 +243,8 @@ const modelRefProviderGroups = computed(() =>
           value: `[model]${model.id}`,
           title: model.displayName || model.id,
           subtitle:
-            model.litellmModel && model.litellmModel !== model.id
-              ? `${model.id} · ${model.litellmModel}`
+            model.backendModel && model.backendModel !== model.id
+              ? `${model.id} · ${model.backendModel}`
               : model.id,
           kind: "configured" as const,
         }))

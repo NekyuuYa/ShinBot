@@ -18,7 +18,7 @@ export interface ModelRuntimeProvider {
 export interface ModelRuntimeModel {
   id: string
   providerId: string
-  litellmModel: string
+  backendModel: string
   displayName: string
   capabilities: string[]
   contextWindow: number | null
@@ -215,7 +215,7 @@ export interface CostAnalysisResponse {
 export interface ProviderCatalogItem {
   id: string
   displayName: string
-  litellmModel: string
+  backendModel: string
   contextWindow: number | null
 }
 
@@ -243,7 +243,7 @@ export interface ProviderPayload {
 export interface ModelPayload {
   id: string
   providerId: string
-  litellmModel: string
+  backendModel: string
   displayName: string
   capabilities: string[]
   contextWindow: number | null

@@ -146,7 +146,7 @@ def _seed_media_runtime(
         ModelDefinitionRecord(
             id=model_id,
             provider_id=provider_id,
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="GPT Vision",
             capabilities=["chat"],
             context_window=64000,
@@ -214,7 +214,7 @@ def _seed_main_runtime(
         ModelDefinitionRecord(
             id=model_id,
             provider_id=provider_id,
-            litellm_model="openai/gpt-4.1",
+            backend_model="openai/gpt-4.1",
             display_name="GPT Chat",
             capabilities=["chat"],
             context_window=128000,

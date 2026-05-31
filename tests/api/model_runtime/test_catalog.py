@@ -39,7 +39,7 @@ def test_provider_catalog_endpoint(
                 {
                     "id": "gpt-4.1-mini",
                     "displayName": "GPT-4.1 Mini",
-                    "litellmModel": "gpt-4.1-mini",
+                    "backendModel": "gpt-4.1-mini",
                     "contextWindow": 128000,
                 }
             ]
@@ -74,7 +74,7 @@ def test_update_model_reinfers_context_window_when_model_changes(
     }
     monkeypatch.setattr(
         "shinbot.api.routers.model_runtime.infer_context_window",
-        lambda provider, litellm_model: inference_values.get(litellm_model),
+        lambda provider, backend_model: inference_values.get(backend_model),
     )
 
     with TestClient(app) as client:
@@ -96,7 +96,7 @@ def test_update_model_reinfers_context_window_when_model_changes(
             json={
                 "id": "openrouter-main/primary",
                 "providerId": "openrouter-main",
-                "litellmModel": "gpt-4.1-mini",
+                "backendModel": "gpt-4.1-mini",
                 "displayName": "Primary",
                 "capabilities": ["chat"],
                 "enabled": True,
@@ -109,7 +109,7 @@ def test_update_model_reinfers_context_window_when_model_changes(
             "/api/v1/model-runtime/models/openrouter-main/primary",
             headers=headers,
             json={
-                "litellmModel": "openrouter/anthropic/claude-3.7-sonnet",
+                "backendModel": "openrouter/anthropic/claude-3.7-sonnet",
                 "displayName": "Claude Primary",
             },
         )
@@ -130,7 +130,7 @@ def test_update_model_keeps_existing_context_window_when_reinference_fails(
 
     monkeypatch.setattr(
         "shinbot.api.routers.model_runtime.infer_context_window",
-        lambda provider, litellm_model: None,
+        lambda provider, backend_model: None,
     )
 
     with TestClient(app) as client:
@@ -152,7 +152,7 @@ def test_update_model_keeps_existing_context_window_when_reinference_fails(
             json={
                 "id": "openrouter-main/primary",
                 "providerId": "openrouter-main",
-                "litellmModel": "openrouter/anthropic/claude-3.7-sonnet",
+                "backendModel": "openrouter/anthropic/claude-3.7-sonnet",
                 "displayName": "Primary",
                 "capabilities": ["chat"],
                 "contextWindow": 200000,
@@ -166,7 +166,7 @@ def test_update_model_keeps_existing_context_window_when_reinference_fails(
             headers=headers,
             json={
                 "displayName": "Claude Primary",
-                "litellmModel": "openrouter/anthropic/claude-4-sonnet",
+                "backendModel": "openrouter/anthropic/claude-4-sonnet",
             },
         )
 

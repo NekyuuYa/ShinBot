@@ -337,7 +337,7 @@ def _seed_media_runtime(bot: ShinBot, instance_id: str) -> None:
         ModelDefinitionRecord(
             id=model_id,
             provider_id=provider_id,
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="E2E Media Vision",
             capabilities=["chat"],
             context_window=64000,
@@ -808,7 +808,7 @@ def register_model_runtime_setup(bot: ShinBot, model_runtime: dict[str, Any]) ->
             ModelDefinitionRecord(
                 id=str(model["id"]),
                 provider_id=str(model["providerId"]),
-                litellm_model=str(model.get("litellmModel", model["id"])),
+                backend_model=str(model.get("backendModel", model["id"])),
                 display_name=str(model.get("displayName", model["id"])),
                 enabled=bool(model.get("enabled", True)),
                 capabilities=list(model.get("capabilities", [])),

@@ -39,7 +39,7 @@ def provider_type_for_litellm(provider_type: str) -> str | None:
     if provider_type == "xiaomi_mimo":
         return "openai"
     # Native LiteLLM providers (anthropic, gemini, deepseek)
-    # are auto-detected from the litellm_model prefix; no custom_llm_provider needed.
+    # are auto-detected from the backend_model prefix; no custom_llm_provider needed.
     return None
 
 

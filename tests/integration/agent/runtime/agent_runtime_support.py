@@ -155,7 +155,7 @@ def seed_model_registry(db: DatabaseManager, *, route_id: str = "chat.default") 
         ModelDefinitionRecord(
             id="test-provider/gpt-fast",
             provider_id="test-provider",
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="GPT Fast",
             capabilities=["chat"],
         )

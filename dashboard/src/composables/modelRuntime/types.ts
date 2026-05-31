@@ -57,7 +57,7 @@ export type RouteMemberDraft = ModelRuntimeRouteMember
 export interface ModelFormState {
   id: string
   displayName: string
-  litellmModel: string
+  backendModel: string
   capabilities: string[]
   contextWindow: number | null
   inputPrice: string

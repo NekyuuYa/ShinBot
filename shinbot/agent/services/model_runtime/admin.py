@@ -225,7 +225,7 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
 
     Returns:
         List of model catalog entries, each containing ``id``,
-        ``displayName``, ``litellmModel``, and ``contextWindow`` keys.
+        ``displayName``, ``backendModel``, and ``contextWindow`` keys.
     """
     provider_type = payload["type"]
     if provider_type == "ollama":
@@ -238,7 +238,7 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
                 {
                     "id": str(model_id),
                     "displayName": str(model_id),
-                    "litellmModel": f"ollama/{model_id}",
+                    "backendModel": f"ollama/{model_id}",
                     "contextWindow": infer_context_window(payload, f"ollama/{model_id}"),
                 }
             )
@@ -256,7 +256,7 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
                 {
                     "id": str(model_id),
                     "displayName": str(item.get("displayName") or model_id),
-                    "litellmModel": backend_model,
+                    "backendModel": backend_model,
                     "contextWindow": infer_context_window(payload, backend_model),
                 }
             )
@@ -281,7 +281,7 @@ def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[
             {
                 "id": str(model_id),
                 "displayName": str(item.get("name") or model_id),
-                "litellmModel": backend_model,
+                "backendModel": backend_model,
                 "contextWindow": infer_context_window(payload, backend_model),
             }
         )

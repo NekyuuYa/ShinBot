@@ -54,7 +54,7 @@
     "defaultParamsPreview": "最终 defaultParams",
     "key": "键",
     "value": "值",
-    "litellmModel": "LiteLLM 模型标识",
+    "backendModel": "后端模型标识",
     "capabilities": "能力",
     "contextWindow": "上下文窗口",
     "pricingSummary": "价格",

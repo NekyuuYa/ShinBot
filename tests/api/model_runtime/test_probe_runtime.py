@@ -41,7 +41,7 @@ def test_provider_probe_endpoint_uses_runtime(
             json={
                 "id": "openai-main/gpt-fast",
                 "providerId": "openai-main",
-                "litellmModel": "gpt-4.1-mini",
+                "backendModel": "gpt-4.1-mini",
                 "displayName": "GPT Fast",
                 "capabilities": ["chat"],
                 "enabled": True,
@@ -100,7 +100,7 @@ def test_provider_probe_endpoint_surfaces_runtime_errors_without_unhandled_500(
             json={
                 "id": "openrouter-main/gemma",
                 "providerId": "openrouter-main",
-                "litellmModel": "openrouter/google/gemma-4-31b-it:free",
+                "backendModel": "openrouter/google/gemma-4-31b-it:free",
                 "displayName": "Gemma",
                 "capabilities": ["chat"],
                 "enabled": True,
@@ -155,7 +155,7 @@ def test_provider_probe_custom_openai_uses_openai_provider_hint(
             json={
                 "id": "custom-openai-main/qwen",
                 "providerId": "custom-openai-main",
-                "litellmModel": "qwen3.5-plus-2026-02-15",
+                "backendModel": "qwen3.5-plus-2026-02-15",
                 "displayName": "Qwen",
                 "capabilities": ["chat"],
                 "enabled": True,
@@ -219,7 +219,7 @@ def test_provider_probe_dashscope_uses_dashscope_provider_hint(
             json={
                 "id": "dashscope-main/qwen",
                 "providerId": "dashscope-main",
-                "litellmModel": "qwen3.5-flash",
+                "backendModel": "qwen3.5-flash",
                 "displayName": "Qwen Flash",
                 "capabilities": ["chat"],
                 "enabled": True,

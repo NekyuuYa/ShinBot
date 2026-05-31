@@ -560,7 +560,7 @@ class TestDatabaseManager:
             ModelDefinitionRecord(
                 id="openai-main/gpt-fast",
                 provider_id="openai-main",
-                litellm_model="gpt-4.1-mini",
+                backend_model="gpt-4.1-mini",
                 display_name="GPT Fast",
                 capabilities=["chat"],
                 cost_metadata={"cacheReadPerMillionTokens": None},
@@ -602,7 +602,7 @@ class TestDatabaseManager:
             ModelDefinitionRecord(
                 id="openai-main/gpt-fast",
                 provider_id="openai-main",
-                litellm_model="gpt-4.1-mini",
+                backend_model="gpt-4.1-mini",
                 display_name="GPT Fast",
                 cost_metadata={
                     "input_per_million_tokens": 1.0,
@@ -660,7 +660,7 @@ class TestDatabaseManager:
                 CREATE TABLE model_definitions (
                     id TEXT PRIMARY KEY,
                     provider_id TEXT NOT NULL,
-                    litellm_model TEXT NOT NULL,
+                    backend_model TEXT NOT NULL,
                     display_name TEXT NOT NULL,
                     capabilities_json TEXT NOT NULL DEFAULT '[]',
                     context_window INTEGER,
@@ -711,7 +711,7 @@ class TestDatabaseManager:
             conn.execute(
                 """
                 INSERT INTO model_definitions (
-                    id, provider_id, litellm_model, display_name, capabilities_json,
+                    id, provider_id, backend_model, display_name, capabilities_json,
                     context_window, default_params_json, cost_metadata_json, enabled,
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

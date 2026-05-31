@@ -61,7 +61,7 @@ class ProviderPatchRequest(BaseModel):
 class ModelRequest(BaseModel):
     id: str
     providerId: str
-    litellmModel: str
+    backendModel: str
     displayName: str
     capabilities: list[str] = Field(default_factory=list)
     contextWindow: int | None = None
@@ -72,7 +72,7 @@ class ModelRequest(BaseModel):
 
 class ModelPatchRequest(BaseModel):
     providerId: str | None = None
-    litellmModel: str | None = None
+    backendModel: str | None = None
     displayName: str | None = None
     capabilities: list[str] | None = None
     contextWindow: int | None = None
@@ -134,7 +134,7 @@ class ModelData(BaseModel):
 
     id: str
     providerId: str
-    litellmModel: str
+    backendModel: str
     displayName: str
     capabilities: list[str]
     contextWindow: int | None = None
@@ -401,7 +401,7 @@ def _serialize_model(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": payload["id"],
         "providerId": payload["provider_id"],
-        "litellmModel": payload["litellm_model"],
+        "backendModel": payload["backend_model"],
         "displayName": payload["display_name"],
         "capabilities": payload["capabilities"],
         "contextWindow": payload["context_window"],
@@ -778,14 +778,14 @@ async def create_model(body: ModelRequest, bot=BotDep):
     provider = _require_provider(bot.database, body.providerId)
     context_window = body.contextWindow
     if context_window is None:
-        context_window = infer_context_window(provider, body.litellmModel)
+        context_window = infer_context_window(provider, body.backendModel)
     cost_metadata = _normalize_cost_metadata(body.costMetadata)
 
     bot.database.model_registry.upsert_model(
         ModelDefinitionRecord(
             id=body.id,
             provider_id=body.providerId,
-            litellm_model=body.litellmModel,
+            backend_model=body.backendModel,
             display_name=body.displayName,
             capabilities=body.capabilities,
             context_window=context_window,
@@ -810,14 +810,14 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
     provider_id = body.providerId if body.providerId is not None else current["provider_id"]
     provider = _require_provider(bot.database, provider_id)
     now = utc_now_iso()
-    litellm_model = body.litellmModel if body.litellmModel is not None else current["litellm_model"]
+    backend_model = body.backendModel if body.backendModel is not None else current["backend_model"]
     context_window = (
         body.contextWindow if body.contextWindow is not None else current["context_window"]
     )
     if body.contextWindow is None and (
-        body.litellmModel is not None or body.providerId is not None or context_window is None
+        body.backendModel is not None or body.providerId is not None or context_window is None
     ):
-        inferred_context_window = infer_context_window(provider, litellm_model)
+        inferred_context_window = infer_context_window(provider, backend_model)
         if inferred_context_window is not None or context_window is None:
             context_window = inferred_context_window
     cost_metadata = (
@@ -830,7 +830,7 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
         ModelDefinitionRecord(
             id=model_id,
             provider_id=provider_id,
-            litellm_model=litellm_model,
+            backend_model=backend_model,
             display_name=(
                 body.displayName if body.displayName is not None else current["display_name"]
             ),

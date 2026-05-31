@@ -127,7 +127,7 @@ Model 必须从属于某个 Provider，并至少包含：
 
 - `id`
 - `provider_id`
-- `litellm_model`
+- `backend_model`
   - 供 LiteLLM 调用的模型标识
 - `display_name`
 - `capabilities`
@@ -490,7 +490,7 @@ Agent 仅允许：
     {
       "id": "gpt-4.1-mini",
       "provider_id": "openai-official",
-      "litellm_model": "gpt-4.1-mini",
+      "backend_model": "gpt-4.1-mini",
       "display_name": "GPT-4.1 mini",
       "capabilities": ["chat", "tool_calling", "json_mode"],
       "context_window": 128000,

@@ -44,7 +44,7 @@
       {
         "id": "stub-provider/stub-model",
         "providerId": "stub-provider",
-        "litellmModel": "stub/stub-model",
+        "backendModel": "stub/stub-model",
         "displayName": "Stub Model",
         "enabled": true
       }

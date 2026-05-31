@@ -142,7 +142,7 @@ class _ScenarioValidator:
         "displayName",
         "enabled",
         "id",
-        "litellmModel",
+        "backendModel",
         "providerId",
     }
     CONFIG_KEYS = {"adapter_instances", "bots", "plugins"}
@@ -559,7 +559,7 @@ class _ScenarioValidator:
                 self._require_optional_string_fields(
                     model,
                     model_path,
-                    {"displayName", "litellmModel"},
+                    {"displayName", "backendModel"},
                 )
                 self._require_optional_bool(model, model_path, "enabled")
                 self._require_optional_string_list(model, model_path, "capabilities")

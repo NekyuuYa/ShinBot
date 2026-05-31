@@ -32,7 +32,7 @@ def test_build_model_record_preserves_request_payload():
             "provider_id": "openai-main",
             "provider_type": "openai",
             "model_id": "openai-main/gpt-fast",
-            "litellm_model": "openai/gpt-4.1-mini",
+            "backend_model": "openai/gpt-4.1-mini",
             "execution_id": "exec-1",
             "strategy": "priority",
             "messages": [{"role": "user", "content": "hello"}],
@@ -65,7 +65,7 @@ def test_build_model_record_preserves_response_payload():
             "provider_id": "openai-main",
             "provider_type": "openai",
             "model_id": "openai-main/gpt-fast",
-            "litellm_model": "openai/gpt-4.1-mini",
+            "backend_model": "openai/gpt-4.1-mini",
             "execution_id": "exec-1",
             "strategy": "priority",
             "status": "success",
@@ -124,7 +124,7 @@ async def test_debug_model_plugin_persists_runtime_requests(
         ModelDefinitionRecord(
             id="openai-main/gpt-fast",
             provider_id="openai-main",
-            litellm_model="openai/gpt-4.1-mini",
+            backend_model="openai/gpt-4.1-mini",
             display_name="GPT Fast",
             capabilities=["chat"],
         )

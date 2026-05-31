@@ -54,7 +54,7 @@
     "defaultParamsPreview": "Final defaultParams",
     "key": "Key",
     "value": "Value",
-    "litellmModel": "LiteLLM Model ID",
+    "backendModel": "Backend Model ID",
     "capabilities": "Capabilities",
     "contextWindow": "Context Window",
     "pricingSummary": "Pricing",

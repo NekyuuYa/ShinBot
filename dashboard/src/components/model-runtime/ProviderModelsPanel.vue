@@ -73,8 +73,8 @@
             </v-col>
             <v-col cols="12">
               <v-text-field
-                v-model="modelForm.litellmModel"
-                :label="$t('pages.modelRuntime.fields.litellmModel')"
+                v-model="modelForm.backendModel"
+                :label="$t('pages.modelRuntime.fields.backendModel')"
                 density="comfortable"
                 variant="outlined"
                 append-inner-icon="mdi-database-search-outline"
@@ -182,7 +182,7 @@
 
   <model-id-picker-dialog
     :model-value="showModelIdPicker"
-    :current-value="modelForm.litellmModel"
+    :current-value="modelForm.backendModel"
     :route-options="modelIdPickerRouteOptions"
     :provider-groups="modelIdPickerProviderGroups"
     @update:model-value="closeModelIdPicker"
