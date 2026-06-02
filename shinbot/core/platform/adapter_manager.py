@@ -355,6 +355,8 @@ class AdapterManager:
             return False
         if state.connected:
             return True
+        if state.last_connected_at is None and state.last_disconnected_at is None:
+            return True
 
         grace_seconds = (
             self._offline_grace_seconds

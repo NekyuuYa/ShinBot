@@ -172,6 +172,14 @@ class TestAdapterManager:
         assert self.mgr.is_available("bot-1", now=31.0, offline_grace_seconds=10.0) is False
 
     @pytest.mark.asyncio
+    async def test_running_instance_without_explicit_connection_state_is_available(self):
+        self.mgr.create_instance("bot-1", "mock")
+        await self.mgr.start_instance("bot-1")
+
+        assert self.mgr.is_connected("bot-1") is False
+        assert self.mgr.is_available("bot-1", now=10.0) is True
+
+    @pytest.mark.asyncio
     async def test_connection_state_is_unavailable_when_not_running(self):
         self.mgr.create_instance("bot-1", "mock")
         self.mgr.mark_connected("bot-1", at=10.0)
