@@ -354,6 +354,7 @@ class ModelRuntime:
             started = utc_now()
             started_at = started.isoformat()
             route_id = call.route_id or attempt["model"]["id"]
+            response_payload: dict[str, Any] | None = None
             plan = self._backend.plan_request(
                 provider=attempt["provider"],
                 model=attempt["model"],
@@ -411,6 +412,11 @@ class ModelRuntime:
                 )
                 if build_response_return is not None:
                     execution.return_payload = build_response_return(execution)
+                data = self._backend.normalize_response(
+                    operation=mode,
+                    response=response,
+                    usage=usage,
+                )
                 audit_metadata = self._persist_audit_payload(
                     execution_id=execution_id,
                     operation=operation,
@@ -463,11 +469,6 @@ class ModelRuntime:
                 )
                 persist_model_execution(self._database, record)
 
-                data = self._backend.normalize_response(
-                    operation=mode,
-                    response=response,
-                    usage=usage,
-                )
                 if after_success is not None:
                     after_success(execution, call)
                 if notify_response:
@@ -518,7 +519,7 @@ class ModelRuntime:
                     call=call,
                     attempt=attempt,
                     plan=plan,
-                    response_payload=None,
+                    response_payload=response_payload,
                     return_payload=None,
                     status="error",
                     error={

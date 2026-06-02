@@ -241,16 +241,36 @@ def _normalize_dashscope_system_content(content: Any) -> Any:
 def sanitize_litellm_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Redact secrets from a kwargs dict before logging or observer emission."""
 
-    redacted = dict(kwargs)
-    for key in (
-        "api_key",
-        "api_token",
+    return _sanitize_runtime_payload(kwargs)
+
+
+_REDACTED_RUNTIME_KEYS = frozenset(
+    {
         "access_token",
-        "authorization",
-        "Authorization",
-        "app_secret",
+        "api-key",
+        "api_key",
         "api_secret",
-    ):
-        if key in redacted and redacted[key]:
-            redacted[key] = "***"
-    return redacted
+        "api_token",
+        "app_secret",
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "x-goog-api-key",
+    }
+)
+
+
+def _sanitize_runtime_payload(value: Any, *, key: str = "") -> Any:
+    normalized_key = key.strip().lower()
+    if normalized_key in _REDACTED_RUNTIME_KEYS and value:
+        return "***"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _sanitize_runtime_payload(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_runtime_payload(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_runtime_payload(item, key=key) for item in value]
+    return value

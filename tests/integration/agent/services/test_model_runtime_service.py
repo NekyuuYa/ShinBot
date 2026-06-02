@@ -8,6 +8,7 @@ import pytest
 
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall
 from shinbot.agent.services.model_runtime.backends import BackendRequestPlan
+from shinbot.agent.services.model_runtime.backends.openai_compatible import OpenAICompatibleBackend
 from shinbot.agent.services.model_runtime.planning import build_litellm_kwargs
 from shinbot.agent.services.model_runtime.service import ModelRuntime
 from shinbot.persistence import DatabaseManager
@@ -74,6 +75,21 @@ class RecordingBackend:
             "text": extract_text(response),
             "tool_calls": extract_tool_calls_list(response),
         }
+
+
+class FailingNormalizerBackend(RecordingBackend):
+    """Backend that succeeds remotely but fails while normalizing."""
+
+    name = "failing-normalizer"
+
+    def normalize_response(
+        self,
+        *,
+        operation: str,
+        response: object,
+        usage: dict[str, object],
+    ) -> dict[str, object]:
+        raise ValueError("normalization failed")
 
 
 def _seed_runtime(db: DatabaseManager) -> None:
@@ -463,6 +479,54 @@ async def test_generate_uses_injected_backend(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_normalizer_failure_does_not_double_count_success_usage(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db, backend=FailingNormalizerBackend())
+
+    with pytest.raises(ModelCallError, match="normalization failed"):
+        await runtime.generate(
+            ModelRuntimeCall(
+                model_id="openai-main/gpt-fast",
+                caller="agent.runtime",
+                messages=[{"role": "user", "content": "Hello"}],
+            )
+        )
+
+    records = db.model_executions.list_recent(limit=5)
+    assert len(records) == 1
+    assert records[0]["success"] is False
+    assert records[0]["input_tokens"] == 0
+    assert records[0]["output_tokens"] == 0
+
+    with db.connect() as conn:
+        usage = conn.execute(
+            """
+            SELECT total_calls, successful_calls, failed_calls, input_tokens, output_tokens
+            FROM model_usage_hourly
+            WHERE provider_id = ? AND model_id = ?
+            """,
+            ("openai-main", "openai-main/gpt-fast"),
+        ).fetchone()
+    assert usage is not None
+    assert dict(usage) == {
+        "total_calls": 1,
+        "successful_calls": 0,
+        "failed_calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+    execution_id = records[0]["id"]
+    audit_path = tmp_path / "model-audit" / f"{execution_id}.json"
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "ValueError"
+    assert payload["response"]["choices"][0]["message"]["content"] == "hello from backend"
+
+
+@pytest.mark.asyncio
 async def test_generate_persists_sanitized_image_context(monkeypatch, tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
@@ -669,6 +733,141 @@ async def test_embed_records_usage(monkeypatch, tmp_path):
     records = db.model_executions.list_recent(limit=1)
     assert records[0]["model_id"] == "openai-main/text-embedding"
     assert records[0]["input_tokens"] == 9
+
+
+def test_openai_compatible_backend_plans_provider_and_embedding_input():
+    backend = OpenAICompatibleBackend()
+    provider = {
+        "id": "custom-openai-main",
+        "type": "custom_openai",
+        "base_url": "https://api.example.com/v1",
+        "auth": {"api_key": "secret-key"},
+        "default_params": {
+            "temperature": 0.2,
+            "requestHeaders": {"HTTP-Referer": "https://shinbot.example"},
+        },
+    }
+    model = {
+        "backend_model": "text-embedding-3-small",
+        "default_params": {"encoding_format": "float"},
+    }
+
+    plan = backend.plan_request(
+        provider=provider,
+        model=model,
+        call=ModelRuntimeCall(
+            model_id="custom-openai-main/text-embedding",
+            caller="test.embedding",
+            input_data="hello world",
+            params={"dimensions": 256},
+        ),
+        timeout_override=10.0,
+        operation="embedding",
+    )
+
+    assert plan.payload["input"] == "hello world"
+    assert plan.payload["model"] == "text-embedding-3-small"
+    assert plan.payload["encoding_format"] == "float"
+    assert plan.payload["dimensions"] == 256
+    assert plan.payload["timeout"] == 10.0
+    assert plan.payload["extra_headers"] == {"HTTP-Referer": "https://shinbot.example"}
+    assert "requestHeaders" not in plan.payload
+    assert plan.metadata["provider"]["base_url"] == "https://api.example.com/v1"
+    assert plan.metadata["provider"]["auth"] == {"api_key": "secret-key"}
+
+
+def test_openai_compatible_backend_strips_prefix_filters_completion_params_and_redacts_headers():
+    backend = OpenAICompatibleBackend()
+    plan = backend.plan_request(
+        provider={
+            "id": "openai-main",
+            "type": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {
+                "temperature": 0.2,
+                "requestHeaders": {
+                    "Authorization": "Bearer provider-secret",
+                    "X-Provider": "provider",
+                },
+                "allowed_openai_params": ["metadata"],
+            },
+        },
+        model={
+            "backend_model": "openai/gpt-4.1-mini",
+            "default_params": {
+                "max_tokens": 64,
+                "extra_headers": {"X-Model": "model"},
+            },
+        },
+        call=ModelRuntimeCall(
+            model_id="openai-main/gpt-fast",
+            caller="test.completion",
+            messages=[{"role": "user", "content": "hello"}],
+            params={
+                "drop_params": True,
+                "extra_headers": {"X-Call": "call"},
+                "num_retries": 2,
+                "presence_penalty": 0.5,
+            },
+        ),
+        timeout_override=5.0,
+        operation="completion",
+    )
+
+    assert plan.payload["model"] == "gpt-4.1-mini"
+    assert plan.payload["temperature"] == 0.2
+    assert plan.payload["max_tokens"] == 64
+    assert plan.payload["presence_penalty"] == 0.5
+    assert plan.payload["timeout"] == 5.0
+    assert plan.payload["extra_headers"] == {
+        "Authorization": "Bearer provider-secret",
+        "X-Call": "call",
+        "X-Model": "model",
+        "X-Provider": "provider",
+    }
+    assert "allowed_openai_params" not in plan.payload
+    assert "drop_params" not in plan.payload
+    assert "num_retries" not in plan.payload
+    assert plan.safe_payload["extra_headers"] == {
+        "Authorization": "***",
+        "X-Call": "call",
+        "X-Model": "model",
+        "X-Provider": "provider",
+    }
+
+
+def test_openai_compatible_backend_filters_embedding_params_and_strips_provider_prefix():
+    backend = OpenAICompatibleBackend()
+    plan = backend.plan_request(
+        provider={
+            "id": "openrouter-main",
+            "type": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "auth": {"api_key": "secret-key"},
+            "default_params": {"temperature": 0.2},
+        },
+        model={
+            "backend_model": "openrouter/google/gemma-4-31b-it:free",
+            "default_params": {"max_tokens": 32},
+        },
+        call=ModelRuntimeCall(
+            model_id="openrouter-main/gemma",
+            caller="test.embedding",
+            input_data="hello world",
+            params={"dimensions": 256, "user": "tester"},
+        ),
+        timeout_override=3.0,
+        operation="embedding",
+    )
+
+    assert plan.payload == {
+        "model": "google/gemma-4-31b-it:free",
+        "input": "hello world",
+        "dimensions": 256,
+        "user": "tester",
+        "timeout": 3.0,
+    }
 
 
 @pytest.mark.asyncio

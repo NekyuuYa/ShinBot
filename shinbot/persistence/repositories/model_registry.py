@@ -20,8 +20,9 @@ if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
 
 
-MODEL_REGISTRY_FILE_VERSION = 1
+MODEL_REGISTRY_FILE_VERSION = 2
 MODEL_REGISTRY_FILENAME = "models.json"
+_LEGACY_MODEL_REGISTRY_FILE_VERSION = 1
 
 
 class ModelRegistryError(ValueError):
@@ -319,6 +320,9 @@ class ModelRegistryRepository:
             raise ModelRegistryError(f"Invalid model registry JSON: {exc}") from exc
         if not isinstance(raw, dict):
             raise ModelRegistryError("Model registry root must be an object")
+        _ensure_supported_registry_version(raw)
+        if _needs_version_migration(raw):
+            raw = self._migrate_payload(raw)
         return _normalize_payload(raw)
 
     def _write_payload(self, payload: dict[str, Any]) -> None:
@@ -330,6 +334,20 @@ class ModelRegistryRepository:
             encoding="utf-8",
         )
         temp_path.replace(self.path)
+
+    def _migrate_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Migrate a legacy registry file to the current schema version."""
+
+        migrated = _migrate_payload_to_current(payload)
+        self._write_backup()
+        self._write_payload(migrated)
+        return migrated
+
+    def _write_backup(self) -> None:
+        backup_path = self.path.with_suffix(f"{self.path.suffix}.v1.bak")
+        if backup_path.exists():
+            return
+        backup_path.write_text(self.path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _resolve_registry_path(source: DatabaseManager | Path | str) -> Path:
@@ -356,6 +374,59 @@ def _normalize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "models": [_normalize_model(item) for item in _list_of_maps(payload.get("models"))],
         "routes": [_normalize_route(item) for item in _list_of_maps(payload.get("routes"))],
     }
+
+
+def _ensure_supported_registry_version(payload: Mapping[str, Any]) -> None:
+    version = _int_or_none(payload.get("version")) or _LEGACY_MODEL_REGISTRY_FILE_VERSION
+    if version > MODEL_REGISTRY_FILE_VERSION:
+        raise ModelRegistryError(
+            f"Unsupported model registry version {version}; "
+            f"current version is {MODEL_REGISTRY_FILE_VERSION}"
+        )
+
+
+def _needs_version_migration(payload: Mapping[str, Any]) -> bool:
+    version = _int_or_none(payload.get("version")) or _LEGACY_MODEL_REGISTRY_FILE_VERSION
+    if version < MODEL_REGISTRY_FILE_VERSION:
+        return True
+    return any(
+        isinstance(model, Mapping)
+        and "backend_model" not in model
+        and "litellm_model" in model
+        for model in _list_of_maps(payload.get("models"))
+    )
+
+
+def _migrate_payload_to_current(payload: Mapping[str, Any]) -> dict[str, Any]:
+    version = _int_or_none(payload.get("version")) or _LEGACY_MODEL_REGISTRY_FILE_VERSION
+    if version > MODEL_REGISTRY_FILE_VERSION:
+        raise ModelRegistryError(
+            f"Unsupported model registry version {version}; "
+            f"current version is {MODEL_REGISTRY_FILE_VERSION}"
+        )
+
+    migrated: dict[str, Any] = {
+        "version": MODEL_REGISTRY_FILE_VERSION,
+        "providers": [dict(item) for item in _list_of_maps(payload.get("providers"))],
+        "models": [_migrate_model_payload(item) for item in _list_of_maps(payload.get("models"))],
+        "routes": [dict(item) for item in _list_of_maps(payload.get("routes"))],
+    }
+    return _normalize_payload(migrated)
+
+
+def _migrate_model_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    backend_model = _string(migrated.get("backend_model")).strip()
+    litellm_model = _string(migrated.get("litellm_model")).strip()
+    if backend_model and litellm_model and backend_model != litellm_model:
+        model_id = _string(migrated.get("id")).strip()
+        raise ModelRegistryError(
+            f"Model {model_id!r} has conflicting backend_model and litellm_model values"
+        )
+    if not backend_model and litellm_model:
+        migrated["backend_model"] = litellm_model
+    migrated.pop("litellm_model", None)
+    return migrated
 
 
 def _list_of_maps(value: Any) -> list[Mapping[str, Any]]:

@@ -90,6 +90,7 @@ def create_api_app(
     if getattr(bot, "model_runtime", None) is None and _model_runtime_enabled_for_api(boot):
         from shinbot.core.runtime import install_model_runtime
 
+        bot.config = getattr(boot, "config", {})
         install_model_runtime(bot)
 
     # ── Lifespan (startup / shutdown hooks) ──────────────────────────

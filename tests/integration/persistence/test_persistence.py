@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.state.session import SessionManager
@@ -20,7 +23,11 @@ from shinbot.persistence import (
     ModelRouteRecord,
     PromptSnapshotRecord,
 )
-from shinbot.persistence.repositories.model_registry import ModelRegistryRepository
+from shinbot.persistence.repositories.model_registry import (
+    MODEL_REGISTRY_FILE_VERSION,
+    ModelRegistryError,
+    ModelRegistryRepository,
+)
 from shinbot.persistence.repositories.model_usage_hourly import ModelUsageHourlyRepositoryMixin
 from shinbot.schema.events import UnifiedEvent
 from shinbot.schema.resources import Channel, User
@@ -585,6 +592,97 @@ class TestDatabaseManager:
             "openai-main/gpt-fast"
         )
         assert (tmp_path / "models.json").is_file()
+
+    def test_model_registry_migrates_v1_litellm_model_file(self, tmp_path):
+        payload = {
+            "version": 1,
+            "providers": [
+                {
+                    "id": "openai-main",
+                    "type": "openai",
+                    "display_name": "OpenAI Main",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            ],
+            "models": [
+                {
+                    "id": "openai-main/gpt-fast",
+                    "provider_id": "openai-main",
+                    "litellm_model": "openai/gpt-4.1-mini",
+                    "display_name": "GPT Fast",
+                    "capabilities": ["chat"],
+                }
+            ],
+            "routes": [
+                {
+                    "id": "agent.default_chat",
+                    "members": [{"model_id": "openai-main/gpt-fast"}],
+                }
+            ],
+        }
+        registry_path = tmp_path / "models.json"
+        registry_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        registry = ModelRegistryRepository(registry_path)
+
+        model = registry.get_model("openai-main/gpt-fast")
+        assert model is not None
+        assert model["backend_model"] == "openai/gpt-4.1-mini"
+        migrated = json.loads(registry_path.read_text(encoding="utf-8"))
+        assert migrated["version"] == 2
+        assert migrated["models"][0]["backend_model"] == "openai/gpt-4.1-mini"
+        assert "litellm_model" not in migrated["models"][0]
+        assert json.loads((tmp_path / "models.json.v1.bak").read_text(encoding="utf-8")) == payload
+
+    def test_model_registry_rejects_conflicting_legacy_model_fields(self, tmp_path):
+        registry_path = tmp_path / "models.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "providers": [],
+                    "models": [
+                        {
+                            "id": "model-a",
+                            "provider_id": "provider-a",
+                            "backend_model": "new-name",
+                            "litellm_model": "old-name",
+                            "display_name": "Model A",
+                        }
+                    ],
+                    "routes": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = ModelRegistryRepository(registry_path)
+
+        with pytest.raises(ModelRegistryError, match="conflicting backend_model"):
+            registry.list_models()
+
+    def test_model_registry_rejects_future_version_without_legacy_fields(self, tmp_path):
+        registry_path = tmp_path / "models.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "version": MODEL_REGISTRY_FILE_VERSION + 1,
+                    "providers": [],
+                    "models": [],
+                    "routes": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        registry = ModelRegistryRepository(registry_path)
+
+        with pytest.raises(ModelRegistryError, match="Unsupported model registry version"):
+            registry.list_models()
+        assert json.loads(registry_path.read_text(encoding="utf-8"))["version"] == (
+            MODEL_REGISTRY_FILE_VERSION + 1
+        )
+        assert not (tmp_path / "models.json.v1.bak").exists()
 
     def test_model_usage_mixin_uses_explicit_registry_dependency(self, tmp_path):
         db = DatabaseManager.from_bootstrap(data_dir=tmp_path)

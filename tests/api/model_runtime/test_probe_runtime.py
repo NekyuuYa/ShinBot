@@ -31,6 +31,7 @@ def test_provider_probe_endpoint_uses_runtime(
                 "type": "openai",
                 "displayName": "OpenAI Main",
                 "baseUrl": "https://api.openai.com/v1",
+                "auth": {"api_key": "secret"},
             },
         )
         assert provider_resp.status_code == 201
@@ -253,3 +254,69 @@ def test_provider_probe_dashscope_uses_dashscope_provider_hint(
     assert captured["custom_llm_provider"] == "dashscope"
 
 
+def test_provider_probe_openai_compatible_backend_filters_probe_params(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_boot_stub,
+    make_auth_headers,
+):
+    bot = ShinBot(data_dir=tmp_path)
+    boot = make_boot_stub(tmp_path)
+    boot.config["runtime"]["model_backend"] = {"type": "openai_compatible"}
+    app = create_api_app(bot, boot)
+    headers = make_auth_headers(app)
+
+    with TestClient(app) as client:
+        provider_resp = client.post(
+            "/api/v1/model-runtime/providers",
+            headers=headers,
+            json={
+                "id": "openai-main",
+                "type": "openai",
+                "displayName": "OpenAI Main",
+                "baseUrl": "https://api.openai.com/v1",
+                "auth": {"api_key": "secret"},
+            },
+        )
+        assert provider_resp.status_code == 201
+
+        model_resp = client.post(
+            "/api/v1/model-runtime/models",
+            headers=headers,
+            json={
+                "id": "openai-main/gpt-fast",
+                "providerId": "openai-main",
+                "backendModel": "openai/gpt-4.1-mini",
+                "displayName": "GPT Fast",
+                "capabilities": ["chat"],
+                "enabled": True,
+            },
+        )
+        assert model_resp.status_code == 201
+
+        captured: dict[str, Any] = {}
+
+        def fake_completion(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "model": kwargs["model"],
+                "choices": [{"message": {"content": "pong"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+        monkeypatch.setattr(
+            "openai.resources.chat.completions.completions.Completions.create",
+            fake_completion,
+        )
+
+        response = client.post(
+            "/api/v1/model-runtime/providers/openai-main/probe",
+            headers=headers,
+            json={},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["mode"] == "chat"
+    assert captured["model"] == "gpt-4.1-mini"
+    assert captured["max_tokens"] == 1
+    assert "drop_params" not in captured

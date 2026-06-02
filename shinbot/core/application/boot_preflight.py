@@ -92,6 +92,39 @@ def _validate_runtime_section(config: dict[str, Any]) -> list[ConfigValidationIs
                     code="type",
                 )
             )
+    backend_config = runtime.get("model_backend")
+    if backend_config is not None and not isinstance(backend_config, dict):
+        issues.append(
+            ConfigValidationIssue(
+                path="runtime.model_backend",
+                message="must be a table",
+                code="type",
+            )
+        )
+    elif isinstance(backend_config, dict):
+        backend_type = backend_config.get("type")
+        if backend_type is not None and not isinstance(backend_type, str):
+            issues.append(
+                ConfigValidationIssue(
+                    path="runtime.model_backend.type",
+                    message="must be a string",
+                    code="type",
+                )
+            )
+        elif isinstance(backend_type, str):
+            from shinbot.core.runtime.model_backend import SUPPORTED_MODEL_BACKENDS
+
+            if backend_type.strip() not in SUPPORTED_MODEL_BACKENDS:
+                issues.append(
+                    ConfigValidationIssue(
+                        path="runtime.model_backend.type",
+                        message=(
+                            "must be one of "
+                            f"{', '.join(sorted(SUPPORTED_MODEL_BACKENDS))}"
+                        ),
+                        code="choices",
+                    )
+                )
     return issues
 
 

@@ -13,11 +13,12 @@ if TYPE_CHECKING:
     from shinbot.core.application.app import ShinBot
 
 
-def create_model_runtime(database: Any) -> Any:
+def create_model_runtime(database: Any, config: dict[str, Any] | None = None) -> Any:
     """Create the concrete model runtime implementation."""
     from shinbot.agent.services.model_runtime import ModelRuntime
+    from shinbot.core.runtime.model_backend import create_model_backend
 
-    return ModelRuntime(database)
+    return ModelRuntime(database, backend=create_model_backend(config))
 
 
 def install_model_runtime(bot: ShinBot) -> Any:
@@ -25,7 +26,8 @@ def install_model_runtime(bot: ShinBot) -> Any:
     if bot.model_runtime is not None:
         return bot.model_runtime
 
-    runtime = create_model_runtime(bot.database)
+    config = getattr(bot, "config", None)
+    runtime = create_model_runtime(bot.database, config if isinstance(config, dict) else None)
     bot.mount_model_runtime(runtime)
     return runtime
 

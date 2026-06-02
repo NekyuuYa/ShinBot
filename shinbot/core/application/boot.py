@@ -163,6 +163,7 @@ class BootController:
 
         from shinbot.core.runtime import install_model_runtime
 
+        self.bot.config = self.config
         install_model_runtime(self.bot)
 
     def _mount_agent_runtime(self) -> None:
@@ -183,6 +184,7 @@ class BootController:
             logger.info("Mounting model runtime because Agent runtime depends on it")
             from shinbot.core.runtime import install_model_runtime
 
+            self.bot.config = self.config
             install_model_runtime(self.bot)
 
         from shinbot.agent.runtime import install_agent_runtime
