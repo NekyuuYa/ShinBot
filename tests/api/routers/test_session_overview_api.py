@@ -324,6 +324,59 @@ def test_session_overview_includes_latest_workflow_run(tmp_path: Path) -> None:
     assert "scan=selected" in session["latestWorkflowRun"]["responseSummary"]
 
 
+def test_session_overview_includes_agent_read_state_for_history(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "bot-main:group:room"
+    _seed_session_management_records(
+        bot,
+        runtime,
+        tmp_path=tmp_path,
+        session_id=session_id,
+    )
+    assert bot.database is not None
+    with bot.database.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM message_logs
+            WHERE session_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        assert len(rows) == 2
+        trigger_id = int(rows[0]["id"])
+        response_id = int(rows[1]["id"])
+        conn.execute(
+            """
+            UPDATE agent_unread_messages
+            SET review_consumed = 1
+            WHERE session_id = ? AND message_log_id = ?
+            """,
+            (session_id, trigger_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_unread_messages (
+                session_id, message_log_id, created_at, review_consumed, chat_consumed
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (session_id, response_id, time.time(), 0, 1),
+        )
+
+    app = create_api_app(bot, _BootStub(tmp_path))
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/session-overview", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    session = response.json()["data"][0]
+    history = session["history"]
+    assert history[0]["agentReadState"] == "review_consumed"
+    assert history[1]["agentReadState"] == "active_chat_consumed"
+
+
 def test_session_overview_includes_platform_availability_state(tmp_path: Path) -> None:
     bot = ShinBot(data_dir=tmp_path)
     runtime = install_agent_runtime(bot)

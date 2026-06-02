@@ -42,6 +42,7 @@ export interface SessionMessage {
   routingStatus: string
   routedAt: number | null
   routingSkipReason: string | null
+  agentReadState: 'unread' | 'review_consumed' | 'active_chat_consumed' | 'not_tracked'
 }
 
 export interface SessionAuditLog {

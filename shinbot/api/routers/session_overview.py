@@ -64,6 +64,7 @@ class MessageLogData(BaseModel):
     routingStatus: str
     routedAt: Any = None
     routingSkipReason: Any = None
+    agentReadState: str = "not_tracked"
 
 
 class AuditLogData(BaseModel):
@@ -207,6 +208,7 @@ def _message_payload(row: Any) -> dict[str, Any]:
         "routingStatus": str(row["routing_status"] or "pending"),
         "routedAt": row["routed_at"],
         "routingSkipReason": row["routing_skip_reason"],
+        "agentReadState": "not_tracked",
     }
 
 
@@ -266,6 +268,30 @@ def _workflow_run_payload(row: Any) -> dict[str, Any] | None:
         "startedAt": float(row["started_at"] or 0.0),
         "finishedAt": row["finished_at"],
     }
+
+
+def _agent_read_states(database: Any, session_id: str) -> dict[int, str]:
+    """Return per-message Agent read state for one session's tracked messages."""
+
+    with database.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT message_log_id, review_consumed, chat_consumed
+            FROM agent_unread_messages
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchall()
+    states: dict[int, str] = {}
+    for row in rows:
+        message_log_id = int(row["message_log_id"])
+        if bool(row["chat_consumed"]):
+            states[message_log_id] = "active_chat_consumed"
+        elif bool(row["review_consumed"]):
+            states[message_log_id] = "review_consumed"
+        else:
+            states[message_log_id] = "unread"
+    return states
 
 
 def _platform_state_payload(bot: Any, instance_id: str) -> dict[str, Any]:
@@ -465,6 +491,12 @@ def get_session_overview(bot=BotDep, boot=BootDep):
             ).fetchone()
 
         message_rows = [_message_payload(item) for item in reversed(history_rows)]
+        agent_read_states = _agent_read_states(database, session_id)
+        for message in message_rows:
+            message["agentReadState"] = agent_read_states.get(
+                int(message["id"]),
+                "not_tracked",
+            )
         latest_message = message_rows[-1] if message_rows else None
         latest_review_summary = _latest_summary_of_type(database, session_id, "block_digest")
         latest_active_chat_summary = _latest_summary_of_type(database, session_id, "active_chat")

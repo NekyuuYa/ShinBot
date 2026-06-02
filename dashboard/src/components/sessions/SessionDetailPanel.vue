@@ -163,9 +163,24 @@
                   <v-chip
                     size="x-small"
                     variant="tonal"
+                    :color="agentReadStateColor(message.agentReadState)"
+                  >
+                    {{ agentReadStateLabel(message.agentReadState) }}
+                  </v-chip>
+                  <v-chip
+                    size="x-small"
+                    variant="tonal"
                     :color="routingColor(message.routingStatus)"
                   >
-                    {{ message.routingStatus }}
+                    {{ routingStatusLabel(message.routingStatus) }}
+                  </v-chip>
+                  <v-chip
+                    v-if="message.routingSkipReason"
+                    size="x-small"
+                    variant="tonal"
+                    color="grey"
+                  >
+                    {{ routingSkipReasonLabel(message.routingSkipReason) }}
                   </v-chip>
                   <v-chip
                     v-if="message.isMentioned"
@@ -303,6 +318,18 @@ defineProps<{
 const noneLabel = t('pages.sessions.labels.none')
 const unknownSenderLabel = t('pages.sessions.labels.unknownSender')
 const mentionedLabel = t('pages.sessions.labels.mentioned')
+const agentUnreadLabel = t('pages.sessions.labels.agentUnread')
+const agentReviewConsumedLabel = t('pages.sessions.labels.agentReviewConsumed')
+const agentActiveChatConsumedLabel = t('pages.sessions.labels.agentActiveChatConsumed')
+const agentNotTrackedLabel = t('pages.sessions.labels.agentNotTracked')
+const routingPendingLabel = t('pages.sessions.labels.routingPending')
+const routingDispatchedLabel = t('pages.sessions.labels.routingDispatched')
+const routingSkippedLabel = t('pages.sessions.labels.routingSkipped')
+const skipReasonExpiredMessageLabel = t('pages.sessions.labels.skipReasonExpiredMessage')
+const skipReasonNoRouteMatchedLabel = t('pages.sessions.labels.skipReasonNoRouteMatched')
+const skipReasonSessionMutedLabel = t('pages.sessions.labels.skipReasonSessionMuted')
+const skipReasonInterceptorBlockedLabel = t('pages.sessions.labels.skipReasonInterceptorBlocked')
+const skipReasonWaitForInputLabel = t('pages.sessions.labels.skipReasonWaitForInput')
 
 const instanceIdLabel = t('pages.sessions.fields.instanceId')
 const channelIdLabel = t('pages.sessions.fields.channelId')
@@ -365,6 +392,62 @@ function platformStatus(platformState: SessionPlatformState): {
     color: 'grey',
     icon: 'mdi-stop-circle-outline',
     label: t('pages.sessions.connection.stopped'),
+  }
+}
+
+function agentReadStateLabel(state: string): string {
+  switch (state) {
+    case 'unread':
+      return agentUnreadLabel
+    case 'review_consumed':
+      return agentReviewConsumedLabel
+    case 'active_chat_consumed':
+      return agentActiveChatConsumedLabel
+    default:
+      return agentNotTrackedLabel
+  }
+}
+
+function agentReadStateColor(state: string): string {
+  switch (state) {
+    case 'unread':
+      return 'warning'
+    case 'review_consumed':
+      return 'info'
+    case 'active_chat_consumed':
+      return 'success'
+    default:
+      return 'grey'
+  }
+}
+
+function routingStatusLabel(status: string): string {
+  switch (status) {
+    case 'pending':
+      return routingPendingLabel
+    case 'dispatched':
+      return routingDispatchedLabel
+    case 'skipped':
+      return routingSkippedLabel
+    default:
+      return status
+  }
+}
+
+function routingSkipReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'expired_message':
+      return skipReasonExpiredMessageLabel
+    case 'no_route_matched':
+      return skipReasonNoRouteMatchedLabel
+    case 'session_muted':
+      return skipReasonSessionMutedLabel
+    case 'interceptor_blocked':
+      return skipReasonInterceptorBlockedLabel
+    case 'wait_for_input':
+      return skipReasonWaitForInputLabel
+    default:
+      return reason
   }
 }
 </script>
