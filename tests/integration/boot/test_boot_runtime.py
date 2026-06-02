@@ -207,7 +207,7 @@ async def test_clean_boot_initializes_file_configs_without_config_tables(tmp_pat
         assert (data_dir / "personas" / "default.md").is_file()
         assert (data_dir / "prompts" / "custom").is_dir()
         assert json.loads((data_dir / "models.json").read_text(encoding="utf-8")) == {
-            "version": 1,
+            "version": 2,
             "providers": [],
             "models": [],
             "routes": [],
@@ -489,6 +489,32 @@ async def test_boot_can_mount_model_without_agent(tmp_path: Path):
         bot = await boot.boot()
         assert bot.model_runtime is not None
         assert bot.agent_runtime is None
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_boot_mounts_configured_model_backend(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    _write_config(
+        config_path,
+        extra_config="\n".join(
+            [
+                "[runtime]",
+                "model = true",
+                "agent = false",
+                "",
+                "[runtime.model_backend]",
+                'type = "openai_compatible"',
+            ]
+        ),
+    )
+    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+
+    try:
+        bot = await boot.boot()
+        assert bot.model_runtime is not None
+        assert bot.model_runtime._backend.name == "openai_compatible"
     finally:
         await boot.shutdown()
 
