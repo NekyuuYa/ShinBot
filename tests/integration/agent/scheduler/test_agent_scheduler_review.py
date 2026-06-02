@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from agent_scheduler_support import (
     ActiveReplyDispatcher,
+    ActiveReplyResume,
+    ActiveReplyResumeKind,
     AgentScheduler,
     AgentSchedulerConfig,
     AgentState,
     AlwaysWakePriorityPolicy,
     FixedReviewPolicy,
+    HighPriorityEvent,
     HighPriorityEventKind,
     InMemoryAgentInbox,
     InMemoryAgentStateStore,
@@ -14,6 +17,9 @@ from agent_scheduler_support import (
     RecordingWorkflowDispatcher,
     ReviewDueTimerService,
     ReviewPlan,
+    SchedulerEventKind,
+    SchedulerTransitionTrigger,
+    UnreadMessage,
     make_review_due_signal,
     make_signal,
     pytest,
@@ -110,6 +116,29 @@ async def test_scheduler_starts_active_reply_for_mention() -> None:
     ]
     assert dispatcher.calls[0]["response_profile"] == "immediate"
     assert dispatcher.calls[0]["is_mentioned"] is True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_active_reply_preserves_high_priority_message_metadata() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "immediate",
+    )
+    signal = make_signal(
+        is_poke_to_bot=True,
+        is_poke_to_other=True,
+        is_mention_to_other=True,
+    )
+    signal.meta["trace_id"] = "ingress:bot:poke-1"
+
+    decision = await scheduler.accept_signal(signal)
+
+    assert decision.active_reply_started is True
+    assert dispatcher.calls[0]["is_poke_to_bot"] is True
+    assert dispatcher.calls[0]["is_poke_to_other"] is True
+    assert dispatcher.calls[0]["is_mention_to_other"] is True
+    assert dispatcher.calls[0]["trace_id"] == "ingress:bot:poke-1"
 
 
 @pytest.mark.asyncio
@@ -259,6 +288,198 @@ async def test_scheduler_dispatches_due_review_workflow() -> None:
         message.message_log_id
         for message in dispatcher.review_calls[0]["unread_messages"]
     ] == [1]
+
+
+@pytest.mark.asyncio
+async def test_due_review_interrupt_uses_persisted_unread_metadata_after_restart(
+    tmp_path,
+) -> None:
+    from shinbot.agent.scheduler.repository import AgentSchedulerRepository
+    from shinbot.persistence import DatabaseManager
+    from shinbot.persistence.records import MessageLogRecord
+
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_log_id = db.message_logs.insert(
+        MessageLogRecord(
+            session_id="bot:group:room",
+            platform_msg_id="msg-1",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="hello",
+            content_json="[]",
+            role="user",
+            created_at=10.0,
+        )
+    )
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=message_log_id,
+            sender_id="user-1",
+            created_at=10.0,
+            response_profile="priority",
+            is_mentioned=True,
+            is_reply_to_bot=True,
+            self_platform_id="bot-self",
+            trace_id="trace:due-review",
+        )
+    )
+    db.agent_scheduler.add_high_priority_events(
+        [
+            HighPriorityEvent(
+                session_id="bot:group:room",
+                message_log_id=message_log_id,
+                sender_id="user-1",
+                kind=HighPriorityEventKind.MENTION,
+                created_at=10.0,
+                reason="message_mentions_self",
+            )
+        ]
+    )
+    plan = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=12.0,
+        reason="restart_due_review",
+        updated_at=10.0,
+    )
+    db.agent_scheduler.set_review_plan(plan)
+    db.agent_scheduler.set_state("bot:group:room", AgentState.IDLE)
+
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        inbox=AgentSchedulerRepository(db),
+        state_store=AgentSchedulerRepository(db),
+        now=lambda: 12.0,
+    )
+
+    decision = await scheduler.run_due_review("bot:group:room", now=12.0)
+
+    assert decision.active_reply_pending is True
+    resume = scheduler._state_store.get_active_reply_resume("bot:group:room")
+    assert resume is not None
+    assert resume.kind == ActiveReplyResumeKind.START_DEFERRED_REVIEW
+    assert dispatcher.calls[0]["response_profile"] == "priority"
+    assert dispatcher.calls[0]["self_platform_id"] == "bot-self"
+    assert dispatcher.calls[0]["is_reply_to_bot"] is False
+
+
+@pytest.mark.asyncio
+async def test_active_reply_interrupts_review_and_resumes_review_after_completion() -> None:
+    dispatcher = RecordingWorkflowDispatcher()
+    scheduler = AgentScheduler(
+        workflow_dispatcher=dispatcher,
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 10.0,
+    )
+    await scheduler.accept_signal(make_signal())
+    scheduler.prepare_due_review("bot:group:room", now=52.0)
+
+    decision = await scheduler.accept_signal(make_signal(message_log_id=2, is_mentioned=True))
+
+    assert decision.active_reply_started is True
+    assert dispatcher.cancelled_reviews == ["bot:group:room"]
+    resume = scheduler._state_store.get_active_reply_resume("bot:group:room")
+    assert resume is not None
+    assert resume.kind == ActiveReplyResumeKind.RESUME_INTERRUPTED_REVIEW
+    completion = await scheduler.complete_active_reply("bot:group:room", now=52.0)
+    assert completion.review_started is True
+    assert completion.review_workflow_started is True
+    assert completion.state == AgentState.REVIEW
+    assert dispatcher.review_calls[-1]["session_id"] == "bot:group:room"
+
+
+def test_scheduler_recovers_transient_review_and_active_reply_states() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        now=lambda: 100.0,
+    )
+    review_plan = ReviewPlan(
+        session_id="bot:group:room",
+        next_review_at=130.0,
+        reason="fixed_test_review",
+        updated_at=10.0,
+    )
+    scheduler._state_store.set_review_plan(review_plan)
+    scheduler._state_store.set_state("bot:group:room", AgentState.REVIEW)
+    scheduler._state_store.set_state("bot:group:room-2", AgentState.ACTIVE_REPLY)
+    scheduler._state_store.set_active_reply_resume(
+        ActiveReplyResume(
+            session_id="bot:group:room-2",
+            kind=ActiveReplyResumeKind.RESUME_INTERRUPTED_REVIEW,
+            resume_state=AgentState.REVIEW,
+            review_plan=ReviewPlan(
+                session_id="bot:group:room-2",
+                next_review_at=140.0,
+                reason="resume",
+                updated_at=20.0,
+            ),
+            updated_at=20.0,
+        )
+    )
+
+    recovered = scheduler.reconcile_transient_sessions(now=100.0, prefix="bot:group:")
+
+    assert recovered == ["bot:group:room", "bot:group:room-2"]
+    assert scheduler.state_for("bot:group:room") == AgentState.IDLE
+    assert scheduler.review_plan_for("bot:group:room").next_review_at == 100.0
+    assert scheduler.state_for("bot:group:room-2") == AgentState.IDLE
+    assert scheduler.review_plan_for("bot:group:room-2").next_review_at == 100.0
+
+
+def test_scheduler_exposes_allowed_state_transitions() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+    )
+
+    assert scheduler.allowed_transitions_for(AgentState.IDLE) == frozenset(
+        {AgentState.REVIEW, AgentState.ACTIVE_REPLY}
+    )
+    assert scheduler.allowed_transitions_for(AgentState.ACTIVE_REPLY) == frozenset(
+        {AgentState.IDLE, AgentState.REVIEW}
+    )
+    assert scheduler.can_transition(AgentState.REVIEW, AgentState.ACTIVE_CHAT) is True
+    assert scheduler.can_transition(AgentState.ACTIVE_CHAT, AgentState.REVIEW) is False
+
+    active_chat_to_idle = scheduler._STATE_TRANSITION_RULES[AgentState.ACTIVE_CHAT][
+        AgentState.IDLE
+    ]
+    assert active_chat_to_idle.effects.stop_active_chat_runtime is True
+    assert active_chat_to_idle.effects.clear_active_chat_state is True
+
+    review_to_active_reply = scheduler._STATE_TRANSITION_RULES[AgentState.REVIEW][
+        AgentState.ACTIVE_REPLY
+    ]
+    assert review_to_active_reply.effects.cancel_review_runtime is True
+
+
+def test_scheduler_normalizes_signal_to_explicit_event() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+    )
+
+    assert scheduler._event_from_signal(make_signal()).kind == SchedulerEventKind.MESSAGE
+    assert scheduler._event_from_signal(make_review_due_signal()).kind == (
+        SchedulerEventKind.REVIEW_DUE
+    )
+
+
+def test_scheduler_rejects_invalid_state_transition() -> None:
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+    )
+    scheduler._state_store.set_state("bot:group:room", AgentState.ACTIVE_CHAT)
+
+    with pytest.raises(RuntimeError, match="invalid agent state transition"):
+        scheduler._transition_state(
+            "bot:group:room",
+            AgentState.REVIEW,
+            trigger=SchedulerTransitionTrigger.REVIEW_DUE,
+        )
 
 
 @pytest.mark.asyncio

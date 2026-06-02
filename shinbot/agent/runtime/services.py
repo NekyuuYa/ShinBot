@@ -6,6 +6,7 @@ attach the Agent entry handler to message routing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import replace
@@ -69,7 +70,7 @@ from shinbot.agent.services.prompt_engine import PromptFileLoadConfig, PromptReg
 from shinbot.agent.services.prompt_engine.runtime_sync import sync_prompt_definition_components
 from shinbot.agent.services.summaries import MarkdownSummaryStore, SummaryService
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
-from shinbot.agent.signals import AgentSignal
+from shinbot.agent.signals import AgentSignal, AgentSignalKind
 from shinbot.agent.workflows.active_chat import ActiveChatFastRunner
 from shinbot.agent.workflows.active_chat import models as active_chat_workflow_models
 from shinbot.agent.workflows.active_chat.prompt_registration import (
@@ -243,6 +244,9 @@ class AgentRuntimeProfile:
         if not start_timers:
             return
         self.review_due_timer.start()
+        reconcile_transient = getattr(self.agent_scheduler, "reconcile_transient_sessions", None)
+        if reconcile_transient is not None:
+            reconcile_transient(prefix=self._session_id_prefix())
         reconcile = getattr(self.agent_scheduler, "reconcile_active_chat_sessions", None)
         if reconcile is not None:
             reconcile(
@@ -395,6 +399,7 @@ class AgentRuntime:
         self.prompt_definitions = PromptDefinitionFileRepository.from_data_dir(runtime_data_dir)
         self.model_runtime = model_runtime
         self.adapter_manager = adapter_manager
+        self._session_signal_locks: dict[str, asyncio.Lock] = {}
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
         self.message_formatter = MessageFormatterService(
@@ -612,57 +617,62 @@ class AgentRuntime:
         signal: AgentSignal,
     ) -> ActiveChatBootstrapApplyDecision | None:
         """Receive a unified Agent signal and let Agent internals process it."""
-        if self.should_pause_session(signal.session_id):
+        async with self._session_signal_lock(signal.session_id):
+            pause_signal = (
+                signal.kind == AgentSignalKind.REVIEW_DUE
+                or signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK
+            )
+            if pause_signal and self.should_pause_session(signal.session_id):
+                logger.debug(
+                    format_log_event(
+                        "agent.runtime.signal_skipped",
+                        kind=signal.kind.value,
+                        source=signal.source.value,
+                        signal_id=signal.signal_id,
+                        session_id=signal.session_id,
+                        bot_id=signal.bot_id,
+                        reason="platform_unavailable",
+                    )
+                )
+                return None
+            profile = self.agent_profile_for_bot(signal.bot_id)
             logger.debug(
                 format_log_event(
-                    "agent.runtime.signal_skipped",
+                    "agent.runtime.signal",
                     kind=signal.kind.value,
                     source=signal.source.value,
                     signal_id=signal.signal_id,
                     session_id=signal.session_id,
                     bot_id=signal.bot_id,
-                    reason="platform_unavailable",
+                    trace_id=str(signal.meta.get("trace_id") or ""),
+                    profile_id=profile.profile_id,
+                    selected_bot_id=profile.bot_id,
+                    message_log_id=(
+                        signal.message.message_log_id if signal.message is not None else None
+                    ),
                 )
             )
+            decision = await profile.agent_scheduler.accept_signal(signal)
+            logger.debug(
+                format_log_event(
+                    "agent.runtime.decision",
+                    kind=signal.kind.value,
+                    signal_id=signal.signal_id,
+                    session_id=signal.session_id,
+                    trace_id=str(signal.meta.get("trace_id") or ""),
+                    profile_id=profile.profile_id,
+                    decision_type=type(decision).__name__ if decision is not None else "",
+                    skipped_reason=getattr(decision, "skipped_reason", ""),
+                    state=(
+                        getattr(getattr(decision, "state", None), "value", "")
+                        if decision is not None
+                        else ""
+                    ),
+                )
+            )
+            if isinstance(decision, ActiveChatBootstrapApplyDecision):
+                return decision
             return None
-        profile = self.agent_profile_for_bot(signal.bot_id)
-        logger.debug(
-            format_log_event(
-                "agent.runtime.signal",
-                kind=signal.kind.value,
-                source=signal.source.value,
-                signal_id=signal.signal_id,
-                session_id=signal.session_id,
-                bot_id=signal.bot_id,
-                trace_id=str(signal.meta.get("trace_id") or ""),
-                profile_id=profile.profile_id,
-                selected_bot_id=profile.bot_id,
-                message_log_id=(
-                    signal.message.message_log_id if signal.message is not None else None
-                ),
-            )
-        )
-        decision = await profile.agent_scheduler.accept_signal(signal)
-        logger.debug(
-            format_log_event(
-                "agent.runtime.decision",
-                kind=signal.kind.value,
-                signal_id=signal.signal_id,
-                session_id=signal.session_id,
-                trace_id=str(signal.meta.get("trace_id") or ""),
-                profile_id=profile.profile_id,
-                decision_type=type(decision).__name__ if decision is not None else "",
-                skipped_reason=getattr(decision, "skipped_reason", ""),
-                state=(
-                    getattr(getattr(decision, "state", None), "value", "")
-                    if decision is not None
-                    else ""
-                ),
-            )
-        )
-        if isinstance(decision, ActiveChatBootstrapApplyDecision):
-            return decision
-        return None
 
     def is_session_platform_connected(self, session_id: str) -> bool:
         """Return whether the session's adapter is explicitly connected now.
@@ -709,6 +719,13 @@ class AgentRuntime:
             profile.start_background_tasks(
                 start_timers=start_default_timers or profile.bot_id != ""
             )
+
+    def _session_signal_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._session_signal_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_signal_locks[session_id] = lock
+        return lock
 
     def _resolve_response_profile(self, signal: AgentSignal) -> str:
         message = signal.message

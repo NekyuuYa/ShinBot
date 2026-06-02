@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from agent_runtime_support import (
     ActiveChatState,
     AgentScheduler,
@@ -254,7 +256,6 @@ async def test_agent_runtime_skips_unusable_agent_entry_signals(tmp_path: Path) 
 
     assert [call["response_profile"] for call in dispatcher.calls] == [
         "immediate",
-        "immediate",
     ]
 
 
@@ -277,6 +278,37 @@ async def test_agent_runtime_records_ordinary_messages_without_active_reply(
         item.message_log_id
         for item in runtime.agent_scheduler.unread_messages("test-bot:group:group:1")
     ] == [123]
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_serializes_same_session_signals(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    order: list[str] = []
+
+    class SerialScheduler:
+        async def accept_signal(self, signal: AgentSignal) -> Any | None:
+            order.append(f"start:{signal.signal_id}")
+            if signal.signal_id == "first":
+                entered.set()
+                await release.wait()
+            order.append(f"end:{signal.signal_id}")
+            return None
+
+    runtime.agent_scheduler = SerialScheduler()  # type: ignore[assignment]
+    first = replace(make_signal(), signal_id="first")
+    second = replace(make_signal(message_log_id=456), signal_id="second")
+
+    first_task = asyncio.create_task(runtime.handle_agent_signal(first))
+    await entered.wait()
+    second_task = asyncio.create_task(runtime.handle_agent_signal(second))
+    await asyncio.sleep(0.05)
+    assert order == ["start:first"]
+    release.set()
+    await asyncio.gather(first_task, second_task)
+    assert order == ["start:first", "end:first", "start:second", "end:second"]
 
 
 @pytest.mark.asyncio
@@ -746,7 +778,7 @@ async def test_agent_runtime_active_chat_bootstrap_signal_applies_disposition(
 
 
 @pytest.mark.asyncio
-async def test_agent_runtime_skips_signal_when_session_platform_unavailable(
+async def test_agent_runtime_only_skips_timer_signals_when_session_platform_unavailable(
     tmp_path: Path,
 ) -> None:
     bot = ShinBot(data_dir=tmp_path)
@@ -761,7 +793,21 @@ async def test_agent_runtime_skips_signal_when_session_platform_unavailable(
     runtime.agent_scheduler = _RecordingScheduler()  # type: ignore[assignment]
     runtime.should_pause_session = lambda _session_id: True  # type: ignore[method-assign]
 
-    decision = await runtime.handle_agent_signal(make_signal())
+    message_decision = await runtime.handle_agent_signal(make_signal())
+    timer_decision = await runtime.handle_agent_signal(
+        AgentSignal(
+            signal_id="review-due:test-bot:group:group:1:10",
+            kind=AgentSignalKind.REVIEW_DUE,
+            source=AgentSignalSource.TIMER,
+            session_id="test-bot:group:group:1",
+            occurred_at=10.0,
+            timer=AgentTimerSignal(
+                trigger=AgentSignalKind.REVIEW_DUE.value,
+                due_at=10.0,
+            ),
+        )
+    )
 
-    assert decision is None
-    assert calls == []
+    assert message_decision is None
+    assert timer_decision is None
+    assert [signal.kind for signal in calls] == [AgentSignalKind.MESSAGE]

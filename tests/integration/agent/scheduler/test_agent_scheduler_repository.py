@@ -58,6 +58,14 @@ def test_agent_scheduler_repository_persists_state_and_inbox(tmp_path) -> None:
             message_log_id=message_log_id,
             sender_id="user-1",
             created_at=10.0,
+            response_profile="balanced",
+            is_mentioned=True,
+            is_reply_to_bot=True,
+            is_mention_to_other=True,
+            is_poke_to_bot=True,
+            is_poke_to_other=True,
+            self_platform_id="bot-self",
+            trace_id="ingress:bot:msg-1",
         )
     )
     db.agent_scheduler.add_high_priority_events(
@@ -74,9 +82,16 @@ def test_agent_scheduler_repository_persists_state_and_inbox(tmp_path) -> None:
     )
 
     assert db.agent_scheduler.get_state("bot:group:room") == AgentState.ACTIVE_REPLY
-    assert [item.message_log_id for item in db.agent_scheduler.list_unread("bot:group:room")] == [
-        message_log_id
-    ]
+    unread = db.agent_scheduler.list_unread("bot:group:room")
+    assert [item.message_log_id for item in unread] == [message_log_id]
+    assert unread[0].response_profile == "balanced"
+    assert unread[0].is_mentioned is True
+    assert unread[0].is_reply_to_bot is True
+    assert unread[0].is_mention_to_other is True
+    assert unread[0].is_poke_to_bot is True
+    assert unread[0].is_poke_to_other is True
+    assert unread[0].self_platform_id == "bot-self"
+    assert unread[0].trace_id == "ingress:bot:msg-1"
     assert [
         (item.start_msg_log_id, item.end_msg_log_id, item.message_count)
         for item in db.agent_scheduler.list_unread_ranges("bot:group:room")
@@ -160,13 +175,17 @@ def test_agent_scheduler_repository_marks_active_chat_consumed(tmp_path) -> None
         _insert_message(db, msg_id=f"msg-{index}", created_at=float(index))
         for index in [1, 2, 3, 4]
     ]
-    for message_id in message_ids:
+    for index, message_id in enumerate(message_ids, start=1):
         db.agent_scheduler.add_unread(
             UnreadMessage(
                 session_id="bot:group:room",
                 message_log_id=message_id,
                 sender_id="user-1",
                 created_at=float(message_id),
+                response_profile=f"profile-{index}",
+                is_reply_to_bot=index % 2 == 0,
+                self_platform_id="bot-self",
+                trace_id=f"trace-{index}",
             )
         )
 
@@ -176,6 +195,9 @@ def test_agent_scheduler_repository_marks_active_chat_consumed(tmp_path) -> None
     )
 
     assert [item.message_log_id for item in consumed] == message_ids[1:3]
+    assert [item.response_profile for item in consumed] == ["profile-2", "profile-3"]
+    assert [item.trace_id for item in consumed] == ["trace-2", "trace-3"]
+    assert [item.self_platform_id for item in consumed] == ["bot-self", "bot-self"]
     assert [
         item.message_log_id for item in db.agent_scheduler.list_unread("bot:group:room")
     ] == [message_ids[0], message_ids[3]]
@@ -187,6 +209,48 @@ def test_agent_scheduler_repository_marks_active_chat_consumed(tmp_path) -> None
         (message_ids[3], message_ids[3], 1),
     ]
     assert db.agent_scheduler.count_unread_messages("bot:group:room") == 2
+
+
+def test_agent_scheduler_repository_preserves_unread_metadata_across_restart(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_log_id = _insert_message(db)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=message_log_id,
+            sender_id="user-1",
+            created_at=10.0,
+            response_profile="priority",
+            is_mentioned=True,
+            is_reply_to_bot=True,
+            is_mention_to_other=True,
+            is_poke_to_bot=True,
+            is_poke_to_other=True,
+            self_platform_id="bot-self",
+            trace_id="trace:restart",
+        )
+    )
+
+    reopened = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    reopened.initialize()
+
+    unread = reopened.agent_scheduler.list_unread("bot:group:room")
+    assert len(unread) == 1
+    assert unread[0] == UnreadMessage(
+        session_id="bot:group:room",
+        message_log_id=message_log_id,
+        sender_id="user-1",
+        created_at=10.0,
+        response_profile="priority",
+        is_mentioned=True,
+        is_reply_to_bot=True,
+        is_mention_to_other=True,
+        is_poke_to_bot=True,
+        is_poke_to_other=True,
+        self_platform_id="bot-self",
+        trace_id="trace:restart",
+    )
 
 
 def test_agent_scheduler_repository_does_not_merge_across_skipped_session_message(

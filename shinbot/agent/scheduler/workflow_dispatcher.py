@@ -24,8 +24,12 @@ class AgentWorkflowDispatcher(Protocol):
         response_profile: str,
         is_mentioned: bool,
         is_reply_to_bot: bool,
+        is_mention_to_other: bool,
+        is_poke_to_bot: bool,
+        is_poke_to_other: bool,
         self_platform_id: str,
         events: list[HighPriorityEvent],
+        trace_id: str = "",
     ) -> None:
         """Handle high-priority events before review or active chat workflows."""
 
@@ -37,6 +41,9 @@ class AgentWorkflowDispatcher(Protocol):
         unread_messages: list[UnreadMessage],
     ) -> None:
         """Run the review workflow for unread messages selected by Agent internals."""
+
+    def cancel_review(self, session_id: str) -> None:
+        """Cancel an in-flight review workflow for one session, if supported."""
 
     async def start_active_chat(
         self,
@@ -65,6 +72,7 @@ class AgentWorkflowDispatcher(Protocol):
         is_poke_to_other: bool,
         self_platform_id: str,
         active_chat_state: ActiveChatState,
+        trace_id: str = "",
     ) -> None:
         """Notify active chat workflow about one observed message signal."""
 

@@ -10,6 +10,8 @@ from shinbot.agent.scheduler import (
     ActiveChatDisposition,
     ActiveChatPolicyConfig,
     ActiveChatTimerService,
+    ActiveReplyResume,
+    ActiveReplyResumeKind,
     AgentScheduler,
     AgentSchedulerConfig,
     AgentState,
@@ -19,9 +21,11 @@ from shinbot.agent.scheduler import (
     InMemoryAgentStateStore,
     PriorityPolicyDecision,
     ReviewDueTimerService,
+    SchedulerEventKind,
+    SchedulerTransitionTrigger,
     calculate_bootstrap_correction,
 )
-from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan
+from shinbot.agent.scheduler.models import HighPriorityEvent, ReviewPlan, UnreadMessage
 from shinbot.agent.signals import (
     AgentActiveChatBootstrapSignal,
     AgentMessageSignal,
@@ -40,6 +44,7 @@ class RecordingWorkflowDispatcher:
         self.active_chat_stops: list[str] = []
         self.idle_review_plans: list[ReviewPlan] = []
         self.idle_review_plan_calls: list[str] = []
+        self.cancelled_reviews: list[str] = []
 
     async def run_active_reply(
         self,
@@ -98,6 +103,9 @@ class RecordingWorkflowDispatcher:
         if not self.idle_review_plans:
             return None
         return self.idle_review_plans.pop(0)
+
+    def cancel_review(self, session_id: str) -> None:
+        self.cancelled_reviews.append(session_id)
 
 
 class RecordingActiveChatTimer:
@@ -259,6 +267,8 @@ def make_active_chat_bootstrap_signal(
 __all__ = [
     "ActiveChatDisposition",
     "ActiveChatPolicyConfig",
+    "ActiveReplyResume",
+    "ActiveReplyResumeKind",
     "ActiveChatTimerService",
     "ActiveReplyDispatcher",
     "AgentActiveChatBootstrapSignal",
@@ -282,6 +292,9 @@ __all__ = [
     "RecordingWorkflowDispatcher",
     "ReviewPlan",
     "ReviewDueTimerService",
+    "SchedulerEventKind",
+    "SchedulerTransitionTrigger",
+    "UnreadMessage",
     "annotations",
     "asyncio_sleep",
     "calculate_bootstrap_correction",

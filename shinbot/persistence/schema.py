@@ -167,6 +167,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         mention_sensitivity TEXT NOT NULL DEFAULT 'normal',
         active_reply_threshold_json TEXT NOT NULL DEFAULT '{}',
         active_chat_state_json TEXT NOT NULL DEFAULT '{}',
+        state_resume_json TEXT NOT NULL DEFAULT '{}',
         updated_at REAL NOT NULL
     )
     """,
@@ -177,6 +178,14 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         message_log_id INTEGER NOT NULL,
         sender_id TEXT NOT NULL DEFAULT '',
         created_at REAL NOT NULL,
+        response_profile TEXT NOT NULL DEFAULT '',
+        is_mentioned INTEGER NOT NULL DEFAULT 0,
+        is_reply_to_bot INTEGER NOT NULL DEFAULT 0,
+        is_mention_to_other INTEGER NOT NULL DEFAULT 0,
+        is_poke_to_bot INTEGER NOT NULL DEFAULT 0,
+        is_poke_to_other INTEGER NOT NULL DEFAULT 0,
+        self_platform_id TEXT NOT NULL DEFAULT '',
+        trace_id TEXT NOT NULL DEFAULT '',
         review_consumed INTEGER NOT NULL DEFAULT 0,
         chat_consumed INTEGER NOT NULL DEFAULT 0,
         UNIQUE(session_id, message_log_id),
@@ -568,10 +577,45 @@ def _migrate_agent_scheduler_schema(conn: sqlite3.Connection) -> None:
         "mention_sensitivity": "TEXT NOT NULL DEFAULT 'normal'",
         "active_reply_threshold_json": "TEXT NOT NULL DEFAULT '{}'",
         "active_chat_state_json": "TEXT NOT NULL DEFAULT '{}'",
+        "state_resume_json": "TEXT NOT NULL DEFAULT '{}'",
     }
     for col, spec in new_columns.items():
         if col not in columns:
             conn.execute(f"ALTER TABLE agent_scheduler_states ADD COLUMN {col} {spec}")
+
+
+def _migrate_agent_unread_messages(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "agent_unread_messages")
+    if not columns:
+        return
+    new_columns = {
+        "response_profile": "TEXT NOT NULL DEFAULT ''",
+        "is_mentioned": "INTEGER NOT NULL DEFAULT 0",
+        "is_reply_to_bot": "INTEGER NOT NULL DEFAULT 0",
+        "is_mention_to_other": "INTEGER NOT NULL DEFAULT 0",
+        "is_poke_to_bot": "INTEGER NOT NULL DEFAULT 0",
+        "is_poke_to_other": "INTEGER NOT NULL DEFAULT 0",
+        "self_platform_id": "TEXT NOT NULL DEFAULT ''",
+        "trace_id": "TEXT NOT NULL DEFAULT ''",
+    }
+    for col, spec in new_columns.items():
+        if col not in columns:
+            conn.execute(f"ALTER TABLE agent_unread_messages ADD COLUMN {col} {spec}")
+
+    if "is_mentioned" not in columns:
+        conn.execute(
+            """
+            UPDATE agent_unread_messages
+            SET is_mentioned = COALESCE(
+                (
+                    SELECT m.is_mentioned
+                    FROM message_logs AS m
+                    WHERE m.id = agent_unread_messages.message_log_id
+                ),
+                0
+            )
+            """
+        )
 
 
 def _migrate_agent_unread_ranges(conn: sqlite3.Connection) -> None:
@@ -681,6 +725,7 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_ai_interactions_schema(conn)
     _migrate_message_logs_schema(conn)
     _migrate_agent_scheduler_schema(conn)
+    _migrate_agent_unread_messages(conn)
     _migrate_agent_unread_ranges(conn)
     _migrate_workflow_runs_schema(conn)
     _migrate_media_semantics_schema(conn)

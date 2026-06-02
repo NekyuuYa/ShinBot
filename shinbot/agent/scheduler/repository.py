@@ -9,6 +9,8 @@ from shinbot.agent.scheduler.inbox import AgentInbox
 from shinbot.agent.scheduler.models import (
     ActiveChatDisposition,
     ActiveChatState,
+    ActiveReplyResume,
+    ActiveReplyResumeKind,
     ActiveReplyThreshold,
     AgentState,
     HighPriorityEvent,
@@ -276,6 +278,98 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 (time.time(), session_id),
             )
 
+    def get_active_reply_resume(self, session_id: str) -> ActiveReplyResume | None:
+        """Return the pending active-reply resume target for one session."""
+
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT state_resume_json
+                FROM agent_scheduler_states
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["state_resume_json"] or "{}")
+        except Exception:
+            return None
+        if not payload:
+            return None
+        resume_state_raw = str(payload.get("resume_state") or "").strip()
+        if not resume_state_raw:
+            return None
+        try:
+            resume_state = AgentState(resume_state_raw)
+        except ValueError:
+            return None
+        resume_kind_raw = str(payload.get("kind") or "").strip()
+        try:
+            resume_kind = (
+                ActiveReplyResumeKind(resume_kind_raw)
+                if resume_kind_raw
+                else ActiveReplyResumeKind.RESUME_INTERRUPTED_REVIEW
+            )
+        except ValueError:
+            resume_kind = ActiveReplyResumeKind.RESUME_INTERRUPTED_REVIEW
+        review_plan_payload = payload.get("review_plan")
+        review_plan = None
+        if isinstance(review_plan_payload, dict):
+            review_plan = self._review_plan_from_payload(session_id, review_plan_payload)
+        return ActiveReplyResume(
+            session_id=session_id,
+            kind=resume_kind,
+            resume_state=resume_state,
+            review_plan=review_plan,
+            updated_at=float(payload.get("updated_at") or 0.0),
+        )
+
+    def set_active_reply_resume(self, resume: ActiveReplyResume) -> None:
+        """Persist the resume target used after ACTIVE_REPLY exits."""
+
+        payload = json.dumps(
+            {
+                "kind": resume.kind.value,
+                "resume_state": resume.resume_state.value,
+                "review_plan": (
+                    self._review_plan_payload(resume.review_plan)
+                    if resume.review_plan is not None
+                    else None
+                ),
+                "updated_at": resume.updated_at,
+            },
+            ensure_ascii=False,
+        )
+        current_state = self.get_state(resume.session_id)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_scheduler_states (
+                    session_id, state, state_resume_json, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    state_resume_json = excluded.state_resume_json,
+                    updated_at = excluded.updated_at
+                """,
+                (resume.session_id, current_state.value, payload, resume.updated_at),
+            )
+
+    def clear_active_reply_resume(self, session_id: str) -> None:
+        """Clear any pending active-reply resume target for one session."""
+
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_scheduler_states
+                SET state_resume_json = '{}',
+                    updated_at = ?
+                WHERE session_id = ?
+                """,
+                (time.time(), session_id),
+            )
+
     def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
         """Return known session IDs, optionally filtered by prefix.
         Session IDs are gathered from all scheduler-related tables
@@ -315,6 +409,31 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             message: The unread message to enqueue.
         """
         with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_unread_messages (
+                    session_id, message_log_id, sender_id, created_at,
+                    response_profile, is_mentioned, is_reply_to_bot,
+                    is_mention_to_other, is_poke_to_bot, is_poke_to_other,
+                    self_platform_id, trace_id, review_consumed, chat_consumed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                ON CONFLICT(session_id, message_log_id) DO NOTHING
+                """,
+                (
+                    message.session_id,
+                    message.message_log_id,
+                    message.sender_id,
+                    message.created_at,
+                    message.response_profile,
+                    1 if message.is_mentioned else 0,
+                    1 if message.is_reply_to_bot else 0,
+                    1 if message.is_mention_to_other else 0,
+                    1 if message.is_poke_to_bot else 0,
+                    1 if message.is_poke_to_other else 0,
+                    message.self_platform_id,
+                    message.trace_id,
+                ),
+            )
             existing = conn.execute(
                 """
                 SELECT id
@@ -377,8 +496,8 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
 
     def list_unread(self, session_id: str) -> list[UnreadMessage]:
         """List unread messages for one session.
-        Only messages belonging to ranges that have not been consumed by
-        review or active chat are returned, in chronological order.
+        Only unread message rows that have not been consumed by review or
+        active chat are returned, in chronological order.
 
         Args:
             session_id: The session whose unread messages to list.
@@ -389,17 +508,15 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT m.session_id, m.id AS message_log_id, m.sender_id,
-                       m.created_at, m.is_mentioned
-                FROM agent_unread_ranges r
-                JOIN message_logs m
-                  ON m.session_id = r.session_id
-                 AND m.id >= r.start_msg_log_id
-                 AND m.id <= r.end_msg_log_id
-                WHERE r.session_id = ?
-                  AND r.review_consumed = 0
-                  AND r.chat_consumed = 0
-                ORDER BY m.created_at ASC, m.id ASC
+                SELECT session_id, message_log_id, sender_id, created_at,
+                       response_profile, is_mentioned, is_reply_to_bot,
+                       is_mention_to_other, is_poke_to_bot, is_poke_to_other,
+                       self_platform_id, trace_id
+                FROM agent_unread_messages
+                WHERE session_id = ?
+                  AND review_consumed = 0
+                  AND chat_consumed = 0
+                ORDER BY created_at ASC, message_log_id ASC
                 """,
                 (session_id,),
             ).fetchall()
@@ -409,7 +526,14 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 message_log_id=int(row["message_log_id"]),
                 sender_id=str(row["sender_id"]),
                 created_at=float(row["created_at"]),
+                response_profile=str(row["response_profile"] or ""),
                 is_mentioned=bool(row["is_mentioned"]),
+                is_reply_to_bot=bool(row["is_reply_to_bot"]),
+                is_mention_to_other=bool(row["is_mention_to_other"]),
+                is_poke_to_bot=bool(row["is_poke_to_bot"]),
+                is_poke_to_other=bool(row["is_poke_to_other"]),
+                self_platform_id=str(row["self_platform_id"] or ""),
+                trace_id=str(row["trace_id"] or ""),
             )
             for row in rows
         ]
@@ -444,8 +568,8 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
 
     def count_unread_messages(self, session_id: str) -> int:
         """Count unread messages for one session.
-        Sums the ``message_count`` of all ranges that have not been
-        consumed by review or active chat.
+        Counts unread message rows that have not been consumed by review
+        or active chat.
 
         Args:
             session_id: The session whose unread count to return.
@@ -456,8 +580,8 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT COALESCE(SUM(message_count), 0) AS cnt
-                FROM agent_unread_ranges
+                SELECT COUNT(*) AS cnt
+                FROM agent_unread_messages
                 WHERE session_id = ?
                   AND review_consumed = 0
                   AND chat_consumed = 0
@@ -500,6 +624,22 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 return
 
             unread_range = self._unread_range_from_row(row)
+            conn.execute(
+                """
+                UPDATE agent_unread_messages
+                SET review_consumed = 1
+                WHERE session_id = ?
+                  AND message_log_id >= ?
+                  AND message_log_id <= ?
+                  AND review_consumed = 0
+                  AND chat_consumed = 0
+                """,
+                (
+                    unread_range.session_id,
+                    consumed_start_msg_log_id,
+                    consumed_end_msg_log_id,
+                ),
+            )
             conn.execute("DELETE FROM agent_unread_ranges WHERE id = ?", (range_id,))
             for replacement in self._remaining_ranges_after_consumed(
                 conn,
@@ -536,6 +676,33 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
             return
         placeholders = ",".join("?" for _ in range_ids)
         with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT session_id, start_msg_log_id, end_msg_log_id
+                FROM agent_unread_ranges
+                WHERE id IN ({placeholders})
+                  AND review_consumed = 0
+                  AND chat_consumed = 0
+                """,
+                tuple(range_ids),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE agent_unread_messages
+                    SET review_consumed = 1
+                    WHERE session_id = ?
+                      AND message_log_id >= ?
+                      AND message_log_id <= ?
+                      AND review_consumed = 0
+                      AND chat_consumed = 0
+                    """,
+                    (
+                        str(row["session_id"]),
+                        int(row["start_msg_log_id"]),
+                        int(row["end_msg_log_id"]),
+                    ),
+                )
             conn.execute(
                 f"""
                 UPDATE agent_unread_ranges
@@ -570,6 +737,20 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         groups = _group_consecutive_ids(sorted(set(message_log_ids)))
         consumed_message_ids: list[int] = []
         with self.connect() as conn:
+            if groups:
+                for start_msg_log_id, end_msg_log_id in groups:
+                    conn.execute(
+                        """
+                        UPDATE agent_unread_messages
+                        SET chat_consumed = 1
+                        WHERE session_id = ?
+                          AND message_log_id >= ?
+                          AND message_log_id <= ?
+                          AND review_consumed = 0
+                          AND chat_consumed = 0
+                        """,
+                        (session_id, start_msg_log_id, end_msg_log_id),
+                    )
             for start_msg_log_id, end_msg_log_id in groups:
                 rows = conn.execute(
                     """
@@ -651,12 +832,14 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 placeholders = ",".join("?" for _ in consumed_message_ids)
                 rows = conn.execute(
                     f"""
-                    SELECT session_id, id AS message_log_id, sender_id,
-                           created_at, is_mentioned
-                    FROM message_logs
+                    SELECT session_id, message_log_id, sender_id, created_at,
+                           response_profile, is_mentioned, is_reply_to_bot,
+                           is_mention_to_other, is_poke_to_bot, is_poke_to_other,
+                           self_platform_id, trace_id
+                    FROM agent_unread_messages
                     WHERE session_id = ?
-                      AND id IN ({placeholders})
-                    ORDER BY created_at ASC, id ASC
+                      AND message_log_id IN ({placeholders})
+                    ORDER BY created_at ASC, message_log_id ASC
                     """,
                     (session_id, *consumed_message_ids),
                 ).fetchall()
@@ -666,7 +849,14 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                         message_log_id=int(row["message_log_id"]),
                         sender_id=str(row["sender_id"]),
                         created_at=float(row["created_at"]),
+                        response_profile=str(row["response_profile"] or ""),
                         is_mentioned=bool(row["is_mentioned"]),
+                        is_reply_to_bot=bool(row["is_reply_to_bot"]),
+                        is_mention_to_other=bool(row["is_mention_to_other"]),
+                        is_poke_to_bot=bool(row["is_poke_to_bot"]),
+                        is_poke_to_other=bool(row["is_poke_to_other"]),
+                        self_platform_id=str(row["self_platform_id"] or ""),
+                        trace_id=str(row["trace_id"] or ""),
                     )
                     for row in rows
                 ]
@@ -929,6 +1119,44 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
                 window_seconds=float(threshold_payload.get("window_seconds") or 60.0),
             ),
             updated_at=float(row["updated_at"] or 0.0),
+        )
+
+    @staticmethod
+    def _review_plan_payload(plan: ReviewPlan) -> dict[str, object]:
+        return {
+            "next_review_at": plan.next_review_at,
+            "reason": plan.reason,
+            "mention_sensitivity": plan.mention_sensitivity.value,
+            "active_reply_threshold": {
+                "at_count": plan.active_reply_threshold.at_count,
+                "window_seconds": plan.active_reply_threshold.window_seconds,
+            },
+            "updated_at": plan.updated_at,
+        }
+
+    @staticmethod
+    def _review_plan_from_payload(
+        session_id: str,
+        payload: dict[str, object],
+    ) -> ReviewPlan | None:
+        try:
+            sensitivity = MentionSensitivity(
+                str(payload.get("mention_sensitivity") or MentionSensitivity.NORMAL.value)
+            )
+        except ValueError:
+            sensitivity = MentionSensitivity.NORMAL
+        threshold_payload = payload.get("active_reply_threshold")
+        threshold = threshold_payload if isinstance(threshold_payload, dict) else {}
+        return ReviewPlan(
+            session_id=session_id,
+            next_review_at=float(payload.get("next_review_at") or 0.0),
+            reason=str(payload.get("reason") or ""),
+            mention_sensitivity=sensitivity,
+            active_reply_threshold=ActiveReplyThreshold(
+                at_count=int(threshold.get("at_count") or 1),
+                window_seconds=float(threshold.get("window_seconds") or 60.0),
+            ),
+            updated_at=float(payload.get("updated_at") or 0.0),
         )
 
 

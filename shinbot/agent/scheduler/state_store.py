@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Protocol
 
-from shinbot.agent.scheduler.models import ActiveChatState, AgentState, ReviewPlan
+from shinbot.agent.scheduler.models import (
+    ActiveChatState,
+    ActiveReplyResume,
+    AgentState,
+    ReviewPlan,
+)
 
 
 class AgentStateStore(Protocol):
@@ -35,6 +40,15 @@ class AgentStateStore(Protocol):
     def clear_active_chat_state(self, session_id: str) -> None:
         """Clear active chat interest state for one session."""
 
+    def get_active_reply_resume(self, session_id: str) -> ActiveReplyResume | None:
+        """Return the stored active-reply resume target for one session."""
+
+    def set_active_reply_resume(self, resume: ActiveReplyResume) -> None:
+        """Persist the active-reply resume target for one session."""
+
+    def clear_active_reply_resume(self, session_id: str) -> None:
+        """Clear the active-reply resume target for one session."""
+
     def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
         """Return known session ids, optionally filtered by prefix."""
 
@@ -47,6 +61,7 @@ class InMemoryAgentStateStore:
         self._states: dict[str, AgentState] = defaultdict(lambda: AgentState.IDLE)
         self._review_plans: dict[str, ReviewPlan] = {}
         self._active_chat_states: dict[str, ActiveChatState] = {}
+        self._active_reply_resumes: dict[str, ActiveReplyResume] = {}
 
     def get_state(self, session_id: str) -> AgentState:
         """Return the current scheduler state for a session.
@@ -96,6 +111,21 @@ class InMemoryAgentStateStore:
         """
         self._active_chat_states.pop(session_id, None)
 
+    def get_active_reply_resume(self, session_id: str) -> ActiveReplyResume | None:
+        """Return the stored active-reply resume target for a session."""
+
+        return self._active_reply_resumes.get(session_id)
+
+    def set_active_reply_resume(self, resume: ActiveReplyResume) -> None:
+        """Persist an active-reply resume target for a session."""
+
+        self._active_reply_resumes[resume.session_id] = resume
+
+    def clear_active_reply_resume(self, session_id: str) -> None:
+        """Remove any active-reply resume target for a session."""
+
+        self._active_reply_resumes.pop(session_id, None)
+
     def list_session_ids(self, *, prefix: str | None = None) -> list[str]:
         """Return all known session ids, optionally filtered by prefix.
 
@@ -105,6 +135,7 @@ class InMemoryAgentStateStore:
         session_ids = set(self._states)
         session_ids.update(self._review_plans)
         session_ids.update(self._active_chat_states)
+        session_ids.update(self._active_reply_resumes)
         items = sorted(session_ids)
         if prefix is None:
             return items

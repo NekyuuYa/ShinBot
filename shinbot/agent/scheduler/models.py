@@ -15,6 +15,39 @@ class AgentState(StrEnum):
     ACTIVE_CHAT = "active_chat"
 
 
+class ActiveReplyResumeKind(StrEnum):
+    """Why ACTIVE_REPLY should hand off into a follow-up state."""
+
+    RESUME_INTERRUPTED_REVIEW = "resume_interrupted_review"
+    START_DEFERRED_REVIEW = "start_deferred_review"
+
+
+class SchedulerTransitionTrigger(StrEnum):
+    """Named transition triggers for the scheduler state machine."""
+
+    MESSAGE_PRIORITY_WAKE = "message_priority_wake"
+    REVIEW_DUE = "review_due"
+    DEFERRED_REVIEW_AFTER_ACTIVE_REPLY = "deferred_review_after_active_reply"
+    ACTIVE_REPLY_RESUME_INTERRUPTED_REVIEW = "active_reply_resume_interrupted_review"
+    ACTIVE_REPLY_START_DEFERRED_REVIEW = "active_reply_start_deferred_review"
+    ACTIVE_REPLY_RETURN_IDLE = "active_reply_return_idle"
+    REVIEW_COMPLETE_ENTER_ACTIVE_CHAT = "review_complete_enter_active_chat"
+    REVIEW_COMPLETE_RETURN_IDLE = "review_complete_return_idle"
+    ACTIVE_CHAT_INTEREST_ADJUSTMENT_EXIT = "active_chat_interest_adjustment_exit"
+    ACTIVE_CHAT_DECAY_EXIT = "active_chat_decay_exit"
+    ACTIVE_CHAT_BOOTSTRAP_EXIT = "active_chat_bootstrap_exit"
+    TRANSIENT_STATE_RECOVERED = "transient_state_recovered"
+
+
+class SchedulerEventKind(StrEnum):
+    """Normalized scheduler event kinds derived from Agent signals."""
+
+    MESSAGE = "message"
+    REVIEW_DUE = "review_due"
+    ACTIVE_CHAT_TICK = "active_chat_tick"
+    ACTIVE_CHAT_BOOTSTRAP = "active_chat_bootstrap"
+
+
 class HighPriorityEventKind(StrEnum):
     """High-attention event kinds detected at message ingress time."""
 
@@ -51,6 +84,14 @@ class ActiveReplyThreshold:
 
 
 @dataclass(slots=True, frozen=True)
+class SchedulerEvent:
+    """Explicit scheduler event normalized from an inbound Agent signal."""
+
+    kind: SchedulerEventKind
+    signal: object
+
+
+@dataclass(slots=True, frozen=True)
 class ReviewPlan:
     """Scheduler-owned plan for the next review opportunity."""
 
@@ -75,6 +116,17 @@ class ActiveChatState:
     active_epoch: int = 0
     bootstrap_applied: bool = False
     bootstrap_disposition: ActiveChatDisposition | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveReplyResume:
+    """Resume target remembered while ACTIVE_REPLY temporarily interrupts work."""
+
+    session_id: str
+    kind: ActiveReplyResumeKind
+    resume_state: AgentState
+    review_plan: ReviewPlan | None = None
+    updated_at: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)

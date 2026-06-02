@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -64,6 +65,7 @@ class ActiveReplyDispatcher:
         self._agent_scheduler: AgentScheduler | None = None
         self.last_review_result: ReviewWorkflowResult | None = None
         self.last_review_explanation: ReviewWorkflowExplanation | None = None
+        self._review_tasks: dict[str, asyncio.Task[None]] = {}
 
     def bind_agent_scheduler(self, scheduler: AgentScheduler) -> None:
         """Bind the owning scheduler so review workflow can return state decisions."""
@@ -78,8 +80,12 @@ class ActiveReplyDispatcher:
         response_profile: str,
         is_mentioned: bool,
         is_reply_to_bot: bool,
+        is_mention_to_other: bool,
+        is_poke_to_bot: bool,
+        is_poke_to_other: bool,
         self_platform_id: str,
         events: list[HighPriorityEvent],
+        trace_id: str = "",
     ) -> None:
         """Handle a high-priority message in ACTIVE_REPLY state.
 
@@ -101,6 +107,7 @@ class ActiveReplyDispatcher:
                     sender_id=sender_id,
                     response_profile=response_profile,
                     event_count=len(events),
+                    trace_id=trace_id,
                 )
             )
             if self._agent_scheduler is not None:
@@ -129,6 +136,7 @@ class ActiveReplyDispatcher:
                 sender_id=sender_id,
                 response_profile=response_profile,
                 event_count=len(events),
+                trace_id=trace_id,
             )
         )
         try:
@@ -144,11 +152,12 @@ class ActiveReplyDispatcher:
                 response_profile=response_profile,
                 is_mentioned=is_mentioned,
                 is_reply_to_bot=is_reply_to_bot,
-                is_mention_to_other=False,
-                is_poke_to_bot=False,
-                is_poke_to_other=False,
+                is_mention_to_other=is_mention_to_other,
+                is_poke_to_bot=is_poke_to_bot,
+                is_poke_to_other=is_poke_to_other,
                 self_platform_id=self_platform_id,
                 active_chat_state=active_chat_state,
+                trace_id=trace_id,
             )
             state = self._active_chat_workflow.attention_state_for(session_id)
             if state is not None and not state.pending_buffer:
@@ -160,9 +169,13 @@ class ActiveReplyDispatcher:
                         response_profile=response_profile,
                         is_mentioned=is_mentioned,
                         is_reply_to_bot=is_reply_to_bot,
+                        is_mention_to_other=is_mention_to_other,
+                        is_poke_to_bot=is_poke_to_bot,
+                        is_poke_to_other=is_poke_to_other,
                         self_platform_id=self_platform_id,
                         active_chat_state=active_chat_state,
                         created_at=now,
+                        trace_id=trace_id,
                     )
                 )
             await self._active_chat_workflow.flush_now(
@@ -209,6 +222,9 @@ class ActiveReplyDispatcher:
         """
         if self._review_coordinator is None or self._agent_scheduler is None:
             return
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._review_tasks[session_id] = current_task
 
         logger.debug(
             format_log_event(
@@ -219,51 +235,63 @@ class ActiveReplyDispatcher:
                 unread_count=len(unread_messages),
             )
         )
-        result = await self._review_coordinator.run(
-            scheduler=self._agent_scheduler,
-            session_id=session_id,
-            review_plan=review_plan,
-            unread_messages=unread_messages,
-        )
-        self.last_review_result = result
-        self.last_review_explanation = build_review_workflow_explanation(result)
-        self._record_review_run(session_id, result, unread_messages)
-        logger.debug(
-            format_log_event(
-                "agent.review.workflow.finish",
+        try:
+            result = await self._review_coordinator.run(
+                scheduler=self._agent_scheduler,
                 session_id=session_id,
-                review_run_id=result.review_run_id,
-                failed=result.failed,
-                reply_replied=(
-                    result.reply.replied if result.reply is not None else None
-                ),
-                active_chat_started=(
-                    result.completion.active_chat_started
-                    if result.completion is not None
-                    else None
-                ),
+                review_plan=review_plan,
+                unread_messages=unread_messages,
             )
-        )
-        if (
-            self._active_chat_workflow is not None
-            and result.completion is not None
-            and result.completion.active_chat_started
-            and result.completion.active_chat_state is not None
-        ):
-            handoff_context = await self._build_handoff_context(
-                session_id=session_id,
-                result=result,
-                explanation=self.last_review_explanation,
+            self.last_review_result = result
+            self.last_review_explanation = build_review_workflow_explanation(result)
+            self._record_review_run(session_id, result, unread_messages)
+            logger.debug(
+                format_log_event(
+                    "agent.review.workflow.finish",
+                    session_id=session_id,
+                    review_run_id=result.review_run_id,
+                    failed=result.failed,
+                    reply_replied=(
+                        result.reply.replied if result.reply is not None else None
+                    ),
+                    active_chat_started=(
+                        result.completion.active_chat_started
+                        if result.completion is not None
+                        else None
+                    ),
+                )
             )
-            await self.start_active_chat(
-                session_id=session_id,
-                active_chat_state=result.completion.active_chat_state,
-                review_result_summary=handoff_context,
-                initial_unread_messages=_unread_messages_added_after_review(
-                    before=unread_messages,
-                    after=self._agent_scheduler.unread_messages(session_id),
-                ),
-            )
+            if (
+                self._active_chat_workflow is not None
+                and result.completion is not None
+                and result.completion.active_chat_started
+                and result.completion.active_chat_state is not None
+            ):
+                handoff_context = await self._build_handoff_context(
+                    session_id=session_id,
+                    result=result,
+                    explanation=self.last_review_explanation,
+                )
+                await self.start_active_chat(
+                    session_id=session_id,
+                    active_chat_state=result.completion.active_chat_state,
+                    review_result_summary=handoff_context,
+                    initial_unread_messages=_unread_messages_added_after_review(
+                        before=unread_messages,
+                        after=self._agent_scheduler.unread_messages(session_id),
+                    ),
+                )
+        finally:
+            if self._review_tasks.get(session_id) is current_task:
+                self._review_tasks.pop(session_id, None)
+
+    def cancel_review(self, session_id: str) -> None:
+        """Cancel an in-flight review workflow for the given session."""
+
+        task = self._review_tasks.get(session_id)
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        task.cancel()
 
     def _record_review_run(
         self,
