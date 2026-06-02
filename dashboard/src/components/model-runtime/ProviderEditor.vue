@@ -404,6 +404,9 @@ const currentProviderSourceTitle = computed(
 );
 
 const currentProviderSourceSubtitle = computed(() => {
+  if (selectedProviderSource.value?.description) {
+    return selectedProviderSource.value.description;
+  }
   if (selectedProviderSource.value?.defaultBaseUrl) {
     return selectedProviderSource.value.defaultBaseUrl;
   }
@@ -627,11 +630,11 @@ const providerSourcePickerSections = computed<GenericPickerSection[]>(() => [
   {
     id: "provider-sources",
     label: t("pages.modelRuntime.fields.source"),
-    items: providerSourceOptions.map((source) => ({
+    items: providerSourceOptions.value.map((source) => ({
       value: source.key,
       title: source.label,
-      subtitle: source.defaultBaseUrl,
-      icon: providerSourceIcon(source.type),
+      subtitle: source.description || source.defaultBaseUrl,
+      icon: source.icon || providerSourceIcon(source.type),
       iconColor: "primary",
       tag: source.type,
       tagColor: source.supportsCatalog ? "primary" : "default",

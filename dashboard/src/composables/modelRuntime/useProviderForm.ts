@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 
 import type {
   ModelRuntimeProvider,
+  ProviderTypeMetadata,
   ProviderPayload,
   ProviderProbeResult,
 } from '@/api/modelRuntime'
@@ -10,6 +11,7 @@ import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import type { useModelRuntimeStore } from '@/stores/modelRuntime'
 import { entriesToObject, objectToEntries, prettyJson, safeJsonParse } from '@/utils/format'
 import {
+  buildProviderSourceCatalog,
   providerSourceTemplates,
   resolveProviderSource,
   resolveProviderSourceKey,
@@ -26,6 +28,8 @@ interface ProviderFormOptions {
   selectProvider: (id: string) => void
   ensureSelection: () => void
 }
+
+const AUTH_FIELD_DEFAULT_KEY = 'api_key'
 
 const MANAGED_DEFAULT_PARAM_KEYS = [
   'apiVersion',
@@ -72,16 +76,60 @@ export function useProviderForm({
   const providerHeaderRows = ref<KeyValueEntry[]>([])
   const probingProviderId = ref('')
   const lastProviderProbeResult = ref<ProviderProbeResult | null>(null)
-  const providerSourceOptions = providerSourceTemplates
+  const providerTypeMetadataByType = computed<Record<string, ProviderTypeMetadata>>(() =>
+    Object.fromEntries(store.providerTypes.map((item) => [item.type, item])),
+  )
+  const providerSourceOptions = computed(() => {
+    const dynamic = buildProviderSourceCatalog(store.providerTypes)
+    return dynamic.length > 0 ? dynamic : providerSourceTemplates
+  })
 
   const providerCapabilityType = computed(() =>
     selectedProvider.value?.capabilityType || tabToCapabilityType(activeTab.value)
   )
-  const selectedProviderSource = computed(() => resolveProviderSource(providerForm.value.sourceType))
-  const sourceSupportsThinking = computed(() => selectedProviderSource.value?.supportsThinking ?? false)
-  const sourceSupportsFilters = computed(() => selectedProviderSource.value?.supportsFilters ?? false)
-  const showProviderTokenField = computed(() => selectedProviderSource.value?.supportsToken ?? true)
-  const showApiVersionField = computed(() => selectedProviderSource.value?.showApiVersion ?? false)
+  const selectedProviderSource = computed(() =>
+    resolveProviderSource(providerForm.value.sourceType, store.providerTypes),
+  )
+  const selectedProviderTypeMetadata = computed(() => {
+    const explicitType = selectedProvider.value?.type
+    if (explicitType) {
+      return providerTypeMetadataByType.value[explicitType] ?? null
+    }
+    const sourceType = selectedProviderSource.value?.type
+    if (!sourceType) {
+      return null
+    }
+    return providerTypeMetadataByType.value[sourceType] ?? null
+  })
+  const configFields = computed(() => selectedProviderTypeMetadata.value?.configFields ?? [])
+  const hasConfigField = (location: 'auth' | 'default_params', key: string) =>
+    computed(() =>
+      configFields.value.some((field) => field.location === location && field.key === key),
+    )
+  const sourceSupportsThinking = computed(
+    () =>
+      hasConfigField('default_params', 'thinking').value
+      || selectedProviderSource.value?.supportsThinking
+      || false,
+  )
+  const sourceSupportsFilters = computed(
+    () =>
+      hasConfigField('default_params', 'filters').value
+      || selectedProviderSource.value?.supportsFilters
+      || false,
+  )
+  const showProviderTokenField = computed(
+    () =>
+      configFields.value.some((field) => field.location === 'auth' && field.secret)
+      || selectedProviderSource.value?.supportsToken
+      || false,
+  )
+  const showApiVersionField = computed(
+    () =>
+      hasConfigField('default_params', 'apiVersion').value
+      || selectedProviderSource.value?.showApiVersion
+      || false,
+  )
   const providerCanManageModels = computed(() => !!selectedProvider.value && !isCreatingProvider.value)
   const hasStoredCredential = computed(() =>
     Boolean(selectedProvider.value?.hasAuth) && !isCreatingProvider.value
@@ -186,7 +234,9 @@ export function useProviderForm({
   )
 
   const resetProviderForm = (type = '') => {
-    const source = type ? resolveProviderSource(type) || providerSourceTemplates[0] : null
+    const source = type
+      ? resolveProviderSource(type, store.providerTypes) || providerSourceOptions.value[0] || null
+      : null
     Object.assign(providerForm.value, {
       id: '',
       displayName: '',
@@ -206,8 +256,11 @@ export function useProviderForm({
   }
 
   const applyProviderSource = (type: string, previousType?: string) => {
-    const previousSource = resolveProviderSource(previousType ?? providerForm.value.sourceType)
-    const source = resolveProviderSource(type)
+    const previousSource = resolveProviderSource(
+      previousType ?? providerForm.value.sourceType,
+      store.providerTypes,
+    )
+    const source = resolveProviderSource(type, store.providerTypes)
     if (!source) {
       return
     }
@@ -242,7 +295,7 @@ export function useProviderForm({
     if (!value || value === providerForm.value.sourceType) {
       return
     }
-    const source = resolveProviderSource(value)
+    const source = resolveProviderSource(value, store.providerTypes)
     if (!source) {
       return
     }
@@ -282,17 +335,21 @@ export function useProviderForm({
       const payload: ProviderPayload = {
         id: providerForm.value.id.trim(),
         displayName: providerForm.value.displayName.trim() || providerForm.value.id.trim(),
-        type: resolveProviderSource(providerForm.value.sourceType)?.type ?? providerForm.value.sourceType,
+        type:
+          resolveProviderSource(providerForm.value.sourceType, store.providerTypes)?.type
+          ?? providerForm.value.sourceType,
         capabilityType: providerCapabilityType.value,
         baseUrl: providerForm.value.baseUrl.trim(),
         enabled: providerForm.value.enabled,
         defaultParams: nextDefaults,
       }
 
+      const authParamKey = selectedProviderTypeMetadata.value?.authParamKey || AUTH_FIELD_DEFAULT_KEY
+
       if (!showProviderTokenField.value || providerForm.value.clearAuthOnSave) {
         payload.auth = {}
       } else if (providerForm.value.token.trim()) {
-        payload.auth = { api_key: providerForm.value.token.trim() }
+        payload.auth = { [authParamKey]: providerForm.value.token.trim() }
       }
 
       if (isCreatingProvider.value) {
@@ -352,13 +409,14 @@ export function useProviderForm({
     if (isCreatingProvider.value || !selectedProvider.value) {
       return
     }
-    const source = resolveProviderSource(selectedProvider.value.type)
+    const source = resolveProviderSource(selectedProvider.value.type, store.providerTypes)
     Object.assign(providerForm.value, {
       id: selectedProvider.value.id,
       displayName: selectedProvider.value.displayName,
       sourceType: resolveProviderSourceKey(
         selectedProvider.value.type,
-        selectedProvider.value.baseUrl
+        selectedProvider.value.baseUrl,
+        store.providerTypes,
       ),
       baseUrl: selectedProvider.value.baseUrl,
       token: '',
@@ -390,6 +448,7 @@ export function useProviderForm({
     providerCapabilityType,
     providerSaveLabel,
     selectedProviderSource,
+    selectedProviderTypeMetadata,
     sourceSupportsThinking,
     sourceSupportsFilters,
     showProviderTokenField,

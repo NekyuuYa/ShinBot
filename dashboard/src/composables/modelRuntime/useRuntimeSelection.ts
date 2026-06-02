@@ -56,8 +56,8 @@ export function useRuntimeSelection({
     filteredProviders.value.map(({ provider, matchedModelCount }) => ({
       id: provider.id,
       title: provider.displayName || provider.id,
-      subtitle: resolveProviderSource(provider.type)?.label || provider.type,
-      icon: 'mdi-cloud-outline',
+      subtitle: resolveProviderSource(provider.type, store.providerTypes)?.label || provider.type,
+      icon: resolveProviderSource(provider.type, store.providerTypes)?.icon || 'mdi-cloud-outline',
       badge: matchedModelCount,
       badgeColor: provider.enabled ? 'success' : 'grey',
     }))

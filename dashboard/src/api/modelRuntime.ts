@@ -219,6 +219,49 @@ export interface ProviderCatalogItem {
   contextWindow: number | null
 }
 
+export interface RuntimeMetadataField {
+  key: string
+  location: 'auth' | 'default_params'
+  control: 'string' | 'secret' | 'json' | 'key_value'
+  label: string
+  description: string
+  placeholder: string
+  defaultValue: unknown
+  secret: boolean
+}
+
+export interface RuntimeMetadataPreset {
+  key: string
+  label: string
+  defaultBaseUrl: string
+  description: string
+  icon: string
+  recommended: boolean
+}
+
+export interface BackendMetadata {
+  name: string
+  displayName: string
+  description: string
+  kind: string
+  supportedProviderTypes: string[]
+}
+
+export interface ProviderTypeMetadata {
+  type: string
+  displayName: string
+  description: string
+  icon: string
+  defaultBaseUrl: string
+  supportedBackends: string[]
+  supportsCatalog: boolean
+  authStrategy: string
+  authParamKey: string
+  requestHeadersParamKeys: string[]
+  presets: RuntimeMetadataPreset[]
+  configFields: RuntimeMetadataField[]
+}
+
 export interface ProviderProbeResult {
   success: boolean
   providerId: string
@@ -263,6 +306,14 @@ export interface RoutePayload {
 }
 
 export const modelRuntimeApi = {
+  listBackendMetadata() {
+    return apiClient.get<BackendMetadata[]>('/model-runtime/metadata/backends')
+  },
+
+  listProviderTypeMetadata() {
+    return apiClient.get<ProviderTypeMetadata[]>('/model-runtime/metadata/provider-types')
+  },
+
   listProviders() {
     return apiClient.get<ModelRuntimeProvider[]>('/model-runtime/providers')
   },

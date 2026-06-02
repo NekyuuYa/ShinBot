@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
+  type BackendMetadata,
   modelRuntimeApi,
   type ModelExecutionRecord,
   type ModelRuntimeModel,
@@ -8,6 +9,7 @@ import {
   type ModelRuntimeRoute,
   type ProviderCatalogItem,
   type ProviderPayload,
+  type ProviderTypeMetadata,
   type RoutePayload,
   type ModelPayload,
 } from '@/api/modelRuntime'
@@ -22,6 +24,8 @@ export const useModelRuntimeStore = defineStore(
   'modelRuntime',
   () => {
     const providers = ref<ModelRuntimeProvider[]>([])
+    const providerTypes = ref<ProviderTypeMetadata[]>([])
+    const backends = ref<BackendMetadata[]>([])
     const models = ref<ModelRuntimeModel[]>([])
     const routes = ref<ModelRuntimeRoute[]>([])
     const executions = ref<ModelExecutionRecord[]>([])
@@ -148,12 +152,23 @@ export const useModelRuntimeStore = defineStore(
       isLoading.value = true
       error.value = ''
       try {
-        const [providersResp, modelsResp, routesResp, executionsResp] = await Promise.all([
+        const [
+          providerTypesResp,
+          backendsResp,
+          providersResp,
+          modelsResp,
+          routesResp,
+          executionsResp,
+        ] = await Promise.all([
+          modelRuntimeApi.listProviderTypeMetadata(),
+          modelRuntimeApi.listBackendMetadata(),
           modelRuntimeApi.listProviders(),
           modelRuntimeApi.listModels(),
           modelRuntimeApi.listRoutes(),
           modelRuntimeApi.listExecutions(30),
         ])
+        providerTypes.value = providerTypesResp.data.data || []
+        backends.value = backendsResp.data.data || []
         providers.value = providersResp.data.data || []
         models.value = modelsResp.data.data || []
         routes.value = routesResp.data.data || []
@@ -228,6 +243,8 @@ export const useModelRuntimeStore = defineStore(
 
     return {
       providers,
+      providerTypes,
+      backends,
       models,
       routes,
       executions,

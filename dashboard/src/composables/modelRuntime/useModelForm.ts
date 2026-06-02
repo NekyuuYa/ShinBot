@@ -148,7 +148,8 @@ export function useModelForm({
         return {
           providerId: provider.id,
           providerName: provider.displayName || provider.id,
-          providerType: resolveProviderSource(provider.type)?.label || provider.type,
+          providerType:
+            resolveProviderSource(provider.type, store.providerTypes)?.label || provider.type,
           items: [...items.values()].sort((left, right) => left.title.localeCompare(right.title)),
         }
       })

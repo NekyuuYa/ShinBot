@@ -1,3 +1,5 @@
+import type { ProviderTypeMetadata } from '@/api/modelRuntime'
+
 export type ModelRuntimeTab = 'routes' | 'chat' | 'embedding' | 'rerank' | 'tts' | 'stt' | 'image' | 'video'
 export type ProviderCapabilityType = 'completion' | 'embedding' | 'rerank' | 'tts' | 'stt' | 'image' | 'video'
 
@@ -57,6 +59,8 @@ export interface ProviderSourceTemplate {
   key: string
   label: string
   type: string
+  icon?: string
+  description?: string
   defaultBaseUrl: string
   supportsToken: boolean
   supportsCatalog: boolean
@@ -70,6 +74,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'openai',
     label: 'OpenAI',
     type: 'openai',
+    icon: 'mdi-cloud-outline',
     defaultBaseUrl: 'https://api.openai.com/v1',
     supportsToken: true,
     supportsCatalog: true,
@@ -80,6 +85,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'openrouter',
     label: 'OpenRouter',
     type: 'openrouter',
+    icon: 'mdi-cloud-outline',
     defaultBaseUrl: 'https://openrouter.ai/api/v1',
     supportsToken: true,
     supportsCatalog: true,
@@ -90,6 +96,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'anthropic',
     label: 'Anthropic',
     type: 'anthropic',
+    icon: 'mdi-alpha-a-circle-outline',
     defaultBaseUrl: 'https://api.anthropic.com',
     supportsToken: true,
     supportsCatalog: true,
@@ -100,6 +107,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'gemini',
     label: 'Gemini',
     type: 'gemini',
+    icon: 'mdi-google',
     defaultBaseUrl: 'https://generativelanguage.googleapis.com',
     supportsToken: true,
     supportsCatalog: true,
@@ -110,6 +118,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'azure_openai',
     label: 'Azure OpenAI',
     type: 'azure_openai',
+    icon: 'mdi-microsoft-azure',
     defaultBaseUrl: 'https://your-resource.openai.azure.com/openai',
     supportsToken: true,
     supportsCatalog: true,
@@ -121,6 +130,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'ollama',
     label: 'Ollama',
     type: 'ollama',
+    icon: 'mdi-lan',
     defaultBaseUrl: 'http://127.0.0.1:11434',
     supportsToken: false,
     supportsCatalog: true,
@@ -131,6 +141,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'dashscope',
     label: 'DashScope (Qwen)',
     type: 'dashscope',
+    icon: 'mdi-cloud-outline',
     defaultBaseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
     supportsToken: true,
     supportsCatalog: true,
@@ -141,6 +152,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'custom_openai',
     label: 'Custom OpenAI Compatible',
     type: 'custom_openai',
+    icon: 'mdi-api',
     defaultBaseUrl: 'https://api.example.com/v1',
     supportsToken: true,
     supportsCatalog: true,
@@ -151,6 +163,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'deepseek',
     label: 'DeepSeek',
     type: 'deepseek',
+    icon: 'mdi-fish',
     defaultBaseUrl: 'https://api.deepseek.com',
     supportsToken: true,
     supportsCatalog: true,
@@ -161,6 +174,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'xiaomi_mimo',
     label: 'Xiaomi MiMo',
     type: 'xiaomi_mimo',
+    icon: 'mdi-cellphone',
     defaultBaseUrl: 'https://api.xiaomimimo.com/v1',
     supportsToken: true,
     supportsCatalog: true,
@@ -171,6 +185,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'xiaomi_mimo_token_plan',
     label: 'Xiaomi MiMo Token Plan',
     type: 'xiaomi_mimo',
+    icon: 'mdi-cellphone',
     defaultBaseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
     supportsToken: true,
     supportsCatalog: true,
@@ -181,6 +196,7 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
     key: 'siliconflow',
     label: 'SiliconFlow',
     type: 'siliconflow',
+    icon: 'mdi-atom',
     defaultBaseUrl: 'https://api.siliconflow.cn/v1',
     supportsToken: true,
     supportsCatalog: true,
@@ -189,21 +205,86 @@ export const providerSourceTemplates: ProviderSourceTemplate[] = [
   },
 ]
 
-export function resolveProviderSource(type: string) {
-  return providerSourceTemplates.find((item) => item.type === type || item.key === type) ?? null
+export function providerTypeMetadataToSources(
+  metadata: ProviderTypeMetadata,
+): ProviderSourceTemplate[] {
+  const fields = metadata.configFields || []
+  const hasField = (location: 'auth' | 'default_params', key: string) =>
+    fields.some((field) => field.location === location && field.key === key)
+  const buildSource = (
+    key: string,
+    label: string,
+    defaultBaseUrl: string,
+  ): ProviderSourceTemplate => ({
+    key,
+    label,
+    type: metadata.type,
+    icon: metadata.icon,
+    description: metadata.description,
+    defaultBaseUrl,
+    supportsToken: fields.some((field) => field.location === 'auth' && field.secret),
+    supportsCatalog: metadata.supportsCatalog,
+    supportsThinking: hasField('default_params', 'thinking'),
+    supportsFilters: hasField('default_params', 'filters'),
+    showApiVersion: hasField('default_params', 'apiVersion'),
+  })
+
+  if (metadata.presets.length > 0) {
+    return metadata.presets.map((preset) =>
+      buildSource(
+        preset.key,
+        preset.label || metadata.displayName || metadata.type,
+        preset.defaultBaseUrl || metadata.defaultBaseUrl,
+      ),
+    )
+  }
+
+  return [
+    buildSource(
+      metadata.type,
+      metadata.displayName || metadata.type,
+      metadata.defaultBaseUrl,
+    ),
+  ]
 }
 
-export function resolveProviderSourceKey(type: string, baseUrl?: string): string {
+export function buildProviderSourceCatalog(
+  providerTypes: ProviderTypeMetadata[],
+): ProviderSourceTemplate[] {
+  if (providerTypes.length === 0) {
+    return providerSourceTemplates
+  }
+  return providerTypes.flatMap(providerTypeMetadataToSources)
+}
+
+export function resolveProviderSource(
+  type: string,
+  providerTypes: ProviderTypeMetadata[] = [],
+) {
+  const catalog = buildProviderSourceCatalog(providerTypes)
+  return catalog.find((item) => item.type === type || item.key === type) ?? null
+}
+
+export function resolveProviderSourceKey(
+  type: string,
+  baseUrl?: string,
+  providerTypes: ProviderTypeMetadata[] = [],
+): string {
+  const catalog = buildProviderSourceCatalog(providerTypes)
   if (baseUrl) {
-    const exact = providerSourceTemplates.find(
+    const exact = catalog.find(
       (item) => item.type === type && item.defaultBaseUrl === baseUrl
     )
     if (exact) return exact.key
   }
-  return providerSourceTemplates.find((item) => item.type === type)?.key ?? type
+  return catalog.find((item) => item.type === type)?.key ?? type
 }
 
 export function providerSourceIcon(type: string) {
+  const staticMatch = providerSourceTemplates.find((item) => item.key === type || item.type === type)
+  if (staticMatch?.icon) {
+    return staticMatch.icon
+  }
   if (type === 'azure_openai') {
     return 'mdi-microsoft-azure'
   }

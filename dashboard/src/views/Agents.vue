@@ -240,7 +240,9 @@ const modelRefProviderGroups = computed(() =>
     .map((provider) => ({
       providerId: provider.id,
       providerName: provider.displayName || provider.id,
-      providerType: resolveProviderSource(provider.type)?.label || provider.type,
+      providerType:
+        resolveProviderSource(provider.type, modelRuntimeStore.providerTypes)?.label
+        || provider.type,
       items: (modelRuntimeStore.modelsByProvider[provider.id] || [])
         .map((model) => ({
           value: `[model]${model.id}`,

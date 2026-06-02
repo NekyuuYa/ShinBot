@@ -258,6 +258,7 @@ export function useModelRuntimePage() {
     defaultParamsJsonError: providerForm.defaultParamsJsonError,
     defaultParamsPreviewJson: providerForm.defaultParamsPreviewJson,
     selectedProviderSource: providerForm.selectedProviderSource,
+    selectedProviderTypeMetadata: providerForm.selectedProviderTypeMetadata,
     sourceSupportsThinking: providerForm.sourceSupportsThinking,
     sourceSupportsFilters: providerForm.sourceSupportsFilters,
     showApiVersionField: providerForm.showApiVersionField,
