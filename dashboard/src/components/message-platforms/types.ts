@@ -12,6 +12,8 @@ export interface MessagePlatformDraft extends MessagePlatformFormState {
   createdAt?: number
   lastModified?: number
   running?: boolean
+  connected?: boolean
+  available?: boolean
 }
 
 export interface MessagePlatformAdapterOption {

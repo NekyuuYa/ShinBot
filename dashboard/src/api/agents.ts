@@ -1,5 +1,11 @@
 import { apiClient } from './client'
 
+export interface AgentRuntimePlatformState {
+  running: boolean
+  connected: boolean
+  available: boolean
+}
+
 export interface Agent {
   uuid: string
   agentId: string
@@ -27,6 +33,8 @@ export interface AgentPayload {
 
 export interface AgentRuntimeSession {
   sessionId: string
+  adapterInstanceId: string
+  platformState: AgentRuntimePlatformState
   state: string
   reviewPlan: {
     sessionId: string
@@ -101,6 +109,7 @@ export interface AgentRuntimeProfile {
     sessionPatterns: string[]
     enabled: boolean
     priority: number
+    platformState: AgentRuntimePlatformState
   }[]
   sessions: AgentRuntimeSession[]
 }

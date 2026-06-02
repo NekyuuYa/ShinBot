@@ -46,6 +46,10 @@
         <strong>{{ platformSummary }}</strong>
       </div>
       <div class="bot-meta-row">
+        <span>{{ platformHealthLabel }}</span>
+        <strong>{{ platformHealthSummary }}</strong>
+      </div>
+      <div class="bot-meta-row">
         <span>{{ commandsLabel }}</span>
         <strong>{{
           bot.commands.enabled ? bot.commands.prefixes.join(' ') : disabledLabel
@@ -74,6 +78,8 @@ interface Props {
   bot: BotInstanceDraft
   displayName: string
   platformSummary: string
+  platformHealthLabel: string
+  platformHealthSummary: string
   agentModeLabel: string
   bindingsLabel: string
   platformsLabel: string

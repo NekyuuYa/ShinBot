@@ -8,6 +8,9 @@ export interface Instance {
   name: string
   adapterType: string
   status: 'running' | 'stopped'
+  running: boolean
+  connected: boolean
+  available: boolean
   config: InstanceConfig
   botConfig: BotConfigSummary | null
   createdAt: number
@@ -42,6 +45,9 @@ interface BackendInstance {
   adapter?: string
   adapterType?: string
   status: 'running' | 'stopped'
+  running?: boolean
+  connected?: boolean
+  available?: boolean
   config: InstanceConfig
   instanceConfig?: BotConfigSummary | null
   botConfig?: BotConfigSummary | null
@@ -60,6 +66,9 @@ const normalizeInstance = (item: BackendInstance): Instance => ({
   name: item.name,
   adapterType: item.adapterType ?? item.adapter ?? '',
   status: item.status,
+  running: item.running ?? item.status === 'running',
+  connected: item.connected ?? false,
+  available: item.available ?? false,
   config: item.config,
   botConfig: item.botConfig ?? item.instanceConfig ?? null,
   createdAt: item.createdAt,

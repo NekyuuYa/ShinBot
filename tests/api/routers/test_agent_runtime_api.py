@@ -9,6 +9,28 @@ from shinbot.agent.runtime import install_agent_runtime
 from shinbot.agent.scheduler import AgentState
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
+from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
+from shinbot.schema.elements import MessageElement
+
+
+class _MockAdapter(BaseAdapter):
+    def __init__(self, instance_id: str, platform: str, **kwargs) -> None:
+        super().__init__(instance_id, platform)
+
+    async def start(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def send(self, target_session: str, elements: list[MessageElement]) -> MessageHandle:
+        return MessageHandle(message_id="msg-1", adapter_ref=self)
+
+    async def call_api(self, method: str, params: dict[str, object]) -> object:
+        return {"ok": True}
+
+    async def get_capabilities(self) -> dict[str, object]:
+        return {"elements": ["text"], "actions": ["message.create"], "limits": {}}
 
 
 class _BootStub:
@@ -224,3 +246,58 @@ def test_agent_runtime_overview_includes_latest_review_run(tmp_path: Path):
     assert session["latestReviewRun"]["sessionId"] == session_id
     assert session["latestReviewRun"]["finishReason"] == "active_chat_started"
     assert "scan=selected" in session["latestReviewRun"]["responseSummary"]
+
+
+def test_agent_runtime_overview_includes_binding_and_session_platform_state(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "inst-1:group:room"
+    runtime.agent_profile_for_bot("bot-main").agent_scheduler._state_store.set_state(
+        session_id,
+        AgentState.ACTIVE_CHAT,
+    )
+    bot.adapter_manager.register_adapter("mock", _MockAdapter)
+    bot.adapter_manager.create_instance("inst-1", "mock")
+    boot = _BootStub(tmp_path)
+    boot.bot_service_configs = (
+        type(
+            "BotConfig",
+            (),
+            {
+                "id": "bot-main",
+                "display_name": "Bot Main",
+                "enabled": True,
+                "agent": type("AgentConfig", (), {"mode": "full", "config": ""})(),
+                "bindings": (
+                    type(
+                        "BindingConfig",
+                        (),
+                        {
+                            "adapter_instance_id": "inst-1",
+                            "session_patterns": ("group:*",),
+                            "enabled": True,
+                            "priority": 0,
+                        },
+                    )(),
+                ),
+            },
+        )(),
+    )
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/agent-runtime", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    profile = response.json()["data"][0]
+    assert profile["bindings"][0]["platformState"] == {
+        "running": False,
+        "connected": False,
+        "available": False,
+    }
+    assert profile["sessions"][0]["adapterInstanceId"] == "inst-1"
+    assert profile["sessions"][0]["platformState"] == {
+        "running": False,
+        "connected": False,
+        "available": False,
+    }

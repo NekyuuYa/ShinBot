@@ -180,6 +180,8 @@ def register_chat_action_tools(
             return {
                 "error": f"Adapter not found for instance {instance_id}",
             }
+        if not adapter_manager.is_connected(instance_id):
+            raise RuntimeError(f"Platform adapter {instance_id} is offline")
 
         idempotency_claim = idempotency_store.begin(idempotency_key)
         if not idempotency_claim.accepted:
@@ -320,6 +322,8 @@ def register_chat_action_tools(
             return {
                 "error": f"Adapter not found for instance {instance_id}",
             }
+        if not adapter_manager.is_connected(instance_id):
+            raise RuntimeError(f"Platform adapter {instance_id} is offline")
 
         params: dict[str, Any] = {"user_id": user_id}
         session_type = _session_type(session_id)

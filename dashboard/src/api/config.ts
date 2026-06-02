@@ -139,6 +139,8 @@ export interface ConfigWorkspaceRuntime {
   adapterInstances: Array<{
     id: string
     running: boolean
+    connected: boolean
+    available: boolean
   }>
   requiresRestartAfterSave: boolean
 }

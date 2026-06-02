@@ -30,22 +30,27 @@ class FakeAdapter:
 
 
 class FakeAdapterManager:
-    def __init__(self, adapter: FakeAdapter) -> None:
+    def __init__(self, adapter: FakeAdapter, *, connected: bool = True) -> None:
         self.adapter = adapter
+        self.connected = connected
 
     def get_instance(self, instance_id: str) -> FakeAdapter | None:
         return self.adapter if instance_id == self.adapter.instance_id else None
+
+    def is_connected(self, instance_id: str) -> bool:
+        return instance_id == self.adapter.instance_id and self.connected
 
 
 def _register_tools(
     adapter: FakeAdapter,
     *,
     store: SendReplyIdempotencyStore | None = None,
+    connected: bool = True,
 ) -> ToolManager:
     registry = ToolRegistry()
     register_chat_action_tools(
         registry,
-        adapter_manager=FakeAdapterManager(adapter),  # type: ignore[arg-type]
+        adapter_manager=FakeAdapterManager(adapter, connected=connected),  # type: ignore[arg-type]
         send_reply_idempotency_store=store,
     )
     return ToolManager(registry)
@@ -151,3 +156,24 @@ def test_send_reply_idempotency_store_prunes_by_ttl_and_capacity() -> None:
     assert store.begin("b").accepted is False
     now[0] = 200.0
     assert store.begin("b").accepted is True
+
+
+@pytest.mark.asyncio
+async def test_send_reply_fails_when_adapter_is_offline() -> None:
+    adapter = FakeAdapter()
+    manager = _register_tools(adapter, connected=False)
+
+    result = await manager.execute(
+        ToolCallRequest(
+            tool_name="send_reply",
+            arguments={"text": "hello"},
+            caller="test.review",
+            instance_id="bot",
+            session_id="bot:group:room",
+        )
+    )
+
+    assert result.success is False
+    assert result.error_code == "tool_execution_failed"
+    assert "offline" in result.error_message.lower()
+    assert adapter.sent == []

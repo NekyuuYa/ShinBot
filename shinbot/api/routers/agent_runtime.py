@@ -23,6 +23,9 @@ class AgentRuntimeBinding(BaseModel):
     sessionPatterns: list[str] = Field(default_factory=list)
     enabled: bool = False
     priority: int = 0
+    platformState: dict[str, bool] = Field(
+        default_factory=lambda: {"running": False, "connected": False, "available": False}
+    )
 
 
 class AgentRuntimeTask(BaseModel):
@@ -35,6 +38,10 @@ class AgentRuntimeTask(BaseModel):
 
 class AgentRuntimeSession(BaseModel):
     sessionId: str = ""
+    adapterInstanceId: str = ""
+    platformState: dict[str, bool] = Field(
+        default_factory=lambda: {"running": False, "connected": False, "available": False}
+    )
     state: str = ""
     reviewPlan: dict[str, Any] | None = None
     activeChatState: dict[str, Any] | None = None
@@ -128,6 +135,26 @@ def _review_run_payload(row: Any) -> dict[str, Any] | None:
     }
 
 
+def _platform_state_payload(bot: Any, instance_id: str) -> dict[str, bool]:
+    """Build runtime availability flags for an adapter instance.
+
+    Args:
+        bot: The running ShinBot application.
+        instance_id: Adapter instance identifier.
+
+    Returns:
+        A runtime availability payload.
+    """
+    manager = getattr(bot, "adapter_manager", None)
+    if manager is None or not instance_id:
+        return {"running": False, "connected": False, "available": False}
+    return {
+        "running": bool(manager.is_running(instance_id)),
+        "connected": bool(manager.is_connected(instance_id)),
+        "available": bool(manager.is_available(instance_id)),
+    }
+
+
 def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
     agent_runtime = getattr(bot, "agent_runtime", None)
     database = getattr(bot, "database", None)
@@ -141,6 +168,7 @@ def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
     session_ids = scheduler.list_session_ids() or []
     result: list[dict[str, Any]] = []
     for session_id in session_ids:
+        instance_id = str(session_id.split(":", 1)[0] or "")
         review_plan = scheduler.review_plan_for(session_id)
         active_chat_state = scheduler.active_chat_state_for(session_id)
         latest_review_summary = database.agent_summaries.get_latest_by_session(session_id)
@@ -159,6 +187,8 @@ def _session_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
         result.append(
             {
                 "sessionId": session_id,
+                "adapterInstanceId": instance_id,
+                "platformState": _platform_state_payload(bot, instance_id),
                 "state": scheduler.state_for(session_id).value,
                 "reviewPlan": _review_plan_payload(review_plan),
                 "activeChatState": _active_chat_state_payload(active_chat_state),
@@ -204,6 +234,7 @@ def get_agent_runtime_overview(bot=BotDep, boot=BootDep):
                 sessionPatterns=list(binding.session_patterns),
                 enabled=binding.enabled,
                 priority=binding.priority,
+                platformState=_platform_state_payload(bot, binding.adapter_instance_id),
             )
             for binding in bot_config.bindings
         ]

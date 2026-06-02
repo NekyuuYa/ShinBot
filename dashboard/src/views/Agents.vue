@@ -41,6 +41,8 @@
       :profiles="runtimeProfiles"
       :bindings-label="$t('pages.agents.labels.bindings')"
       :sessions-label="$t('pages.agents.labels.sessions')"
+      :platform-label="$t('pages.agents.labels.platform')"
+      :platform-status-label="$t('pages.agents.labels.platformStatus')"
       :review-label="$t('pages.agents.labels.review')"
       :review-interval-label="$t('pages.agents.labels.reviewInterval')"
       :unread-label="$t('pages.agents.labels.unread')"

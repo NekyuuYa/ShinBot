@@ -246,8 +246,12 @@ const platforms = computed<MessagePlatformDraft[]>(() =>
 
 const platformRuntimeById = computed(() => {
   const rows = configStore.workspace?.runtime.adapterInstances ?? []
-  return rows.reduce<Record<string, { running: boolean }>>((result, item) => {
-    result[item.id] = { running: item.running }
+  return rows.reduce<Record<string, { running: boolean; connected: boolean; available: boolean }>>((result, item) => {
+    result[item.id] = {
+      running: item.running,
+      connected: item.connected,
+      available: item.available,
+    }
     return result
   }, {})
 })
@@ -347,6 +351,8 @@ function normalizePlatformDraft(record: ConfigRecord, index: number): MessagePla
     createdAt: normalizeTimestamp(record.createdAt),
     lastModified: normalizeTimestamp(record.lastModified),
     running: platformRuntimeById.value[id]?.running ?? false,
+    connected: platformRuntimeById.value[id]?.connected ?? false,
+    available: platformRuntimeById.value[id]?.available ?? false,
   }
 }
 
@@ -379,17 +385,31 @@ function connectionStatus(platform: MessagePlatformDraft): {
       label: t('pages.messagePlatforms.connection.disabled'),
     }
   }
-  if (platform.running) {
+  if (platform.connected) {
     return {
       color: 'success',
       icon: 'mdi-lan-connect',
       label: t('pages.messagePlatforms.connection.connected'),
     }
   }
+  if (platform.available) {
+    return {
+      color: 'info',
+      icon: 'mdi-lan-pending',
+      label: t('pages.messagePlatforms.connection.gracePeriod'),
+    }
+  }
+  if (platform.running) {
+    return {
+      color: 'warning',
+      icon: 'mdi-lan-disconnect',
+      label: t('pages.messagePlatforms.connection.disconnected'),
+    }
+  }
   return {
-    color: 'warning',
-    icon: 'mdi-lan-disconnect',
-    label: t('pages.messagePlatforms.connection.disconnected'),
+    color: 'grey',
+    icon: 'mdi-stop-circle-outline',
+    label: t('pages.messagePlatforms.connection.stopped'),
   }
 }
 

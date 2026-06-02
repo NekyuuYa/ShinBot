@@ -12,9 +12,19 @@
           {{ session.session.id }} · {{ session.session.platform || session.session.sessionType }}
         </v-card-subtitle>
         <template #append>
-          <v-chip size="small" variant="tonal" color="info">
-            {{ session.agent?.state || noneLabel }}
-          </v-chip>
+          <div class="session-title-chips">
+            <v-chip
+              size="small"
+              variant="tonal"
+              :color="platformStatus(session.platformState).color"
+            >
+              <v-icon :icon="platformStatus(session.platformState).icon" start />
+              {{ platformStatus(session.platformState).label }}
+            </v-chip>
+            <v-chip size="small" variant="tonal" color="info">
+              {{ session.agent?.state || noneLabel }}
+            </v-chip>
+          </div>
         </template>
       </v-card-item>
 
@@ -36,6 +46,12 @@
             <div class="session-meta-row">
               <span>{{ lastActiveLabel }}</span>
               <strong>{{ formatTimestamp(session.session.lastActive) }}</strong>
+            </div>
+          </v-col>
+          <v-col cols="12" md="3">
+            <div class="session-meta-row">
+              <span>{{ platformStatusLabel }}</span>
+              <strong>{{ platformStatus(session.platformState).label }}</strong>
             </div>
           </v-col>
           <v-col cols="12" md="3">
@@ -264,7 +280,11 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import type { SessionOverviewItem, SessionSummary } from '@/api/sessions'
+import type {
+  SessionOverviewItem,
+  SessionPlatformState,
+  SessionSummary,
+} from '@/api/sessions'
 
 const { t } = useI18n()
 
@@ -287,6 +307,7 @@ const mentionedLabel = t('pages.sessions.labels.mentioned')
 const instanceIdLabel = t('pages.sessions.fields.instanceId')
 const channelIdLabel = t('pages.sessions.fields.channelId')
 const lastActiveLabel = t('pages.sessions.fields.lastActive')
+const platformStatusLabel = t('pages.sessions.fields.platformStatus')
 const permissionGroupLabel = t('pages.sessions.fields.permissionGroup')
 const messagesLabel = t('pages.sessions.stats.messages')
 const auditsLabel = t('pages.sessions.stats.audits')
@@ -313,10 +334,50 @@ const workflowRunLabel = t('pages.sessions.fields.workflowRun')
 const workflowProfileLabel = t('pages.sessions.fields.workflowProfile')
 const workflowResultLabel = t('pages.sessions.fields.workflowResult')
 const lastAuditLabel = t('pages.sessions.fields.lastAudit')
+
+function platformStatus(platformState: SessionPlatformState): {
+  color: string
+  icon: string
+  label: string
+} {
+  if (platformState.connected) {
+    return {
+      color: 'success',
+      icon: 'mdi-lan-connect',
+      label: t('pages.sessions.connection.connected'),
+    }
+  }
+  if (platformState.available) {
+    return {
+      color: 'info',
+      icon: 'mdi-lan-pending',
+      label: t('pages.sessions.connection.gracePeriod'),
+    }
+  }
+  if (platformState.running) {
+    return {
+      color: 'warning',
+      icon: 'mdi-lan-disconnect',
+      label: t('pages.sessions.connection.disconnected'),
+    }
+  }
+  return {
+    color: 'grey',
+    icon: 'mdi-stop-circle-outline',
+    label: t('pages.sessions.connection.stopped'),
+  }
+}
 </script>
 
 <style scoped lang="scss">
 @use '@/styles/mixins' as *;
+
+.session-title-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
 
 .sessions-panel,
 .session-stat-card {

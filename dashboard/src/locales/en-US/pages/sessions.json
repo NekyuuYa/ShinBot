@@ -3,7 +3,40 @@
   "title": "Session Management",
   "subtitle": "The left pane lists sessions, and the right pane shows the selected session's messages, audit trail, summaries, and runtime state.",
   "actions": {
-    "refresh": "Refresh"
+    "manage": "Data Actions",
+    "select": "Select Sessions",
+    "cancelSelection": "Cancel Selection",
+    "refresh": "Refresh",
+    "clearHistory": "Clear History",
+    "clearAuditLogs": "Clear Audit Logs",
+    "delete": "Delete Session"
+  },
+  "confirmClearHistoryBatch": {
+    "title": "Clear history for selected sessions?",
+    "message": "Clear the stored message history, summaries, workflow records, and runtime context for {count} selected sessions? This cannot be undone."
+  },
+  "confirmClearHistory": {
+    "title": "Clear session history?",
+    "message": "Clear the stored message history, summaries, workflow records, and runtime context for session \"{name}\" while keeping the session itself? This cannot be undone.",
+    "confirm": "Clear History"
+  },
+  "confirmClearAuditBatch": {
+    "title": "Clear audit logs for selected sessions?",
+    "message": "Clear the audit log entries for {count} selected sessions while keeping the sessions and message history?"
+  },
+  "confirmClearAudit": {
+    "title": "Clear audit logs?",
+    "message": "Clear the audit log entries for session \"{name}\" while keeping the session and message history?",
+    "confirm": "Clear Audit Logs"
+  },
+  "confirmDeleteBatch": {
+    "title": "Delete selected sessions?",
+    "message": "Delete {count} selected sessions and their stored history, audit logs, and runtime state? This cannot be undone."
+  },
+  "confirmDelete": {
+    "title": "Delete session?",
+    "message": "Delete session \"{name}\" and its stored history, audit logs, and runtime state? This cannot be undone.",
+    "confirm": "Delete Session"
   },
   "sidebar": {
     "title": "Session List",
@@ -18,6 +51,7 @@
     "instanceId": "Instance ID",
     "channelId": "Channel / DM ID",
     "lastActive": "Last Active",
+    "platformStatus": "Platform Status",
     "permissionGroup": "Permission Group",
     "prefixes": "Prefixes",
     "llmEnabled": "LLM",
@@ -34,6 +68,12 @@
     "workflowProfile": "Response Profile",
     "workflowResult": "Run Result",
     "lastAudit": "Latest Audit"
+  },
+  "connection": {
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "gracePeriod": "Offline Grace",
+    "stopped": "Stopped"
   },
   "sections": {
     "config": "Session Config",
@@ -53,12 +93,26 @@
     "noState": "No State",
     "unknownSender": "Unknown Sender",
     "mentioned": "Mentioned",
+    "selectionCount": "{count} selected",
+    "selectionSummary": "{count} selected sessions",
     "reviewDue": "Due",
     "reviewInMinutes": "In about {count} min",
     "reviewInHours": "In about {count} hr",
     "reviewInDays": "In about {count} d"
   },
   "messages": {
-    "loadFailed": "Failed to load session management data"
+    "loadFailed": "Failed to load session management data",
+    "historyClearFailed": "Failed to clear session history",
+    "historyCleared": "Session history cleared",
+    "historyBatchClearFailed": "Failed to clear history for selected sessions",
+    "historyBatchCleared": "Cleared history for {count} sessions",
+    "auditClearFailed": "Failed to clear audit logs",
+    "auditCleared": "Audit logs cleared",
+    "auditBatchClearFailed": "Failed to clear audit logs for selected sessions",
+    "auditBatchCleared": "Cleared audit logs for {count} sessions",
+    "deleteFailed": "Failed to delete session",
+    "deleted": "Session deleted",
+    "batchDeleteFailed": "Failed to delete selected sessions",
+    "batchDeleted": "Deleted {count} sessions"
   }
 }

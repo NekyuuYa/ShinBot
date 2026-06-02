@@ -83,6 +83,14 @@ def test_config_workspace_exposes_frontend_contract(tmp_path: Path):
     assert payload["validation"]["valid"] is True
     assert payload["runtime"]["modelEnabled"] is False
     assert payload["runtime"]["requiresRestartAfterSave"] is True
+    assert payload["runtime"]["adapterInstances"] == [
+        {
+            "id": "qq-main",
+            "running": False,
+            "connected": False,
+            "available": False,
+        }
+    ]
 
 
 def test_config_workspace_marks_model_enabled_when_agent_bot_requires_it(tmp_path: Path):

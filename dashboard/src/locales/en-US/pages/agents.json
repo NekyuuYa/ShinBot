@@ -59,6 +59,8 @@
     "advancedFields": "Advanced Fields",
     "bindings": "Bindings",
     "sessions": "Sessions",
+    "platform": "Platform",
+    "platformStatus": "Platform Status",
     "review": "Review",
     "reviewInterval": "Review Interval",
     "unread": "Unread",

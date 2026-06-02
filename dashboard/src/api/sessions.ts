@@ -21,6 +21,12 @@ export interface SessionListItem {
   lastActive: number
 }
 
+export interface SessionPlatformState {
+  running: boolean
+  connected: boolean
+  available: boolean
+}
+
 export interface SessionMessage {
   id: number
   sessionId: string
@@ -119,6 +125,7 @@ export interface SessionAgentState {
 
 export interface SessionOverviewItem {
   session: SessionListItem
+  platformState: SessionPlatformState
   config: SessionConfig | null
   history: SessionMessage[]
   latestMessage: SessionMessage | null
@@ -132,8 +139,52 @@ export interface SessionOverviewItem {
   auditCount: number
 }
 
+export interface SessionBatchActionResponse {
+  action: string
+  requestedCount: number
+  processedCount: number
+  processedSessionIds: string[]
+  missingSessionIds: string[]
+}
+
 export const sessionsApi = {
   overview() {
     return apiClient.get<SessionOverviewItem[]>('/session-overview')
+  },
+
+  clearHistoryBatch(sessionIds: string[]) {
+    return apiClient.post<SessionBatchActionResponse>('/session-overview/batch/history', {
+      sessionIds,
+    })
+  },
+
+  clearAuditLogsBatch(sessionIds: string[]) {
+    return apiClient.post<SessionBatchActionResponse>('/session-overview/batch/audit-logs', {
+      sessionIds,
+    })
+  },
+
+  deleteBatch(sessionIds: string[]) {
+    return apiClient.post<SessionBatchActionResponse>('/session-overview/batch/delete', {
+      sessionIds,
+    })
+  },
+
+  clearHistory(sessionId: string) {
+    return apiClient.delete<{ cleared: boolean; scope: string; sessionId: string }>(
+      `/session-overview/${encodeURIComponent(sessionId)}/history`
+    )
+  },
+
+  clearAuditLogs(sessionId: string) {
+    return apiClient.delete<{ cleared: boolean; scope: string; sessionId: string }>(
+      `/session-overview/${encodeURIComponent(sessionId)}/audit-logs`
+    )
+  },
+
+  delete(sessionId: string) {
+    return apiClient.delete<{ deleted: boolean; sessionId: string }>(
+      `/session-overview/${encodeURIComponent(sessionId)}`
+    )
   },
 }

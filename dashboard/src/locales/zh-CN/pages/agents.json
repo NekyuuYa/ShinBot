@@ -59,6 +59,8 @@
     "advancedFields": "高级字段",
     "bindings": "绑定",
     "sessions": "会话",
+    "platform": "平台",
+    "platformStatus": "平台状态",
     "review": "复盘",
     "reviewInterval": "复盘间隔",
     "unread": "未读",

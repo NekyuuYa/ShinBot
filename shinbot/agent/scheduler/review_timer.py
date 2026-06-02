@@ -111,6 +111,7 @@ class ReviewDueTimerService:
                 batch_limit=self._batch_limit,
             )
         )
+        pause_session = getattr(runtime, "should_pause_session", None)
         for plan in due_plans:
             if plan.session_id in self._in_flight:
                 logger.debug(
@@ -119,6 +120,16 @@ class ReviewDueTimerService:
                         bot_id=self._bot_id,
                         session_id=plan.session_id,
                         reason="in_flight",
+                    )
+                )
+                continue
+            if callable(pause_session) and pause_session(plan.session_id):
+                logger.debug(
+                    format_log_event(
+                        "agent.review_timer.skip",
+                        bot_id=self._bot_id,
+                        session_id=plan.session_id,
+                        reason="platform_unavailable",
                     )
                 )
                 continue

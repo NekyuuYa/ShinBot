@@ -3,7 +3,40 @@
   "title": "会话管理",
   "subtitle": "左侧列出所有会话，右侧查看选中会话的消息、审计、复盘和运行态。",
   "actions": {
-    "refresh": "刷新"
+    "manage": "数据管理",
+    "select": "选择会话",
+    "cancelSelection": "取消选择",
+    "refresh": "刷新",
+    "clearHistory": "清空消息历史",
+    "clearAuditLogs": "清空审计记录",
+    "delete": "删除会话"
+  },
+  "confirmClearHistoryBatch": {
+    "title": "清空已选会话的消息历史？",
+    "message": "清空 {count} 个已选会话的消息历史、摘要、工作流记录和运行态上下文？此操作无法撤销。"
+  },
+  "confirmClearHistory": {
+    "title": "清空消息历史？",
+    "message": "清空会话“{name}”的消息历史、摘要、工作流记录和运行态上下文，但保留会话本身？此操作无法撤销。",
+    "confirm": "清空消息历史"
+  },
+  "confirmClearAuditBatch": {
+    "title": "清空已选会话的审计记录？",
+    "message": "清空 {count} 个已选会话的审计记录，但保留会话和消息历史？"
+  },
+  "confirmClearAudit": {
+    "title": "清空审计记录？",
+    "message": "清空会话“{name}”的审计记录，但保留会话和消息历史？",
+    "confirm": "清空审计记录"
+  },
+  "confirmDeleteBatch": {
+    "title": "删除已选会话？",
+    "message": "删除 {count} 个已选会话以及它们的消息历史、审计记录和运行态数据？此操作无法撤销。"
+  },
+  "confirmDelete": {
+    "title": "删除会话？",
+    "message": "删除会话“{name}”以及它的消息历史、审计记录和运行态数据？此操作无法撤销。",
+    "confirm": "删除会话"
   },
   "sidebar": {
     "title": "会话列表",
@@ -18,6 +51,7 @@
     "instanceId": "实例 ID",
     "channelId": "频道 / 私聊 ID",
     "lastActive": "最近活跃",
+    "platformStatus": "平台状态",
     "permissionGroup": "权限组",
     "prefixes": "前缀",
     "llmEnabled": "LLM",
@@ -34,6 +68,12 @@
     "workflowProfile": "响应策略",
     "workflowResult": "运行结果",
     "lastAudit": "最近审计"
+  },
+  "connection": {
+    "connected": "已连接",
+    "disconnected": "未连接",
+    "gracePeriod": "断线缓冲中",
+    "stopped": "已停止"
   },
   "sections": {
     "config": "会话配置",
@@ -53,12 +93,26 @@
     "noState": "无状态",
     "unknownSender": "未知发送者",
     "mentioned": "被提及",
+    "selectionCount": "已选择 {count} 项",
+    "selectionSummary": "{count} 个已选会话",
     "reviewDue": "已到期",
     "reviewInMinutes": "约 {count} 分钟后",
     "reviewInHours": "约 {count} 小时后",
     "reviewInDays": "约 {count} 天后"
   },
   "messages": {
-    "loadFailed": "加载会话管理数据失败"
+    "loadFailed": "加载会话管理数据失败",
+    "historyClearFailed": "清空消息历史失败",
+    "historyCleared": "消息历史已清空",
+    "historyBatchClearFailed": "批量清空消息历史失败",
+    "historyBatchCleared": "已清空 {count} 个会话的消息历史",
+    "auditClearFailed": "清空审计记录失败",
+    "auditCleared": "审计记录已清空",
+    "auditBatchClearFailed": "批量清空审计记录失败",
+    "auditBatchCleared": "已清空 {count} 个会话的审计记录",
+    "deleteFailed": "删除会话失败",
+    "deleted": "会话已删除",
+    "batchDeleteFailed": "批量删除会话失败",
+    "batchDeleted": "已删除 {count} 个会话"
   }
 }

@@ -394,6 +394,7 @@ class AgentRuntime:
         self.personas.ensure_default_persona()
         self.prompt_definitions = PromptDefinitionFileRepository.from_data_dir(runtime_data_dir)
         self.model_runtime = model_runtime
+        self.adapter_manager = adapter_manager
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
         self.message_formatter = MessageFormatterService(
@@ -611,6 +612,19 @@ class AgentRuntime:
         signal: AgentSignal,
     ) -> ActiveChatBootstrapApplyDecision | None:
         """Receive a unified Agent signal and let Agent internals process it."""
+        if self.should_pause_session(signal.session_id):
+            logger.debug(
+                format_log_event(
+                    "agent.runtime.signal_skipped",
+                    kind=signal.kind.value,
+                    source=signal.source.value,
+                    signal_id=signal.signal_id,
+                    session_id=signal.session_id,
+                    bot_id=signal.bot_id,
+                    reason="platform_unavailable",
+                )
+            )
+            return None
         profile = self.agent_profile_for_bot(signal.bot_id)
         logger.debug(
             format_log_event(
@@ -649,6 +663,43 @@ class AgentRuntime:
         if isinstance(decision, ActiveChatBootstrapApplyDecision):
             return decision
         return None
+
+    def is_session_platform_connected(self, session_id: str) -> bool:
+        """Return whether the session's adapter is explicitly connected now.
+
+        Args:
+            session_id: Bot-scoped session identifier whose adapter should be
+                checked.
+        """
+        instance_id = _instance_id_from_session_id(session_id)
+        if not instance_id:
+            return False
+        if self.adapter_manager.get_instance(instance_id) is None:
+            return False
+        return self.adapter_manager.is_connected(instance_id)
+
+    def is_session_platform_available(self, session_id: str) -> bool:
+        """Return whether the session's adapter should be treated as available.
+
+        Args:
+            session_id: Bot-scoped session identifier whose adapter should be
+                checked.
+        """
+        instance_id = _instance_id_from_session_id(session_id)
+        if not instance_id:
+            return True
+        if self.adapter_manager.get_instance(instance_id) is None:
+            return True
+        return self.adapter_manager.is_available(instance_id)
+
+    def should_pause_session(self, session_id: str) -> bool:
+        """Return whether Agent background work should pause for a session.
+
+        Args:
+            session_id: Bot-scoped session identifier whose adapter should be
+                checked.
+        """
+        return not self.is_session_platform_available(session_id)
 
     def start_background_tasks(self) -> None:
         """Start Agent background services once an event loop is available."""

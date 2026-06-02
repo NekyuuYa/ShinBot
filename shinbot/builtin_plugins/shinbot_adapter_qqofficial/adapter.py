@@ -193,6 +193,7 @@ class QQOfficialAdapter(BaseAdapter):
             except Exception:
                 pass
             self._ws = None
+        self._notify_connection_state(False)
 
         if self._http is not None:
             await self._http.aclose()
@@ -430,6 +431,7 @@ class QQOfficialAdapter(BaseAdapter):
                 if self._heartbeat_task and not self._heartbeat_task.done():
                     self._heartbeat_task.cancel()
                 self._heartbeat_task = None
+                self._notify_connection_state(False)
                 self._ws = None
 
     async def _resolve_ws_url(self) -> str:
@@ -548,6 +550,7 @@ class QQOfficialAdapter(BaseAdapter):
             self._session_id = str(data.get("session_id", ""))
             user = data.get("user", {}) if isinstance(data.get("user"), dict) else {}
             self._self_id = str(user.get("id", ""))
+            self._notify_connection_state(True)
             logger.info(
                 format_log_event(
                     "adapter.connection.ready",

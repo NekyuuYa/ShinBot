@@ -25,6 +25,7 @@
     "agent": "Agent",
     "bindings": "Bindings",
     "platforms": "Message Platforms",
+    "platformHealth": "Platform Health",
     "commands": "Commands",
     "actions": "Actions"
   },
@@ -80,5 +81,11 @@
     "none": "No Agent",
     "simple": "Light Agent",
     "full": "Full Agent"
+  },
+  "health": {
+    "connectedCount": "{count} connected",
+    "graceCount": "{count} grace",
+    "disconnectedCount": "{count} disconnected",
+    "stoppedCount": "{count} stopped"
   }
 }

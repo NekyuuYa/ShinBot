@@ -18,6 +18,21 @@
             <span>{{ bindingsLabel }}</span>
             <strong>{{ profile.bindings.length }}</strong>
           </div>
+          <div
+            v-for="binding in profile.bindings"
+            :key="`${profile.botId}:${binding.adapterInstanceId}`"
+            class="runtime-meta-row"
+          >
+            <span>{{ binding.adapterInstanceId }}</span>
+            <v-chip
+              size="x-small"
+              variant="tonal"
+              :color="platformStatus(binding.platformState).color"
+            >
+              <v-icon :icon="platformStatus(binding.platformState).icon" start />
+              {{ platformStatus(binding.platformState).label }}
+            </v-chip>
+          </div>
           <div class="runtime-meta-row">
             <span>{{ sessionsLabel }}</span>
             <strong>{{ profile.sessions.length }}</strong>
@@ -33,6 +48,21 @@
                 </div>
               </v-expansion-panel-title>
               <v-expansion-panel-text>
+                <div class="runtime-meta-row">
+                  <span>{{ platformLabel }}</span>
+                  <strong>{{ session.adapterInstanceId || noValueLabel }}</strong>
+                </div>
+                <div class="runtime-meta-row">
+                  <span>{{ platformStatusLabel }}</span>
+                  <v-chip
+                    size="x-small"
+                    variant="tonal"
+                    :color="platformStatus(session.platformState).color"
+                  >
+                    <v-icon :icon="platformStatus(session.platformState).icon" start />
+                    {{ platformStatus(session.platformState).label }}
+                  </v-chip>
+                </div>
                 <div class="runtime-meta-row">
                   <span>{{ reviewLabel }}</span>
                   <strong>{{
@@ -91,12 +121,18 @@
 </template>
 
 <script setup lang="ts">
-import type { AgentRuntimeProfile } from '@/api/agents'
+import { useI18n } from 'vue-i18n'
+
+import type { AgentRuntimePlatformState, AgentRuntimeProfile } from '@/api/agents'
+
+const { t } = useI18n()
 
 defineProps<{
   profiles: AgentRuntimeProfile[]
   bindingsLabel: string
   sessionsLabel: string
+  platformLabel: string
+  platformStatusLabel: string
   reviewLabel: string
   reviewIntervalLabel: string
   unreadLabel: string
@@ -108,6 +144,39 @@ defineProps<{
   formatTimestamp: (value: number) => string
   formatReviewInterval: (value: number | null | undefined) => string
 }>()
+
+function platformStatus(platformState: AgentRuntimePlatformState): {
+  color: string
+  icon: string
+  label: string
+} {
+  if (platformState.connected) {
+    return {
+      color: 'success',
+      icon: 'mdi-lan-connect',
+      label: t('pages.sessions.connection.connected'),
+    }
+  }
+  if (platformState.available) {
+    return {
+      color: 'info',
+      icon: 'mdi-lan-pending',
+      label: t('pages.sessions.connection.gracePeriod'),
+    }
+  }
+  if (platformState.running) {
+    return {
+      color: 'warning',
+      icon: 'mdi-lan-disconnect',
+      label: t('pages.sessions.connection.disconnected'),
+    }
+  }
+  return {
+    color: 'grey',
+    icon: 'mdi-stop-circle-outline',
+    label: t('pages.sessions.connection.stopped'),
+  }
+}
 </script>
 
 <style scoped lang="scss">

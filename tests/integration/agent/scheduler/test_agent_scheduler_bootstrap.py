@@ -289,6 +289,35 @@ async def test_active_chat_timer_service_drives_scheduler_idle_transition() -> N
     assert dispatcher.active_chat_stops == ["bot:group:room"]
 
 
+@pytest.mark.asyncio
+async def test_active_chat_timer_service_skips_unavailable_session() -> None:
+    timer = ActiveChatTimerService()
+    calls: list[AgentSignal] = []
+
+    class Scheduler:
+        def state_for(self, _session_id: str) -> AgentState:
+            return AgentState.ACTIVE_CHAT
+
+    class Profile:
+        agent_scheduler = Scheduler()
+
+    class Runtime:
+        async def handle_agent_signal(self, signal: AgentSignal) -> None:
+            calls.append(signal)
+
+        def agent_profile_for_bot(self, _bot_id: str) -> Profile:
+            return Profile()
+
+        def should_pause_session(self, session_id: str) -> bool:
+            return session_id == "bot:group:room"
+
+    timer.bind_agent_runtime(Runtime(), bot_id="bot-a")
+
+    await timer.run_once("bot:group:room")
+
+    assert calls == []
+
+
 def test_scheduler_tick_active_chat_skips_when_state_is_not_active_chat() -> None:
     scheduler = AgentScheduler(
         response_profile_resolver=lambda _signal: "balanced",

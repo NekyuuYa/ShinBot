@@ -186,6 +186,17 @@ class ActiveChatTimerService:
                 )
             )
             return
+        pause_session = getattr(runtime, "should_pause_session", None)
+        if callable(pause_session) and pause_session(session_id):
+            logger.debug(
+                format_log_event(
+                    "agent.active_chat_timer.tick_skipped",
+                    bot_id=self._bot_id,
+                    session_id=session_id,
+                    reason="platform_unavailable",
+                )
+            )
+            return
         now = time.time()
         logger.debug(
             format_log_event(

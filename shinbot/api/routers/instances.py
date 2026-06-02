@@ -84,6 +84,9 @@ class InstanceData(BaseModel):
     name: str
     adapter: str
     status: str
+    running: bool = False
+    connected: bool = False
+    available: bool = False
     config: dict[str, Any]
     instanceConfig: InstanceConfigSummaryData | None = None
     createdAt: Any

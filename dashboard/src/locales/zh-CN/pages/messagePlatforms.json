@@ -32,7 +32,9 @@
   "connection": {
     "connected": "已连接",
     "disconnected": "未连接",
-    "disabled": "未启用"
+    "disabled": "未启用",
+    "gracePeriod": "断线缓冲中",
+    "stopped": "已停止"
   },
   "form": {
     "name": "名称",

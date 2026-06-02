@@ -743,3 +743,25 @@ async def test_agent_runtime_active_chat_bootstrap_signal_applies_disposition(
     assert decision is not None
     assert decision.bootstrap_applied is True
     assert runtime.agent_scheduler.state_for(session_id) == AgentState.ACTIVE_CHAT
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_skips_signal_when_session_platform_unavailable(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    calls: list[AgentSignal] = []
+
+    class _RecordingScheduler:
+        async def accept_signal(self, signal: AgentSignal):
+            calls.append(signal)
+            return None
+
+    runtime.agent_scheduler = _RecordingScheduler()  # type: ignore[assignment]
+    runtime.should_pause_session = lambda _session_id: True  # type: ignore[method-assign]
+
+    decision = await runtime.handle_agent_signal(make_signal())
+
+    assert decision is None
+    assert calls == []

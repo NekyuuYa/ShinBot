@@ -32,7 +32,9 @@
   "connection": {
     "connected": "Connected",
     "disconnected": "Disconnected",
-    "disabled": "Disabled"
+    "disabled": "Disabled",
+    "gracePeriod": "Offline Grace",
+    "stopped": "Stopped"
   },
   "form": {
     "name": "Name",

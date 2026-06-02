@@ -12,6 +12,40 @@ from .base import Repository
 class SessionRepository(Repository):
     """Persistence adapter for structured session state."""
 
+    @staticmethod
+    def _delete_ai_interactions_for_session(conn: Any, session_id: str) -> None:
+        conn.execute(
+            """
+            DELETE FROM ai_interactions
+            WHERE trigger_id IN (
+                SELECT id FROM message_logs WHERE session_id = ?
+            )
+            OR response_id IN (
+                SELECT id FROM message_logs WHERE session_id = ?
+            )
+            """,
+            (session_id, session_id),
+        )
+
+    @classmethod
+    def _clear_message_derived_rows(cls, conn: Any, session_id: str) -> None:
+        cls._delete_ai_interactions_for_session(conn, session_id)
+        conn.execute("DELETE FROM message_media_links WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM session_media_occurrences WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM agent_unread_messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM agent_unread_ranges WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM agent_review_summaries WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM agent_high_priority_events WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM agent_recent_mentions WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM agent_summaries WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM agent_scheduler_states WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM session_attention_states WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sender_weight_states WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM prompt_snapshots WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM model_execution_records WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM workflow_runs WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM message_logs WHERE session_id = ?", (session_id,))
+
     def list(self, *, instance_id: str | None = None) -> list[dict[str, Any]]:
         """Return all sessions, optionally filtered by instance.
 
@@ -233,7 +267,72 @@ class SessionRepository(Repository):
             session_id: Unique session identifier.
         """
         with self.connect() as conn:
-            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._delete_with_conn(conn, session_id)
+
+    def clear_history(self, session_id: str) -> None:
+        """Delete message history and derived session runtime data.
+
+        Args:
+            session_id: Unique session identifier.
+        """
+        with self.connect() as conn:
+            self._clear_history_with_conn(conn, session_id)
+
+    def clear_audit_logs(self, session_id: str) -> None:
+        """Delete all audit log entries for a session.
+
+        Args:
+            session_id: Unique session identifier.
+        """
+        with self.connect() as conn:
+            self._clear_audit_logs_with_conn(conn, session_id)
+
+    def delete_many(self, session_ids: list[str]) -> None:
+        """Delete multiple sessions and all cascaded rows in one transaction.
+
+        Args:
+            session_ids: Unique session identifiers to delete.
+        """
+        with self.connect() as conn:
+            for session_id in session_ids:
+                self._delete_with_conn(conn, session_id)
+
+    def clear_history_many(self, session_ids: list[str]) -> None:
+        """Delete message history for multiple sessions in one transaction.
+
+        Args:
+            session_ids: Unique session identifiers to clear.
+        """
+        with self.connect() as conn:
+            for session_id in session_ids:
+                self._clear_history_with_conn(conn, session_id)
+
+    def clear_audit_logs_many(self, session_ids: list[str]) -> None:
+        """Delete audit logs for multiple sessions in one transaction.
+
+        Args:
+            session_ids: Unique session identifiers to clear.
+        """
+        with self.connect() as conn:
+            for session_id in session_ids:
+                self._clear_audit_logs_with_conn(conn, session_id)
+
+    @classmethod
+    def _delete_with_conn(cls, conn: Any, session_id: str) -> None:
+        """Delete one session using an existing open database connection."""
+        cls._clear_history_with_conn(conn, session_id)
+        cls._clear_audit_logs_with_conn(conn, session_id)
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    @classmethod
+    def _clear_history_with_conn(cls, conn: Any, session_id: str) -> None:
+        """Clear message history for one session using an existing connection."""
+        cls._clear_message_derived_rows(conn, session_id)
+
+    @staticmethod
+    def _clear_audit_logs_with_conn(conn: Any, session_id: str) -> None:
+        """Clear audit logs for one session using an existing connection."""
+        conn.execute("DELETE FROM audit_logs WHERE session_id = ?", (session_id,))
 
 
 class AuditRepository(Repository):

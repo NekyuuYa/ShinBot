@@ -4,6 +4,12 @@ import type {
   NormalizedBotCommandsConfig,
   NormalizedBotPluginsConfig,
 } from '@/api/config'
+import type { AgentRuntimePlatformState } from '@/api/agents'
+
+export interface BotBindingRuntimeSummary {
+  adapterInstanceId: string
+  platformState: AgentRuntimePlatformState
+}
 
 export interface BotInstanceFormState {
   id: string
@@ -15,7 +21,10 @@ export interface BotInstanceFormState {
   bindings: NormalizedBotBindingConfig[]
 }
 
-export type BotInstanceDraft = BotInstanceFormState
+export type BotInstanceDraft = BotInstanceFormState & {
+  platformBindings?: BotBindingRuntimeSummary[]
+  platformStatusSummary?: string
+}
 
 export interface SelectOption {
   title: string

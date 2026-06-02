@@ -30,7 +30,12 @@
     </template>
 
     <template #item.platforms="{ item }">
-      {{ platformSummary(row(item)) }}
+      <div class="bot-name-cell">
+        <span>{{ platformSummary(row(item)) }}</span>
+        <span class="text-caption text-medium-emphasis">
+          {{ platformHealthSummary(row(item)) }}
+        </span>
+      </div>
     </template>
 
     <template #item.actions="{ item }">
@@ -67,6 +72,7 @@ interface Props {
   loading: boolean
   displayName: (bot: BotInstanceDraft) => string
   platformSummary: (bot: BotInstanceDraft) => string
+  platformHealthSummary: (bot: BotInstanceDraft) => string
   agentModeLabel: (mode: string) => string
   enabledLabel: string
   disabledLabel: string

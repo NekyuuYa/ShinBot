@@ -193,6 +193,8 @@ def _adapter_instance_runtime_payload(
             {
                 "id": instance_id,
                 "running": bool(manager.is_running(instance_id)),
+                "connected": bool(manager.is_connected(instance_id)),
+                "available": bool(manager.is_available(instance_id)),
             }
         )
     for adapter in getattr(manager, "all_instances", []):
@@ -202,6 +204,8 @@ def _adapter_instance_runtime_payload(
             {
                 "id": adapter.instance_id,
                 "running": bool(manager.is_running(adapter.instance_id)),
+                "connected": bool(manager.is_connected(adapter.instance_id)),
+                "available": bool(manager.is_available(adapter.instance_id)),
             }
         )
     return runtime_items

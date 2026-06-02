@@ -262,17 +262,19 @@ class SessionManager:
             return
         self._save_to_disk(session)
 
-    def remove(self, session_id: str) -> Session | None:
+    def remove(self, session_id: str, *, delete_persisted: bool = True) -> Session | None:
         """Remove a session from memory (and persistence) and return it.
 
         Args:
             session_id: Full session URN to remove.
+            delete_persisted: When ``True`` also delete the persisted session
+                record and associated database state.
 
         Returns:
             The removed :class:`Session`, or ``None`` if it did not exist.
         """
         removed = self._sessions.pop(session_id, None)
-        if self._session_repo is not None:
+        if delete_persisted and self._session_repo is not None:
             self._session_repo.delete(session_id)
         return removed
 

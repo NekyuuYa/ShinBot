@@ -379,6 +379,7 @@ class SatoriAdapter(BaseAdapter):
             finally:
                 if self._ping_task and not self._ping_task.done():
                     self._ping_task.cancel()
+                self._notify_connection_state(False)
                 self._ws = None
 
     async def _send_identify(self, ws: Any) -> None:
@@ -445,6 +446,7 @@ class SatoriAdapter(BaseAdapter):
             user = login.get("user", {})
             self._self_id = user.get("id", "")
             self._detected_platform = login.get("platform", self.platform)
+            self._notify_connection_state(True)
             logger.info(
                 format_log_event(
                     "adapter.connection.ready",

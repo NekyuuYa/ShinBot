@@ -161,11 +161,10 @@ def serialize_instance_record(
     normalized = normalize_adapter_instance_record(item)
     instance_id = normalized["id"]
     adapter = mgr.get_instance(instance_id) if instance_id else None
-    status = (
-        "running"
-        if instance_id and adapter is not None and mgr.is_running(instance_id)
-        else "stopped"
-    )
+    running = bool(instance_id and adapter is not None and mgr.is_running(instance_id))
+    connected = bool(instance_id and adapter is not None and mgr.is_connected(instance_id))
+    available = bool(instance_id and adapter is not None and mgr.is_available(instance_id))
+    status = "running" if running else "stopped"
     config = normalized["config"]
     if not config and adapter is not None:
         config = runtime_config(adapter)
@@ -175,6 +174,9 @@ def serialize_instance_record(
         "name": normalized["name"],
         "adapter": normalized["adapter"],
         "status": status,
+        "running": running,
+        "connected": connected,
+        "available": available,
         "config": config,
         "instanceConfig": serialize_instance_config_summary(
             instance_configs_by_instance_id.get(str(instance_id))
@@ -199,11 +201,17 @@ def serialize_runtime_instance(
     Returns:
         A serialised instance dict with zeroed timestamps.
     """
+    running = bool(mgr.is_running(adapter.instance_id))
+    connected = bool(mgr.is_connected(adapter.instance_id))
+    available = bool(mgr.is_available(adapter.instance_id))
     return {
         "id": adapter.instance_id,
         "name": adapter.instance_id,
         "adapter": adapter.platform,
-        "status": "running" if mgr.is_running(adapter.instance_id) else "stopped",
+        "status": "running" if running else "stopped",
+        "running": running,
+        "connected": connected,
+        "available": available,
         "config": runtime_config(adapter),
         "instanceConfig": serialize_instance_config_summary(
             instance_configs_by_instance_id.get(adapter.instance_id)

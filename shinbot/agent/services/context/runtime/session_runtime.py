@@ -63,3 +63,16 @@ class ContextSessionRuntime:
             return False
         self.state_store.save(state)
         return True
+
+    def delete(self, session_id: str) -> bool:
+        """Delete in-memory and persisted context state for a session.
+
+        Args:
+            session_id: Conversation session identifier.
+
+        Returns:
+            True if cached state existed, otherwise False.
+        """
+        removed = self.session_states.pop(session_id, None)
+        self.state_store.delete(session_id)
+        return removed is not None

@@ -156,3 +156,25 @@ class TestAdapterManager:
             "bot-1", "mock", event_callback=lambda e: called.append(e)
         )
         assert adapter._event_callback is not None
+
+    @pytest.mark.asyncio
+    async def test_connection_state_reports_connected_and_disconnected(self):
+        self.mgr.create_instance("bot-1", "mock")
+        await self.mgr.start_instance("bot-1")
+
+        self.mgr.mark_connected("bot-1", at=10.0)
+        assert self.mgr.is_connected("bot-1") is True
+        assert self.mgr.is_available("bot-1", now=10.0, offline_grace_seconds=0.0) is True
+
+        self.mgr.mark_disconnected("bot-1", at=20.0)
+        assert self.mgr.is_connected("bot-1") is False
+        assert self.mgr.is_available("bot-1", now=25.0, offline_grace_seconds=10.0) is True
+        assert self.mgr.is_available("bot-1", now=31.0, offline_grace_seconds=10.0) is False
+
+    @pytest.mark.asyncio
+    async def test_connection_state_is_unavailable_when_not_running(self):
+        self.mgr.create_instance("bot-1", "mock")
+        self.mgr.mark_connected("bot-1", at=10.0)
+
+        assert self.mgr.is_connected("bot-1") is False
+        assert self.mgr.is_available("bot-1", now=10.0) is False

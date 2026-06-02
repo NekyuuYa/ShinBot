@@ -459,6 +459,7 @@ class OneBotV11Adapter(BaseAdapter):
                 client_role=client_role,
             )
         )
+        self._notify_connection_state(True)
 
         try:
             async for raw in websocket:
@@ -469,6 +470,7 @@ class OneBotV11Adapter(BaseAdapter):
             logger.warning("OneBot v11 %s connection error: %s", self.instance_id, exc)
         finally:
             self._ws = None
+            self._notify_connection_state(False)
             logger.info(
                 format_log_event(
                     "adapter.connection.closed",
@@ -798,8 +800,13 @@ class OneBotV11Adapter(BaseAdapter):
                     endpoint=self.config.url,
                 )
             )
-            async for raw in ws:
-                await self._handle_raw(raw)
+            self._notify_connection_state(True)
+            try:
+                async for raw in ws:
+                    await self._handle_raw(raw)
+            finally:
+                self._ws = None
+                self._notify_connection_state(False)
 
     # ── Message processing ────────────────────────────────────────────
 

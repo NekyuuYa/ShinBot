@@ -10,14 +10,25 @@ interaction goes through the BaseAdapter interface.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from shinbot.schema.elements import MessageElement
 from shinbot.utils.logger import format_log_event, get_logger
 
 logger = get_logger(__name__, source="adapter", color="green")
+
+
+@dataclass(slots=True)
+class AdapterConnectionState:
+    """Observed connection state for one adapter instance."""
+
+    connected: bool = False
+    last_connected_at: float | None = None
+    last_disconnected_at: float | None = None
 
 
 class MessageHandle:
@@ -84,6 +95,7 @@ class BaseAdapter(ABC):
         self.instance_id = instance_id
         self.platform = platform
         self._event_callback: Callable | None = None
+        self._connection_state_callback: Callable[[bool], None] | None = None
 
     def set_event_callback(self, callback: Callable) -> None:
         """Set the callback that the adapter calls when it receives events.
@@ -92,6 +104,21 @@ class BaseAdapter(ABC):
             async def on_event(event: UnifiedEvent) -> None
         """
         self._event_callback = callback
+
+    def set_connection_state_callback(self, callback: Callable[[bool], None]) -> None:
+        """Set the callback used to report explicit connection lifecycle changes.
+
+        Args:
+            callback: Invoked with ``True`` when the adapter becomes connected
+                and ``False`` when the adapter explicitly disconnects.
+        """
+        self._connection_state_callback = callback
+
+    def _notify_connection_state(self, connected: bool) -> None:
+        """Report an explicit connection lifecycle transition to the manager."""
+        if self._connection_state_callback is None:
+            return
+        self._connection_state_callback(bool(connected))
 
     @abstractmethod
     async def start(self) -> None:
@@ -155,10 +182,12 @@ class AdapterManager:
       - Lookup by instance_id or platform
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, offline_grace_seconds: float = 15.0) -> None:
         self._factories: dict[str, Callable] = {}
         self._instances: dict[str, BaseAdapter] = {}
         self._running: set[str] = set()
+        self._connection_states: dict[str, AdapterConnectionState] = {}
+        self._offline_grace_seconds = max(0.0, float(offline_grace_seconds))
 
     # ── Factory registration ─────────────────────────────────────────
 
@@ -221,8 +250,15 @@ class AdapterManager:
 
         if event_callback is not None:
             adapter.set_event_callback(event_callback)
+        adapter.set_connection_state_callback(
+            lambda connected, *, _instance_id=instance_id: self._handle_connection_state_change(
+                _instance_id,
+                connected,
+            )
+        )
 
         self._instances[instance_id] = adapter
+        self._connection_states[instance_id] = AdapterConnectionState()
         logger.info(
             format_log_event(
                 "adapter.instance.created",
@@ -274,6 +310,7 @@ class AdapterManager:
         Returns:
             The removed adapter, or None if not found.
         """
+        self._connection_states.pop(instance_id, None)
         return self._instances.pop(instance_id, None)
 
     # ── Lifecycle ────────────────────────────────────────────────────
@@ -282,11 +319,62 @@ class AdapterManager:
         """Return True if the adapter instance is currently running."""
         return instance_id in self._running
 
+    def is_connected(self, instance_id: str) -> bool:
+        """Return True when the adapter is explicitly connected right now.
+
+        Args:
+            instance_id: Unique identifier for the adapter instance.
+        """
+        if instance_id not in self._running:
+            return False
+        state = self._connection_states.get(instance_id)
+        return bool(state is not None and state.connected)
+
+    def is_available(
+        self,
+        instance_id: str,
+        *,
+        now: float | None = None,
+        offline_grace_seconds: float | None = None,
+    ) -> bool:
+        """Return True when the adapter should be treated as stably available.
+
+        This differs from :meth:`is_connected` by allowing a short grace window
+        after an explicit disconnect, preventing brief reconnect jitter from
+        immediately flipping Agent scheduling on and off.
+
+        Args:
+            instance_id: Unique identifier for the adapter instance.
+            now: Optional monotonic timestamp override for tests.
+            offline_grace_seconds: Optional grace-window override for tests.
+        """
+        if instance_id not in self._running:
+            return False
+        state = self._connection_states.get(instance_id)
+        if state is None:
+            return False
+        if state.connected:
+            return True
+
+        grace_seconds = (
+            self._offline_grace_seconds
+            if offline_grace_seconds is None
+            else max(0.0, float(offline_grace_seconds))
+        )
+        if grace_seconds <= 0:
+            return False
+        if state.last_connected_at is None or state.last_disconnected_at is None:
+            return False
+
+        current_time = time.monotonic() if now is None else float(now)
+        return current_time - state.last_disconnected_at <= grace_seconds
+
     async def start_instance(self, instance_id: str) -> None:
         """Start a single adapter instance by ID."""
         adapter = self._instances.get(instance_id)
         if adapter is None:
             raise ValueError(f"No instance registered with id {instance_id!r}")
+        self._reset_connection_state(instance_id)
         logger.info(
             format_log_event(
                 "adapter.instance.starting",
@@ -318,6 +406,7 @@ class AdapterManager:
         )
         await adapter.shutdown()
         self._running.discard(instance_id)
+        self._reset_connection_state(instance_id)
         logger.info(
             format_log_event(
                 "adapter.instance.stopped",
@@ -330,6 +419,7 @@ class AdapterManager:
         """Stop (if running) and remove an adapter instance."""
         if instance_id in self._running:
             await self.stop_instance(instance_id)
+        self._connection_states.pop(instance_id, None)
         return self._instances.pop(instance_id, None) is not None
 
     async def start_all(self) -> None:
@@ -365,6 +455,25 @@ class AdapterManager:
                 )
         self._instances.clear()
         self._running.clear()
+        self._connection_states.clear()
+
+    def mark_connected(self, instance_id: str, *, at: float | None = None) -> None:
+        """Record that an adapter instance reached an explicit connected state.
+
+        Args:
+            instance_id: Unique identifier for the adapter instance.
+            at: Optional monotonic timestamp override for tests.
+        """
+        self._set_connection_state(instance_id, connected=True, at=at)
+
+    def mark_disconnected(self, instance_id: str, *, at: float | None = None) -> None:
+        """Record that an adapter instance explicitly disconnected.
+
+        Args:
+            instance_id: Unique identifier for the adapter instance.
+            at: Optional monotonic timestamp override for tests.
+        """
+        self._set_connection_state(instance_id, connected=False, at=at)
 
     # ── Capability queries ───────────────────────────────────────────
 
@@ -381,3 +490,39 @@ class AdapterManager:
         if adapter is None:
             return None
         return await adapter.get_capabilities()
+
+    def _handle_connection_state_change(self, instance_id: str, connected: bool) -> None:
+        if instance_id not in self._instances:
+            return
+        if connected:
+            self.mark_connected(instance_id)
+            return
+        self.mark_disconnected(instance_id)
+
+    def _reset_connection_state(self, instance_id: str) -> None:
+        self._connection_states[instance_id] = AdapterConnectionState()
+
+    def _set_connection_state(
+        self,
+        instance_id: str,
+        *,
+        connected: bool,
+        at: float | None = None,
+    ) -> None:
+        state = self._connection_states.setdefault(instance_id, AdapterConnectionState())
+        previous = state.connected
+        timestamp = time.monotonic() if at is None else float(at)
+        state.connected = connected
+        if connected:
+            state.last_connected_at = timestamp
+        else:
+            state.last_disconnected_at = timestamp
+        if previous == connected:
+            return
+        logger.debug(
+            format_log_event(
+                "adapter.connection.state_changed",
+                instance_id=instance_id,
+                connected=connected,
+            )
+        )

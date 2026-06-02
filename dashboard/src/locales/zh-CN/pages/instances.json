@@ -25,6 +25,7 @@
     "agent": "Agent",
     "bindings": "绑定",
     "platforms": "消息平台",
+    "platformHealth": "平台在线情况",
     "commands": "命令",
     "actions": "操作"
   },
@@ -80,5 +81,11 @@
     "none": "不启用 Agent",
     "simple": "轻量 Agent",
     "full": "完整 Agent"
+  },
+  "health": {
+    "connectedCount": "{count} 在线",
+    "graceCount": "{count} 缓冲",
+    "disconnectedCount": "{count} 断线",
+    "stoppedCount": "{count} 停止"
   }
 }

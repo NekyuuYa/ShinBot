@@ -120,6 +120,8 @@
           :bot="bot"
           :display-name="botDisplayName(bot)"
           :platform-summary="botPlatformSummary(bot)"
+          :platform-health-label="$t('pages.instances.table.platformHealth')"
+          :platform-health-summary="botPlatformHealthSummary(bot)"
           :agent-mode-label="agentModeLabel(bot.agent.mode)"
           :bindings-label="$t('pages.instances.table.bindings')"
           :platforms-label="$t('pages.instances.table.platforms')"
@@ -143,6 +145,7 @@
           :loading="configStore.isLoading"
           :display-name="botDisplayName"
           :platform-summary="botPlatformSummary"
+          :platform-health-summary="botPlatformHealthSummary"
           :agent-mode-label="agentModeLabel"
           :enabled-label="$t('common.actions.status.enabled')"
           :disabled-label="$t('common.actions.status.disabled')"
@@ -185,6 +188,7 @@ import BotInstanceFormDialog from '@/components/instances/BotInstanceFormDialog.
 import BotInstanceTable from '@/components/instances/BotInstanceTable.vue'
 import type {
   BotInstanceDraft,
+  BotBindingRuntimeSummary,
   BotInstanceFormState,
   SelectOption,
 } from '@/components/instances/botTypes'
@@ -406,6 +410,8 @@ function normalizeBot(record: ConfigRecord, index: number): BotInstanceDraft {
     bindings: rawBindings.map((binding, bindingIndex) =>
       normalizeBinding(binding, bindingIndex, id)
     ),
+    platformBindings: [],
+    platformStatusSummary: '',
   }
 }
 
@@ -424,11 +430,72 @@ function adapterName(adapterId: string): string {
   return adapter?.name || adapterId
 }
 
+function adapterRuntimeState(adapterId: string): BotBindingRuntimeSummary {
+  const runtime = configStore.workspace?.runtime.adapterInstances.find((item) => item.id === adapterId)
+  return {
+    adapterInstanceId: adapterId,
+    platformState: {
+      running: runtime?.running ?? false,
+      connected: runtime?.connected ?? false,
+      available: runtime?.available ?? false,
+    },
+  }
+}
+
+function summarizePlatformHealth(bindings: BotBindingRuntimeSummary[]): string {
+  if (bindings.length === 0) {
+    return t('pages.instances.empty.noPlatform')
+  }
+
+  let connected = 0
+  let grace = 0
+  let disconnected = 0
+  let stopped = 0
+
+  for (const binding of bindings) {
+    if (binding.platformState.connected) {
+      connected += 1
+      continue
+    }
+    if (binding.platformState.available) {
+      grace += 1
+      continue
+    }
+    if (binding.platformState.running) {
+      disconnected += 1
+      continue
+    }
+    stopped += 1
+  }
+
+  const parts: string[] = []
+  if (connected > 0) {
+    parts.push(t('pages.instances.health.connectedCount', { count: connected }))
+  }
+  if (grace > 0) {
+    parts.push(t('pages.instances.health.graceCount', { count: grace }))
+  }
+  if (disconnected > 0) {
+    parts.push(t('pages.instances.health.disconnectedCount', { count: disconnected }))
+  }
+  if (stopped > 0) {
+    parts.push(t('pages.instances.health.stoppedCount', { count: stopped }))
+  }
+  return parts.join(' / ')
+}
+
 function botPlatformSummary(bot: BotInstanceDraft): string {
   const names = Array.from(new Set(bot.bindings.map((binding) => binding.adapter_instance_id)))
     .filter(Boolean)
     .map(adapterName)
   return names.length > 0 ? names.join(', ') : t('pages.instances.empty.noPlatform')
+}
+
+function botPlatformHealthSummary(bot: BotInstanceDraft): string {
+  const bindings = Array.from(
+    new Set(bot.bindings.map((binding) => binding.adapter_instance_id).filter(Boolean))
+  ).map(adapterRuntimeState)
+  return summarizePlatformHealth(bindings)
 }
 
 function issueMessage(issue: ConfigValidationIssue): string {

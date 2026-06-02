@@ -38,12 +38,19 @@
         <v-list-item
           v-for="item in filteredItems"
           :key="item.id"
-          :active="item.id === activeId"
+          :active="!selectionMode && item.id === activeId"
           rounded="lg"
           class="mb-2 sidebar-item"
-          @click="$emit('select', item.id)"
+          @click="selectionMode ? $emit('toggleSelect', item.id) : $emit('select', item.id)"
         >
           <template #prepend>
+            <v-checkbox-btn
+              v-if="selectionMode"
+              :model-value="selectedIds.includes(item.id)"
+              color="primary"
+              class="me-1"
+              @click.stop="$emit('toggleSelect', item.id)"
+            />
             <v-icon :icon="item.icon" />
           </template>
           <v-list-item-title class="text-body-2 font-weight-medium">
@@ -53,6 +60,16 @@
             {{ item.subtitle }}
           </v-list-item-subtitle>
           <template #append>
+            <v-chip
+              v-if="item.statusLabel"
+              size="x-small"
+              variant="tonal"
+              :color="item.statusColor || 'grey'"
+              class="me-2"
+            >
+              <v-icon v-if="item.statusIcon" :icon="item.statusIcon" size="14" start />
+              {{ item.statusLabel }}
+            </v-chip>
             <v-chip
               v-if="item.badge !== undefined && item.badge !== null"
               size="x-small"
@@ -78,6 +95,9 @@ interface SidebarItem {
   icon: string
   badge?: string | number
   badgeColor?: string
+  statusLabel?: string
+  statusColor?: string
+  statusIcon?: string
 }
 
 interface Props {
@@ -85,12 +105,16 @@ interface Props {
   emptyText: string
   items: SidebarItem[]
   activeId: string
+  selectionMode?: boolean
+  selectedIds?: string[]
   showAddButton?: boolean
   addIcon?: string
   addLabel?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  selectionMode: false,
+  selectedIds: () => [],
   showAddButton: true,
   addIcon: 'mdi-plus',
   addLabel: 'Add',
@@ -99,6 +123,7 @@ const props = withDefaults(defineProps<Props>(), {
 defineEmits<{
   add: []
   select: [id: string]
+  toggleSelect: [id: string]
 }>()
 
 const search = ref('')

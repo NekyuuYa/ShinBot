@@ -467,6 +467,18 @@ class ContextManager:
     def _save_session_state(self, session_id: str) -> None:
         self._session_runtime.save(session_id)
 
+    def delete_session_state(self, session_id: str) -> bool:
+        """Delete cached and persisted context state for one session.
+
+        Args:
+            session_id: Unique identifier for the conversation session.
+
+        Returns:
+            True if cached state existed for the session, otherwise False.
+        """
+        self._pool_runtime.pools.pop(session_id, None)
+        return self._session_runtime.delete(session_id)
+
     def _sync_prompt_runtime(self) -> None:
         self._timeline_runtime.builder = self._context_builder
         self._prompt_runtime.identity_store = self._identity_store

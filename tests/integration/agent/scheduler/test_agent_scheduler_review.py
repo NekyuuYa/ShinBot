@@ -470,6 +470,43 @@ async def test_review_due_timer_service_drives_scheduler_review_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_due_timer_skips_unavailable_session() -> None:
+    class RecordingRuntime:
+        def __init__(self) -> None:
+            self.calls: list[AgentSignal] = []
+            self.agent_scheduler = type(
+                "Scheduler",
+                (),
+                {
+                    "due_review_plans": lambda self, limit=50: [
+                        ReviewPlan(
+                            session_id="bot:group:room",
+                            next_review_at=52.0,
+                            reason="fixed_test_review",
+                        )
+                    ]
+                },
+            )()
+
+        async def handle_agent_signal(self, signal: AgentSignal) -> None:
+            self.calls.append(signal)
+
+        def agent_profile_for_bot(self, _bot_id: str):
+            return self
+
+        def should_pause_session(self, session_id: str) -> bool:
+            return session_id == "bot:group:room"
+
+    runtime = RecordingRuntime()
+    timer = ReviewDueTimerService()
+    timer.bind_agent_runtime(runtime, bot_id="bot-a")
+
+    await timer.run_once()
+
+    assert runtime.calls == []
+
+
+@pytest.mark.asyncio
 async def test_scheduler_completes_active_reply_to_idle_when_review_is_not_requested() -> None:
     dispatcher = RecordingWorkflowDispatcher()
     scheduler = AgentScheduler(
