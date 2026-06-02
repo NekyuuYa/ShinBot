@@ -124,7 +124,8 @@ def test_agent_runtime_overview_lists_persisted_scheduler_sessions(tmp_path: Pat
     payload = response.json()["data"]
     assert payload[0]["botId"] == "bot-main"
     assert payload[0]["sessions"][0]["sessionId"] == session_id
-    assert payload[0]["sessions"][0]["state"] == "active_reply"
+    # API startup reconciles transient scheduler states like ACTIVE_REPLY back to IDLE.
+    assert payload[0]["sessions"][0]["state"] == "idle"
 
 
 def test_agent_runtime_overview_lists_profile_background_tasks(tmp_path: Path):
