@@ -562,7 +562,8 @@ class ActiveReplyDispatcher:
                 msg_count=snapshot.msg_count,
                 metadata={
                     "active_epoch": snapshot.active_epoch,
-                    "conversation_message_count": snapshot.conversation_message_count,
+                    "trace_message_count": snapshot.trace_message_count,
+                    "observed_message_count": snapshot.observed_message_count,
                     "range_source": snapshot.range_source,
                     "covered_message_log_ids": list(snapshot.message_log_ids),
                 },
@@ -620,7 +621,8 @@ class ActiveReplyDispatcher:
             )
             metadata.update(
                 {
-                    "conversation_message_count": snapshot.conversation_message_count,
+                    "trace_message_count": snapshot.trace_message_count,
+                    "observed_message_count": snapshot.observed_message_count,
                     "conversation_summary": snapshot.conversation_summary,
                     "message_log_ids": list(snapshot.message_log_ids),
                 }

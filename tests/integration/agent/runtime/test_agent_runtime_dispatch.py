@@ -707,6 +707,78 @@ async def test_agent_runtime_active_chat_tick_plans_review_before_idle(
 
 
 @pytest.mark.asyncio
+async def test_agent_runtime_idle_review_planning_uses_observed_message_count_metadata(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    model_runtime = FakeModelRuntime(
+        [
+            make_generate_result(
+                tool_calls=[
+                    make_tool_call(
+                        "exit_active",
+                        {"reason": "conversation has clearly ended"},
+                    )
+                ]
+            ),
+            make_generate_result(
+                text='{"next_review_after_seconds": 120, "reason": "conversation_settled"}'
+            ),
+        ]
+    )
+    bot.mount_model_runtime(model_runtime)
+    runtime = install_agent_runtime(bot)
+    session_id = "test-bot:group:group:1"
+    message_log_id = runtime.database.message_logs.insert(
+        MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id="msg-1",
+            sender_id="user-1",
+            sender_name="User",
+            raw_text="@bot hello",
+            content_json="[]",
+            role="user",
+            created_at=40_000.0,
+            is_mentioned=True,
+        )
+    )
+    active_state = ActiveChatState(
+        session_id=session_id,
+        interest_value=60.0,
+        decay_half_life_seconds=20.0,
+        entered_at=10.0,
+        updated_at=10.0,
+        active_epoch=9,
+    )
+    runtime.agent_scheduler._state_store.set_state(session_id, AgentState.ACTIVE_CHAT)
+    runtime.agent_scheduler._state_store.set_active_chat_state(active_state)
+    await runtime.active_chat_workflow.start_active_chat(
+        session_id=session_id,
+        active_chat_state=active_state,
+    )
+
+    try:
+        await runtime.handle_agent_signal(
+            make_signal(message_log_id=message_log_id, is_mentioned=True)
+        )
+        await asyncio.sleep(
+            runtime.active_chat_workflow.attention_config.semantic_wait_ms / 1000.0
+            + 0.1
+        )
+
+        assert len(model_runtime.calls) == 2
+        metadata = model_runtime.calls[1].metadata
+        assert model_runtime.calls[1].purpose == "idle_review_planning"
+        assert metadata["review_stage_metadata"]["observed_message_count"] == 1
+        assert metadata["review_stage_metadata"]["trace_message_count"] >= 0
+        assert metadata["review_stage_metadata"]["message_log_ids"] == [message_log_id]
+        assert metadata["observed_message_count"] == 1
+        assert metadata["trace_message_count"] >= 0
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_agent_runtime_review_due_signal_runs_due_review(
     tmp_path: Path,
 ) -> None:

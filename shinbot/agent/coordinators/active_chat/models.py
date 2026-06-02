@@ -75,6 +75,7 @@ class ActiveChatAttentionState:
     review_result_summary: Any = None
     conversation_summary: str = ""
     conversation_messages: list[dict[str, Any]] = field(default_factory=list)
+    observed_message_count: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -142,7 +143,8 @@ class ActiveChatSummarySnapshot:
     session_id: str
     active_epoch: int
     conversation_summary: str
-    conversation_message_count: int
+    trace_message_count: int
+    observed_message_count: int = 0
     conversation_messages: list[dict[str, Any]] = field(default_factory=list)
     message_log_ids: list[int] = field(default_factory=list)
     range_source: str = "last_batch"

@@ -339,7 +339,8 @@ class TestSummaryPayload:
 
         meta = summary_service.saved[0]["metadata"]
         assert meta["active_epoch"] == 0
-        assert meta["conversation_message_count"] == 2
+        assert meta["trace_message_count"] == 2
+        assert meta["observed_message_count"] == 0
         assert meta["range_source"] == "last_batch"
         assert meta["covered_message_log_ids"] == [10, 20, 30]
 
@@ -504,12 +505,43 @@ class TestActiveChatSummarySnapshot:
         assert snapshot.session_id == "bot:group:room"
         assert snapshot.active_epoch == 77
         assert snapshot.conversation_summary == "snapshot summary"
-        assert snapshot.conversation_message_count == 2
+        assert snapshot.trace_message_count == 2
+        assert snapshot.observed_message_count == 0
         assert snapshot.message_log_ids == [30, 10, 20]
         assert snapshot.msg_log_start == 10
         assert snapshot.msg_log_end == 30
         assert snapshot.msg_count == 3
         assert snapshot.range_source == "last_batch"
+
+    async def test_snapshot_tracks_observed_messages_separately_from_trace(self) -> None:
+        coordinator = ActiveChatCoordinator()
+        active_state = make_active_state(active_epoch=88)
+        await coordinator.start_active_chat(
+            session_id="bot:group:room",
+            active_chat_state=active_state,
+        )
+
+        await coordinator.notify_message(
+            scheduler=None,
+            session_id="bot:group:room",
+            message_log_id=101,
+            sender_id="user-1",
+            response_profile="balanced",
+            is_mentioned=False,
+            is_reply_to_bot=False,
+            is_mention_to_other=False,
+            is_poke_to_bot=False,
+            is_poke_to_other=False,
+            self_platform_id="bot-self",
+            active_chat_state=active_state,
+            trace_id="trace-101",
+        )
+
+        snapshot = coordinator.summary_snapshot_for("bot:group:room")
+
+        assert snapshot is not None
+        assert snapshot.observed_message_count == 1
+        assert snapshot.trace_message_count == 0
 
     async def test_snapshot_returns_none_for_inactive_session(self) -> None:
         coordinator = ActiveChatCoordinator()

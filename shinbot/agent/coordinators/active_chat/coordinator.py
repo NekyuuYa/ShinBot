@@ -224,6 +224,7 @@ class ActiveChatCoordinator:
 
             previous_sender_id = state.last_sender_id
             self._attention.observe(state, signal, now=now)
+            state.observed_message_count += 1
             threshold = self._attention.effective_threshold(active_chat_state.interest_value)
             triggered = state.accumulated >= threshold
             logger.debug(
@@ -355,7 +356,8 @@ class ActiveChatCoordinator:
             session_id=session_id,
             active_epoch=state.active_epoch,
             conversation_summary=state.conversation_summary,
-            conversation_message_count=len(state.conversation_messages),
+            trace_message_count=len(state.conversation_messages),
+            observed_message_count=state.observed_message_count,
             conversation_messages=[dict(message) for message in state.conversation_messages],
             message_log_ids=batch.message_log_ids if batch is not None else [],
         )
