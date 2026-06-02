@@ -70,7 +70,7 @@ class BootController:
         self.state = BootState.BOOTING
 
         self._phase1_environment()
-        self._phase2_infrastructure()
+        await self._phase2_infrastructure()
         self._phase3_kernel_load()
         await self._phase4_plugin_loading()
         await self._phase5_adapter_activation()
@@ -127,11 +127,12 @@ class BootController:
         self._ensure_admin_defaults()
         DataInitializer(self.data_dir).initialize()
 
-    def _phase2_infrastructure(self) -> None:
+    async def _phase2_infrastructure(self) -> None:
         logger.info("Boot Phase 2/5: infrastructure")
         self._init_dashboard_static_config()
         try:
             self.bot = self._create_core_application()
+            await self._preregister_model_runtime_extensions()
             self._mount_model_runtime()
             self._mount_agent_runtime()
         except Exception:
@@ -149,6 +150,13 @@ class BootController:
         )
         bot.configure_bot_service_configs(self.bot_service_configs)
         return bot
+
+    async def _preregister_model_runtime_extensions(self) -> None:
+        if self.bot is None:
+            raise RuntimeError("Bot is not initialized")
+
+        user_plugins_dir = self.data_dir / "plugins"
+        await self.bot.plugin_manager.preregister_model_runtime_extensions(user_plugins_dir)
 
     def _mount_model_runtime(self) -> None:
         if self.bot is None:

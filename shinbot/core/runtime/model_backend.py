@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from shinbot.agent.services.model_runtime.backends import (
+    create_registered_backend,
+    supported_backend_names,
+)
+
 if TYPE_CHECKING:
     from shinbot.agent.services.model_runtime.backends import ModelBackend
 
 DEFAULT_MODEL_BACKEND = "litellm"
-SUPPORTED_MODEL_BACKENDS = frozenset({DEFAULT_MODEL_BACKEND, "openai_compatible"})
+SUPPORTED_MODEL_BACKENDS = supported_backend_names()
 
 
 def model_backend_name_from_config(config: dict[str, Any] | None) -> str:
@@ -42,15 +47,4 @@ def create_model_backend(config: dict[str, Any] | None) -> ModelBackend:
     """
 
     backend_name = model_backend_name_from_config(config)
-    if backend_name == "litellm":
-        from shinbot.agent.services.model_runtime.backends import LiteLLMBackend
-
-        return LiteLLMBackend()
-    if backend_name == "openai_compatible":
-        from shinbot.agent.services.model_runtime.backends import OpenAICompatibleBackend
-
-        return OpenAICompatibleBackend()
-    raise ValueError(
-        f"Unsupported model backend {backend_name!r}; "
-        f"supported backends: {', '.join(sorted(SUPPORTED_MODEL_BACKENDS))}"
-    )
+    return create_registered_backend(backend_name)

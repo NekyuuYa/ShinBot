@@ -1,4 +1,4 @@
-"""LiteLLM-backed provider/model/route runtime."""
+"""Unified provider/model/route runtime."""
 
 from __future__ import annotations
 

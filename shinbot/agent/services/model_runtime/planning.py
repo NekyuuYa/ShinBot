@@ -1,4 +1,4 @@
-"""Route resolution and LiteLLM kwarg planning helpers."""
+"""Route resolution and backend request planning helpers."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import random
 from typing import Any
 
 from shinbot.agent.services.model_runtime.extraction import provider_type_for_litellm
+from shinbot.agent.services.model_runtime.providers import get_provider_descriptor
 from shinbot.agent.services.model_runtime.types import ModelCallError, ModelRuntimeCall
 
 
@@ -95,7 +96,7 @@ def weighted_pick(
     return picker.choices(candidates, weights=weights, k=1)[0]
 
 
-def build_litellm_kwargs(
+def build_backend_request_kwargs(
     *,
     provider: dict[str, Any],
     model: dict[str, Any],
@@ -103,7 +104,7 @@ def build_litellm_kwargs(
     timeout_override: float | None,
     mode: str = "completion",
 ) -> dict[str, Any]:
-    """Build the LiteLLM kwargs payload for one execution attempt."""
+    """Build backend request kwargs for one execution attempt."""
 
     kwargs: dict[str, Any] = {}
     if provider["base_url"]:
@@ -116,12 +117,13 @@ def build_litellm_kwargs(
     kwargs.update(provider.get("default_params") or {})
     kwargs.update(model.get("default_params") or {})
     kwargs.update(call.params)
-    _normalize_openai_compatible_params(kwargs)
+    descriptor = get_provider_descriptor(str(provider.get("type", "")))
+    _normalize_openai_compatible_params(kwargs, descriptor=descriptor)
     _drop_empty_runtime_params(kwargs)
-    kwargs["model"] = _litellm_request_model_name(
+    kwargs["model"] = _runtime_request_model_name(
         str(model["backend_model"]),
-        custom_llm_provider=custom_llm_provider,
-        provider_type=str(provider.get("type", "")),
+        backend_name="litellm",
+        descriptor=descriptor,
     )
 
     if timeout_override is not None:
@@ -130,7 +132,8 @@ def build_litellm_kwargs(
     if mode == "completion":
         kwargs["messages"] = _normalize_chat_messages(
             call.messages,
-            custom_llm_provider=custom_llm_provider,
+            descriptor=descriptor,
+            backend_name="litellm",
         )
         allowed_openai_params = _normalize_allowed_openai_params(kwargs)
         if call.tools:
@@ -148,32 +151,38 @@ def build_litellm_kwargs(
     return kwargs
 
 
-def _normalize_openai_compatible_params(kwargs: dict[str, Any]) -> None:
+def _normalize_openai_compatible_params(
+    kwargs: dict[str, Any],
+    *,
+    descriptor: Any = None,
+) -> None:
     """Translate admin-facing OpenAI-compatible params into LiteLLM kwargs."""
 
-    request_headers = kwargs.pop("requestHeaders", None)
-    if isinstance(request_headers, dict):
+    request_headers = None
+    if descriptor is not None:
+        request_headers = descriptor.merge_request_header_params(kwargs)
+        for key in descriptor.request_headers_param_keys:
+            kwargs.pop(key, None)
+    else:
+        request_headers = kwargs.pop("requestHeaders", None)
+
+    if isinstance(request_headers, dict) and request_headers:
         extra_headers = kwargs.get("extra_headers")
         if not isinstance(extra_headers, dict):
             extra_headers = {}
         kwargs["extra_headers"] = {**extra_headers, **request_headers}
 
 
-def _litellm_request_model_name(
+def _runtime_request_model_name(
     backend_model: str,
     *,
-    custom_llm_provider: str | None,
-    provider_type: str,
+    descriptor: Any = None,
+    backend_name: str,
 ) -> str:
-    """Return the model name sent through LiteLLM for one request."""
-    if custom_llm_provider == "openai" and provider_type == "xiaomi_mimo":
-        return _strip_model_prefix(backend_model, "xiaomi_mimo")
+    """Return the model name sent through one backend for one request."""
+    if descriptor is not None:
+        return descriptor.request_model_name(backend_model, backend_name=backend_name)
     return backend_model
-
-
-def _strip_model_prefix(model_name: str, prefix: str) -> str:
-    needle = f"{prefix}/"
-    return model_name[len(needle) :] if model_name.startswith(needle) else model_name
 
 
 def _normalize_allowed_openai_params(kwargs: dict[str, Any]) -> list[str]:
@@ -202,46 +211,45 @@ def _drop_empty_runtime_params(kwargs: dict[str, Any]) -> None:
 def _normalize_chat_messages(
     messages: list[dict[str, Any]],
     *,
-    custom_llm_provider: str | None,
+    descriptor: Any = None,
+    backend_name: str,
 ) -> list[dict[str, Any]]:
-    """Keep system messages at the beginning for strict OpenAI-compatible providers."""
+    """Keep system messages at the beginning for strict runtime providers."""
 
-    normalized: list[dict[str, Any]] = []
-    seen_non_system = False
-    for message in messages:
-        copied = dict(message)
-        if copied.get("role") == "system" and seen_non_system:
-            copied["role"] = "user"
-        elif copied.get("role") == "system":
-            if custom_llm_provider == "dashscope":
-                copied["content"] = _normalize_dashscope_system_content(copied.get("content"))
-        else:
-            seen_non_system = True
-        normalized.append(copied)
-    return normalized
+    if descriptor is not None:
+        return descriptor.normalize_runtime_messages(messages, backend_name=backend_name)
+    return [dict(message) for message in messages]
 
 
-def _normalize_dashscope_system_content(content: Any) -> Any:
-    if not isinstance(content, list):
-        return content
-    if any(isinstance(item, dict) and item.get("cache_control") for item in content):
-        return content
+def sanitize_backend_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Redact secrets from a request kwargs dict before logging or observer emission."""
 
-    text_parts: list[str] = []
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == "text":
-            text = str(item.get("text", "") or "").strip()
-            if text:
-                text_parts.append(text)
-        elif isinstance(item, str) and item.strip():
-            text_parts.append(item.strip())
-    return "\n\n".join(text_parts)
+    return _sanitize_runtime_payload(kwargs)
+
+
+def build_litellm_kwargs(
+    *,
+    provider: dict[str, Any],
+    model: dict[str, Any],
+    call: ModelRuntimeCall,
+    timeout_override: float | None,
+    mode: str = "completion",
+) -> dict[str, Any]:
+    """Compatibility wrapper for the legacy LiteLLM request builder."""
+
+    return build_backend_request_kwargs(
+        provider=provider,
+        model=model,
+        call=call,
+        timeout_override=timeout_override,
+        mode=mode,
+    )
 
 
 def sanitize_litellm_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Redact secrets from a kwargs dict before logging or observer emission."""
+    """Compatibility wrapper for the legacy LiteLLM payload sanitizer."""
 
-    return _sanitize_runtime_payload(kwargs)
+    return sanitize_backend_request_kwargs(kwargs)
 
 
 _REDACTED_RUNTIME_KEYS = frozenset(

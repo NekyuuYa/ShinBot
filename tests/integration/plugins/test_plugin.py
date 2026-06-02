@@ -793,6 +793,67 @@ async def test_load_all_async_disables_builtin_default_disabled_plugins(
 
 
 @pytest.mark.asyncio
+async def test_preregister_model_runtime_extensions_registers_backend_and_provider(
+    tmp_path: Path,
+) -> None:
+    plugin_id = "demo_runtime_extensions"
+    module_body = "\n".join(
+        [
+            "from shinbot.agent.services.model_runtime.backends.protocol import BackendRequestPlan",
+            "from shinbot.agent.services.model_runtime.providers import ModelProviderDescriptor",
+            "",
+            "class DemoBackend:",
+            '    name = "demo_backend"',
+            "",
+            "    def plan_request(self, *, provider, model, call, timeout_override, operation):",
+            "        return BackendRequestPlan(",
+            "            operation=operation,",
+            '            payload={"model": model["backend_model"]},',
+            '            safe_payload={"model": model["backend_model"]},',
+            "            backend_name=self.name,",
+            '            backend_model=str(model["backend_model"]),',
+            "        )",
+            "",
+            "    def invoke(self, plan):",
+            '        return {"choices": [{"message": {"content": "ok"}}], "usage": {}}',
+            "",
+            "    def normalize_response(self, *, operation, response, usage):",
+            '        return {"text": "ok", "tool_calls": []}',
+            "",
+            "def register_model_runtime_extensions(registrar):",
+            '    registrar.register_backend_factory("demo_backend", DemoBackend)',
+            "    registrar.register_provider_descriptor(",
+            "        ModelProviderDescriptor(",
+            '            provider_type="demo_runtime_provider",',
+            '            supported_backends=frozenset({"demo_backend"}),',
+            '            auth_strategy="none",',
+            '            catalog_path=None,',
+            "        )",
+            "    )",
+            "",
+            "def setup(plg):",
+            "    pass",
+        ]
+    )
+    plugins_dir = _write_metadata_plugin(
+        tmp_path,
+        plugin_id=plugin_id,
+        module_body=module_body,
+    )
+    mgr = PluginManager(CommandRegistry(), EventBus(), data_dir=tmp_path)
+
+    await mgr.preregister_model_runtime_extensions(plugins_dir)
+
+    from shinbot.agent.services.model_runtime.backends import create_registered_backend
+    from shinbot.agent.services.model_runtime.providers import require_provider_descriptor
+
+    backend = create_registered_backend("demo_backend")
+    descriptor = require_provider_descriptor("demo_runtime_provider")
+    assert backend.name == "demo_backend"
+    assert descriptor.supports_backend("demo_backend")
+
+
+@pytest.mark.asyncio
 async def test_metadata_identity_overrides_module_identity_fields(tmp_path: Path):
     plugin_id = "demo_meta_identity"
     plugin_dir = tmp_path / plugin_id

@@ -10,6 +10,11 @@ from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCal
 from shinbot.agent.services.model_runtime.backends import BackendRequestPlan
 from shinbot.agent.services.model_runtime.backends.openai_compatible import OpenAICompatibleBackend
 from shinbot.agent.services.model_runtime.planning import build_litellm_kwargs
+from shinbot.agent.services.model_runtime.providers import (
+    ModelProviderDescriptor,
+    get_provider_descriptor,
+    register_provider_descriptor,
+)
 from shinbot.agent.services.model_runtime.service import ModelRuntime
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import (
@@ -357,6 +362,36 @@ def test_build_litellm_kwargs_allows_tools_and_response_format_for_strict_litell
     assert kwargs["custom_llm_provider"] == "openai"
     assert kwargs["model"] == "mimo-v2.5"
     assert kwargs["tools"] == [{"type": "function", "function": {"name": "send_reply"}}]
+
+
+def test_provider_descriptor_normalizes_runtime_messages_and_model_name():
+    descriptor = get_provider_descriptor("dashscope")
+    assert descriptor is not None
+
+    normalized_messages = descriptor.normalize_runtime_messages(
+        [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}],
+            },
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": "late system"},
+        ],
+        backend_name="litellm",
+    )
+
+    assert normalized_messages[0]["content"] == "one\n\ntwo"
+    assert [message["role"] for message in normalized_messages] == ["system", "user", "user"]
+
+    mimo_descriptor = get_provider_descriptor("xiaomi_mimo")
+    assert mimo_descriptor is not None
+    assert (
+        mimo_descriptor.request_model_name(
+            "xiaomi_mimo/mimo-v2.5",
+            backend_name="litellm",
+        )
+        == "mimo-v2.5"
+    )
 
 
 @pytest.mark.asyncio
@@ -868,6 +903,74 @@ def test_openai_compatible_backend_filters_embedding_params_and_strips_provider_
         "user": "tester",
         "timeout": 3.0,
     }
+
+
+def test_openai_compatible_backend_uses_descriptor_auth_param_key(monkeypatch: pytest.MonkeyPatch):
+    descriptor = get_provider_descriptor("custom_openai")
+    assert descriptor is not None
+    backend = OpenAICompatibleBackend()
+    captured: dict[str, str] = {}
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+
+    monkeypatch.setattr(
+        "shinbot.agent.services.model_runtime.backends.openai_compatible.backend.OpenAI",
+        FakeOpenAI,
+    )
+
+    backend._get_client(
+        {
+            "type": "custom_openai",
+            "base_url": "https://api.example.com/v1",
+            "auth": {"api_key": "secret-key"},
+        }
+    )
+
+    assert captured == {
+        "api_key": "secret-key",
+        "base_url": "https://api.example.com/v1",
+    }
+
+
+def test_openai_compatible_backend_uses_descriptor_request_header_keys():
+    register_provider_descriptor(
+        ModelProviderDescriptor(
+            provider_type="test_header_provider",
+            supported_backends=frozenset({"openai_compatible"}),
+            auth_strategy="none",
+            request_headers_param_keys=("provider_headers",),
+            catalog_path=None,
+        )
+    )
+
+    backend = OpenAICompatibleBackend()
+    plan = backend.plan_request(
+        provider={
+            "id": "test-header-provider",
+            "type": "test_header_provider",
+            "base_url": "https://api.example.com/v1",
+            "auth": {},
+            "default_params": {"provider_headers": {"X-Provider": "provider"}},
+        },
+        model={
+            "backend_model": "demo-model",
+            "default_params": {},
+        },
+        call=ModelRuntimeCall(
+            model_id="demo/model",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "Hello"}],
+            params={"provider_headers": {"X-Call": "call"}},
+        ),
+        timeout_override=3.0,
+        operation="completion",
+    )
+
+    assert plan.payload["extra_headers"] == {"X-Provider": "provider", "X-Call": "call"}
+    assert "provider_headers" not in plan.payload
 
 
 @pytest.mark.asyncio

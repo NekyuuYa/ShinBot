@@ -112,17 +112,12 @@ def _validate_runtime_section(config: dict[str, Any]) -> list[ConfigValidationIs
                 )
             )
         elif isinstance(backend_type, str):
-            from shinbot.core.runtime.model_backend import SUPPORTED_MODEL_BACKENDS
-
-            if backend_type.strip() not in SUPPORTED_MODEL_BACKENDS:
+            if not backend_type.strip():
                 issues.append(
                     ConfigValidationIssue(
                         path="runtime.model_backend.type",
-                        message=(
-                            "must be one of "
-                            f"{', '.join(sorted(SUPPORTED_MODEL_BACKENDS))}"
-                        ),
-                        code="choices",
+                        message="must not be empty",
+                        code="min_length",
                     )
                 )
     return issues

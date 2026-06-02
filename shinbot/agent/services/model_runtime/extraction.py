@@ -1,4 +1,4 @@
-"""Response extraction helpers for LiteLLM-backed runtime calls."""
+"""Response extraction helpers for model runtime calls."""
 
 from __future__ import annotations
 
@@ -9,38 +9,19 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
+from shinbot.agent.services.model_runtime.providers import get_provider_descriptor
+
 DATA_URL_PREFIX = "data:"
 MEDIA_SHA256_REF_PREFIX = "media:sha256:"
 
 
 def provider_type_for_litellm(provider_type: str) -> str | None:
-    """Map a ShinBot provider name to the LiteLLM ``custom_llm_provider`` type.
-    OpenAI-compatible providers that LiteLLM handles through dynamic provider
-    metadata should use the OpenAI transform when their API accepts the
-    Chat Completions wire format. This keeps unknown-but-compatible models from
-    losing standard OpenAI params such as ``tools`` because of LiteLLM's model
-    capability registry.
+    """Return the LiteLLM provider override declared by a provider descriptor."""
 
-    Args:
-        provider_type: Internal provider identifier (e.g. ``"custom_openai"``).
-
-    Returns:
-        The corresponding LiteLLM provider string, or ``None`` if the provider
-        is natively supported and requires no override.
-    """
-    if provider_type == "custom_openai":
-        return "openai"
-    if provider_type == "dashscope":
-        return "dashscope"
-    if provider_type == "azure_openai":
-        return "azure"
-    if provider_type == "siliconflow":
-        return "openai"
-    if provider_type == "xiaomi_mimo":
-        return "openai"
-    # Native LiteLLM providers (anthropic, gemini, deepseek)
-    # are auto-detected from the backend_model prefix; no custom_llm_provider needed.
-    return None
+    descriptor = get_provider_descriptor(provider_type)
+    if descriptor is None:
+        return None
+    return descriptor.litellm_custom_llm_provider
 
 
 def utc_now() -> datetime:

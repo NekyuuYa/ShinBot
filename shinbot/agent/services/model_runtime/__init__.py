@@ -1,4 +1,4 @@
-"""Unified LiteLLM-backed model runtime."""
+"""Unified model runtime service."""
 
 from shinbot.agent.services.model_runtime.service import (
     EmbedResult,

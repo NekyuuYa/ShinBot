@@ -8,6 +8,7 @@ import inspect
 import json
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +21,7 @@ from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteTable
 from shinbot.core.message_routes import CommandRegistry, KeywordRegistry
-from shinbot.core.model_runtime import ModelRuntimeObserverRegistry
+from shinbot.core.model_runtime import ModelRuntimeExtensionRegistrar, ModelRuntimeObserverRegistry
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
 from shinbot.core.tools import ToolOwnerType, ToolRegistry
@@ -33,6 +34,36 @@ logger = get_logger(__name__, source="plugins", color="yellow")
 
 _VALID_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
 _BUILTIN_PLUGINS_DIR = Path(__file__).resolve().parents[2] / "builtin_plugins"
+
+
+def _ensure_user_plugin_package_on_path(directory: Path) -> None:
+    """Ensure the user-plugin package root can be imported from ``directory``."""
+
+    parent = str(directory.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+
+    package_name = directory.name
+    package_dir = str(directory)
+    existing = sys.modules.get(package_name)
+    if existing is not None:
+        package_paths = getattr(existing, "__path__", None)
+        if package_paths is None:
+            sys.modules.pop(package_name, None)
+        elif package_dir not in package_paths:
+            package_paths.append(package_dir)
+
+    importlib.invalidate_caches()
+
+
+@dataclass(slots=True, frozen=True)
+class PluginDiscoveryCandidate:
+    """Resolved metadata for one discovered plugin candidate."""
+
+    plugin_dir: Path
+    metadata: dict[str, Any]
+    module_path: str
+    is_builtin: bool
 
 
 def _topo_sort(
@@ -129,6 +160,7 @@ class PluginManager:
         self._plugin_objects: dict[str, Plugin] = {}
         self._modules: dict[str, Any] = {}
         self._declared_metadata: dict[str, dict[str, Any]] = {}
+        self._pre_registered_runtime_plugins: set[str] = set()
 
         self._root_data_dir = Path(data_dir) if data_dir is not None else Path("data")
         self._plugin_data_root = self._root_data_dir / "plugin_data"
@@ -148,6 +180,43 @@ class PluginManager:
             self._model_runtime = model_runtime
         if agent_runtime is not None:
             self._agent_runtime = agent_runtime
+
+    async def preregister_model_runtime_extensions(
+        self,
+        user_dir: Path | str | None = None,
+    ) -> None:
+        """Import plugin modules and let them register model-runtime extensions early."""
+
+        registrar = ModelRuntimeExtensionRegistrar()
+        for candidate in self._discover_plugin_candidates(user_dir=user_dir):
+            plugin_id = candidate.metadata["id"]
+            if plugin_id in self._pre_registered_runtime_plugins:
+                continue
+            try:
+                module = importlib.import_module(candidate.module_path)
+            except Exception:
+                logger.exception(
+                    "Failed importing plugin %s for model runtime preregistration",
+                    plugin_id,
+                )
+                continue
+            try:
+                preregister = getattr(module, "register_model_runtime_extensions", None)
+                if preregister is None:
+                    continue
+                result = preregister(registrar)
+                if inspect.isawaitable(result):
+                    await result
+                self._pre_registered_runtime_plugins.add(plugin_id)
+                logger.info(
+                    "Pre-registered model runtime extensions from plugin %s",
+                    plugin_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed preregistering model runtime extensions for plugin %s",
+                    plugin_id,
+                )
 
     def _build_plg(self, plugin_id: str) -> Plugin:
         return Plugin(
@@ -603,18 +672,30 @@ class PluginManager:
             Combined list of metadata from all loaded plugins.
         """
         results: list[PluginMeta] = []
-
-        if _BUILTIN_PLUGINS_DIR.is_dir():
-            results.extend(
-                await self._load_from_metadata_dir_async(_BUILTIN_PLUGINS_DIR, is_builtin=True)
-            )
-        else:
-            logger.debug("No built-in plugins directory at %s", _BUILTIN_PLUGINS_DIR)
-
-        user_path = Path(user_dir) if user_dir is not None else self._root_data_dir / "plugins"
-        if user_path.is_dir():
-            results.extend(await self._load_from_metadata_dir_async(user_path, is_builtin=False))
-
+        for candidate in self._discover_plugin_candidates(user_dir=user_dir):
+            try:
+                meta = await self.load_plugin_async(
+                    candidate.metadata["id"],
+                    candidate.module_path,
+                    declared_metadata=candidate.metadata,
+                )
+                permissions = candidate.metadata.get("permissions", [])
+                self._validate_permissions(candidate.metadata["id"], permissions, meta)
+                if candidate.metadata.get("default_enabled") is False:
+                    meta = await self.disable_plugin_async(candidate.metadata["id"])
+                results.append(meta)
+                logger.info(
+                    "Loaded %s plugin %s (module=%s)",
+                    "builtin" if candidate.is_builtin else "user",
+                    candidate.metadata["id"],
+                    candidate.module_path,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to load plugin %s from %s",
+                    candidate.metadata["id"],
+                    candidate.plugin_dir,
+                )
         return results
 
     async def _load_from_metadata_dir_async(
@@ -624,9 +705,7 @@ class PluginManager:
             raise NotADirectoryError(f"Plugin directory not found: {directory}")
 
         if not is_builtin:
-            parent = str(directory.parent)
-            if parent not in sys.path:
-                sys.path.insert(0, parent)
+            _ensure_user_plugin_package_on_path(directory)
 
         candidates: list[tuple[Path, dict[str, Any]]] = []
         for plugin_dir in sorted(directory.iterdir()):
@@ -706,6 +785,112 @@ class PluginManager:
                 logger.exception("Failed to load plugin %s from %s", plugin_id, plugin_dir)
 
         return loaded
+
+    def _discover_plugin_candidates(
+        self,
+        *,
+        user_dir: Path | str | None,
+    ) -> list[PluginDiscoveryCandidate]:
+        candidates: list[PluginDiscoveryCandidate] = []
+
+        if _BUILTIN_PLUGINS_DIR.is_dir():
+            candidates.extend(self._discover_metadata_dir(_BUILTIN_PLUGINS_DIR, is_builtin=True))
+        else:
+            logger.debug("No built-in plugins directory at %s", _BUILTIN_PLUGINS_DIR)
+
+        user_path = Path(user_dir) if user_dir is not None else self._root_data_dir / "plugins"
+        if user_path.is_dir():
+            candidates.extend(self._discover_metadata_dir(user_path, is_builtin=False))
+
+        return candidates
+
+    def _discover_metadata_dir(
+        self,
+        directory: Path,
+        *,
+        is_builtin: bool,
+    ) -> list[PluginDiscoveryCandidate]:
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Plugin directory not found: {directory}")
+
+        if not is_builtin:
+            _ensure_user_plugin_package_on_path(directory)
+
+        raw_candidates: list[tuple[Path, dict[str, Any]]] = []
+        for plugin_dir in sorted(directory.iterdir()):
+            if not plugin_dir.is_dir() or plugin_dir.name.startswith("_"):
+                continue
+
+            metadata_path = plugin_dir / "metadata.json"
+            if not metadata_path.exists():
+                logger.debug("No metadata.json in %s, skipping", plugin_dir)
+                continue
+
+            try:
+                metadata = self._validate_metadata(
+                    metadata_path, plugin_dir, require_naming=is_builtin
+                )
+            except Exception:
+                logger.exception("Invalid metadata.json in %s", plugin_dir)
+                continue
+
+            if metadata["id"] in self._plugins:
+                logger.debug("Plugin %r already loaded, skipping", metadata["id"])
+                continue
+
+            raw_candidates.append((plugin_dir, metadata))
+
+        sorted_candidates = _topo_sort(raw_candidates)
+
+        batch_ids = {m["id"] for _, m in sorted_candidates}
+        already_loaded = set(self._plugins.keys())
+        for _, metadata in sorted_candidates:
+            for dep in metadata.get("dependencies", []):
+                if dep not in batch_ids and dep not in already_loaded:
+                    logger.warning(
+                        "Plugin %r declares dependency on %r which is not available",
+                        metadata["id"],
+                        dep,
+                    )
+
+        return [
+            PluginDiscoveryCandidate(
+                plugin_dir=plugin_dir,
+                metadata=metadata,
+                module_path=self._module_path_for_candidate(
+                    directory=directory,
+                    plugin_dir=plugin_dir,
+                    metadata=metadata,
+                    is_builtin=is_builtin,
+                ),
+                is_builtin=is_builtin,
+            )
+            for plugin_dir, metadata in sorted_candidates
+        ]
+
+    @staticmethod
+    def _module_path_for_candidate(
+        *,
+        directory: Path,
+        plugin_dir: Path,
+        metadata: dict[str, Any],
+        is_builtin: bool,
+    ) -> str:
+        entry_file = metadata["entry"]
+        if is_builtin:
+            pkg = f"shinbot.builtin_plugins.{plugin_dir.name}"
+            return (
+                pkg
+                if entry_file == "__init__.py"
+                else f"{pkg}.{'.'.join(Path(entry_file).with_suffix('').parts)}"
+            )
+
+        prefix = directory.name
+        return (
+            f"{prefix}.{plugin_dir.name}"
+            if entry_file == "__init__.py"
+            else f"{prefix}.{plugin_dir.name}.{'.'.join(Path(entry_file).with_suffix('').parts)}"
+        )
 
     def _validate_permissions(
         self, plugin_id: str, declared_permissions: list[str], meta: PluginMeta

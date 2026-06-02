@@ -19,6 +19,11 @@ from shinbot.agent.services.model_runtime.admin import (
     validate_route_member_ids,
 )
 from shinbot.agent.services.model_runtime.audit_store import ModelAuditPayloadStore
+from shinbot.agent.services.model_runtime.backends import registered_backend_descriptors
+from shinbot.agent.services.model_runtime.providers import (
+    registered_provider_descriptors,
+    require_provider_descriptor,
+)
 from shinbot.api.deps import AuthRequired, BotDep
 from shinbot.api.models import EC, Envelope, ok
 from shinbot.persistence.records import (
@@ -127,6 +132,57 @@ class ProviderData(BaseModel):
     enabled: bool
     createdAt: str
     lastModified: str
+
+
+class RuntimeMetadataFieldData(BaseModel):
+    """Management field schema exposed for backend/provider configuration."""
+
+    key: str
+    location: str
+    control: str
+    label: str
+    description: str
+    placeholder: str
+    defaultValue: Any = None
+    secret: bool
+
+
+class RuntimeMetadataPresetData(BaseModel):
+    """Selectable provider preset exposed to management clients."""
+
+    key: str
+    label: str
+    defaultBaseUrl: str
+    description: str
+    icon: str
+    recommended: bool
+
+
+class BackendMetadataData(BaseModel):
+    """Metadata describing one registered model backend."""
+
+    name: str
+    displayName: str
+    description: str
+    kind: str
+    supportedProviderTypes: list[str]
+
+
+class ProviderTypeMetadataData(BaseModel):
+    """Metadata describing one registered provider descriptor."""
+
+    type: str
+    displayName: str
+    description: str
+    icon: str
+    defaultBaseUrl: str
+    supportedBackends: list[str]
+    supportsCatalog: bool
+    authStrategy: str
+    authParamKey: str
+    requestHeadersParamKeys: list[str]
+    presets: list[RuntimeMetadataPresetData]
+    configFields: list[RuntimeMetadataFieldData]
 
 
 class ModelData(BaseModel):
@@ -397,6 +453,64 @@ def _serialize_provider(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _serialize_runtime_field(payload: Any) -> dict[str, Any]:
+    return {
+        "key": payload.key,
+        "location": payload.location,
+        "control": payload.control,
+        "label": payload.label,
+        "description": payload.description,
+        "placeholder": payload.placeholder,
+        "defaultValue": payload.default_value,
+        "secret": payload.secret,
+    }
+
+
+def _serialize_runtime_preset(payload: Any) -> dict[str, Any]:
+    return {
+        "key": payload.key,
+        "label": payload.label,
+        "defaultBaseUrl": payload.default_base_url,
+        "description": payload.description,
+        "icon": payload.icon,
+        "recommended": payload.recommended,
+    }
+
+
+def _serialize_backend_metadata(payload: Any) -> dict[str, Any]:
+    supported_provider_types = payload.supported_provider_types
+    if not supported_provider_types:
+        supported_provider_types = frozenset(
+            descriptor.provider_type
+            for descriptor in registered_provider_descriptors()
+            if payload.name in descriptor.supported_backends
+        )
+    return {
+        "name": payload.name,
+        "displayName": payload.display_name or payload.name,
+        "description": payload.description,
+        "kind": payload.kind,
+        "supportedProviderTypes": sorted(supported_provider_types),
+    }
+
+
+def _serialize_provider_type_metadata(payload: Any) -> dict[str, Any]:
+    return {
+        "type": payload.provider_type,
+        "displayName": payload.display_name or payload.provider_type,
+        "description": payload.description,
+        "icon": payload.icon,
+        "defaultBaseUrl": payload.default_base_url,
+        "supportedBackends": sorted(payload.supported_backends),
+        "supportsCatalog": payload.supports_catalog,
+        "authStrategy": payload.auth_strategy,
+        "authParamKey": payload.auth_param_key,
+        "requestHeadersParamKeys": list(payload.request_headers_param_keys),
+        "presets": [_serialize_runtime_preset(item) for item in payload.presets],
+        "configFields": [_serialize_runtime_field(item) for item in payload.config_fields],
+    }
+
+
 def _serialize_model(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": payload["id"],
@@ -634,6 +748,19 @@ def _validate_route_members(database: Any, members: list[RouteMemberRequest]) ->
         _raise_admin_http_error(exc)
 
 
+def _require_provider_type(provider_type: str) -> None:
+    try:
+        require_provider_descriptor(provider_type)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": EC.INVALID_ACTION,
+                "message": str(exc),
+            },
+        ) from exc
+
+
 async def _fetch_provider_catalog(database: Any, provider_id: str) -> list[dict[str, Any]]:
     try:
         provider = get_provider_or_raise(database, provider_id)
@@ -649,9 +776,37 @@ async def list_providers(bot=BotDep):
     return ok([_serialize_provider(item) for item in providers])
 
 
+@router.get("/metadata/backends", response_model=Envelope[list[BackendMetadataData]])
+async def list_backend_metadata():
+    """List registered model backend descriptors for management clients."""
+
+    return ok(
+        [
+            _serialize_backend_metadata(item)
+            for item in sorted(registered_backend_descriptors(), key=lambda descriptor: descriptor.name)
+        ]
+    )
+
+
+@router.get("/metadata/provider-types", response_model=Envelope[list[ProviderTypeMetadataData]])
+async def list_provider_type_metadata():
+    """List registered model provider descriptors for management clients."""
+
+    return ok(
+        [
+            _serialize_provider_type_metadata(item)
+            for item in sorted(
+                registered_provider_descriptors(),
+                key=lambda descriptor: descriptor.provider_type,
+            )
+        ]
+    )
+
+
 @router.post("/providers", status_code=201, response_model=Envelope[ProviderData])
 async def create_provider(body: ProviderRequest, bot=BotDep):
     """Create a new model provider with authentication and default parameters."""
+    _require_provider_type(body.type)
     if bot.database.model_registry.get_provider(body.id) is not None:
         raise HTTPException(
             status_code=409,
@@ -680,6 +835,8 @@ async def create_provider(body: ProviderRequest, bot=BotDep):
 async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotDep):
     """Partially update an existing model provider."""
     current = _require_provider(bot.database, provider_id)
+    next_type = body.type if body.type is not None else current["type"]
+    _require_provider_type(next_type)
     next_id = body.id if body.id is not None else provider_id
     if next_id != provider_id and bot.database.model_registry.get_provider(next_id) is not None:
         raise HTTPException(

@@ -52,8 +52,8 @@ from shinbot.agent.services.model_runtime.backends.protocol import (
     BackendRequestPlan,
 )
 from shinbot.agent.services.model_runtime.planning import (
-    build_litellm_kwargs,
-    sanitize_litellm_kwargs,
+    build_backend_request_kwargs,
+    sanitize_backend_request_kwargs,
 )
 from shinbot.agent.services.model_runtime.types import ModelRuntimeCall
 
@@ -97,7 +97,7 @@ class LiteLLMBackend:
     ) -> BackendRequestPlan:
         """Build a LiteLLM kwargs payload for one execution attempt."""
 
-        payload = build_litellm_kwargs(
+        payload = build_backend_request_kwargs(
             provider=provider,
             model=model,
             call=call,
@@ -107,7 +107,7 @@ class LiteLLMBackend:
         return BackendRequestPlan(
             operation=operation,
             payload=payload,
-            safe_payload=sanitize_litellm_kwargs(payload),
+            safe_payload=sanitize_backend_request_kwargs(payload),
             backend_name=self.name,
             backend_model=str(payload.get("model") or model.get("backend_model") or ""),
         )

@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from shinbot.agent.services.model_runtime import ModelCallError, ModelRuntimeCall, litellm_adapter
+from shinbot.agent.services.model_runtime.providers import require_provider_descriptor
 
 
 @dataclass(slots=True)
@@ -106,72 +107,17 @@ def validate_route_member_ids(database: Any, model_ids: list[str]) -> None:
 
 
 def provider_request_headers(payload: dict[str, Any]) -> dict[str, str]:
-    """Build HTTP headers required for outgoing provider API calls.
+    """Build HTTP headers required for outgoing provider API calls."""
 
-    Sets the appropriate authentication header based on provider type
-    (Azure ``api-key``, Anthropic ``x-api-key``, Gemini ``x-goog-api-key``,
-    or standard ``Authorization: Bearer``).  Custom headers from
-    ``payload["default_params"]["requestHeaders"]`` are merged on top.
-
-    Args:
-        payload: Provider configuration dictionary containing at least
-            ``type`` and optionally ``auth`` and ``default_params``.
-
-    Returns:
-        Dictionary of HTTP header name/value pairs.
-    """
-    headers: dict[str, str] = {}
-    auth = payload.get("auth") or {}
-    default_params = payload.get("default_params") or {}
-    api_key = auth.get("api_key")
-    if api_key and payload["type"] == "azure_openai":
-        headers["api-key"] = str(api_key)
-    elif api_key and payload["type"] == "anthropic":
-        headers["x-api-key"] = str(api_key)
-        headers["anthropic-version"] = "2023-06-01"
-    elif api_key and payload["type"] == "gemini":
-        headers["x-goog-api-key"] = str(api_key)
-    elif api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    request_headers = default_params.get("requestHeaders")
-    if isinstance(request_headers, dict):
-        for key, value in request_headers.items():
-            if value is None:
-                continue
-            headers[str(key)] = str(value)
-    return headers
+    descriptor = require_provider_descriptor(str(payload.get("type") or ""))
+    return descriptor.request_headers(payload)
 
 
 def provider_type_for_model_info(provider_type: str) -> str | None:
-    """Map an internal provider type to its LiteLLM ``custom_llm_provider`` value.
+    """Return the LiteLLM model-info override declared by a provider descriptor."""
 
-    Some providers require an explicit mapping (e.g. ``custom_openai`` →
-    ``openai``), while native LiteLLM providers are auto-detected from the
-    model prefix and return ``None``.
-
-    Args:
-        provider_type: Internal provider type string from the database.
-
-    Returns:
-        LiteLLM provider type string, or ``None`` when no explicit override
-        is needed.
-    """
-    if provider_type == "custom_openai":
-        return "openai"
-    if provider_type == "dashscope":
-        return "dashscope"
-    if provider_type == "azure_openai":
-        return "azure"
-    if provider_type == "siliconflow":
-        return "openai"
-    # Native LiteLLM providers auto-detected from model prefix.
-    if provider_type in {
-        "openai", "openrouter", "ollama",
-        "anthropic", "gemini", "deepseek", "xiaomi_mimo",
-    }:
-        return None
-    return None
+    descriptor = require_provider_descriptor(provider_type)
+    return descriptor.model_info_custom_llm_provider
 
 
 def infer_context_window(provider: dict[str, Any], backend_model: str) -> int | None:
@@ -191,9 +137,10 @@ def infer_context_window(provider: dict[str, Any], backend_model: str) -> int | 
         determined.
     """
     try:
+        descriptor = require_provider_descriptor(str(provider["type"]))
         model_info = litellm_adapter.get_model_info(
             backend_model,
-            custom_llm_provider=provider_type_for_model_info(provider["type"]),
+            custom_llm_provider=descriptor.model_info_custom_llm_provider,
             api_base=provider.get("base_url") or None,
         )
     except Exception:
@@ -211,81 +158,14 @@ def infer_context_window(provider: dict[str, Any], backend_model: str) -> int | 
 
 
 def normalize_provider_catalog(payload: dict[str, Any], body: Any) -> list[dict[str, Any]]:
-    """Normalize a raw provider API response into a standard catalog format.
+    """Normalize a raw provider API response into a standard catalog format."""
 
-    Handles the differing response schemas of Ollama (``models`` list with
-    ``name`` keys), Gemini (``models`` list with ``name``/``displayName``),
-    and OpenAI-compatible providers (``data`` list with ``id`` keys).
-
-    Args:
-        payload: Provider configuration dictionary (used for type detection
-            and context window inference).
-        body: Parsed JSON response body from the provider's list-models
-            endpoint.
-
-    Returns:
-        List of model catalog entries, each containing ``id``,
-        ``displayName``, ``backendModel``, and ``contextWindow`` keys.
-    """
-    provider_type = payload["type"]
-    if provider_type == "ollama":
-        models = []
-        for item in body.get("models", []):
-            model_id = item.get("name")
-            if not model_id:
-                continue
-            models.append(
-                {
-                    "id": str(model_id),
-                    "displayName": str(model_id),
-                    "backendModel": f"ollama/{model_id}",
-                    "contextWindow": infer_context_window(payload, f"ollama/{model_id}"),
-                }
-            )
-        return models
-
-    if provider_type == "gemini":
-        models = []
-        for item in body.get("models", []):
-            raw_name = item.get("name") or ""
-            model_id = raw_name.replace("models/", "")
-            if not model_id:
-                continue
-            backend_model = f"gemini/{model_id}"
-            models.append(
-                {
-                    "id": str(model_id),
-                    "displayName": str(item.get("displayName") or model_id),
-                    "backendModel": backend_model,
-                    "contextWindow": infer_context_window(payload, backend_model),
-                }
-            )
-        return models
-
-    items = body.get("data", [])
-    models: list[dict[str, Any]] = []
-    for item in items:
-        model_id = item.get("id")
-        if not model_id:
-            continue
-        backend_model = str(model_id)
-        if provider_type == "openrouter":
-            backend_model = f"openrouter/{model_id}"
-        elif provider_type == "deepseek":
-            backend_model = f"deepseek/{model_id}"
-        elif provider_type == "xiaomi_mimo":
-            backend_model = f"xiaomi_mimo/{model_id}"
-        elif provider_type == "anthropic":
-            backend_model = f"anthropic/{model_id}"
-        models.append(
-            {
-                "id": str(model_id),
-                "displayName": str(item.get("name") or model_id),
-                "backendModel": backend_model,
-                "contextWindow": infer_context_window(payload, backend_model),
-            }
-        )
-    return models
+    descriptor = require_provider_descriptor(str(payload["type"]))
+    return descriptor.normalize_catalog(
+        payload,
+        body,
+        infer_context_window=infer_context_window,
+    )
 
 
 async def fetch_provider_catalog(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -307,31 +187,17 @@ async def fetch_provider_catalog(payload: dict[str, Any]) -> list[dict[str, Any]
             provider type does not support catalog fetching, or the HTTP
             request fails.
     """
-    provider_type = payload["type"]
-    base_url = (payload.get("base_url") or "").rstrip("/")
-    if not base_url:
+    descriptor = require_provider_descriptor(str(payload["type"]))
+    url = descriptor.catalog_url(payload)
+    if not url:
         raise ModelRuntimeAdminError(
             status_code=400,
             code="INVALID_ACTION",
-            message="Provider base URL is required",
-        )
-
-    if provider_type == "ollama":
-        url = f"{base_url}/api/tags"
-    elif provider_type == "gemini":
-        url = f"{base_url}/v1beta/models"
-    elif provider_type == "anthropic":
-        url = f"{base_url}/v1/models"
-    elif provider_type in {
-        "openai", "openrouter", "custom_openai", "azure_openai", "dashscope",
-        "deepseek", "xiaomi_mimo", "siliconflow",
-    }:
-        url = f"{base_url}/models"
-    else:
-        raise ModelRuntimeAdminError(
-            status_code=400,
-            code="INVALID_ACTION",
-            message=f"Provider type {provider_type!r} does not support catalog fetch",
+            message=(
+                "Provider base URL is required"
+                if not str(payload.get("base_url") or "").strip()
+                else f"Provider type {payload['type']!r} does not support catalog fetch"
+            ),
         )
 
     async with httpx.AsyncClient(timeout=15.0) as client:

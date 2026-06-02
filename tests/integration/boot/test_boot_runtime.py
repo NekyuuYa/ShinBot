@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -517,6 +518,106 @@ async def test_boot_mounts_configured_model_backend(tmp_path: Path):
         assert bot.model_runtime._backend.name == "openai_compatible"
     finally:
         await boot.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_boot_preregisters_plugin_model_runtime_extensions_before_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    builtin_root = tmp_path / "empty_builtin_plugins"
+    builtin_root.mkdir()
+    monkeypatch.setattr("shinbot.core.plugins.manager._BUILTIN_PLUGINS_DIR", builtin_root)
+
+    data_dir = tmp_path / "data"
+    plugin_id = "demo_runtime_bootstrap"
+    plugin_dir = data_dir / "plugins" / plugin_id
+    plugin_dir.mkdir(parents=True)
+    (data_dir / "plugins" / "__init__.py").write_text("", encoding="utf-8")
+    (plugin_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": plugin_id,
+                "name": "Runtime Bootstrap",
+                "version": "1.0.0",
+                "author": "test",
+                "description": "",
+                "entry": "__init__.py",
+                "permissions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "from shinbot.agent.services.model_runtime.backends.protocol import BackendRequestPlan",
+                "from shinbot.agent.services.model_runtime.providers import ModelProviderDescriptor",
+                "",
+                "class DemoBootBackend:",
+                '    name = "demo_boot_backend"',
+                "",
+                "    def plan_request(self, *, provider, model, call, timeout_override, operation):",
+                "        return BackendRequestPlan(",
+                "            operation=operation,",
+                '            payload={"model": model["backend_model"]},',
+                '            safe_payload={"model": model["backend_model"]},',
+                "            backend_name=self.name,",
+                '            backend_model=str(model["backend_model"]),',
+                "        )",
+                "",
+                "    def invoke(self, plan):",
+                '        return {"choices": [{"message": {"content": "boot"}}], "usage": {}}',
+                "",
+                "    def normalize_response(self, *, operation, response, usage):",
+                '        return {"text": "boot", "tool_calls": []}',
+                "",
+                "def register_model_runtime_extensions(registrar):",
+                '    registrar.register_backend_factory("demo_boot_backend", DemoBootBackend)',
+                "    registrar.register_provider_descriptor(",
+                "        ModelProviderDescriptor(",
+                '            provider_type="demo_boot_provider",',
+                '            supported_backends=frozenset({"demo_boot_backend"}),',
+                '            auth_strategy="none",',
+                '            catalog_path=None,',
+                "        )",
+                "    )",
+                "",
+                "def setup(plg):",
+                "    pass",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config_path = tmp_path / "config.toml"
+    _write_config(
+        config_path,
+        extra_config="\n".join(
+            [
+                "[runtime]",
+                "model = true",
+                "agent = false",
+                "",
+                "[runtime.model_backend]",
+                'type = "demo_boot_backend"',
+            ]
+        ),
+    )
+    boot = BootController(config_path=config_path, data_dir=data_dir)
+
+    try:
+        bot = await boot.boot()
+        assert bot.model_runtime is not None
+        assert bot.model_runtime._backend.name == "demo_boot_backend"
+        from shinbot.agent.services.model_runtime.providers import require_provider_descriptor
+
+        descriptor = require_provider_descriptor("demo_boot_provider")
+        assert descriptor.supports_backend("demo_boot_backend")
+    finally:
+        await boot.shutdown()
+        sys.modules.pop(f"plugins.{plugin_id}", None)
+        sys.modules.pop("plugins", None)
 
 
 @pytest.mark.asyncio

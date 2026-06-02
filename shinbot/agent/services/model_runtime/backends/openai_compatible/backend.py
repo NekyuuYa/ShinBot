@@ -23,7 +23,8 @@ from shinbot.agent.services.model_runtime.backends.protocol import (
     BackendOperation,
     BackendRequestPlan,
 )
-from shinbot.agent.services.model_runtime.planning import sanitize_litellm_kwargs
+from shinbot.agent.services.model_runtime.planning import sanitize_backend_request_kwargs
+from shinbot.agent.services.model_runtime.providers import require_provider_descriptor
 from shinbot.agent.services.model_runtime.types import ModelRuntimeCall
 
 _ClientFactory = Callable[[dict[str, Any]], OpenAI]
@@ -38,30 +39,6 @@ _INVOKE: dict[BackendOperation, _EndpointInvoker] = {
 _NORMALIZERS: dict[BackendOperation, _EndpointNormalizer] = {
     "completion": normalize_completion,
     "embedding": normalize_embedding,
-}
-
-_SUPPORTED_PROVIDER_TYPES = frozenset(
-    {
-        "azure_openai",
-        "custom_openai",
-        "dashscope",
-        "deepseek",
-        "ollama",
-        "openai",
-        "openrouter",
-        "siliconflow",
-        "xiaomi_mimo",
-    }
-)
-
-_MODEL_PREFIX_BY_PROVIDER = {
-    "azure_openai": "openai",
-    "custom_openai": "openai",
-    "deepseek": "deepseek",
-    "ollama": "ollama",
-    "openai": "openai",
-    "openrouter": "openrouter",
-    "xiaomi_mimo": "xiaomi_mimo",
 }
 
 _ALLOWED_PARAMS: dict[BackendOperation, frozenset[str]] = {
@@ -129,8 +106,9 @@ class OpenAICompatibleBackend:
         self._clients: dict[tuple[str, str], OpenAI] = {}
 
     def _get_client(self, provider: dict[str, Any]) -> OpenAI:
-        auth: dict[str, Any] = provider.get("auth") or {}
-        api_key = str(auth.get("api_key") or "")
+        provider_type = str(provider.get("type") or "").strip()
+        descriptor = require_provider_descriptor(provider_type)
+        api_key = descriptor.backend_client_auth_value(provider, backend_name=self.name)
         base_url = str(provider.get("base_url") or "")
         cache_key = (base_url, api_key)
         client = self._clients.get(cache_key)
@@ -150,10 +128,11 @@ class OpenAICompatibleBackend:
     ) -> BackendRequestPlan:
         """Build the request payload for an OpenAI-compatible call."""
         provider_type = str(provider.get("type") or "").strip()
-        self._ensure_supported_provider(provider_type)
-        backend_model = self._request_model_name(
-            provider_type=provider_type,
-            backend_model=str(model.get("backend_model") or ""),
+        descriptor = require_provider_descriptor(provider_type)
+        self._ensure_supported_provider(provider_type, descriptor=descriptor)
+        backend_model = descriptor.request_model_name(
+            str(model.get("backend_model") or ""),
+            backend_name=self.name,
         )
         payload = self._base_payload(
             provider=provider,
@@ -176,7 +155,7 @@ class OpenAICompatibleBackend:
             if timeout_override is not None:
                 payload["timeout"] = timeout_override
 
-        safe_payload = sanitize_litellm_kwargs(payload)
+        safe_payload = sanitize_backend_request_kwargs(payload)
 
         return BackendRequestPlan(
             operation=operation,
@@ -196,53 +175,38 @@ class OpenAICompatibleBackend:
         operation: BackendOperation,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {}
+        descriptor = require_provider_descriptor(str(provider.get("type") or ""))
         default_params = provider.get("default_params") or {}
         model_params = model.get("default_params") or {}
-        payload.update(self._without_header_params(default_params))
-        payload.update(self._without_header_params(model_params))
-        payload.update(self._without_header_params(call.params))
-        extra_headers = self._merge_request_headers(default_params, model_params, call.params)
+        payload.update(self._without_header_params(default_params, descriptor=descriptor))
+        payload.update(self._without_header_params(model_params, descriptor=descriptor))
+        payload.update(self._without_header_params(call.params, descriptor=descriptor))
+        extra_headers = descriptor.merge_request_header_params(
+            default_params,
+            model_params,
+            call.params,
+        )
         if extra_headers:
             payload["extra_headers"] = extra_headers
         return self._filter_operation_params(operation, payload)
 
     @staticmethod
-    def _without_header_params(params: dict[str, Any]) -> dict[str, Any]:
+    def _without_header_params(params: dict[str, Any], *, descriptor: Any) -> dict[str, Any]:
+        request_header_keys = set(descriptor.request_headers_param_keys)
         return {
             key: value
             for key, value in params.items()
-            if key not in {"extra_headers", "requestHeaders"}
+            if key not in request_header_keys
         }
 
     @staticmethod
-    def _merge_request_headers(*sources: dict[str, Any]) -> dict[str, Any]:
-        merged: dict[str, Any] = {}
-        for source in sources:
-            extra_headers = source.get("extra_headers")
-            if isinstance(extra_headers, dict):
-                merged.update(extra_headers)
-            request_headers = source.get("requestHeaders")
-            if isinstance(request_headers, dict):
-                merged.update(request_headers)
-        return merged
-
-    @staticmethod
-    def _ensure_supported_provider(provider_type: str) -> None:
-        if provider_type not in _SUPPORTED_PROVIDER_TYPES:
-            supported = ", ".join(sorted(_SUPPORTED_PROVIDER_TYPES))
+    def _ensure_supported_provider(provider_type: str, *, descriptor: Any) -> None:
+        if not descriptor.supports_backend("openai_compatible"):
+            supported = "provider descriptor with openai_compatible backend support"
             raise NotImplementedError(
                 f"OpenAI-compatible backend does not support provider type {provider_type!r}; "
-                f"supported types: {supported}"
+                f"expected {supported}"
             )
-
-    @staticmethod
-    def _request_model_name(*, provider_type: str, backend_model: str) -> str:
-        prefix = _MODEL_PREFIX_BY_PROVIDER.get(provider_type)
-        if prefix:
-            needle = f"{prefix}/"
-            if backend_model.startswith(needle):
-                return backend_model[len(needle) :]
-        return backend_model
 
     @staticmethod
     def _filter_operation_params(
