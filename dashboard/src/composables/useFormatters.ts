@@ -1,10 +1,15 @@
 import type { Ref } from 'vue'
 
+import { normalizeTimestampMs } from '@/utils/time'
+
 type DateLike = string | number | Date
 
 const EMPTY_VALUE = '—'
 
-const toDate = (value: DateLike) => (value instanceof Date ? value : new Date(value))
+const toDate = (value: DateLike) =>
+  value instanceof Date
+    ? value
+    : new Date(typeof value === 'number' ? normalizeTimestampMs(value) ?? value : value)
 
 export function useFormatters(
   locale: Readonly<Ref<string>>,

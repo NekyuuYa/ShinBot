@@ -83,6 +83,7 @@ import { sessionsApi, type SessionOverviewItem, type SessionSummary } from '@/ap
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { useFormatters } from '@/composables/useFormatters'
 import { useSystemSettingsStore } from '@/stores/systemSettings'
+import { normalizeTimestampMs } from '@/utils/time'
 
 const systemSettingsStore = useSystemSettingsStore()
 const { locale, t } = useI18n()
@@ -122,14 +123,25 @@ const formatTimestamp = (value: number | string | null | undefined) => {
   if (value === null || value === undefined) {
     return t('pages.sessions.labels.none')
   }
-  return formatDateTime(new Date(value).toISOString())
+  if (typeof value === 'number') {
+    const normalized = normalizeTimestampMs(value)
+    if (normalized === null) {
+      return t('pages.sessions.labels.none')
+    }
+    return formatDateTime(new Date(normalized).toISOString())
+  }
+  return formatDateTime(value)
 }
 
 const formatReviewInterval = (value: number | null | undefined) => {
   if (!value) {
     return t('pages.sessions.labels.none')
   }
-  const diffMs = value - Date.now()
+  const normalized = normalizeTimestampMs(value)
+  if (normalized === null) {
+    return t('pages.sessions.labels.none')
+  }
+  const diffMs = normalized - Date.now()
   if (diffMs <= 0) {
     return t('pages.sessions.labels.reviewDue')
   }

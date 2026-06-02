@@ -170,6 +170,7 @@ import { translate } from "@/plugins/i18n";
 import { useConfigWorkspaceStore } from "@/stores/configWorkspace";
 import { useModelRuntimeStore } from "@/stores/modelRuntime";
 import { useUiStore } from "@/stores/ui";
+import { normalizeTimestampMs } from "@/utils/time";
 import { getErrorMessage } from "@/utils/error";
 import { resolveProviderSource } from "@/utils/modelRuntimeSources";
 
@@ -299,7 +300,10 @@ function formatTimestamp(value: number) {
   if (!value) {
     return t("pages.agents.labels.noValue");
   }
-  const normalized = value > 1_000_000_000_000 ? value : value * 1000;
+  const normalized = normalizeTimestampMs(value);
+  if (normalized === null) {
+    return t("pages.agents.labels.noValue");
+  }
   return new Intl.DateTimeFormat(locale.value, {
     month: "short",
     day: "numeric",
@@ -312,7 +316,10 @@ function formatReviewInterval(value: number | null | undefined) {
   if (!value) {
     return t("pages.agents.labels.noValue");
   }
-  const normalized = value > 1_000_000_000_000 ? value : value * 1000;
+  const normalized = normalizeTimestampMs(value);
+  if (normalized === null) {
+    return t("pages.agents.labels.noValue");
+  }
   const diffMs = normalized - Date.now();
   if (diffMs <= 0) {
     return t("pages.agents.labels.reviewDue");

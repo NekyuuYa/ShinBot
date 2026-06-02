@@ -1,0 +1,10 @@
+{
+  "id": "shinbot_plugin_builtin_commands",
+  "name": "Builtin Commands",
+  "version": "1.0.0",
+  "author": "ShinBot Team",
+  "description": "Provides baseline help, ping, and about commands for chat platforms.",
+  "entry": "__init__.py",
+  "role": "logic",
+  "permissions": []
+}
