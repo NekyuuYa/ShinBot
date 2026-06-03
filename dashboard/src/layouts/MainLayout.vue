@@ -199,6 +199,11 @@ const primaryNavItems: NavItem[] = [
     title: "layout.main.nav.pluginsManage",
   },
   {
+    to: "/commands",
+    icon: "mdi-console-line",
+    title: "layout.main.nav.commandsManage",
+  },
+  {
     to: "/cost-analysis",
     icon: "mdi-chart-areaspline",
     title: "layout.main.nav.costAnalysis",
@@ -249,6 +254,7 @@ const routeTitleMap: Record<string, string> = {
   MessagePlatforms: "layout.main.nav.messagePlatforms",
   Instances: "layout.main.nav.instancesManage",
   Plugins: "layout.main.nav.pluginsManage",
+  Commands: "layout.main.nav.commandsManage",
   Tools: "layout.main.nav.toolsManage",
   Sessions: "layout.main.nav.sessionsManage",
   Agents: "layout.main.nav.agentsManage",

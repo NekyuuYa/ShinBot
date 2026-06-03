@@ -26,6 +26,7 @@ from shinbot.core.application.provider_config_validation import (
     validate_adapter_instance_configs,
     validate_plugin_configs,
 )
+from shinbot.admin.command_admin import apply_command_enabled_overrides
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
@@ -362,6 +363,7 @@ class BootController:
 
         self._validate_plugin_provider_configs()
         await self._apply_plugin_state_overrides()
+        apply_command_enabled_overrides(self.bot.command_registry, self.config)
 
     async def _apply_plugin_state_overrides(self) -> None:
         if self.bot is None:

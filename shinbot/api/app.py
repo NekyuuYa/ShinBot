@@ -26,6 +26,7 @@ from shinbot.api.models import EC, Envelope, ErrorBody
 from shinbot.api.routers import agent_configs as agent_configs_router
 from shinbot.api.routers import agent_runtime as agent_runtime_router
 from shinbot.api.routers import auth as auth_router
+from shinbot.api.routers import commands as commands_router
 from shinbot.api.routers import config as config_router
 from shinbot.api.routers import config_providers as config_providers_router
 from shinbot.api.routers import instance_configs as instance_configs_router
@@ -45,6 +46,7 @@ from shinbot.api.ws_manager import (
     status_manager,
 )
 from shinbot.core.application.config_sections import iter_adapter_instance_records
+from shinbot.admin.command_admin import apply_command_enabled_overrides
 from shinbot.core.application.system_update import (
     DashboardBuildService,
     FrameworkUpdateCommandService,
@@ -148,6 +150,7 @@ def create_api_app(
         )
     app.state.dashboard_build_service = boot.dashboard_build_service
     app.state.framework_update_service = boot.framework_update_service
+    apply_command_enabled_overrides(bot.command_registry, boot.config)
 
     # ── CORS ─────────────────────────────────────────────────────────
 
@@ -203,6 +206,7 @@ def create_api_app(
     app.include_router(agent_configs_router.router, prefix=api_prefix)
     app.include_router(agent_runtime_router.router, prefix=api_prefix)
     app.include_router(auth_router.router, prefix=api_prefix)
+    app.include_router(commands_router.router, prefix=api_prefix)
     app.include_router(config_router.router, prefix=api_prefix)
     app.include_router(config_providers_router.router, prefix=api_prefix)
     app.include_router(instance_configs_router.router, prefix=api_prefix)

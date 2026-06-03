@@ -8,6 +8,7 @@
     "messagePlatforms": "Message Platforms",
     "plugins": "Plugins",
     "pluginsManage": "Plugin Management",
+    "commandsManage": "Command Management",
     "toolsManage": "Tool Management",
     "agentsManage": "Agent Hub",
     "promptsManage": "Prompt Definitions",

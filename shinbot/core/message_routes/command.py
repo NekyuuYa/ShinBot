@@ -62,6 +62,7 @@ class CommandDef:
     priority: CommandPriority = CommandPriority.P0_PREFIX
     pattern: re.Pattern | None = None  # For P2 regex commands
     owner: str | None = None  # Plugin ID that registered this command
+    enabled: bool = True
 
     @property
     def all_triggers(self) -> list[str]:
@@ -91,11 +92,15 @@ class CommandRegistry:
         self._alias_map: dict[str, str] = {}  # alias -> command name
         self._regex_commands: list[CommandDef] = []  # P2 pattern commands
         self._exact_commands: dict[str, CommandDef] = {}  # P1 exact match map
+        self._enabled_overrides: dict[str, bool] = {}
 
     def register(self, cmd: CommandDef) -> None:
         """Register a command definition."""
         if cmd.name in self._commands:
             logger.warning("Overriding command: %s", cmd.name)
+
+        if cmd.name in self._enabled_overrides:
+            cmd.enabled = self._enabled_overrides[cmd.name]
 
         self._commands[cmd.name] = cmd
 
@@ -146,6 +151,25 @@ class CommandRegistry:
         """Return a snapshot list of all registered command definitions."""
         return list(self._commands.values())
 
+    def set_enabled(self, name: str, enabled: bool) -> CommandDef | None:
+        """Set enabled state for a command and persist the runtime override."""
+        self._enabled_overrides[name] = enabled
+        cmd = self._commands.get(name)
+        if cmd is not None:
+            cmd.enabled = enabled
+        return cmd
+
+    def is_enabled(self, name: str, *, default: bool = True) -> bool:
+        """Return whether a command is enabled."""
+        cmd = self._commands.get(name)
+        if cmd is not None:
+            return cmd.enabled
+        return self._enabled_overrides.get(name, default)
+
+    def list_enabled_overrides(self) -> dict[str, bool]:
+        """Return a copy of explicit command enabled-state overrides."""
+        return dict(self._enabled_overrides)
+
     def resolve(self, text: str, prefixes: list[str]) -> CommandMatch | None:
         """Resolve a message text to a command match."""
         stripped = text.strip()
@@ -163,7 +187,7 @@ class CommandRegistry:
                 raw_args = parts[1] if len(parts) > 1 else ""
 
                 cmd = self.get(cmd_word)
-                if cmd is not None and cmd.priority == CommandPriority.P0_PREFIX:
+                if cmd is not None and cmd.enabled and cmd.priority == CommandPriority.P0_PREFIX:
                     return CommandMatch(
                         command=cmd,
                         priority=CommandPriority.P0_PREFIX,
@@ -172,7 +196,7 @@ class CommandRegistry:
                 return None
 
         cmd = self._exact_commands.get(stripped)
-        if cmd is not None:
+        if cmd is not None and cmd.enabled:
             return CommandMatch(
                 command=cmd,
                 priority=CommandPriority.P1_EXACT,
@@ -180,7 +204,7 @@ class CommandRegistry:
             )
 
         for cmd in self._regex_commands:
-            if cmd.pattern is not None:
+            if cmd.enabled and cmd.pattern is not None:
                 m = cmd.pattern.search(stripped)
                 if m:
                     return CommandMatch(

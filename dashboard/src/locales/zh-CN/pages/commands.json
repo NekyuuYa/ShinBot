@@ -1,0 +1,48 @@
+{
+  "kicker": "Command Registry",
+  "title": "指令管理",
+  "subtitle": "查看当前运行时已注册的指令，并按需启用或停用单条指令。",
+  "refresh": "刷新",
+  "loadFailed": "加载指令失败",
+  "updateFailed": "更新指令状态失败",
+  "updated": "指令状态已更新",
+  "layout": {
+    "list": "切换到列表",
+    "card": "切换到卡片"
+  },
+  "summary": {
+    "total": "指令总数",
+    "enabled": "启用中",
+    "pluginOwned": "插件指令"
+  },
+  "filters": {
+    "all": "全部",
+    "status": "状态",
+    "owner": "归属"
+  },
+  "status": {
+    "enabled": "已启用",
+    "disabled": "已停用"
+  },
+  "mode": {
+    "delegated": "委托执行",
+    "managed": "托管执行"
+  },
+  "owner": {
+    "core": "核心内建",
+    "plugin": "插件注册"
+  },
+  "fields": {
+    "owner": "归属",
+    "triggers": "触发词",
+    "usage": "用法",
+    "permission": "权限",
+    "pattern": "匹配规则"
+  },
+  "empty": {
+    "title": "暂无指令",
+    "subtitle": "当前筛选条件下没有匹配到指令。",
+    "description": "未提供描述",
+    "permission": "未配置权限"
+  }
+}

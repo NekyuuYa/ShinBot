@@ -1,0 +1,48 @@
+{
+  "kicker": "Command Registry",
+  "title": "Command Management",
+  "subtitle": "Inspect registered runtime commands and enable or disable individual commands as needed.",
+  "refresh": "Refresh",
+  "loadFailed": "Failed to load commands",
+  "updateFailed": "Failed to update command state",
+  "updated": "Command state updated",
+  "layout": {
+    "list": "Switch to List",
+    "card": "Switch to Cards"
+  },
+  "summary": {
+    "total": "Total Commands",
+    "enabled": "Enabled",
+    "pluginOwned": "Plugin-owned"
+  },
+  "filters": {
+    "all": "All",
+    "status": "Status",
+    "owner": "Owner"
+  },
+  "status": {
+    "enabled": "Enabled",
+    "disabled": "Disabled"
+  },
+  "mode": {
+    "delegated": "Delegated",
+    "managed": "Managed"
+  },
+  "owner": {
+    "core": "Core Built-in",
+    "plugin": "Plugin Registered"
+  },
+  "fields": {
+    "owner": "Owner",
+    "triggers": "Triggers",
+    "usage": "Usage",
+    "permission": "Permission",
+    "pattern": "Pattern"
+  },
+  "empty": {
+    "title": "No commands found",
+    "subtitle": "No commands match the current filters.",
+    "description": "No description provided",
+    "permission": "No permission assigned"
+  }
+}
