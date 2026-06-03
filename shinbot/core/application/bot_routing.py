@@ -120,6 +120,12 @@ def session_key_for_event(event: UnifiedEvent) -> str:
 def session_pattern_matches_event(pattern: str, event: UnifiedEvent) -> bool:
     """Return whether a configured session pattern matches an event."""
 
+    return session_pattern_matches_session_key(pattern, session_key_for_event(event))
+
+
+def session_pattern_matches_session_key(pattern: str, session_key: str) -> bool:
+    """Return whether a configured session pattern matches a session key."""
+
     normalized = str(pattern or "").strip()
     if normalized == WILDCARD:
         return True
@@ -128,7 +134,7 @@ def session_pattern_matches_event(pattern: str, event: UnifiedEvent) -> bool:
     if not separator:
         return False
 
-    session_key = session_key_for_event(event)
+    session_key = str(session_key or "").strip()
     session_type, _separator, session_target = session_key.partition(":")
     if pattern_type != session_type:
         return False

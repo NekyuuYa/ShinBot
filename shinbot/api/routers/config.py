@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import EC, Envelope, ok
 from shinbot.core.application.boot_preflight import run_boot_preflight
+from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.application.config_sections import (
     iter_adapter_instance_records,
     normalize_adapter_instance_record,
@@ -29,6 +31,8 @@ router = APIRouter(
     tags=["config"],
     dependencies=AuthRequired,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ValidateConfigRequest(BaseModel):
@@ -238,6 +242,7 @@ def _save_config_payload(
                 "message": "Failed to persist configuration",
             },
         )
+    _apply_runtime_config_updates(bot=bot, boot=boot)
 
     return ok(
         {
@@ -247,6 +252,51 @@ def _save_config_payload(
             "workspace": _config_workspace(bot=bot, boot=boot),
         }
     )
+
+
+def _apply_runtime_config_updates(
+    *,
+    bot: Any,
+    boot: Any,
+) -> None:
+    """Apply the subset of config changes that can safely refresh in-process.
+
+    Command routing and bot binding selection should reflect saved bot config
+    immediately, even though broader runtime changes may still require restart.
+    """
+
+    bot.config = boot.config
+    _apply_runtime_bot_service_configs(bot=bot, boot=boot)
+
+    try:
+        from shinbot.admin.command_admin import apply_command_enabled_overrides
+
+        apply_command_enabled_overrides(bot.command_registry, boot.config)
+    except Exception:
+        logger.exception("Failed to refresh command enabled overrides after config save")
+
+
+def _apply_runtime_bot_service_configs(
+    *,
+    bot: Any,
+    boot: Any,
+) -> None:
+    """Refresh parsed bot configs and routing state after a successful save."""
+
+    try:
+        preflight = run_boot_preflight(boot.config, data_dir=boot.data_dir, raise_on_error=False)
+    except Exception:
+        logger.exception("Failed to re-parse bot runtime configs after config save")
+        return
+
+    boot.bot_service_configs = tuple(preflight.bot_service_configs)
+    configure = getattr(bot, "configure_bot_service_configs", None)
+    if configure is None:
+        return
+    try:
+        configure(boot.bot_service_configs)
+    except Exception:
+        logger.exception("Failed to refresh bot runtime router after config save")
 
 
 def _provider_catalog(registry: ConfigProviderRegistry) -> dict[str, list[dict[str, Any]]]:

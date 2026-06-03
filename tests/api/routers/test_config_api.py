@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
+from shinbot.core.application.bot_routing import command_prefixes_for_context
 from shinbot.core.config_provider import load_provider_schema
 
 
@@ -335,3 +336,81 @@ def test_config_save_bots_persists_section_only(tmp_path: Path):
     assert boot.config["bots"][0]["id"] == "bot-main"
     assert boot.config["adapter_instances"][0]["id"] == "qq-main"
     assert boot.save_config_calls == 1
+
+
+def test_config_save_bots_refreshes_runtime_prefix_routing(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    boot = _BootStub(tmp_path)
+    boot.config["adapter_instances"] = [
+        {
+            "id": "qq-main",
+            "adapter": "onebot_v11",
+            "enabled": True,
+            "config": {"mode": "reverse"},
+        }
+    ]
+    boot.config["bots"] = [
+        {
+            "id": "bot-main",
+            "display_name": "Bot Main",
+            "enabled": True,
+            "commands": {"enabled": True, "prefixes": ["/"]},
+            "plugins": {
+                "enabled": True,
+                "enabled_plugins": ["*"],
+                "disabled_plugins": [],
+            },
+            "agent": {"mode": "none", "config": ""},
+            "bindings": [
+                {
+                    "id": "binding-main",
+                    "adapter_instance_id": "qq-main",
+                    "session_patterns": ["group:*"],
+                    "enabled": True,
+                    "priority": 0,
+                }
+            ],
+        }
+    ]
+    bot.configure_bot_service_configs(())
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/v1/config/bots",
+            headers=_auth_headers(app),
+            json={
+                "bots": [
+                    {
+                        "id": "bot-main",
+                        "display_name": "Bot Main",
+                        "enabled": True,
+                        "commands": {"enabled": True, "prefixes": ["!"]},
+                        "plugins": {
+                            "enabled": True,
+                            "enabled_plugins": ["*"],
+                            "disabled_plugins": [],
+                        },
+                        "agent": {"mode": "none", "config": ""},
+                        "bindings": [
+                            {
+                                "id": "binding-main",
+                                "adapter_instance_id": "qq-main",
+                                "session_patterns": ["group:*"],
+                                "enabled": True,
+                                "priority": 0,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert boot.bot_service_configs[0].commands.prefixes == ("!",)
+    assert bot.bot_service_configs[0].commands.prefixes == ("!",)
+
+    class _Context:
+        bot_service_config = bot.bot_service_configs[0]
+
+    assert command_prefixes_for_context(_Context(), ["/"]) == ["!"]

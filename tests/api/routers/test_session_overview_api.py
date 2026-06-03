@@ -324,6 +324,71 @@ def test_session_overview_includes_latest_workflow_run(tmp_path: Path) -> None:
     assert "scan=selected" in session["latestWorkflowRun"]["responseSummary"]
 
 
+def test_session_overview_includes_effective_command_config(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    assert bot.database is not None
+    session_id = "qq-main:group:room"
+    bot.database.sessions.upsert(
+        {
+            "id": session_id,
+            "instance_id": "qq-main",
+            "session_type": "group",
+            "platform": "sim",
+            "channel_id": "room",
+            "display_name": "Room",
+            "config": {
+                "prefixes": ["/"],
+                "llm_enabled": True,
+                "is_muted": False,
+                "audit_enabled": False,
+            },
+        }
+    )
+    boot = _BootStub(tmp_path)
+    boot.bot_service_configs = (
+        type(
+            "BotConfig",
+            (),
+            {
+                "id": "bot-main",
+                "display_name": "Bot Main",
+                "enabled": True,
+                "commands": type("CommandsConfig", (), {"enabled": True, "prefixes": ("!",)})(),
+                "agent": type("AgentConfig", (), {"mode": "none", "config": ""})(),
+                "bindings": (
+                    type(
+                        "BindingConfig",
+                        (),
+                        {
+                            "id": "binding-main",
+                            "adapter_instance_id": "qq-main",
+                            "session_patterns": ("group:*",),
+                            "enabled": True,
+                            "priority": 0,
+                        },
+                    )(),
+                ),
+            },
+        )(),
+    )
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/session-overview", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    session = response.json()["data"][0]
+    assert session["config"]["prefixes"] == ["/"]
+    assert session["effectiveCommandConfig"] == {
+        "enabled": True,
+        "prefixes": ["!"],
+        "source": "bot_binding",
+        "botId": "bot-main",
+        "botDisplayName": "Bot Main",
+        "bindingId": "binding-main",
+    }
+
+
 def test_session_overview_includes_agent_read_state_for_history(tmp_path: Path) -> None:
     bot = ShinBot(data_dir=tmp_path)
     runtime = install_agent_runtime(bot)

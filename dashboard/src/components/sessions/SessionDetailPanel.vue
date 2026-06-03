@@ -101,13 +101,49 @@
 
     <v-card class="sessions-panel mb-6" elevation="0">
       <v-card-title class="text-subtitle-1 font-weight-bold">
+        {{ effectiveCommandsLabel }}
+      </v-card-title>
+      <v-card-text>
+        <v-row>
+          <v-col cols="12" md="3">
+            <div class="session-meta-row">
+              <span>{{ commandSourceLabel }}</span>
+              <strong>{{ commandSourceText }}</strong>
+            </div>
+          </v-col>
+          <v-col cols="12" md="3">
+            <div class="session-meta-row">
+              <span>{{ commandsEnabledLabel }}</span>
+              <strong>{{ boolLabel(session.effectiveCommandConfig?.enabled) }}</strong>
+            </div>
+          </v-col>
+          <v-col cols="12" md="3">
+            <div class="session-meta-row">
+              <span>{{ effectivePrefixesLabel }}</span>
+              <strong>{{
+                (session.effectiveCommandConfig?.prefixes || []).join(' ') || noneLabel
+              }}</strong>
+            </div>
+          </v-col>
+          <v-col cols="12" md="3">
+            <div class="session-meta-row">
+              <span>{{ bindingLabel }}</span>
+              <strong>{{ session.effectiveCommandConfig?.bindingId || noneLabel }}</strong>
+            </div>
+          </v-col>
+        </v-row>
+      </v-card-text>
+    </v-card>
+
+    <v-card class="sessions-panel mb-6" elevation="0">
+      <v-card-title class="text-subtitle-1 font-weight-bold">
         {{ configLabel }}
       </v-card-title>
       <v-card-text>
         <v-row>
           <v-col cols="12" md="3">
             <div class="session-meta-row">
-              <span>{{ prefixesLabel }}</span>
+              <span>{{ storedPrefixesLabel }}</span>
               <strong>{{ (session.config?.prefixes || []).join(' ') || noneLabel }}</strong>
             </div>
           </v-col>
@@ -398,8 +434,13 @@ const messagesLabel = t('pages.sessions.stats.messages')
 const auditsLabel = t('pages.sessions.stats.audits')
 const unreadLabel = t('pages.sessions.stats.unread')
 const priorityLabel = t('pages.sessions.stats.highPriority')
+const effectiveCommandsLabel = t('pages.sessions.sections.effectiveCommands')
 const configLabel = t('pages.sessions.sections.config')
-const prefixesLabel = t('pages.sessions.fields.prefixes')
+const commandSourceLabel = t('pages.sessions.fields.commandSource')
+const commandsEnabledLabel = t('pages.sessions.fields.commandsEnabled')
+const effectivePrefixesLabel = t('pages.sessions.fields.effectivePrefixes')
+const bindingLabel = t('pages.sessions.fields.binding')
+const storedPrefixesLabel = t('pages.sessions.fields.storedPrefixes')
 const llmEnabledLabel = t('pages.sessions.fields.llmEnabled')
 const mutedLabel = t('pages.sessions.fields.muted')
 const auditEnabledLabel = t('pages.sessions.fields.auditEnabled')
@@ -439,6 +480,18 @@ const historyRangeLabel = computed(() => {
     end,
     total: props.historyTotal,
   })
+})
+
+const commandSourceText = computed(() => {
+  const config = props.session?.effectiveCommandConfig
+  if (!config) {
+    return noneLabel
+  }
+  if (config.source === 'bot_binding') {
+    const botName = config.botDisplayName || config.botId || noneLabel
+    return t('pages.sessions.labels.commandSourceBotBinding', { bot: botName })
+  }
+  return t('pages.sessions.labels.commandSourceSession')
 })
 
 function platformStatus(platformState: SessionPlatformState): {

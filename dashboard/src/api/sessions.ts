@@ -8,6 +8,15 @@ export interface SessionConfig {
   updatedAt: number
 }
 
+export interface SessionEffectiveCommandConfig {
+  enabled: boolean
+  prefixes: string[]
+  source: 'session' | 'bot_binding'
+  botId: string | null
+  botDisplayName: string | null
+  bindingId: string | null
+}
+
 export interface SessionListItem {
   id: string
   instanceId: string
@@ -136,6 +145,7 @@ export interface SessionOverviewItem {
   session: SessionListItem
   platformState: SessionPlatformState
   config: SessionConfig | null
+  effectiveCommandConfig: SessionEffectiveCommandConfig
   history: SessionMessage[]
   latestMessage: SessionMessage | null
   latestAudit: SessionAuditLog | null

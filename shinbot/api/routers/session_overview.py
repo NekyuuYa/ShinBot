@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import EC, Envelope, ok
+from shinbot.core.application.bot_routing import session_pattern_matches_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,15 @@ class SessionConfigData(BaseModel):
     isMuted: bool
     auditEnabled: bool
     updatedAt: float
+
+
+class EffectiveCommandConfigData(BaseModel):
+    enabled: bool
+    prefixes: list[str]
+    source: str
+    botId: str | None = None
+    botDisplayName: str | None = None
+    bindingId: str | None = None
 
 
 class MessageLogData(BaseModel):
@@ -126,6 +136,7 @@ class SessionOverviewItem(BaseModel):
     session: SessionInfoData
     platformState: PlatformStateData
     config: SessionConfigData | None = None
+    effectiveCommandConfig: EffectiveCommandConfigData
     history: list[MessageLogData]
     latestMessage: MessageLogData | None = None
     latestAudit: AuditLogData | None = None
@@ -199,6 +210,78 @@ def _session_config_payload(row: Any) -> dict[str, Any] | None:
         "isMuted": bool(row["is_muted"]) if row["is_muted"] is not None else False,
         "auditEnabled": bool(row["audit_enabled"]) if row["audit_enabled"] is not None else False,
         "updatedAt": float(row["updated_at"] or 0.0),
+    }
+
+
+def _session_key_from_row(row: Any) -> str:
+    session_id = str(row["id"] or "")
+    instance_id = str(row["instance_id"] or "")
+    session_type = str(row["session_type"] or "")
+    prefix = f"{instance_id}:{session_type}:"
+    if prefix and session_id.startswith(prefix):
+        target = session_id[len(prefix) :].strip()
+        if target:
+            return f"{session_type}:{target}"
+
+    if session_type == "private":
+        channel_id = str(row["channel_id"] or "").strip()
+        if channel_id.startswith("private:"):
+            channel_id = channel_id[len("private:") :]
+        return f"private:{channel_id}"
+
+    channel_id = str(row["channel_id"] or "").strip()
+    guild_id = str(row["guild_id"] or "").strip()
+    target = f"{guild_id}:{channel_id}" if guild_id else channel_id
+    return f"group:{target}"
+
+
+def _effective_command_config_payload(row: Any, boot: Any) -> dict[str, Any]:
+    fallback_prefixes = _parse_json(row["prefixes_json"], ["/"])
+    instance_id = str(row["instance_id"] or "").strip()
+    session_key = _session_key_from_row(row)
+    best_match: tuple[tuple[int, int, int], Any, Any] | None = None
+
+    for bot_index, bot_config in enumerate(getattr(boot, "bot_service_configs", ())):
+        if not getattr(bot_config, "enabled", False):
+            continue
+        for binding_index, binding in enumerate(getattr(bot_config, "bindings", ())):
+            if not getattr(binding, "enabled", False):
+                continue
+            if str(getattr(binding, "adapter_instance_id", "") or "").strip() != instance_id:
+                continue
+            patterns = tuple(getattr(binding, "session_patterns", ()) or ())
+            if not any(session_pattern_matches_session_key(pattern, session_key) for pattern in patterns):
+                continue
+            candidate_key = (
+                -int(getattr(binding, "priority", 0) or 0),
+                bot_index,
+                binding_index,
+            )
+            if best_match is None or candidate_key < best_match[0]:
+                best_match = (candidate_key, bot_config, binding)
+
+    if best_match is None:
+        return {
+            "enabled": True,
+            "prefixes": fallback_prefixes,
+            "source": "session",
+            "botId": None,
+            "botDisplayName": None,
+            "bindingId": None,
+        }
+
+    _sort_key, bot_config, binding = best_match
+    commands = getattr(bot_config, "commands", None)
+    prefixes = list(getattr(commands, "prefixes", ()) or fallback_prefixes)
+    return {
+        "enabled": bool(getattr(commands, "enabled", True)),
+        "prefixes": prefixes,
+        "source": "bot_binding",
+        "botId": str(getattr(bot_config, "id", "") or ""),
+        "botDisplayName": str(
+            getattr(bot_config, "display_name", "") or getattr(bot_config, "id", "") or ""
+        ),
+        "bindingId": str(getattr(binding, "id", "") or ""),
     }
 
 
@@ -616,6 +699,7 @@ def get_session_overview(
                 },
                 "platformState": _platform_state_payload(bot, instance_id),
                 "config": _session_config_payload(row),
+                "effectiveCommandConfig": _effective_command_config_payload(row, boot),
                 "history": message_rows,
                 "latestMessage": latest_message,
                 "latestAudit": latest_audit,
