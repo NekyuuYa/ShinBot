@@ -51,112 +51,87 @@
       @clear="clearFilters"
     />
 
-    <section class="audit-record-panel">
-      <div class="record-panel-head">
-        <div>
-          <div class="panel-kicker">{{ $t('pages.modelAudit.sections.records') }}</div>
-          <h2>{{ $t('pages.modelAudit.labels.page', pageRange) }}</h2>
-        </div>
-        <div class="pagination-actions">
-          <v-btn
-            icon="mdi-chevron-left"
-            variant="tonal"
-            :disabled="offset === 0 || loading"
-            :aria-label="$t('pages.modelAudit.actions.previous')"
-            @click="previousPage"
-          />
-          <v-btn
-            icon="mdi-chevron-right"
-            variant="tonal"
-            :disabled="!hasNextPage || loading"
-            :aria-label="$t('pages.modelAudit.actions.next')"
-            @click="nextPage"
-          />
-        </div>
-      </div>
-
-      <model-audit-record-list
-        :records="records"
-        :loading="loading"
-        :offset="offset"
-        :has-next-page="hasNextPage"
-        :selected-record-id="selectedRecordId"
-        :page-label="$t('pages.modelAudit.labels.page', pageRange)"
-        :records-label="$t('pages.modelAudit.sections.records')"
-        :empty-label="$t('pages.modelAudit.labels.empty')"
-        :success-label="$t('pages.modelAudit.labels.success')"
-        :failed-label="$t('pages.modelAudit.labels.failed')"
-        :none-label="$t('pages.modelAudit.labels.none')"
-        :previous-label="$t('pages.modelAudit.actions.previous')"
-        :next-label="$t('pages.modelAudit.actions.next')"
-        :format-date-time="formatDateTime"
-        :format-compact-number="formatCompactNumber"
-        :format-duration="formatDuration"
-        @previous="previousPage"
-        @next="nextPage"
-        @toggle="toggleRecord"
-      >
-        <template #detail="{ record }">
-          <model-audit-record-detail
-            :record="record"
-            :active-tab="payloadTabById[record.id]"
-            :payload="payloadById[record.id]"
-            :payload-error="payloadErrorById[record.id]"
-            :loading="payloadLoadingId === record.id"
-            :available="record.auditPayloadAvailable"
-            :payload-ref="record.auditPayloadRef"
-            :payload-expires-at="record.auditPayloadExpiresAt"
-            :labels="payloadLabels"
-            :details-label="$t('pages.modelAudit.sections.details')"
-            :routing-label="$t('pages.modelAudit.sections.routing')"
-            :timing-label="$t('pages.modelAudit.sections.timing')"
-            :usage-label="$t('pages.modelAudit.sections.usage')"
-            :fallback-label="$t('pages.modelAudit.labels.fallback')"
-            :error-label="$t('pages.modelAudit.sections.error')"
-            :metadata-label="$t('pages.modelAudit.sections.metadata')"
-            :metadata-empty-label="$t('pages.modelAudit.labels.metadataEmpty')"
-            :payload-label="$t('pages.modelAudit.sections.payload')"
-            :view-payload-label="$t('pages.modelAudit.actions.viewPayload')"
-            :not-loaded-label="$t('pages.modelAudit.payload.notLoaded')"
-            :unavailable-label="$t('pages.modelAudit.payload.unavailable')"
-            :payload-ref-label="$t('pages.modelAudit.labels.auditPayloadRef')"
-            :payload-expires-at-label="$t('pages.modelAudit.labels.auditPayloadExpiresAt')"
-            :empty-value="NONE_VALUE"
-            :execution-id-label="$t('pages.modelAudit.labels.executionId')"
-            :prompt-snapshot-id-label="$t('pages.modelAudit.labels.promptSnapshotId')"
-            :purpose-label="$t('pages.modelAudit.labels.purpose')"
-            :provider-id-label="$t('pages.modelAudit.labels.providerId')"
-            :model-id-label="$t('pages.modelAudit.labels.modelId')"
-            :route-id-label="$t('pages.modelAudit.labels.routeId')"
-            :caller-label="$t('pages.modelAudit.labels.caller')"
-            :session-id-label="$t('pages.modelAudit.labels.sessionId')"
-            :instance-id-label="$t('pages.modelAudit.labels.instanceId')"
-            :started-at-label="$t('pages.modelAudit.labels.startedAt')"
-            :first-token-at-label="$t('pages.modelAudit.labels.firstTokenAt')"
-            :finished-at-label="$t('pages.modelAudit.labels.finishedAt')"
-            :latency-label="$t('pages.modelAudit.labels.latency')"
-            :ttft-label="$t('pages.modelAudit.labels.ttft')"
-            :input-tokens-label="$t('pages.modelAudit.labels.inputTokens')"
-            :output-tokens-label="$t('pages.modelAudit.labels.outputTokens')"
-            :cache-read-label="$t('pages.modelAudit.labels.cacheRead')"
-            :cache-write-label="$t('pages.modelAudit.labels.cacheWrite')"
-            :cache-hit-label="$t('pages.modelAudit.labels.cacheHit')"
-            :cost-label="$t('pages.modelAudit.labels.cost')"
-            :fallback-from-label="$t('pages.modelAudit.labels.fallbackFrom')"
-            :fallback-reason-label="$t('pages.modelAudit.labels.fallbackReason')"
-            :error-code-label="$t('pages.modelAudit.labels.errorCode')"
-            :error-message-label="$t('pages.modelAudit.labels.errorMessage')"
-            :format-number="formatNumber"
-            :format-duration="formatDuration"
-            :format-date-time="formatDateTime"
-            :format-cost="formatCost"
-            :bool-label="boolLabel"
-            @load-payload="loadPayload(record.id)"
-            @update:active-tab="(value) => { payloadTabById[record.id] = value }"
-          />
-        </template>
-      </model-audit-record-list>
-    </section>
+    <model-audit-record-list
+      :records="records"
+      :loading="loading"
+      :offset="offset"
+      :has-next-page="hasNextPage"
+      :selected-record-id="selectedRecordId"
+      :page-label="$t('pages.modelAudit.labels.page', pageRange)"
+      :records-label="$t('pages.modelAudit.sections.records')"
+      :empty-label="$t('pages.modelAudit.labels.empty')"
+      :success-label="$t('pages.modelAudit.labels.success')"
+      :failed-label="$t('pages.modelAudit.labels.failed')"
+      :none-label="$t('pages.modelAudit.labels.none')"
+      :previous-label="$t('pages.modelAudit.actions.previous')"
+      :next-label="$t('pages.modelAudit.actions.next')"
+      :format-date-time="formatDateTime"
+      :format-compact-number="formatCompactNumber"
+      :format-duration="formatDuration"
+      @previous="previousPage"
+      @next="nextPage"
+      @toggle="toggleRecord"
+    >
+      <template #detail="{ record }">
+        <model-audit-record-detail
+          :record="record"
+          :active-tab="payloadTabById[record.id]"
+          :payload="payloadById[record.id]"
+          :payload-error="payloadErrorById[record.id]"
+          :loading="payloadLoadingId === record.id"
+          :available="record.auditPayloadAvailable"
+          :payload-ref="record.auditPayloadRef"
+          :payload-expires-at="record.auditPayloadExpiresAt"
+          :labels="payloadLabels"
+          :details-label="$t('pages.modelAudit.sections.details')"
+          :routing-label="$t('pages.modelAudit.sections.routing')"
+          :timing-label="$t('pages.modelAudit.sections.timing')"
+          :usage-label="$t('pages.modelAudit.sections.usage')"
+          :fallback-label="$t('pages.modelAudit.labels.fallback')"
+          :error-label="$t('pages.modelAudit.sections.error')"
+          :metadata-label="$t('pages.modelAudit.sections.metadata')"
+          :metadata-empty-label="$t('pages.modelAudit.labels.metadataEmpty')"
+          :payload-label="$t('pages.modelAudit.sections.payload')"
+          :view-payload-label="$t('pages.modelAudit.actions.viewPayload')"
+          :not-loaded-label="$t('pages.modelAudit.payload.notLoaded')"
+          :unavailable-label="$t('pages.modelAudit.payload.unavailable')"
+          :payload-ref-label="$t('pages.modelAudit.labels.auditPayloadRef')"
+          :payload-expires-at-label="$t('pages.modelAudit.labels.auditPayloadExpiresAt')"
+          :empty-value="NONE_VALUE"
+          :execution-id-label="$t('pages.modelAudit.labels.executionId')"
+          :prompt-snapshot-id-label="$t('pages.modelAudit.labels.promptSnapshotId')"
+          :purpose-label="$t('pages.modelAudit.labels.purpose')"
+          :provider-id-label="$t('pages.modelAudit.labels.providerId')"
+          :model-id-label="$t('pages.modelAudit.labels.modelId')"
+          :route-id-label="$t('pages.modelAudit.labels.routeId')"
+          :caller-label="$t('pages.modelAudit.labels.caller')"
+          :session-id-label="$t('pages.modelAudit.labels.sessionId')"
+          :instance-id-label="$t('pages.modelAudit.labels.instanceId')"
+          :started-at-label="$t('pages.modelAudit.labels.startedAt')"
+          :first-token-at-label="$t('pages.modelAudit.labels.firstTokenAt')"
+          :finished-at-label="$t('pages.modelAudit.labels.finishedAt')"
+          :latency-label="$t('pages.modelAudit.labels.latency')"
+          :ttft-label="$t('pages.modelAudit.labels.ttft')"
+          :input-tokens-label="$t('pages.modelAudit.labels.inputTokens')"
+          :output-tokens-label="$t('pages.modelAudit.labels.outputTokens')"
+          :cache-read-label="$t('pages.modelAudit.labels.cacheRead')"
+          :cache-write-label="$t('pages.modelAudit.labels.cacheWrite')"
+          :cache-hit-label="$t('pages.modelAudit.labels.cacheHit')"
+          :cost-label="$t('pages.modelAudit.labels.cost')"
+          :fallback-from-label="$t('pages.modelAudit.labels.fallbackFrom')"
+          :fallback-reason-label="$t('pages.modelAudit.labels.fallbackReason')"
+          :error-code-label="$t('pages.modelAudit.labels.errorCode')"
+          :error-message-label="$t('pages.modelAudit.labels.errorMessage')"
+          :format-number="formatNumber"
+          :format-duration="formatDuration"
+          :format-date-time="formatDateTime"
+          :format-cost="formatCost"
+          :bool-label="boolLabel"
+          @load-payload="loadPayload(record.id)"
+          @update:active-tab="(value) => { payloadTabById[record.id] = value }"
+        />
+      </template>
+    </model-audit-record-list>
   </v-container>
 </template>
 
@@ -434,135 +409,6 @@ onBeforeUnmount(() => {
 <style scoped lang="scss">
 @use '@/styles/mixins' as *;
 
-.audit-record-panel {
-  @include surface-card;
-  padding: 20px;
-}
-
-.record-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.record-panel-head h2 {
-  margin: 4px 0 0;
-  color: rgba(var(--v-theme-on-surface), 0.88);
-  font-size: $font-size-md;
-  font-weight: 800;
-}
-
-.pagination-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.record-list {
-  display: grid;
-  gap: 10px;
-}
-
-.record-item {
-  border: 1px solid $border-color-soft;
-  border-radius: $radius-sm;
-  background: rgba(var(--v-theme-surface), 0.74);
-  overflow: hidden;
-  transition:
-    border-color $transition-fast,
-    background-color $transition-fast,
-    box-shadow $transition-fast;
-}
-
-.record-item:hover,
-.record-item--active {
-  border-color: $border-color-primary;
-  background: rgba(var(--v-theme-surface), 0.9);
-}
-
-.record-item--active {
-  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.08);
-}
-
-.record-summary {
-  width: 100%;
-  min-height: 72px;
-  display: grid;
-  grid-template-columns: minmax(96px, 0.7fr) minmax(220px, 1.6fr) minmax(180px, 1.4fr) minmax(120px, 0.8fr) 32px;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 16px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.record-status,
-.record-main,
-.record-meta,
-.record-usage {
-  min-width: 0;
-}
-
-.record-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: $font-size-sm;
-  font-weight: 700;
-}
-
-.record-status--success {
-  color: rgb(var(--v-theme-success));
-}
-
-.record-status--failed {
-  color: rgb(var(--v-theme-error));
-}
-
-.record-main,
-.record-meta,
-.record-usage {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.record-main strong,
-.record-usage strong {
-  overflow: hidden;
-  color: rgba(var(--v-theme-on-surface), 0.9);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.record-main small,
-.record-meta,
-.record-usage small {
-  overflow: hidden;
-  color: rgba(var(--v-theme-on-surface), 0.58);
-  font-size: $font-size-xs;
-  text-overflow: ellipsis;
-}
-
-.record-meta span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.record-chevron {
-  justify-self: end;
-  color: rgba(var(--v-theme-on-surface), 0.54);
-}
-
-.record-detail {
-  padding: 12px 18px 20px;
-}
-
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(220px, 1fr));
@@ -600,43 +446,14 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1280px) {
-  .record-summary {
-    grid-template-columns: minmax(92px, 0.7fr) minmax(200px, 1.6fr) minmax(140px, 1fr) 32px;
-  }
-
-  .record-usage {
-    display: none;
-  }
-
   .detail-grid {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
   }
 }
 
 @media (max-width: 760px) {
-  .record-panel-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .detail-grid {
     grid-template-columns: 1fr;
-  }
-
-  .record-summary {
-    grid-template-columns: 1fr 28px;
-    gap: 8px;
-  }
-
-  .record-status,
-  .record-main,
-  .record-meta {
-    grid-column: 1;
-  }
-
-  .record-chevron {
-    grid-column: 2;
-    grid-row: 1;
   }
 }
 </style>

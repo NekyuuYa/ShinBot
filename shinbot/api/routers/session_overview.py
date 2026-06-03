@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
@@ -136,6 +136,16 @@ class SessionOverviewItem(BaseModel):
     agent: AgentStateData | None = None
     messageCount: int
     auditCount: int
+
+
+class SessionHistoryPageData(BaseModel):
+    """Paginated message history payload for one session."""
+
+    sessionId: str
+    items: list[MessageLogData]
+    total: int
+    page: int
+    pageSize: int
 
 
 class SessionDeletedData(BaseModel):
@@ -294,6 +304,62 @@ def _agent_read_states(database: Any, session_id: str) -> dict[int, str]:
     return states
 
 
+def _message_rows_with_agent_state(database: Any, session_id: str, rows: list[Any]) -> list[dict[str, Any]]:
+    """Convert raw message rows to API payloads with Agent read state attached."""
+
+    message_rows = [_message_payload(item) for item in rows]
+    agent_read_states = _agent_read_states(database, session_id)
+    for message in message_rows:
+        message["agentReadState"] = agent_read_states.get(
+            int(message["id"]),
+            "not_tracked",
+        )
+    return message_rows
+
+
+def _history_page_payload(
+    database: Any,
+    session_id: str,
+    *,
+    page: int,
+    page_size: int,
+) -> dict[str, Any]:
+    """Build a paginated message history payload for one session."""
+
+    offset = (page - 1) * page_size
+    with database.connect() as conn:
+        history_rows = conn.execute(
+            """
+            SELECT *
+            FROM message_logs
+            WHERE session_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (session_id, page_size, offset),
+        ).fetchall()
+        total = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM message_logs
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()["count"]
+            or 0
+        )
+
+    items = _message_rows_with_agent_state(database, session_id, list(reversed(history_rows)))
+    return {
+        "sessionId": session_id,
+        "items": items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+    }
+
+
 def _platform_state_payload(bot: Any, instance_id: str) -> dict[str, Any]:
     """Build runtime availability flags for a session's adapter instance.
 
@@ -417,7 +483,11 @@ def _validated_batch_request(database: Any, body: SessionBatchActionRequest) -> 
 
 
 @router.get("", response_model=Envelope[list[SessionOverviewItem]])
-def get_session_overview(bot=BotDep, boot=BootDep):
+def get_session_overview(
+    preview_limit: int = Query(default=10, ge=1, le=50),
+    bot=BotDep,
+    boot=BootDep,
+):
     """Get a full overview of all sessions including history, audit logs, agent state, and summaries."""
     database = getattr(bot, "database", None)
     if database is None:
@@ -465,9 +535,9 @@ def get_session_overview(bot=BotDep, boot=BootDep):
                 FROM message_logs
                 WHERE session_id = ?
                 ORDER BY created_at DESC, id DESC
-                LIMIT 40
+                LIMIT ?
                 """,
-                (session_id,),
+                (session_id, preview_limit),
             ).fetchall()
             audit_rows = conn.execute(
                 """
@@ -489,14 +559,30 @@ def get_session_overview(bot=BotDep, boot=BootDep):
                 """,
                 (session_id,),
             ).fetchone()
-
-        message_rows = [_message_payload(item) for item in reversed(history_rows)]
-        agent_read_states = _agent_read_states(database, session_id)
-        for message in message_rows:
-            message["agentReadState"] = agent_read_states.get(
-                int(message["id"]),
-                "not_tracked",
+            message_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM message_logs
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()["count"]
+                or 0
             )
+            audit_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM audit_logs
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()["count"]
+                or 0
+            )
+
+        message_rows = _message_rows_with_agent_state(database, session_id, list(reversed(history_rows)))
         latest_message = message_rows[-1] if message_rows else None
         latest_review_summary = _latest_summary_of_type(database, session_id, "block_digest")
         latest_active_chat_summary = _latest_summary_of_type(database, session_id, "active_chat")
@@ -578,12 +664,26 @@ def get_session_overview(bot=BotDep, boot=BootDep):
                     if profile is not None
                     else None
                 ),
-                "messageCount": len(message_rows),
-                "auditCount": len(audit_rows),
+                "messageCount": message_count,
+                "auditCount": audit_count,
             }
         )
 
     return ok(sessions)
+
+
+@router.get("/{session_id:path}/history", response_model=Envelope[SessionHistoryPageData])
+def get_session_history_page(
+    session_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50, alias="pageSize"),
+    bot=BotDep,
+):
+    """Get one page of persisted message history for a session."""
+
+    database = _session_storage(bot)
+    _existing_session_or_404(database, session_id)
+    return ok(_history_page_payload(database, session_id, page=page, page_size=page_size))
 
 
 @router.delete("/{session_id:path}/history", response_model=Envelope[SessionClearedData])

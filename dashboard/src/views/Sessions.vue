@@ -131,6 +131,12 @@
       <template #content>
         <session-detail-panel
           :session="selectedSession"
+          :history-items="historyItems"
+          :history-loading="historyLoading"
+          :history-page="historyPage"
+          :history-page-size="historyPageSize"
+          :history-total="historyTotal"
+          :history-has-next-page="historyHasNextPage"
           :empty-label="$t('pages.sessions.empty.title')"
           :format-timestamp="formatTimestamp"
           :format-date-time="formatDateTime"
@@ -139,6 +145,9 @@
           :format-summary="formatSummary"
           :routing-color="routingColor"
           :stringify-content="stringifyContent"
+          @update:history-page-size="updateHistoryPageSize"
+          @previous-history-page="previousHistoryPage"
+          @next-history-page="nextHistoryPage"
         />
       </template>
     </dual-pane-list-view>
@@ -146,7 +155,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 
@@ -156,6 +165,7 @@ import SidebarListCard from '@/components/SidebarListCard.vue'
 import SessionDetailPanel from '@/components/sessions/SessionDetailPanel.vue'
 import {
   sessionsApi,
+  type SessionMessage,
   type SessionOverviewItem,
   type SessionPlatformState,
   type SessionSummary,
@@ -182,6 +192,11 @@ const sessions = ref<SessionOverviewItem[]>([])
 const selectedSessionId = ref('')
 const selectionMode = ref(false)
 const selectedSessionIds = ref<string[]>([])
+const historyLoading = ref(false)
+const historyItems = ref<SessionMessage[]>([])
+const historyPage = ref(1)
+const historyPageSize = ref(10)
+const historyTotal = ref(0)
 
 const displayCurrency = computed(() => pricingCurrency.value || 'CNY')
 const { formatDateTime } = useFormatters(locale, displayCurrency)
@@ -199,6 +214,9 @@ const actionableSessionIds = computed(() =>
       : []
 )
 const hasActionableTargets = computed(() => actionableSessionIds.value.length > 0)
+const historyHasNextPage = computed(
+  () => historyPage.value * historyPageSize.value < historyTotal.value
+)
 
 const boolLabel = (value: boolean | null | undefined) =>
   value
@@ -317,7 +335,7 @@ const refresh = async () => {
   loading.value = true
   error.value = ''
   try {
-    const resp = await sessionsApi.overview()
+    const resp = await sessionsApi.overview(historyPageSize.value)
     sessions.value = resp.data.data || []
     selectedSessionIds.value = selectedSessionIds.value.filter((session_id) =>
       sessions.value.some((item) => item.session.id === session_id)
@@ -335,9 +353,47 @@ const refresh = async () => {
   }
 }
 
+const loadHistory = async (sessionId: string, page = historyPage.value) => {
+  historyLoading.value = true
+  try {
+    const resp = await sessionsApi.history(sessionId, page, historyPageSize.value)
+    const payload = resp.data.data
+    historyItems.value = payload?.items || []
+    historyTotal.value = payload?.total || 0
+    historyPage.value = payload?.page || page
+  } finally {
+    historyLoading.value = false
+  }
+}
+
 const selectedSession = computed(() =>
   sessions.value.find((item) => item.session.id === selectedSessionId.value) || sessions.value[0] || null
 )
+
+const previousHistoryPage = async () => {
+  if (!selectedSession.value || historyPage.value <= 1 || historyLoading.value) {
+    return
+  }
+  await loadHistory(selectedSession.value.session.id, historyPage.value - 1)
+}
+
+const nextHistoryPage = async () => {
+  if (!selectedSession.value || !historyHasNextPage.value || historyLoading.value) {
+    return
+  }
+  await loadHistory(selectedSession.value.session.id, historyPage.value + 1)
+}
+
+const updateHistoryPageSize = async (value: number) => {
+  if (!Number.isFinite(value) || historyPageSize.value === value) {
+    return
+  }
+  historyPageSize.value = value
+  historyPage.value = 1
+  if (selectedSession.value) {
+    await loadHistory(selectedSession.value.session.id, 1)
+  }
+}
 
 const toggleSelectionMode = () => {
   if (selectionMode.value) {
@@ -494,4 +550,17 @@ const runSessionAction = async (action: SessionActionKind) => {
 onMounted(() => {
   void refresh()
 })
+
+watch(
+  selectedSession,
+  (session) => {
+    historyPage.value = 1
+    historyItems.value = session?.history || []
+    historyTotal.value = session?.messageCount || 0
+    if (session) {
+      void loadHistory(session.session.id, 1)
+    }
+  },
+  { immediate: true }
+)
 </script>

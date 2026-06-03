@@ -140,15 +140,59 @@
             {{ historyLabel }}
           </v-card-title>
           <v-card-text>
+            <div class="session-history-header">
+              <div class="text-body-2 text-medium-emphasis">
+                {{ historyRangeLabel }}
+              </div>
+              <div class="session-history-controls">
+                <v-select
+                  :model-value="historyPageSize"
+                  :items="historyPageSizeOptions"
+                  item-title="label"
+                  item-value="value"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  class="session-history-page-size"
+                  :label="pageSizeLabel"
+                  @update:model-value="(value) => $emit('update:historyPageSize', Number(value))"
+                />
+                <div class="session-history-nav">
+                  <v-btn
+                    icon="mdi-chevron-left"
+                    variant="tonal"
+                    size="small"
+                    :disabled="historyLoading || historyPage <= 1"
+                    :aria-label="previousPageLabel"
+                    @click="$emit('previous-history-page')"
+                  />
+                  <v-btn
+                    icon="mdi-chevron-right"
+                    variant="tonal"
+                    size="small"
+                    :disabled="historyLoading || !historyHasNextPage"
+                    :aria-label="nextPageLabel"
+                    @click="$emit('next-history-page')"
+                  />
+                </div>
+              </div>
+            </div>
+            <v-progress-linear
+              v-if="historyLoading"
+              indeterminate
+              color="primary"
+              rounded
+              class="mb-4"
+            />
             <div
-              v-if="session.history.length === 0"
+              v-if="historyItems.length === 0"
               class="text-body-2 text-medium-emphasis py-6 text-center"
             >
               {{ emptyHistoryLabel }}
             </div>
             <div v-else class="session-message-list">
               <div
-                v-for="message in session.history"
+                v-for="message in historyItems"
                 :key="message.id"
                 class="session-message-row"
               >
@@ -294,8 +338,10 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type {
+  SessionMessage,
   SessionOverviewItem,
   SessionPlatformState,
   SessionSummary,
@@ -303,8 +349,14 @@ import type {
 
 const { t } = useI18n()
 
-defineProps<{
+const props = defineProps<{
   session: SessionOverviewItem | null
+  historyItems: SessionMessage[]
+  historyLoading: boolean
+  historyPage: number
+  historyPageSize: number
+  historyTotal: number
+  historyHasNextPage: boolean
   emptyLabel: string
   formatTimestamp: (value: number | string | null | undefined) => string
   formatDateTime: (value: string | null | undefined) => string
@@ -313,6 +365,12 @@ defineProps<{
   formatSummary: (summary: SessionSummary | null) => string
   routingColor: (status: string) => string
   stringifyContent: (content: unknown[]) => string
+}>()
+
+defineEmits<{
+  'update:historyPageSize': [value: number]
+  'previous-history-page': []
+  'next-history-page': []
 }>()
 
 const noneLabel = t('pages.sessions.labels.none')
@@ -347,6 +405,9 @@ const mutedLabel = t('pages.sessions.fields.muted')
 const auditEnabledLabel = t('pages.sessions.fields.auditEnabled')
 const historyLabel = t('pages.sessions.sections.history')
 const emptyHistoryLabel = t('pages.sessions.empty.history')
+const pageSizeLabel = t('pages.sessions.fields.pageSize')
+const previousPageLabel = t('pages.sessions.actions.previousPage')
+const nextPageLabel = t('pages.sessions.actions.nextPage')
 const agentLabel = t('pages.sessions.sections.agent')
 const reviewAtLabel = t('pages.sessions.fields.reviewAt')
 const reviewIntervalLabel = t('pages.sessions.fields.reviewInterval')
@@ -361,6 +422,24 @@ const workflowRunLabel = t('pages.sessions.fields.workflowRun')
 const workflowProfileLabel = t('pages.sessions.fields.workflowProfile')
 const workflowResultLabel = t('pages.sessions.fields.workflowResult')
 const lastAuditLabel = t('pages.sessions.fields.lastAudit')
+
+const historyPageSizeOptions = [10, 20, 50].map((value) => ({
+  label: `${value}`,
+  value,
+}))
+
+const historyRangeLabel = computed(() => {
+  if (props.historyTotal === 0 || props.historyItems.length === 0) {
+    return t('pages.sessions.labels.historyRangeEmpty')
+  }
+  const start = (props.historyPage - 1) * props.historyPageSize + 1
+  const end = start + props.historyItems.length - 1
+  return t('pages.sessions.labels.historyRange', {
+    start,
+    end,
+    total: props.historyTotal,
+  })
+})
 
 function platformStatus(platformState: SessionPlatformState): {
   color: string
@@ -484,6 +563,29 @@ function routingSkipReasonLabel(reason: string): string {
   gap: 12px;
 }
 
+.session-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.session-history-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.session-history-page-size {
+  width: 112px;
+}
+
+.session-history-nav {
+  display: flex;
+  gap: 8px;
+}
+
 .session-message-row {
   padding: 12px 14px;
   border: 1px solid $border-color-soft;
@@ -517,6 +619,20 @@ function routingSkipReasonLabel(reason: string): string {
 }
 
 @media (max-width: 960px) {
+  .session-history-header,
+  .session-history-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .session-history-page-size {
+    width: 100%;
+  }
+
+  .session-history-nav {
+    justify-content: flex-end;
+  }
+
   .session-meta-row span {
     font-size: 0.75rem;
   }

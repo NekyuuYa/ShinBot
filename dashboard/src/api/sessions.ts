@@ -45,6 +45,14 @@ export interface SessionMessage {
   agentReadState: 'unread' | 'review_consumed' | 'active_chat_consumed' | 'not_tracked'
 }
 
+export interface SessionHistoryPage {
+  sessionId: string
+  items: SessionMessage[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 export interface SessionAuditLog {
   id: number
   timestamp: string
@@ -149,8 +157,24 @@ export interface SessionBatchActionResponse {
 }
 
 export const sessionsApi = {
-  overview() {
-    return apiClient.get<SessionOverviewItem[]>('/session-overview')
+  overview(previewLimit = 10) {
+    return apiClient.get<SessionOverviewItem[]>('/session-overview', {
+      params: {
+        preview_limit: previewLimit,
+      },
+    })
+  },
+
+  history(sessionId: string, page = 1, pageSize = 10) {
+    return apiClient.get<SessionHistoryPage>(
+      `/session-overview/${encodeURIComponent(sessionId)}/history`,
+      {
+        params: {
+          page,
+          pageSize,
+        },
+      }
+    )
   },
 
   clearHistoryBatch(sessionIds: string[]) {

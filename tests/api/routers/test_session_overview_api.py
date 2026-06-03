@@ -377,6 +377,93 @@ def test_session_overview_includes_agent_read_state_for_history(tmp_path: Path) 
     assert history[1]["agentReadState"] == "active_chat_consumed"
 
 
+def test_session_overview_uses_preview_limit_but_returns_real_message_count(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "bot-main:group:room"
+    _seed_session_management_records(
+        bot,
+        runtime,
+        tmp_path=tmp_path,
+        session_id=session_id,
+    )
+    assert bot.database is not None
+    with bot.database.connect() as conn:
+        now = time.time()
+        for index in range(18):
+            conn.execute(
+                """
+                INSERT INTO message_logs (session_id, role, created_at, raw_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, "user", now + 10 + index, f"extra-{index}"),
+            )
+
+    app = create_api_app(bot, _BootStub(tmp_path))
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/session-overview", headers=_auth_headers(app))
+
+    assert response.status_code == 200
+    session = response.json()["data"][0]
+    assert len(session["history"]) == 10
+    assert session["messageCount"] == 20
+
+
+def test_session_history_endpoint_paginates_messages(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    session_id = "bot-main:group:room"
+    _seed_session_management_records(
+        bot,
+        runtime,
+        tmp_path=tmp_path,
+        session_id=session_id,
+    )
+    assert bot.database is not None
+    with bot.database.connect() as conn:
+        now = time.time()
+        for index in range(23):
+            conn.execute(
+                """
+                INSERT INTO message_logs (session_id, role, created_at, raw_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, "user", now + 10 + index, f"page-{index}"),
+            )
+
+    app = create_api_app(bot, _BootStub(tmp_path))
+
+    with TestClient(app) as client:
+        page_one = client.get(
+            f"/api/v1/session-overview/{session_id}/history?page=1&pageSize=10",
+            headers=_auth_headers(app),
+        )
+        page_three = client.get(
+            f"/api/v1/session-overview/{session_id}/history?page=3&pageSize=10",
+            headers=_auth_headers(app),
+        )
+
+    assert page_one.status_code == 200
+    payload_one = page_one.json()["data"]
+    assert payload_one["sessionId"] == session_id
+    assert payload_one["page"] == 1
+    assert payload_one["pageSize"] == 10
+    assert payload_one["total"] == 25
+    assert len(payload_one["items"]) == 10
+    assert payload_one["items"][0]["rawText"] == "page-13"
+    assert payload_one["items"][-1]["rawText"] == "page-22"
+
+    assert page_three.status_code == 200
+    payload_three = page_three.json()["data"]
+    assert payload_three["page"] == 3
+    assert payload_three["pageSize"] == 10
+    assert payload_three["total"] == 25
+    assert len(payload_three["items"]) == 5
+    assert payload_three["items"][0]["rawText"] == "hello"
+    assert payload_three["items"][-1]["rawText"] == "page-2"
+
+
 def test_session_overview_includes_platform_availability_state(tmp_path: Path) -> None:
     bot = ShinBot(data_dir=tmp_path)
     runtime = install_agent_runtime(bot)
