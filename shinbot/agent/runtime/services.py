@@ -81,6 +81,13 @@ from shinbot.core.instance_config import (
     resolve_instance_runtime_config,
     select_response_profile,
 )
+from shinbot.core.state.session import (
+    SESSION_STATE_AGENT_PAUSE_UNTIL_KEY,
+    SessionManager,
+    get_agent_pause_until,
+    is_agent_paused,
+    set_agent_pause_until,
+)
 from shinbot.utils.logger import format_log_event, get_logger
 
 if TYPE_CHECKING:
@@ -380,6 +387,7 @@ class AgentRuntime:
         permission_engine: PermissionEngine,
         audit_logger: AuditLogger,
         adapter_manager: AdapterManager,
+        session_manager: SessionManager | None,
         model_runtime: Any,
         tool_registry: ToolRegistry | None = None,
         review_runtime_config: ReviewRuntimeConfig | dict[str, Any] | None = None,
@@ -399,6 +407,7 @@ class AgentRuntime:
         self.prompt_definitions = PromptDefinitionFileRepository.from_data_dir(runtime_data_dir)
         self.model_runtime = model_runtime
         self.adapter_manager = adapter_manager
+        self.session_manager = session_manager
         self._session_signal_locks: dict[str, asyncio.Lock] = {}
         self.identity_store = IdentityStore(runtime_data_dir / "identities.json")
         self.media_service = MediaService(database) if database is not None else None
@@ -618,11 +627,26 @@ class AgentRuntime:
     ) -> ActiveChatBootstrapApplyDecision | None:
         """Receive a unified Agent signal and let Agent internals process it."""
         async with self._session_signal_lock(signal.session_id):
-            pause_signal = (
-                signal.kind == AgentSignalKind.REVIEW_DUE
-                or signal.kind == AgentSignalKind.ACTIVE_CHAT_TICK
-            )
-            if pause_signal and self.should_pause_session(signal.session_id):
+            paused_until = self.session_pause_until(signal.session_id)
+            session_paused = paused_until is not None
+            should_skip = False
+            skip_reason = ""
+            if signal.kind == AgentSignalKind.MESSAGE:
+                should_skip = session_paused
+                skip_reason = "session_paused"
+            elif signal.kind in {
+                AgentSignalKind.REVIEW_DUE,
+                AgentSignalKind.ACTIVE_CHAT_TICK,
+            }:
+                should_skip = self.should_pause_session(signal.session_id)
+                skip_reason = "session_paused" if session_paused else "platform_unavailable"
+            if should_skip:
+                if signal.kind == AgentSignalKind.MESSAGE and signal.message is not None:
+                    profile = self.agent_profile_for_bot(signal.bot_id)
+                    profile.agent_scheduler.queue_paused_message(
+                        signal,
+                        pause_until=paused_until,
+                    )
                 logger.debug(
                     format_log_event(
                         "agent.runtime.signal_skipped",
@@ -631,7 +655,7 @@ class AgentRuntime:
                         signal_id=signal.signal_id,
                         session_id=signal.session_id,
                         bot_id=signal.bot_id,
-                        reason="platform_unavailable",
+                        reason=skip_reason,
                     )
                 )
                 return None
@@ -709,7 +733,91 @@ class AgentRuntime:
             session_id: Bot-scoped session identifier whose adapter should be
                 checked.
         """
-        return not self.is_session_platform_available(session_id)
+        return not self.is_session_platform_available(session_id) or self.is_session_paused(
+            session_id
+        )
+
+    def session_pause_until(self, session_id: str) -> float | None:
+        """Return the explicit Agent pause deadline for a session, if any."""
+
+        session = self.session_manager.get(session_id) if self.session_manager is not None else None
+        pause_until = get_agent_pause_until(session) if session is not None else None
+        if pause_until is None and self.database is not None:
+            persisted = self.database.sessions.get(session_id)
+            if persisted is not None:
+                pause_until = get_agent_pause_until(persisted)
+        if pause_until is None:
+            return None
+        if pause_until > time.time():
+            return pause_until
+        self.clear_session_pause(session_id)
+        return None
+
+    def is_session_paused(self, session_id: str) -> bool:
+        """Return whether a session has an explicit Agent pause in effect."""
+
+        session = self.session_manager.get(session_id) if self.session_manager is not None else None
+        if session is not None:
+            if is_agent_paused(session):
+                return True
+            if get_agent_pause_until(session) is not None:
+                self.clear_session_pause(session_id)
+                return False
+        if self.database is None:
+            return False
+        persisted = self.database.sessions.get(session_id)
+        if persisted is None:
+            return False
+        if is_agent_paused(persisted):
+            return True
+        if get_agent_pause_until(persisted) is not None:
+            self.clear_session_pause(session_id)
+        return False
+
+    def pause_session_until(self, session_id: str, *, pause_until: float) -> None:
+        """Immediately pause Agent activity for a session until ``pause_until``."""
+
+        checked_at = time.time()
+        if self.session_manager is not None:
+            session = self.session_manager.get(session_id)
+            if session is not None:
+                set_agent_pause_until(session, pause_until)
+                self.session_manager.update(session)
+        if self.database is not None:
+            persisted = self.database.sessions.get(session_id)
+            if persisted is not None:
+                state = dict(persisted.get("state") or {})
+                state[SESSION_STATE_AGENT_PAUSE_UNTIL_KEY] = float(pause_until)
+                persisted["state"] = state
+                self.database.sessions.upsert(persisted)
+
+        for profile in self._unique_profiles():
+            scheduler = profile.agent_scheduler
+            if session_id not in set(scheduler.list_session_ids()):
+                continue
+            scheduler.pause_session_until(
+                session_id,
+                pause_until=pause_until,
+                now=checked_at,
+            )
+
+    def clear_session_pause(self, session_id: str) -> None:
+        """Clear any explicit Agent pause stored for a session."""
+
+        cleared = False
+        if self.session_manager is not None:
+            session = self.session_manager.get(session_id)
+            if session is not None and get_agent_pause_until(session) is not None:
+                set_agent_pause_until(session, None)
+                self.session_manager.update(session)
+                cleared = True
+        if not cleared and self.database is not None:
+            persisted = self.database.sessions.get(session_id)
+            if persisted is not None and get_agent_pause_until(persisted) is not None:
+                state = dict(persisted.get("state") or {})
+                state.pop(SESSION_STATE_AGENT_PAUSE_UNTIL_KEY, None)
+                persisted["state"] = state
+                self.database.sessions.upsert(persisted)
 
     def start_background_tasks(self) -> None:
         """Start Agent background services once an event loop is available."""
@@ -873,6 +981,7 @@ def install_agent_runtime(
         permission_engine=bot.permission_engine,
         audit_logger=bot.audit_logger,
         adapter_manager=bot.adapter_manager,
+        session_manager=bot.session_manager,
         model_runtime=model_runtime,
         tool_registry=bot.tool_registry,
         review_runtime_config=review_runtime_config,

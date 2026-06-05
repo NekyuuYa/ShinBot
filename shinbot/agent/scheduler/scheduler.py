@@ -365,6 +365,90 @@ class AgentScheduler:
         self._log_signal_decision(signal, decision)
         return decision
 
+    def queue_paused_message(
+        self,
+        signal: AgentSignal,
+        *,
+        pause_until: float,
+    ) -> AgentScheduleDecision | None:
+        """Store a paused-session message without starting Agent workflows.
+
+        This keeps unread/high-priority backlog intact while a session-level
+        Agent pause is active so the scheduler can resume naturally after the
+        pause deadline passes.
+        """
+        self._log_signal_entry(signal)
+        prepared = self._prepare_message_event(signal)
+        if isinstance(prepared, AgentScheduleDecision):
+            decision = prepared
+        else:
+            self._bring_review_plan_forward(
+                signal.session_id,
+                next_review_at=pause_until,
+                now=prepared.checked_at,
+                reason="session_agent_paused",
+            )
+            decision = AgentScheduleDecision(
+                accepted=True,
+                state=self._state_store.get_state(signal.session_id),
+                unread_message=prepared.unread,
+                high_priority_events=prepared.high_priority_events,
+                skipped_reason="session_paused",
+            )
+        self._log_signal_decision(signal, decision)
+        return decision
+
+    def pause_session_until(
+        self,
+        session_id: str,
+        *,
+        pause_until: float,
+        now: float | None = None,
+    ) -> AgentState:
+        """Pause scheduler-side work for one session until ``pause_until``.
+
+        The scheduler preserves unread backlog and high-priority events, stops
+        review/active-chat loops where possible, and ensures the next review is
+        due once the pause deadline has passed.
+        """
+        checked_at = self._now() if now is None else now
+        current_state = self._state_store.get_state(session_id)
+        self._bring_review_plan_forward(
+            session_id,
+            next_review_at=pause_until,
+            now=checked_at,
+            reason="session_agent_paused",
+        )
+        if current_state == AgentState.REVIEW:
+            self._cancel_review_runtime(session_id)
+            self._transition_state(
+                session_id,
+                AgentState.IDLE,
+                trigger=SchedulerTransitionTrigger.REVIEW_COMPLETE_RETURN_IDLE,
+            )
+        elif current_state == AgentState.ACTIVE_CHAT:
+            self._transition_state(
+                session_id,
+                AgentState.IDLE,
+                trigger=SchedulerTransitionTrigger.ACTIVE_CHAT_INTEREST_ADJUSTMENT_EXIT,
+            )
+        elif current_state == AgentState.ACTIVE_REPLY:
+            self._stop_active_chat_runtime(session_id)
+            self._transition_state(
+                session_id,
+                AgentState.IDLE,
+                trigger=SchedulerTransitionTrigger.ACTIVE_REPLY_RETURN_IDLE,
+            )
+        logger.info(
+            format_log_event(
+                "agent.session.paused",
+                session_id=session_id,
+                previous_state=current_state.value,
+                next_review_at=f"{pause_until:.2f}",
+            )
+        )
+        return self._state_store.get_state(session_id)
+
     async def _accept_event(self, event: SchedulerEvent) -> AgentSignalDecision | None:
         handler = self._event_handlers.get(event.kind)
         if handler is None:
@@ -1758,6 +1842,34 @@ class AgentScheduler:
                 next_review_after_seconds=f"{max(0.0, plan.next_review_at - now):.2f}",
             )
         )
+
+    def _bring_review_plan_forward(
+        self,
+        session_id: str,
+        *,
+        next_review_at: float,
+        now: float,
+        reason: str,
+    ) -> ReviewPlan:
+        current = self._state_store.get_review_plan(session_id)
+        if current is None:
+            plan = replace(
+                self._review_policy.initial_plan(session_id=session_id, now=now),
+                next_review_at=next_review_at,
+                reason=reason,
+                updated_at=now,
+            )
+        elif current.next_review_at == next_review_at and current.reason == reason:
+            return current
+        else:
+            plan = replace(
+                current,
+                next_review_at=next_review_at,
+                reason=reason,
+                updated_at=now,
+            )
+        self._state_store.set_review_plan(plan)
+        return plan
 
     @staticmethod
     def _timer_checked_at(signal: AgentSignal) -> float:

@@ -6,5 +6,11 @@
   "description": "Provides baseline help, ping, and about commands for chat platforms.",
   "entry": "__init__.py",
   "role": "logic",
-  "permissions": []
+  "permissions": [
+    "cmd.help",
+    "cmd.ping",
+    "cmd.about",
+    "cmd.whoami",
+    "cmd.mute"
+  ]
 }

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from shinbot.persistence.repos import SessionRepository
 
 logger = logging.getLogger(__name__)
+
+SESSION_STATE_AGENT_PAUSE_UNTIL_KEY = "agent_pause_until"
 
 
 class SessionConfig(BaseModel):
@@ -89,6 +92,64 @@ class Session(BaseModel):
     def is_muted(self) -> bool:
         """Return True if the session is currently muted."""
         return self.config.is_muted
+
+
+def get_agent_pause_until(payload: Session | Mapping[str, Any]) -> float | None:
+    """Return the session-level Agent pause deadline, if present.
+
+    Args:
+        payload: A live :class:`Session` object or a persisted session-like
+            mapping containing a ``state`` payload.
+
+    Returns:
+        The pause deadline as a Unix timestamp in seconds, or ``None`` when
+        no valid pause deadline is stored.
+    """
+    if isinstance(payload, Session):
+        state = payload.state
+    else:
+        raw_state = payload.get("state", {})
+        state = raw_state if isinstance(raw_state, Mapping) else {}
+    raw_value = state.get(SESSION_STATE_AGENT_PAUSE_UNTIL_KEY)
+    if raw_value in (None, ""):
+        return None
+    try:
+        pause_until = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+    return pause_until if pause_until > 0 else None
+
+
+def set_agent_pause_until(session: Session, pause_until: float | None) -> None:
+    """Store or clear the session-level Agent pause deadline.
+
+    Args:
+        session: The session to mutate.
+        pause_until: Unix timestamp in seconds when Agent activity may resume.
+            Pass ``None`` to clear the pause state.
+    """
+    if pause_until is None:
+        session.state.pop(SESSION_STATE_AGENT_PAUSE_UNTIL_KEY, None)
+        return
+    session.state[SESSION_STATE_AGENT_PAUSE_UNTIL_KEY] = float(pause_until)
+
+
+def is_agent_paused(
+    payload: Session | Mapping[str, Any],
+    *,
+    now: float | None = None,
+) -> bool:
+    """Return whether the session-level Agent pause window is still active.
+
+    Args:
+        payload: A live :class:`Session` object or persisted session payload.
+        now: Override the current time for tests.
+    """
+    pause_until = get_agent_pause_until(payload)
+    if pause_until is None:
+        return False
+    checked_at = time.time() if now is None else now
+    return pause_until > checked_at
 
 
 def build_session_id(

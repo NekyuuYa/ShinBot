@@ -46,7 +46,7 @@ class PermissionGroup(BaseModel):
 DEFAULT_GROUP = PermissionGroup(
     id="default",
     name="Default",
-    permissions={"cmd.help", "cmd.ping"},
+    permissions={"cmd.help", "cmd.ping", "cmd.about", "cmd.whoami", "cmd.mute"},
 )
 
 ADMIN_GROUP = PermissionGroup(

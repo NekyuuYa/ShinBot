@@ -180,6 +180,13 @@ class PluginManager:
             self._model_runtime = model_runtime
         if agent_runtime is not None:
             self._agent_runtime = agent_runtime
+        for plugin in self._plugin_objects.values():
+            if tool_registry is not None:
+                plugin._tool_registry = tool_registry
+            if model_runtime is not None:
+                plugin._model_runtime = model_runtime
+            if agent_runtime is not None:
+                plugin.agent_runtime = agent_runtime
 
     async def preregister_model_runtime_extensions(
         self,
