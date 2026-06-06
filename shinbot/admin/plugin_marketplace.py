@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import shutil
 import time
+import uuid
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
-from urllib.parse import quote, urlparse
-
-import httpx
+from urllib.parse import urlparse
 
 from shinbot.admin.plugin_install import (
     PLUGIN_INSTALL_MAX_ARCHIVE_BYTES,
+    PLUGIN_INSTALL_MAX_EXTRACTED_BYTES,
     PluginInstallError,
     PluginInstallManifest,
     build_plugin_install_service,
@@ -189,7 +191,12 @@ class PluginMarketplaceService:
     ) -> dict[str, Any]:
         """Return discovered marketplace plugins with local install state."""
         source = self._source_or_raise(source_id)
-        archive = await self._download_github_archive(source, refresh=refresh)
+        archive = await self._load_sparse_archive(
+            source,
+            sparse_paths=[f"{source.plugin_root}/*/metadata.json"],
+            cache_scope="metadata",
+            refresh=refresh,
+        )
         items = self._scan_monorepo_archive(source, archive.content)
         return {
             "source": source.as_dict(),
@@ -269,10 +276,21 @@ class PluginMarketplaceService:
         refresh: bool = False,
     ) -> tuple[PluginMarketplaceItem, PluginMarketplaceArchive]:
         source = self._source_or_raise(source_id)
-        archive = await self._download_github_archive(source, refresh=refresh)
-        for item in self._scan_monorepo_archive(source, archive.content):
+        metadata_archive = await self._load_sparse_archive(
+            source,
+            sparse_paths=[f"{source.plugin_root}/*/metadata.json"],
+            cache_scope="metadata",
+            refresh=refresh,
+        )
+        for item in self._scan_monorepo_archive(source, metadata_archive.content):
             if item.plugin_id == plugin_id:
-                return item, archive
+                plugin_archive = await self._load_sparse_archive(
+                    source,
+                    sparse_paths=[f"{item.plugin_path}/**"],
+                    cache_scope=f"plugin:{item.plugin_path}",
+                    refresh=refresh,
+                )
+                return item, plugin_archive
         raise PluginMarketplaceError(
             status_code=404,
             code="PLUGIN_MARKETPLACE_ITEM_NOT_FOUND",
@@ -289,51 +307,40 @@ class PluginMarketplaceService:
             )
         return source
 
-    async def _download_github_archive(
+    async def _load_sparse_archive(
         self,
         source: PluginMarketplaceSource,
         *,
+        sparse_paths: list[str],
+        cache_scope: str,
         refresh: bool = False,
     ) -> PluginMarketplaceArchive:
         if not refresh:
-            cached = self._load_cached_archive(source)
+            cached = self._load_cached_archive(source, cache_scope=cache_scope)
             if cached is not None:
                 return cached
 
-        owner, repo = _parse_github_repo(source.repository_url)
-        _validate_github_ref(source.ref)
-        archive_url = (
-            f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/zipball/"
-            f"{quote(source.ref, safe='')}"
-        )
-        try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=httpx.Timeout(30.0, connect=10.0),
-                headers={"User-Agent": "ShinBot-WebUI-Plugin-Marketplace"},
-            ) as client:
-                response = await client.get(archive_url)
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise PluginMarketplaceError(
-                status_code=502,
-                code="PLUGIN_MARKETPLACE_DOWNLOAD_FAILED",
-                message=f"Failed to download plugin marketplace source: {exc}",
-            ) from exc
-        content = response.content
-        if len(content) > PLUGIN_INSTALL_MAX_ARCHIVE_BYTES:
+        archive = await self._create_sparse_archive(source, sparse_paths=sparse_paths)
+        if len(archive.content) > PLUGIN_INSTALL_MAX_ARCHIVE_BYTES:
             raise PluginMarketplaceError(
                 status_code=413,
                 code="PLUGIN_MARKETPLACE_ARCHIVE_INVALID",
                 message="Plugin marketplace archive is too large",
             )
-        return self._save_cached_archive(source, content, resolved_ref="")
+        return self._save_cached_archive(
+            source,
+            archive.content,
+            cache_scope=cache_scope,
+            resolved_ref=archive.resolved_ref,
+        )
 
     def _load_cached_archive(
         self,
         source: PluginMarketplaceSource,
+        *,
+        cache_scope: str,
     ) -> PluginMarketplaceArchive | None:
-        archive_path, metadata_path = self._cache_paths(source)
+        archive_path, metadata_path = self._cache_paths(source, cache_scope=cache_scope)
         if not archive_path.is_file() or not metadata_path.is_file():
             return None
         try:
@@ -363,10 +370,11 @@ class PluginMarketplaceService:
         source: PluginMarketplaceSource,
         content: bytes,
         *,
+        cache_scope: str,
         resolved_ref: str,
     ) -> PluginMarketplaceArchive:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        archive_path, metadata_path = self._cache_paths(source)
+        archive_path, metadata_path = self._cache_paths(source, cache_scope=cache_scope)
         now = time.time()
         expires_at = now + PLUGIN_MARKETPLACE_CACHE_TTL_SECONDS
         archive_tmp = archive_path.with_suffix(".zip.tmp")
@@ -376,6 +384,7 @@ class PluginMarketplaceService:
             "schema_version": PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION,
             "source": source.as_dict(),
             "resolved_ref": resolved_ref,
+            "cache_scope": cache_scope,
             "cached_at": now,
             "expires_at": expires_at,
             "archive_sha256": hashlib.sha256(content).hexdigest(),
@@ -395,7 +404,121 @@ class PluginMarketplaceService:
             expires_at=expires_at,
         )
 
-    def _cache_paths(self, source: PluginMarketplaceSource) -> tuple[Path, Path]:
+    async def _create_sparse_archive(
+        self,
+        source: PluginMarketplaceSource,
+        *,
+        sparse_paths: list[str],
+    ) -> PluginMarketplaceArchive:
+        _parse_github_repo(source.repository_url)
+        _validate_github_ref(source.ref)
+        normalized_paths = [_normalize_sparse_path(path) for path in sparse_paths]
+        workspace = self.cache_dir / f".sparse-{uuid.uuid4().hex}"
+        repo_dir = workspace / "repo"
+        try:
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            await self._run_git("init", str(repo_dir))
+            await self._run_git("-C", str(repo_dir), "remote", "add", "origin", source.repository_url)
+            await self._run_git("-C", str(repo_dir), "config", "advice.detachedHead", "false")
+            await self._run_git(
+                "-C",
+                str(repo_dir),
+                "fetch",
+                "--depth=1",
+                "--filter=blob:none",
+                "origin",
+                source.ref,
+            )
+            await self._run_git("-C", str(repo_dir), "sparse-checkout", "init", "--no-cone")
+            await self._run_git(
+                "-C",
+                str(repo_dir),
+                "sparse-checkout",
+                "set",
+                "--no-cone",
+                *normalized_paths,
+            )
+            await self._run_git("-C", str(repo_dir), "checkout", "--detach", "FETCH_HEAD")
+            resolved_ref = (
+                await self._run_git("-C", str(repo_dir), "rev-parse", "HEAD")
+            ).strip()
+            return PluginMarketplaceArchive(
+                content=self._zip_sparse_checkout(repo_dir),
+                resolved_ref=resolved_ref,
+            )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    async def _run_git(self, *args: str) -> str:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise PluginMarketplaceError(
+                status_code=500,
+                code="PLUGIN_MARKETPLACE_GIT_UNAVAILABLE",
+                message=f"Failed to start git: {exc}",
+            ) from exc
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise PluginMarketplaceError(
+                status_code=504,
+                code="PLUGIN_MARKETPLACE_GIT_FAILED",
+                message="Git sparse checkout timed out",
+            ) from exc
+        if process.returncode != 0:
+            error = stderr.decode("utf-8", errors="replace").strip()
+            raise PluginMarketplaceError(
+                status_code=502,
+                code="PLUGIN_MARKETPLACE_GIT_FAILED",
+                message=error or "Git sparse checkout failed",
+            )
+        return stdout.decode("utf-8", errors="replace")
+
+    def _zip_sparse_checkout(self, repo_dir: Path) -> bytes:
+        total_size = 0
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(repo_dir.rglob("*")):
+                if path.is_dir() or ".git" in path.relative_to(repo_dir).parts:
+                    continue
+                if path.is_symlink():
+                    raise PluginMarketplaceError(
+                        status_code=409,
+                        code="PLUGIN_MARKETPLACE_ARCHIVE_INVALID",
+                        message="Marketplace plugin sources must not contain symlinks",
+                    )
+                relative = path.relative_to(repo_dir).as_posix()
+                total_size += path.stat().st_size
+                if total_size > PLUGIN_INSTALL_MAX_EXTRACTED_BYTES:
+                    raise PluginMarketplaceError(
+                        status_code=413,
+                        code="PLUGIN_MARKETPLACE_ARCHIVE_INVALID",
+                        message="Marketplace plugin source is too large",
+                    )
+                archive.write(path, f"repo/{relative}")
+        content = output.getvalue()
+        if len(content) > PLUGIN_INSTALL_MAX_ARCHIVE_BYTES:
+            raise PluginMarketplaceError(
+                status_code=413,
+                code="PLUGIN_MARKETPLACE_ARCHIVE_INVALID",
+                message="Marketplace plugin archive is too large",
+            )
+        return content
+
+    def _cache_paths(
+        self,
+        source: PluginMarketplaceSource,
+        *,
+        cache_scope: str,
+    ) -> tuple[Path, Path]:
         cache_key = hashlib.sha256(
             "\0".join(
                 [
@@ -403,6 +526,7 @@ class PluginMarketplaceService:
                     source.repository_url,
                     source.ref,
                     source.plugin_root,
+                    cache_scope,
                 ]
             ).encode("utf-8")
         ).hexdigest()
@@ -705,3 +829,21 @@ def _validate_github_ref(ref: str) -> None:
             code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
             message="Invalid GitHub marketplace ref",
         )
+
+
+def _normalize_sparse_path(value: str) -> str:
+    raw = value.strip()
+    if not raw or "\\" in raw:
+        raise PluginMarketplaceError(
+            status_code=422,
+            code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
+            message="Sparse checkout path must be a relative repository path",
+        )
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts or "." in path.parts:
+        raise PluginMarketplaceError(
+            status_code=422,
+            code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
+            message="Sparse checkout path must stay inside the repository",
+        )
+    return path.as_posix()

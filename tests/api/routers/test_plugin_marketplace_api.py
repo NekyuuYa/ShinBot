@@ -7,7 +7,6 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import shinbot.admin.plugin_install as plugin_install
 import shinbot.admin.plugin_marketplace as plugin_marketplace
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
@@ -42,7 +41,7 @@ def _client(tmp_path: Path) -> tuple[TestClient, ShinBot, _BootStub, dict[str, s
     return TestClient(app), bot, boot, headers
 
 
-def _marketplace_zip(
+def _metadata_archive_zip(
     *,
     version: str = "0.1.0",
     required_dependencies: list[str] | None = None,
@@ -68,6 +67,33 @@ def _marketplace_zip(
         "entry": "shinbot_plugin_other_demo/__init__.py",
         "permissions": [],
     }
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        root = "repo"
+        archive.writestr(
+            f"{root}/plugins/shinbot_plugin_market_demo/metadata.json",
+            json.dumps(demo_metadata),
+        )
+        archive.writestr(
+            f"{root}/plugins/shinbot_plugin_other_demo/metadata.json",
+            json.dumps(other_metadata),
+        )
+    return stream.getvalue()
+
+
+def _plugin_archive_zip(*, version: str = "0.1.0") -> bytes:
+    metadata = {
+        "id": "shinbot_plugin_market_demo",
+        "name": "Market Demo",
+        "version": version,
+        "description": "Demo plugin from marketplace",
+        "author": "Tests",
+        "role": "logic",
+        "entry": "shinbot_plugin_market_demo/__init__.py",
+        "permissions": ["send_message"],
+        "optional_dependencies": ["shinbot_plugin_optional_demo"],
+        "tags": ["demo"],
+    }
     setup_body = "\n".join(
         [
             "def setup(plg):",
@@ -79,54 +105,38 @@ def _marketplace_zip(
     )
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
-        root = "shinbot-plugins-main"
+        root = "repo"
         archive.writestr(
             f"{root}/plugins/shinbot_plugin_market_demo/metadata.json",
-            json.dumps(demo_metadata),
+            json.dumps(metadata),
         )
         archive.writestr(
             f"{root}/plugins/shinbot_plugin_market_demo/shinbot_plugin_market_demo/__init__.py",
             setup_body,
         )
-        archive.writestr(
-            f"{root}/plugins/shinbot_plugin_other_demo/metadata.json",
-            json.dumps(other_metadata),
-        )
-        archive.writestr(
-            f"{root}/plugins/shinbot_plugin_other_demo/shinbot_plugin_other_demo/__init__.py",
-            "def setup(plg):\n    pass\n",
-        )
     return stream.getvalue()
 
 
-class _FakeResponse:
-    def __init__(self, content: bytes) -> None:
-        self.content = content
-        self.headers: dict[str, str] = {}
+def _patch_sparse_archives(
+    monkeypatch,
+    archives_by_scope: dict[str, list[bytes]],
+) -> list[tuple[str, list[str]]]:
+    calls: list[tuple[str, list[str]]] = []
 
-    def raise_for_status(self) -> None:
-        return None
+    async def fake_create_sparse_archive(self, source, *, sparse_paths):
+        scope = "metadata" if sparse_paths == ["plugins/*/metadata.json"] else "plugin"
+        calls.append((scope, sparse_paths))
+        archives = archives_by_scope[scope]
+        return plugin_marketplace.PluginMarketplaceArchive(
+            content=archives.pop(0),
+            resolved_ref=f"resolved-{len(calls)}",
+        )
 
-
-def _patch_github_downloads(monkeypatch, archives: list[bytes]) -> list[str]:
-    calls: list[str] = []
-
-    class _FakeAsyncClient:
-        def __init__(self, **kwargs):
-            return None
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url: str):
-            calls.append(url)
-            return _FakeResponse(archives[len(calls) - 1])
-
-    monkeypatch.setattr(plugin_marketplace.httpx, "AsyncClient", _FakeAsyncClient)
-    monkeypatch.setattr(plugin_install.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(
+        plugin_marketplace.PluginMarketplaceService,
+        "_create_sparse_archive",
+        fake_create_sparse_archive,
+    )
     return calls
 
 
@@ -143,7 +153,10 @@ def test_plugin_marketplace_sources_returns_official_source(tmp_path: Path):
 
 
 def test_plugin_marketplace_lists_monorepo_plugins(tmp_path: Path, monkeypatch):
-    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip()])
+    calls = _patch_sparse_archives(
+        monkeypatch,
+        {"metadata": [_metadata_archive_zip()], "plugin": []},
+    )
     client, _bot, _boot, headers = _client(tmp_path)
 
     with client:
@@ -160,11 +173,17 @@ def test_plugin_marketplace_lists_monorepo_plugins(tmp_path: Path, monkeypatch):
     assert demo["can_install"] is True
     assert demo["missing_optional_dependencies"] == ["shinbot_plugin_optional_demo"]
     assert payload["cache"]["cached"] is False
-    assert len(calls) == 1
+    assert calls == [("metadata", ["plugins/*/metadata.json"])]
 
 
 def test_plugin_marketplace_reuses_cached_archive(tmp_path: Path, monkeypatch):
-    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip()])
+    calls = _patch_sparse_archives(
+        monkeypatch,
+        {
+            "metadata": [_metadata_archive_zip()],
+            "plugin": [_plugin_archive_zip()],
+        },
+    )
     client, _bot, _boot, headers = _client(tmp_path)
 
     with client:
@@ -181,13 +200,22 @@ def test_plugin_marketplace_reuses_cached_archive(tmp_path: Path, monkeypatch):
     assert second.status_code == 200
     assert second.json()["data"]["cache"]["cached"] is True
     assert preview.status_code == 200
-    assert len(calls) == 1
+    assert calls == [
+        ("metadata", ["plugins/*/metadata.json"]),
+        ("plugin", ["plugins/shinbot_plugin_market_demo/**"]),
+    ]
 
 
 def test_plugin_marketplace_refresh_bypasses_cached_archive(tmp_path: Path, monkeypatch):
-    calls = _patch_github_downloads(
+    calls = _patch_sparse_archives(
         monkeypatch,
-        [_marketplace_zip(version="0.1.0"), _marketplace_zip(version="0.2.0")],
+        {
+            "metadata": [
+                _metadata_archive_zip(version="0.1.0"),
+                _metadata_archive_zip(version="0.2.0"),
+            ],
+            "plugin": [],
+        },
     )
     client, _bot, _boot, headers = _client(tmp_path)
 
@@ -210,9 +238,16 @@ def test_plugin_marketplace_refresh_bypasses_cached_archive(tmp_path: Path, monk
 
 
 def test_plugin_marketplace_marks_missing_required_dependency(tmp_path: Path, monkeypatch):
-    _patch_github_downloads(
+    _patch_sparse_archives(
         monkeypatch,
-        [_marketplace_zip(required_dependencies=["shinbot_plugin_missing_required"])],
+        {
+            "metadata": [
+                _metadata_archive_zip(
+                    required_dependencies=["shinbot_plugin_missing_required"]
+                )
+            ],
+            "plugin": [],
+        },
     )
     client, _bot, _boot, headers = _client(tmp_path)
 
@@ -228,7 +263,13 @@ def test_plugin_marketplace_marks_missing_required_dependency(tmp_path: Path, mo
 
 
 def test_plugin_marketplace_installs_selected_monorepo_plugin(tmp_path: Path, monkeypatch):
-    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip()])
+    calls = _patch_sparse_archives(
+        monkeypatch,
+        {
+            "metadata": [_metadata_archive_zip()],
+            "plugin": [_plugin_archive_zip()],
+        },
+    )
     client, bot, _boot, headers = _client(tmp_path)
 
     with client:
@@ -250,11 +291,20 @@ def test_plugin_marketplace_installs_selected_monorepo_plugin(tmp_path: Path, mo
     assert demo["managed_by_webui"] is True
     assert demo["can_install"] is False
     assert demo["installed_source"]["plugin_path"] == "plugins/shinbot_plugin_market_demo"
-    assert len(calls) == 1
+    assert calls == [
+        ("metadata", ["plugins/*/metadata.json"]),
+        ("plugin", ["plugins/shinbot_plugin_market_demo/**"]),
+    ]
 
 
 def test_plugin_marketplace_preview_uses_selected_plugin_path(tmp_path: Path, monkeypatch):
-    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip()])
+    calls = _patch_sparse_archives(
+        monkeypatch,
+        {
+            "metadata": [_metadata_archive_zip()],
+            "plugin": [_plugin_archive_zip()],
+        },
+    )
     client, _bot, _boot, headers = _client(tmp_path)
 
     with client:
@@ -268,7 +318,10 @@ def test_plugin_marketplace_preview_uses_selected_plugin_path(tmp_path: Path, mo
     payload = response.json()["data"]
     assert payload["plugin_id"] == "shinbot_plugin_market_demo"
     assert payload["plugin_path"] == "plugins/shinbot_plugin_market_demo"
-    assert len(calls) == 1
+    assert calls == [
+        ("metadata", ["plugins/*/metadata.json"]),
+        ("plugin", ["plugins/shinbot_plugin_market_demo/**"]),
+    ]
 
 
 def test_plugin_marketplace_blocks_unmanaged_existing_plugin(tmp_path: Path, monkeypatch):
@@ -288,7 +341,10 @@ def test_plugin_marketplace_blocks_unmanaged_existing_plugin(tmp_path: Path, mon
         encoding="utf-8",
     )
     (package_root / "__init__.py").write_text("def setup(plg):\n    pass\n", encoding="utf-8")
-    _patch_github_downloads(monkeypatch, [_marketplace_zip()])
+    _patch_sparse_archives(
+        monkeypatch,
+        {"metadata": [_metadata_archive_zip()], "plugin": []},
+    )
     client, _bot, _boot, headers = _client(tmp_path)
 
     with client:
@@ -306,9 +362,12 @@ def test_plugin_marketplace_blocks_unmanaged_existing_plugin(tmp_path: Path, mon
 
 
 def test_plugin_marketplace_reports_update_available(tmp_path: Path, monkeypatch):
-    _patch_github_downloads(
+    _patch_sparse_archives(
         monkeypatch,
-        [_marketplace_zip(version="0.1.0")],
+        {
+            "metadata": [_metadata_archive_zip(version="0.1.0")],
+            "plugin": [_plugin_archive_zip(version="0.1.0")],
+        },
     )
     client, _bot, _boot, headers = _client(tmp_path)
     with client:
@@ -319,7 +378,10 @@ def test_plugin_marketplace_reports_update_available(tmp_path: Path, monkeypatch
         )
     assert install.status_code == 200
 
-    _patch_github_downloads(monkeypatch, [_marketplace_zip(version="0.2.0")])
+    _patch_sparse_archives(
+        monkeypatch,
+        {"metadata": [_metadata_archive_zip(version="0.2.0")], "plugin": []},
+    )
     with client:
         listed = client.get(
             "/api/v1/plugin-marketplace",
@@ -337,7 +399,10 @@ def test_plugin_marketplace_reports_update_available(tmp_path: Path, monkeypatch
 
 
 def test_plugin_marketplace_get_unknown_plugin_returns_404(tmp_path: Path, monkeypatch):
-    _patch_github_downloads(monkeypatch, [_marketplace_zip()])
+    _patch_sparse_archives(
+        monkeypatch,
+        {"metadata": [_metadata_archive_zip()], "plugin": []},
+    )
     client, _bot, _boot, headers = _client(tmp_path)
 
     with client:
