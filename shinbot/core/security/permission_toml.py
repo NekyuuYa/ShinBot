@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import tempfile
 import threading
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from shinbot.core.security.permission import PermissionGroup
 
-_write_lock = threading.Lock()
+_toml_transaction_lock = threading.Lock()
 
 
 class PermissionGroupDefinition(BaseModel):
@@ -74,9 +75,12 @@ class PermissionGroupRepository:
 
     def save(self, groups: Iterable[PermissionGroup | PermissionGroupDefinition]) -> None:
         """Replace ``[[permissions.groups]]`` and persist the TOML atomically."""
-        config = _load_config(self.config_path)
-        set_groups_in_config(config, groups)
-        _atomic_write_toml(self.config_path, config)
+        group_records = list(groups)
+
+        def update(config: dict[str, Any]) -> None:
+            set_groups_in_config(config, group_records)
+
+        _atomic_update_toml(self.config_path, update)
 
 
 class PermissionBindingRepository:
@@ -91,9 +95,12 @@ class PermissionBindingRepository:
 
     def save(self, bindings: Iterable[PermissionBindingRecord]) -> None:
         """Replace ``[[permissions.bindings]]`` and persist the TOML atomically."""
-        config = _load_config(self.config_path)
-        set_bindings_in_config(config, bindings)
-        _atomic_write_toml(self.config_path, config)
+        binding_records = list(bindings)
+
+        def update(config: dict[str, Any]) -> None:
+            set_bindings_in_config(config, binding_records)
+
+        _atomic_update_toml(self.config_path, update)
 
 
 class CommandPermissionOverrideRepository:
@@ -108,9 +115,12 @@ class CommandPermissionOverrideRepository:
 
     def save(self, overrides: Iterable[CommandPermissionOverride]) -> None:
         """Replace ``[[permissions.command_overrides]]`` and persist TOML atomically."""
-        config = _load_config(self.config_path)
-        set_command_overrides_in_config(config, overrides)
-        _atomic_write_toml(self.config_path, config)
+        override_records = list(overrides)
+
+        def update(config: dict[str, Any]) -> None:
+            set_command_overrides_in_config(config, override_records)
+
+        _atomic_update_toml(self.config_path, update)
 
 
 def group_definitions_from_config(config: Mapping[str, Any]) -> list[PermissionGroupDefinition]:
@@ -246,8 +256,26 @@ def _load_config(config_path: Path) -> dict[str, Any]:
 
 
 def _atomic_write_toml(config_path: Path, config: Mapping[str, Any]) -> None:
-    with _write_lock:
-        _atomic_write_toml_inner(config_path, config)
+    def replace_config(current_config: dict[str, Any]) -> None:
+        current_config.clear()
+        current_config.update(dict(config))
+
+    _atomic_update_toml(config_path, replace_config)
+
+
+def _atomic_update_toml[T](config_path: Path, update: Callable[[dict[str, Any]], T]) -> T:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _lock_path_for(config_path)
+    with _toml_transaction_lock:
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                config = _load_config(config_path)
+                result = update(config)
+                _atomic_write_toml_inner(config_path, config)
+                return result
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _atomic_write_toml_inner(config_path: Path, config: Mapping[str, Any]) -> None:
@@ -273,6 +301,10 @@ def _atomic_write_toml_inner(config_path: Path, config: Mapping[str, Any]) -> No
             except OSError:
                 pass
         raise PermissionTomlError(f"Failed to persist permissions TOML {config_path}: {exc}") from exc
+
+
+def _lock_path_for(config_path: Path) -> Path:
+    return config_path.parent / f".{config_path.name}.lock"
 
 
 def _permissions_table(config: Mapping[str, Any]) -> Mapping[str, Any]:

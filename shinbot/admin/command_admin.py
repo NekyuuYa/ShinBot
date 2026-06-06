@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 COMMAND_OVERRIDES_SECTION = "command_overrides"
@@ -113,9 +114,17 @@ def set_command_enabled_or_raise(
     command = get_command_or_raise(command_registry, name)
 
     # Prepare config mutation first, persist, then apply runtime state.
+    missing = object()
+    previous_overrides = boot.config.get(COMMAND_OVERRIDES_SECTION, missing)
+    if previous_overrides is not missing:
+        previous_overrides = deepcopy(previous_overrides)
     store = _enabled_override_store(boot.config, create=True)
     store[command.name] = enabled
     if not boot.save_config():
+        if previous_overrides is missing:
+            boot.config.pop(COMMAND_OVERRIDES_SECTION, None)
+        else:
+            boot.config[COMMAND_OVERRIDES_SECTION] = previous_overrides
         raise CommandAdminError(
             status_code=500,
             code="CONFIG_WRITE_FAILED",

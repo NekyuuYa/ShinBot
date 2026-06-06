@@ -11,7 +11,7 @@ from shinbot.core.application.app import ShinBot
 
 
 class _BootStub:
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, *, save_result: bool = True) -> None:
         self.config = {
             "admin": {
                 "username": "admin",
@@ -24,10 +24,11 @@ class _BootStub:
         self.dashboard_dist_dir = None
         self.dashboard_index_file = None
         self.save_config_calls = 0
+        self.save_result = save_result
 
     def save_config(self) -> bool:
         self.save_config_calls += 1
-        return True
+        return self.save_result
 
 
 def test_commands_list_route_returns_registered_commands(tmp_path: Path) -> None:
@@ -66,6 +67,26 @@ def test_commands_patch_route_can_disable_command_and_persist(tmp_path: Path) ->
     assert bot.command_registry.get("help") is not None
     assert bot.command_registry.get("help").enabled is False
     assert boot.config["command_overrides"]["enabled"] == {"help": False}
+    assert boot.save_config_calls == 1
+
+
+def test_commands_patch_route_rolls_back_config_when_save_fails(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    asyncio.run(bot.plugin_manager.load_all_async(tmp_path / "plugins"))
+    boot = _BootStub(tmp_path, save_result=False)
+    boot.config["command_overrides"] = {"enabled": {"ping": False}}
+    app = create_api_app(bot, boot)
+    token = app.state.auth_config.create_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(app) as client:
+        response = client.patch("/api/v1/commands/help", json={"enabled": False}, headers=headers)
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "CONFIG_WRITE_FAILED"
+    assert bot.command_registry.get("help") is not None
+    assert bot.command_registry.get("help").enabled is True
+    assert boot.config["command_overrides"] == {"enabled": {"ping": False}}
     assert boot.save_config_calls == 1
 
 

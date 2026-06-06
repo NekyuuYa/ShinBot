@@ -18,6 +18,7 @@ from shinbot.core.security.permission_service import (
     PermissionGroupService,
     PermissionServiceError,
 )
+from shinbot.core.security.permission_toml import PermissionTomlError
 
 
 def _load(path: Path) -> dict:
@@ -55,6 +56,44 @@ def test_create_group_persists_and_refreshes_engine(tmp_path: Path) -> None:
         "name": "Moderator",
         "permissions": ["cmd.help", "cmd.mute"],
         "description": "Group managers",
+    }
+
+
+def test_stale_services_merge_against_latest_toml_snapshot(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[app]\nname = \"shinbot\"\n", encoding="utf-8")
+    first = PermissionGroupService.from_config_path(config_path)
+    second = PermissionGroupService.from_config_path(config_path)
+
+    first.create_group(group_id="moderator", permissions=["cmd.mute"])
+    second.create_group(group_id="auditor", permissions=["audit.read"])
+
+    payload = _load(config_path)
+    group_ids = {group["id"] for group in payload["permissions"]["groups"]}
+    assert {"auditor", "moderator"} <= group_ids
+
+
+def test_persist_failure_rolls_back_service_snapshot_and_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[app]\nname = \"shinbot\"\n", encoding="utf-8")
+    engine = PermissionEngine()
+    service = PermissionGroupService.from_config_path(config_path, engine=engine)
+
+    def fail_replace(self: Path, target: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(PermissionTomlError, match="replace failed"):
+        service.create_group(group_id="moderator", permissions=["cmd.mute"])
+
+    assert service.get_group("moderator") is None
+    assert engine.get_group("moderator") is None
+    assert "moderator" not in {
+        group["id"] for group in _load(config_path).get("permissions", {}).get("groups", [])
     }
 
 

@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import re
 import threading
-import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, Field
 
@@ -23,7 +23,8 @@ from shinbot.core.security.permission import (
 from shinbot.core.security.permission_toml import (
     CommandPermissionOverride,
     PermissionGroupDefinition,
-    _atomic_write_toml,
+    _atomic_update_toml,
+    _load_config,
     bindings_from_config,
     command_overrides_from_config,
     group_definitions_from_config,
@@ -51,6 +52,10 @@ class PermissionServiceError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class _NoopPermissionMutation(Exception):
+    """Internal sentinel used to skip persistence for no-op removals."""
 
 
 class PermissionGroupRecord(BaseModel):
@@ -124,6 +129,12 @@ class PermissionConfigRepository(Protocol):
     def save(self, snapshot: PermissionStoreSnapshot) -> None:
         """Persist permission administration state."""
 
+    def update[T](
+        self,
+        mutator: Callable[[PermissionStoreSnapshot], T],
+    ) -> tuple[PermissionStoreSnapshot, T]:
+        """Atomically load, mutate, and persist permission administration state."""
+
 
 class TomlPermissionConfigRepository:
     """TOML repository for permission groups, bindings, and command overrides."""
@@ -133,10 +144,32 @@ class TomlPermissionConfigRepository:
 
     def load(self) -> PermissionStoreSnapshot:
         """Read permission state from the configured TOML file."""
-        if not self.config_path.exists():
-            return PermissionStoreSnapshot()
-        with self.config_path.open("rb") as file_obj:
-            payload = tomllib.load(file_obj)
+        payload = _load_config(self.config_path)
+        return self._snapshot_from_payload(payload)
+
+    def save(self, snapshot: PermissionStoreSnapshot) -> None:
+        """Write permission state to TOML via temp file and atomic rename."""
+
+        def update(payload: dict[str, Any]) -> None:
+            self._write_snapshot_to_payload(payload, snapshot)
+
+        _atomic_update_toml(self.config_path, update)
+
+    def update[T](
+        self,
+        mutator: Callable[[PermissionStoreSnapshot], T],
+    ) -> tuple[PermissionStoreSnapshot, T]:
+        """Atomically load, mutate, and persist permission state."""
+
+        def update(payload: dict[str, Any]) -> tuple[PermissionStoreSnapshot, T]:
+            snapshot = self._snapshot_from_payload(payload)
+            result = mutator(snapshot)
+            self._write_snapshot_to_payload(payload, snapshot)
+            return snapshot, result
+
+        return _atomic_update_toml(self.config_path, update)
+
+    def _snapshot_from_payload(self, payload: dict[str, Any]) -> PermissionStoreSnapshot:
         permissions = payload.get("permissions", {})
         if not isinstance(permissions, dict):
             return PermissionStoreSnapshot()
@@ -167,13 +200,11 @@ class TomlPermissionConfigRepository:
             command_overrides=command_overrides,
         )
 
-    def save(self, snapshot: PermissionStoreSnapshot) -> None:
-        """Write permission state to TOML via temp file and atomic rename."""
-        payload: dict[str, Any] = {}
-        if self.config_path.exists():
-            with self.config_path.open("rb") as file_obj:
-                payload = tomllib.load(file_obj)
-
+    def _write_snapshot_to_payload(
+        self,
+        payload: dict[str, Any],
+        snapshot: PermissionStoreSnapshot,
+    ) -> None:
         set_groups_in_config(
             payload,
             (
@@ -202,7 +233,6 @@ class TomlPermissionConfigRepository:
                 for command, permission in snapshot.command_overrides.items()
             ),
         )
-        _atomic_write_toml(self.config_path, payload)
 
 
 class PermissionGroupService:
@@ -222,8 +252,8 @@ class PermissionGroupService:
         self._actor = actor
         self._lock = threading.Lock()
         self._snapshot = repository.load()
-        self._ensure_builtin_groups()
-        self._validate_snapshot()
+        self._ensure_builtin_groups(self._snapshot)
+        self._validate_snapshot(self._snapshot)
 
     @classmethod
     def from_config_path(
@@ -265,20 +295,24 @@ class PermissionGroupService:
     ) -> PermissionGroupRecord:
         """Create a custom permission group."""
         group_id = _validate_group_id(group_id)
-        if group_id in self._snapshot.groups:
-            raise PermissionServiceError("GROUP_EXISTS", f"Permission group {group_id!r} already exists")
         if group_id in BUILTIN_GROUP_IDS:
             raise PermissionServiceError("BUILTIN_GROUP", f"Built-in group {group_id!r} already exists")
+        permission_set = _validate_permissions(permissions)
 
-        group = PermissionGroupRecord(
-            id=group_id,
-            name=name,
-            description=description,
-            permissions=_validate_permissions(permissions),
-            protected=protected,
-        )
-        self._snapshot.groups[group_id] = group
-        self._persist_and_refresh("permission_group.create", group=group_id)
+        def mutate(snapshot: PermissionStoreSnapshot) -> PermissionGroupRecord:
+            if group_id in snapshot.groups:
+                raise PermissionServiceError("GROUP_EXISTS", f"Permission group {group_id!r} already exists")
+            group = PermissionGroupRecord(
+                id=group_id,
+                name=name,
+                description=description,
+                permissions=set(permission_set),
+                protected=protected,
+            )
+            snapshot.groups[group_id] = group
+            return group
+
+        group = self._persist_and_refresh(mutate, "permission_group.create", group=group_id)
         return self._group_record_copy(group)
 
     def update_group(
@@ -291,57 +325,66 @@ class PermissionGroupService:
         protected: bool | None = None,
     ) -> PermissionGroupRecord:
         """Update group metadata and permissions."""
-        group = self._require_group(group_id)
-        if name is not None:
-            group.name = name
-        if description is not None:
-            group.description = description
-        if permissions is not None:
-            next_permissions = _validate_permissions(permissions)
-            if group.id in BUILTIN_GROUP_IDS:
-                negative_perms = {p for p in next_permissions if p.startswith("-")}
-                if negative_perms:
-                    raise PermissionServiceError(
-                        "BUILTIN_NEGATIVE_PERMISSION",
-                        (
-                            f"Built-in group {group.id!r} must not contain negative permissions: "
-                            f"{', '.join(sorted(negative_perms))}"
-                        ),
-                    )
-                missing_permissions = _builtin_group_permissions(group.id) - next_permissions
-                if missing_permissions:
-                    raise PermissionServiceError(
-                        "BUILTIN_PERMISSION_REQUIRED",
-                        (
-                            f"Built-in group {group.id!r} must keep permissions: "
-                            f"{', '.join(sorted(missing_permissions))}"
-                        ),
-                    )
-            group.permissions = next_permissions
-        if protected is not None:
-            if group.id in BUILTIN_GROUP_IDS and protected is False:
-                raise PermissionServiceError(
-                    "BUILTIN_PROTECTION_REQUIRED",
-                    f"Built-in group {group.id!r} cannot be unprotected",
-                )
-            group.protected = protected
+        group_id = _validate_group_id(group_id)
+        next_permissions = _validate_permissions(permissions) if permissions is not None else None
 
-        self._persist_and_refresh("permission_group.update", group=group.id)
+        def mutate(snapshot: PermissionStoreSnapshot) -> PermissionGroupRecord:
+            group = self._require_group(group_id, snapshot)
+            if name is not None:
+                group.name = name
+            if description is not None:
+                group.description = description
+            if next_permissions is not None:
+                candidate_permissions = set(next_permissions)
+                if group.id in BUILTIN_GROUP_IDS:
+                    negative_perms = {p for p in candidate_permissions if p.startswith("-")}
+                    if negative_perms:
+                        raise PermissionServiceError(
+                            "BUILTIN_NEGATIVE_PERMISSION",
+                            (
+                                f"Built-in group {group.id!r} must not contain negative permissions: "
+                                f"{', '.join(sorted(negative_perms))}"
+                            ),
+                        )
+                    missing_permissions = _builtin_group_permissions(group.id) - candidate_permissions
+                    if missing_permissions:
+                        raise PermissionServiceError(
+                            "BUILTIN_PERMISSION_REQUIRED",
+                            (
+                                f"Built-in group {group.id!r} must keep permissions: "
+                                f"{', '.join(sorted(missing_permissions))}"
+                            ),
+                        )
+                group.permissions = candidate_permissions
+            if protected is not None:
+                if group.id in BUILTIN_GROUP_IDS and protected is False:
+                    raise PermissionServiceError(
+                        "BUILTIN_PROTECTION_REQUIRED",
+                        f"Built-in group {group.id!r} cannot be unprotected",
+                    )
+                group.protected = protected
+            return group
+
+        group = self._persist_and_refresh(mutate, "permission_group.update", group=group_id)
         return self._group_record_copy(group)
 
     def delete_group(self, group_id: str) -> None:
         """Delete a custom permission group."""
-        group = self._require_group(group_id)
-        if group.id in BUILTIN_GROUP_IDS or group.system or group.protected:
-            raise PermissionServiceError("GROUP_PROTECTED", f"Permission group {group.id!r} is protected")
-        del self._snapshot.groups[group.id]
-        for key, groups in list(self._snapshot.bindings.items()):
-            remaining = tuple(group_id for group_id in groups if group_id != group.id)
-            if remaining:
-                self._snapshot.bindings[key] = remaining
-            else:
-                del self._snapshot.bindings[key]
-        self._persist_and_refresh("permission_group.delete", group=group.id)
+        group_id = _validate_group_id(group_id)
+
+        def mutate(snapshot: PermissionStoreSnapshot) -> None:
+            group = self._require_group(group_id, snapshot)
+            if group.id in BUILTIN_GROUP_IDS or group.system or group.protected:
+                raise PermissionServiceError("GROUP_PROTECTED", f"Permission group {group.id!r} is protected")
+            del snapshot.groups[group.id]
+            for key, groups in list(snapshot.bindings.items()):
+                remaining = tuple(candidate for candidate in groups if candidate != group.id)
+                if remaining:
+                    snapshot.bindings[key] = remaining
+                else:
+                    del snapshot.bindings[key]
+
+        self._persist_and_refresh(mutate, "permission_group.delete", group=group_id)
 
     def list_bindings(
         self,
@@ -371,29 +414,48 @@ class PermissionGroupService:
         groups = tuple(_unique_sorted(_validate_group_id(group_id) for group_id in group_ids))
         if not groups:
             raise PermissionServiceError("EMPTY_BINDING", "Binding must reference at least one group")
-        for group_id in groups:
-            self._require_group(group_id)
-        self._snapshot.bindings[scope_key] = groups
-        self._persist_and_refresh("permission_binding.set", binding=scope_key, groups=",".join(groups))
-        return PermissionBindingRecord(key=scope_key, groups=groups)
+
+        def mutate(snapshot: PermissionStoreSnapshot) -> PermissionBindingRecord:
+            for group_id in groups:
+                self._require_group(group_id, snapshot)
+            snapshot.bindings[scope_key] = groups
+            return PermissionBindingRecord(key=scope_key, groups=groups)
+
+        return self._persist_and_refresh(
+            mutate,
+            "permission_binding.set",
+            binding=scope_key,
+            groups=",".join(groups),
+        )
 
     def remove_binding(self, scope_key: str, group_id: str | None = None) -> None:
         """Remove a whole binding key or one group from the binding."""
         scope_key = _validate_binding_key(scope_key)
-        if scope_key not in self._snapshot.bindings:
-            return
-        if group_id is None:
-            del self._snapshot.bindings[scope_key]
-            self._persist_and_refresh("permission_binding.remove", binding=scope_key)
-            return
+        if group_id is not None:
+            group_id = _validate_group_id(group_id)
 
-        group_id = _validate_group_id(group_id)
-        groups = tuple(group for group in self._snapshot.bindings[scope_key] if group != group_id)
-        if groups:
-            self._snapshot.bindings[scope_key] = groups
-        else:
-            del self._snapshot.bindings[scope_key]
-        self._persist_and_refresh("permission_binding.remove_group", binding=scope_key, group=group_id)
+        def mutate(snapshot: PermissionStoreSnapshot) -> None:
+            if scope_key not in snapshot.bindings:
+                raise _NoopPermissionMutation
+            if group_id is None:
+                del snapshot.bindings[scope_key]
+                return
+
+            groups = tuple(group for group in snapshot.bindings[scope_key] if group != group_id)
+            if groups:
+                snapshot.bindings[scope_key] = groups
+            else:
+                del snapshot.bindings[scope_key]
+
+        if group_id is None:
+            self._persist_and_refresh(mutate, "permission_binding.remove", binding=scope_key)
+            return
+        self._persist_and_refresh(
+            mutate,
+            "permission_binding.remove_group",
+            binding=scope_key,
+            group=group_id,
+        )
 
     def list_command_overrides(self) -> list[CommandPermissionOverrideRecord]:
         """Return command permission overrides sorted by command name."""
@@ -407,17 +469,28 @@ class PermissionGroupService:
         command = _validate_command_name(command)
         if permission:
             _validate_permission_node(permission)
-        self._snapshot.command_overrides[command] = permission
-        self._persist_and_refresh("permission_command_override.set", command=command, permission=permission)
-        return CommandPermissionOverrideRecord(command=command, permission=permission)
+
+        def mutate(snapshot: PermissionStoreSnapshot) -> CommandPermissionOverrideRecord:
+            snapshot.command_overrides[command] = permission
+            return CommandPermissionOverrideRecord(command=command, permission=permission)
+
+        return self._persist_and_refresh(
+            mutate,
+            "permission_command_override.set",
+            command=command,
+            permission=permission,
+        )
 
     def remove_command_override(self, command: str) -> None:
         """Remove a command permission override."""
         command = _validate_command_name(command)
-        if command not in self._snapshot.command_overrides:
-            return
-        del self._snapshot.command_overrides[command]
-        self._persist_and_refresh("permission_command_override.remove", command=command)
+
+        def mutate(snapshot: PermissionStoreSnapshot) -> None:
+            if command not in snapshot.command_overrides:
+                raise _NoopPermissionMutation
+            del snapshot.command_overrides[command]
+
+        self._persist_and_refresh(mutate, "permission_command_override.remove", command=command)
 
     def detect_orphan_permissions(self, command_registry: Any) -> list[str]:
         """Find positive permission nodes in groups that no command currently requires."""
@@ -458,9 +531,7 @@ class PermissionGroupService:
                 continue
             new_bindings[key] = set(groups)
 
-        # Atomic replacement
-        target._groups = new_groups
-        target._bindings = new_bindings
+        target.replace_runtime_state(new_groups, new_bindings)
 
     def refresh_command_registry(self, command_registry: Any | None = None) -> None:
         """Refresh runtime command permission overrides from the current snapshot."""
@@ -483,30 +554,45 @@ class PermissionGroupService:
             for command, permission in self._snapshot.command_overrides.items():
                 set_override(command, permission)
 
-    def _persist_and_refresh(self, event: str, **fields: str) -> None:
+    def _persist_and_refresh[T](
+        self,
+        mutator: Callable[[PermissionStoreSnapshot], T],
+        event: str,
+        **fields: str,
+    ) -> T:
         with self._lock:
-            self._validate_snapshot()
-            self._repository.save(self._snapshot)
+            def update(snapshot: PermissionStoreSnapshot) -> T:
+                self._ensure_builtin_groups(snapshot)
+                result = mutator(snapshot)
+                self._validate_snapshot(snapshot)
+                return result
+
+            try:
+                persisted_snapshot, result = self._repository.update(update)
+            except _NoopPermissionMutation:
+                return cast(T, None)
+            self._snapshot = persisted_snapshot
             self.refresh_engine()
             self.refresh_command_registry()
             _log_permission_admin_event(event, actor=self._actor, **fields)
+            return result
 
-    def _ensure_builtin_groups(self) -> None:
+    def _ensure_builtin_groups(self, snapshot: PermissionStoreSnapshot) -> None:
         for builtin in (DEFAULT_GROUP, ADMIN_GROUP, OWNER_GROUP):
-            existing = self._snapshot.groups.get(builtin.id)
+            existing = snapshot.groups.get(builtin.id)
             if existing is None:
-                self._snapshot.groups[builtin.id] = PermissionGroupRecord.from_engine_group(builtin)
+                snapshot.groups[builtin.id] = PermissionGroupRecord.from_engine_group(builtin)
                 continue
             existing.system = True
             existing.protected = True
             existing.name = existing.name or builtin.name
             existing.permissions |= set(builtin.permissions)
 
-        owner = self._snapshot.groups["owner"]
+        owner = snapshot.groups["owner"]
         owner.permissions.add("*")
 
-    def _validate_snapshot(self) -> None:
-        for group in self._snapshot.groups.values():
+    def _validate_snapshot(self, snapshot: PermissionStoreSnapshot) -> None:
+        for group in snapshot.groups.values():
             _validate_group_id(group.id)
             group.permissions = _validate_permissions(group.permissions)
             if group.id == "owner" and "*" not in group.permissions:
@@ -517,24 +603,29 @@ class PermissionGroupService:
                 group.permissions -= {p for p in group.permissions if p.startswith("-")}
                 group.permissions |= _builtin_group_permissions(group.id)
 
-        for key, groups in list(self._snapshot.bindings.items()):
+        for key, groups in list(snapshot.bindings.items()):
             _validate_binding_key(key)
             unique_groups = tuple(_unique_sorted(_validate_group_id(group_id) for group_id in groups))
             if not unique_groups:
-                del self._snapshot.bindings[key]
+                del snapshot.bindings[key]
                 continue
             for group_id in unique_groups:
-                self._require_group(group_id)
-            self._snapshot.bindings[key] = unique_groups
+                self._require_group(group_id, snapshot)
+            snapshot.bindings[key] = unique_groups
 
-        for command, permission in self._snapshot.command_overrides.items():
+        for command, permission in snapshot.command_overrides.items():
             _validate_command_name(command)
             if permission:
                 _validate_permission_node(permission)
 
-    def _require_group(self, group_id: str) -> PermissionGroupRecord:
+    def _require_group(
+        self,
+        group_id: str,
+        snapshot: PermissionStoreSnapshot | None = None,
+    ) -> PermissionGroupRecord:
         group_id = _validate_group_id(group_id)
-        group = self._snapshot.groups.get(group_id)
+        target_snapshot = snapshot or self._snapshot
+        group = target_snapshot.groups.get(group_id)
         if group is None:
             raise PermissionServiceError("GROUP_NOT_FOUND", f"Permission group {group_id!r} not found")
         return group
