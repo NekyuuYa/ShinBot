@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -10,6 +11,7 @@ import shutil
 import stat
 import sys
 import time
+import tomllib
 import uuid
 import zipfile
 from copy import deepcopy
@@ -685,6 +687,7 @@ class PluginInstallService:
                 shutil.move(str(target), str(backup))
                 backup_created = True
             shutil.move(str(staging), str(target))
+            await self._install_python_dependencies(plugin_id, target)
             self._persist_enabled(plugin_id, enable_after_install)
             now = time.time()
             installed_at = previous_record.installed_at if previous_record is not None else now
@@ -1120,6 +1123,32 @@ class PluginInstallService:
             sys.modules.pop(name, None)
         importlib.invalidate_caches()
 
+    async def _install_python_dependencies(self, plugin_id: str, plugin_root: Path) -> None:
+        dependencies = _plugin_python_dependencies(plugin_root)
+        if not dependencies:
+            return
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            *dependencies,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            return
+        detail = _process_output(stdout, stderr)
+        raise PluginInstallError(
+            status_code=500,
+            code="PLUGIN_INSTALL_DEPENDENCY_INSTALL_FAILED",
+            message=(
+                f"Failed to install Python dependencies for plugin {plugin_id!r}: {detail}"
+            ),
+        )
+
     async def _download_github_archive(self, url: str, ref: str) -> tuple[bytes, str]:
         owner, repo = _parse_github_repo(url)
         _validate_github_ref(ref)
@@ -1214,6 +1243,47 @@ def _metadata_string_list(metadata: dict[str, Any], key: str) -> list[str]:
             message=f"metadata.{key} must be a list of strings",
         )
     return [item.strip() for item in value if item.strip()]
+
+
+def _plugin_python_dependencies(plugin_root: Path) -> list[str]:
+    pyproject_path = plugin_root / "pyproject.toml"
+    if not pyproject_path.is_file():
+        return []
+    try:
+        with pyproject_path.open("rb") as file_obj:
+            payload = tomllib.load(file_obj)
+    except tomllib.TOMLDecodeError as exc:
+        raise PluginInstallError(
+            status_code=422,
+            code="PLUGIN_INSTALL_PYPROJECT_INVALID",
+            message=f"Invalid plugin pyproject.toml: {exc}",
+        ) from exc
+    project = payload.get("project")
+    if not isinstance(project, dict):
+        return []
+    dependencies = project.get("dependencies", [])
+    if dependencies is None:
+        return []
+    if not isinstance(dependencies, list) or not all(
+        isinstance(item, str) for item in dependencies
+    ):
+        raise PluginInstallError(
+            status_code=422,
+            code="PLUGIN_INSTALL_PYPROJECT_INVALID",
+            message="plugin pyproject.toml project.dependencies must be a list of strings",
+        )
+    return [item.strip() for item in dependencies if item.strip()]
+
+
+def _process_output(stdout: bytes, stderr: bytes) -> str:
+    output = b"\n".join(part for part in (stdout, stderr) if part).decode(
+        "utf-8",
+        errors="replace",
+    )
+    stripped = output.strip()
+    if not stripped:
+        return "dependency installer exited without output"
+    return stripped[-1000:]
 
 
 def _sha256_bytes(value: bytes) -> str:

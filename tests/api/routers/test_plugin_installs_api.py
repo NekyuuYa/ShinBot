@@ -51,6 +51,7 @@ def _plugin_zip(
     required_dependencies: list[str] | None = None,
     optional_dependencies: list[str] | None = None,
     dependencies: list[str] | None = None,
+    pyproject_dependencies: list[str] | None = None,
     command: str = "install-demo",
     setup_body: str | None = None,
 ) -> bytes:
@@ -81,6 +82,24 @@ def _plugin_zip(
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr(f"{plugin_id}/metadata.json", json.dumps(metadata))
         archive.writestr(f"{plugin_id}/__init__.py", setup_body)
+        if pyproject_dependencies is not None:
+            dependency_lines = "\n".join(
+                f'    "{dependency}",' for dependency in pyproject_dependencies
+            )
+            archive.writestr(
+                f"{plugin_id}/pyproject.toml",
+                "\n".join(
+                    [
+                        "[project]",
+                        f'name = "{plugin_id.replace("_", "-")}"',
+                        'version = "0.1.0"',
+                        "dependencies = [",
+                        dependency_lines,
+                        "]",
+                        "",
+                    ]
+                ),
+            )
     return stream.getvalue()
 
 
@@ -231,6 +250,48 @@ def test_archive_install_loads_plugin_and_writes_manifest(tmp_path: Path):
     assert source["source_type"] == "archive"
     plugin_payload = plugins_response.json()["data"][0]
     assert plugin_payload["metadata"]["install_source"]["can_uninstall"] is True
+
+
+def test_archive_install_installs_pyproject_dependencies(tmp_path: Path, monkeypatch):
+    captured: list[tuple[str, ...]] = []
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"installed", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.append(tuple(str(arg) for arg in args))
+        return _FakeProcess()
+
+    monkeypatch.setattr(plugin_install.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client, bot, _boot, headers = _client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/plugin-installs/archive?filename=demo.zip",
+            headers={**headers, "Content-Type": "application/zip"},
+            content=_plugin_zip(
+                pyproject_dependencies=[
+                    "cairosvg>=2.7.0",
+                    "jinja2>=3.1.0",
+                ],
+            ),
+        )
+
+    assert response.status_code == 200
+    assert bot.plugin_manager.get_plugin("shinbot_plugin_install_demo") is not None
+    assert captured == [
+        (
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "cairosvg>=2.7.0",
+            "jinja2>=3.1.0",
+        )
+    ]
 
 
 def test_github_install_downloads_archive_and_records_source(
