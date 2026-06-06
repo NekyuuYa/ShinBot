@@ -142,6 +142,52 @@ async def test_builtin_commands_plugin_help_only_lists_allowed_commands(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_builtin_commands_plugin_help_respects_current_command_permissions(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    bot.adapter_manager.register_adapter("mock", MockAdapter)
+    adapter = bot.add_adapter("inst1", "mock")
+
+    metadata_path = _repo_path(
+        "shinbot",
+        "builtin_plugins",
+        "shinbot_plugin_builtin_commands",
+        "metadata.json",
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    await bot.plugin_manager.load_plugin_async(
+        "shinbot_plugin_builtin_commands",
+        "shinbot.builtin_plugins.shinbot_plugin_builtin_commands",
+        declared_metadata=metadata,
+    )
+    bot.command_registry.set_permission_override("ping", "cmd.support.ping")
+
+    await bot.on_event(make_message_event(content="/help", instance_id="inst1"), adapter)
+    await asyncio.sleep(0)
+
+    reply = adapter.sent[0][1][0].text_content
+    assert "/help / /commands - 列出当前可用的基础指令" in reply
+    assert "/ping - 检查消息命令链路是否可用" not in reply
+
+    bot.permission_engine.add_group(
+        bot.permission_engine.get_group("default").model_copy(
+            update={
+                "id": "support",
+                "permissions": {"cmd.help", "cmd.support.ping"},
+            }
+        )
+    )
+    bot.permission_engine.bind("inst1:user-1", "support")
+
+    await bot.on_event(make_message_event(content="/help", instance_id="inst1"), adapter)
+    await asyncio.sleep(0)
+
+    reply = adapter.sent[1][1][0].text_content
+    assert "/ping - 检查消息命令链路是否可用" in reply
+
+
+@pytest.mark.asyncio
 async def test_builtin_commands_plugin_help_hides_context_disabled_plugin_commands(
     tmp_path: Path,
 ) -> None:

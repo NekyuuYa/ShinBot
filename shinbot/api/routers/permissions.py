@@ -30,6 +30,7 @@ class PermissionGroupData(BaseModel):
     description: str
     permissions: list[str]
     orphanPermissions: list[str]
+    builtin: bool
     system: bool
     protected: bool
 
@@ -51,11 +52,20 @@ class PermissionGroupUpdatePayload(BaseModel):
 
 class PermissionBindingData(BaseModel):
     scopeKey: str
+    groups: list[str]
     groupIds: list[str]
 
 
 class PermissionBindingPayload(BaseModel):
-    groupIds: list[str] = Field(default_factory=list)
+    groups: list[str] | None = None
+    groupIds: list[str] | None = None
+
+    def resolved_groups(self) -> list[str]:
+        if self.groups is not None:
+            return self.groups
+        if self.groupIds is not None:
+            return self.groupIds
+        return []
 
 
 class CommandPermissionPayload(BaseModel):
@@ -121,13 +131,15 @@ def _group_data(record: PermissionGroupRecord) -> PermissionGroupData:
         description=record.description,
         permissions=sorted(record.permissions),
         orphanPermissions=sorted(record.orphan_permissions),
+        builtin=record.system,
         system=record.system,
         protected=record.protected,
     )
 
 
 def _binding_data(record: PermissionBindingRecord) -> PermissionBindingData:
-    return PermissionBindingData(scopeKey=record.key, groupIds=list(record.groups))
+    groups = list(record.groups)
+    return PermissionBindingData(scopeKey=record.key, groups=groups, groupIds=groups)
 
 
 def _command_permission_data(command, registry) -> CommandPermissionData:
@@ -146,7 +158,7 @@ def _raise_permission_http_error(exc: PermissionServiceError) -> None:
     elif exc.code in {"GROUP_EXISTS", "BUILTIN_GROUP"}:
         status_code = 409
     elif exc.code == "GROUP_PROTECTED":
-        status_code = 403
+        status_code = 400
     raise HTTPException(
         status_code=status_code,
         detail={"code": exc.code, "message": exc.message},
@@ -266,7 +278,7 @@ async def set_permission_binding(
     """Replace the groups bound to one permission scope key."""
     service = _permission_service(bot, boot)
     try:
-        binding = service.set_binding(scope_key, payload.groupIds)
+        binding = service.set_binding(scope_key, payload.resolved_groups())
         _sync_boot_permissions_config(boot)
     except PermissionServiceError as exc:
         _raise_permission_http_error(exc)

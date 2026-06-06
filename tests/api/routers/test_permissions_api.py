@@ -74,8 +74,9 @@ def test_permission_group_crud_and_protection(tmp_path: Path) -> None:
         list_resp = client.get("/api/v1/permissions/groups", headers=headers)
         assert list_resp.status_code == 200
         groups = {item["id"]: item for item in list_resp.json()["data"]}
+        assert groups["default"]["builtin"] is True
         assert groups["default"]["protected"] is True
-        assert groups["moderator"]["system"] is False
+        assert groups["moderator"]["builtin"] is False
 
         update_resp = client.patch(
             "/api/v1/permissions/groups/moderator",
@@ -86,7 +87,7 @@ def test_permission_group_crud_and_protection(tmp_path: Path) -> None:
         assert update_resp.json()["data"]["name"] == "Mods"
 
         protected_resp = client.delete("/api/v1/permissions/groups/default", headers=headers)
-        assert protected_resp.status_code == 403
+        assert protected_resp.status_code == 400
         assert protected_resp.json()["error"]["code"] == "GROUP_PROTECTED"
 
         delete_resp = client.delete("/api/v1/permissions/groups/moderator", headers=headers)
@@ -140,14 +141,14 @@ def test_permission_bindings_support_filters_and_multi_group_runtime_refresh(
 
         put_resp = client.put(
             "/api/v1/permissions/bindings/bot-main:user-1",
-            json={"groupIds": ["search_user", "moderator", "moderator"]},
+            json={"groups": ["search_user", "moderator", "moderator"]},
             headers=headers,
         )
         assert put_resp.status_code == 200
-        assert put_resp.json()["data"] == {
-            "scopeKey": "bot-main:user-1",
-            "groupIds": ["moderator", "search_user"],
-        }
+        binding_payload = put_resp.json()["data"]
+        assert binding_payload["scopeKey"] == "bot-main:user-1"
+        assert binding_payload["groups"] == ["moderator", "search_user"]
+        assert binding_payload["groupIds"] == ["moderator", "search_user"]
         assert bot.permission_engine.groups_for_key("bot-main:user-1") == (
             "moderator",
             "search_user",
@@ -176,6 +177,13 @@ def test_permission_bindings_support_filters_and_multi_group_runtime_refresh(
         )
         assert remove_one.status_code == 200
         assert bot.permission_engine.groups_for_key("bot-main:user-1") == ("search_user",)
+
+        remove_all = client.delete(
+            "/api/v1/permissions/bindings/bot-main:user-1",
+            headers=headers,
+        )
+        assert remove_all.status_code == 200
+        assert bot.permission_engine.groups_for_key("bot-main:user-1") == ()
 
 
 def test_command_permission_override_patch_and_delete(tmp_path: Path) -> None:

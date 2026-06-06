@@ -231,14 +231,23 @@
               <div class="text-break">
                 <span class="text-medium-emphasis">{{ $t('pages.commands.fields.permission') }}:</span>
                 {{ command.permission || $t('pages.commands.empty.permission') }}
+              </div>
+              <div class="text-break">
+                <span class="text-medium-emphasis">{{ $t('pages.commands.fields.defaultPermission') }}:</span>
+                {{ command.defaultPermission || $t('pages.commands.empty.permission') }}
+              </div>
+              <div class="d-flex flex-wrap align-center ga-2">
+                <span class="text-medium-emphasis">{{ $t('pages.commands.fields.permissionOverridden') }}:</span>
                 <v-chip
-                  v-if="command.permissionOverridden"
-                  size="x-small"
-                  color="warning"
+                  size="small"
+                  :color="command.permissionOverridden ? 'warning' : 'default'"
                   variant="tonal"
-                  class="ms-2"
                 >
-                  {{ $t('pages.commands.permission.overridden') }}
+                  {{
+                    command.permissionOverridden
+                      ? $t('pages.commands.permission.overridden')
+                      : $t('pages.commands.permission.inherited')
+                  }}
                 </v-chip>
               </div>
             </div>

@@ -40,12 +40,15 @@
     "triggers": "触发词",
     "usage": "用法",
     "permission": "权限",
+    "defaultPermission": "默认权限",
+    "permissionOverridden": "权限覆盖",
     "pattern": "匹配规则"
   },
   "permission": {
     "required": "所需权限",
     "default": "默认权限",
     "overridden": "已覆盖",
+    "inherited": "默认",
     "targetGroup": "目标权限组",
     "addDialogTitle": "加入权限组",
     "added": "权限已加入权限组",

@@ -23,6 +23,7 @@
     "permissionCount": "{count} 个权限",
     "bindingCount": "{count} 个绑定",
     "system": "内置",
+    "builtin": "内置",
     "protected": "保护"
   },
   "bindings": {
@@ -35,9 +36,11 @@
     "overridden": "已覆盖"
   },
   "fields": {
+    "id": "标识",
     "groupId": "权限组 ID",
     "name": "名称",
     "description": "描述",
+    "builtin": "内置",
     "protected": "保护",
     "permissions": "允许权限点",
     "deniedPermissions": "显式拒绝",

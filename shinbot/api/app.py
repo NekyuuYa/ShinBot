@@ -127,9 +127,9 @@ def create_api_app(
     app = FastAPI(
         title="ShinBot Management API",
         version="1.0.0",
-        docs_url="/api/docs",
+        docs_url=None,
         redoc_url=None,
-        openapi_url="/api/openapi.json",
+        openapi_url=None,
         lifespan=lifespan,
     )
 
@@ -200,6 +200,24 @@ def create_api_app(
             error = ErrorBody(code="HTTP_ERROR", message=str(detail))
         body = Envelope(success=False, data=data, error=error, timestamp=int(time.time()))
         return JSONResponse(status_code=exc.status_code, content=body.model_dump())
+
+    # Handle request validation errors (e.g. bad JSON body, missing fields)
+    from fastapi.exceptions import RequestValidationError
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exc_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = exc.errors()
+        messages = []
+        for err in errors:
+            loc = " -> ".join(str(part) for part in err.get("loc", ()))
+            msg = err.get("msg", "Validation error")
+            messages.append(f"{loc}: {msg}" if loc else msg)
+        body = Envelope(
+            success=False,
+            error=ErrorBody(code="VALIDATION_ERROR", message="; ".join(messages)),
+            timestamp=int(time.time()),
+        )
+        return JSONResponse(status_code=422, content=body.model_dump())
 
     # ── API routers ───────────────────────────────────────────────────
 

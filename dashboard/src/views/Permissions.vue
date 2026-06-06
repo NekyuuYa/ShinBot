@@ -98,8 +98,8 @@
                     <v-chip size="x-small" variant="outlined">
                       {{ $t('pages.permissions.groups.bindingCount', { count: bindingCount(group.id) }) }}
                     </v-chip>
-                    <v-chip v-if="group.system" size="x-small" color="info" variant="tonal">
-                      {{ $t('pages.permissions.groups.system') }}
+                    <v-chip v-if="group.builtin" size="x-small" color="info" variant="tonal">
+                      {{ $t('pages.permissions.groups.builtin') }}
                     </v-chip>
                     <v-chip v-if="group.protected" size="x-small" color="warning" variant="tonal">
                       {{ $t('pages.permissions.groups.protected') }}
@@ -132,7 +132,7 @@
                 {{ $t('common.actions.action.save') }}
               </v-btn>
               <v-btn
-                v-if="selectedGroup && !selectedGroup.system && !selectedGroup.protected"
+                v-if="selectedGroup && !selectedGroup.builtin && !selectedGroup.protected"
                 color="error"
                 variant="tonal"
                 prepend-icon="mdi-delete-outline"
@@ -169,7 +169,7 @@
                 <v-switch
                   v-model="groupForm.protected"
                   :label="$t('pages.permissions.fields.protected')"
-                  :disabled="Boolean(selectedGroup?.system)"
+                  :disabled="Boolean(selectedGroup?.builtin)"
                   color="warning"
                   inset
                 />
@@ -286,11 +286,11 @@
                 <div class="d-grid ga-3">
                   <div
                     v-for="binding in bindings"
-                    :key="binding.key"
+                    :key="binding.scopeKey"
                     class="binding-row"
                     @click="editBinding(binding)"
                   >
-                    <div class="text-body-2 font-weight-bold text-break">{{ binding.key }}</div>
+                    <div class="text-body-2 font-weight-bold text-break">{{ binding.scopeKey }}</div>
                     <div class="d-flex flex-wrap ga-2 mt-2">
                       <v-chip
                         v-for="groupId in binding.groups"
@@ -552,7 +552,7 @@ const groupSelectItems = computed(() =>
   }))
 )
 
-const bindingScopeItems = computed(() => bindings.value.map((binding) => binding.key))
+const bindingScopeItems = computed(() => bindings.value.map((binding) => binding.scopeKey))
 
 const commandSelectItems = computed(() =>
   commands.value.map((command) => ({
@@ -569,7 +569,7 @@ const canSaveGroup = computed(() => {
 })
 
 const canSaveBinding = computed(
-  () => Boolean(bindingScopeKey.value.trim()) && bindingGroupIds.value.length > 0
+  () => Boolean(bindingScopeKey.value?.trim()) && bindingGroupIds.value.length > 0
 )
 
 const canAddCommandToGroup = computed(() => {
@@ -694,7 +694,7 @@ async function saveBinding() {
   errorMessage.value = ''
   try {
     const binding = await apiClient.unwrap(
-      permissionsApi.setBinding(bindingScopeKey.value.trim(), { groupIds: bindingGroupIds.value })
+      permissionsApi.setBinding(String(bindingScopeKey.value ?? '').trim(), { groups: bindingGroupIds.value })
     )
     upsertBinding(normalizeBinding(binding))
     uiStore.showSnackbar(translate('pages.permissions.messages.bindingSaved'), 'success')
@@ -709,8 +709,8 @@ async function deleteBinding() {
   isSavingBinding.value = true
   errorMessage.value = ''
   try {
-    await apiClient.unwrap(permissionsApi.deleteBinding(bindingScopeKey.value.trim()))
-    bindings.value = bindings.value.filter((binding) => binding.key !== bindingScopeKey.value.trim())
+    await apiClient.unwrap(permissionsApi.deleteBinding(String(bindingScopeKey.value ?? '').trim()))
+    bindings.value = bindings.value.filter((binding) => binding.scopeKey !== String(bindingScopeKey.value ?? '').trim())
     bindingScopeKey.value = ''
     bindingGroupIds.value = []
     uiStore.showSnackbar(translate('pages.permissions.messages.bindingDeleted'), 'success')
@@ -722,7 +722,7 @@ async function deleteBinding() {
 }
 
 function editBinding(binding: PermissionBinding) {
-  bindingScopeKey.value = binding.key
+  bindingScopeKey.value = binding.scopeKey
   bindingGroupIds.value = [...binding.groups]
 }
 
@@ -857,6 +857,7 @@ function displayGroupNameById(groupId: string) {
 }
 
 function normalizeGroup(group: PermissionGroup): PermissionGroup {
+  const builtin = Boolean(group.builtin || group.system)
   return {
     id: String(group.id),
     name: group.name || '',
@@ -865,19 +866,22 @@ function normalizeGroup(group: PermissionGroup): PermissionGroup {
     orphanPermissions: Array.isArray(group.orphanPermissions)
       ? [...group.orphanPermissions].sort()
       : [],
-    system: Boolean(group.system),
+    builtin,
+    system: builtin,
     protected: Boolean(group.protected),
   }
 }
 
-function normalizeBinding(binding: PermissionBinding & { scopeKey?: string; groupIds?: string[] }): PermissionBinding {
+function normalizeBinding(binding: PermissionBinding & { key?: string; groupIds?: string[] }): PermissionBinding {
+  const groups = Array.isArray(binding.groups)
+    ? [...binding.groups].sort()
+    : Array.isArray(binding.groupIds)
+      ? [...binding.groupIds].sort()
+      : []
   return {
-    key: String(binding.key ?? binding.scopeKey ?? ''),
-    groups: Array.isArray(binding.groups)
-      ? [...binding.groups].sort()
-      : Array.isArray(binding.groupIds)
-        ? [...binding.groupIds].sort()
-        : [],
+    scopeKey: String(binding.scopeKey ?? binding.key ?? ''),
+    groups,
+    groupIds: groups,
   }
 }
 
@@ -891,9 +895,9 @@ function upsertGroup(group: PermissionGroup) {
 }
 
 function upsertBinding(binding: PermissionBinding) {
-  const index = bindings.value.findIndex((item) => item.key === binding.key)
+  const index = bindings.value.findIndex((item) => item.scopeKey === binding.scopeKey)
   if (index === -1) {
-    bindings.value = [...bindings.value, binding].sort((left, right) => left.key.localeCompare(right.key))
+    bindings.value = [...bindings.value, binding].sort((left, right) => left.scopeKey.localeCompare(right.scopeKey))
     return
   }
   bindings.value[index] = binding

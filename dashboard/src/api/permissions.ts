@@ -6,13 +6,15 @@ export interface PermissionGroup {
   description: string
   permissions: string[]
   orphanPermissions: string[]
+  builtin: boolean
   system: boolean
   protected: boolean
 }
 
 export interface PermissionBinding {
-  key: string
+  scopeKey: string
   groups: string[]
+  groupIds?: string[]
 }
 
 export interface PermissionGroupPayload {
@@ -27,7 +29,7 @@ export interface CreatePermissionGroupPayload extends PermissionGroupPayload {
 }
 
 export interface SetPermissionBindingPayload {
-  groupIds: string[]
+  groups: string[]
 }
 
 export interface CommandPermissionPayload {

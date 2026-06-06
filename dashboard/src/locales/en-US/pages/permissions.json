@@ -23,6 +23,7 @@
     "permissionCount": "{count} permissions",
     "bindingCount": "{count} bindings",
     "system": "Built-in",
+    "builtin": "Built-in",
     "protected": "Protected"
   },
   "bindings": {
@@ -35,9 +36,11 @@
     "overridden": "Overridden"
   },
   "fields": {
+    "id": "ID",
     "groupId": "Group ID",
     "name": "Name",
     "description": "Description",
+    "builtin": "Built-in",
     "protected": "Protected",
     "permissions": "Allowed Permissions",
     "deniedPermissions": "Explicit Denials",

@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from shinbot.core.message_routes.command import CommandDef, CommandRegistry
-from shinbot.core.security.permission import PermissionEngine
+from shinbot.core.security.permission import (
+    ADMIN_GROUP,
+    DEFAULT_GROUP,
+    OWNER_GROUP,
+    PermissionEngine,
+)
 from shinbot.core.security.permission_service import (
     PermissionGroupService,
     PermissionServiceError,
@@ -197,12 +202,33 @@ def test_group_records_mark_orphan_permissions_from_command_registry(tmp_path: P
         ],
     )
 
-    assert created.orphan_permissions == {"cmd.missing", "-cmd.ghost"}
+    assert created.orphan_permissions == {"cmd.missing"}
     assert created.model_dump(by_alias=True)["orphanPermissions"] == {
         "cmd.missing",
-        "-cmd.ghost",
     }
 
     fetched = service.get_group("moderator")
     assert fetched is not None
-    assert fetched.orphan_permissions == {"cmd.missing", "-cmd.ghost"}
+    assert fetched.orphan_permissions == {"cmd.missing"}
+
+
+def test_detect_orphan_permissions_ignores_negative_permissions(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    registry = CommandRegistry()
+    builtin_permissions = DEFAULT_GROUP.permissions | ADMIN_GROUP.permissions | OWNER_GROUP.permissions
+    for index, permission in enumerate(sorted(builtin_permissions)):
+        registry.register(
+            CommandDef(name=f"builtin_{index}", handler=_noop_command, permission=permission)
+        )
+    registry.register(CommandDef(name="help", handler=_noop_command, permission="cmd.help"))
+
+    service = PermissionGroupService.from_config_path(config_path)
+    service.create_group(
+        group_id="moderator",
+        permissions=["cmd.help", "cmd.missing", "-cmd.denied", "tools.weather.query"],
+    )
+
+    assert service.detect_orphan_permissions(registry) == [
+        "moderator:cmd.missing",
+        "moderator:tools.weather.query",
+    ]
