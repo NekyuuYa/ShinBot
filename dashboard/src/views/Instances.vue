@@ -6,116 +6,55 @@
       :kicker="$t('pages.instances.kicker')"
     >
       <template #actions>
-        <v-btn
-          variant="tonal"
-          color="secondary"
-          prepend-icon="mdi-refresh"
+        <config-workspace-actions
           :loading="configStore.isLoading"
-          rounded="lg"
-          @click="refreshWorkspace"
-        >
-          {{ $t('common.actions.action.refresh') }}
-        </v-btn>
-        <v-btn
-          variant="outlined"
-          prepend-icon="mdi-restore"
-          :disabled="!configStore.isDirty || configStore.isSaving"
-          rounded="lg"
-          @click="configStore.resetDraft"
-        >
-          {{ $t('common.actions.action.reset') }}
-        </v-btn>
-        <v-btn
-          variant="outlined"
-          prepend-icon="mdi-check-decagram-outline"
-          :loading="configStore.isValidating"
-          rounded="lg"
-          @click="validateDraft"
-        >
-          {{ $t('pages.instances.actions.validate') }}
-        </v-btn>
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-plus"
-          rounded="lg"
-          @click="openCreate"
-        >
-          {{ $t('pages.instances.create') }}
-        </v-btn>
+          :dirty="configStore.isDirty"
+          :saving="configStore.isSaving"
+          :validating="configStore.isValidating"
+          :refresh-label="$t('common.actions.action.refresh')"
+          :reset-label="$t('common.actions.action.reset')"
+          :validate-label="$t('pages.instances.actions.validate')"
+          :create-label="$t('pages.instances.create')"
+          @refresh="refreshWorkspace"
+          @reset="configStore.resetDraft"
+          @validate="validateDraft"
+          @create="openCreate"
+        />
       </template>
     </app-page-header>
 
-    <v-alert
-      v-if="configStore.error"
-      type="error"
-      variant="tonal"
-      density="comfortable"
-      class="mb-6"
+    <config-validation-alerts
+      :error="configStore.error"
+      :issues="botValidationIssues"
+      :title="$t('pages.instances.validation.title')"
+      :format-issue="issueMessage"
+      :more-label="(count) => $t('pages.instances.validation.more', { count })"
+    />
+
+    <config-resource-toolbar
+      v-model:search="searchQuery"
+      v-model:view-mode="viewMode"
+      :search-label="$t('common.actions.action.search')"
+      :list-label="t('pages.instances.views.list')"
+      :card-label="t('pages.instances.views.card')"
+    />
+
+    <config-resource-collection-view
+      :items="filteredBots"
+      :loading="showInitialSkeleton"
+      :show-empty-state="!initialSkeletonRequested && filteredBots.length === 0"
+      :view-mode="viewMode"
+      empty-icon="mdi-robot-confused-outline"
+      :empty-title="$t('pages.instances.noData')"
+      :get-item-key="(bot) => bot.id"
     >
-      {{ configStore.error }}
-    </v-alert>
-
-    <v-alert
-      v-if="botValidationIssues.length > 0"
-      type="warning"
-      variant="tonal"
-      density="comfortable"
-      class="mb-6"
-    >
-      <div class="font-weight-medium mb-2">
-        {{ $t('pages.instances.validation.title') }}
-      </div>
-      <div
-        v-for="issue in visibleValidationIssues"
-        :key="`${issue.path}:${issue.code}:${issue.message}`"
-        class="text-body-2 validation-issue-line"
-      >
-        <span class="font-weight-medium">{{ issue.path }}</span>
-        <span>{{ issueMessage(issue) }}</span>
-      </div>
-      <div v-if="hiddenValidationIssueCount > 0" class="text-body-2 mt-1 text-medium-emphasis">
-        {{ $t('pages.instances.validation.more', { count: hiddenValidationIssueCount }) }}
-      </div>
-    </v-alert>
-
-    <div class="instances-toolbar mb-6">
-      <v-text-field
-        v-model="searchQuery"
-        :label="$t('common.actions.action.search')"
-        prepend-inner-icon="mdi-magnify"
-        single-line
-        hide-details
-        density="comfortable"
-        variant="outlined"
-        bg-color="surface"
-        class="instances-search"
-      />
-      <v-spacer />
-      <layout-mode-button
-        v-model="viewMode"
-        :list-label="t('pages.instances.views.list')"
-        :card-label="t('pages.instances.views.card')"
-      />
-    </div>
-
-    <v-row v-if="showInitialSkeleton">
-      <v-col cols="12">
-        <v-skeleton-loader type="card" :count="3" />
-      </v-col>
-    </v-row>
-
-    <v-row v-else-if="!initialSkeletonRequested && filteredBots.length === 0" justify="center" class="py-12">
-      <v-col cols="12" sm="8" md="6" class="text-center">
-        <v-icon size="112" color="grey-lighten-1" icon="mdi-robot-confused-outline" />
-        <h3 class="text-h6 my-4">{{ $t('pages.instances.noData') }}</h3>
+      <template #empty-action>
         <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreate">
           {{ $t('pages.instances.create') }}
         </v-btn>
-      </v-col>
-    </v-row>
+      </template>
 
-    <v-row v-else-if="viewMode === 'card'" class="ma-0">
-      <v-col v-for="bot in filteredBots" :key="bot.id" cols="12" sm="6" md="4" lg="3">
+      <template #card="{ item: bot }">
         <bot-instance-card
           :bot="bot"
           :display-name="botDisplayName(bot)"
@@ -134,11 +73,9 @@
           @edit="openEdit"
           @delete="deleteBot"
         />
-      </v-col>
-    </v-row>
+      </template>
 
-    <v-row v-else>
-      <v-col cols="12">
+      <template #table>
         <bot-instance-table
           :headers="tableHeaders"
           :items="filteredBots"
@@ -152,8 +89,8 @@
           @edit="openEdit"
           @delete="deleteBot"
         />
-      </v-col>
-    </v-row>
+      </template>
+    </config-resource-collection-view>
 
     <bot-instance-form-dialog
       v-model:visible="dialogVisible"
@@ -183,6 +120,10 @@ import type {
   NormalizedBotBindingConfig,
 } from '@/api/config'
 import AppPageHeader from '@/components/AppPageHeader.vue'
+import ConfigResourceCollectionView from '@/components/config/ConfigResourceCollectionView.vue'
+import ConfigResourceToolbar from '@/components/config/ConfigResourceToolbar.vue'
+import ConfigValidationAlerts from '@/components/config/ConfigValidationAlerts.vue'
+import ConfigWorkspaceActions from '@/components/config/ConfigWorkspaceActions.vue'
 import BotInstanceCard from '@/components/instances/BotInstanceCard.vue'
 import BotInstanceFormDialog from '@/components/instances/BotInstanceFormDialog.vue'
 import BotInstanceTable from '@/components/instances/BotInstanceTable.vue'
@@ -192,7 +133,6 @@ import type {
   BotInstanceFormState,
   SelectOption,
 } from '@/components/instances/botTypes'
-import LayoutModeButton from '@/components/LayoutModeButton.vue'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { localizedConfigIssueMessage } from '@/config'
 import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
@@ -281,10 +221,6 @@ const filteredBots = computed(() => {
 
 const botValidationIssues = computed(() =>
   configStore.validationIssues.filter((issue) => issue.path === 'bots' || issue.path.startsWith('bots['))
-)
-const visibleValidationIssues = computed(() => botValidationIssues.value.slice(0, 5))
-const hiddenValidationIssueCount = computed(() =>
-  Math.max(botValidationIssues.value.length - visibleValidationIssues.value.length, 0)
 )
 
 const tableHeaders = computed(() => [
@@ -737,38 +673,3 @@ onMounted(() => {
   void loadInitialWorkspace()
 })
 </script>
-
-<style scoped lang="scss">
-@use '@/styles/mixins' as *;
-
-.instances-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-  @include surface-card;
-}
-
-.instances-search {
-  flex: 0 1 420px;
-}
-
-.validation-issue-line {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  min-width: 0;
-}
-
-@include respond-to('tablet') {
-  .instances-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .instances-search {
-    flex: 1 1 auto;
-    width: 100%;
-  }
-}
-</style>
