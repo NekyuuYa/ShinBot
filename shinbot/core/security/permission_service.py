@@ -574,6 +574,8 @@ def _orphan_permissions_for_group(permissions: set[str], known_permissions: set[
         normalized = permission[1:] if permission.startswith("-") else permission
         if normalized == "*" or normalized.endswith(".*"):
             continue
+        if not normalized.startswith("cmd."):
+            continue
         if normalized not in known_permissions:
             orphan_permissions.add(permission)
     return orphan_permissions

@@ -193,6 +193,7 @@ def test_group_records_mark_orphan_permissions_from_command_registry(tmp_path: P
             "-cmd.ghost",
             "cmd.*",
             "*",
+            "tools.weather.query",
         ],
     )
 

@@ -7,6 +7,7 @@ import time
 from collections.abc import Sequence
 
 import shinbot
+from shinbot.core.application.bot_routing import bot_plugin_enabled_for_context
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.state.session import get_agent_pause_until
 
@@ -25,7 +26,11 @@ _DURATION_UNITS = {
 
 
 def _is_command_visible(command, ctx) -> bool:
-    return command.enabled and (ctx is None or not command.permission or ctx.has_permission(command.permission))
+    return (
+        command.enabled
+        and (ctx is None or bot_plugin_enabled_for_context(ctx, command.owner))
+        and (ctx is None or not command.permission or ctx.has_permission(command.permission))
+    )
 
 
 def _render_help_lines(plugin: Plugin, ctx=None) -> list[str]:
