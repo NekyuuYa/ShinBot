@@ -163,6 +163,29 @@ class FakeMessageStore:
         }
 
 
+class FakeWindowMessageStore(FakeMessageStore):
+    def __init__(self, history_ids: list[int]) -> None:
+        self.history_ids = list(history_ids)
+        self.list_by_session_calls: list[dict[str, Any]] = []
+
+    def list_by_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        before_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.list_by_session_calls.append(
+            {"session_id": session_id, "limit": limit, "before_id": before_id}
+        )
+        ids = [
+            message_id
+            for message_id in self.history_ids
+            if before_id is None or message_id < before_id
+        ][-limit:]
+        return [self.get(message_id) for message_id in reversed(ids) if self.get(message_id)]
+
+
 class FakeContextManager:
     def __init__(self) -> None:
         self.instruction_calls: list[dict[str, Any]] = []
@@ -300,6 +323,7 @@ __all__ = [
     "FailingRepairModelRuntime",
     "FakeContextManager",
     "FakeMessageStore",
+    "FakeWindowMessageStore",
     "FakeModelRuntime",
     "FakeToolManager",
     "GenerateResult",

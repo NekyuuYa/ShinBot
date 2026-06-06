@@ -599,6 +599,10 @@ def _active_chat_fast_runner_config(
         },
         tool_config=stage_tool_config_from_mapping(_mapping(value.get("tools"))),
         message_format_config=message_format,
+        source_context_before_messages=_int(
+            value.get("source_context_before_messages"),
+            50,
+        ),
     )
 
 

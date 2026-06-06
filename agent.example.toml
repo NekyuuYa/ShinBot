@@ -158,6 +158,7 @@ threshold = 5.0
 
 [agent.active_chat.fast_mode]
 llm = "[route]chat.fast"
+source_context_before_messages = 50
 
 # Optional additive tools. Built-in active-chat tools are always available.
 # [agent.active_chat.fast_mode.tools]

@@ -9,6 +9,7 @@ from active_chat_runner_support import (
     FakeMessageStore,
     FakeModelRuntime,
     FakeToolManager,
+    FakeWindowMessageStore,
     MessageFormatterService,
     PromptComponent,
     PromptComponentKind,
@@ -473,3 +474,42 @@ async def test_active_chat_fast_runner_uses_message_formatter_without_context_bu
     )
     assert "[msg_log_id:101] Alice: message 101" in rendered_prompt_text
     assert "Source messages JSON" not in rendered_prompt_text
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_loads_recent_source_context_before_batch() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[
+                    make_tool_call("no_reply", {"internal_summary": "watching"})
+                ]
+            )
+        ]
+    )
+    message_store = FakeWindowMessageStore([96, 97, 98, 99, 100])
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=FakeToolManager(),
+        message_store=message_store,
+        message_formatter=MessageFormatterService(),
+        config=ActiveChatFastRunnerConfig(source_context_before_messages=3),
+    )
+
+    await runner.run(make_batch())
+
+    assert message_store.list_by_session_calls == [
+        {"session_id": "bot:group:room", "limit": 3, "before_id": 101}
+    ]
+    rendered_prompt_text = json.dumps(
+        model_runtime.calls[0].messages,
+        ensure_ascii=False,
+    )
+    assert "[msg_log_id:98] Alice: message 98" in rendered_prompt_text
+    assert "[msg_log_id:99] Alice: message 99" in rendered_prompt_text
+    assert "[msg_log_id:100] Alice: message 100" in rendered_prompt_text
+    assert "[msg_log_id:101] Alice: message 101" in rendered_prompt_text
+    assert rendered_prompt_text.index("message 98") < rendered_prompt_text.index("message 101")

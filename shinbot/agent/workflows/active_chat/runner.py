@@ -80,6 +80,7 @@ class ActiveChatFastRunnerConfig:
     params: dict[str, Any] = field(default_factory=dict)
     tool_config: StageToolConfig = field(default_factory=StageToolConfig)
     message_format_config: MessageFormatConfig | None = None
+    source_context_before_messages: int = 50
     instance_config_resolver: InstanceRuntimeConfigResolver | None = None
     model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None
 
@@ -303,11 +304,45 @@ class ActiveChatFastRunner:
                 for signal in batch.messages
             ]
 
-        messages: list[dict[str, Any]] = []
+        messages = self._load_recent_source_context(batch)
+        seen_ids = {int(message["id"]) for message in messages if message.get("id") is not None}
         for message_log_id in batch.message_log_ids:
+            if message_log_id in seen_ids:
+                continue
             payload = self._message_store.get(message_log_id)
             if payload is not None:
                 messages.append(dict(payload))
+                seen_ids.add(message_log_id)
+        return messages
+
+    def _load_recent_source_context(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
+        before = max(0, int(self._config.source_context_before_messages))
+        if before <= 0 or self._message_store is None or not batch.message_log_ids:
+            return []
+        list_by_session = getattr(self._message_store, "list_by_session", None)
+        if not callable(list_by_session):
+            return []
+        first_message_id = min(batch.message_log_ids)
+        try:
+            rows = list_by_session(
+                batch.session_id,
+                limit=before,
+                before_id=first_message_id,
+            )
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.active_chat.source_context_load.failed",
+                    session_id=batch.session_id,
+                    message_log_ids=batch.message_log_ids,
+                    before=before,
+                    error_code=type(exc).__name__,
+                    trace_id=_trace_id_from_batch(batch),
+                )
+            )
+            return []
+        messages = [dict(row) for row in rows if isinstance(row, dict)]
+        messages.reverse()
         return messages
 
     def _build_context(

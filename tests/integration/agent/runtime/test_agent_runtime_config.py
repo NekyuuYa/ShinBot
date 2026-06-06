@@ -93,6 +93,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                     },
                     "fast_mode": {
                         "llm": "[route]route-fast",
+                        "source_context_before_messages": 12,
                         "params": {"top_p": 0.8},
                         "tools": {
                             "extra": ["lookup_user_profile"],
@@ -145,6 +146,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.active_chat_interest_effect_config.no_reply_delta == -6
     assert config.active_chat_fast_runner_config.llm == "[route]route-fast"
     assert config.active_chat_fast_runner_config.default_llm == "[route]route-default"
+    assert config.active_chat_fast_runner_config.source_context_before_messages == 12
     assert config.active_chat_fast_runner_config.special_prompt_ids == {}
     assert config.active_chat_fast_runner_config.params == {
         "temperature": 0.2,
@@ -165,6 +167,7 @@ def test_agent_runtime_config_schema_accepts_example(tmp_path: Path) -> None:
 
     assert config.agent_id == "full-agent"
     assert config.active_chat_policy_config.initial_interest_value == 15
+    assert config.active_chat_fast_runner_config.source_context_before_messages == 50
     assert config.review_runtime_config.reply_decision.special_prompt_ids == {
         "repair": "review.reply_decision.repair",
     }

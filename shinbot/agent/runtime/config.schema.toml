@@ -924,6 +924,13 @@ advanced = true
 description = "Model params for active chat fast mode."
 
 [[fields]]
+path = "agent.active_chat.fast_mode.source_context_before_messages"
+type = "integer"
+default = 50
+min = 0
+description = "Recent messages before the active-chat batch included as direct source context."
+
+[[fields]]
 path = "agent.active_chat.fast_mode.tools.extra"
 type = "string_list"
 default = []
