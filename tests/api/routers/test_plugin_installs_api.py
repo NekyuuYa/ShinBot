@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import shinbot.admin.plugin_install as plugin_install
+import shinbot.core.plugins.dependencies as plugin_dependencies
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 
@@ -265,7 +266,11 @@ def test_archive_install_installs_pyproject_dependencies(tmp_path: Path, monkeyp
         captured.append(tuple(str(arg) for arg in args))
         return _FakeProcess()
 
-    monkeypatch.setattr(plugin_install.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(
+        plugin_dependencies.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
 
     client, bot, _boot, headers = _client(tmp_path)
     with client:
@@ -315,7 +320,11 @@ def test_archive_install_falls_back_to_uv_when_pip_module_is_missing(
             return _FakeProcess(1, b"No module named pip")
         return _FakeProcess(0)
 
-    monkeypatch.setattr(plugin_install.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(
+        plugin_dependencies.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
 
     client, bot, _boot, headers = _client(tmp_path)
     with client:

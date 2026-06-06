@@ -23,6 +23,10 @@ from shinbot.core.dispatch.routing import RouteTable
 from shinbot.core.message_routes import CommandRegistry, KeywordRegistry
 from shinbot.core.model_runtime import ModelRuntimeExtensionRegistrar, ModelRuntimeObserverRegistry
 from shinbot.core.plugins.context import Plugin
+from shinbot.core.plugins.dependencies import (
+    PluginDependencyError,
+    sync_plugin_python_dependencies,
+)
 from shinbot.core.plugins.types import PluginMeta, PluginRole, PluginState
 from shinbot.core.tools import ToolOwnerType, ToolRegistry
 from shinbot.utils.logger import get_logger
@@ -695,6 +699,17 @@ class PluginManager:
         results: list[PluginMeta] = []
         for candidate in self._discover_plugin_candidates(user_dir=user_dir):
             try:
+                if not candidate.is_builtin:
+                    installed_dependencies = await sync_plugin_python_dependencies(
+                        candidate.metadata["id"],
+                        candidate.plugin_dir,
+                    )
+                    if installed_dependencies:
+                        logger.info(
+                            "Installed Python dependencies for plugin %s: %s",
+                            candidate.metadata["id"],
+                            ", ".join(installed_dependencies),
+                        )
                 meta = await self.load_plugin_async(
                     candidate.metadata["id"],
                     candidate.module_path,
@@ -745,6 +760,26 @@ class PluginManager:
             except Exception:
                 logger.exception("Invalid metadata.json in %s", plugin_dir)
                 continue
+
+            if not is_builtin:
+                try:
+                    installed_dependencies = await sync_plugin_python_dependencies(
+                        metadata["id"],
+                        plugin_dir,
+                    )
+                except PluginDependencyError:
+                    logger.exception(
+                        "Failed to install Python dependencies for plugin %s from %s",
+                        metadata["id"],
+                        plugin_dir,
+                    )
+                    continue
+                if installed_dependencies:
+                    logger.info(
+                        "Installed Python dependencies for plugin %s: %s",
+                        metadata["id"],
+                        ", ".join(installed_dependencies),
+                    )
 
             if metadata["id"] in self._plugins:
                 logger.debug("Plugin %r already loaded, skipping", metadata["id"])

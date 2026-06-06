@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import shinbot.core.plugins.dependencies as plugin_dependencies
 from shinbot.agent.services.tools import ToolRegistry
 from shinbot.builtin_plugins import shinbot_plugin_sleepy
 from shinbot.core.application.app import ShinBot
@@ -703,6 +704,63 @@ async def test_load_respects_dependency_order(tmp_path: Path):
 
     assert load_order.index("plugin_z") < load_order.index("plugin_b")
     assert "plugin_a" in load_order
+
+
+@pytest.mark.asyncio
+async def test_rescan_installs_pyproject_dependencies_for_already_loaded_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    plugins_dir = _write_metadata_plugin(tmp_path, plugin_id="shinbot_plugin_dependency_demo")
+    plugin_root = plugins_dir / "shinbot_plugin_dependency_demo"
+
+    mgr = PluginManager(CommandRegistry(), EventBus(), data_dir=tmp_path)
+    loaded = await mgr.load_plugins_from_metadata_dir_async(plugins_dir)
+    assert [meta.id for meta in loaded] == ["shinbot_plugin_dependency_demo"]
+
+    (plugin_root / "pyproject.toml").write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "shinbot-plugin-dependency-demo"',
+                'version = "1.0.0"',
+                "dependencies = [",
+                '    "cairosvg>=2.7.0",',
+                "]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    captured: list[tuple[str, ...]] = []
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"installed", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.append(tuple(str(arg) for arg in args))
+        return _FakeProcess()
+
+    monkeypatch.setattr(
+        plugin_dependencies.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    loaded_again = await mgr.load_plugins_from_metadata_dir_async(plugins_dir)
+
+    assert loaded_again == []
+    assert captured == [
+        (
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "cairosvg>=2.7.0",
+        )
+    ]
 
 
 @pytest.mark.asyncio
