@@ -1127,19 +1127,26 @@ class PluginInstallService:
         dependencies = _plugin_python_dependencies(plugin_root)
         if not dependencies:
             return
-        process = await asyncio.create_subprocess_exec(
+        stdout, stderr, returncode = await _run_dependency_installer(
             sys.executable,
             "-m",
             "pip",
             "install",
             *dependencies,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
-        if process.returncode == 0:
+        if returncode == 0:
             return
+        if "No module named pip" in _process_output(stdout, stderr):
+            stdout, stderr, returncode = await _run_dependency_installer(
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                *dependencies,
+            )
+            if returncode == 0:
+                return
         detail = _process_output(stdout, stderr)
         raise PluginInstallError(
             status_code=500,
@@ -1284,6 +1291,20 @@ def _process_output(stdout: bytes, stderr: bytes) -> str:
     if not stripped:
         return "dependency installer exited without output"
     return stripped[-1000:]
+
+
+async def _run_dependency_installer(*args: str) -> tuple[bytes, bytes, int]:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        return b"", str(exc).encode("utf-8", errors="replace"), 127
+    stdout, stderr = await process.communicate()
+    return stdout, stderr, process.returncode
 
 
 def _sha256_bytes(value: bytes) -> str:

@@ -294,6 +294,58 @@ def test_archive_install_installs_pyproject_dependencies(tmp_path: Path, monkeyp
     ]
 
 
+def test_archive_install_falls_back_to_uv_when_pip_module_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    captured: list[tuple[str, ...]] = []
+
+    class _FakeProcess:
+        def __init__(self, returncode: int, stderr: bytes = b"") -> None:
+            self.returncode = returncode
+            self.stderr = stderr
+
+        async def communicate(self):
+            return b"", self.stderr
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        command = tuple(str(arg) for arg in args)
+        captured.append(command)
+        if command[:4] == (sys.executable, "-m", "pip", "install"):
+            return _FakeProcess(1, b"No module named pip")
+        return _FakeProcess(0)
+
+    monkeypatch.setattr(plugin_install.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client, bot, _boot, headers = _client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/plugin-installs/archive?filename=demo.zip",
+            headers={**headers, "Content-Type": "application/zip"},
+            content=_plugin_zip(pyproject_dependencies=["cairosvg>=2.7.0"]),
+        )
+
+    assert response.status_code == 200
+    assert bot.plugin_manager.get_plugin("shinbot_plugin_install_demo") is not None
+    assert captured == [
+        (
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "cairosvg>=2.7.0",
+        ),
+        (
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "cairosvg>=2.7.0",
+        ),
+    ]
+
+
 def test_github_install_downloads_archive_and_records_source(
     tmp_path: Path,
     monkeypatch,
