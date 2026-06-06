@@ -31,12 +31,12 @@ from shinbot.core.application.provider_config_validation import (
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
+from shinbot.core.security.permission_service import BUILTIN_GROUP_IDS
 from shinbot.core.security.permission_toml import (
     bindings_from_config,
     command_overrides_from_config,
     groups_from_config,
 )
-from shinbot.core.security.permission_service import BUILTIN_GROUP_IDS
 from shinbot.utils.log_file import parse_file_log_config
 from shinbot.utils.logger import DEFAULT_THIRD_PARTY_NOISE_POLICY, get_logger, setup_logging
 

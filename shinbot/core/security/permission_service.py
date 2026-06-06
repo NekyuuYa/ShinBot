@@ -119,8 +119,8 @@ class PermissionStoreSnapshot:
 class PermissionConfigRepository(Protocol):
     """Repository contract used by PermissionGroupService.
 
-    Sub-agent 1 can replace the bundled TOML implementation with narrower
-    repositories as long as this service-facing contract remains available.
+    Alternate storage implementations can replace the bundled TOML repository
+    as long as this service-facing contract remains available.
     """
 
     def load(self) -> PermissionStoreSnapshot:
