@@ -37,6 +37,7 @@
 - 安装后触发现有 `rescan`，复用 `PluginManager` 加载逻辑。
 - 在 WebUI 显示安装进度、失败原因、来源和版本。
 - 禁止路径逃逸、非法插件 id、缺失 `metadata.json`、缺失入口文件。
+- 区分必须前置插件和可选前置插件。
 - 默认只允许管理员操作。
 - 不新增数据库表，不引入 plugin install repository。
 
@@ -165,6 +166,33 @@ PluginInstallTask = {
 
 服务重启后任务状态丢失是 V1 可接受行为；已完成安装结果以 manifest 和 `data/plugins` 为准。
 
+## 插件前置依赖语义
+
+当前 `metadata.json` 只有 `dependencies` 字符串列表。现有加载器只用它做拓扑排序；依赖缺失时只记录 warning，不会阻止插件加载。WebUI 安装需要把“必须前置”和“可选前置”分清楚。
+
+建议从新安装能力开始支持以下字段：
+
+```json
+{
+  "required_dependencies": ["shinbot_plugin_base"],
+  "optional_dependencies": ["shinbot_plugin_extra"],
+  "dependencies": ["legacy_soft_dependency"]
+}
+```
+
+语义：
+
+- `required_dependencies`：必须前置插件。缺失时 WebUI preview 返回 `can_install=false`，安装 API 拒绝安装；后续运行时加载器也应升级为缺失即拒绝加载。
+- `optional_dependencies`：可选前置插件。存在时参与拓扑排序；缺失时只显示 warning，不阻止安装和加载。
+- `dependencies`：legacy 软依赖字段。为了兼容旧插件，V1 不改变其运行时行为，仍按“加载顺序提示”处理；WebUI preview 显示为 `legacy_dependencies` 并给出兼容提示。
+
+兼容迁移规则：
+
+- 新插件应使用 `required_dependencies` 和 `optional_dependencies`，不要再新增 `dependencies`。
+- 旧插件只声明 `dependencies` 时，WebUI 不把它当强依赖阻断安装。
+- 文档和脚手架后续应把 `dependencies` 标记为 legacy。
+- 运行时 `PluginManager` 可分两步升级：先识别新字段并参与排序，再在下一步对 `required_dependencies` 缺失执行 load failure。
+
 ## API 规划
 
 新增路由挂载在 `/api/v1/plugin-installs`。
@@ -234,7 +262,11 @@ POST /api/v1/plugin-installs/github/preview
   "description": "Example ShinBot plugin.",
   "author": "NekyuuYa",
   "role": "logic",
-  "dependencies": [],
+  "required_dependencies": [],
+  "optional_dependencies": [],
+  "legacy_dependencies": [],
+  "missing_required_dependencies": [],
+  "missing_optional_dependencies": [],
   "permissions": [],
   "source_type": "github",
   "source_url": "https://github.com/NekyuuYa/shinbot-plugin-example",
@@ -344,6 +376,7 @@ DELETE /api/v1/plugin-installs/{plugin_id}
 - `PLUGIN_INSTALL_METADATA_INVALID`：metadata 字段非法。
 - `PLUGIN_INSTALL_ENTRY_NOT_FOUND`：metadata 指向的入口文件不存在。
 - `PLUGIN_INSTALL_ID_INVALID`：插件 id 不是允许前缀。
+- `PLUGIN_INSTALL_REQUIRED_DEPENDENCY_MISSING`：必须前置插件缺失。
 - `PLUGIN_INSTALL_TARGET_EXISTS`：目标目录已存在且不允许覆盖。
 - `PLUGIN_INSTALL_TARGET_UNMANAGED`：目标插件不是 WebUI 管理，拒绝覆盖或卸载。
 - `PLUGIN_INSTALL_LOAD_FAILED`：文件已安装，但 rescan/load 失败。
@@ -366,19 +399,22 @@ GitHub 安装：
    - `entry` 不能是绝对路径，不能包含 `..`。
    - `role` 如存在，只能是 `logic` 或 `adapter`。
    - `dependencies` 如存在，必须是字符串列表。
+   - `required_dependencies` 如存在，必须是字符串列表。
+   - `optional_dependencies` 如存在，必须是字符串列表。
 8. 校验目标目录：
    - 目标必须在 `<data_dir>/plugins` 内。
    - 如果目标已存在，必须是 WebUI 管理的插件，或者用户显式确认覆盖。
-9. 如果当前已加载同 id 插件，先调用 `disable_plugin_or_raise()` 再 `bot.plugin_manager.unload_plugin_async(plugin_id)`。
-10. 写入 staging 目录 `<data_dir>/plugins/.installing-<plugin_id>-<task_id>`。
-11. 原子替换到 `<data_dir>/plugins/<plugin_id>`。
-12. 写入插件启用状态配置：
+9. 校验 `required_dependencies` 全部已经存在于当前 loaded plugins、本次安装包、或 `data/plugins` 可发现目录。
+10. 如果当前已加载同 id 插件，先调用 `disable_plugin_or_raise()` 再 `bot.plugin_manager.unload_plugin_async(plugin_id)`。
+11. 写入 staging 目录 `<data_dir>/plugins/.installing-<plugin_id>-<task_id>`。
+12. 原子替换到 `<data_dir>/plugins/<plugin_id>`。
+13. 写入插件启用状态配置：
     - `enable_after_install=true` 时设置 `plugins[].enabled=true`。
     - `enable_after_install=false` 时设置 `plugins[].enabled=false`。
-13. 更新 manifest。
-14. 调用 `rescan_plugins()`。
-15. 如果 `enable_after_install=false` 且插件已被 rescan 短暂加载，立即调用 `disable_plugin_or_raise()`。
-16. 清理临时目录。
+14. 更新 manifest。
+15. 调用 `rescan_plugins()`。
+16. 如果 `enable_after_install=false` 且插件已被 rescan 短暂加载，立即调用 `disable_plugin_or_raise()`。
+17. 清理临时目录。
 
 上传 zip 安装同样从第 4 步开始。
 
@@ -454,7 +490,8 @@ GitHub tab 字段：
 
 - 插件名、id、版本、作者、描述。
 - 插件 role。
-- 声明的 dependencies。
+- 必须前置插件、可选前置插件、legacy 软依赖。
+- 缺失的必须前置插件和缺失的可选前置插件。
 - 声明的 permissions。
 - 来源 URL/ref 或上传文件名。
 - 覆盖目标提示。
@@ -518,6 +555,9 @@ WebUI 管理的插件菜单新增：
   - zip symlink 拒绝。
   - metadata 缺失拒绝。
   - metadata id 前缀拒绝。
+  - `required_dependencies` 缺失时 preview 和 install 均拒绝。
+  - `optional_dependencies` 缺失时只返回 warning。
+  - legacy `dependencies` 缺失时只返回兼容提示。
   - 成功安装后写入 manifest 并触发 rescan。
   - 拒绝覆盖非 WebUI 管理插件。
   - 卸载时保留 plugin data。
