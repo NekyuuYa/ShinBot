@@ -197,7 +197,7 @@
         <h2 class="text-h6 mb-4">{{ $t('pages.dashboard.quickActions.title') }}</h2>
       </v-col>
       <v-col cols="12" sm="6" md="4">
-        <v-card class="pa-5 action-card h-100" elevation="0" @click="navigateTo('/instances')">
+        <v-card class="pa-5 action-card h-100" elevation="0" @click="navigateTo('/bot-instances')">
           <v-avatar color="primary" variant="tonal" size="48" class="mb-4">
             <v-icon size="28" icon="mdi-robot" />
           </v-avatar>

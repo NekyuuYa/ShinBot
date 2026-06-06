@@ -189,7 +189,7 @@ const primaryNavItems: NavItem[] = [
     title: "layout.main.nav.messagePlatforms",
   },
   {
-    to: "/instances",
+    to: "/bot-instances",
     icon: "mdi-robot-outline",
     title: "layout.main.nav.instancesManage",
   },

@@ -28,6 +28,10 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: 'instances',
+        redirect: '/bot-instances',
+      },
+      {
+        path: 'bot-instances',
         name: 'Instances',
         component: () => import('@/views/Instances.vue'),
       },
