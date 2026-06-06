@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from shinbot.admin.command_admin import load_command_enabled_overrides
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 
@@ -84,6 +85,20 @@ def test_commands_route_applies_saved_enabled_overrides_on_app_creation(tmp_path
     assert response.status_code == 200
     payload = {item["name"]: item for item in response.json()["data"]}
     assert payload["help"]["enabled"] is False
+
+
+def test_command_enabled_overrides_ignore_non_bool_values() -> None:
+    config = {
+        "command_overrides": {
+            "enabled": {
+                "about": True,
+                "help": "false",
+                "ping": 0,
+            }
+        }
+    }
+
+    assert load_command_enabled_overrides(config) == {"about": True}
 
 
 def test_commands_list_route_exposes_permission_overrides(tmp_path: Path) -> None:

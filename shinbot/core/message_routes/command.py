@@ -77,6 +77,7 @@ class CommandMatch:
     command: CommandDef
     priority: CommandPriority
     raw_args: str = ""  # Remaining text after command trigger
+    prefix: str = ""  # Actual matched command prefix for P0 commands
     regex_match: re.Match | None = None  # For P2 matches
 
 
@@ -247,6 +248,7 @@ class CommandRegistry:
                         command=cmd,
                         priority=CommandPriority.P0_PREFIX,
                         raw_args=raw_args,
+                        prefix=prefix,
                     )
                 return None
 

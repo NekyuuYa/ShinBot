@@ -276,7 +276,7 @@
                     variant="tonal"
                     prepend-icon="mdi-link-variant-off"
                     :loading="isSavingBinding"
-                    :disabled="!bindingScopeKey"
+                    :disabled="!bindingScopeKey.trim()"
                     @click="deleteBinding"
                   >
                     {{ $t('pages.permissions.actions.deleteBinding') }}

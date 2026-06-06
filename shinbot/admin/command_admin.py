@@ -45,9 +45,9 @@ def load_command_enabled_overrides(config: dict[str, Any]) -> dict[str, bool]:
     raw_overrides = _enabled_override_store(config, create=False)
     overrides: dict[str, bool] = {}
     for key, value in raw_overrides.items():
-        if not isinstance(key, str):
+        if not isinstance(key, str) or not isinstance(value, bool):
             continue
-        overrides[str(key)] = bool(value)
+        overrides[key] = value
     return overrides
 
 

@@ -34,6 +34,10 @@ def _is_command_visible(command, ctx) -> bool:
 
 
 def _render_help_lines(plugin: Plugin, ctx=None) -> list[str]:
+    prefix = "/"
+    if ctx is not None and ctx.command_match is not None and ctx.command_match.prefix:
+        prefix = ctx.command_match.prefix
+
     commands = sorted(
         (
             command
@@ -48,7 +52,7 @@ def _render_help_lines(plugin: Plugin, ctx=None) -> list[str]:
     lines = ["可用指令："]
     for command in commands:
         triggers = [command.name, *command.aliases]
-        trigger_text = " / ".join(f"/{trigger}" for trigger in triggers)
+        trigger_text = " / ".join(f"{prefix}{trigger}" for trigger in triggers)
         detail = command.description.strip() or "无描述"
         lines.append(f"{trigger_text} - {detail}")
     return lines
