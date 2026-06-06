@@ -39,20 +39,6 @@
             />
           </v-col>
           <v-col cols="12">
-            <v-combobox
-              v-model="form.administrators"
-              :label="$t('pages.instances.form.administrators')"
-              :hint="$t('pages.instances.form.administratorsHint')"
-              density="comfortable"
-              variant="outlined"
-              multiple
-              chips
-              closable-chips
-              clearable
-              persistent-hint
-            />
-          </v-col>
-          <v-col cols="12">
             <v-switch
               v-model="form.enabled"
               :label="$t('pages.instances.form.enabled')"

@@ -20,7 +20,18 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-BOT_ADMIN_BINDING_PREFIX = "__bot_admin__:"
+RUNTIME_MANAGED_BINDING_GROUP_IDS = frozenset({"admin"})
+SESSION_ADMIN_ROLE_NAMES = frozenset(
+    {
+        "admin",
+        "administrator",
+        "group_admin",
+        "group_owner",
+        "owner",
+        "管理员",
+        "群主",
+    }
+)
 
 
 def candidate_user_keys(user_id: str) -> tuple[str, ...]:
@@ -135,6 +146,28 @@ def merge_permissions(*groups: PermissionGroup | set[str]) -> set[str]:
     return result
 
 
+def permissions_for_group_ids(
+    group_ids: Iterable[str],
+    groups: dict[str, PermissionGroup],
+) -> list[set[str]]:
+    """Return permission layers for known group IDs."""
+    layers: list[set[str]] = []
+    for group_id in group_ids:
+        group = groups.get(group_id)
+        if group is not None:
+            layers.append(group.permissions)
+    return layers
+
+
+def runtime_group_ids_for_member_roles(roles: Iterable[str]) -> tuple[str, ...]:
+    """Return runtime permission groups implied by normalized member roles."""
+    for role in roles:
+        normalized = str(role or "").strip().lower()
+        if normalized in SESSION_ADMIN_ROLE_NAMES:
+            return ("admin",)
+    return ()
+
+
 # ── User permission bindings ─────────────────────────────────────────
 
 
@@ -220,15 +253,13 @@ class PermissionEngine:
             group_id: ID of the permission group to assign.
         """
         with self._lock:
-            if group_id not in self._groups:
-                raise ValueError(f"Unknown permission group: {group_id!r}")
+            self._validate_bindable_group_ids({group_id})
             self._bindings[key] = {group_id}
 
     def bind_group(self, key: str, group_id: str, source: str = "manual") -> None:
         """Add one permission group to a user/session scope binding."""
         with self._lock:
-            if group_id not in self._groups:
-                raise ValueError(f"Unknown permission group: {group_id!r}")
+            self._validate_bindable_group_ids({group_id})
             self._bindings.setdefault(key, set()).add(group_id)
 
     def unbind(self, key: str) -> None:
@@ -271,11 +302,7 @@ class PermissionEngine:
         """Replace all permission groups bound to a key."""
         with self._lock:
             normalized_group_ids = set(group_ids)
-            unknown_group_ids = sorted(
-                group_id for group_id in normalized_group_ids if group_id not in self._groups
-            )
-            if unknown_group_ids:
-                raise ValueError(f"Unknown permission group: {unknown_group_ids[0]!r}")
+            self._validate_bindable_group_ids(normalized_group_ids)
             if normalized_group_ids:
                 self._bindings[key] = normalized_group_ids
             else:
@@ -294,7 +321,21 @@ class PermissionEngine:
         """Atomically replace runtime groups and bindings."""
         with self._lock:
             self._groups = groups
-            self._bindings = bindings
+            self._bindings = {
+                key: set(group_ids) - RUNTIME_MANAGED_BINDING_GROUP_IDS
+                for key, group_ids in bindings.items()
+                if set(group_ids) - RUNTIME_MANAGED_BINDING_GROUP_IDS
+            }
+
+    def _validate_bindable_group_ids(self, group_ids: set[str]) -> None:
+        managed_group_ids = sorted(group_ids & RUNTIME_MANAGED_BINDING_GROUP_IDS)
+        if managed_group_ids:
+            raise ValueError(
+                f"Permission group {managed_group_ids[0]!r} is runtime-managed and cannot be bound"
+            )
+        unknown_group_ids = sorted(group_id for group_id in group_ids if group_id not in self._groups)
+        if unknown_group_ids:
+            raise ValueError(f"Unknown permission group: {unknown_group_ids[0]!r}")
 
     def _permission_layers_for_key(self, key: str) -> list[set[str]]:
         """Return permission sets for all existing groups bound to one key."""
@@ -314,6 +355,7 @@ class PermissionEngine:
         session_id: str,
         user_id: str,
         session_base_group: str = "default",
+        runtime_group_ids: Iterable[str] = (),
     ) -> set[str]:
         """Compute the merged permission set for a user in a session context.
 
@@ -321,6 +363,7 @@ class PermissionEngine:
         1. Global: {instance_id}:{user_id}
         2. Session-local: {session_id}.{user_id}
         3. Session-base: the session's default permission group
+        4. Runtime groups derived from the current event context
 
         The parameter is still named ``instance_id`` for API compatibility, but
         callers may pass a bot id as the permission identity.
@@ -332,9 +375,6 @@ class PermissionEngine:
                 global_key = f"{instance_id}:{candidate_user_id}"
                 layers.extend(self._permission_layers_for_key(global_key))
 
-                bot_admin_key = f"{BOT_ADMIN_BINDING_PREFIX}{instance_id}:{candidate_user_id}"
-                layers.extend(self._permission_layers_for_key(bot_admin_key))
-
             # Layer 2: Session-local binding
             for candidate_user_id in candidate_user_keys(user_id):
                 session_key = f"{session_id}.{candidate_user_id}"
@@ -345,6 +385,8 @@ class PermissionEngine:
             if base_group:
                 layers.append(base_group.permissions)
 
+            layers.extend(permissions_for_group_ids(runtime_group_ids, self._groups))
+
             return merge_permissions(*layers)
 
     def check(
@@ -354,7 +396,14 @@ class PermissionEngine:
         session_id: str,
         user_id: str,
         session_base_group: str = "default",
+        runtime_group_ids: Iterable[str] = (),
     ) -> bool:
         """Check if a user has a specific permission in context."""
-        merged = self.resolve(instance_id, session_id, user_id, session_base_group)
+        merged = self.resolve(
+            instance_id,
+            session_id,
+            user_id,
+            session_base_group,
+            runtime_group_ids=runtime_group_ids,
+        )
         return check_permission(required, merged)

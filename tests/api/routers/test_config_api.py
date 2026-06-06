@@ -414,7 +414,7 @@ def test_config_save_bots_refreshes_runtime_prefix_routing(tmp_path: Path):
     assert boot.bot_service_configs[0].commands.prefixes == ("!",)
     assert boot.bot_service_configs[0].administrators == ("qq-main:user-1",)
     assert bot.bot_service_configs[0].commands.prefixes == ("!",)
-    assert bot.permission_engine.check("cmd.mute", "bot-main", "bot-main:group:room-1", "qq-main:user-1")
+    assert not bot.permission_engine.check("cmd.mute", "bot-main", "bot-main:group:room-1", "qq-main:user-1")
 
     class _Context:
         bot_service_config = bot.bot_service_configs[0]

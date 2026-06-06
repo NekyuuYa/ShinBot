@@ -329,7 +329,7 @@ async def test_agent_mode_controls_agent_entry_route_matching() -> None:
 @pytest.mark.asyncio
 async def test_command_permissions_use_selected_bot_global_scope() -> None:
     permission_engine = PermissionEngine()
-    permission_engine.bind("qq-main:user-1", "admin")
+    permission_engine.bind("qq-main:user-1", "owner")
     registry = CommandRegistry()
     calls: list[str] = []
 
@@ -360,7 +360,7 @@ async def test_command_permissions_use_selected_bot_global_scope() -> None:
 
     denied = await ingress.process_event(make_event("/secret"), adapter)
     await asyncio.sleep(0)
-    permission_engine.bind("full-agent:user-1", "admin")
+    permission_engine.bind("full-agent:user-1", "owner")
     allowed = await ingress.process_event(make_event("/secret"), adapter)
     await asyncio.sleep(0)
 
@@ -373,7 +373,7 @@ async def test_command_permissions_use_selected_bot_global_scope() -> None:
 
 async def test_command_permissions_use_selected_bot_session_scope() -> None:
     permission_engine = PermissionEngine()
-    permission_engine.bind("full-agent:group:room-1.user-1", "admin")
+    permission_engine.bind("full-agent:group:room-1.user-1", "owner")
     registry = CommandRegistry()
     calls: list[str] = []
 

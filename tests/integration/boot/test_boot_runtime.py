@@ -116,7 +116,7 @@ def test_setup_permissions_loads_custom_groups_and_multi_group_bindings(
     assert "tools.search.*" in permissions
 
 
-def test_setup_permissions_keeps_legacy_binding_mapping_form(tmp_path: Path) -> None:
+def test_setup_permissions_ignores_legacy_admin_binding_mapping_form(tmp_path: Path) -> None:
     boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
     boot.config = {
         "permissions": {
@@ -130,10 +130,10 @@ def test_setup_permissions_keeps_legacy_binding_mapping_form(tmp_path: Path) -> 
 
     boot._setup_permissions()
 
-    assert bot.permission_engine.get_binding("bot-main:user-1") == "admin"
+    assert bot.permission_engine.get_binding("bot-main:user-1") is None
 
 
-def test_setup_permissions_keeps_legacy_binding_group_field(tmp_path: Path) -> None:
+def test_setup_permissions_ignores_legacy_admin_binding_group_field(tmp_path: Path) -> None:
     boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
     boot.config = {
         "permissions": {
@@ -150,10 +150,10 @@ def test_setup_permissions_keeps_legacy_binding_group_field(tmp_path: Path) -> N
 
     boot._setup_permissions()
 
-    assert bot.permission_engine.get_binding("bot-main:user-1") == "admin"
+    assert bot.permission_engine.get_binding("bot-main:user-1") is None
 
 
-def test_setup_permissions_derives_bot_admin_bindings_without_config_writeback(
+def test_setup_permissions_does_not_derive_admin_bindings_from_bot_administrators(
     tmp_path: Path,
 ) -> None:
     permissions_config = {"bindings": []}
@@ -171,7 +171,7 @@ def test_setup_permissions_derives_bot_admin_bindings_without_config_writeback(
 
     boot._setup_permissions()
 
-    assert bot.permission_engine.check(
+    assert not bot.permission_engine.check(
         "cmd.mute",
         "bot-main",
         "bot-main:group:100",

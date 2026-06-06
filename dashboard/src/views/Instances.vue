@@ -307,7 +307,6 @@ function createEmptyForm(): BotInstanceFormState {
     id: '',
     display_name: '',
     enabled: true,
-    administrators: [],
     commands: {
       enabled: true,
       prefixes: ['/'],
@@ -395,7 +394,6 @@ function normalizeBot(record: ConfigRecord, index: number): BotInstanceDraft {
     id,
     display_name: normalizeString(record.display_name, id),
     enabled: normalizeBoolean(record.enabled, true),
-    administrators: normalizeStringList(record.administrators, []),
     commands: {
       enabled: normalizeBoolean(commands.enabled, true),
       prefixes: normalizeStringList(commands.prefixes, ['/']),
@@ -537,7 +535,6 @@ function openCreate() {
     id,
     display_name: template?.display_name || id,
     enabled: template?.enabled ?? true,
-    administrators: [...(template?.administrators ?? [])],
     commands: {
       enabled: template?.commands.enabled ?? true,
       prefixes: [...(template?.commands.prefixes ?? ['/'])],
@@ -565,7 +562,6 @@ function openEdit(bot: BotInstanceDraft) {
     id: bot.id,
     display_name: bot.display_name,
     enabled: bot.enabled,
-    administrators: [...bot.administrators],
     commands: {
       enabled: bot.commands.enabled,
       prefixes: [...bot.commands.prefixes],
@@ -610,13 +606,6 @@ function validateEditorForm(): string {
   if (editorForm.value.agent.mode === 'full' && !editorForm.value.agent.config.trim()) {
     return t('pages.instances.validation.requiredAgentConfig')
   }
-  for (const administrator of editorForm.value.administrators) {
-    const normalized = administrator.trim()
-    const separator = normalized.indexOf(':')
-    if (separator <= 0 || separator >= normalized.length - 1) {
-      return t('pages.instances.validation.invalidAdministrator')
-    }
-  }
   const otherBindingIds = new Set(
     bots.value
       .filter((_, index) => index !== editingIndex.value)
@@ -653,7 +642,6 @@ function buildBotRecord(form: BotInstanceFormState): ConfigRecord {
     id,
     display_name: form.display_name.trim() || id,
     enabled: form.enabled,
-    administrators: cleanStringList(form.administrators, []),
     commands: {
       enabled: form.commands.enabled,
       prefixes: cleanStringList(form.commands.prefixes, ['/']),

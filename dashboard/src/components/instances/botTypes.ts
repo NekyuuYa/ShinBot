@@ -15,7 +15,6 @@ export interface BotInstanceFormState {
   id: string
   display_name: string
   enabled: boolean
-  administrators: string[]
   commands: NormalizedBotCommandsConfig
   plugins: NormalizedBotPluginsConfig
   agent: NormalizedBotAgentConfig

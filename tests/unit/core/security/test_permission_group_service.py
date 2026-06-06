@@ -146,6 +146,20 @@ def test_bindings_require_existing_groups_and_refresh_multi_group_engine(tmp_pat
         service.set_binding("bot-main:user-2", ["missing"])
 
 
+def test_admin_group_membership_cannot_be_bound_manually(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    engine = PermissionEngine()
+    service = PermissionGroupService.from_config_path(config_path, engine=engine)
+
+    with pytest.raises(PermissionServiceError) as exc_info:
+        service.set_binding("bot-main:user-1", ["admin"])
+
+    assert exc_info.value.code == "ADMIN_BINDING_MANAGED"
+    assert service.list_bindings(scope_key="bot-main:user-1") == []
+    assert engine.groups_for_key("bot-main:user-1") == ()
+    assert not config_path.exists()
+
+
 def test_remove_group_cleans_bindings(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     engine = PermissionEngine()
@@ -183,7 +197,7 @@ def test_command_override_crud_and_permission_validation(tmp_path: Path) -> None
     assert [item.command for item in service.list_command_overrides()] == ["help"]
 
 
-def test_loads_legacy_mapping_bindings_and_preserves_on_save(tmp_path: Path) -> None:
+def test_loads_legacy_mapping_bindings_and_drops_runtime_managed_admin(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
@@ -197,11 +211,10 @@ def test_loads_legacy_mapping_bindings_and_preserves_on_save(tmp_path: Path) -> 
     service = PermissionGroupService.from_config_path(config_path)
     service.create_group(group_id="moderator", permissions=["cmd.mute"])
 
-    assert service.list_bindings(scope_key="bot:user-1")[0].groups == ("admin",)
-    assert service.list_bindings(scope_key="bot:user-2")[0].groups == ("admin", "default")
+    assert service.list_bindings(scope_key="bot:user-1") == []
+    assert service.list_bindings(scope_key="bot:user-2")[0].groups == ("default",)
     assert _load(config_path)["permissions"]["bindings"] == [
-        {"key": "bot:user-1", "groups": ["admin"]},
-        {"key": "bot:user-2", "groups": ["admin", "default"]},
+        {"key": "bot:user-2", "groups": ["default"]},
     ]
 
 

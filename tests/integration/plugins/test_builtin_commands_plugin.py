@@ -320,7 +320,7 @@ async def test_builtin_commands_plugin_mute_pauses_agent_but_keeps_commands_avai
         declared_metadata=metadata,
     )
 
-    bot.permission_engine.bind("inst1:user-1", "admin")
+    bot.permission_engine.bind("inst1:user-1", "owner")
 
     await bot.on_event(make_message_event(content="/mute 15m", instance_id="inst1"), adapter)
     await asyncio.sleep(0)

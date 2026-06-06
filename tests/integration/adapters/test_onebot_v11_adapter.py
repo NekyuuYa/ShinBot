@@ -58,7 +58,7 @@ async def test_decode_message_with_rich_segments(adapter: OneBotV11Adapter):
         "message_id": 222,
         "group_id": 778899,
         "user_id": 123456,
-        "sender": {"nickname": "Alice", "card": "AliceCard"},
+        "sender": {"nickname": "Alice", "card": "AliceCard", "role": "admin"},
         "message": [
             {"type": "text", "data": {"text": "hello "}},
             {"type": "markdown", "data": {"content": "**world**"}},
@@ -78,6 +78,7 @@ async def test_decode_message_with_rich_segments(adapter: OneBotV11Adapter):
     assert event.user.nick == "Alice"
     assert event.member is not None
     assert event.member.nick == "AliceCard"
+    assert event.member.roles == ["admin"]
     assert event.message is not None
     assert "qq:markdown" in event.message.content
     assert "qq:mface" in event.message.content

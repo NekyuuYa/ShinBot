@@ -34,7 +34,7 @@ from shinbot.core.dispatch.routing import RouteMatchContext, RouteRule, RouteTab
 from shinbot.core.message_analysis import is_self_mentioned
 from shinbot.core.platform.adapter_manager import BaseAdapter
 from shinbot.core.security.audit import AuditLogger
-from shinbot.core.security.permission import PermissionEngine
+from shinbot.core.security.permission import PermissionEngine, runtime_group_ids_for_member_roles
 from shinbot.core.state.session import SessionManager, build_session_id
 from shinbot.persistence.records import MessageLogRecord
 from shinbot.schema.elements import Message
@@ -55,6 +55,13 @@ ROUTING_SKIP_NO_ROUTE_MATCHED = MessageRoutingSkipReason.NO_ROUTE_MATCHED.value
 ROUTING_SKIP_SESSION_MUTED = MessageRoutingSkipReason.SESSION_MUTED.value
 ROUTING_SKIP_INTERCEPTOR_BLOCKED = MessageRoutingSkipReason.INTERCEPTOR_BLOCKED.value
 ROUTING_SKIP_WAIT_FOR_INPUT = MessageRoutingSkipReason.WAIT_FOR_INPUT.value
+
+
+def runtime_permission_group_ids_for_event(event: UnifiedEvent) -> tuple[str, ...]:
+    """Return permission group IDs derived from the current platform event."""
+    if event.is_private or event.member is None:
+        return ()
+    return runtime_group_ids_for_member_roles(event.member.roles)
 
 
 @dataclass(slots=True)
@@ -328,6 +335,7 @@ class MessageIngress:
             session_id=permission_scope.session_id,
             user_id=permission_user_id,
             session_base_group=session.permission_group,
+            runtime_group_ids=runtime_permission_group_ids_for_event(event),
         )
         message_context = MessageContext(
             event=event,

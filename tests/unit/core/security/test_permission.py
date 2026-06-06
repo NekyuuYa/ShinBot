@@ -103,9 +103,9 @@ class TestPermissionEngine:
 
     def test_resolve_with_global_binding(self):
         engine = self._make_engine()
-        engine.bind("inst1:user1", "admin")
+        engine.bind("inst1:user1", "owner")
         perms = engine.resolve("inst1", "inst1:group:g1", "user1")
-        assert "tools.*" in perms  # from admin group
+        assert "*" in perms  # from owner group
         assert "cmd.help" in perms  # from default base
 
     def test_resolve_merges_multiple_global_binding_groups(self):
@@ -135,9 +135,9 @@ class TestPermissionEngine:
 
     def test_resolve_with_session_binding(self):
         engine = self._make_engine()
-        engine.bind("inst1:group:g1.user1", "admin")
+        engine.bind("inst1:group:g1.user1", "owner")
         perms = engine.resolve("inst1", "inst1:group:g1", "user1")
-        assert "tools.*" in perms
+        assert "*" in perms
 
     def test_resolve_owner_gets_wildcard(self):
         engine = self._make_engine()
@@ -147,13 +147,49 @@ class TestPermissionEngine:
 
     def test_check_permission(self):
         engine = self._make_engine()
-        engine.bind("inst1:user1", "admin")
+        engine.bind("inst1:user1", "owner")
         assert engine.check("tools.weather", "inst1", "inst1:group:g1", "user1") is True
         assert engine.check("sys.reboot", "inst1", "inst1:group:g1", "user1") is True
 
-    def test_check_permission_with_bot_default_admin_binding(self):
+    def test_runtime_admin_group_grants_permissions_without_binding(self):
         engine = self._make_engine()
-        engine.bind("__bot_admin__:bot-main:platform:user-admin", "admin")
+
+        perms = engine.resolve(
+            "inst1",
+            "inst1:group:g1",
+            "user1",
+            runtime_group_ids=("admin",),
+        )
+
+        assert "tools.*" in perms
+        assert engine.groups_for_key("inst1:user1") == ()
+        assert (
+            engine.check(
+                "cmd.mute",
+                "inst1",
+                "inst1:group:g1",
+                "user1",
+                runtime_group_ids=("admin",),
+            )
+            is True
+        )
+
+    def test_runtime_managed_admin_group_cannot_be_bound(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+
+        with pytest.raises(ValueError, match="runtime-managed"):
+            engine.bind("inst1:user1", "admin")
+        with pytest.raises(ValueError, match="runtime-managed"):
+            engine.bind_group("inst1:user1", "admin")
+        with pytest.raises(ValueError, match="runtime-managed"):
+            engine.set_groups_for_key("inst1:user1", ["admin", "moderator"])
+
+        assert engine.groups_for_key("inst1:user1") == ()
+
+    def test_deprecated_bot_admin_binding_prefix_is_ignored(self):
+        engine = self._make_engine()
+        engine.bind("__bot_admin__:bot-main:platform:user-admin", "owner")
         assert (
             engine.check(
                 "cmd.mute",
@@ -161,14 +197,14 @@ class TestPermissionEngine:
                 "bot-main:group:g1",
                 "platform:user-admin",
             )
-            is True
+            is False
         )
 
-    def test_resolve_merges_multiple_bot_admin_binding_groups(self):
+    def test_deprecated_bot_admin_binding_prefix_does_not_merge_groups(self):
         engine = self._make_engine()
         engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
 
-        engine.bind_group("__bot_admin__:bot-main:platform:user-admin", "admin")
+        engine.bind_group("__bot_admin__:bot-main:platform:user-admin", "owner")
         engine.bind_group("__bot_admin__:bot-main:platform:user-admin", "moderator")
 
         perms = engine.resolve(
@@ -176,8 +212,8 @@ class TestPermissionEngine:
             "bot-main:group:g1",
             "platform:user-admin",
         )
-        assert "tools.*" in perms
-        assert "cmd.mute" in perms
+        assert "*" not in perms
+        assert "cmd.mute" not in perms
 
     def test_check_mute_denied_for_default_user(self):
         engine = self._make_engine()
@@ -189,20 +225,21 @@ class TestPermissionEngine:
 
     def test_unbind(self):
         engine = self._make_engine()
-        engine.bind("inst1:user1", "admin")
+        engine.bind("inst1:user1", "owner")
         engine.unbind("inst1:user1")
         perms = engine.resolve("inst1", "inst1:group:g1", "user1")
-        assert "tools.*" not in perms
+        assert "*" not in perms
 
     def test_bind_replaces_existing_groups_and_get_binding_returns_stable_first(self):
         engine = self._make_engine()
         engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+        engine.add_group(PermissionGroup(id="search_user", permissions={"tools.search.query"}))
 
         engine.bind_group("inst1:user1", "moderator")
-        engine.bind_group("inst1:user1", "admin")
+        engine.bind_group("inst1:user1", "search_user")
 
-        assert engine.groups_for_key("inst1:user1") == ("admin", "moderator")
-        assert engine.get_binding("inst1:user1") == "admin"
+        assert engine.groups_for_key("inst1:user1") == ("moderator", "search_user")
+        assert engine.get_binding("inst1:user1") == "moderator"
 
         engine.bind("inst1:user1", "owner")
 
@@ -213,10 +250,10 @@ class TestPermissionEngine:
         engine = self._make_engine()
         engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
 
-        engine.bind_group("inst1:user1", "admin", source="test")
+        engine.bind_group("inst1:user1", "owner", source="test")
         engine.bind_group("inst1:user1", "moderator", source="test")
 
-        engine.unbind_group("inst1:user1", "admin", source="test")
+        engine.unbind_group("inst1:user1", "owner", source="test")
 
         assert engine.groups_for_key("inst1:user1") == ("moderator",)
         assert "inst1:user1" in engine.binding_keys()
@@ -230,8 +267,8 @@ class TestPermissionEngine:
         engine = self._make_engine()
         engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
 
-        engine.set_groups_for_key("inst1:user1", ["admin", "moderator"])
-        assert engine.groups_for_key("inst1:user1") == ("admin", "moderator")
+        engine.set_groups_for_key("inst1:user1", ["owner", "moderator"])
+        assert engine.groups_for_key("inst1:user1") == ("moderator", "owner")
 
         engine.set_groups_for_key("inst1:user1", ["owner"])
         assert engine.groups_for_key("inst1:user1") == ("owner",)
@@ -242,12 +279,12 @@ class TestPermissionEngine:
 
     def test_set_groups_for_key_unknown_group_keeps_existing_binding(self):
         engine = self._make_engine()
-        engine.bind("inst1:user1", "admin")
+        engine.bind("inst1:user1", "owner")
 
         with pytest.raises(ValueError, match="Unknown permission group"):
             engine.set_groups_for_key("inst1:user1", ["owner", "missing"])
 
-        assert engine.groups_for_key("inst1:user1") == ("admin",)
+        assert engine.groups_for_key("inst1:user1") == ("owner",)
 
     def test_bind_group_unknown_group_does_not_create_binding(self):
         engine = self._make_engine()
@@ -275,13 +312,13 @@ class TestPermissionEngine:
     def test_resolve_ignores_removed_bound_group(self):
         engine = self._make_engine()
         engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
-        engine.bind_group("inst1:user1", "admin")
+        engine.bind_group("inst1:user1", "owner")
         engine.bind_group("inst1:user1", "moderator")
 
         engine.remove_group("moderator")
 
         perms = engine.resolve("inst1", "inst1:group:g1", "user1")
-        assert "tools.*" in perms
+        assert "*" in perms
         assert "cmd.mute" not in perms
 
     def test_bind_unknown_group_raises(self):

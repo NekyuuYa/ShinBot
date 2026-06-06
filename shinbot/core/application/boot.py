@@ -31,7 +31,10 @@ from shinbot.core.application.provider_config_validation import (
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
-from shinbot.core.security.permission_service import BUILTIN_GROUP_IDS
+from shinbot.core.security.permission_service import (
+    BUILTIN_GROUP_IDS,
+    RUNTIME_MANAGED_BINDING_GROUP_IDS,
+)
 from shinbot.core.security.permission_toml import (
     bindings_from_config,
     command_overrides_from_config,
@@ -506,6 +509,14 @@ class BootController:
         for binding in bindings_from_config(self.config):
             valid_group_ids: list[str] = []
             for group_id in binding.groups:
+                if group_id in RUNTIME_MANAGED_BINDING_GROUP_IDS:
+                    logger.warning(
+                        "Ignoring runtime-managed permission group %r in binding %r; "
+                        "membership is derived from the current event context",
+                        group_id,
+                        binding.key,
+                    )
+                    continue
                 if self.bot.permission_engine.get_group(group_id) is None:
                     logger.warning(
                         "Permission binding %r references unknown group %r",

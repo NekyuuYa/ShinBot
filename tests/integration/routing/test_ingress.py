@@ -48,7 +48,7 @@ from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
 from shinbot.schema.elements import MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
-from shinbot.schema.resources import Channel, User
+from shinbot.schema.resources import Channel, Member, User
 from shinbot.schema.routing import MessageRoutingStatus
 
 
@@ -92,13 +92,16 @@ def make_event(
     event_type: str = "message-created",
     timestamp: int | None = None,
     private: bool = True,
+    member_roles: list[str] | None = None,
 ) -> UnifiedEvent:
+    user = User(id="user-1", name="Alice")
     return UnifiedEvent(
         type=event_type,
         self_id="bot-1",
         platform="mock",
         timestamp=timestamp,
-        user=User(id="user-1", name="Alice"),
+        user=user,
+        member=Member(user=user, roles=member_roles or []) if not private else None,
         channel=Channel(id="private:user-1" if private else "group:1", type=1 if private else 0),
         message=MessagePayload(id="msg-1", content=content)
         if event_type.startswith("message-")
@@ -113,13 +116,14 @@ def build_ingress(
     route_targets: RouteTargetRegistry | None = None,
     session_manager: SessionManager | None = None,
     waiting_registry: WaitingInputRegistry | None = None,
+    permission_engine: PermissionEngine | None = None,
     max_message_age_seconds: int = 60,
 ) -> tuple[MessageIngress, DatabaseManager, MockAdapter]:
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     ingress = MessageIngress(
         session_manager=session_manager or SessionManager(session_repo=db.sessions),
-        permission_engine=PermissionEngine(),
+        permission_engine=permission_engine or PermissionEngine(),
         route_table=route_table or RouteTable(),
         route_targets=route_targets,
         database=db,
@@ -468,6 +472,43 @@ async def test_text_command_dispatcher_denies_missing_permission(tmp_path) -> No
     assert command_calls == []
     assert len(adapter.sent) == 1
     assert adapter.sent[0][1][0].text_content == "权限不足：需要 admin.secret"
+
+
+@pytest.mark.asyncio
+async def test_text_command_dispatcher_allows_session_admin_role_without_binding(tmp_path) -> None:
+    command_registry = CommandRegistry()
+    command_calls: list[str] = []
+
+    async def secret(_ctx, _args) -> None:
+        command_calls.append("secret")
+
+    command_registry.register(CommandDef(name="secret", handler=secret, permission="cmd.secret"))
+    command_dispatcher = TextCommandDispatcher(command_registry)
+
+    table = RouteTable()
+    command_rule = make_text_command_route_rule(command_dispatcher)
+    table.register(command_rule)
+    targets = RouteTargetRegistry()
+    targets.register(TEXT_COMMAND_DISPATCHER_TARGET, command_dispatcher)
+    permission_engine = PermissionEngine()
+    ingress, _db, adapter = build_ingress(
+        tmp_path,
+        route_table=table,
+        route_targets=targets,
+        permission_engine=permission_engine,
+    )
+
+    result = await ingress.process_event(
+        make_event("/secret", private=False, member_roles=["admin"]),
+        adapter,
+    )
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == [command_rule]
+    assert command_calls == ["secret"]
+    assert adapter.sent == []
+    assert permission_engine.groups_for_key("test-bot:user-1") == ()
+    assert permission_engine.groups_for_key("test-bot:group:1.user-1") == ()
 
 
 @pytest.mark.asyncio

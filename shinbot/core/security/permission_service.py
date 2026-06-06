@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field
 
 from shinbot.core.security.permission import (
     ADMIN_GROUP,
-    BOT_ADMIN_BINDING_PREFIX,
     DEFAULT_GROUP,
     OWNER_GROUP,
+    RUNTIME_MANAGED_BINDING_GROUP_IDS,
     PermissionEngine,
     PermissionGroup,
 )
@@ -188,7 +188,13 @@ class TomlPermissionConfigRepository:
 
         bindings: dict[str, tuple[str, ...]] = {}
         for item in bindings_from_config(payload):
-            bindings[item.key] = item.groups
+            binding_groups = tuple(
+                group_id
+                for group_id in item.groups
+                if group_id not in RUNTIME_MANAGED_BINDING_GROUP_IDS
+            )
+            if binding_groups:
+                bindings[item.key] = binding_groups
 
         command_overrides: dict[str, str] = {}
         for item in command_overrides_from_config(payload):
@@ -414,6 +420,15 @@ class PermissionGroupService:
         groups = tuple(_unique_sorted(_validate_group_id(group_id) for group_id in group_ids))
         if not groups:
             raise PermissionServiceError("EMPTY_BINDING", "Binding must reference at least one group")
+        managed_groups = sorted(set(groups) & RUNTIME_MANAGED_BINDING_GROUP_IDS)
+        if managed_groups:
+            raise PermissionServiceError(
+                "ADMIN_BINDING_MANAGED",
+                (
+                    "Admin group membership is derived from the current session member role "
+                    "and cannot be assigned manually"
+                ),
+            )
 
         def mutate(snapshot: PermissionStoreSnapshot) -> PermissionBindingRecord:
             for group_id in groups:
@@ -521,15 +536,10 @@ class PermissionGroupService:
             new_groups[engine_group.id] = engine_group
 
         new_bindings: dict[str, set[str]] = {}
-        # Preserve bot_admin bindings from the existing engine state
-        for key in target.binding_keys():
-            if key.startswith(BOT_ADMIN_BINDING_PREFIX):
-                new_bindings[key] = set(target.groups_for_key(key))
-
         for key, groups in self._snapshot.bindings.items():
-            if key.startswith(BOT_ADMIN_BINDING_PREFIX):
-                continue
-            new_bindings[key] = set(groups)
+            filtered_groups = set(groups) - RUNTIME_MANAGED_BINDING_GROUP_IDS
+            if filtered_groups:
+                new_bindings[key] = filtered_groups
 
         target.replace_runtime_state(new_groups, new_bindings)
 

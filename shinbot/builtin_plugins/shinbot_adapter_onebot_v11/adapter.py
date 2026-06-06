@@ -912,6 +912,7 @@ class OneBotV11Adapter(BaseAdapter):
         user_nick = self._first_non_empty(sender.get("nickname"))
         if message_type == "group":
             member_nick = await self._resolve_group_member_nick(group_id, user_id, sender)
+        member_role = self._first_non_empty(sender.get("role"))
 
         user = User(
             id=user_id,
@@ -926,7 +927,8 @@ class OneBotV11Adapter(BaseAdapter):
         if message_type == "group":
             channel = Channel(id=group_id, name=str(payload.get("group_name", "")) or None, type=0)
             guild = Guild(id=group_id)
-            member = Member(nick=member_nick, user=user)
+            member_roles = [member_role] if member_role else []
+            member = Member(nick=member_nick, user=user, roles=member_roles)
         else:
             channel = Channel(id=f"private:{user_id}", type=1)
 

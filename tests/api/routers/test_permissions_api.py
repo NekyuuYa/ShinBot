@@ -186,6 +186,23 @@ def test_permission_bindings_support_filters_and_multi_group_runtime_refresh(
         assert bot.permission_engine.groups_for_key("bot-main:user-1") == ()
 
 
+def test_permission_binding_rejects_runtime_managed_admin_group(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    boot = _BootStub(tmp_path)
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/v1/permissions/bindings/bot-main:user-1",
+            json={"groups": ["admin"]},
+            headers=_headers(app),
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "ADMIN_BINDING_MANAGED"
+    assert bot.permission_engine.groups_for_key("bot-main:user-1") == ()
+
+
 def test_command_permission_override_patch_and_delete(tmp_path: Path) -> None:
     bot = ShinBot(data_dir=tmp_path)
     bot.command_registry.register(

@@ -248,7 +248,7 @@
                   <v-col cols="12" md="5" class="pa-2">
                     <v-select
                       v-model="bindingGroupIds"
-                      :items="groupSelectItems"
+                      :items="bindingGroupSelectItems"
                       :label="$t('pages.permissions.fields.groups')"
                       item-title="title"
                       item-value="value"
@@ -550,6 +550,10 @@ const groupSelectItems = computed(() =>
     title: displayGroupName(group),
     value: group.id,
   }))
+)
+
+const bindingGroupSelectItems = computed(() =>
+  groupSelectItems.value.filter((group) => group.value !== 'admin')
 )
 
 const bindingScopeItems = computed(() => bindings.value.map((binding) => binding.scopeKey))

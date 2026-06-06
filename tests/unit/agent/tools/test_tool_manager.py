@@ -114,7 +114,7 @@ class TestToolManager:
         )
         assert tools == []
 
-        self.permissions.bind("inst1:user1", "admin")
+        self.permissions.bind("inst1:user1", "owner")
         tools = self.manager.export_model_tools(
             caller="agent.runtime",
             instance_id="inst1",
@@ -140,7 +140,7 @@ class TestToolManager:
                 tags=["chat_action"],
             )
         )
-        self.permissions.bind("inst1:user1", "admin")
+        self.permissions.bind("inst1:user1", "owner")
 
         tools = self.manager.build_request_tools(
             ["send_reply", "missing", "no_reply"],
@@ -155,7 +155,7 @@ class TestToolManager:
 
     @pytest.mark.asyncio
     async def test_execute_tool_success(self):
-        self.permissions.bind("inst1:user1", "admin")
+        self.permissions.bind("inst1:user1", "owner")
 
         result = await self.manager.execute(
             ToolCallRequest(
@@ -173,7 +173,7 @@ class TestToolManager:
 
     @pytest.mark.asyncio
     async def test_execute_tool_rejects_invalid_arguments(self):
-        self.permissions.bind("inst1:user1", "admin")
+        self.permissions.bind("inst1:user1", "owner")
 
         result = await self.manager.execute(
             ToolCallRequest(
@@ -206,7 +206,7 @@ class TestToolManager:
         assert result.error_code == "permission_denied"
 
     def test_invalidate_tool_schema_cache_after_in_place_tool_update(self):
-        self.permissions.bind("inst1:user1", "admin")
+        self.permissions.bind("inst1:user1", "owner")
 
         first = self.manager.build_request_tools(
             ["weather_query"],
