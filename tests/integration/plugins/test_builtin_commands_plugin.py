@@ -106,6 +106,36 @@ async def test_builtin_commands_plugin_whoami_reports_binding_keys(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_builtin_commands_plugin_help_only_lists_allowed_commands(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    bot.adapter_manager.register_adapter("mock", MockAdapter)
+    adapter = bot.add_adapter("inst1", "mock")
+
+    metadata_path = _repo_path(
+        "shinbot",
+        "builtin_plugins",
+        "shinbot_plugin_builtin_commands",
+        "metadata.json",
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    await bot.plugin_manager.load_plugin_async(
+        "shinbot_plugin_builtin_commands",
+        "shinbot.builtin_plugins.shinbot_plugin_builtin_commands",
+        declared_metadata=metadata,
+    )
+
+    await bot.on_event(make_message_event(content="/help", instance_id="inst1"), adapter)
+    await asyncio.sleep(0)
+
+    assert len(adapter.sent) == 1
+    reply = adapter.sent[0][1][0].text_content
+    assert "/help / /commands - 列出当前可用的基础指令" in reply
+    assert "/ping - 检查消息命令链路是否可用" in reply
+    assert "/mute - 暂停当前 session 的 agent 活动一段时间" not in reply
+    assert "/unmute / /resume - 恢复当前 session 的 agent 活动" not in reply
+
+
+@pytest.mark.asyncio
 async def test_builtin_commands_plugin_mute_pauses_agent_but_keeps_commands_available(
     tmp_path: Path,
 ) -> None:

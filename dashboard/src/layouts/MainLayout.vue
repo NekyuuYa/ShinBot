@@ -204,6 +204,11 @@ const primaryNavItems: NavItem[] = [
     title: "layout.main.nav.commandsManage",
   },
   {
+    to: "/permissions",
+    icon: "mdi-shield-key-outline",
+    title: "layout.main.nav.permissionsManage",
+  },
+  {
     to: "/cost-analysis",
     icon: "mdi-chart-areaspline",
     title: "layout.main.nav.costAnalysis",
@@ -255,6 +260,7 @@ const routeTitleMap: Record<string, string> = {
   Instances: "layout.main.nav.instancesManage",
   Plugins: "layout.main.nav.pluginsManage",
   Commands: "layout.main.nav.commandsManage",
+  Permissions: "layout.main.nav.permissionsManage",
   Tools: "layout.main.nav.toolsManage",
   Sessions: "layout.main.nav.sessionsManage",
   Agents: "layout.main.nav.agentsManage",

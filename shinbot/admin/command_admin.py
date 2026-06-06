@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 COMMAND_OVERRIDES_SECTION = "command_overrides"
 COMMAND_ENABLED_SECTION = "enabled"
 
@@ -58,11 +57,20 @@ def apply_command_enabled_overrides(command_registry: Any, config: dict[str, Any
         command_registry.set_enabled(name, enabled)
 
 
-def command_dict(definition: Any) -> dict[str, Any]:
+def command_dict(definition: Any, command_registry: Any | None = None) -> dict[str, Any]:
     """Build a serialized command payload for API responses."""
     aliases = list(definition.aliases)
     triggers = [definition.name, *aliases]
     pattern = definition.pattern.pattern if definition.pattern is not None else ""
+    default_permission = definition.permission
+    permission_overridden = False
+    if command_registry is not None:
+        default_permission_for = getattr(command_registry, "default_permission_for", None)
+        has_permission_override = getattr(command_registry, "has_permission_override", None)
+        if callable(default_permission_for):
+            default_permission = default_permission_for(definition.name)
+        if callable(has_permission_override):
+            permission_overridden = bool(has_permission_override(definition.name))
 
     return {
         "name": definition.name,
@@ -70,7 +78,9 @@ def command_dict(definition: Any) -> dict[str, Any]:
         "triggers": triggers,
         "description": definition.description,
         "usage": definition.usage,
+        "defaultPermission": default_permission,
         "permission": definition.permission,
+        "permissionOverridden": permission_overridden,
         "mode": definition.mode.value,
         "priority": definition.priority.value,
         "priorityLabel": definition.priority.name,

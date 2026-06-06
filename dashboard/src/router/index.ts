@@ -51,6 +51,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Commands.vue'),
       },
       {
+        path: 'permissions',
+        name: 'Permissions',
+        component: () => import('@/views/Permissions.vue'),
+      },
+      {
         path: 'sessions',
         name: 'Sessions',
         component: () => import('@/views/Sessions.vue'),

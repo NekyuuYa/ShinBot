@@ -31,6 +31,11 @@ from shinbot.core.application.provider_config_validation import (
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
+from shinbot.core.security.permission_toml import (
+    bindings_from_config,
+    command_overrides_from_config,
+    groups_from_config,
+)
 from shinbot.utils.log_file import parse_file_log_config
 from shinbot.utils.logger import DEFAULT_THIRD_PARTY_NOISE_POLICY, get_logger, setup_logging
 
@@ -458,17 +463,77 @@ class BootController:
 
     def _setup_permissions(self) -> None:
         assert self.bot is not None
-        perms = self.config.get("permissions", {})
-        for binding in perms.get("bindings", []):
-            key = binding.get("key", "")
-            group = binding.get("group", "default")
+        raw_permissions = self.config.get("permissions", {})
+        if raw_permissions and not isinstance(raw_permissions, dict):
+            logger.warning("Invalid permissions config: expected table")
+
+        self._load_permission_groups()
+        self._load_permission_bindings()
+        apply_bot_admin_bindings(self.bot.permission_engine, self.bot_service_configs)
+        self._apply_command_permission_overrides()
+
+    def _load_permission_groups(self) -> None:
+        assert self.bot is not None
+        for loaded_group in groups_from_config(self.config):
+            existing = self.bot.permission_engine.get_group(loaded_group.id)
+            if existing is not None:
+                group = existing.model_copy(deep=True)
+                if loaded_group.name:
+                    group.name = loaded_group.name
+                group.permissions = set(group.permissions) | set(loaded_group.permissions)
+            else:
+                group = loaded_group
+            self.bot.permission_engine.add_group(group)
+            logger.info("Loaded permission group %r", group.id)
+
+    def _load_permission_bindings(self) -> None:
+        assert self.bot is not None
+        for binding in bindings_from_config(self.config):
+            valid_group_ids: list[str] = []
+            for group_id in binding.groups:
+                if self.bot.permission_engine.get_group(group_id) is None:
+                    logger.warning(
+                        "Permission binding %r references unknown group %r",
+                        binding.key,
+                        group_id,
+                    )
+                    continue
+                valid_group_ids.append(group_id)
+            if not valid_group_ids:
+                logger.warning("Permission binding %r has no valid groups", binding.key)
+                continue
             try:
-                self.bot.permission_engine.bind(key, group)
-                logger.info("Bound %r -> permission group %r", key, group)
+                setter = getattr(self.bot.permission_engine, "set_groups_for_key", None)
+                if callable(setter):
+                    setter(binding.key, valid_group_ids)
+                else:
+                    self.bot.permission_engine.bind(binding.key, valid_group_ids[0])
+                logger.info("Bound %r -> permission groups %r", binding.key, valid_group_ids)
             except ValueError as exc:
                 logger.warning("Permission binding error: %s", exc)
 
-        apply_bot_admin_bindings(self.bot.permission_engine, self.bot_service_configs)
+    def _apply_command_permission_overrides(self) -> None:
+        assert self.bot is not None
+        for override in command_overrides_from_config(self.config):
+            setter = getattr(self.bot.command_registry, "set_permission_override", None)
+            if callable(setter):
+                if setter(override.command, override.permission) is None:
+                    logger.warning(
+                        "Command permission override references unknown command %r",
+                        override.command,
+                    )
+                logger.info("Applied permission override for command %r", override.command)
+                continue
+
+            cmd = self.bot.command_registry.get(override.command)
+            if cmd is None:
+                logger.warning(
+                    "Command permission override references unknown command %r",
+                    override.command,
+                )
+                continue
+            cmd.permission = override.permission
+            logger.info("Applied permission override for command %r", override.command)
 
     def _configure_logging(
         self,

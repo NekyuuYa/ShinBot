@@ -44,6 +44,9 @@ def test_commands_list_route_returns_registered_commands(tmp_path: Path) -> None
     assert "help" in payload
     assert payload["help"]["aliases"] == ["commands"]
     assert payload["help"]["enabled"] is True
+    assert payload["help"]["defaultPermission"] == "cmd.help"
+    assert payload["help"]["permission"] == "cmd.help"
+    assert payload["help"]["permissionOverridden"] is False
 
 
 def test_commands_patch_route_can_disable_command_and_persist(tmp_path: Path) -> None:
@@ -81,3 +84,21 @@ def test_commands_route_applies_saved_enabled_overrides_on_app_creation(tmp_path
     assert response.status_code == 200
     payload = {item["name"]: item for item in response.json()["data"]}
     assert payload["help"]["enabled"] is False
+
+
+def test_commands_list_route_exposes_permission_overrides(tmp_path: Path) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    asyncio.run(bot.plugin_manager.load_all_async(tmp_path / "plugins"))
+    bot.command_registry.set_permission_override("help", "cmd.support.help")
+    app = create_api_app(bot, _BootStub(tmp_path))
+    token = app.state.auth_config.create_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/commands", headers=headers)
+
+    assert response.status_code == 200
+    payload = {item["name"]: item for item in response.json()["data"]}
+    assert payload["help"]["defaultPermission"] == "cmd.help"
+    assert payload["help"]["permission"] == "cmd.support.help"
+    assert payload["help"]["permissionOverridden"] is True

@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from shinbot.admin.command_admin import apply_command_enabled_overrides
 from shinbot.api.auth import AuthConfig
 from shinbot.api.models import EC, Envelope, ErrorBody
 from shinbot.api.routers import agent_configs as agent_configs_router
@@ -32,6 +33,7 @@ from shinbot.api.routers import config_providers as config_providers_router
 from shinbot.api.routers import instance_configs as instance_configs_router
 from shinbot.api.routers import instances as instances_router
 from shinbot.api.routers import model_runtime as model_runtime_router
+from shinbot.api.routers import permissions as permissions_router
 from shinbot.api.routers import personas as personas_router
 from shinbot.api.routers import plugins as plugins_router
 from shinbot.api.routers import prompt_definitions as prompt_definitions_router
@@ -46,7 +48,6 @@ from shinbot.api.ws_manager import (
     status_manager,
 )
 from shinbot.core.application.config_sections import iter_adapter_instance_records
-from shinbot.admin.command_admin import apply_command_enabled_overrides
 from shinbot.core.application.system_update import (
     DashboardBuildService,
     FrameworkUpdateCommandService,
@@ -213,6 +214,7 @@ def create_api_app(
     app.include_router(instances_router.router, prefix=api_prefix)
     app.include_router(model_runtime_router.router, prefix=api_prefix)
     app.include_router(personas_router.router, prefix=api_prefix)
+    app.include_router(permissions_router.router, prefix=api_prefix)
     app.include_router(prompt_definitions_router.router, prefix=api_prefix)
     app.include_router(prompts_router.router, prefix=api_prefix)
     app.include_router(session_overview_router.router, prefix=api_prefix)

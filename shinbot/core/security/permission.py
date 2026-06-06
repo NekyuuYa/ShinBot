@@ -13,6 +13,7 @@ Permission model:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
 from pydantic import BaseModel, Field
 
@@ -160,7 +161,7 @@ class PermissionEngine:
     def __init__(self) -> None:
         """Initialize the engine with built-in permission groups."""
         self._groups: dict[str, PermissionGroup] = {}
-        self._bindings: dict[str, str] = {}  # binding_key → group_id
+        self._bindings: dict[str, set[str]] = {}  # binding_key -> group_ids
 
         # Register built-in groups
         for group in (DEFAULT_GROUP, ADMIN_GROUP, OWNER_GROUP):
@@ -203,7 +204,10 @@ class PermissionEngine:
     # ── Binding management ───────────────────────────────────────────
 
     def bind(self, key: str, group_id: str) -> None:
-        """Bind a user/session scope to a permission group.
+        """Bind a user/session scope to one permission group.
+
+        This compatibility API replaces any existing groups for ``key`` with a
+        single group, matching the old one-key-to-one-group behavior.
 
         Args:
             key: Either "{session_id}.{user_id}" or "{instance_id}:{user_id}"
@@ -211,7 +215,13 @@ class PermissionEngine:
         """
         if group_id not in self._groups:
             raise ValueError(f"Unknown permission group: {group_id!r}")
-        self._bindings[key] = group_id
+        self._bindings[key] = {group_id}
+
+    def bind_group(self, key: str, group_id: str, source: str = "manual") -> None:
+        """Add one permission group to a user/session scope binding."""
+        if group_id not in self._groups:
+            raise ValueError(f"Unknown permission group: {group_id!r}")
+        self._bindings.setdefault(key, set()).add(group_id)
 
     def unbind(self, key: str) -> None:
         """Remove a binding between a key and a permission group.
@@ -220,6 +230,15 @@ class PermissionEngine:
             key: The binding key to remove. Silently ignored if missing.
         """
         self._bindings.pop(key, None)
+
+    def unbind_group(self, key: str, group_id: str, source: str | None = None) -> None:
+        """Remove one permission group from a user/session scope binding."""
+        group_ids = self._bindings.get(key)
+        if not group_ids:
+            return
+        group_ids.discard(group_id)
+        if not group_ids:
+            self._bindings.pop(key, None)
 
     def get_binding(self, key: str) -> str | None:
         """Look up which group a binding key is mapped to.
@@ -230,11 +249,38 @@ class PermissionEngine:
         Returns:
             The group ID, or None if no binding exists.
         """
-        return self._bindings.get(key)
+        groups = self.groups_for_key(key)
+        return groups[0] if groups else None
+
+    def groups_for_key(self, key: str) -> tuple[str, ...]:
+        """Return all permission groups bound to a key in stable order."""
+        return tuple(sorted(self._bindings.get(key, set())))
+
+    def set_groups_for_key(self, key: str, group_ids: Iterable[str]) -> None:
+        """Replace all permission groups bound to a key."""
+        normalized_group_ids = set(group_ids)
+        unknown_group_ids = sorted(
+            group_id for group_id in normalized_group_ids if group_id not in self._groups
+        )
+        if unknown_group_ids:
+            raise ValueError(f"Unknown permission group: {unknown_group_ids[0]!r}")
+        if normalized_group_ids:
+            self._bindings[key] = normalized_group_ids
+        else:
+            self._bindings.pop(key, None)
 
     def binding_keys(self) -> tuple[str, ...]:
         """Return all registered binding keys."""
         return tuple(self._bindings.keys())
+
+    def _permission_layers_for_key(self, key: str) -> list[set[str]]:
+        """Return permission sets for all existing groups bound to one key."""
+        layers: list[set[str]] = []
+        for group_id in self.groups_for_key(key):
+            group = self._groups.get(group_id)
+            if group is not None:
+                layers.append(group.permissions)
+        return layers
 
     # ── Resolution ───────────────────────────────────────────────────
 
@@ -259,21 +305,15 @@ class PermissionEngine:
 
         for candidate_user_id in candidate_user_keys(user_id):
             global_key = f"{instance_id}:{candidate_user_id}"
-            global_group_id = self._bindings.get(global_key)
-            if global_group_id and global_group_id in self._groups:
-                layers.append(self._groups[global_group_id].permissions)
+            layers.extend(self._permission_layers_for_key(global_key))
 
             bot_admin_key = f"{BOT_ADMIN_BINDING_PREFIX}{instance_id}:{candidate_user_id}"
-            bot_admin_group_id = self._bindings.get(bot_admin_key)
-            if bot_admin_group_id and bot_admin_group_id in self._groups:
-                layers.append(self._groups[bot_admin_group_id].permissions)
+            layers.extend(self._permission_layers_for_key(bot_admin_key))
 
         # Layer 2: Session-local binding
         for candidate_user_id in candidate_user_keys(user_id):
             session_key = f"{session_id}.{candidate_user_id}"
-            session_group_id = self._bindings.get(session_key)
-            if session_group_id and session_group_id in self._groups:
-                layers.append(self._groups[session_group_id].permissions)
+            layers.extend(self._permission_layers_for_key(session_key))
 
         # Layer 3: Session-base group
         base_group = self._groups.get(session_base_group)

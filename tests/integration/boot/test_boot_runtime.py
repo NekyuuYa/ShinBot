@@ -10,8 +10,10 @@ import pytest
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot import BootController, BootState
 from shinbot.core.application.boot_preflight import BootPreflightError, run_boot_preflight
+from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.application.data_initializer import DataInitializer
 from shinbot.core.application.runtime_control import RuntimeControl
+from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.plugins.types import PluginState
 from tests.conftest import MockAdapter
 
@@ -42,6 +44,10 @@ def _sqlite_tables(path: Path) -> set[str]:
         conn.close()
 
 
+async def _noop_command(ctx, args):
+    return None
+
+
 def test_setup_instances_reads_normalized_adapter_instances(tmp_path: Path):
     boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
     boot.config = {
@@ -68,6 +74,135 @@ def test_setup_instances_reads_normalized_adapter_instances(tmp_path: Path):
 
     assert bot.adapter_manager.get_instance("mock-main") is not None
     assert bot.adapter_manager.get_instance("mock-disabled") is None
+
+
+def test_setup_permissions_loads_custom_groups_and_multi_group_bindings(
+    tmp_path: Path,
+) -> None:
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
+    boot.config = {
+        "permissions": {
+            "groups": [
+                {
+                    "id": "moderator",
+                    "name": "Moderator",
+                    "permissions": ["cmd.mute"],
+                },
+                {
+                    "id": "search_user",
+                    "permissions": ["tools.search.*"],
+                },
+            ],
+            "bindings": [
+                {
+                    "key": "bot-main:user-1",
+                    "groups": ["moderator", "search_user"],
+                }
+            ],
+        }
+    }
+    bot = ShinBot(data_dir=tmp_path / "data")
+    boot.bot = bot
+
+    boot._setup_permissions()
+
+    assert bot.permission_engine.get_group("moderator") is not None
+    assert set(bot.permission_engine.groups_for_key("bot-main:user-1")) == {
+        "moderator",
+        "search_user",
+    }
+    permissions = bot.permission_engine.resolve("bot-main", "bot-main:group:100", "user-1")
+    assert "cmd.mute" in permissions
+    assert "tools.search.*" in permissions
+
+
+def test_setup_permissions_keeps_legacy_binding_mapping_form(tmp_path: Path) -> None:
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
+    boot.config = {
+        "permissions": {
+            "bindings": {
+                "bot-main:user-1": "admin",
+            }
+        }
+    }
+    bot = ShinBot(data_dir=tmp_path / "data")
+    boot.bot = bot
+
+    boot._setup_permissions()
+
+    assert bot.permission_engine.get_binding("bot-main:user-1") == "admin"
+
+
+def test_setup_permissions_keeps_legacy_binding_group_field(tmp_path: Path) -> None:
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
+    boot.config = {
+        "permissions": {
+            "bindings": [
+                {
+                    "key": "bot-main:user-1",
+                    "group": "admin",
+                }
+            ]
+        }
+    }
+    bot = ShinBot(data_dir=tmp_path / "data")
+    boot.bot = bot
+
+    boot._setup_permissions()
+
+    assert bot.permission_engine.get_binding("bot-main:user-1") == "admin"
+
+
+def test_setup_permissions_derives_bot_admin_bindings_without_config_writeback(
+    tmp_path: Path,
+) -> None:
+    permissions_config = {"bindings": []}
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
+    boot.config = {"permissions": permissions_config}
+    boot.bot_service_configs = (
+        BotServiceConfig(
+            id="bot-main",
+            display_name="Main",
+            administrators=("platform:user-admin",),
+        ),
+    )
+    bot = ShinBot(data_dir=tmp_path / "data")
+    boot.bot = bot
+
+    boot._setup_permissions()
+
+    assert bot.permission_engine.check(
+        "cmd.mute",
+        "bot-main",
+        "bot-main:group:100",
+        "platform:user-admin",
+    )
+    assert boot.config["permissions"] == permissions_config
+
+
+def test_setup_permissions_applies_command_permission_overrides(tmp_path: Path) -> None:
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
+    boot.config = {
+        "permissions": {
+            "command_overrides": [
+                {"command": "mute", "permission": "cmd.moderation.mute"},
+                {"command": "open", "permission": ""},
+            ]
+        }
+    }
+    bot = ShinBot(data_dir=tmp_path / "data")
+    bot.command_registry.register(
+        CommandDef(name="mute", handler=_noop_command, permission="cmd.mute")
+    )
+    bot.command_registry.register(
+        CommandDef(name="open", handler=_noop_command, permission="cmd.open")
+    )
+    boot.bot = bot
+
+    boot._setup_permissions()
+
+    assert bot.command_registry.get("mute").permission == "cmd.moderation.mute"
+    assert bot.command_registry.get("open").permission == ""
 
 
 def test_data_initializer_creates_required_dirs_and_cleans_temp(tmp_path: Path) -> None:

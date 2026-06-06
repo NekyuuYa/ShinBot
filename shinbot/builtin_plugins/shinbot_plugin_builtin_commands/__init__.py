@@ -24,9 +24,17 @@ _DURATION_UNITS = {
 }
 
 
-def _render_help_lines(plugin: Plugin) -> list[str]:
+def _is_command_visible(command, ctx) -> bool:
+    return command.enabled and (ctx is None or not command.permission or ctx.has_permission(command.permission))
+
+
+def _render_help_lines(plugin: Plugin, ctx=None) -> list[str]:
     commands = sorted(
-        plugin._command_registry.all_commands,
+        (
+            command
+            for command in plugin._command_registry.all_commands
+            if _is_command_visible(command, ctx)
+        ),
         key=lambda item: (item.name, item.owner or ""),
     )
     if not commands:
@@ -128,7 +136,7 @@ def setup(plg: Plugin) -> None:
         permission="cmd.help",
     )
     async def help_command(ctx, _args: str) -> None:
-        await ctx.send("\n".join(_render_help_lines(plg)))
+        await ctx.send("\n".join(_render_help_lines(plg, ctx)))
 
     @plg.on_command(
         "ping",

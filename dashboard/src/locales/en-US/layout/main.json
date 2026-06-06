@@ -9,6 +9,7 @@
     "plugins": "Plugins",
     "pluginsManage": "Plugin Management",
     "commandsManage": "Command Management",
+    "permissionsManage": "Permission Groups",
     "toolsManage": "Tool Management",
     "agentsManage": "Agent Hub",
     "promptsManage": "Prompt Definitions",
