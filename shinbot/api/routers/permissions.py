@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -28,6 +29,7 @@ class PermissionGroupData(BaseModel):
     name: str
     description: str
     permissions: list[str]
+    orphanPermissions: list[str]
     system: bool
     protected: bool
 
@@ -92,12 +94,33 @@ def _permission_config_path(boot) -> Path:
     )
 
 
+def _sync_boot_permissions_config(boot) -> None:
+    """Keep BootController's in-memory config aligned with TOML permission writes."""
+    config = getattr(boot, "config", None)
+    if not isinstance(config, dict):
+        return
+
+    config_path = _permission_config_path(boot)
+    if not config_path.exists():
+        config.pop("permissions", None)
+        return
+
+    with config_path.open("rb") as file_obj:
+        payload = tomllib.load(file_obj)
+    permissions = payload.get("permissions")
+    if isinstance(permissions, dict):
+        config["permissions"] = permissions
+    else:
+        config.pop("permissions", None)
+
+
 def _group_data(record: PermissionGroupRecord) -> PermissionGroupData:
     return PermissionGroupData(
         id=record.id,
         name=record.name,
         description=record.description,
         permissions=sorted(record.permissions),
+        orphanPermissions=sorted(record.orphan_permissions),
         system=record.system,
         protected=record.protected,
     )
@@ -160,6 +183,7 @@ async def create_permission_group(
             permissions=payload.permissions,
             protected=payload.protected,
         )
+        _sync_boot_permissions_config(boot)
     except PermissionServiceError as exc:
         _raise_permission_http_error(exc)
     return ok(_group_data(group).model_dump())
@@ -198,6 +222,7 @@ async def update_permission_group(
             permissions=payload.permissions,
             protected=payload.protected,
         )
+        _sync_boot_permissions_config(boot)
     except PermissionServiceError as exc:
         _raise_permission_http_error(exc)
     return ok(_group_data(group).model_dump())
@@ -209,6 +234,7 @@ async def delete_permission_group(group_id: str, bot=BotDep, boot=BootDep):
     service = _permission_service(bot, boot)
     try:
         service.delete_group(group_id)
+        _sync_boot_permissions_config(boot)
     except PermissionServiceError as exc:
         _raise_permission_http_error(exc)
     return ok({"deleted": True})
@@ -241,6 +267,7 @@ async def set_permission_binding(
     service = _permission_service(bot, boot)
     try:
         binding = service.set_binding(scope_key, payload.groupIds)
+        _sync_boot_permissions_config(boot)
     except PermissionServiceError as exc:
         _raise_permission_http_error(exc)
     return ok(_binding_data(binding).model_dump())
@@ -257,6 +284,7 @@ async def delete_permission_binding(
     service = _permission_service(bot, boot)
     try:
         service.remove_binding(scope_key, group_id=groupId)
+        _sync_boot_permissions_config(boot)
     except PermissionServiceError as exc:
         _raise_permission_http_error(exc)
     return ok({"deleted": True})
@@ -280,6 +308,7 @@ async def update_command_permission(
         command = get_command_or_raise(registry, command_name)
         service = _permission_service(bot, boot)
         service.set_command_override(command.name, payload.permission)
+        _sync_boot_permissions_config(boot)
         command = get_command_or_raise(registry, command.name)
     except CommandAdminError as exc:
         _raise_admin_http_error(exc)
@@ -301,6 +330,11 @@ async def reset_command_permission(command_name: str, bot=BotDep, boot=BootDep):
         command = get_command_or_raise(registry, command_name)
         service = _permission_service(bot, boot)
         service.remove_command_override(command.name)
+        clear_override = getattr(registry, "clear_permission_override", None)
+        has_override = getattr(registry, "has_permission_override", None)
+        if callable(clear_override) and callable(has_override) and has_override(command.name):
+            clear_override(command.name)
+        _sync_boot_permissions_config(boot)
         command = get_command_or_raise(registry, command.name)
     except CommandAdminError as exc:
         _raise_admin_http_error(exc)
