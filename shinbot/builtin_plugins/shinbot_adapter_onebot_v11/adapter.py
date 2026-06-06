@@ -37,6 +37,19 @@ from shinbot.utils.satori_parser import elements_to_xml
 logger = get_logger(__name__, source="adapter:onebot-v11", color="green")
 
 
+def _format_ob11_file_src(src: Any) -> str:
+    raw = str(src or "")
+    if not raw:
+        return ""
+    if urlparse(raw).scheme:
+        return raw
+
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path.as_uri()
+    return raw
+
+
 class OneBotV11Config(BaseModel):
     mode: Literal["forward", "reverse"] = Field(default="reverse")
     url: str = Field(default="ws://127.0.0.1:3001")
@@ -1324,13 +1337,13 @@ class OneBotV11Adapter(BaseAdapter):
                 return {"type": "at", "data": {"qq": "all"}}
             return {"type": "at", "data": {"qq": str(el.attrs.get("id", ""))}}
         if el.type == "img":
-            return {"type": "image", "data": {"file": str(el.attrs.get("src", ""))}}
+            return {"type": "image", "data": {"file": _format_ob11_file_src(el.attrs.get("src"))}}
         if el.type == "audio":
-            return {"type": "record", "data": {"file": str(el.attrs.get("src", ""))}}
+            return {"type": "record", "data": {"file": _format_ob11_file_src(el.attrs.get("src"))}}
         if el.type == "video":
-            return {"type": "video", "data": {"file": str(el.attrs.get("src", ""))}}
+            return {"type": "video", "data": {"file": _format_ob11_file_src(el.attrs.get("src"))}}
         if el.type == "file":
-            return {"type": "file", "data": {"file": str(el.attrs.get("src", ""))}}
+            return {"type": "file", "data": {"file": _format_ob11_file_src(el.attrs.get("src"))}}
         if el.type == "quote":
             return {"type": "reply", "data": {"id": str(el.attrs.get("id", ""))}}
         if el.type == "emoji":

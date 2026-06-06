@@ -17,7 +17,7 @@ from shinbot.builtin_plugins.shinbot_adapter_onebot_v11.adapter import (
     OneBotV11Adapter,
     OneBotV11Config,
 )
-from shinbot.schema.elements import Message
+from shinbot.schema.elements import Message, MessageElement
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -46,6 +46,34 @@ def adapter() -> OneBotV11Adapter:
 
 def test_forward_max_depth_default_is_three(adapter: OneBotV11Adapter):
     assert adapter.config.forward_max_depth == 3
+
+
+def test_encode_local_media_paths_as_file_uri(adapter: OneBotV11Adapter, tmp_path: Path):
+    image_path = tmp_path / "render image.png"
+
+    segment = adapter._element_to_ob11(MessageElement.img(str(image_path)))
+
+    assert segment == {
+        "type": "image",
+        "data": {"file": image_path.as_uri()},
+    }
+
+
+@pytest.mark.parametrize(
+    ("src", "expected"),
+    [
+        ("https://example.test/image.png", "https://example.test/image.png"),
+        ("file:///tmp/image.png", "file:///tmp/image.png"),
+        ("base64://aW1hZ2U=", "base64://aW1hZ2U="),
+        ("relative/image.png", "relative/image.png"),
+    ],
+)
+def test_encode_media_paths_preserves_non_local_uri(
+    adapter: OneBotV11Adapter, src: str, expected: str
+):
+    segment = adapter._element_to_ob11(MessageElement.img(src))
+
+    assert segment == {"type": "image", "data": {"file": expected}}
 
 
 @pytest.mark.asyncio
