@@ -49,3 +49,5 @@ def test_builtin_commands_plugin_appears_in_plugins_api(tmp_path: Path) -> None:
         "mute",
         "unmute",
     ]
+    assert payload["shinbot_plugin_builtin_commands"]["metadata"]["builtin"] is True
+    assert payload["shinbot_plugin_builtin_commands"]["metadata"]["source"] == "builtin"

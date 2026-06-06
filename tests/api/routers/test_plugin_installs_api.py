@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import io
 import json
 import stat
+import sys
 import zipfile
 from pathlib import Path
 
@@ -79,6 +81,56 @@ def _plugin_zip(
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr(f"{plugin_id}/metadata.json", json.dumps(metadata))
         archive.writestr(f"{plugin_id}/__init__.py", setup_body)
+    return stream.getvalue()
+
+
+def _monorepo_zip(*, version: str = "0.1.0", command: str = "market-demo") -> bytes:
+    metadata = {
+        "id": "shinbot_plugin_market_demo",
+        "name": "Market Demo",
+        "version": version,
+        "description": "Demo plugin in a monorepo",
+        "author": "Tests",
+        "role": "logic",
+        "entry": "shinbot_plugin_market_demo/__init__.py",
+        "permissions": [],
+    }
+    other_metadata = {
+        "id": "shinbot_plugin_other_demo",
+        "name": "Other Demo",
+        "version": "0.1.0",
+        "role": "logic",
+        "entry": "shinbot_plugin_other_demo/__init__.py",
+        "permissions": [],
+    }
+    setup_body = "\n".join(
+        [
+            "def setup(plg):",
+            f"    @plg.on_command({command!r})",
+            "    async def demo(c, args):",
+            "        return None",
+            "",
+        ]
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        root = "shinbot-plugins-main"
+        archive.writestr(
+            f"{root}/plugins/shinbot_plugin_market_demo/metadata.json",
+            json.dumps(metadata),
+        )
+        archive.writestr(
+            f"{root}/plugins/shinbot_plugin_market_demo/shinbot_plugin_market_demo/__init__.py",
+            setup_body,
+        )
+        archive.writestr(
+            f"{root}/plugins/shinbot_plugin_other_demo/metadata.json",
+            json.dumps(other_metadata),
+        )
+        archive.writestr(
+            f"{root}/plugins/shinbot_plugin_other_demo/shinbot_plugin_other_demo/__init__.py",
+            "def setup(plg):\n    pass\n",
+        )
     return stream.getvalue()
 
 
@@ -301,6 +353,110 @@ def test_github_managed_plugin_can_update_from_manifest_source(tmp_path: Path, m
     source = sources_response.json()["data"]["plugins"][0]
     assert source["installed_version"] == "0.2.0"
     assert source["resolved_ref"] == ""
+
+
+def test_github_install_can_select_plugin_path_from_monorepo(tmp_path: Path, monkeypatch):
+    archive_versions = [
+        _monorepo_zip(version="0.1.0", command="market-demo"),
+        _monorepo_zip(version="0.1.0", command="market-demo"),
+        _monorepo_zip(version="0.2.0", command="market-demo"),
+    ]
+    calls: list[str] = []
+
+    class _FakeResponse:
+        def __init__(self, content: bytes) -> None:
+            self.content = content
+            self.headers = {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str):
+            calls.append(url)
+            return _FakeResponse(archive_versions[len(calls) - 1])
+
+    monkeypatch.setattr(plugin_install.httpx, "AsyncClient", _FakeAsyncClient)
+
+    client, bot, _boot, headers = _client(tmp_path)
+    with client:
+        preview = client.post(
+            "/api/v1/plugin-installs/github/preview",
+            headers=headers,
+            json={
+                "url": "https://github.com/NekyuuYa/shinbot-plugins",
+                "ref": "main",
+                "plugin_path": "plugins/shinbot_plugin_market_demo",
+            },
+        )
+        install = client.post(
+            "/api/v1/plugin-installs/github",
+            headers=headers,
+            json={
+                "url": "https://github.com/NekyuuYa/shinbot-plugins",
+                "ref": "main",
+                "plugin_path": "plugins/shinbot_plugin_market_demo",
+            },
+        )
+        update = client.post(
+            "/api/v1/plugin-installs/shinbot_plugin_market_demo/update",
+            headers=headers,
+        )
+        sources_response = client.get("/api/v1/plugin-installs", headers=headers)
+        plugins_response = client.get("/api/v1/plugins", headers=headers)
+
+    assert preview.status_code == 200
+    assert preview.json()["data"]["plugin_path"] == "plugins/shinbot_plugin_market_demo"
+    assert install.status_code == 200
+    assert update.status_code == 200
+    assert len(calls) == 3
+    meta = bot.plugin_manager.get_plugin("shinbot_plugin_market_demo")
+    assert meta is not None
+    assert meta.module_path == "shinbot_plugin_market_demo"
+    assert importlib.import_module("shinbot_plugin_market_demo") is not None
+    assert bot.plugin_manager.get_plugin("shinbot_plugin_other_demo") is None
+    metadata = json.loads(
+        (tmp_path / "plugins" / "shinbot_plugin_market_demo" / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata["version"] == "0.2.0"
+    source = sources_response.json()["data"]["plugins"][0]
+    assert source["plugin_id"] == "shinbot_plugin_market_demo"
+    assert source["source_url"] == "https://github.com/NekyuuYa/shinbot-plugins"
+    assert source["plugin_path"] == "plugins/shinbot_plugin_market_demo"
+    assert source["installed_version"] == "0.2.0"
+    plugin_payload = {
+        item["id"]: item for item in plugins_response.json()["data"]
+    }["shinbot_plugin_market_demo"]
+    assert plugin_payload["metadata"]["source"] == "github"
+    sys.modules.pop("shinbot_plugin_market_demo", None)
+
+
+def test_github_preview_rejects_invalid_plugin_path(tmp_path: Path):
+    client, _bot, _boot, headers = _client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/plugin-installs/github/preview",
+            headers=headers,
+            json={
+                "url": "https://github.com/NekyuuYa/shinbot-plugins",
+                "ref": "main",
+                "plugin_path": "../shinbot_plugin_market_demo",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "PLUGIN_INSTALL_INVALID_PLUGIN_PATH"
 
 
 def test_archive_install_can_persist_disabled_state(tmp_path: Path):

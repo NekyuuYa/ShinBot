@@ -150,10 +150,16 @@ const { t } = useI18n()
 const pluginsStore = usePluginsStore()
 const canConfigure = computed(() => props.plugin.role !== 'adapter')
 const installSource = computed(() => props.plugin.metadata?.install_source)
+const isBuiltin = computed(() =>
+  Boolean(props.plugin.metadata?.builtin || props.plugin.metadata?.source === 'builtin')
+)
 const isWebuiManaged = computed(() => Boolean(installSource.value?.managed_by_webui))
 const canUpdate = computed(() => Boolean(isWebuiManaged.value && installSource.value?.can_update))
 const canUninstall = computed(() => Boolean(isWebuiManaged.value && installSource.value?.can_uninstall))
 const sourceLabel = computed(() => {
+  if (isBuiltin.value) {
+    return t('pages.plugins.card.builtinSource')
+  }
   if (!installSource.value) {
     return t('pages.plugins.card.localSource')
   }
@@ -163,12 +169,18 @@ const sourceLabel = computed(() => {
   return t('pages.plugins.install.archiveSource')
 })
 const sourceIcon = computed(() => {
+  if (isBuiltin.value) {
+    return 'mdi-package-variant-closed-check'
+  }
   if (!installSource.value) {
     return 'mdi-folder-outline'
   }
   return installSource.value.source_type === 'github' ? 'mdi-github' : 'mdi-folder-zip'
 })
 const sourceColor = computed(() => {
+  if (isBuiltin.value) {
+    return 'info'
+  }
   if (!installSource.value) {
     return 'grey'
   }

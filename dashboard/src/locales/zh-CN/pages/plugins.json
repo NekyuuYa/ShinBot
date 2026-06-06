@@ -14,6 +14,10 @@
   "schema": {
     "empty": "该插件未提供可配置的 Schema。"
   },
+  "tabs": {
+    "installed": "已安装",
+    "marketplace": "插件市场"
+  },
   "dialog": {
     "title": "配置插件：{name}",
     "hint": "表单根据后端元数据动态生成。"
@@ -33,6 +37,7 @@
     "enable": "启用",
     "update": "更新",
     "uninstall": "卸载",
+    "builtinSource": "内置",
     "localSource": "本地"
   },
   "install": {
@@ -42,6 +47,8 @@
     "archiveTab": "ZIP 文件",
     "githubUrl": "GitHub 仓库 URL",
     "githubRef": "分支、标签或 Commit",
+    "githubPluginPath": "插件路径",
+    "githubPluginPathHint": "用于多插件仓库，例如 plugins/shinbot_plugin_example；留空则按单插件仓库处理。",
     "archiveFile": "插件 ZIP 文件",
     "enableAfterInstall": "安装后启用",
     "allowOverwrite": "允许覆盖已有插件",
@@ -65,6 +72,7 @@
     "source": "来源",
     "ref": "Ref",
     "resolvedRef": "解析 Ref",
+    "pluginPath": "插件路径",
     "sha256": "归档 SHA-256",
     "requiredDependencies": "必须前置",
     "optionalDependencies": "可选前置",
@@ -80,5 +88,22 @@
     "confirmUpdateMessage": "将从记录的 GitHub 来源更新插件 {name}，并在更新后启用。确认继续吗？",
     "confirmUninstallTitle": "确认卸载插件",
     "confirmUninstallMessage": "将卸载 WebUI 管理的插件 {name}，插件数据会保留。确认继续吗？"
+  },
+  "marketplace": {
+    "title": "插件市场",
+    "loadFailed": "加载插件市场失败",
+    "noData": "暂无市场插件",
+    "installed": "已安装",
+    "notInstalled": "未安装",
+    "updateAvailable": "可更新",
+    "blocked": "不可安装",
+    "install": "安装",
+    "update": "更新",
+    "installedVersion": "已安装版本",
+    "missingRequired": "缺失必须前置：{dependencies}",
+    "localExists": "本地已存在同名插件，且不是 WebUI 管理，不能从市场覆盖。",
+    "differentSource": "该插件已由其他来源安装；请在已安装插件中管理。",
+    "confirmUpdateTitle": "确认更新市场插件",
+    "confirmUpdateMessage": "将从官方插件市场更新 {name}，并在更新后启用。确认继续吗？"
   }
 }

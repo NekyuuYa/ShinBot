@@ -62,8 +62,12 @@ def plugin_dict(
         logger.exception("Failed to build config schema for plugin %s", plugin_meta.id)
     status = "enabled" if plugin_meta.state.value in ("active", "loaded", "running") else "disabled"
     resolved_translations = translations or {}
+    is_builtin = str(plugin_meta.module_path).startswith("shinbot.builtin_plugins.")
 
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = {
+        "builtin": is_builtin,
+        "source": "builtin" if is_builtin else "local",
+    }
     if cfg_schema is not None:
         metadata["config_schema"] = translate_plugin_schema(cfg_schema, resolved_translations)
     if boot is not None:
@@ -73,6 +77,7 @@ def plugin_dict(
         install_source = install_source_for_plugin(boot, plugin_meta.id)
         if install_source is not None:
             metadata["install_source"] = install_source
+            metadata["source"] = install_source["source_type"]
     if module is not None and hasattr(module, "__plugin_adapter_platform__"):
         metadata["adapter_platform"] = module.__plugin_adapter_platform__
 

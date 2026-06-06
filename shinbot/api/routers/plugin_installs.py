@@ -29,6 +29,7 @@ class GithubPluginInstallRequest(BaseModel):
 
     url: str
     ref: str = "main"
+    plugin_path: str = ""
     enable_after_install: bool = True
     allow_overwrite: bool = False
 
@@ -95,7 +96,13 @@ async def preview_github_plugin_install(payload: GithubPluginInstallRequest, bot
     """Preview a GitHub plugin archive without installing it."""
     service = build_plugin_install_service(bot, boot)
     try:
-        return ok(await service.preview_github(payload.url, payload.ref))
+        return ok(
+            await service.preview_github(
+                payload.url,
+                payload.ref,
+                plugin_path=payload.plugin_path,
+            )
+        )
     except PluginInstallError as exc:
         _raise_install_http_error(exc)
 
@@ -109,6 +116,7 @@ async def install_github_plugin(payload: GithubPluginInstallRequest, bot=BotDep,
             await service.install_github(
                 payload.url,
                 payload.ref,
+                plugin_path=payload.plugin_path,
                 enable_after_install=payload.enable_after_install,
                 allow_overwrite=payload.allow_overwrite,
             )

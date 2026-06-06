@@ -14,6 +14,10 @@
   "schema": {
     "empty": "This plugin does not provide a configurable schema."
   },
+  "tabs": {
+    "installed": "Installed",
+    "marketplace": "Marketplace"
+  },
   "dialog": {
     "title": "Configure Plugin: {name}",
     "hint": "This form is generated dynamically from backend metadata."
@@ -33,6 +37,7 @@
     "enable": "Enable",
     "update": "Update",
     "uninstall": "Uninstall",
+    "builtinSource": "Builtin",
     "localSource": "Local"
   },
   "install": {
@@ -42,6 +47,8 @@
     "archiveTab": "ZIP File",
     "githubUrl": "GitHub Repository URL",
     "githubRef": "Branch, Tag, or Commit",
+    "githubPluginPath": "Plugin Path",
+    "githubPluginPathHint": "For monorepos, for example plugins/shinbot_plugin_example. Leave blank for single-plugin repositories.",
     "archiveFile": "Plugin ZIP File",
     "enableAfterInstall": "Enable after install",
     "allowOverwrite": "Allow overwriting existing plugin",
@@ -65,6 +72,7 @@
     "source": "Source",
     "ref": "Ref",
     "resolvedRef": "Resolved Ref",
+    "pluginPath": "Plugin Path",
     "sha256": "Archive SHA-256",
     "requiredDependencies": "Required Dependencies",
     "optionalDependencies": "Optional Dependencies",
@@ -80,5 +88,22 @@
     "confirmUpdateMessage": "Update {name} from its recorded GitHub source and enable it after update?",
     "confirmUninstallTitle": "Uninstall Plugin",
     "confirmUninstallMessage": "Uninstall the WebUI-managed plugin {name}. Plugin data will be kept. Continue?"
+  },
+  "marketplace": {
+    "title": "Plugin Marketplace",
+    "loadFailed": "Failed to load plugin marketplace",
+    "noData": "No marketplace plugins",
+    "installed": "Installed",
+    "notInstalled": "Not installed",
+    "updateAvailable": "Update available",
+    "blocked": "Blocked",
+    "install": "Install",
+    "update": "Update",
+    "installedVersion": "Installed version",
+    "missingRequired": "Missing required dependencies: {dependencies}",
+    "localExists": "A local plugin with the same id already exists and is not WebUI-managed.",
+    "differentSource": "This plugin was installed from a different source. Manage it from installed plugins.",
+    "confirmUpdateTitle": "Update Marketplace Plugin",
+    "confirmUpdateMessage": "Update {name} from the official plugin marketplace and enable it after update?"
   }
 }

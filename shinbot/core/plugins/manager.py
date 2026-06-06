@@ -56,6 +56,15 @@ def _ensure_user_plugin_package_on_path(directory: Path) -> None:
     importlib.invalidate_caches()
 
 
+def _ensure_user_plugin_dir_on_path(plugin_dir: Path) -> None:
+    """Ensure a package nested under a plugin directory can be imported by name."""
+
+    path = str(plugin_dir)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    importlib.invalidate_caches()
+
+
 @dataclass(slots=True, frozen=True)
 class PluginDiscoveryCandidate:
     """Resolved metadata for one discovered plugin candidate."""
@@ -775,11 +784,11 @@ class PluginManager:
                     else (f"{pkg}.{'.'.join(Path(entry_file).with_suffix('').parts)}")
                 )
             else:
-                prefix = directory.name
-                module_path = (
-                    f"{prefix}.{plugin_dir.name}"
-                    if entry_file == "__init__.py"
-                    else f"{prefix}.{plugin_dir.name}.{'.'.join(Path(entry_file).with_suffix('').parts)}"
+                module_path = self._module_path_for_candidate(
+                    directory=directory,
+                    plugin_dir=plugin_dir,
+                    metadata=metadata,
+                    is_builtin=False,
                 )
 
             try:
@@ -908,6 +917,11 @@ class PluginManager:
             )
 
         prefix = directory.name
+        entry_parts = Path(entry_file).with_suffix("").parts
+        if entry_parts and entry_parts[0] == plugin_dir.name:
+            _ensure_user_plugin_dir_on_path(plugin_dir)
+            import_parts = entry_parts[:-1] if entry_parts[-1] == "__init__" else entry_parts
+            return ".".join(import_parts)
         return (
             f"{prefix}.{plugin_dir.name}"
             if entry_file == "__init__.py"

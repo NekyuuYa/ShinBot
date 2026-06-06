@@ -45,11 +45,13 @@ export interface PluginConfigSchema {
 
 export interface PluginMetadata {
   adapter_platform?: string
+  builtin?: boolean
   config?: Record<string, unknown>
   configSchema?: Record<string, ConfigSchemaField>
   config_schema?: PluginConfigSchema
   dynamicForm?: Record<string, unknown>
   install_source?: PluginInstallSource
+  source?: 'builtin' | 'local' | string
   [key: string]: unknown
 }
 
@@ -61,6 +63,7 @@ export interface PluginInstallSource {
   source_url: string
   ref: string
   resolved_ref: string
+  plugin_path: string
   installed_at?: number
   updated_at?: number
   installed_version: string
@@ -92,6 +95,7 @@ export interface PluginInstallPreview {
   source_url: string
   ref: string
   resolved_ref: string
+  plugin_path: string
   archive_sha256: string
   target_exists: boolean
   target_managed_by_webui: boolean
@@ -102,6 +106,7 @@ export interface PluginInstallPreview {
 export interface GithubPluginInstallPayload {
   url: string
   ref: string
+  plugin_path?: string
   enable_after_install?: boolean
   allow_overwrite?: boolean
 }
@@ -124,6 +129,67 @@ export interface PluginInstallTask {
   } | null
   created_at: number
   updated_at: number
+}
+
+export interface PluginMarketplaceSource {
+  id: string
+  name: string
+  source_type: 'github_monorepo'
+  repository_url: string
+  repo_url?: string
+  ref: string
+  plugin_root: string
+}
+
+export interface PluginMarketplaceItem {
+  id: string
+  plugin_id: string
+  name: string
+  version: string
+  description?: string
+  author?: string
+  role?: string
+  entry: string
+  permissions: string[]
+  required_dependencies: string[]
+  optional_dependencies: string[]
+  legacy_dependencies: string[]
+  missing_required_dependencies: string[]
+  missing_optional_dependencies: string[]
+  tags: string[]
+  homepage?: string
+  repository?: string
+  repository_url: string
+  ref: string
+  plugin_path: string
+  installed: boolean
+  installed_version: string
+  installed_source?: PluginInstallSource | null
+  managed_by_webui: boolean
+  can_install: boolean
+  can_update: boolean
+  update_available: boolean
+  warnings: string[]
+}
+
+export interface PluginMarketplaceSourcesResponse {
+  sources: PluginMarketplaceSource[]
+}
+
+export interface PluginMarketplaceResponse {
+  source: PluginMarketplaceSource
+  plugins: PluginMarketplaceItem[]
+}
+
+export interface PluginMarketplaceItemResponse {
+  source: PluginMarketplaceSource
+  plugin: PluginMarketplaceItem
+}
+
+export interface PluginMarketplaceInstallPayload {
+  source?: string
+  enable_after_install?: boolean
+  allow_overwrite?: boolean
 }
 
 export const pluginsApi = {
@@ -207,5 +273,31 @@ export const pluginsApi = {
 
   uninstallInstalledPlugin(id: string) {
     return apiClient.delete<PluginInstallTask>(`/plugin-installs/${id}`)
+  },
+
+  listMarketplaceSources() {
+    return apiClient.get<PluginMarketplaceSourcesResponse>('/plugin-marketplace/sources')
+  },
+
+  listMarketplace(source = 'official') {
+    return apiClient.get<PluginMarketplaceResponse>('/plugin-marketplace', {
+      params: { source },
+    })
+  },
+
+  getMarketplacePlugin(id: string, source = 'official') {
+    return apiClient.get<PluginMarketplaceItemResponse>(`/plugin-marketplace/${id}`, {
+      params: { source },
+    })
+  },
+
+  previewMarketplacePlugin(id: string, source = 'official') {
+    return apiClient.post<PluginInstallPreview>(`/plugin-marketplace/${id}/preview`, {
+      source,
+    })
+  },
+
+  installMarketplacePlugin(id: string, payload: PluginMarketplaceInstallPayload = {}) {
+    return apiClient.post<PluginInstallTask>(`/plugin-marketplace/${id}/install`, payload)
   },
 }

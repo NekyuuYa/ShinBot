@@ -18,6 +18,28 @@
       </template>
     </app-page-header>
 
+    <v-row class="mb-4 mx-0" align="center">
+      <v-col cols="12" md="6" class="pa-0">
+        <v-tabs v-model="activeTab" color="primary" density="comfortable">
+          <v-tab value="installed">
+            <v-icon start icon="mdi-puzzle" />
+            {{ $t('pages.plugins.tabs.installed') }}
+          </v-tab>
+          <v-tab value="marketplace">
+            <v-icon start icon="mdi-storefront-outline" />
+            {{ $t('pages.plugins.tabs.marketplace') }}
+          </v-tab>
+        </v-tabs>
+      </v-col>
+      <v-spacer />
+      <v-col v-if="activeTab === 'marketplace' && pluginsStore.marketplaceSource" cols="12" md="auto" class="pa-0">
+        <v-chip color="primary" variant="tonal" class="text-break">
+          <v-icon start icon="mdi-github" />
+          {{ pluginsStore.marketplaceSource.name }}
+        </v-chip>
+      </v-col>
+    </v-row>
+
     <v-row class="mb-6 mx-0" align="center">
       <v-col cols="12" sm="8" md="4" class="pa-0">
         <v-text-field
@@ -34,24 +56,34 @@
       </v-col>
       <v-spacer />
       <v-col cols="auto" class="pa-0">
-        <v-btn icon="mdi-refresh" variant="outlined" @click="handleRefresh" rounded="lg" />
+        <v-btn
+          icon="mdi-refresh"
+          variant="outlined"
+          :loading="activeTab === 'marketplace' ? pluginsStore.isMarketplaceLoading : pluginsStore.isLoading"
+          @click="handleRefresh"
+          rounded="lg"
+        />
       </v-col>
     </v-row>
 
-    <v-row v-if="showInitialSkeleton" class="mx-0">
+    <v-row v-if="activeTab === 'installed' && showInitialSkeleton" class="mx-0">
       <v-col cols="12" class="pa-0">
         <v-skeleton-loader type="card" :count="3" />
       </v-col>
     </v-row>
 
-    <v-row v-else-if="!initialSkeletonRequested && filteredPlugins.length === 0" justify="center" class="py-12 mx-0">
+    <v-row
+      v-else-if="activeTab === 'installed' && !initialSkeletonRequested && filteredPlugins.length === 0"
+      justify="center"
+      class="py-12 mx-0"
+    >
       <v-col cols="12" sm="8" md="6" class="text-center pa-0">
         <v-icon size="120" color="grey-lighten-1" icon="mdi-puzzle-outline" />
         <h3 class="text-h6 my-4">{{ $t('pages.plugins.noData') }}</h3>
       </v-col>
     </v-row>
 
-    <v-row v-else class="mx-n4">
+    <v-row v-else-if="activeTab === 'installed'" class="mx-n4">
       <v-col v-for="plugin in filteredPlugins" :key="plugin.id" cols="12" sm="6" md="4" lg="3" class="pa-4">
         <plugin-card
           :plugin="plugin"
@@ -62,8 +94,48 @@
       </v-col>
     </v-row>
 
-    <v-alert v-if="pluginsStore.error" type="error" class="mt-4">
+    <v-row v-else-if="pluginsStore.isMarketplaceLoading && pluginsStore.marketplaceItems.length === 0" class="mx-0">
+      <v-col cols="12" class="pa-0">
+        <v-skeleton-loader type="card" :count="3" />
+      </v-col>
+    </v-row>
+
+    <v-row
+      v-else-if="filteredMarketplaceItems.length === 0"
+      justify="center"
+      class="py-12 mx-0"
+    >
+      <v-col cols="12" sm="8" md="6" class="text-center pa-0">
+        <v-icon size="120" color="grey-lighten-1" icon="mdi-storefront-outline" />
+        <h3 class="text-h6 my-4">{{ $t('pages.plugins.marketplace.noData') }}</h3>
+      </v-col>
+    </v-row>
+
+    <v-row v-else class="mx-n4">
+      <v-col
+        v-for="item in filteredMarketplaceItems"
+        :key="item.plugin_id"
+        cols="12"
+        sm="6"
+        md="4"
+        lg="3"
+        class="pa-4"
+      >
+        <plugin-marketplace-card
+          :item="item"
+          :loading="marketplaceActionId === item.plugin_id"
+          @install="handleInstallMarketplacePlugin"
+          @update="handleUpdateMarketplacePlugin"
+        />
+      </v-col>
+    </v-row>
+
+    <v-alert v-if="activeTab === 'installed' && pluginsStore.error" type="error" class="mt-4">
       {{ pluginsStore.error }}
+    </v-alert>
+
+    <v-alert v-if="activeTab === 'marketplace' && pluginsStore.marketplaceError" type="error" class="mt-4">
+      {{ pluginsStore.marketplaceError }}
     </v-alert>
 
     <plugin-install-dialog
@@ -102,13 +174,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { usePluginsStore } from '@/stores/plugins'
 import PluginCard from '@/components/PluginCard.vue'
 import PluginInstallDialog from '@/components/plugins/PluginInstallDialog.vue'
+import PluginMarketplaceCard from '@/components/plugins/PluginMarketplaceCard.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
-import type { Plugin, PluginConfigSchema } from '@/api/plugins'
+import type { Plugin, PluginConfigSchema, PluginMarketplaceItem } from '@/api/plugins'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { translate } from '@/plugins/i18n'
@@ -116,6 +189,8 @@ import { translate } from '@/plugins/i18n'
 const pluginsStore = usePluginsStore()
 const { confirm } = useConfirmDialog()
 const searchQuery = ref('')
+const activeTab = ref<'installed' | 'marketplace'>('installed')
+const marketplaceActionId = ref('')
 const dialogVisible = ref(false)
 const installDialogVisible = ref(false)
 const activePlugin = ref<Plugin | null>(null)
@@ -129,16 +204,41 @@ const showInitialSkeleton = useDelayedFlag(initialSkeletonRequested)
 
 const filteredPlugins = computed(() =>
   pluginsStore.plugins.filter((plugin) =>
-    plugin.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+    pluginMatchesQuery(plugin.name, plugin.id, plugin.description)
+  )
+)
+
+const filteredMarketplaceItems = computed(() =>
+  pluginsStore.marketplaceItems.filter((plugin) =>
+    pluginMatchesQuery(plugin.name, plugin.plugin_id, plugin.description)
   )
 )
 
 onMounted(() => {
   void pluginsStore.fetchPlugins()
   void pluginsStore.fetchInstallSources()
+  void pluginsStore.fetchMarketplaceSources()
 })
 
+watch(activeTab, (next) => {
+  if (next === 'marketplace' && pluginsStore.marketplaceItems.length === 0) {
+    void pluginsStore.fetchMarketplace()
+  }
+})
+
+const pluginMatchesQuery = (...values: Array<string | undefined>) => {
+  const query = searchQuery.value.trim().toLowerCase()
+  if (!query) {
+    return true
+  }
+  return values.some((value) => (value ?? '').toLowerCase().includes(query))
+}
+
 const handleRefresh = () => {
+  if (activeTab.value === 'marketplace') {
+    void pluginsStore.fetchMarketplace()
+    return
+  }
   void pluginsStore.fetchPlugins({ force: true })
 }
 
@@ -153,6 +253,46 @@ const handleRescan = async () => {
 const handleInstallCompleted = () => {
   void pluginsStore.fetchPlugins({ force: true })
   void pluginsStore.fetchInstallSources()
+  if (pluginsStore.marketplaceItems.length > 0 || activeTab.value === 'marketplace') {
+    void pluginsStore.fetchMarketplace(pluginsStore.marketplaceSource?.id ?? 'official')
+  }
+}
+
+const handleInstallMarketplacePlugin = async (item: PluginMarketplaceItem) => {
+  marketplaceActionId.value = item.plugin_id
+  try {
+    await pluginsStore.installMarketplacePlugin(item.plugin_id, {
+      source: pluginsStore.marketplaceSource?.id ?? 'official',
+      enable_after_install: true,
+      allow_overwrite: false,
+    })
+  } finally {
+    marketplaceActionId.value = ''
+  }
+}
+
+const handleUpdateMarketplacePlugin = async (item: PluginMarketplaceItem) => {
+  const confirmed = await confirm({
+    title: translate('pages.plugins.marketplace.confirmUpdateTitle'),
+    message: translate('pages.plugins.marketplace.confirmUpdateMessage', { name: item.name }),
+    confirmText: translate('pages.plugins.marketplace.update'),
+    confirmColor: 'primary',
+  })
+
+  if (!confirmed) {
+    return
+  }
+
+  marketplaceActionId.value = item.plugin_id
+  try {
+    await pluginsStore.installMarketplacePlugin(item.plugin_id, {
+      source: pluginsStore.marketplaceSource?.id ?? 'official',
+      enable_after_install: true,
+      allow_overwrite: true,
+    })
+  } finally {
+    marketplaceActionId.value = ''
+  }
 }
 
 const handleUpdatePlugin = async (plugin: Plugin) => {

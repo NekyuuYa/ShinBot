@@ -128,6 +128,7 @@ class PluginInstallRecord:
     installed_at: float
     updated_at: float
     installed_version: str
+    plugin_path: str = ""
     managed_by_webui: bool = True
     archive_sha256: str = ""
 
@@ -139,6 +140,7 @@ class PluginInstallRecord:
             "source_url": self.source_url,
             "ref": self.ref,
             "resolved_ref": self.resolved_ref,
+            "plugin_path": self.plugin_path,
             "installed_at": self.installed_at,
             "updated_at": self.updated_at,
             "installed_version": self.installed_version,
@@ -155,12 +157,17 @@ class PluginInstallRecord:
         plugin_id = value.get("plugin_id")
         if not isinstance(plugin_id, str) or not plugin_id:
             raise ValueError("plugin_id must be a non-empty string")
+        try:
+            plugin_path = _normalize_plugin_path(str(value.get("plugin_path", "")))
+        except PluginInstallError as exc:
+            raise ValueError(str(exc)) from exc
         return cls(
             plugin_id=plugin_id,
             source_type=source_type,
             source_url=str(value.get("source_url", "")),
             ref=str(value.get("ref", "")),
             resolved_ref=str(value.get("resolved_ref", "")),
+            plugin_path=plugin_path,
             installed_at=float(value.get("installed_at", 0)),
             updated_at=float(value.get("updated_at", 0)),
             installed_version=str(value.get("installed_version", "0.0.0")),
@@ -268,6 +275,7 @@ class PluginPackagePreview:
     source_url: str
     ref: str
     resolved_ref: str
+    plugin_path: str
     archive_sha256: str
     target_exists: bool
     target_managed_by_webui: bool
@@ -295,6 +303,7 @@ class PluginPackagePreview:
             "source_url": self.source_url,
             "ref": self.ref,
             "resolved_ref": self.resolved_ref,
+            "plugin_path": self.plugin_path,
             "archive_sha256": self.archive_sha256,
             "target_exists": self.target_exists,
             "target_managed_by_webui": self.target_managed_by_webui,
@@ -342,14 +351,22 @@ class PluginInstallService:
                 source_url=filename or "uploaded_archive",
                 ref="",
                 resolved_ref="",
+                plugin_path="",
                 archive_sha256=_sha256_bytes(archive_bytes),
             )
             return preview.as_dict()
         finally:
             shutil.rmtree(self.tmp_dir / task_id, ignore_errors=True)
 
-    async def preview_github(self, url: str, ref: str = "main") -> dict[str, Any]:
+    async def preview_github(
+        self,
+        url: str,
+        ref: str = "main",
+        *,
+        plugin_path: str = "",
+    ) -> dict[str, Any]:
         """Preview a GitHub archive without installing it."""
+        normalized_plugin_path = _normalize_plugin_path(plugin_path)
         archive_bytes, resolved_ref = await self._download_github_archive(url, ref)
         task_id = f"preview-{uuid.uuid4().hex}"
         package_path, extract_root = self._prepare_archive_workspace(task_id, archive_bytes)
@@ -360,6 +377,7 @@ class PluginInstallService:
                 source_url=_normalize_github_url(url),
                 ref=ref,
                 resolved_ref=resolved_ref,
+                plugin_path=normalized_plugin_path,
                 archive_sha256=_sha256_bytes(archive_bytes),
             )
             return preview.as_dict()
@@ -384,6 +402,7 @@ class PluginInstallService:
             source_url=filename or "uploaded_archive",
             ref="",
             resolved_ref="",
+            plugin_path="",
             enable_after_install=enable_after_install,
             allow_overwrite=allow_overwrite,
         )
@@ -394,11 +413,13 @@ class PluginInstallService:
         url: str,
         ref: str = "main",
         *,
+        plugin_path: str = "",
         enable_after_install: bool = True,
         allow_overwrite: bool = False,
     ) -> dict[str, Any]:
         """Install a plugin from a GitHub repository archive."""
         task = self.task_registry.create()
+        normalized_plugin_path = _normalize_plugin_path(plugin_path)
         try:
             self.task_registry.update(
                 task,
@@ -418,6 +439,7 @@ class PluginInstallService:
             source_url=source_url,
             ref=ref,
             resolved_ref=resolved_ref,
+            plugin_path=normalized_plugin_path,
             enable_after_install=enable_after_install,
             allow_overwrite=allow_overwrite,
         )
@@ -447,6 +469,7 @@ class PluginInstallService:
         return await self.install_github(
             record.source_url,
             record.ref or "main",
+            plugin_path=record.plugin_path,
             enable_after_install=enable_after_install,
             allow_overwrite=True,
         )
@@ -509,6 +532,7 @@ class PluginInstallService:
         source_url: str,
         ref: str,
         resolved_ref: str,
+        plugin_path: str,
         enable_after_install: bool,
         allow_overwrite: bool,
     ) -> None:
@@ -527,6 +551,7 @@ class PluginInstallService:
                 source_url=source_url,
                 ref=ref,
                 resolved_ref=resolved_ref,
+                plugin_path=plugin_path,
                 archive_sha256=_sha256_bytes(archive_bytes),
             )
             self.task_registry.update(
@@ -609,6 +634,7 @@ class PluginInstallService:
                 source_url=preview.source_url,
                 ref=preview.ref,
                 resolved_ref=preview.resolved_ref,
+                plugin_path=preview.plugin_path,
                 installed_at=installed_at,
                 updated_at=now,
                 installed_version=preview.version,
@@ -662,10 +688,12 @@ class PluginInstallService:
         source_url: str,
         ref: str,
         resolved_ref: str,
+        plugin_path: str,
         archive_sha256: str,
     ) -> PluginPackagePreview:
         self._ensure_inside_data_dir(extract_root, allow_plugins=False)
-        plugin_root = self._find_plugin_root(extract_root)
+        normalized_plugin_path = _normalize_plugin_path(plugin_path)
+        plugin_root = self._find_plugin_root(extract_root, plugin_path=normalized_plugin_path)
         metadata = self._load_metadata(plugin_root)
         plugin_id = metadata["id"]
         required = metadata["required_dependencies"]
@@ -703,6 +731,7 @@ class PluginInstallService:
             source_url=source_url,
             ref=ref,
             resolved_ref=resolved_ref,
+            plugin_path=normalized_plugin_path,
             archive_sha256=archive_sha256,
             target_exists=target_exists,
             target_managed_by_webui=target_managed,
@@ -779,7 +808,17 @@ class PluginInstallService:
                 message="Plugin archive must not contain symlinks",
             )
 
-    def _find_plugin_root(self, extract_root: Path) -> Path:
+    def _find_plugin_root(self, extract_root: Path, *, plugin_path: str) -> Path:
+        if plugin_path:
+            root = self._repo_relative_path(extract_root, plugin_path)
+            if not (root / "metadata.json").is_file():
+                raise PluginInstallError(
+                    status_code=422,
+                    code="PLUGIN_INSTALL_METADATA_NOT_FOUND",
+                    message=f"Plugin path {plugin_path!r} does not contain metadata.json",
+                )
+            return root
+
         candidates = [extract_root]
         candidates.extend(path for path in sorted(extract_root.iterdir()) if path.is_dir())
         roots = [path for path in candidates if (path / "metadata.json").is_file()]
@@ -796,6 +835,22 @@ class PluginInstallService:
                 message="Plugin archive contains multiple metadata.json roots",
             )
         return roots[0]
+
+    def _repo_relative_path(self, extract_root: Path, plugin_path: str) -> Path:
+        relative = PurePosixPath(plugin_path)
+        roots = [extract_root]
+        roots.extend(path for path in sorted(extract_root.iterdir()) if path.is_dir())
+        extract_resolved = extract_root.resolve()
+        for root in roots:
+            candidate = (root / Path(*relative.parts)).resolve()
+            if candidate == extract_resolved or extract_resolved in candidate.parents:
+                if candidate.is_dir():
+                    return candidate
+        raise PluginInstallError(
+            status_code=422,
+            code="PLUGIN_INSTALL_PLUGIN_PATH_NOT_FOUND",
+            message=f"Plugin path {plugin_path!r} was not found in the archive",
+        )
 
     def _load_metadata(self, plugin_root: Path) -> dict[str, Any]:
         metadata_path = plugin_root / "metadata.json"
@@ -1067,6 +1122,7 @@ def install_source_for_plugin(boot: Any, plugin_id: str) -> dict[str, Any] | Non
         "source_url": record.source_url,
         "ref": record.ref,
         "resolved_ref": record.resolved_ref,
+        "plugin_path": record.plugin_path,
         "installed_version": record.installed_version,
         "managed_by_webui": record.managed_by_webui,
         "can_update": record.managed_by_webui and record.source_type == "github",
@@ -1102,6 +1158,26 @@ def _metadata_string_list(metadata: dict[str, Any], key: str) -> list[str]:
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _normalize_plugin_path(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    if "\\" in raw:
+        raise PluginInstallError(
+            status_code=422,
+            code="PLUGIN_INSTALL_INVALID_PLUGIN_PATH",
+            message="Plugin path must use forward slashes",
+        )
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts or "." in path.parts:
+        raise PluginInstallError(
+            status_code=422,
+            code="PLUGIN_INSTALL_INVALID_PLUGIN_PATH",
+            message="Plugin path must be a relative repository directory",
+        )
+    return path.as_posix()
 
 
 def _parse_github_repo(url: str) -> tuple[str, str]:

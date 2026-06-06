@@ -11,6 +11,8 @@ import {
   type PluginInstallPreview,
   type PluginInstallSource,
   type PluginInstallTask,
+  type PluginMarketplaceItem,
+  type PluginMarketplaceSource,
 } from '@/api/plugins'
 import type { ApiResponse } from '@/api/client'
 import { translate } from '@/plugins/i18n'
@@ -46,6 +48,11 @@ export const usePluginsStore = defineStore('plugins', () => {
   const plugins = crud.items
   const pluginSchemas = ref<Record<string, PluginConfigSchema>>({})
   const installSources = ref<PluginInstallSource[]>([])
+  const marketplaceSources = ref<PluginMarketplaceSource[]>([])
+  const marketplaceItems = ref<PluginMarketplaceItem[]>([])
+  const marketplaceSource = ref<PluginMarketplaceSource | null>(null)
+  const isMarketplaceLoading = ref(false)
+  const marketplaceError = ref('')
   const installError = ref<PluginInstallErrorState | null>(null)
 
   const clearInstallError = () => {
@@ -253,8 +260,44 @@ export const usePluginsStore = defineStore('plugins', () => {
     return result.ok
   }
 
+  const fetchMarketplaceSources = async () => {
+    marketplaceError.value = ''
+    try {
+      const response = await pluginsApi.listMarketplaceSources()
+      if (response.data.success && response.data.data) {
+        marketplaceSources.value = response.data.data.sources
+        return true
+      }
+      marketplaceError.value = response.data.error?.message ?? translate('pages.plugins.marketplace.loadFailed')
+      return false
+    } catch (errorDetail: unknown) {
+      marketplaceError.value = getErrorMessage(errorDetail, translate('pages.plugins.marketplace.loadFailed'))
+      return false
+    }
+  }
+
+  const fetchMarketplace = async (source = 'official') => {
+    isMarketplaceLoading.value = true
+    marketplaceError.value = ''
+    try {
+      const response = await pluginsApi.listMarketplace(source)
+      if (response.data.success && response.data.data) {
+        marketplaceSource.value = response.data.data.source
+        marketplaceItems.value = response.data.data.plugins
+        return true
+      }
+      marketplaceError.value = response.data.error?.message ?? translate('pages.plugins.marketplace.loadFailed')
+      return false
+    } catch (errorDetail: unknown) {
+      marketplaceError.value = getErrorMessage(errorDetail, translate('pages.plugins.marketplace.loadFailed'))
+      return false
+    } finally {
+      isMarketplaceLoading.value = false
+    }
+  }
+
   const previewGithubInstall = async (
-    payload: Pick<GithubPluginInstallPayload, 'url' | 'ref'>
+    payload: Pick<GithubPluginInstallPayload, 'url' | 'ref' | 'plugin_path'>
   ): Promise<PluginInstallPreview | null> => {
     return await runInstallRequest(
       () => pluginsApi.previewGithubInstall(payload),
@@ -355,10 +398,39 @@ export const usePluginsStore = defineStore('plugins', () => {
     )
   }
 
+  const installMarketplacePlugin = async (
+    id: string,
+    options: {
+      source?: string
+      enable_after_install?: boolean
+      allow_overwrite?: boolean
+    } = {}
+  ): Promise<PluginInstallTask | null> => {
+    return await runInstallRequest(
+      () => pluginsApi.installMarketplacePlugin(id, options),
+      {
+        errorKey: 'pages.plugins.install.installFailed',
+        successKey: options.allow_overwrite
+          ? 'pages.plugins.install.updated'
+          : 'pages.plugins.install.installed',
+        onSuccess: async (task) => {
+          clearInstallError()
+          await refreshAfterInstallTask(task)
+          await fetchMarketplace(options.source ?? 'official')
+        },
+      }
+    )
+  }
+
   return {
     plugins,
     pluginSchemas,
     installSources,
+    marketplaceSources,
+    marketplaceItems,
+    marketplaceSource,
+    isMarketplaceLoading,
+    marketplaceError,
     installError,
     isLoading: crud.isLoading,
     isSaving: crud.isSaving,
@@ -371,6 +443,8 @@ export const usePluginsStore = defineStore('plugins', () => {
     disablePlugin,
     updatePluginConfig,
     fetchInstallSources,
+    fetchMarketplaceSources,
+    fetchMarketplace,
     previewGithubInstall,
     previewArchiveInstall,
     installGithub,
@@ -378,6 +452,7 @@ export const usePluginsStore = defineStore('plugins', () => {
     fetchInstallTask,
     updateInstalledPlugin,
     uninstallInstalledPlugin,
+    installMarketplacePlugin,
     clearInstallError,
   }
 })

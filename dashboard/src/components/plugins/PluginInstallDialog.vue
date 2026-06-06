@@ -39,6 +39,17 @@
                   hide-details="auto"
                 />
               </v-col>
+              <v-col cols="12">
+                <v-text-field
+                  v-model.trim="githubPluginPath"
+                  :label="$t('pages.plugins.install.githubPluginPath')"
+                  :hint="$t('pages.plugins.install.githubPluginPathHint')"
+                  prepend-inner-icon="mdi-folder-search-outline"
+                  variant="outlined"
+                  density="comfortable"
+                  persistent-hint
+                />
+              </v-col>
             </v-row>
           </v-window-item>
 
@@ -157,6 +168,10 @@
               <div class="meta-line">
                 <span>{{ $t('pages.plugins.install.resolvedRef') }}</span>
                 <strong class="text-break">{{ preview.resolved_ref || '-' }}</strong>
+              </div>
+              <div class="meta-line">
+                <span>{{ $t('pages.plugins.install.pluginPath') }}</span>
+                <strong class="text-break">{{ preview.plugin_path || '-' }}</strong>
               </div>
               <div class="meta-line">
                 <span>{{ $t('pages.plugins.install.sha256') }}</span>
@@ -327,6 +342,7 @@ const pluginsStore = usePluginsStore()
 const sourceMode = ref<InstallSourceMode>('github')
 const githubUrl = ref('')
 const githubRef = ref('main')
+const githubPluginPath = ref('')
 const archiveInput = ref<File | File[] | null>(null)
 const enableAfterInstall = ref(true)
 const allowOverwrite = ref(false)
@@ -384,13 +400,14 @@ const resetForm = () => {
   sourceMode.value = 'github'
   githubUrl.value = ''
   githubRef.value = 'main'
+  githubPluginPath.value = ''
   archiveInput.value = null
   enableAfterInstall.value = true
   allowOverwrite.value = false
   resetResult()
 }
 
-watch([sourceMode, githubUrl, githubRef, archiveInput], () => {
+watch([sourceMode, githubUrl, githubRef, githubPluginPath, archiveInput], () => {
   resetResult()
   allowOverwrite.value = false
 })
@@ -418,6 +435,7 @@ const buildSourceFingerprint = () => {
       source: 'github',
       url: githubUrl.value.trim(),
       ref: githubRef.value.trim() || 'main',
+      pluginPath: githubPluginPath.value.trim(),
     })
   }
 
@@ -441,6 +459,7 @@ const handlePreview = async () => {
     const result = await pluginsStore.previewGithubInstall({
       url: githubUrl.value.trim(),
       ref: githubRef.value.trim() || 'main',
+      plugin_path: githubPluginPath.value.trim(),
     })
     if (fingerprint === buildSourceFingerprint()) {
       preview.value = result
@@ -471,6 +490,7 @@ const handleInstall = async () => {
     task.value = await pluginsStore.installGithub({
       url: githubUrl.value.trim(),
       ref: githubRef.value.trim() || 'main',
+      plugin_path: githubPluginPath.value.trim(),
       enable_after_install: enableAfterInstall.value,
       allow_overwrite: allowOverwrite.value,
     })
