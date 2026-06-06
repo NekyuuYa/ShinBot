@@ -252,7 +252,13 @@ POST /api/v1/plugin-installs/github/preview
 POST /api/v1/plugin-installs/archive/preview
 ```
 
-上传 zip 并校验 metadata，但不写入 `data/plugins`。
+请求体使用 raw zip bytes，`Content-Type: application/zip`。这样不需要为 FastAPI 额外引入 `python-multipart`。
+
+查询参数：
+
+- `filename`：可选，用于 UI 展示。
+
+接口校验 metadata，但不写入 `data/plugins`。
 
 响应结构与 GitHub preview 相同，`source_type` 为 `archive`。
 
@@ -284,13 +290,13 @@ POST /api/v1/plugin-installs/github
 POST /api/v1/plugin-installs/archive
 ```
 
-`multipart/form-data` 上传 zip 包。
+请求体使用 raw zip bytes，`Content-Type: application/zip`。
 
-字段：
+查询参数：
 
-- `file`：`.zip` 文件。
 - `enable_after_install`：布尔值，默认 `true`。
 - `allow_overwrite`：布尔值，默认 `false`。
+- `filename`：可选，用于 manifest 或 UI 展示。
 
 返回安装任务。
 
@@ -366,12 +372,21 @@ GitHub 安装：
 9. 如果当前已加载同 id 插件，先调用 `disable_plugin_or_raise()` 再 `bot.plugin_manager.unload_plugin_async(plugin_id)`。
 10. 写入 staging 目录 `<data_dir>/plugins/.installing-<plugin_id>-<task_id>`。
 11. 原子替换到 `<data_dir>/plugins/<plugin_id>`。
-12. 更新 manifest。
-13. 调用 `rescan_plugins()`。
-14. 如果 `enable_after_install=true`，调用 `enable_plugin_or_raise()`。
-15. 清理临时目录。
+12. 写入插件启用状态配置：
+    - `enable_after_install=true` 时设置 `plugins[].enabled=true`。
+    - `enable_after_install=false` 时设置 `plugins[].enabled=false`。
+13. 更新 manifest。
+14. 调用 `rescan_plugins()`。
+15. 如果 `enable_after_install=false` 且插件已被 rescan 短暂加载，立即调用 `disable_plugin_or_raise()`。
+16. 清理临时目录。
 
-上传 zip 安装同样从第 3 步开始。
+上传 zip 安装同样从第 4 步开始。
+
+启用状态说明：
+
+- ShinBot 当前启动流程会先 `load_all_async(data/plugins)`，再根据 `boot.config["plugins"][].enabled` 应用启用/禁用覆盖。
+- 安装服务必须复用 `set_plugin_saved_enabled()` 并调用 `boot.save_config()`，保证安装后的状态和重启后的状态一致。
+- `enable_after_install=false` 不能只依赖“不调用 enable”，因为现有 rescan/load 会默认激活插件。
 
 覆盖策略：
 
