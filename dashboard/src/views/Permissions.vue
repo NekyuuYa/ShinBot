@@ -772,16 +772,38 @@ async function refreshCommands() {
 }
 
 async function addCommandPermissionToGroup() {
-  const permission = commandPermissionDraft.value.trim() || selectedCommand.value?.permission || ''
+  const command = selectedCommand.value
+  if (!command) {
+    return
+  }
+
+  const commandName = command.name
+  const originalPermission = command.permission
+  const originallyOverridden = command.permissionOverridden
+  const draftPermission = commandPermissionDraft.value.trim()
+  const shouldUpdateCommandPermission = Boolean(draftPermission && draftPermission !== originalPermission)
+  let commandPermissionUpdated = false
+  let permission = draftPermission || originalPermission || ''
   const targetGroup = groups.value.find((group) => group.id === commandTargetGroupId.value)
   if (!permission || !targetGroup) {
     return
   }
 
-  const mergedPermissions = Array.from(new Set([...targetGroup.permissions, permission])).sort()
   isSavingGroup.value = true
   errorMessage.value = ''
   try {
+    if (shouldUpdateCommandPermission) {
+      await apiClient.unwrap(
+        permissionsApi.updateCommandPermission(commandName, {
+          permission: draftPermission,
+        })
+      )
+      commandPermissionUpdated = true
+      await refreshCommands()
+      permission = commands.value.find((item) => item.name === commandName)?.permission || draftPermission
+    }
+
+    const mergedPermissions = Array.from(new Set([...targetGroup.permissions, permission])).sort()
     const group = await apiClient.unwrap(
       permissionsApi.updateGroup(targetGroup.id, {
         name: targetGroup.name,
@@ -794,9 +816,29 @@ async function addCommandPermissionToGroup() {
     selectedGroupId.value = targetGroup.id
     uiStore.showSnackbar(translate('pages.permissions.messages.commandAdded'), 'success')
   } catch (error) {
+    if (commandPermissionUpdated) {
+      await restoreCommandPermission(commandName, originalPermission, originallyOverridden)
+    }
     errorMessage.value = getErrorMessage(error, translate('pages.permissions.messages.commandAddFailed'))
   } finally {
     isSavingGroup.value = false
+  }
+}
+
+async function restoreCommandPermission(commandName: string, permission: string, overridden: boolean) {
+  try {
+    if (overridden) {
+      await apiClient.unwrap(
+        permissionsApi.updateCommandPermission(commandName, {
+          permission,
+        })
+      )
+    } else {
+      await apiClient.unwrap(permissionsApi.resetCommandPermission(commandName))
+    }
+    await refreshCommands()
+  } catch {
+    await refreshCommands()
   }
 }
 

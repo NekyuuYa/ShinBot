@@ -36,6 +36,7 @@ from shinbot.core.security.permission_toml import (
     command_overrides_from_config,
     groups_from_config,
 )
+from shinbot.core.security.permission_service import BUILTIN_GROUP_IDS
 from shinbot.utils.log_file import parse_file_log_config
 from shinbot.utils.logger import DEFAULT_THIRD_PARTY_NOISE_POLICY, get_logger, setup_logging
 
@@ -480,7 +481,21 @@ class BootController:
                 group = existing.model_copy(deep=True)
                 if loaded_group.name:
                     group.name = loaded_group.name
-                group.permissions = set(group.permissions) | set(loaded_group.permissions)
+                configured_permissions = set(loaded_group.permissions)
+                if loaded_group.id in BUILTIN_GROUP_IDS:
+                    negative_permissions = {
+                        permission
+                        for permission in configured_permissions
+                        if permission.startswith("-")
+                    }
+                    if negative_permissions:
+                        logger.warning(
+                            "Ignoring negative permissions for built-in group %r: %r",
+                            loaded_group.id,
+                            sorted(negative_permissions),
+                        )
+                    configured_permissions -= negative_permissions
+                group.permissions = set(group.permissions) | configured_permissions
             else:
                 group = loaded_group
             self.bot.permission_engine.add_group(group)

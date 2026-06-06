@@ -205,6 +205,53 @@ def test_setup_permissions_applies_command_permission_overrides(tmp_path: Path) 
     assert bot.command_registry.get("open").permission == ""
 
 
+def test_setup_permissions_ignores_negative_permissions_for_builtin_groups(
+    tmp_path: Path,
+) -> None:
+    boot = BootController(config_path=tmp_path / "config.toml", data_dir=tmp_path / "data")
+    boot.config = {
+        "permissions": {
+            "groups": [
+                {
+                    "id": "owner",
+                    "permissions": ["-*", "cmd.owner.extra"],
+                },
+                {
+                    "id": "admin",
+                    "permissions": ["-cmd.*", "cmd.admin.extra"],
+                },
+                {
+                    "id": "default",
+                    "permissions": ["-cmd.help", "cmd.default.extra"],
+                },
+            ]
+        }
+    }
+    bot = ShinBot(data_dir=tmp_path / "data")
+    boot.bot = bot
+
+    boot._setup_permissions()
+
+    owner = bot.permission_engine.get_group("owner")
+    admin = bot.permission_engine.get_group("admin")
+    default = bot.permission_engine.get_group("default")
+
+    assert owner is not None
+    assert "*" in owner.permissions
+    assert "-*" not in owner.permissions
+    assert "cmd.owner.extra" in owner.permissions
+
+    assert admin is not None
+    assert "cmd.*" in admin.permissions
+    assert "-cmd.*" not in admin.permissions
+    assert "cmd.admin.extra" in admin.permissions
+
+    assert default is not None
+    assert "cmd.help" in default.permissions
+    assert "-cmd.help" not in default.permissions
+    assert "cmd.default.extra" in default.permissions
+
+
 def test_data_initializer_creates_required_dirs_and_cleans_temp(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     stale_dir = data_dir / "temp" / "context_state"
