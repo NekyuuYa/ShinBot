@@ -111,8 +111,8 @@ def set_command_enabled_or_raise(
 ) -> dict[str, Any]:
     """Update one command enabled state and persist it to config."""
     command = get_command_or_raise(command_registry, name)
-    command_registry.set_enabled(command.name, enabled)
 
+    # Prepare config mutation first, persist, then apply runtime state.
     store = _enabled_override_store(boot.config, create=True)
     store[command.name] = enabled
     if not boot.save_config():
@@ -121,4 +121,6 @@ def set_command_enabled_or_raise(
             code="CONFIG_WRITE_FAILED",
             message=f"Failed to persist enabled state for command {command.name!r}",
         )
+
+    command_registry.set_enabled(command.name, enabled)
     return command_dict(command)

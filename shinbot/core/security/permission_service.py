@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -219,6 +220,7 @@ class PermissionGroupService:
         self._engine = engine
         self._command_registry = command_registry
         self._actor = actor
+        self._lock = threading.Lock()
         self._snapshot = repository.load()
         self._ensure_builtin_groups()
         self._validate_snapshot()
@@ -297,6 +299,15 @@ class PermissionGroupService:
         if permissions is not None:
             next_permissions = _validate_permissions(permissions)
             if group.id in BUILTIN_GROUP_IDS:
+                negative_perms = {p for p in next_permissions if p.startswith("-")}
+                if negative_perms:
+                    raise PermissionServiceError(
+                        "BUILTIN_NEGATIVE_PERMISSION",
+                        (
+                            f"Built-in group {group.id!r} must not contain negative permissions: "
+                            f"{', '.join(sorted(negative_perms))}"
+                        ),
+                    )
                 missing_permissions = _builtin_group_permissions(group.id) - next_permissions
                 if missing_permissions:
                     raise PermissionServiceError(
@@ -408,29 +419,48 @@ class PermissionGroupService:
         del self._snapshot.command_overrides[command]
         self._persist_and_refresh("permission_command_override.remove", command=command)
 
+    def detect_orphan_permissions(self, command_registry: Any) -> list[str]:
+        """Find positive permission nodes in groups that no command currently requires."""
+        command_permissions = _required_command_permission_nodes(command_registry)
+        orphan: list[str] = []
+        for group in self.list_groups():
+            for permission in sorted(group.permissions):
+                if permission.startswith("-"):
+                    continue
+                if permission not in command_permissions:
+                    orphan.append(f"{group.id}:{permission}")
+        return orphan
+
     def refresh_engine(self, engine: PermissionEngine | None = None) -> None:
-        """Refresh the runtime permission engine from the current snapshot."""
+        """Refresh the runtime permission engine from the current snapshot.
+
+        Builds complete new group and binding dicts, then atomically replaces
+        the engine internals to avoid mid-update inconsistent reads.
+        """
         target = engine or self._engine
         if target is None:
             return
 
-        for group in list(target.all_groups):
-            if group.id not in BUILTIN_GROUP_IDS and group.id not in self._snapshot.groups:
-                target.remove_group(group.id)
-
+        # Build complete new snapshots
+        new_groups: dict[str, PermissionGroup] = {}
         for group in self._snapshot.groups.values():
-            target.add_group(group.to_engine_group())
+            engine_group = group.to_engine_group()
+            new_groups[engine_group.id] = engine_group
 
+        new_bindings: dict[str, set[str]] = {}
+        # Preserve bot_admin bindings from the existing engine state
         for key in target.binding_keys():
             if key.startswith(BOT_ADMIN_BINDING_PREFIX):
-                continue
-            target.unbind(key)
+                new_bindings[key] = set(target.groups_for_key(key))
 
         for key, groups in self._snapshot.bindings.items():
-            if hasattr(target, "set_groups_for_key"):
-                target.set_groups_for_key(key, groups)
-            elif groups:
-                target.bind(key, groups[0])
+            if key.startswith(BOT_ADMIN_BINDING_PREFIX):
+                continue
+            new_bindings[key] = set(groups)
+
+        # Atomic replacement
+        target._groups = new_groups
+        target._bindings = new_bindings
 
     def refresh_command_registry(self, command_registry: Any | None = None) -> None:
         """Refresh runtime command permission overrides from the current snapshot."""
@@ -454,11 +484,12 @@ class PermissionGroupService:
                 set_override(command, permission)
 
     def _persist_and_refresh(self, event: str, **fields: str) -> None:
-        self._validate_snapshot()
-        self._repository.save(self._snapshot)
-        self.refresh_engine()
-        self.refresh_command_registry()
-        _log_permission_admin_event(event, actor=self._actor, **fields)
+        with self._lock:
+            self._validate_snapshot()
+            self._repository.save(self._snapshot)
+            self.refresh_engine()
+            self.refresh_command_registry()
+            _log_permission_admin_event(event, actor=self._actor, **fields)
 
     def _ensure_builtin_groups(self) -> None:
         for builtin in (DEFAULT_GROUP, ADMIN_GROUP, OWNER_GROUP):
@@ -483,6 +514,7 @@ class PermissionGroupService:
             if group.id in BUILTIN_GROUP_IDS:
                 group.system = True
                 group.protected = True
+                group.permissions -= {p for p in group.permissions if p.startswith("-")}
                 group.permissions |= _builtin_group_permissions(group.id)
 
         for key, groups in list(self._snapshot.bindings.items()):
@@ -565,12 +597,24 @@ def _known_permission_nodes(command_registry: Any | None) -> set[str]:
     return known
 
 
+def _required_command_permission_nodes(command_registry: Any | None) -> set[str]:
+    if command_registry is None:
+        return set()
+    return {
+        str(getattr(command, "permission", "") or "").strip()
+        for command in getattr(command_registry, "all_commands", ())
+        if str(getattr(command, "permission", "") or "").strip()
+    }
+
+
 def _orphan_permissions_for_group(permissions: set[str], known_permissions: set[str]) -> set[str]:
     if not known_permissions:
         return set()
 
     orphan_permissions: set[str] = set()
     for permission in permissions:
+        if permission.startswith("-"):
+            continue
         normalized = permission[1:] if permission.startswith("-") else permission
         if normalized == "*" or normalized.endswith(".*"):
             continue

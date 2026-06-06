@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -13,6 +14,8 @@ import tomli_w
 from pydantic import BaseModel, Field
 
 from shinbot.core.security.permission import PermissionGroup
+
+_write_lock = threading.Lock()
 
 
 class PermissionGroupDefinition(BaseModel):
@@ -243,6 +246,11 @@ def _load_config(config_path: Path) -> dict[str, Any]:
 
 
 def _atomic_write_toml(config_path: Path, config: Mapping[str, Any]) -> None:
+    with _write_lock:
+        _atomic_write_toml_inner(config_path, config)
+
+
+def _atomic_write_toml_inner(config_path: Path, config: Mapping[str, Any]) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     temp_name = ""
     try:
