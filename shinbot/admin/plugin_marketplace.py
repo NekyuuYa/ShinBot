@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
@@ -23,6 +25,8 @@ OFFICIAL_MARKETPLACE_SOURCE_ID = "official"
 OFFICIAL_MARKETPLACE_REPOSITORY_URL = "https://github.com/NekyuuYa/shinbot-plugins"
 OFFICIAL_MARKETPLACE_REF = "main"
 OFFICIAL_MARKETPLACE_PLUGIN_ROOT = "plugins"
+PLUGIN_MARKETPLACE_CACHE_TTL_SECONDS = 6 * 60 * 60
+PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION = 1
 _VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
 _VALID_ROLE_VALUES = {"logic", "adapter"}
 
@@ -130,6 +134,26 @@ class PluginMarketplaceItem:
         }
 
 
+@dataclass(slots=True)
+class PluginMarketplaceArchive:
+    """One downloaded or cached marketplace repository archive."""
+
+    content: bytes
+    resolved_ref: str = ""
+    cached: bool = False
+    cached_at: float = 0
+    expires_at: float = 0
+
+    def cache_dict(self) -> dict[str, Any]:
+        """Return cache metadata for API payloads."""
+        return {
+            "cached": self.cached,
+            "cached_at": self.cached_at,
+            "expires_at": self.expires_at,
+            "ttl_seconds": PLUGIN_MARKETPLACE_CACHE_TTL_SECONDS,
+        }
+
+
 OFFICIAL_MARKETPLACE_SOURCE = PluginMarketplaceSource(
     id=OFFICIAL_MARKETPLACE_SOURCE_ID,
     name="ShinBot Official Plugins",
@@ -149,6 +173,7 @@ class PluginMarketplaceService:
         self.boot = boot
         self.data_dir = Path(boot.data_dir)
         self.plugins_dir = self.data_dir / "plugins"
+        self.cache_dir = self.data_dir / "plugin_marketplace_cache"
         self.manifest = PluginInstallManifest(self.data_dir)
         self.sources = {OFFICIAL_MARKETPLACE_SOURCE.id: OFFICIAL_MARKETPLACE_SOURCE}
 
@@ -156,13 +181,19 @@ class PluginMarketplaceService:
         """Return configured marketplace sources."""
         return {"sources": [source.as_dict() for source in self.sources.values()]}
 
-    async def list_plugins(self, source_id: str = OFFICIAL_MARKETPLACE_SOURCE_ID) -> dict[str, Any]:
+    async def list_plugins(
+        self,
+        source_id: str = OFFICIAL_MARKETPLACE_SOURCE_ID,
+        *,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
         """Return discovered marketplace plugins with local install state."""
         source = self._source_or_raise(source_id)
-        archive_bytes = await self._download_github_archive(source)
-        items = self._scan_monorepo_archive(source, archive_bytes)
+        archive = await self._download_github_archive(source, refresh=refresh)
+        items = self._scan_monorepo_archive(source, archive.content)
         return {
             "source": source.as_dict(),
+            "cache": archive.cache_dict(),
             "plugins": [self._enrich_item(item).as_dict() for item in items],
         }
 
@@ -170,9 +201,11 @@ class PluginMarketplaceService:
         self,
         source_id: str,
         plugin_id: str,
+        *,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         """Return one discovered marketplace plugin."""
-        payload = await self.list_plugins(source_id)
+        payload = await self.list_plugins(source_id, refresh=refresh)
         for item in payload["plugins"]:
             if item["plugin_id"] == plugin_id:
                 return {"source": payload["source"], "plugin": item}
@@ -186,14 +219,18 @@ class PluginMarketplaceService:
         self,
         source_id: str,
         plugin_id: str,
+        *,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         """Preview installing one marketplace plugin."""
-        item = await self._raw_plugin_or_raise(source_id, plugin_id)
+        item, archive = await self._raw_plugin_or_raise(source_id, plugin_id, refresh=refresh)
         service = build_plugin_install_service(self.bot, self.boot)
         try:
-            return await service.preview_github(
+            return await service.preview_github_archive(
                 item.source.repository_url,
                 item.source.ref,
+                archive_bytes=archive.content,
+                resolved_ref=archive.resolved_ref,
                 plugin_path=item.plugin_path,
             )
         except PluginInstallError as exc:
@@ -206,14 +243,17 @@ class PluginMarketplaceService:
         *,
         enable_after_install: bool,
         allow_overwrite: bool,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         """Install one marketplace plugin through the WebUI install service."""
-        item = await self._raw_plugin_or_raise(source_id, plugin_id)
+        item, archive = await self._raw_plugin_or_raise(source_id, plugin_id, refresh=refresh)
         service = build_plugin_install_service(self.bot, self.boot)
         try:
-            return await service.install_github(
+            return await service.install_github_archive(
                 item.source.repository_url,
                 item.source.ref,
+                archive_bytes=archive.content,
+                resolved_ref=archive.resolved_ref,
                 plugin_path=item.plugin_path,
                 enable_after_install=enable_after_install,
                 allow_overwrite=allow_overwrite,
@@ -225,12 +265,14 @@ class PluginMarketplaceService:
         self,
         source_id: str,
         plugin_id: str,
-    ) -> PluginMarketplaceItem:
+        *,
+        refresh: bool = False,
+    ) -> tuple[PluginMarketplaceItem, PluginMarketplaceArchive]:
         source = self._source_or_raise(source_id)
-        archive_bytes = await self._download_github_archive(source)
-        for item in self._scan_monorepo_archive(source, archive_bytes):
+        archive = await self._download_github_archive(source, refresh=refresh)
+        for item in self._scan_monorepo_archive(source, archive.content):
             if item.plugin_id == plugin_id:
-                return item
+                return item, archive
         raise PluginMarketplaceError(
             status_code=404,
             code="PLUGIN_MARKETPLACE_ITEM_NOT_FOUND",
@@ -247,7 +289,17 @@ class PluginMarketplaceService:
             )
         return source
 
-    async def _download_github_archive(self, source: PluginMarketplaceSource) -> bytes:
+    async def _download_github_archive(
+        self,
+        source: PluginMarketplaceSource,
+        *,
+        refresh: bool = False,
+    ) -> PluginMarketplaceArchive:
+        if not refresh:
+            cached = self._load_cached_archive(source)
+            if cached is not None:
+                return cached
+
         owner, repo = _parse_github_repo(source.repository_url)
         _validate_github_ref(source.ref)
         archive_url = (
@@ -275,7 +327,86 @@ class PluginMarketplaceService:
                 code="PLUGIN_MARKETPLACE_ARCHIVE_INVALID",
                 message="Plugin marketplace archive is too large",
             )
-        return content
+        return self._save_cached_archive(source, content, resolved_ref="")
+
+    def _load_cached_archive(
+        self,
+        source: PluginMarketplaceSource,
+    ) -> PluginMarketplaceArchive | None:
+        archive_path, metadata_path = self._cache_paths(source)
+        if not archive_path.is_file() or not metadata_path.is_file():
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if not isinstance(metadata, dict):
+                return None
+            if metadata.get("schema_version") != PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION:
+                return None
+            expires_at = float(metadata.get("expires_at", 0))
+            if expires_at <= time.time():
+                return None
+            content = archive_path.read_bytes()
+        except Exception:
+            return None
+        if len(content) > PLUGIN_INSTALL_MAX_ARCHIVE_BYTES:
+            return None
+        return PluginMarketplaceArchive(
+            content=content,
+            resolved_ref=str(metadata.get("resolved_ref", "")),
+            cached=True,
+            cached_at=float(metadata.get("cached_at", 0)),
+            expires_at=expires_at,
+        )
+
+    def _save_cached_archive(
+        self,
+        source: PluginMarketplaceSource,
+        content: bytes,
+        *,
+        resolved_ref: str,
+    ) -> PluginMarketplaceArchive:
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        archive_path, metadata_path = self._cache_paths(source)
+        now = time.time()
+        expires_at = now + PLUGIN_MARKETPLACE_CACHE_TTL_SECONDS
+        archive_tmp = archive_path.with_suffix(".zip.tmp")
+        metadata_tmp = metadata_path.with_suffix(".json.tmp")
+        archive_tmp.write_bytes(content)
+        metadata = {
+            "schema_version": PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION,
+            "source": source.as_dict(),
+            "resolved_ref": resolved_ref,
+            "cached_at": now,
+            "expires_at": expires_at,
+            "archive_sha256": hashlib.sha256(content).hexdigest(),
+            "archive_size": len(content),
+        }
+        metadata_tmp.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        archive_tmp.replace(archive_path)
+        metadata_tmp.replace(metadata_path)
+        return PluginMarketplaceArchive(
+            content=content,
+            resolved_ref=resolved_ref,
+            cached=False,
+            cached_at=now,
+            expires_at=expires_at,
+        )
+
+    def _cache_paths(self, source: PluginMarketplaceSource) -> tuple[Path, Path]:
+        cache_key = hashlib.sha256(
+            "\0".join(
+                [
+                    source.id,
+                    source.repository_url,
+                    source.ref,
+                    source.plugin_root,
+                ]
+            ).encode("utf-8")
+        ).hexdigest()
+        return self.cache_dir / f"{cache_key}.zip", self.cache_dir / f"{cache_key}.json"
 
     def _scan_monorepo_archive(
         self,

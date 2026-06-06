@@ -28,6 +28,7 @@ class PluginMarketplaceSourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str = OFFICIAL_MARKETPLACE_SOURCE_ID
+    refresh: bool = False
 
 
 class PluginMarketplaceInstallRequest(PluginMarketplaceSourceRequest):
@@ -54,13 +55,14 @@ async def list_plugin_marketplace_sources(bot=BotDep, boot=BootDep):
 @router.get("", response_model=Envelope[dict[str, Any]])
 async def list_plugin_marketplace(
     source: str = Query(default=OFFICIAL_MARKETPLACE_SOURCE_ID),
+    refresh: bool = Query(default=False),
     bot=BotDep,
     boot=BootDep,
 ):
     """List plugins from a marketplace source."""
     service = build_plugin_marketplace_service(bot, boot)
     try:
-        return ok(await service.list_plugins(source))
+        return ok(await service.list_plugins(source, refresh=refresh))
     except PluginMarketplaceError as exc:
         _raise_marketplace_http_error(exc)
 
@@ -69,13 +71,14 @@ async def list_plugin_marketplace(
 async def get_plugin_marketplace_item(
     plugin_id: str,
     source: str = Query(default=OFFICIAL_MARKETPLACE_SOURCE_ID),
+    refresh: bool = Query(default=False),
     bot=BotDep,
     boot=BootDep,
 ):
     """Get one plugin from a marketplace source."""
     service = build_plugin_marketplace_service(bot, boot)
     try:
-        return ok(await service.get_plugin(source, plugin_id))
+        return ok(await service.get_plugin(source, plugin_id, refresh=refresh))
     except PluginMarketplaceError as exc:
         _raise_marketplace_http_error(exc)
 
@@ -90,8 +93,9 @@ async def preview_plugin_marketplace_item(
     """Preview installing one marketplace plugin."""
     service = build_plugin_marketplace_service(bot, boot)
     source = payload.source if payload is not None else OFFICIAL_MARKETPLACE_SOURCE_ID
+    refresh = payload.refresh if payload is not None else False
     try:
-        return ok(await service.preview_plugin(source, plugin_id))
+        return ok(await service.preview_plugin(source, plugin_id, refresh=refresh))
     except PluginMarketplaceError as exc:
         _raise_marketplace_http_error(exc)
 
@@ -113,6 +117,7 @@ async def install_plugin_marketplace_item(
                 plugin_id,
                 enable_after_install=request_payload.enable_after_install,
                 allow_overwrite=request_payload.allow_overwrite,
+                refresh=request_payload.refresh,
             )
         )
     except PluginMarketplaceError as exc:

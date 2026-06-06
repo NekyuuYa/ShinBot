@@ -178,6 +178,12 @@ export interface PluginMarketplaceSourcesResponse {
 
 export interface PluginMarketplaceResponse {
   source: PluginMarketplaceSource
+  cache?: {
+    cached: boolean
+    cached_at: number
+    expires_at: number
+    ttl_seconds: number
+  }
   plugins: PluginMarketplaceItem[]
 }
 
@@ -188,6 +194,7 @@ export interface PluginMarketplaceItemResponse {
 
 export interface PluginMarketplaceInstallPayload {
   source?: string
+  refresh?: boolean
   enable_after_install?: boolean
   allow_overwrite?: boolean
 }
@@ -279,9 +286,9 @@ export const pluginsApi = {
     return apiClient.get<PluginMarketplaceSourcesResponse>('/plugin-marketplace/sources')
   },
 
-  listMarketplace(source = 'official') {
+  listMarketplace(source = 'official', refresh = false) {
     return apiClient.get<PluginMarketplaceResponse>('/plugin-marketplace', {
-      params: { source },
+      params: { source, refresh },
     })
   },
 

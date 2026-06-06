@@ -159,7 +159,54 @@ def test_plugin_marketplace_lists_monorepo_plugins(tmp_path: Path, monkeypatch):
     assert demo["installed"] is False
     assert demo["can_install"] is True
     assert demo["missing_optional_dependencies"] == ["shinbot_plugin_optional_demo"]
+    assert payload["cache"]["cached"] is False
     assert len(calls) == 1
+
+
+def test_plugin_marketplace_reuses_cached_archive(tmp_path: Path, monkeypatch):
+    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip()])
+    client, _bot, _boot, headers = _client(tmp_path)
+
+    with client:
+        first = client.get("/api/v1/plugin-marketplace", headers=headers)
+        second = client.get("/api/v1/plugin-marketplace", headers=headers)
+        preview = client.post(
+            "/api/v1/plugin-marketplace/shinbot_plugin_market_demo/preview",
+            headers=headers,
+            json={"source": "official"},
+        )
+
+    assert first.status_code == 200
+    assert first.json()["data"]["cache"]["cached"] is False
+    assert second.status_code == 200
+    assert second.json()["data"]["cache"]["cached"] is True
+    assert preview.status_code == 200
+    assert len(calls) == 1
+
+
+def test_plugin_marketplace_refresh_bypasses_cached_archive(tmp_path: Path, monkeypatch):
+    calls = _patch_github_downloads(
+        monkeypatch,
+        [_marketplace_zip(version="0.1.0"), _marketplace_zip(version="0.2.0")],
+    )
+    client, _bot, _boot, headers = _client(tmp_path)
+
+    with client:
+        first = client.get("/api/v1/plugin-marketplace", headers=headers)
+        refreshed = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"refresh": "true"},
+        )
+
+    assert first.status_code == 200
+    assert refreshed.status_code == 200
+    demo = {
+        item["plugin_id"]: item for item in refreshed.json()["data"]["plugins"]
+    }["shinbot_plugin_market_demo"]
+    assert demo["version"] == "0.2.0"
+    assert refreshed.json()["data"]["cache"]["cached"] is False
+    assert len(calls) == 2
 
 
 def test_plugin_marketplace_marks_missing_required_dependency(tmp_path: Path, monkeypatch):
@@ -181,10 +228,7 @@ def test_plugin_marketplace_marks_missing_required_dependency(tmp_path: Path, mo
 
 
 def test_plugin_marketplace_installs_selected_monorepo_plugin(tmp_path: Path, monkeypatch):
-    calls = _patch_github_downloads(
-        monkeypatch,
-        [_marketplace_zip(), _marketplace_zip(), _marketplace_zip()],
-    )
+    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip()])
     client, bot, _boot, headers = _client(tmp_path)
 
     with client:
@@ -206,11 +250,11 @@ def test_plugin_marketplace_installs_selected_monorepo_plugin(tmp_path: Path, mo
     assert demo["managed_by_webui"] is True
     assert demo["can_install"] is False
     assert demo["installed_source"]["plugin_path"] == "plugins/shinbot_plugin_market_demo"
-    assert len(calls) == 3
+    assert len(calls) == 1
 
 
 def test_plugin_marketplace_preview_uses_selected_plugin_path(tmp_path: Path, monkeypatch):
-    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip(), _marketplace_zip()])
+    calls = _patch_github_downloads(monkeypatch, [_marketplace_zip()])
     client, _bot, _boot, headers = _client(tmp_path)
 
     with client:
@@ -224,7 +268,7 @@ def test_plugin_marketplace_preview_uses_selected_plugin_path(tmp_path: Path, mo
     payload = response.json()["data"]
     assert payload["plugin_id"] == "shinbot_plugin_market_demo"
     assert payload["plugin_path"] == "plugins/shinbot_plugin_market_demo"
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_plugin_marketplace_blocks_unmanaged_existing_plugin(tmp_path: Path, monkeypatch):
@@ -264,7 +308,7 @@ def test_plugin_marketplace_blocks_unmanaged_existing_plugin(tmp_path: Path, mon
 def test_plugin_marketplace_reports_update_available(tmp_path: Path, monkeypatch):
     _patch_github_downloads(
         monkeypatch,
-        [_marketplace_zip(version="0.1.0"), _marketplace_zip(version="0.1.0")],
+        [_marketplace_zip(version="0.1.0")],
     )
     client, _bot, _boot, headers = _client(tmp_path)
     with client:
@@ -277,7 +321,11 @@ def test_plugin_marketplace_reports_update_available(tmp_path: Path, monkeypatch
 
     _patch_github_downloads(monkeypatch, [_marketplace_zip(version="0.2.0")])
     with client:
-        listed = client.get("/api/v1/plugin-marketplace", headers=headers)
+        listed = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"refresh": "true"},
+        )
 
     demo = {
         item["plugin_id"]: item for item in listed.json()["data"]["plugins"]

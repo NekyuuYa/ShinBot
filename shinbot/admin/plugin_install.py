@@ -385,6 +385,34 @@ class PluginInstallService:
             package_path.unlink(missing_ok=True)
             shutil.rmtree(self.tmp_dir / task_id, ignore_errors=True)
 
+    async def preview_github_archive(
+        self,
+        url: str,
+        ref: str,
+        *,
+        archive_bytes: bytes,
+        resolved_ref: str = "",
+        plugin_path: str = "",
+    ) -> dict[str, Any]:
+        """Preview a GitHub archive that was already downloaded."""
+        normalized_plugin_path = _normalize_plugin_path(plugin_path)
+        task_id = f"preview-{uuid.uuid4().hex}"
+        package_path, extract_root = self._prepare_archive_workspace(task_id, archive_bytes)
+        try:
+            preview = self._preview_extracted_package(
+                extract_root,
+                source_type="github",
+                source_url=_normalize_github_url(url),
+                ref=ref,
+                resolved_ref=resolved_ref,
+                plugin_path=normalized_plugin_path,
+                archive_sha256=_sha256_bytes(archive_bytes),
+            )
+            return preview.as_dict()
+        finally:
+            package_path.unlink(missing_ok=True)
+            shutil.rmtree(self.tmp_dir / task_id, ignore_errors=True)
+
     async def install_archive(
         self,
         archive_bytes: bytes,
@@ -428,6 +456,38 @@ class PluginInstallService:
                 message="Downloading GitHub archive",
             )
             archive_bytes, resolved_ref = await self._download_github_archive(url, ref)
+            source_url = _normalize_github_url(url)
+        except PluginInstallError as exc:
+            self._fail_task(task, exc)
+            raise
+        await self._run_archive_install(
+            task,
+            archive_bytes,
+            source_type="github",
+            source_url=source_url,
+            ref=ref,
+            resolved_ref=resolved_ref,
+            plugin_path=normalized_plugin_path,
+            enable_after_install=enable_after_install,
+            allow_overwrite=allow_overwrite,
+        )
+        return task.as_dict()
+
+    async def install_github_archive(
+        self,
+        url: str,
+        ref: str,
+        *,
+        archive_bytes: bytes,
+        resolved_ref: str = "",
+        plugin_path: str = "",
+        enable_after_install: bool = True,
+        allow_overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Install a GitHub archive that was already downloaded."""
+        task = self.task_registry.create()
+        normalized_plugin_path = _normalize_plugin_path(plugin_path)
+        try:
             source_url = _normalize_github_url(url)
         except PluginInstallError as exc:
             self._fail_task(task, exc)

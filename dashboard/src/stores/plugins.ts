@@ -276,11 +276,11 @@ export const usePluginsStore = defineStore('plugins', () => {
     }
   }
 
-  const fetchMarketplace = async (source = 'official') => {
+  const fetchMarketplace = async (source = 'official', options: { refresh?: boolean } = {}) => {
     isMarketplaceLoading.value = true
     marketplaceError.value = ''
     try {
-      const response = await pluginsApi.listMarketplace(source)
+      const response = await pluginsApi.listMarketplace(source, options.refresh ?? false)
       if (response.data.success && response.data.data) {
         marketplaceSource.value = response.data.data.source
         marketplaceItems.value = response.data.data.plugins

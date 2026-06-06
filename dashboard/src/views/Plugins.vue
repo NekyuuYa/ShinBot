@@ -236,7 +236,9 @@ const pluginMatchesQuery = (...values: Array<string | undefined>) => {
 
 const handleRefresh = () => {
   if (activeTab.value === 'marketplace') {
-    void pluginsStore.fetchMarketplace()
+    void pluginsStore.fetchMarketplace(pluginsStore.marketplaceSource?.id ?? 'official', {
+      refresh: true,
+    })
     return
   }
   void pluginsStore.fetchPlugins({ force: true })
