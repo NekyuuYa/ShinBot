@@ -86,7 +86,12 @@ def _topo_sort(
             return
         in_stack.add(pid)
         _, meta = id_to_item[pid]
-        for dep in meta.get("dependencies", []):
+        dependency_ids = [
+            *meta.get("required_dependencies", []),
+            *meta.get("optional_dependencies", []),
+            *meta.get("dependencies", []),
+        ]
+        for dep in dependency_ids:
             visit(dep)
         in_stack.discard(pid)
         if pid not in visited:
@@ -743,7 +748,12 @@ class PluginManager:
         batch_ids = {m["id"] for _, m in sorted_candidates}
         already_loaded = set(self._plugins.keys())
         for _, metadata in sorted_candidates:
-            for dep in metadata.get("dependencies", []):
+            dependency_ids = [
+                *metadata.get("required_dependencies", []),
+                *metadata.get("optional_dependencies", []),
+                *metadata.get("dependencies", []),
+            ]
+            for dep in dependency_ids:
                 if dep not in batch_ids and dep not in already_loaded:
                     logger.warning(
                         "Plugin %r declares dependency on %r which is not available",
@@ -852,7 +862,12 @@ class PluginManager:
         batch_ids = {m["id"] for _, m in sorted_candidates}
         already_loaded = set(self._plugins.keys())
         for _, metadata in sorted_candidates:
-            for dep in metadata.get("dependencies", []):
+            dependency_ids = [
+                *metadata.get("required_dependencies", []),
+                *metadata.get("optional_dependencies", []),
+                *metadata.get("dependencies", []),
+            ]
+            for dep in dependency_ids:
                 if dep not in batch_ids and dep not in already_loaded:
                     logger.warning(
                         "Plugin %r declares dependency on %r which is not available",
@@ -1195,6 +1210,20 @@ class PluginManager:
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
             raise ValueError("metadata.dependencies must be a list of plugin ID strings")
         metadata["dependencies"] = deps
+
+        required_deps = metadata.get("required_dependencies", [])
+        if not isinstance(required_deps, list) or not all(
+            isinstance(d, str) for d in required_deps
+        ):
+            raise ValueError("metadata.required_dependencies must be a list of plugin ID strings")
+        metadata["required_dependencies"] = required_deps
+
+        optional_deps = metadata.get("optional_dependencies", [])
+        if not isinstance(optional_deps, list) or not all(
+            isinstance(d, str) for d in optional_deps
+        ):
+            raise ValueError("metadata.optional_dependencies must be a list of plugin ID strings")
+        metadata["optional_dependencies"] = optional_deps
 
         default_enabled = metadata.get("default_enabled", True)
         if not isinstance(default_enabled, bool):

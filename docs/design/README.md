@@ -54,6 +54,7 @@
 - `webui_design_spec.md`
 - `api_communication_spec.md`
 - `model_runtime_webui_spec.md`
+- `webui_plugin_install.md` — Dashboard 插件安装、更新、卸载能力规划。
 
 ### `governance/`
 

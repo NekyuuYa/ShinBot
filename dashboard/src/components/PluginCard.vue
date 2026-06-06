@@ -26,6 +26,21 @@
             <v-list-item v-if="canConfigure" @click="handleConfigure">
               <v-list-item-title>{{ $t('pages.plugins.card.configure') }}</v-list-item-title>
             </v-list-item>
+            <v-divider v-if="canUpdate || canUninstall" />
+            <v-list-item v-if="canUpdate" @click="handleUpdate">
+              <template #prepend>
+                <v-icon icon="mdi-update" />
+              </template>
+              <v-list-item-title>{{ $t('pages.plugins.card.update') }}</v-list-item-title>
+            </v-list-item>
+            <v-list-item v-if="canUninstall" @click="handleUninstall">
+              <template #prepend>
+                <v-icon color="error" icon="mdi-delete-outline" />
+              </template>
+              <v-list-item-title class="text-error">
+                {{ $t('pages.plugins.card.uninstall') }}
+              </v-list-item-title>
+            </v-list-item>
           </v-list>
         </v-menu>
       </template>
@@ -63,6 +78,27 @@
         {{ plugin.author }}
       </div>
 
+      <div class="d-flex flex-wrap ga-2 mb-2">
+        <v-chip :color="sourceColor" size="small" variant="tonal">
+          <template #prepend>
+            <v-icon :icon="sourceIcon" size="14" class="me-1" />
+          </template>
+          {{ sourceLabel }}
+        </v-chip>
+        <v-chip
+          v-if="installSource?.ref"
+          color="secondary"
+          size="small"
+          variant="tonal"
+        >
+          {{ installSource.ref }}
+        </v-chip>
+      </div>
+
+      <div v-if="installSource?.source_url" class="text-caption text-medium-emphasis mb-2 text-truncate">
+        {{ installSource.source_url }}
+      </div>
+
       <div v-if="plugin.description" class="text-caption text-medium-emphasis mt-2 line-clamp-3">
         {{ plugin.description }}
       </div>
@@ -83,6 +119,9 @@
         }}
       </v-btn>
       <v-spacer />
+      <v-btn v-if="canUpdate" color="secondary" variant="tonal" size="small" @click="handleUpdate">
+        {{ $t('pages.plugins.card.update') }}
+      </v-btn>
       <v-btn v-if="canConfigure" color="primary" variant="tonal" size="small" @click="handleConfigure">
         {{ $t('pages.plugins.card.configure') }}
       </v-btn>
@@ -92,6 +131,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { usePluginsStore } from '@/stores/plugins'
 import type { Plugin } from '@/api/plugins'
 
@@ -102,10 +142,38 @@ interface Props {
 const props = defineProps<Props>()
 const emit = defineEmits<{
   configure: [plugin: Plugin]
+  update: [plugin: Plugin]
+  uninstall: [plugin: Plugin]
 }>()
 
+const { t } = useI18n()
 const pluginsStore = usePluginsStore()
 const canConfigure = computed(() => props.plugin.role !== 'adapter')
+const installSource = computed(() => props.plugin.metadata?.install_source)
+const isWebuiManaged = computed(() => Boolean(installSource.value?.managed_by_webui))
+const canUpdate = computed(() => Boolean(isWebuiManaged.value && installSource.value?.can_update))
+const canUninstall = computed(() => Boolean(isWebuiManaged.value && installSource.value?.can_uninstall))
+const sourceLabel = computed(() => {
+  if (!installSource.value) {
+    return t('pages.plugins.card.localSource')
+  }
+  if (installSource.value.source_type === 'github') {
+    return t('pages.plugins.install.githubSource')
+  }
+  return t('pages.plugins.install.archiveSource')
+})
+const sourceIcon = computed(() => {
+  if (!installSource.value) {
+    return 'mdi-folder-outline'
+  }
+  return installSource.value.source_type === 'github' ? 'mdi-github' : 'mdi-folder-zip'
+})
+const sourceColor = computed(() => {
+  if (!installSource.value) {
+    return 'grey'
+  }
+  return installSource.value.source_type === 'github' ? 'primary' : 'secondary'
+})
 
 const handleToggle = async () => {
   if (props.plugin.status === 'enabled') {
@@ -117,6 +185,14 @@ const handleToggle = async () => {
 
 const handleConfigure = () => {
   emit('configure', props.plugin)
+}
+
+const handleUpdate = () => {
+  emit('update', props.plugin)
+}
+
+const handleUninstall = () => {
+  emit('uninstall', props.plugin)
 }
 </script>
 
