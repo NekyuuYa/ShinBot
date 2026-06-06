@@ -448,8 +448,8 @@ import { useUiStore } from '@/stores/ui'
 import { getErrorMessage } from '@/utils/error'
 
 interface PermissionCommand extends CommandDefinition {
-  defaultPermission?: string
-  permissionOverridden?: boolean
+  defaultPermission: string
+  permissionOverridden: boolean
 }
 
 const uiStore = useUiStore()
@@ -538,7 +538,9 @@ const permissionSuggestions = computed(() => {
 const knownPermissionSet = computed(() => new Set(permissionSuggestions.value))
 
 const orphanPermissions = computed(() =>
-  [...groupForm.value.permissions, ...groupForm.value.deniedPermissions]
+  selectedGroup.value?.orphanPermissions.length
+    ? selectedGroup.value.orphanPermissions
+    : [...groupForm.value.permissions, ...groupForm.value.deniedPermissions]
     .map(stripDenyPrefix)
     .filter((permission) => isOrphanPermission(permission))
 )
@@ -692,7 +694,7 @@ async function saveBinding() {
   errorMessage.value = ''
   try {
     const binding = await apiClient.unwrap(
-      permissionsApi.setBinding(bindingScopeKey.value.trim(), { groups: bindingGroupIds.value })
+      permissionsApi.setBinding(bindingScopeKey.value.trim(), { groupIds: bindingGroupIds.value })
     )
     upsertBinding(normalizeBinding(binding))
     uiStore.showSnackbar(translate('pages.permissions.messages.bindingSaved'), 'success')
@@ -860,6 +862,9 @@ function normalizeGroup(group: PermissionGroup): PermissionGroup {
     name: group.name || '',
     description: group.description || '',
     permissions: Array.isArray(group.permissions) ? [...group.permissions].sort() : [],
+    orphanPermissions: Array.isArray(group.orphanPermissions)
+      ? [...group.orphanPermissions].sort()
+      : [],
     system: Boolean(group.system),
     protected: Boolean(group.protected),
   }

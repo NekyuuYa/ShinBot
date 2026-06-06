@@ -6,6 +6,9 @@
   "loadFailed": "Failed to load commands",
   "updateFailed": "Failed to update command state",
   "updated": "Command state updated",
+  "actions": {
+    "addToGroup": "Add to Group"
+  },
   "layout": {
     "list": "Switch to List",
     "card": "Switch to Cards"
@@ -38,6 +41,16 @@
     "usage": "Usage",
     "permission": "Permission",
     "pattern": "Pattern"
+  },
+  "permission": {
+    "required": "Required Permission",
+    "default": "Default Permission",
+    "overridden": "Overridden",
+    "targetGroup": "Target Permission Group",
+    "addDialogTitle": "Add to Permission Group",
+    "added": "Permission added to group",
+    "addFailed": "Failed to add permission to group",
+    "loadGroupsFailed": "Failed to load permission groups"
   },
   "empty": {
     "title": "No commands found",

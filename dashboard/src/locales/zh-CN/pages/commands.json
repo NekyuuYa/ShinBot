@@ -6,6 +6,9 @@
   "loadFailed": "加载指令失败",
   "updateFailed": "更新指令状态失败",
   "updated": "指令状态已更新",
+  "actions": {
+    "addToGroup": "加入权限组"
+  },
   "layout": {
     "list": "切换到列表",
     "card": "切换到卡片"
@@ -38,6 +41,16 @@
     "usage": "用法",
     "permission": "权限",
     "pattern": "匹配规则"
+  },
+  "permission": {
+    "required": "所需权限",
+    "default": "默认权限",
+    "overridden": "已覆盖",
+    "targetGroup": "目标权限组",
+    "addDialogTitle": "加入权限组",
+    "added": "权限已加入权限组",
+    "addFailed": "加入权限组失败",
+    "loadGroupsFailed": "加载权限组失败"
   },
   "empty": {
     "title": "暂无指令",

@@ -158,12 +158,42 @@
                 </div>
                 <div>
                   <div class="text-caption text-medium-emphasis">{{ $t('pages.commands.fields.permission') }}</div>
-                  <div class="text-break">{{ command.permission || $t('pages.commands.empty.permission') }}</div>
+                  <div class="d-flex flex-wrap align-center ga-2">
+                    <span class="text-break">{{ command.permission || $t('pages.commands.empty.permission') }}</span>
+                    <v-chip
+                      v-if="command.permissionOverridden"
+                      size="x-small"
+                      color="warning"
+                      variant="tonal"
+                    >
+                      {{ $t('pages.commands.permission.overridden') }}
+                    </v-chip>
+                  </div>
+                  <div
+                    v-if="command.defaultPermission && command.defaultPermission !== command.permission"
+                    class="text-caption text-medium-emphasis mt-1"
+                  >
+                    {{ $t('pages.commands.permission.default') }}:
+                    {{ command.defaultPermission }}
+                  </div>
                 </div>
                 <div v-if="command.pattern">
                   <div class="text-caption text-medium-emphasis">{{ $t('pages.commands.fields.pattern') }}</div>
                   <div class="text-break">{{ command.pattern }}</div>
                 </div>
+              </div>
+
+              <div class="mt-4">
+                <v-btn
+                  size="small"
+                  color="secondary"
+                  variant="tonal"
+                  prepend-icon="mdi-shield-plus-outline"
+                  :disabled="!command.permission"
+                  @click="openAddPermissionDialog(command.name)"
+                >
+                  {{ $t('pages.commands.actions.addToGroup') }}
+                </v-btn>
               </div>
             </v-card-text>
           </v-card>
@@ -201,11 +231,30 @@
               <div class="text-break">
                 <span class="text-medium-emphasis">{{ $t('pages.commands.fields.permission') }}:</span>
                 {{ command.permission || $t('pages.commands.empty.permission') }}
+                <v-chip
+                  v-if="command.permissionOverridden"
+                  size="x-small"
+                  color="warning"
+                  variant="tonal"
+                  class="ms-2"
+                >
+                  {{ $t('pages.commands.permission.overridden') }}
+                </v-chip>
               </div>
             </div>
           </div>
 
-          <div class="d-flex align-center ga-3">
+          <div class="d-flex flex-wrap align-center ga-3">
+            <v-btn
+              size="small"
+              color="secondary"
+              variant="tonal"
+              prepend-icon="mdi-shield-plus-outline"
+              :disabled="!command.permission"
+              @click="openAddPermissionDialog(command.name)"
+            >
+              {{ $t('pages.commands.actions.addToGroup') }}
+            </v-btn>
             <v-chip :color="command.enabled ? 'success' : 'default'" variant="tonal">
               {{ command.enabled ? $t('pages.commands.status.enabled') : $t('pages.commands.status.disabled') }}
             </v-chip>
@@ -225,6 +274,51 @@
     <v-alert v-if="commandsStore.error" type="error" class="mt-4">
       {{ commandsStore.error }}
     </v-alert>
+
+    <v-alert v-if="permissionGroupError" type="error" class="mt-4">
+      {{ permissionGroupError }}
+    </v-alert>
+
+    <v-dialog v-model="addPermissionDialog" max-width="520">
+      <v-card rounded="xl">
+        <v-card-title>{{ $t('pages.commands.permission.addDialogTitle') }}</v-card-title>
+        <v-card-text>
+          <div v-if="selectedPermissionCommand" class="mb-4">
+            <div class="text-caption text-medium-emphasis">
+              {{ $t('pages.commands.permission.required') }}
+            </div>
+            <div class="text-body-2 text-break">
+              {{ selectedPermissionCommand.permission || $t('pages.commands.empty.permission') }}
+            </div>
+          </div>
+
+          <v-select
+            v-model="targetPermissionGroupId"
+            :items="permissionGroupItems"
+            :label="$t('pages.commands.permission.targetGroup')"
+            item-title="title"
+            item-value="value"
+            variant="outlined"
+            density="comfortable"
+            rounded="lg"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="addPermissionDialog = false">
+            {{ $t('common.actions.action.cancel') }}
+          </v-btn>
+          <v-btn
+            color="primary"
+            :loading="isSavingPermissionGroup"
+            :disabled="!canAddPermissionToGroup"
+            @click="addPermissionToGroup"
+          >
+            {{ $t('common.actions.action.add') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -232,16 +326,27 @@
 import { computed, onMounted, ref } from 'vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import LayoutModeButton from '@/components/LayoutModeButton.vue'
+import { apiClient } from '@/api/client'
+import { permissionsApi, type PermissionGroup } from '@/api/permissions'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { useCommandsStore, type CommandLayoutMode } from '@/stores/commands'
 import { translate } from '@/plugins/i18n'
+import { useUiStore } from '@/stores/ui'
+import { getErrorMessage } from '@/utils/error'
 
 const commandsStore = useCommandsStore()
+const uiStore = useUiStore()
 
 const searchQuery = ref('')
 const statusFilter = ref('all')
 const ownerFilter = ref('all')
 const hasLoadedCommands = ref(false)
+const permissionGroups = ref<PermissionGroup[]>([])
+const addPermissionDialog = ref(false)
+const selectedPermissionCommandName = ref('')
+const targetPermissionGroupId = ref('')
+const isSavingPermissionGroup = ref(false)
+const permissionGroupError = ref('')
 
 const initialSkeletonRequested = computed(
   () => commandsStore.isLoading && commandsStore.commands.length === 0
@@ -293,11 +398,38 @@ const filteredCommands = computed(() => {
   })
 })
 
+const selectedPermissionCommand = computed(() =>
+  commandsStore.commands.find((command) => command.name === selectedPermissionCommandName.value)
+)
+
+const permissionGroupItems = computed(() =>
+  permissionGroups.value.map((group) => ({
+    title: group.name || group.id,
+    value: group.id,
+  }))
+)
+
+const canAddPermissionToGroup = computed(() =>
+  Boolean(selectedPermissionCommand.value?.permission && targetPermissionGroupId.value)
+)
+
 async function loadCommands(force = false) {
   try {
-    await commandsStore.fetchCommands({ force })
+    await Promise.all([
+      commandsStore.fetchCommands({ force }),
+      loadPermissionGroups(),
+    ])
   } finally {
     hasLoadedCommands.value = true
+  }
+}
+
+async function loadPermissionGroups() {
+  try {
+    const groups = await apiClient.unwrap(permissionsApi.listGroups())
+    permissionGroups.value = groups
+  } catch (error) {
+    permissionGroupError.value = getErrorMessage(error, translate('pages.commands.permission.loadGroupsFailed'))
   }
 }
 
@@ -317,6 +449,48 @@ const handleLayoutChange = (mode: CommandLayoutMode) => {
 
 const handleEnabledChange = async (name: string, enabled: boolean) => {
   await commandsStore.updateCommandEnabled(name, enabled)
+}
+
+const openAddPermissionDialog = (commandName: string) => {
+  selectedPermissionCommandName.value = commandName
+  if (!targetPermissionGroupId.value && permissionGroups.value.length > 0) {
+    targetPermissionGroupId.value = permissionGroups.value[0].id
+  }
+  addPermissionDialog.value = true
+}
+
+async function addPermissionToGroup() {
+  const command = selectedPermissionCommand.value
+  const group = permissionGroups.value.find((item) => item.id === targetPermissionGroupId.value)
+  if (!command?.permission || !group) {
+    return
+  }
+
+  isSavingPermissionGroup.value = true
+  permissionGroupError.value = ''
+  try {
+    const permissions = Array.from(new Set([...group.permissions, command.permission])).sort()
+    const updated = await apiClient.unwrap(
+      permissionsApi.updateGroup(group.id, {
+        name: group.name,
+        description: group.description,
+        protected: group.protected,
+        permissions,
+      })
+    )
+    const index = permissionGroups.value.findIndex((item) => item.id === updated.id)
+    if (index === -1) {
+      permissionGroups.value = [...permissionGroups.value, updated]
+    } else {
+      permissionGroups.value[index] = updated
+    }
+    addPermissionDialog.value = false
+    uiStore.showSnackbar(translate('pages.commands.permission.added'), 'success')
+  } catch (error) {
+    permissionGroupError.value = getErrorMessage(error, translate('pages.commands.permission.addFailed'))
+  } finally {
+    isSavingPermissionGroup.value = false
+  }
 }
 </script>
 
