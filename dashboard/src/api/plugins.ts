@@ -49,7 +49,81 @@ export interface PluginMetadata {
   configSchema?: Record<string, ConfigSchemaField>
   config_schema?: PluginConfigSchema
   dynamicForm?: Record<string, unknown>
+  install_source?: PluginInstallSource
   [key: string]: unknown
+}
+
+export type PluginInstallSourceType = 'github' | 'archive'
+
+export interface PluginInstallSource {
+  plugin_id?: string
+  source_type: PluginInstallSourceType
+  source_url: string
+  ref: string
+  resolved_ref: string
+  installed_at?: number
+  updated_at?: number
+  installed_version: string
+  managed_by_webui: boolean
+  archive_sha256?: string
+  can_update?: boolean
+  can_uninstall?: boolean
+}
+
+export interface PluginInstallSourcesResponse {
+  plugins: PluginInstallSource[]
+}
+
+export interface PluginInstallPreview {
+  plugin_id: string
+  name: string
+  version: string
+  description: string
+  author: string
+  role: string
+  entry: string
+  permissions: string[]
+  required_dependencies: string[]
+  optional_dependencies: string[]
+  legacy_dependencies: string[]
+  missing_required_dependencies: string[]
+  missing_optional_dependencies: string[]
+  source_type: PluginInstallSourceType
+  source_url: string
+  ref: string
+  resolved_ref: string
+  archive_sha256: string
+  target_exists: boolean
+  target_managed_by_webui: boolean
+  can_install: boolean
+  warnings: string[]
+}
+
+export interface GithubPluginInstallPayload {
+  url: string
+  ref: string
+  enable_after_install?: boolean
+  allow_overwrite?: boolean
+}
+
+export interface PluginArchiveInstallOptions {
+  filename?: string
+  enable_after_install?: boolean
+  allow_overwrite?: boolean
+}
+
+export interface PluginInstallTask {
+  task_id: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed'
+  stage: string
+  message: string
+  plugin_id?: string | null
+  error?: {
+    code: string
+    message: string
+  } | null
+  created_at: number
+  updated_at: number
 }
 
 export const pluginsApi = {
@@ -81,5 +155,57 @@ export const pluginsApi = {
 
   disable(id: string) {
     return apiClient.post<Plugin>(`/plugins/${id}/disable`)
+  },
+
+  listInstallSources() {
+    return apiClient.get<PluginInstallSourcesResponse>('/plugin-installs')
+  },
+
+  previewGithubInstall(payload: GithubPluginInstallPayload) {
+    return apiClient.post<PluginInstallPreview>('/plugin-installs/github/preview', payload)
+  },
+
+  installGithub(payload: GithubPluginInstallPayload) {
+    return apiClient.post<PluginInstallTask>('/plugin-installs/github', payload)
+  },
+
+  previewArchiveInstall(file: Blob, filename = '') {
+    return apiClient.post<PluginInstallPreview>('/plugin-installs/archive/preview', file, {
+      headers: {
+        'Content-Type': 'application/zip',
+      },
+      params: {
+        filename,
+      },
+    })
+  },
+
+  installArchive(file: Blob, options: PluginArchiveInstallOptions = {}) {
+    return apiClient.post<PluginInstallTask>('/plugin-installs/archive', file, {
+      headers: {
+        'Content-Type': 'application/zip',
+      },
+      params: {
+        filename: options.filename ?? '',
+        enable_after_install: options.enable_after_install ?? true,
+        allow_overwrite: options.allow_overwrite ?? false,
+      },
+    })
+  },
+
+  fetchInstallTask(taskId: string) {
+    return apiClient.get<PluginInstallTask>(`/plugin-installs/tasks/${taskId}`)
+  },
+
+  updateInstalledPlugin(id: string, enableAfterInstall = true) {
+    return apiClient.post<PluginInstallTask>(`/plugin-installs/${id}/update`, undefined, {
+      params: {
+        enable_after_install: enableAfterInstall,
+      },
+    })
+  },
+
+  uninstallInstalledPlugin(id: string) {
+    return apiClient.delete<PluginInstallTask>(`/plugin-installs/${id}`)
   },
 }

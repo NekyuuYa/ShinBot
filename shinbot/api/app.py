@@ -35,6 +35,7 @@ from shinbot.api.routers import instances as instances_router
 from shinbot.api.routers import model_runtime as model_runtime_router
 from shinbot.api.routers import permissions as permissions_router
 from shinbot.api.routers import personas as personas_router
+from shinbot.api.routers import plugin_installs as plugin_installs_router
 from shinbot.api.routers import plugins as plugins_router
 from shinbot.api.routers import prompt_definitions as prompt_definitions_router
 from shinbot.api.routers import prompts as prompts_router
@@ -236,6 +237,7 @@ def create_api_app(
     app.include_router(prompt_definitions_router.router, prefix=api_prefix)
     app.include_router(prompts_router.router, prefix=api_prefix)
     app.include_router(session_overview_router.router, prefix=api_prefix)
+    app.include_router(plugin_installs_router.router, prefix=api_prefix)
     app.include_router(plugins_router.router, prefix=api_prefix)
     app.include_router(system_router.public_router, prefix=api_prefix)
     app.include_router(system_router.router, prefix=api_prefix)

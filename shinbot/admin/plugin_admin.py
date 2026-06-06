@@ -68,6 +68,11 @@ def plugin_dict(
         metadata["config_schema"] = translate_plugin_schema(cfg_schema, resolved_translations)
     if boot is not None:
         metadata["config"] = plugin_saved_config(boot, plugin_meta.id)
+        from shinbot.admin.plugin_install import install_source_for_plugin
+
+        install_source = install_source_for_plugin(boot, plugin_meta.id)
+        if install_source is not None:
+            metadata["install_source"] = install_source
     if module is not None and hasattr(module, "__plugin_adapter_platform__"):
         metadata["adapter_platform"] = module.__plugin_adapter_platform__
 

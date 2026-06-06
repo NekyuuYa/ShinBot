@@ -6,6 +6,9 @@
       :kicker="$t('pages.plugins.kicker')"
     >
       <template #actions>
+        <v-btn color="primary" prepend-icon="mdi-puzzle-plus" @click="installDialogVisible = true" class="me-2">
+          {{ $t('pages.plugins.install.open') }}
+        </v-btn>
         <v-btn color="secondary" prepend-icon="mdi-reload" @click="handleReload" class="me-2">
           {{ $t('pages.plugins.reload') }}
         </v-btn>
@@ -50,13 +53,23 @@
 
     <v-row v-else class="mx-n4">
       <v-col v-for="plugin in filteredPlugins" :key="plugin.id" cols="12" sm="6" md="4" lg="3" class="pa-4">
-        <plugin-card :plugin="plugin" @configure="openConfigDialog" />
+        <plugin-card
+          :plugin="plugin"
+          @configure="openConfigDialog"
+          @update="handleUpdatePlugin"
+          @uninstall="handleUninstallPlugin"
+        />
       </v-col>
     </v-row>
 
     <v-alert v-if="pluginsStore.error" type="error" class="mt-4">
       {{ pluginsStore.error }}
     </v-alert>
+
+    <plugin-install-dialog
+      v-model="installDialogVisible"
+      @completed="handleInstallCompleted"
+    />
 
     <v-dialog v-model="dialogVisible" max-width="760">
       <v-card>
@@ -92,14 +105,19 @@
 import { computed, onMounted, ref } from 'vue'
 import { usePluginsStore } from '@/stores/plugins'
 import PluginCard from '@/components/PluginCard.vue'
+import PluginInstallDialog from '@/components/plugins/PluginInstallDialog.vue'
 import SchemaForm from '@/components/SchemaForm.vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import type { Plugin, PluginConfigSchema } from '@/api/plugins'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
+import { useConfirmDialog } from '@/composables/useConfirmDialog'
+import { translate } from '@/plugins/i18n'
 
 const pluginsStore = usePluginsStore()
+const { confirm } = useConfirmDialog()
 const searchQuery = ref('')
 const dialogVisible = ref(false)
+const installDialogVisible = ref(false)
 const activePlugin = ref<Plugin | null>(null)
 const activeSchema = ref<PluginConfigSchema | null>(null)
 const schemaForm = ref<Record<string, unknown>>({})
@@ -117,6 +135,7 @@ const filteredPlugins = computed(() =>
 
 onMounted(() => {
   void pluginsStore.fetchPlugins()
+  void pluginsStore.fetchInstallSources()
 })
 
 const handleRefresh = () => {
@@ -129,6 +148,41 @@ const handleReload = async () => {
 
 const handleRescan = async () => {
   await pluginsStore.rescanPlugins()
+}
+
+const handleInstallCompleted = () => {
+  void pluginsStore.fetchPlugins({ force: true })
+  void pluginsStore.fetchInstallSources()
+}
+
+const handleUpdatePlugin = async (plugin: Plugin) => {
+  const confirmed = await confirm({
+    title: translate('pages.plugins.install.confirmUpdateTitle'),
+    message: translate('pages.plugins.install.confirmUpdateMessage', { name: plugin.name }),
+    confirmText: translate('pages.plugins.card.update'),
+    confirmColor: 'primary',
+  })
+
+  if (!confirmed) {
+    return
+  }
+
+  await pluginsStore.updateInstalledPlugin(plugin.id, true)
+}
+
+const handleUninstallPlugin = async (plugin: Plugin) => {
+  const confirmed = await confirm({
+    title: translate('pages.plugins.install.confirmUninstallTitle'),
+    message: translate('pages.plugins.install.confirmUninstallMessage', { name: plugin.name }),
+    confirmText: translate('pages.plugins.card.uninstall'),
+    confirmColor: 'error',
+  })
+
+  if (!confirmed) {
+    return
+  }
+
+  await pluginsStore.uninstallInstalledPlugin(plugin.id)
 }
 
 const flattenConfig = (
