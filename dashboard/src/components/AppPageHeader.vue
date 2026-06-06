@@ -61,7 +61,7 @@ const hasActions = computed(() => Boolean(slots.actions))
 
 .page-title {
   margin: 0;
-  font-size: clamp(1.6rem, 2.2vw, $font-size-xl);
+  font-size: $font-size-xl;
   font-weight: 800;
   line-height: 1.2;
   color: rgba(var(--v-theme-on-surface), 0.94);
@@ -98,6 +98,10 @@ const hasActions = computed(() => Boolean(slots.actions))
   .page-header-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .page-title {
+    font-size: $font-size-lg;
   }
 }
 </style>

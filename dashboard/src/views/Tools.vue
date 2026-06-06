@@ -12,120 +12,34 @@
       </template>
     </app-page-header>
 
-    <v-row class="mx-0 mb-6" align="stretch">
-      <v-col cols="12" md="4" class="pa-2">
-        <v-card rounded="xl" elevation="0" class="summary-card">
-          <v-card-text>
-            <div class="text-caption text-medium-emphasis">{{ $t('pages.tools.summary.total') }}</div>
-            <div class="text-h4 font-weight-black mt-2">{{ toolsStore.tools.length }}</div>
-          </v-card-text>
-        </v-card>
-      </v-col>
-      <v-col cols="12" md="4" class="pa-2">
-        <v-card rounded="xl" elevation="0" class="summary-card">
-          <v-card-text>
-            <div class="text-caption text-medium-emphasis">{{ $t('pages.tools.summary.enabled') }}</div>
-            <div class="text-h4 font-weight-black mt-2">{{ toolsStore.enabledCount }}</div>
-          </v-card-text>
-        </v-card>
-      </v-col>
-      <v-col cols="12" md="4" class="pa-2">
-        <v-card rounded="xl" elevation="0" class="summary-card">
-          <v-card-text>
-            <div class="text-caption text-medium-emphasis">{{ $t('pages.tools.summary.publicVisible') }}</div>
-            <div class="text-h4 font-weight-black mt-2">{{ toolsStore.publicCount }}</div>
-          </v-card-text>
-        </v-card>
-      </v-col>
-    </v-row>
+    <summary-metric-band :metrics="summaryMetrics" />
 
-    <v-card rounded="xl" elevation="0" class="filter-card mb-6">
-      <v-card-text>
-        <v-row class="mx-0" align="center">
-          <v-col cols="12" md="4" class="pa-2">
-            <v-text-field
-              v-model="searchQuery"
-              :label="$t('common.actions.action.search')"
-              prepend-inner-icon="mdi-magnify"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-              rounded="lg"
-              bg-color="surface"
-            />
-          </v-col>
-          <v-col cols="12" sm="6" md="3" class="pa-2">
-            <v-select
-              v-model="ownerTypeFilter"
-              :label="$t('pages.tools.filters.ownerType')"
-              :items="ownerTypeItems"
-              item-title="title"
-              item-value="value"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-              rounded="lg"
-              bg-color="surface"
-            />
-          </v-col>
-          <v-col cols="12" sm="6" md="3" class="pa-2">
-            <v-select
-              v-model="visibilityFilter"
-              :label="$t('pages.tools.filters.visibility')"
-              :items="visibilityItems"
-              item-title="title"
-              item-value="value"
-              variant="outlined"
-              density="comfortable"
-              hide-details
-              rounded="lg"
-              bg-color="surface"
-            />
-          </v-col>
-          <v-col cols="12" md="2" class="pa-2 d-flex justify-end">
-            <layout-mode-button
-              :model-value="toolsStore.layoutMode"
-              :list-label="$t('pages.tools.layout.list')"
-              :card-label="$t('pages.tools.layout.card')"
-              @update:model-value="handleLayoutChange"
-            />
-          </v-col>
-        </v-row>
-      </v-card-text>
-    </v-card>
+    <resource-filter-toolbar
+      v-model:search="searchQuery"
+      :filters="toolbarFilters"
+      :search-label="$t('common.actions.action.search')"
+      :layout-mode="toolsStore.layoutMode"
+      :list-label="$t('pages.tools.layout.list')"
+      :card-label="$t('pages.tools.layout.card')"
+      @update:filter="handleFilterChange"
+      @update:layout-mode="handleLayoutChange"
+    />
 
-    <v-row v-if="showInitialSkeleton" class="mx-0">
-      <v-col cols="12" class="pa-0">
-        <v-skeleton-loader type="list-item-two-line, list-item-two-line, list-item-two-line" />
-      </v-col>
-    </v-row>
-
-    <v-row v-else-if="hasLoadedTools && filteredTools.length === 0" justify="center" class="mx-0 py-12">
-      <v-col cols="12" md="6" class="text-center pa-0">
-        <v-icon size="120" color="grey-lighten-1" icon="mdi-tools" />
-        <h3 class="text-h6 my-4">{{ $t('pages.tools.empty.title') }}</h3>
-        <p class="text-body-2 text-medium-emphasis">{{ $t('pages.tools.empty.subtitle') }}</p>
-      </v-col>
-    </v-row>
-
-    <template v-else-if="toolsStore.layoutMode === 'card'">
-      <v-row class="mx-n3">
-        <v-col
-          v-for="tool in filteredTools"
-          :key="tool.id"
-          cols="12"
-          md="6"
-          xl="4"
-          class="pa-3"
-        >
-          <tool-card :tool="tool" />
-        </v-col>
-      </v-row>
-    </template>
-
-    <div v-else class="d-grid ga-4">
-      <tool-list-row v-for="tool in filteredTools" :key="tool.id" :tool="tool" />
-    </div>
+    <resource-collection-view
+      :items="filteredTools"
+      :loading="showInitialSkeleton"
+      :loaded="hasLoadedTools"
+      :layout-mode="toolsStore.layoutMode"
+      :empty-config="emptyConfig"
+      :get-item-key="(tool) => tool.id"
+    >
+      <template #card="{ item: tool }">
+        <tool-card :tool="tool" />
+      </template>
+      <template #row="{ item: tool }">
+        <tool-list-row :key="tool.id" :tool="tool" />
+      </template>
+    </resource-collection-view>
 
     <v-alert v-if="toolsStore.error" type="error" class="mt-4">
       {{ toolsStore.error }}
@@ -136,7 +50,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import AppPageHeader from '@/components/AppPageHeader.vue'
-import LayoutModeButton from '@/components/LayoutModeButton.vue'
+import ResourceCollectionView from '@/components/resources/ResourceCollectionView.vue'
+import ResourceFilterToolbar, {
+  type ResourceFilter,
+} from '@/components/resources/ResourceFilterToolbar.vue'
+import SummaryMetricBand, {
+  type SummaryMetric,
+} from '@/components/resources/SummaryMetricBand.vue'
 import ToolCard from '@/components/tools/ToolCard.vue'
 import ToolListRow from '@/components/tools/ToolListRow.vue'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
@@ -171,6 +91,33 @@ const visibilityItems = computed(() => [
   { title: translate('pages.tools.visibilityOptions.scoped'), value: 'scoped' },
   { title: translate('pages.tools.visibilityOptions.private'), value: 'private' },
 ])
+
+const summaryMetrics = computed<SummaryMetric[]>(() => [
+  { key: 'total', label: translate('pages.tools.summary.total'), value: toolsStore.tools.length },
+  { key: 'enabled', label: translate('pages.tools.summary.enabled'), value: toolsStore.enabledCount },
+  { key: 'public', label: translate('pages.tools.summary.publicVisible'), value: toolsStore.publicCount },
+])
+
+const toolbarFilters = computed<ResourceFilter[]>(() => [
+  {
+    key: 'ownerType',
+    label: translate('pages.tools.filters.ownerType'),
+    value: ownerTypeFilter.value,
+    items: ownerTypeItems.value,
+  },
+  {
+    key: 'visibility',
+    label: translate('pages.tools.filters.visibility'),
+    value: visibilityFilter.value,
+    items: visibilityItems.value,
+  },
+])
+
+const emptyConfig = computed(() => ({
+  icon: 'mdi-tools',
+  title: translate('pages.tools.empty.title'),
+  subtitle: translate('pages.tools.empty.subtitle'),
+}))
 
 const filteredTools = computed(() => {
   const query = searchQuery.value.trim().toLowerCase()
@@ -221,14 +168,12 @@ const handleLayoutChange = (mode: ToolLayoutMode) => {
     toolsStore.setLayoutMode(mode)
   }
 }
-</script>
 
-<style scoped lang="scss">
-@use '@/styles/mixins' as *;
-
-.summary-card,
-.filter-card {
-  @include surface-card;
-  @include hover-lift;
+const handleFilterChange = (key: string, value: string) => {
+  if (key === 'ownerType') {
+    ownerTypeFilter.value = value
+  } else if (key === 'visibility') {
+    visibilityFilter.value = value
+  }
 }
-</style>
+</script>
