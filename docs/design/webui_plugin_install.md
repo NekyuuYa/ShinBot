@@ -38,6 +38,7 @@
 - 在 WebUI 显示安装进度、失败原因、来源和版本。
 - 禁止路径逃逸、非法插件 id、缺失 `metadata.json`、缺失入口文件。
 - 默认只允许管理员操作。
+- 不新增数据库表，不引入 plugin install repository。
 
 暂不做：
 
@@ -46,6 +47,8 @@
 - 多版本并存。
 - 远程插件市场搜索。
 - 插件运行沙箱。
+- 安装历史审计。
+- 服务重启后恢复安装任务。
 
 ## 职责边界
 
@@ -83,35 +86,84 @@ dashboard/src/views/Plugins.vue
 dashboard/src/components/plugins/PluginInstallDialog.vue
 ```
 
-## 数据模型
+## 文件布局
 
-第一版可以先使用 JSON manifest，避免马上扩展 SQLite schema：
+第一版只使用文件系统和内存状态，不使用数据库。
+
+```text
+<data_dir>/
+├── plugins/
+│   └── <plugin_id>/                 # PluginManager 当前扫描目录
+├── plugin_data/
+│   └── <plugin_id>/                 # 插件运行数据，卸载时默认保留
+├── plugin_install_manifest.json     # WebUI 管理来源清单
+└── plugin_install_tmp/
+    └── <task_id>/                   # 安装临时目录，任务结束后清理
+```
+
+`plugin_install_manifest.json` 是本机安装清单，不是审计日志，也不记录历史版本：
 
 ```text
 <data_dir>/plugin_install_manifest.json
 ```
 
-结构：
+建议结构：
 
 ```json
 {
+  "schema_version": 1,
   "plugins": {
     "shinbot_plugin_example": {
       "plugin_id": "shinbot_plugin_example",
       "source_type": "github",
       "source_url": "https://github.com/NekyuuYa/shinbot-plugin-example",
       "ref": "main",
+      "resolved_ref": "abc123",
       "installed_at": 1780750000,
       "updated_at": 1780750000,
       "installed_version": "0.1.0",
-      "commit": "abc123",
-      "managed_by_webui": true
+      "managed_by_webui": true,
+      "archive_sha256": "..."
     }
   }
 }
 ```
 
-后续如果需要审计、并发任务查询、历史记录，再迁到 SQLite repository。
+字段说明：
+
+- `schema_version`：manifest 文件格式版本，第一版固定为 `1`。
+- `plugin_id`：必须等于插件 `metadata.json` 的 `id`。
+- `source_type`：`github` 或 `archive`。
+- `source_url`：GitHub URL；上传 ZIP 时可为空字符串或 `uploaded_archive`。
+- `ref`：用户输入的 branch/tag/commit；上传 ZIP 时为空。
+- `resolved_ref`：GitHub archive 对应 commit；如果无法解析则为空。
+- `installed_version`：安装时读取的 `metadata.version`。
+- `managed_by_webui`：只有为 `true` 时，WebUI 才允许覆盖、更新、卸载插件目录。
+- `archive_sha256`：安装包内容摘要，用于展示和排查，不作为安全信任根。
+
+Manifest 写入要求：
+
+- 使用临时文件加 `Path.replace()` 原子写入。
+- JSON 使用 `ensure_ascii=False` 和稳定缩进，方便人工查看。
+- 读取失败时不自动覆盖，API 返回 `PLUGIN_INSTALL_MANIFEST_INVALID`。
+- 缺失 manifest 时按空清单处理。
+
+任务状态只放内存：
+
+```python
+PluginInstallTask = {
+    "task_id": str,
+    "status": "queued" | "running" | "succeeded" | "failed",
+    "stage": str,
+    "message": str,
+    "plugin_id": str | None,
+    "error": {"code": str, "message": str} | None,
+    "created_at": float,
+    "updated_at": float,
+}
+```
+
+服务重启后任务状态丢失是 V1 可接受行为；已完成安装结果以 manifest 和 `data/plugins` 为准。
 
 ## API 规划
 
@@ -121,7 +173,88 @@ dashboard/src/components/plugins/PluginInstallDialog.vue
 GET /api/v1/plugin-installs
 ```
 
-返回已安装来源记录，和当前插件列表合并展示。
+返回 WebUI 管理的安装来源清单。
+
+响应：
+
+```json
+{
+  "plugins": [
+    {
+      "plugin_id": "shinbot_plugin_example",
+      "source_type": "github",
+      "source_url": "https://github.com/NekyuuYa/shinbot-plugin-example",
+      "ref": "main",
+      "resolved_ref": "abc123",
+      "installed_version": "0.1.0",
+      "managed_by_webui": true
+    }
+  ]
+}
+```
+
+插件列表接口 `/api/v1/plugins` 可把对应记录合并到每个插件的 `metadata.install_source`：
+
+```json
+{
+  "metadata": {
+    "install_source": {
+      "source_type": "github",
+      "source_url": "https://github.com/NekyuuYa/shinbot-plugin-example",
+      "managed_by_webui": true,
+      "can_update": true,
+      "can_uninstall": true
+    }
+  }
+}
+```
+
+```http
+POST /api/v1/plugin-installs/github/preview
+```
+
+下载并校验 GitHub archive，但不写入 `data/plugins`，用于安装前确认。
+
+请求：
+
+```json
+{
+  "url": "https://github.com/NekyuuYa/shinbot-plugin-example",
+  "ref": "main"
+}
+```
+
+响应：
+
+```json
+{
+  "plugin_id": "shinbot_plugin_example",
+  "name": "Example Plugin",
+  "version": "0.1.0",
+  "description": "Example ShinBot plugin.",
+  "author": "NekyuuYa",
+  "role": "logic",
+  "dependencies": [],
+  "permissions": [],
+  "source_type": "github",
+  "source_url": "https://github.com/NekyuuYa/shinbot-plugin-example",
+  "ref": "main",
+  "resolved_ref": "abc123",
+  "archive_sha256": "...",
+  "target_exists": false,
+  "target_managed_by_webui": false,
+  "can_install": true,
+  "warnings": []
+}
+```
+
+```http
+POST /api/v1/plugin-installs/archive/preview
+```
+
+上传 zip 并校验 metadata，但不写入 `data/plugins`。
+
+响应结构与 GitHub preview 相同，`source_type` 为 `archive`。
 
 ```http
 POST /api/v1/plugin-installs/github
@@ -133,7 +266,8 @@ POST /api/v1/plugin-installs/github
 {
   "url": "https://github.com/NekyuuYa/shinbot-plugin-example",
   "ref": "main",
-  "enable_after_install": true
+  "enable_after_install": true,
+  "allow_overwrite": false
 }
 ```
 
@@ -150,7 +284,15 @@ POST /api/v1/plugin-installs/github
 POST /api/v1/plugin-installs/archive
 ```
 
-上传 zip 包，返回安装任务。
+`multipart/form-data` 上传 zip 包。
+
+字段：
+
+- `file`：`.zip` 文件。
+- `enable_after_install`：布尔值，默认 `true`。
+- `allow_overwrite`：布尔值，默认 `false`。
+
+返回安装任务。
 
 ```http
 GET /api/v1/plugin-installs/tasks/{task_id}
@@ -175,35 +317,74 @@ POST /api/v1/plugin-installs/{plugin_id}/update
 
 从 manifest 记录的来源更新。
 
+GitHub 来源插件可更新；archive 来源插件第一版不可自动更新，只能重新上传 ZIP 覆盖安装。
+
 ```http
 DELETE /api/v1/plugin-installs/{plugin_id}
 ```
 
 卸载 WebUI 管理的用户插件。流程是先 disable/unload，再删除 `data/plugins/<plugin_id>`，最后更新 manifest。第一版不删除 `data/plugin_data/<plugin_id>`，只在 UI 中提示保留数据。
 
+### API 错误码
+
+安装层统一抛出 `PluginInstallError`，router 转换为 `HTTPException`，由 app-level handler 包装成 Envelope。
+
+建议错误码：
+
+- `PLUGIN_INSTALL_INVALID_SOURCE`：URL、ref 或上传文件类型不合法。
+- `PLUGIN_INSTALL_DOWNLOAD_FAILED`：下载失败。
+- `PLUGIN_INSTALL_ARCHIVE_INVALID`：zip 无法读取或违反解压安全规则。
+- `PLUGIN_INSTALL_METADATA_NOT_FOUND`：找不到 `metadata.json`。
+- `PLUGIN_INSTALL_METADATA_INVALID`：metadata 字段非法。
+- `PLUGIN_INSTALL_ENTRY_NOT_FOUND`：metadata 指向的入口文件不存在。
+- `PLUGIN_INSTALL_ID_INVALID`：插件 id 不是允许前缀。
+- `PLUGIN_INSTALL_TARGET_EXISTS`：目标目录已存在且不允许覆盖。
+- `PLUGIN_INSTALL_TARGET_UNMANAGED`：目标插件不是 WebUI 管理，拒绝覆盖或卸载。
+- `PLUGIN_INSTALL_LOAD_FAILED`：文件已安装，但 rescan/load 失败。
+- `PLUGIN_INSTALL_MANIFEST_INVALID`：manifest 文件损坏或不可解析。
+
 ## 安装流程
 
 GitHub 安装：
 
 1. 校验 URL 只允许 `https://github.com/<owner>/<repo>` 或 `git@github.com:<owner>/<repo>.git`。
-2. 下载源码 archive 到临时目录。
-3. 解压到 `<data_dir>/plugin_install_tmp/<task_id>`。
-4. 查找插件根目录，要求根目录或一级子目录包含 `metadata.json`。
-5. 校验 `metadata.json`：
+2. 校验 `ref` 只允许常见 branch/tag/commit 字符，拒绝空白、路径分隔逃逸和 shell 元字符。
+3. 下载源码 archive 到临时目录。
+4. 计算 archive sha256。
+5. 解压到 `<data_dir>/plugin_install_tmp/<task_id>/extract`。
+6. 查找插件根目录，要求根目录或一级子目录包含 `metadata.json`。
+7. 校验 `metadata.json`：
    - `id` 非空。
    - `id` 以 `shinbot_plugin_`、`shinbot_adapter_` 或 `shinbot_debug_` 开头。
    - 入口文件存在。
    - `entry` 不能是绝对路径，不能包含 `..`。
-6. 校验目标目录：
+   - `role` 如存在，只能是 `logic` 或 `adapter`。
+   - `dependencies` 如存在，必须是字符串列表。
+8. 校验目标目录：
    - 目标必须在 `<data_dir>/plugins` 内。
    - 如果目标已存在，必须是 WebUI 管理的插件，或者用户显式确认覆盖。
-7. 写入 staging 目录。
-8. 原子替换到 `<data_dir>/plugins/<plugin_id>`。
-9. 更新 manifest。
-10. 调用 `rescan_plugins()`。
-11. 如果 `enable_after_install=true`，调用 `enable_plugin_or_raise()`。
+9. 如果当前已加载同 id 插件，先调用 `disable_plugin_or_raise()` 再 `bot.plugin_manager.unload_plugin_async(plugin_id)`。
+10. 写入 staging 目录 `<data_dir>/plugins/.installing-<plugin_id>-<task_id>`。
+11. 原子替换到 `<data_dir>/plugins/<plugin_id>`。
+12. 更新 manifest。
+13. 调用 `rescan_plugins()`。
+14. 如果 `enable_after_install=true`，调用 `enable_plugin_or_raise()`。
+15. 清理临时目录。
 
 上传 zip 安装同样从第 3 步开始。
+
+覆盖策略：
+
+- 目标不存在：允许安装。
+- 目标存在且 manifest 中 `managed_by_webui=true`：只有 `allow_overwrite=true` 才允许覆盖。
+- 目标存在但 manifest 没有记录：拒绝覆盖。
+- 目标存在且是内置插件：拒绝覆盖。
+
+回滚策略：
+
+- 在替换目标目录前失败：删除 staging 和 tmp，不修改 manifest。
+- 替换目标目录后 load 失败：保留文件和 manifest，但任务标记 `failed`，并返回 `PLUGIN_INSTALL_LOAD_FAILED`；UI 显示“已安装但加载失败”，让管理员查看错误并修复。
+- 覆盖旧版本时，可先把旧目录移动到 `.backup-<plugin_id>-<task_id>`；新版本 load 成功后删除备份，load 失败则恢复备份。
 
 ## 安全策略
 
@@ -217,12 +398,15 @@ GitHub 安装：
 - 不自动运行 `pip install`。
 - 安装前展示插件 metadata、来源、权限声明和覆盖风险。
 - adapter 插件安装时提示需要配置实例后才会生效。
+- 禁止 archive 写出 `data/plugins` 和 `plugin_install_tmp` 之外。
+- 禁止 archive 内包含 symlink 目标。
+- 禁止安装目录名和 `metadata.id` 不一致的包，除非插件根目录被识别后重命名到 `<plugin_id>`。
 
 依赖处理建议：
 
 - 第一版只检测依赖，不安装依赖。
 - 如果导入失败是 `ModuleNotFoundError`，API 返回缺失模块名，UI 引导用户在服务端环境手动安装。
-- 后续可增加“允许安装 Python 依赖”的显式开关，并通过受控 task 执行 `uv pip install`。
+- 设计案不内置依赖安装按钮；依赖安装应作为单独安全评审项处理。
 
 ## WebUI 交互
 
@@ -251,6 +435,27 @@ GitHub tab 字段：
 - 安装后启用
 - 覆盖已有插件
 
+安装确认页展示：
+
+- 插件名、id、版本、作者、描述。
+- 插件 role。
+- 声明的 dependencies。
+- 声明的 permissions。
+- 来源 URL/ref 或上传文件名。
+- 覆盖目标提示。
+- “安装后启用”开关。
+
+任务状态展示：
+
+- queued：等待开始。
+- downloading：下载中。
+- extracting：解压中。
+- validating：校验插件。
+- installing：写入插件目录。
+- loading：扫描并加载插件。
+- succeeded：安装完成。
+- failed：安装失败，展示错误码和 message。
+
 插件卡片新增来源信息：
 
 - 内置插件：`Builtin`
@@ -269,13 +474,15 @@ WebUI 管理的插件菜单新增：
 ### Phase 1: 安装服务和 API
 
 - 新增 `PluginInstallError`。
-- 新增 `PluginInstallManifest` 读写 helper。
+- 新增 `PluginInstallManifest` 文件读写 helper，不接入数据库。
+- 新增 `PluginInstallTaskRegistry`，使用进程内内存 dict。
 - 新增 `PluginInstallService`：
+  - `preview_github()`
+  - `preview_archive()`
   - `install_from_github()`
   - `install_from_archive()`
   - `update_plugin()`
   - `uninstall_plugin()`
-- 新增 task registry，先用内存存储任务状态。
 - 新增 API router 和 schema。
 - 给 `plugin_dict()` 增加来源 metadata 合并。
 
@@ -288,18 +495,21 @@ WebUI 管理的插件菜单新增：
 - `PluginCard.vue` 增加 update/uninstall 菜单项。
 - 补齐 `zh-CN` 和 `en-US` 文案。
 
-### Phase 3: 测试和稳定性
+### Phase 3: 测试
 
 - API 单测：
   - GitHub URL 校验。
   - zip 路径逃逸拒绝。
+  - zip symlink 拒绝。
   - metadata 缺失拒绝。
+  - metadata id 前缀拒绝。
   - 成功安装后写入 manifest 并触发 rescan。
+  - 拒绝覆盖非 WebUI 管理插件。
   - 卸载时保留 plugin data。
 - integration 测试：
   - 从本地 archive 安装可加载插件。
   - 覆盖已有 WebUI 管理插件。
-  - 拒绝覆盖非 WebUI 管理插件。
+  - 覆盖失败时恢复旧插件目录。
 - Dashboard 构建：
   - `pnpm build`
 
@@ -307,6 +517,6 @@ WebUI 管理的插件菜单新增：
 
 第一版不做自动依赖安装，是为了避免 WebUI 变成任意代码下载和执行入口。插件本身在启用时已经会执行 Python 代码，所以安装入口必须让“来源确认”和“实际启用”两个动作清晰可见。
 
-第一版用 JSON manifest 而不是 SQLite，是因为来源记录只服务安装管理，不影响 bot 核心运行。等出现审计、历史、并发任务持久化需求后再迁移到数据库。
+第一版不用数据库。来源记录只服务本机安装管理，不影响 bot 核心运行，也不需要查询能力、历史审计或跨进程任务恢复。JSON manifest 更容易人工检查和修复，符合当前复杂度。
 
 安装逻辑不进入 `PluginManager`，是为了保持当前架构中“安装文件”和“加载运行时”的边界。这样后续即使支持 PyPI、marketplace 或私有 registry，也不会污染插件生命周期代码。
