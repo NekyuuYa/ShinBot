@@ -58,11 +58,13 @@ def _base_config() -> dict:
 
 def test_load_bot_service_configs_accepts_session_patterns_array(tmp_path: Path) -> None:
     config = _base_config()
+    config["bots"][0]["administrators"] = ["qq-main:user-admin", "qq-main:user-helper"]
 
     bots = load_bot_service_configs(config, data_dir=tmp_path / "data")
 
     assert len(bots) == 1
     assert bots[0].id == "command-bot"
+    assert bots[0].administrators == ("qq-main:user-admin", "qq-main:user-helper")
     assert bots[0].commands.prefixes == ("/", "!")
     assert bots[0].plugins.enabled_plugins == ("shinbot_debug_message",)
     assert bots[0].bindings[0].session_patterns == ("group:10001", "private:*")

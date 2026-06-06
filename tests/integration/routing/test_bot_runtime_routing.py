@@ -371,7 +371,6 @@ async def test_command_permissions_use_selected_bot_global_scope() -> None:
     assert adapter.sent[0][1][0].text_content == "权限不足：需要 cmd.secret"
 
 
-@pytest.mark.asyncio
 async def test_command_permissions_use_selected_bot_session_scope() -> None:
     permission_engine = PermissionEngine()
     permission_engine.bind("full-agent:group:room-1.user-1", "admin")

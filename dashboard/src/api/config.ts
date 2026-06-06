@@ -117,6 +117,7 @@ export interface NormalizedBotServiceConfig {
   id: string
   display_name: string
   enabled: boolean
+  administrators: string[]
   commands: NormalizedBotCommandsConfig
   plugins: NormalizedBotPluginsConfig
   agent: NormalizedBotAgentConfig
@@ -197,6 +198,7 @@ export interface ConfigBotTemplate {
   id: string
   display_name: string
   enabled: boolean
+  administrators: string[]
   commands: NormalizedBotCommandsConfig
   plugins: NormalizedBotPluginsConfig
   agent: NormalizedBotAgentConfig

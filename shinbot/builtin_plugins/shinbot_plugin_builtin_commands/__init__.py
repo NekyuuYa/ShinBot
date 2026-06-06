@@ -82,9 +82,12 @@ def _format_duration(seconds: float) -> str:
 def _permission_binding_keys(ctx) -> tuple[str, str]:
     identity_id = ctx.bot_id or ctx.adapter.instance_id
     session_scope = ctx.bot_session_id or ctx.session_id
+    platform_user_id = ctx.user_id
+    if platform_user_id and ":" not in platform_user_id:
+        platform_user_id = f"{ctx.adapter.instance_id}:{platform_user_id}"
     return (
         f"{identity_id}:{ctx.user_id}",
-        f"{session_scope}.{ctx.user_id}",
+        f"{session_scope}.{platform_user_id}",
     )
 
 
@@ -95,6 +98,23 @@ def _current_pause_until(ctx, plugin: Plugin) -> float | None:
         if callable(getter):
             return getter(ctx.session_id)
     return get_agent_pause_until(ctx.session)
+
+
+async def _clear_agent_pause(ctx, plugin: Plugin) -> bool:
+    """Clear the current session agent pause if runtime support is available."""
+    runtime = plugin.agent_runtime
+    if runtime is None:
+        await ctx.send("当前未挂载 agent runtime，无法恢复 agent 活动")
+        return False
+
+    pause_clearer = getattr(runtime, "clear_session_pause", None)
+    if not callable(pause_clearer):
+        await ctx.send("当前 agent runtime 暂不支持提前恢复暂停")
+        return False
+
+    pause_clearer(ctx.session_id)
+    await ctx.send("已恢复当前 session 的 agent 活动")
+    return True
 
 
 def setup(plg: Plugin) -> None:
@@ -138,10 +158,14 @@ def setup(plg: Plugin) -> None:
     )
     async def whoami_command(ctx, _args: str) -> None:
         global_key, session_key = _permission_binding_keys(ctx)
+        platform_user_id = ctx.user_id
+        if platform_user_id and ":" not in platform_user_id:
+            platform_user_id = f"{ctx.adapter.instance_id}:{platform_user_id}"
         await ctx.send(
             "\n".join(
                 [
                     f"你的唯一用户标识（user_id）：{ctx.user_id or '(unknown)'}",
+                    f"平台权限标识：{platform_user_id or '(unknown)'}",
                     f"全局权限绑定 key：{global_key}",
                     f"当前会话权限绑定 key：{session_key}",
                 ]
@@ -162,7 +186,6 @@ def setup(plg: Plugin) -> None:
 
         pause_until_getter = getattr(runtime, "session_pause_until", None)
         pause_setter = getattr(runtime, "pause_session_until", None)
-        pause_clearer = getattr(runtime, "clear_session_pause", None)
         if not callable(pause_until_getter) or not callable(pause_setter):
             await ctx.send("当前 agent runtime 暂不支持 session 级暂停")
             return
@@ -180,11 +203,7 @@ def setup(plg: Plugin) -> None:
 
         normalized = "".join(raw_args.split()).lower()
         if normalized in {"off", "clear", "resume", "unmute"}:
-            if not callable(pause_clearer):
-                await ctx.send("当前 agent runtime 暂不支持提前恢复暂停")
-                return
-            pause_clearer(ctx.session_id)
-            await ctx.send("已恢复当前 session 的 agent 活动")
+            await _clear_agent_pause(ctx, plg)
             return
 
         try:
@@ -203,3 +222,13 @@ def setup(plg: Plugin) -> None:
                 ]
             )
         )
+
+    @plg.on_command(
+        "unmute",
+        aliases=["resume"],
+        description="恢复当前 session 的 agent 活动",
+        usage="/unmute",
+        permission="cmd.mute",
+    )
+    async def unmute_command(ctx, _args: str) -> None:
+        await _clear_agent_pause(ctx, plg)

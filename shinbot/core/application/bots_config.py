@@ -57,6 +57,7 @@ class BotServiceConfig:
     id: str
     display_name: str
     enabled: bool = True
+    administrators: tuple[str, ...] = ()
     commands: BotCommandsConfig = field(default_factory=BotCommandsConfig)
     plugins: BotPluginsConfig = field(default_factory=BotPluginsConfig)
     agent: BotAgentConfig = field(default_factory=BotAgentConfig)
@@ -138,6 +139,13 @@ def parse_bot_service_configs(
             _check_unique(bot_id, f"{path}.id", seen_bot_ids, issues)
         display_name = _optional_string(raw_bot, "display_name", path, issues, default=bot_id)
         enabled = _optional_bool(raw_bot, "enabled", path, issues, default=True)
+        administrators = _optional_string_list(
+            raw_bot,
+            "administrators",
+            path,
+            issues,
+            default=(),
+        )
         commands = _parse_commands(raw_bot.get("commands"), f"{path}.commands", issues)
         plugins = _parse_plugins(raw_bot.get("plugins"), f"{path}.plugins", plugin_ids, issues)
         agent = _parse_agent(raw_bot.get("agent"), f"{path}.agent", root_data_dir, issues)
@@ -156,6 +164,7 @@ def parse_bot_service_configs(
                 id=bot_id,
                 display_name=display_name or bot_id,
                 enabled=enabled,
+                administrators=administrators,
                 commands=commands,
                 plugins=plugins,
                 agent=agent,

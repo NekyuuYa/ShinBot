@@ -9,11 +9,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from shinbot.admin.command_admin import apply_command_enabled_overrides
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot_preflight import (
     BootPreflightError,
     run_boot_preflight,
 )
+from shinbot.core.application.bot_permissions import apply_bot_admin_bindings
 from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.application.config_sections import (
     iter_adapter_instance_records,
@@ -26,7 +28,6 @@ from shinbot.core.application.provider_config_validation import (
     validate_adapter_instance_configs,
     validate_plugin_configs,
 )
-from shinbot.admin.command_admin import apply_command_enabled_overrides
 from shinbot.core.application.runtime_control import RuntimeControl
 from shinbot.core.plugins.config import plugin_saved_enabled
 from shinbot.core.plugins.types import PluginState
@@ -466,6 +467,8 @@ class BootController:
                 logger.info("Bound %r -> permission group %r", key, group)
             except ValueError as exc:
                 logger.warning("Permission binding error: %s", exc)
+
+        apply_bot_admin_bindings(self.bot.permission_engine, self.bot_service_configs)
 
     def _configure_logging(
         self,

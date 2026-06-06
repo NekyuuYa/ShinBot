@@ -76,6 +76,7 @@ def test_config_workspace_exposes_frontend_contract(tmp_path: Path):
     payload = response.json()["data"]
     assert payload["version"] == 1
     assert payload["config"]["adapter_instances"][0]["id"] == "qq-main"
+    assert payload["templates"]["bot"]["administrators"] == []
     assert payload["templates"]["bot"]["agent"] == {"mode": "none", "config": ""}
     assert payload["options"]["agentModes"] == ["none", "simple", "full"]
     assert "onebot_v11" in payload["options"]["adapterPlatforms"]
@@ -309,6 +310,7 @@ def test_config_save_bots_persists_section_only(tmp_path: Path):
                         "id": "bot-main",
                         "display_name": "Bot Main",
                         "enabled": True,
+                        "administrators": ["qq-main:user-admin"],
                         "commands": {"enabled": True, "prefixes": ["/"]},
                         "plugins": {
                             "enabled": True,
@@ -334,6 +336,7 @@ def test_config_save_bots_persists_section_only(tmp_path: Path):
     payload = response.json()["data"]
     assert payload["saved"] is True
     assert boot.config["bots"][0]["id"] == "bot-main"
+    assert boot.config["bots"][0]["administrators"] == ["qq-main:user-admin"]
     assert boot.config["adapter_instances"][0]["id"] == "qq-main"
     assert boot.save_config_calls == 1
 
@@ -385,6 +388,7 @@ def test_config_save_bots_refreshes_runtime_prefix_routing(tmp_path: Path):
                         "id": "bot-main",
                         "display_name": "Bot Main",
                         "enabled": True,
+                        "administrators": ["qq-main:user-1"],
                         "commands": {"enabled": True, "prefixes": ["!"]},
                         "plugins": {
                             "enabled": True,
@@ -408,7 +412,9 @@ def test_config_save_bots_refreshes_runtime_prefix_routing(tmp_path: Path):
 
     assert response.status_code == 200
     assert boot.bot_service_configs[0].commands.prefixes == ("!",)
+    assert boot.bot_service_configs[0].administrators == ("qq-main:user-1",)
     assert bot.bot_service_configs[0].commands.prefixes == ("!",)
+    assert bot.permission_engine.check("cmd.mute", "bot-main", "bot-main:group:room-1", "qq-main:user-1")
 
     class _Context:
         bot_service_config = bot.bot_service_configs[0]

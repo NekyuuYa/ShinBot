@@ -92,6 +92,7 @@ class TestPermissionEngine:
         g = engine.get_group("default")
         assert "cmd.help" in g.permissions
         assert "cmd.ping" in g.permissions
+        assert "cmd.mute" not in g.permissions
 
     def test_resolve_base_only(self):
         engine = self._make_engine()
@@ -124,6 +125,23 @@ class TestPermissionEngine:
         engine.bind("inst1:user1", "admin")
         assert engine.check("tools.weather", "inst1", "inst1:group:g1", "user1") is True
         assert engine.check("sys.reboot", "inst1", "inst1:group:g1", "user1") is True
+
+    def test_check_permission_with_bot_default_admin_binding(self):
+        engine = self._make_engine()
+        engine.bind("__bot_admin__:bot-main:platform:user-admin", "admin")
+        assert (
+            engine.check(
+                "cmd.mute",
+                "bot-main",
+                "bot-main:group:g1",
+                "platform:user-admin",
+            )
+            is True
+        )
+
+    def test_check_mute_denied_for_default_user(self):
+        engine = self._make_engine()
+        assert engine.check("cmd.mute", "bot-main", "bot-main:group:g1", "user1") is False
 
     def test_check_denied_for_default_user(self):
         engine = self._make_engine()

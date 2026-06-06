@@ -18,6 +18,19 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+BOT_ADMIN_BINDING_PREFIX = "__bot_admin__:"
+
+
+def candidate_user_keys(user_id: str) -> tuple[str, ...]:
+    """Return supported user binding key variants for permission lookup."""
+    normalized = str(user_id or "").strip()
+    if not normalized:
+        return ()
+    keys = [normalized]
+    if ":" in normalized:
+        keys.append(normalized.rsplit(":", 1)[-1])
+    return tuple(dict.fromkeys(keys))
+
 
 class PermissionGroup(BaseModel):
     """A named set of permission nodes that can be assigned to users/sessions."""
@@ -46,7 +59,7 @@ class PermissionGroup(BaseModel):
 DEFAULT_GROUP = PermissionGroup(
     id="default",
     name="Default",
-    permissions={"cmd.help", "cmd.ping", "cmd.about", "cmd.whoami", "cmd.mute"},
+    permissions={"cmd.help", "cmd.ping", "cmd.about", "cmd.whoami"},
 )
 
 ADMIN_GROUP = PermissionGroup(
@@ -219,6 +232,10 @@ class PermissionEngine:
         """
         return self._bindings.get(key)
 
+    def binding_keys(self) -> tuple[str, ...]:
+        """Return all registered binding keys."""
+        return tuple(self._bindings.keys())
+
     # ── Resolution ───────────────────────────────────────────────────
 
     def resolve(
@@ -240,17 +257,23 @@ class PermissionEngine:
         """
         layers: list[set[str]] = []
 
-        # Layer 1: Global binding
-        global_key = f"{instance_id}:{user_id}"
-        global_group_id = self._bindings.get(global_key)
-        if global_group_id and global_group_id in self._groups:
-            layers.append(self._groups[global_group_id].permissions)
+        for candidate_user_id in candidate_user_keys(user_id):
+            global_key = f"{instance_id}:{candidate_user_id}"
+            global_group_id = self._bindings.get(global_key)
+            if global_group_id and global_group_id in self._groups:
+                layers.append(self._groups[global_group_id].permissions)
+
+            bot_admin_key = f"{BOT_ADMIN_BINDING_PREFIX}{instance_id}:{candidate_user_id}"
+            bot_admin_group_id = self._bindings.get(bot_admin_key)
+            if bot_admin_group_id and bot_admin_group_id in self._groups:
+                layers.append(self._groups[bot_admin_group_id].permissions)
 
         # Layer 2: Session-local binding
-        session_key = f"{session_id}.{user_id}"
-        session_group_id = self._bindings.get(session_key)
-        if session_group_id and session_group_id in self._groups:
-            layers.append(self._groups[session_group_id].permissions)
+        for candidate_user_id in candidate_user_keys(user_id):
+            session_key = f"{session_id}.{candidate_user_id}"
+            session_group_id = self._bindings.get(session_key)
+            if session_group_id and session_group_id in self._groups:
+                layers.append(self._groups[session_group_id].permissions)
 
         # Layer 3: Session-base group
         base_group = self._groups.get(session_base_group)

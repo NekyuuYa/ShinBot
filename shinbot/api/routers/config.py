@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from dataclasses import asdict
-import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import EC, Envelope, ok
 from shinbot.core.application.boot_preflight import run_boot_preflight
-from shinbot.core.application.bots_config import BotServiceConfig
+from shinbot.core.application.bot_permissions import apply_bot_admin_bindings
 from shinbot.core.application.config_sections import (
     iter_adapter_instance_records,
     normalize_adapter_instance_record,
@@ -292,9 +292,11 @@ def _apply_runtime_bot_service_configs(
     boot.bot_service_configs = tuple(preflight.bot_service_configs)
     configure = getattr(bot, "configure_bot_service_configs", None)
     if configure is None:
+        apply_bot_admin_bindings(bot.permission_engine, boot.bot_service_configs)
         return
     try:
         configure(boot.bot_service_configs)
+        apply_bot_admin_bindings(bot.permission_engine, boot.bot_service_configs)
     except Exception:
         logger.exception("Failed to refresh bot runtime router after config save")
 
@@ -393,6 +395,7 @@ def _config_templates() -> dict[str, Any]:
             "id": "",
             "display_name": "",
             "enabled": True,
+            "administrators": [],
             "commands": {"enabled": True, "prefixes": ["/"]},
             "plugins": {
                 "enabled": True,

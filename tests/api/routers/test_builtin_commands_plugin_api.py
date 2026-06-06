@@ -47,4 +47,5 @@ def test_builtin_commands_plugin_appears_in_plugins_api(tmp_path: Path) -> None:
         "about",
         "whoami",
         "mute",
+        "unmute",
     ]

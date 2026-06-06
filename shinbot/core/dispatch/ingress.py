@@ -319,11 +319,14 @@ class MessageIngress:
             fallback_identity_id=adapter.instance_id,
             fallback_session_id=session.id,
         )
+        permission_user_id = event.sender_id or ""
+        if bot_selection is not None and permission_user_id and ":" not in permission_user_id:
+            permission_user_id = f"{adapter.instance_id}:{permission_user_id}"
 
         permissions = self._permission_engine.resolve(
             instance_id=permission_scope.identity_id,
             session_id=permission_scope.session_id,
-            user_id=event.sender_id or "",
+            user_id=permission_user_id,
             session_base_group=session.permission_group,
         )
         message_context = MessageContext(
