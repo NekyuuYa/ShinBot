@@ -1,0 +1,79 @@
+{
+  "kicker": "Permission Groups",
+  "title": "Permission Groups",
+  "subtitle": "Manage runtime permission groups, user bindings, and command permission overrides.",
+  "actions": {
+    "refresh": "Refresh",
+    "newGroup": "New Group",
+    "saveBinding": "Save Binding",
+    "deleteBinding": "Delete Binding",
+    "saveCommandPermission": "Save Permission",
+    "resetCommandPermission": "Restore Default",
+    "addCommandToGroup": "Add to Group"
+  },
+  "summary": {
+    "groups": "Groups",
+    "bindings": "Bindings",
+    "overrides": "Overrides"
+  },
+  "groups": {
+    "title": "Permission Groups",
+    "detailTitle": "Group Details",
+    "createTitle": "New Permission Group",
+    "permissionCount": "{count} permissions",
+    "bindingCount": "{count} bindings",
+    "system": "Built-in",
+    "builtin": "Built-in",
+    "protected": "Protected"
+  },
+  "bindings": {
+    "title": "Binding Management"
+  },
+  "commands": {
+    "title": "Command Permissions",
+    "defaultPermission": "Default Permission",
+    "currentPermission": "Current Permission",
+    "overridden": "Overridden"
+  },
+  "fields": {
+    "id": "ID",
+    "groupId": "Group ID",
+    "name": "Name",
+    "description": "Description",
+    "builtin": "Built-in",
+    "protected": "Protected",
+    "permissions": "Allowed Permissions",
+    "deniedPermissions": "Explicit Denials",
+    "scopeKey": "Scope key",
+    "groups": "Groups",
+    "command": "Command",
+    "commandPermission": "Required Permission",
+    "targetGroup": "Target Group"
+  },
+  "empty": {
+    "groups": "No matching groups",
+    "bindings": "No bindings yet",
+    "commands": "No commands",
+    "permission": "No permission assigned"
+  },
+  "orphans": {
+    "title": "Possible orphan permissions"
+  },
+  "messages": {
+    "loadFailed": "Failed to load permission data",
+    "groupSaved": "Permission group saved",
+    "groupSaveFailed": "Failed to save permission group",
+    "groupDeleted": "Permission group deleted",
+    "groupDeleteFailed": "Failed to delete permission group",
+    "bindingSaved": "Binding saved",
+    "bindingSaveFailed": "Failed to save binding",
+    "bindingDeleted": "Binding deleted",
+    "bindingDeleteFailed": "Failed to delete binding",
+    "commandSaved": "Command permission saved",
+    "commandSaveFailed": "Failed to save command permission",
+    "commandReset": "Command permission restored",
+    "commandResetFailed": "Failed to restore command permission",
+    "commandAdded": "Command permission added to group",
+    "commandAddFailed": "Failed to add command permission"
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "kicker": "Permission Groups",
+  "title": "权限组管理",
+  "subtitle": "维护运行时权限组、用户绑定和指令权限覆盖。",
+  "actions": {
+    "refresh": "刷新",
+    "newGroup": "新建权限组",
+    "saveBinding": "保存绑定",
+    "deleteBinding": "删除绑定",
+    "saveCommandPermission": "保存权限",
+    "resetCommandPermission": "恢复默认",
+    "addCommandToGroup": "加入权限组"
+  },
+  "summary": {
+    "groups": "权限组",
+    "bindings": "绑定",
+    "overrides": "权限覆盖"
+  },
+  "groups": {
+    "title": "权限组列表",
+    "detailTitle": "权限组详情",
+    "createTitle": "新建权限组",
+    "permissionCount": "{count} 个权限",
+    "bindingCount": "{count} 个绑定",
+    "system": "内置",
+    "builtin": "内置",
+    "protected": "保护"
+  },
+  "bindings": {
+    "title": "绑定管理"
+  },
+  "commands": {
+    "title": "指令权限",
+    "defaultPermission": "默认权限",
+    "currentPermission": "当前权限",
+    "overridden": "已覆盖"
+  },
+  "fields": {
+    "id": "标识",
+    "groupId": "权限组 ID",
+    "name": "名称",
+    "description": "描述",
+    "builtin": "内置",
+    "protected": "保护",
+    "permissions": "允许权限点",
+    "deniedPermissions": "显式拒绝",
+    "scopeKey": "Scope key",
+    "groups": "权限组",
+    "command": "指令",
+    "commandPermission": "所需权限",
+    "targetGroup": "目标权限组"
+  },
+  "empty": {
+    "groups": "没有匹配的权限组",
+    "bindings": "暂无绑定",
+    "commands": "暂无指令",
+    "permission": "未配置权限"
+  },
+  "orphans": {
+    "title": "可能不存在的权限点"
+  },
+  "messages": {
+    "loadFailed": "加载权限数据失败",
+    "groupSaved": "权限组已保存",
+    "groupSaveFailed": "保存权限组失败",
+    "groupDeleted": "权限组已删除",
+    "groupDeleteFailed": "删除权限组失败",
+    "bindingSaved": "绑定已保存",
+    "bindingSaveFailed": "保存绑定失败",
+    "bindingDeleted": "绑定已删除",
+    "bindingDeleteFailed": "删除绑定失败",
+    "commandSaved": "指令权限已保存",
+    "commandSaveFailed": "保存指令权限失败",
+    "commandReset": "指令权限已恢复默认",
+    "commandResetFailed": "恢复指令权限失败",
+    "commandAdded": "指令权限已加入权限组",
+    "commandAddFailed": "加入权限组失败"
+  }
+}

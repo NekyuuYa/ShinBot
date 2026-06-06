@@ -58,6 +58,23 @@ class TestCommandRegistry:
         self.reg.register(CommandDef(name="b", handler=noop_handler))
         assert len(self.reg.all_commands) == 2
 
+    def test_permission_override_applies_to_existing_and_later_commands(self):
+        existing = CommandDef(name="mute", handler=noop_handler, permission="cmd.mute")
+        self.reg.register(existing)
+
+        assert self.reg.set_permission_override("mute", "cmd.moderation.mute") is existing
+        assert existing.permission == "cmd.moderation.mute"
+
+        assert self.reg.set_permission_override("open", "") is None
+        later = CommandDef(name="open", handler=noop_handler, permission="cmd.open")
+        self.reg.register(later)
+
+        assert later.permission == ""
+        assert self.reg.list_permission_overrides() == {
+            "mute": "cmd.moderation.mute",
+            "open": "",
+        }
+
 
 class TestCommandResolution:
     def setup_method(self):

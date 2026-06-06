@@ -77,6 +77,7 @@ class CommandMatch:
     command: CommandDef
     priority: CommandPriority
     raw_args: str = ""  # Remaining text after command trigger
+    prefix: str = ""  # Actual matched command prefix for P0 commands
     regex_match: re.Match | None = None  # For P2 matches
 
 
@@ -93,14 +94,19 @@ class CommandRegistry:
         self._regex_commands: list[CommandDef] = []  # P2 pattern commands
         self._exact_commands: dict[str, CommandDef] = {}  # P1 exact match map
         self._enabled_overrides: dict[str, bool] = {}
+        self._permission_overrides: dict[str, str] = {}
+        self._default_permissions: dict[str, str] = {}
 
     def register(self, cmd: CommandDef) -> None:
         """Register a command definition."""
         if cmd.name in self._commands:
             logger.warning("Overriding command: %s", cmd.name)
 
+        self._default_permissions[cmd.name] = cmd.permission
         if cmd.name in self._enabled_overrides:
             cmd.enabled = self._enabled_overrides[cmd.name]
+        if cmd.name in self._permission_overrides:
+            cmd.permission = self._permission_overrides[cmd.name]
 
         self._commands[cmd.name] = cmd
 
@@ -120,6 +126,7 @@ class CommandRegistry:
         cmd = self._commands.pop(name, None)
         if cmd is None:
             return None
+        self._default_permissions.pop(name, None)
 
         for alias in cmd.aliases:
             self._alias_map.pop(alias, None)
@@ -170,6 +177,55 @@ class CommandRegistry:
         """Return a copy of explicit command enabled-state overrides."""
         return dict(self._enabled_overrides)
 
+    def set_permission_override(self, name: str, permission: str) -> CommandDef | None:
+        """Set the runtime permission override for a command.
+
+        An empty permission string disables the command's permission requirement.
+        """
+        self._permission_overrides[name] = permission
+        cmd = self._commands.get(name)
+        if cmd is not None:
+            cmd.permission = permission
+        return cmd
+
+    def clear_permission_override(self, name: str) -> None:
+        """Remove a stored permission override and restore the plugin default."""
+        self._permission_overrides.pop(name, None)
+        cmd = self._commands.get(name)
+        if cmd is not None:
+            cmd.permission = self._default_permissions.get(name, cmd.permission)
+
+    def list_permission_overrides(self) -> dict[str, str]:
+        """Return a copy of explicit command permission overrides."""
+        return dict(self._permission_overrides)
+
+    def default_permission_for(self, name: str) -> str:
+        """Return the plugin-declared default permission for a command."""
+        return self._default_permissions.get(name, "")
+
+    def has_permission_override(self, name: str) -> bool:
+        """Return whether a command has an explicit permission override."""
+        return name in self._permission_overrides
+
+    def declared_permission_nodes(self) -> set[str]:
+        """Return all permission nodes declared or currently required by commands."""
+        permissions = {
+            permission
+            for permission in self._default_permissions.values()
+            if permission
+        }
+        permissions.update(
+            cmd.permission
+            for cmd in self._commands.values()
+            if cmd.permission
+        )
+        permissions.update(
+            permission
+            for permission in self._permission_overrides.values()
+            if permission
+        )
+        return permissions
+
     def resolve(self, text: str, prefixes: list[str]) -> CommandMatch | None:
         """Resolve a message text to a command match."""
         stripped = text.strip()
@@ -192,6 +248,7 @@ class CommandRegistry:
                         command=cmd,
                         priority=CommandPriority.P0_PREFIX,
                         raw_args=raw_args,
+                        prefix=prefix,
                     )
                 return None
 

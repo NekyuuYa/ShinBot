@@ -8,7 +8,9 @@ export interface CommandDefinition {
   triggers: string[]
   description: string
   usage: string
+  defaultPermission: string
   permission: string
+  permissionOverridden: boolean
   mode: CommandMode
   priority: number
   priorityLabel: string

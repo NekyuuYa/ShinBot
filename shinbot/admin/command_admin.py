@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
-
 
 COMMAND_OVERRIDES_SECTION = "command_overrides"
 COMMAND_ENABLED_SECTION = "enabled"
@@ -46,9 +46,9 @@ def load_command_enabled_overrides(config: dict[str, Any]) -> dict[str, bool]:
     raw_overrides = _enabled_override_store(config, create=False)
     overrides: dict[str, bool] = {}
     for key, value in raw_overrides.items():
-        if not isinstance(key, str):
+        if not isinstance(key, str) or not isinstance(value, bool):
             continue
-        overrides[str(key)] = bool(value)
+        overrides[key] = value
     return overrides
 
 
@@ -58,11 +58,20 @@ def apply_command_enabled_overrides(command_registry: Any, config: dict[str, Any
         command_registry.set_enabled(name, enabled)
 
 
-def command_dict(definition: Any) -> dict[str, Any]:
+def command_dict(definition: Any, command_registry: Any | None = None) -> dict[str, Any]:
     """Build a serialized command payload for API responses."""
     aliases = list(definition.aliases)
     triggers = [definition.name, *aliases]
     pattern = definition.pattern.pattern if definition.pattern is not None else ""
+    default_permission = definition.permission
+    permission_overridden = False
+    if command_registry is not None:
+        default_permission_for = getattr(command_registry, "default_permission_for", None)
+        has_permission_override = getattr(command_registry, "has_permission_override", None)
+        if callable(default_permission_for):
+            default_permission = default_permission_for(definition.name)
+        if callable(has_permission_override):
+            permission_overridden = bool(has_permission_override(definition.name))
 
     return {
         "name": definition.name,
@@ -70,7 +79,9 @@ def command_dict(definition: Any) -> dict[str, Any]:
         "triggers": triggers,
         "description": definition.description,
         "usage": definition.usage,
+        "defaultPermission": default_permission,
         "permission": definition.permission,
+        "permissionOverridden": permission_overridden,
         "mode": definition.mode.value,
         "priority": definition.priority.value,
         "priorityLabel": definition.priority.name,
@@ -101,14 +112,24 @@ def set_command_enabled_or_raise(
 ) -> dict[str, Any]:
     """Update one command enabled state and persist it to config."""
     command = get_command_or_raise(command_registry, name)
-    command_registry.set_enabled(command.name, enabled)
 
+    # Prepare config mutation first, persist, then apply runtime state.
+    missing = object()
+    previous_overrides = boot.config.get(COMMAND_OVERRIDES_SECTION, missing)
+    if previous_overrides is not missing:
+        previous_overrides = deepcopy(previous_overrides)
     store = _enabled_override_store(boot.config, create=True)
     store[command.name] = enabled
     if not boot.save_config():
+        if previous_overrides is missing:
+            boot.config.pop(COMMAND_OVERRIDES_SECTION, None)
+        else:
+            boot.config[COMMAND_OVERRIDES_SECTION] = previous_overrides
         raise CommandAdminError(
             status_code=500,
             code="CONFIG_WRITE_FAILED",
             message=f"Failed to persist enabled state for command {command.name!r}",
         )
+
+    command_registry.set_enabled(command.name, enabled)
     return command_dict(command)

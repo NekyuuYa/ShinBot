@@ -7,6 +7,7 @@ import time
 from collections.abc import Sequence
 
 import shinbot
+from shinbot.core.application.bot_routing import bot_plugin_enabled_for_context
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.state.session import get_agent_pause_until
 
@@ -24,9 +25,25 @@ _DURATION_UNITS = {
 }
 
 
-def _render_help_lines(plugin: Plugin) -> list[str]:
+def _is_command_visible(command, ctx) -> bool:
+    return (
+        command.enabled
+        and (ctx is None or bot_plugin_enabled_for_context(ctx, command.owner))
+        and (ctx is None or not command.permission or ctx.has_permission(command.permission))
+    )
+
+
+def _render_help_lines(plugin: Plugin, ctx=None) -> list[str]:
+    prefix = "/"
+    if ctx is not None and ctx.command_match is not None and ctx.command_match.prefix:
+        prefix = ctx.command_match.prefix
+
     commands = sorted(
-        plugin._command_registry.all_commands,
+        (
+            command
+            for command in plugin._command_registry.all_commands
+            if _is_command_visible(command, ctx)
+        ),
         key=lambda item: (item.name, item.owner or ""),
     )
     if not commands:
@@ -35,7 +52,7 @@ def _render_help_lines(plugin: Plugin) -> list[str]:
     lines = ["可用指令："]
     for command in commands:
         triggers = [command.name, *command.aliases]
-        trigger_text = " / ".join(f"/{trigger}" for trigger in triggers)
+        trigger_text = " / ".join(f"{prefix}{trigger}" for trigger in triggers)
         detail = command.description.strip() or "无描述"
         lines.append(f"{trigger_text} - {detail}")
     return lines
@@ -128,7 +145,7 @@ def setup(plg: Plugin) -> None:
         permission="cmd.help",
     )
     async def help_command(ctx, _args: str) -> None:
-        await ctx.send("\n".join(_render_help_lines(plg)))
+        await ctx.send("\n".join(_render_help_lines(plg, ctx)))
 
     @plg.on_command(
         "ping",

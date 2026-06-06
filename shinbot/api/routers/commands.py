@@ -26,7 +26,9 @@ class CommandData(BaseModel):
     triggers: list[str]
     description: str
     usage: str
+    defaultPermission: str
     permission: str
+    permissionOverridden: bool
     mode: str
     priority: int
     priorityLabel: str
@@ -53,7 +55,7 @@ async def list_commands(bot=BotDep):
     if registry is None:
         return ok([])
     commands = sorted(registry.all_commands, key=lambda item: item.name)
-    return ok([command_dict(item) for item in commands])
+    return ok([command_dict(item, registry) for item in commands])
 
 
 @router.patch("/{command_name}", response_model=Envelope[CommandData])
@@ -71,13 +73,12 @@ async def update_command(
             detail={"code": "COMMAND_NOT_FOUND", "message": f"Command {command_name!r} not found"},
         )
     try:
-        return ok(
-            set_command_enabled_or_raise(
-                registry,
-                boot,
-                command_name,
-                enabled=payload.enabled,
-            )
+        command = set_command_enabled_or_raise(
+            registry,
+            boot,
+            command_name,
+            enabled=payload.enabled,
         )
+        return ok(command_dict(registry.get(command["name"]), registry))
     except CommandAdminError as exc:
         _raise_admin_http_error(exc)

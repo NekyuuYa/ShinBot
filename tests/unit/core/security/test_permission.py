@@ -108,6 +108,31 @@ class TestPermissionEngine:
         assert "tools.*" in perms  # from admin group
         assert "cmd.help" in perms  # from default base
 
+    def test_resolve_merges_multiple_global_binding_groups(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+        engine.add_group(PermissionGroup(id="search_user", permissions={"tools.search.query"}))
+
+        engine.bind_group("inst1:user1", "moderator")
+        engine.bind_group("inst1:user1", "search_user")
+
+        perms = engine.resolve("inst1", "inst1:group:g1", "user1")
+        assert "cmd.mute" in perms
+        assert "tools.search.query" in perms
+        assert "cmd.help" in perms
+
+    def test_resolve_merges_multiple_session_binding_groups(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+        engine.add_group(PermissionGroup(id="search_user", permissions={"tools.search.query"}))
+
+        engine.bind_group("inst1:group:g1.user1", "moderator")
+        engine.bind_group("inst1:group:g1.user1", "search_user")
+
+        perms = engine.resolve("inst1", "inst1:group:g1", "user1")
+        assert "cmd.mute" in perms
+        assert "tools.search.query" in perms
+
     def test_resolve_with_session_binding(self):
         engine = self._make_engine()
         engine.bind("inst1:group:g1.user1", "admin")
@@ -139,6 +164,21 @@ class TestPermissionEngine:
             is True
         )
 
+    def test_resolve_merges_multiple_bot_admin_binding_groups(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+
+        engine.bind_group("__bot_admin__:bot-main:platform:user-admin", "admin")
+        engine.bind_group("__bot_admin__:bot-main:platform:user-admin", "moderator")
+
+        perms = engine.resolve(
+            "bot-main",
+            "bot-main:group:g1",
+            "platform:user-admin",
+        )
+        assert "tools.*" in perms
+        assert "cmd.mute" in perms
+
     def test_check_mute_denied_for_default_user(self):
         engine = self._make_engine()
         assert engine.check("cmd.mute", "bot-main", "bot-main:group:g1", "user1") is False
@@ -153,6 +193,96 @@ class TestPermissionEngine:
         engine.unbind("inst1:user1")
         perms = engine.resolve("inst1", "inst1:group:g1", "user1")
         assert "tools.*" not in perms
+
+    def test_bind_replaces_existing_groups_and_get_binding_returns_stable_first(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+
+        engine.bind_group("inst1:user1", "moderator")
+        engine.bind_group("inst1:user1", "admin")
+
+        assert engine.groups_for_key("inst1:user1") == ("admin", "moderator")
+        assert engine.get_binding("inst1:user1") == "admin"
+
+        engine.bind("inst1:user1", "owner")
+
+        assert engine.groups_for_key("inst1:user1") == ("owner",)
+        assert engine.get_binding("inst1:user1") == "owner"
+
+    def test_unbind_group_removes_one_group_and_prunes_empty_binding(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+
+        engine.bind_group("inst1:user1", "admin", source="test")
+        engine.bind_group("inst1:user1", "moderator", source="test")
+
+        engine.unbind_group("inst1:user1", "admin", source="test")
+
+        assert engine.groups_for_key("inst1:user1") == ("moderator",)
+        assert "inst1:user1" in engine.binding_keys()
+
+        engine.unbind_group("inst1:user1", "moderator", source="test")
+
+        assert engine.groups_for_key("inst1:user1") == ()
+        assert "inst1:user1" not in engine.binding_keys()
+
+    def test_set_groups_for_key_replaces_groups(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+
+        engine.set_groups_for_key("inst1:user1", ["admin", "moderator"])
+        assert engine.groups_for_key("inst1:user1") == ("admin", "moderator")
+
+        engine.set_groups_for_key("inst1:user1", ["owner"])
+        assert engine.groups_for_key("inst1:user1") == ("owner",)
+
+        engine.set_groups_for_key("inst1:user1", [])
+        assert engine.groups_for_key("inst1:user1") == ()
+        assert "inst1:user1" not in engine.binding_keys()
+
+    def test_set_groups_for_key_unknown_group_keeps_existing_binding(self):
+        engine = self._make_engine()
+        engine.bind("inst1:user1", "admin")
+
+        with pytest.raises(ValueError, match="Unknown permission group"):
+            engine.set_groups_for_key("inst1:user1", ["owner", "missing"])
+
+        assert engine.groups_for_key("inst1:user1") == ("admin",)
+
+    def test_bind_group_unknown_group_does_not_create_binding(self):
+        engine = self._make_engine()
+
+        with pytest.raises(ValueError, match="Unknown permission group"):
+            engine.bind_group("inst1:user1", "missing")
+
+        assert engine.groups_for_key("inst1:user1") == ()
+        assert "inst1:user1" not in engine.binding_keys()
+
+    def test_resolve_custom_session_base_group(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="session_mod", permissions={"cmd.mute"}))
+
+        perms = engine.resolve(
+            "inst1",
+            "inst1:group:g1",
+            "user1",
+            session_base_group="session_mod",
+        )
+
+        assert "cmd.mute" in perms
+        assert "cmd.help" not in perms
+
+    def test_resolve_ignores_removed_bound_group(self):
+        engine = self._make_engine()
+        engine.add_group(PermissionGroup(id="moderator", permissions={"cmd.mute"}))
+        engine.bind_group("inst1:user1", "admin")
+        engine.bind_group("inst1:user1", "moderator")
+
+        engine.remove_group("moderator")
+
+        perms = engine.resolve("inst1", "inst1:group:g1", "user1")
+        assert "tools.*" in perms
+        assert "cmd.mute" not in perms
 
     def test_bind_unknown_group_raises(self):
         engine = self._make_engine()
