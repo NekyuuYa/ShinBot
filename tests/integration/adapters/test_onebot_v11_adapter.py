@@ -48,14 +48,27 @@ def test_forward_max_depth_default_is_three(adapter: OneBotV11Adapter):
     assert adapter.config.forward_max_depth == 3
 
 
-def test_encode_local_media_paths_as_file_uri(adapter: OneBotV11Adapter, tmp_path: Path):
+def test_encode_local_media_paths_as_base64(adapter: OneBotV11Adapter, tmp_path: Path):
     image_path = tmp_path / "render image.png"
+    image_path.write_bytes(b"png-bytes")
 
     segment = adapter._element_to_ob11(MessageElement.img(str(image_path)))
 
     assert segment == {
         "type": "image",
-        "data": {"file": image_path.as_uri()},
+        "data": {"file": "base64://cG5nLWJ5dGVz"},
+    }
+
+
+def test_encode_local_file_uri_as_base64(adapter: OneBotV11Adapter, tmp_path: Path):
+    image_path = tmp_path / "render image.png"
+    image_path.write_bytes(b"png-bytes")
+
+    segment = adapter._element_to_ob11(MessageElement.img(image_path.as_uri()))
+
+    assert segment == {
+        "type": "image",
+        "data": {"file": "base64://cG5nLWJ5dGVz"},
     }
 
 
@@ -63,7 +76,7 @@ def test_encode_local_media_paths_as_file_uri(adapter: OneBotV11Adapter, tmp_pat
     ("src", "expected"),
     [
         ("https://example.test/image.png", "https://example.test/image.png"),
-        ("file:///tmp/image.png", "file:///tmp/image.png"),
+        ("file:///tmp/missing-image.png", "file:///tmp/missing-image.png"),
         ("base64://aW1hZ2U=", "base64://aW1hZ2U="),
         ("relative/image.png", "relative/image.png"),
     ],

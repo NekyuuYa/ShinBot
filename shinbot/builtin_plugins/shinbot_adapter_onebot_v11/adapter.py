@@ -14,13 +14,14 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import base64
 import http
 import json
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import websockets
 import websockets.exceptions
@@ -41,12 +42,18 @@ def _format_ob11_file_src(src: Any) -> str:
     raw = str(src or "")
     if not raw:
         return ""
-    if urlparse(raw).scheme:
+    parsed = urlparse(raw)
+    if parsed.scheme == "file":
+        path = Path(unquote(parsed.path))
+        if path.is_file():
+            return f"base64://{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        return raw
+    if parsed.scheme:
         return raw
 
     path = Path(raw).expanduser()
-    if path.is_absolute():
-        return path.as_uri()
+    if path.is_absolute() and path.is_file():
+        return f"base64://{base64.b64encode(path.read_bytes()).decode('ascii')}"
     return raw
 
 
