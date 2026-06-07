@@ -74,18 +74,20 @@ const removeRow = (index: number) => {
 }
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use "@/styles/mixins" as *;
+
 .key-value-editor {
   padding: 14px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.12);
-  border-radius: 20px;
+  border: 1px solid $border-color-base;
+  border-radius: $radius-sm;
   background: rgba(var(--v-theme-surface), 0.72);
 }
 
 .key-value-row {
   padding: 10px;
-  border: 1px solid rgba(var(--v-theme-primary), 0.08);
-  border-radius: 18px;
+  border: 1px solid $border-color-soft;
+  border-radius: $radius-xs;
   background: rgba(var(--v-theme-surface), 0.82);
 }
 </style>

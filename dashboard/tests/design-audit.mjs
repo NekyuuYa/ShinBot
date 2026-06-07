@@ -9,6 +9,7 @@ const srcRoot = join(dashboardRoot, 'src')
 const args = parseArgs(process.argv.slice(2))
 const outputPath = args.output ? resolve(dashboardRoot, args.output) : null
 const outputFormat = args.format ?? 'markdown'
+const maxHigh = parseOptionalNonNegativeInteger(args['max-high'], 'max-high')
 
 const allowedRawColorFiles = new Set([
   'src/theme/themes.ts',
@@ -65,6 +66,16 @@ if (outputPath) {
   await writeFile(outputPath, `${report}\n`)
 } else {
   process.stdout.write(`${report}\n`)
+}
+
+if (maxHigh !== null) {
+  const highCount = summary.bySeverity.get('high') ?? 0
+  if (highCount > maxHigh) {
+    process.stderr.write(
+      `Design audit failed: high findings ${highCount} exceed allowed maximum ${maxHigh}.\n`
+    )
+    process.exitCode = 1
+  }
 }
 
 function auditVueFile(relativePath, content, lines) {
@@ -188,6 +199,18 @@ function parseArgs(argv) {
     }
   }
   return result
+}
+
+function parseOptionalNonNegativeInteger(value, name) {
+  if (value === undefined) {
+    return null
+  }
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    process.stderr.write(`Invalid --${name} value: expected a non-negative integer.\n`)
+    process.exit(2)
+  }
+  return parsed
 }
 
 function formatSummary() {

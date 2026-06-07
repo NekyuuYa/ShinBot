@@ -22,7 +22,13 @@ pnpm design:audit -- --output ../tmp/dashboard-design-audit.md
 pnpm design:audit -- --format json --output ../tmp/dashboard-design-audit.json
 ```
 
-当前脚本只产生 warning/report，不阻塞构建。等问题基线收敛后，再把部分规则升级为 CI 检查。
+严格检查 high finding 不回归：
+
+```bash
+pnpm design:audit:strict
+```
+
+`design:audit:strict` 等价于 `pnpm design:audit -- --max-high 0`。当前只把 high 级别接入门禁；medium/low 仍作为治理 backlog，避免历史样式债务阻塞功能改动。
 
 ## 审计维度
 
@@ -138,12 +144,19 @@ batch: P0 | P1 | P2 | P3
 - 把高频 opacity、surface、border、shadow、radius 迁到 token。
 - 将普通 CSS style block 迁为 SCSS。
 
+### P5: 自动化门禁
+
+- 使用 `pnpm design:audit:strict` 防止 high finding 回归。
+- 先只 gate high；medium/low 通过报告持续暴露，不在当前阶段阻塞构建。
+- 后续当某类 medium 基线收敛后，再新增对应 `--max-*` 或分类门禁。
+
 ## 验收
 
 每个修复批次至少执行：
 
 ```bash
 pnpm design:audit
+pnpm design:audit:strict
 pnpm build
 ```
 

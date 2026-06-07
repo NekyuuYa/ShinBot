@@ -96,15 +96,17 @@ defineEmits<{
 }>()
 </script>
 
-<style scoped>
+<style scoped lang="scss">
+@use "@/styles/mixins" as *;
+
 .member-card {
-  border-radius: 20px;
-  border-color: rgba(var(--v-theme-primary), 0.14);
+  border-radius: $radius-sm;
+  border-color: $border-color-base;
   background: rgba(var(--v-theme-surface), 0.82);
 }
 
 .member-avatar {
-  box-shadow: inset 0 0 0 1px rgba(var(--v-theme-primary), 0.08);
+  border: 1px solid $border-color-soft;
 }
 
 .member-card :deep(.v-card-actions) {
