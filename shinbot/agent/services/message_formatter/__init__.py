@@ -120,17 +120,17 @@ class MessageFormatterService:
             return {}
         names: dict[str, str] = {}
         for record in records:
-            sender_id = str(record.get("sender_id", "") or "").strip()
-            if not sender_id or sender_id in names:
-                continue
-            if sender_id == config.self_platform_id:
-                continue
-            try:
-                identity = self._identity_store.get_identity(sender_id)
-                if identity and identity.get("name"):
-                    names[sender_id] = str(identity["name"])
-            except Exception:
-                pass
+            for user_id in _identity_ids_from_record(record, config):
+                if not user_id or user_id in names:
+                    continue
+                if user_id == config.self_platform_id:
+                    continue
+                try:
+                    identity = self._identity_store.get_identity(user_id)
+                    if identity and identity.get("name"):
+                        names[user_id] = str(identity["name"])
+                except Exception:
+                    pass
         return names
 
     def _resolve_image_descriptions(
@@ -198,6 +198,48 @@ def _collect_image_hashes(
         children = item.get("children")
         if isinstance(children, list):
             _collect_image_hashes(children, descriptions, media_service)
+
+
+def _identity_ids_from_record(
+    record: dict[str, Any],
+    config: MessageFormatConfig,
+) -> list[str]:
+    ids: list[str] = []
+    sender_id = str(record.get("sender_id", "") or "").strip()
+    if sender_id:
+        ids.append(sender_id)
+    content_json = str(record.get("content_json", "") or "").strip()
+    if not content_json:
+        return ids
+    try:
+        payload = json.loads(content_json)
+    except (json.JSONDecodeError, TypeError):
+        return ids
+    if isinstance(payload, list):
+        _collect_identity_ids(payload, ids)
+    return ids
+
+
+def _collect_identity_ids(payload: list[Any], ids: list[str]) -> None:
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        attrs = item.get("attrs") if isinstance(item.get("attrs"), dict) else {}
+        element_type = str(item.get("type", "") or "").strip()
+        if element_type == "at":
+            target_id = str(attrs.get("id", "") or "").strip()
+            if target_id:
+                ids.append(target_id)
+        elif element_type == "sb:poke":
+            sender_id = str(attrs.get("sender_id", "") or "").strip()
+            target_id = str(attrs.get("target", "") or "").strip()
+            if sender_id:
+                ids.append(sender_id)
+            if target_id:
+                ids.append(target_id)
+        children = item.get("children")
+        if isinstance(children, list):
+            _collect_identity_ids(children, ids)
 
 
 def _collect_media_semantic(

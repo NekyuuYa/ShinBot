@@ -102,14 +102,25 @@ def test_format_content_json_mention() -> None:
     content = json.dumps([{"type": "at", "attrs": {"id": "bot-1", "name": "Bot"}}])
     records = [_make_record(content_json=content, raw_text="")]
     result = format_messages(records, MessageFormatConfig(pack_mode=PackMode.PACK, self_platform_id="bot-1"))
-    assert "[@ 你]" in result.packed_text
+    assert "[@ 你/bot-1]" in result.packed_text
 
 
 def test_format_content_json_mention_other() -> None:
     content = json.dumps([{"type": "at", "attrs": {"id": "user-2", "name": "Bob"}}])
     records = [_make_record(content_json=content, raw_text="")]
     result = format_messages(records, MessageFormatConfig(pack_mode=PackMode.PACK))
-    assert "[@ Bob]" in result.packed_text
+    assert "[@ Bob/user-2]" in result.packed_text
+
+
+def test_format_content_json_mention_other_uses_identity_name() -> None:
+    content = json.dumps([{"type": "at", "attrs": {"id": "user-2"}}])
+    records = [_make_record(content_json=content, raw_text="")]
+    result = format_messages(
+        records,
+        MessageFormatConfig(pack_mode=PackMode.PACK),
+        display_names={"user-2": "Bobby"},
+    )
+    assert "[@ Bobby/user-2]" in result.packed_text
 
 
 def test_format_content_json_quote() -> None:
@@ -147,6 +158,34 @@ def test_format_content_json_image_no_description() -> None:
     assert "[图片]" in result.packed_text
 
 
+def test_format_content_json_image_description_can_use_source_id() -> None:
+    content = json.dumps([{"type": "img", "attrs": {"src": "hash123"}}])
+    records = [_make_record(content_json=content, raw_text="")]
+    config = MessageFormatConfig(image_mode=ImageMode.DESCRIPTION, pack_mode=PackMode.PACK)
+    result = format_messages(records, config, image_descriptions={"hash123": "a scoreboard"})
+    assert "[图片: a scoreboard]" in result.packed_text
+
+
+def test_format_content_json_image_thumbnail_prefers_description(monkeypatch, tmp_path) -> None:
+    img_file = tmp_path / "thumbnail.jpg"
+    img_file.write_bytes(b"\xff\xd8thumbnail")
+    content = json.dumps([{"type": "img", "attrs": {"src": str(img_file)}}])
+    records = [_make_record(content_json=content, raw_text="")]
+    config = MessageFormatConfig(image_mode=ImageMode.THUMBNAIL, pack_mode=PackMode.PACK)
+
+    class FakeFingerprint:
+        raw_hash = "thumb123"
+        strict_dhash = "dhash"
+        storage_path = str(img_file)
+
+    import shinbot.agent.services.media.fingerprint as fp_mod
+
+    monkeypatch.setattr(fp_mod, "fingerprint_image_file", lambda _: FakeFingerprint())
+    result = format_messages(records, config, image_descriptions={"thumb123": "a diagram"})
+    assert "[图片: a diagram]" in result.packed_text
+    assert "图片缩略图" not in result.packed_text
+
+
 def test_format_content_json_emoji_semantic_mode(monkeypatch, tmp_path) -> None:
     img_file = tmp_path / "emoji.png"
     img_file.write_bytes(b"\x89PNGfake")
@@ -168,10 +207,39 @@ def test_format_content_json_emoji_semantic_mode(monkeypatch, tmp_path) -> None:
 
 def test_format_content_json_poke() -> None:
     content = json.dumps([{"type": "sb:poke", "attrs": {"target": "user-1"}}])
-    records = [_make_record(content_json=content, raw_text="")]
+    records = [_make_record(sender_id="user-2", sender_name="Alice", content_json=content, raw_text="")]
     config = MessageFormatConfig(pack_mode=PackMode.PACK, self_platform_id="user-1")
     result = format_messages(records, config)
-    assert "[戳一戳" in result.packed_text
+    assert "[戳一戳: Alice/user-2 -> 你/user-1]" in result.packed_text
+
+
+def test_format_content_json_poke_other_uses_identity_names() -> None:
+    content = json.dumps([
+        {"type": "sb:poke", "attrs": {"sender_id": "user-1", "target": "user-2"}}
+    ])
+    records = [_make_record(sender_id="user-1", sender_name="", content_json=content, raw_text="")]
+    config = MessageFormatConfig(pack_mode=PackMode.PACK, self_platform_id="bot-1")
+    result = format_messages(
+        records,
+        config,
+        display_names={"user-1": "Alice", "user-2": "Bob"},
+    )
+    assert "[戳一戳: Alice/user-1 -> Bob/user-2]" in result.packed_text
+
+
+def test_format_content_json_poke_attr_sender_uses_matching_name() -> None:
+    content = json.dumps([
+        {"type": "sb:poke", "attrs": {"sender_id": "user-9", "target": "user-2"}}
+    ])
+    records = [_make_record(sender_id="user-1", sender_name="Alice", content_json=content, raw_text="")]
+    config = MessageFormatConfig(pack_mode=PackMode.PACK, self_platform_id="bot-1")
+    result = format_messages(
+        records,
+        config,
+        display_names={"user-9": "Nina", "user-2": "Bob"},
+    )
+    assert "[戳一戳: Nina/user-9 -> Bob/user-2]" in result.packed_text
+    assert "Alice/user-9" not in result.packed_text
 
 
 # -- pack modes --
@@ -277,6 +345,20 @@ def test_service_resolves_identity_store_name() -> None:
     assert "Alicia: hello" in result.packed_text
 
 
+def test_service_resolves_mention_target_identity_store_name() -> None:
+    class FakeIdentityStore:
+        def get_identity(self, user_id: str, *, platform: str = "") -> dict | None:
+            if user_id == "user-2":
+                return {"name": "Bobby"}
+            return None
+
+    content = json.dumps([{"type": "at", "attrs": {"id": "user-2"}}])
+    svc = MessageFormatterService(identity_store=FakeIdentityStore())
+    records = [_make_record(content_json=content, raw_text="")]
+    result = svc.format(records, MessageFormatConfig(pack_mode=PackMode.PACK))
+    assert "[@ Bobby/user-2]" in result.packed_text
+
+
 def test_service_resolves_media_semantics_by_fingerprint(monkeypatch, tmp_path) -> None:
     img_file = tmp_path / "semantic.jpg"
     img_file.write_bytes(b"\xff\xd8semantic")
@@ -315,5 +397,5 @@ def test_format_mixed_text_and_mention() -> None:
     config = MessageFormatConfig(pack_mode=PackMode.PACK, self_platform_id="bot-1")
     result = format_messages(records, config)
     assert "hey" in result.packed_text
-    assert "[@ 你]" in result.packed_text
+    assert "[@ 你/bot-1]" in result.packed_text
     assert "check this" in result.packed_text

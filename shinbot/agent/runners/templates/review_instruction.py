@@ -92,6 +92,7 @@ def resolve_review_stage_instruction(
                 "review_stage_metadata",
                 "review_instruction_content",
                 "review_source_messages",
+                "review_source_messages_text",
             }
         }
     metadata_json = json.dumps(metadata, ensure_ascii=False, sort_keys=True)

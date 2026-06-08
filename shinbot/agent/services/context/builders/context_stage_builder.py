@@ -366,7 +366,8 @@ class ContextStageBuilder:
             self_platform_id=self_platform_id,
         ).strip() or "[无文本]"
         message_id = projection_state.assign_message_id(record)
-        line = f"[msgid: {message_id}]{sender_label}: {rendered_body}"
+        sender = _format_alias_with_platform(sender_label, sender_id)
+        line = f"[msgid: {message_id}]{sender}: {rendered_body}"
         return ContextRenderedRow(
             sender_id=sender_id,
             sender_label=sender_label,

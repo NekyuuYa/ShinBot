@@ -86,9 +86,16 @@ def resolve_active_chat_fast_mode_batch(
 ) -> dict[str, Any]:
     """Render active chat fast-mode batch instruction content."""
 
-    batch_metadata = dict(request.metadata)
-    batch_metadata.pop("review_stage", None)
-    batch_metadata.pop("review_stage_metadata", None)
+    batch_metadata = _filtered_metadata(
+        request.metadata,
+        exclude={
+            "review_stage",
+            "review_stage_metadata",
+            "active_chat_instruction_content",
+            "active_chat_source_messages",
+            "active_chat_source_messages_text",
+        },
+    )
     batch_metadata_json = json.dumps(batch_metadata, ensure_ascii=False, sort_keys=True)
     instruction = (
         "主动聊天快速模式批次。通过工具决定一个即时动作。\n"
@@ -133,3 +140,11 @@ def _content_blocks(value: Any) -> list[dict[str, Any]]:
 
 def _list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
+
+
+def _filtered_metadata(
+    metadata: dict[str, Any],
+    *,
+    exclude: set[str],
+) -> dict[str, Any]:
+    return {key: value for key, value in metadata.items() if key not in exclude}

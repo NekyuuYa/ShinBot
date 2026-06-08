@@ -91,7 +91,14 @@ def _format_single_record(
             return None
         parts = [NormalizedMessagePart(kind="text", text=raw_text)]
 
-    text = _render_parts(parts, config=config, image_descriptions=image_descriptions, sender_label=sender_label)
+    text = _render_parts(
+        parts,
+        config=config,
+        image_descriptions=image_descriptions,
+        display_names=display_names,
+        sender_id=sender_id,
+        sender_label=sender_label,
+    )
     if not text.strip():
         return None
 
@@ -109,6 +116,8 @@ def _render_parts(
     *,
     config: MessageFormatConfig,
     image_descriptions: dict[str, str],
+    display_names: dict[str, str],
+    sender_id: str = "",
     sender_label: str = "",
 ) -> str:
     fragments: list[str] = []
@@ -118,7 +127,13 @@ def _render_parts(
             continue
 
         if part.kind == "mention":
-            fragments.append(_format_mention(part, config.self_platform_id))
+            fragments.append(
+                _format_mention(
+                    part,
+                    config.self_platform_id,
+                    display_names=display_names,
+                )
+            )
             continue
 
         if part.kind == "quote":
@@ -126,7 +141,15 @@ def _render_parts(
             continue
 
         if part.kind == "poke":
-            fragments.append(_format_poke(part, config.self_platform_id, sender_label=sender_label))
+            fragments.append(
+                _format_poke(
+                    part,
+                    config.self_platform_id,
+                    display_names=display_names,
+                    sender_id=sender_id,
+                    sender_label=sender_label,
+                )
+            )
             continue
 
         if part.kind == "image" and part.image is not None:
@@ -150,17 +173,19 @@ def _format_image(
 ) -> str:
     is_emoji = image.is_custom_emoji
     raw_hash = image.raw_hash
+    description = _image_description(image, image_descriptions)
 
     if is_emoji:
         return _format_emoji(image, config=config, image_descriptions=image_descriptions)
 
     if config.image_mode == ImageMode.DESCRIPTION:
-        desc = image_descriptions.get(raw_hash, "")
-        if desc:
-            return f"[图片: {desc}]"
+        if description:
+            return f"[图片: {description}]"
         return "[图片]"
 
     if config.image_mode == ImageMode.THUMBNAIL:
+        if description:
+            return f"[图片: {description}]"
         return f"[图片缩略图:{raw_hash[:8]}]" if raw_hash else "[图片]"
 
     return f"[图片:{raw_hash[:8]}]" if raw_hash else "[图片]"
@@ -173,28 +198,42 @@ def _format_emoji(
     image_descriptions: dict[str, str],
 ) -> str:
     raw_hash = image.raw_hash
+    description = _image_description(image, image_descriptions)
 
     if config.emoji_mode == EmojiMode.SEMANTIC:
-        desc = image_descriptions.get(raw_hash, "")
-        if desc:
-            return f"[表情: {desc}]"
+        if description:
+            return f"[表情: {description}]"
         return "[表情]"
 
     if config.emoji_mode == EmojiMode.THUMBNAIL:
+        if description:
+            return f"[表情: {description}]"
         return f"[表情缩略图:{raw_hash[:8]}]" if raw_hash else "[表情]"
 
     return f"[表情:{raw_hash[:8]}]" if raw_hash else "[表情]"
 
 
-def _format_mention(part: NormalizedMessagePart, self_platform_id: str) -> str:
+def _image_description(image: Any, image_descriptions: dict[str, str]) -> str:
+    for key in (image.raw_hash, image.source_path):
+        normalized = str(key or "").strip()
+        if normalized and image_descriptions.get(normalized):
+            return image_descriptions[normalized]
+    return ""
+
+
+def _format_mention(
+    part: NormalizedMessagePart,
+    self_platform_id: str,
+    *,
+    display_names: dict[str, str],
+) -> str:
     target_id = part.platform_id.strip()
-    if target_id and self_platform_id and target_id == self_platform_id:
-        return "[@ 你]"
-    if part.display_name:
-        return f"[@ {part.display_name}]"
-    if target_id:
-        return f"[@ {target_id}]"
-    return "[@ 某人]"
+    label = _format_identity_label(
+        target_id,
+        part.display_name or display_names.get(target_id, ""),
+        self_platform_id=self_platform_id,
+    )
+    return f"[@ {label}]"
 
 
 def _format_quote(part: NormalizedMessagePart) -> str:
@@ -208,6 +247,8 @@ def _format_poke(
     part: NormalizedMessagePart,
     self_platform_id: str,
     *,
+    display_names: dict[str, str],
+    sender_id: str = "",
     sender_label: str = "",
 ) -> str:
     """Render a poke (戳一戳) part into a text placeholder.
@@ -230,21 +271,56 @@ def _format_poke(
         Text placeholder string describing the poke action.
     """
     target_id = part.platform_id.strip()
-    sender = sender_label.strip() if sender_label else ""
-    if not sender:
-        sender = part.sender_id.strip() if part.sender_id else ""
+    resolved_sender_id = (part.sender_id or sender_id).strip()
+    resolved_sender_name = (
+        sender_label
+        if resolved_sender_id and resolved_sender_id == sender_id
+        else display_names.get(resolved_sender_id, "")
+    )
+    sender = _format_identity_label(
+        resolved_sender_id,
+        resolved_sender_name,
+        self_platform_id=self_platform_id,
+        fallback="某人",
+    )
 
     if target_id and self_platform_id and target_id == self_platform_id:
-        if sender:
-            return f"[戳一戳: {sender}戳了你一下]"
-        return "[戳一戳: 某人戳了你一下]"
+        target = _format_identity_label(
+            target_id,
+            part.display_name or display_names.get(target_id, ""),
+            self_platform_id=self_platform_id,
+        )
+        return f"[戳一戳: {sender} -> {target}]"
 
     if target_id:
-        if sender:
-            return f"[戳一戳: {sender}戳了 {target_id} 一下]"
-        return f"[戳一戳: 戳了 {target_id} 一下]"
+        target = _format_identity_label(
+            target_id,
+            part.display_name or display_names.get(target_id, ""),
+            self_platform_id=self_platform_id,
+        )
+        return f"[戳一戳: {sender} -> {target}]"
 
     return "[戳一戳]"
+
+
+def _format_identity_label(
+    user_id: str,
+    display_name: str = "",
+    *,
+    self_platform_id: str = "",
+    fallback: str = "某人",
+) -> str:
+    normalized_id = str(user_id or "").strip()
+    normalized_name = str(display_name or "").strip()
+    if normalized_id and self_platform_id and normalized_id == self_platform_id:
+        normalized_name = "你"
+    if normalized_name and normalized_id:
+        return f"{normalized_name}/{normalized_id}"
+    if normalized_name:
+        return normalized_name
+    if normalized_id:
+        return normalized_id
+    return fallback
 
 
 def _pack_messages(
