@@ -583,15 +583,18 @@ def _insert_message(
     session_id: str = "bot:group:room",
     raw_text: str,
     created_at: float,
+    content_json: str = "[]",
+    sender_id: str = "user-1",
+    sender_name: str = "User",
 ) -> int:
     return db.message_logs.insert(
         MessageLogRecord(
             session_id=session_id,
             platform_msg_id=f"msg-{raw_text}",
-            sender_id="user-1",
-            sender_name="User",
+            sender_id=sender_id,
+            sender_name=sender_name,
             raw_text=raw_text,
-            content_json="[]",
+            content_json=content_json,
             role="user",
             created_at=created_at,
         )

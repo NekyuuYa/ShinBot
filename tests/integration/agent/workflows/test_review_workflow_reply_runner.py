@@ -361,6 +361,133 @@ async def test_reply_decision_runner_requires_first_quote_to_target_candidate() 
 
 
 @pytest.mark.asyncio
+async def test_reply_decision_runner_blocks_other_target_only_candidate_reply() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": (
+                                '{"text": "是真红，不是风子哦", '
+                                '"quote_message_log_id": 61698}'
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[
+                {
+                    "id": 61698,
+                    "raw_text": "@月梅塩絮 风子",
+                    "content_json": (
+                        '[{"type":"at","attrs":{"id":"2898394893","name":"月梅塩絮"}},'
+                        '{"type":"text","attrs":{"content":" 风子"}}]'
+                    ),
+                }
+            ],
+            metadata={
+                "candidate_message_ids": [61698],
+                "other_target_only_candidate_message_ids": [61698],
+                "candidate_target_facts": [
+                    {
+                        "message_id": 61698,
+                        "mentions_other": True,
+                        "targeted_to_other_only": True,
+                        "other_target_ids": ["2898394893"],
+                        "text_without_target_markers": "风子",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [61698]
+    assert result.reason == "reply_tool_quote_message_log_id_targets_other_only"
+    assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_blocks_later_other_target_only_quoted_reply() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": '{"text": "first", "quote_message_log_id": 7}',
+                        },
+                    },
+                    {
+                        "id": "tool-2",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": (
+                                '{"text": "是真红，不是风子哦", '
+                                '"quote_message_log_id": 61698}'
+                            ),
+                        },
+                    },
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[
+                {"id": 7, "raw_text": "hello"},
+                {
+                    "id": 61698,
+                    "raw_text": "@月梅塩絮 风子",
+                    "content_json": (
+                        '[{"type":"at","attrs":{"id":"2898394893","name":"月梅塩絮"}},'
+                        '{"type":"text","attrs":{"content":" 风子"}}]'
+                    ),
+                },
+            ],
+            metadata={
+                "candidate_message_ids": [7, 61698],
+                "other_target_only_candidate_message_ids": [61698],
+            },
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [7, 61698]
+    assert result.reason == "reply_tool_quote_message_log_id_targets_other_only"
+    assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
 async def test_reply_decision_runner_repairs_toolless_text_response() -> None:
     tool_manager = FakeReviewToolManager()
     model_runtime = FakeModelRuntime(

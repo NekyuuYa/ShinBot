@@ -104,7 +104,7 @@ async def test_review_llm_stage_runners_parse_structured_outputs() -> None:
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
         purpose="review_scan",
-        source_messages=[{"id": 1, "raw_text": "hello"}],
+        source_messages=[{"id": 3, "raw_text": "hello"}],
         metadata={"candidate_message_id": 3},
     )
     prompt_registry = _make_prompt_registry()
@@ -266,7 +266,9 @@ async def test_review_llm_runner_uses_prompt_registry_when_available() -> None:
 async def test_review_scan_runner_accepts_observed_candidate_id_aliases() -> None:
     model_runtime = FakeModelRuntime(
         [
+            '{"candidate_msg_log_ids": [7], "reason": "selected"}',
             '{"selected_msg_log_ids": [7], "reason": "selected"}',
+            '{"selected_message_log_ids": [8], "reason": "selected"}',
             '{"message_log_ids": [8], "reason": "selected"}',
         ]
     )
@@ -278,11 +280,109 @@ async def test_review_scan_runner_accepts_observed_candidate_id_aliases() -> Non
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
         purpose="review_scan",
-        source_messages=[{"id": 7, "raw_text": "hello"}],
+        source_messages=[{"id": 7, "raw_text": "hello"}, {"id": 8, "raw_text": "hi"}],
     )
 
+    candidate_msg_log_result = await runner.run(stage_input)
     selected_result = await runner.run(stage_input)
+    selected_message_log_result = await runner.run(stage_input)
     message_log_result = await runner.run(stage_input)
 
+    assert candidate_msg_log_result.candidate_message_ids == [7]
     assert selected_result.candidate_message_ids == [7]
+    assert selected_message_log_result.candidate_message_ids == [8]
     assert message_log_result.candidate_message_ids == [8]
+
+
+@pytest.mark.asyncio
+async def test_review_scan_runner_filters_other_target_and_low_signal_image_candidates() -> None:
+    model_runtime = FakeModelRuntime(
+        ['{"candidate_message_ids": [7, 8, 9, 10, 11, 12], "reason": "selected"}']
+    )
+    runner = LLMReviewScanStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[
+            {
+                "id": 7,
+                "raw_text": "",
+                "content_json": '[{"type":"at","attrs":{"id":"user-2","name":"Bob"}}]',
+            },
+            {
+                "id": 8,
+                "raw_text": "",
+                "content_json": '[{"type":"sb:poke","attrs":{"sender_id":"user-1","target":"user-2"}}]',
+            },
+            {
+                "id": 9,
+                "raw_text": "",
+                "content_json": '[{"type":"img","attrs":{"src":"missing.jpg"}}]',
+            },
+            {
+                "id": 10,
+                "raw_text": "",
+                "content_json": '[{"type":"at","attrs":{"id":"bot-self","name":"Bot"}}]',
+            },
+            {
+                "id": 11,
+                "raw_text": "[@用户 user-2] 风子",
+                "content_json": (
+                    '[{"type":"quote","attrs":{"id":"357983158"}},'
+                    '{"type":"at","attrs":{"id":"user-2","name":"Bob"}},'
+                    '{"type":"text","attrs":{"content":" 风子"}}]'
+                ),
+            },
+            {
+                "id": 12,
+                "raw_text": "@Bob 你刚才那张图里报错是连接超时，Shinku 你怎么看",
+                "content_json": (
+                    '[{"type":"at","attrs":{"id":"user-2","name":"Bob"}},'
+                    '{"type":"text","attrs":{"content":" '
+                    '你刚才那张图里报错是连接超时，Shinku 你怎么看"}}]'
+                ),
+            },
+        ],
+        metadata={"self_id": "bot-self"},
+    )
+
+    result = await runner.run(stage_input)
+
+    assert result.candidate_message_ids == [10, 12]
+
+
+@pytest.mark.asyncio
+async def test_review_scan_runner_keeps_image_candidate_with_semantic_hint() -> None:
+    class FakeMessageFormatter:
+        def format_text(self, _records, _config=None) -> str:
+            return "Alice: [图片: a screenshot of an error]"
+
+    model_runtime = FakeModelRuntime(
+        ['{"candidate_message_ids": [9], "reason": "selected"}']
+    )
+    runner = LLMReviewScanStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+        message_formatter=FakeMessageFormatter(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="review_scan",
+        source_messages=[
+            {
+                "id": 9,
+                "raw_text": "",
+                "content_json": '[{"type":"img","attrs":{"src":"missing.jpg"}}]',
+            },
+        ],
+        metadata={"self_id": "bot-self"},
+    )
+
+    result = await runner.run(stage_input)
+
+    assert result.candidate_message_ids == [9]

@@ -159,28 +159,16 @@ class LLMReplyDecisionStageRunner:
         has_reply_call = any(
             call.name == "send_reply" for call in parsed_calls
         )
-        first_reply_arguments = next(
-            (
-                call.arguments
-                for call in parsed_calls
-                if call.name == "send_reply"
-            ),
-            None,
+        quote_validation_error = _reply_quote_validation_error(
+            stage_input,
+            parsed_calls,
+            target_message_ids=target_message_ids,
         )
-        if first_reply_arguments is not None:
-            quote_message_log_id = optional_int(
-                first_reply_arguments.get("quote_message_log_id")
+        if quote_validation_error:
+            return ReplyDecisionStageOutput(
+                target_message_ids=target_message_ids,
+                reason=quote_validation_error,
             )
-            if quote_message_log_id is None:
-                return ReplyDecisionStageOutput(
-                    target_message_ids=target_message_ids,
-                    reason="reply_tool_missing_quote_message_log_id",
-                )
-            if quote_message_log_id not in set(target_message_ids):
-                return ReplyDecisionStageOutput(
-                    target_message_ids=target_message_ids,
-                    reason="reply_tool_quote_message_log_id_not_candidate",
-                )
 
         replied = False
         reply_message_id: int | None = None
@@ -265,6 +253,47 @@ def _candidate_message_ids_from_stage(stage_input: ReviewStageInput) -> list[int
     if isinstance(values, list):
         return int_list(values)
     return int_list([stage_input.metadata.get("candidate_message_id")])
+
+
+def _reply_quote_validation_error(
+    stage_input: ReviewStageInput,
+    parsed_calls: list[Any],
+    *,
+    target_message_ids: list[int],
+) -> str:
+    target_message_id_set = set(target_message_ids)
+    other_only_ids = _other_target_only_candidate_message_ids(stage_input)
+    reply_index = 0
+    for call in parsed_calls:
+        if call.name != "send_reply":
+            continue
+        reply_index += 1
+        quote_message_log_id = optional_int(call.arguments.get("quote_message_log_id"))
+        if quote_message_log_id is None:
+            if reply_index == 1:
+                return "reply_tool_missing_quote_message_log_id"
+            continue
+        if quote_message_log_id not in target_message_id_set:
+            return "reply_tool_quote_message_log_id_not_candidate"
+        if quote_message_log_id in other_only_ids:
+            return "reply_tool_quote_message_log_id_targets_other_only"
+    return ""
+
+
+def _other_target_only_candidate_message_ids(stage_input: ReviewStageInput) -> set[int]:
+    values = stage_input.metadata.get("other_target_only_candidate_message_ids")
+    if isinstance(values, list):
+        return set(int_list(values))
+    facts = stage_input.metadata.get("candidate_target_facts")
+    if not isinstance(facts, list):
+        return set()
+    return {
+        message_id
+        for fact in facts
+        if isinstance(fact, dict)
+        if fact.get("targeted_to_other_only") is True
+        if (message_id := optional_int(fact.get("message_id"))) is not None
+    }
 
 
 def _reply_message_ids_from_payload(payload: dict[str, Any]) -> list[int]:

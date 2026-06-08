@@ -56,6 +56,10 @@ from shinbot.agent.scheduler.models import (
     UnreadMessage,
     UnreadRange,
 )
+from shinbot.agent.services.context.builders.message_parts import (
+    NormalizedMessagePart,
+    parse_message_parts,
+)
 from shinbot.agent.services.context.review_context_builder import (
     ReviewContextBuilder,
     ReviewContextBuilderAdapter,
@@ -229,6 +233,7 @@ class ReviewCoordinator:
         started_at = self._now()
         stage_traces: list[ReviewStageTrace] = []
         trace_by_message_id = _trace_by_message_id(unread_messages)
+        self_platform_id = _self_platform_id_from_unread(unread_messages)
         try:
             current_unread_ranges = scheduler.unread_ranges(session_id, limit=10_000)
             unread_ranges = _freeze_unread_ranges(
@@ -251,6 +256,7 @@ class ReviewCoordinator:
                 unread_ranges=unread_ranges,
                 review_run_id=review_run_id,
                 trace_by_message_id=trace_by_message_id,
+                self_platform_id=self_platform_id,
                 use_partial_consumption=use_partial_consumption,
                 stage_traces=stage_traces,
             )
@@ -260,6 +266,7 @@ class ReviewCoordinator:
                 block_digests=block_digests,
                 review_run_id=review_run_id,
                 trace_by_message_id=trace_by_message_id,
+                self_platform_id=self_platform_id,
                 stage_traces=stage_traces,
             )
             completion = scheduler.complete_review(
@@ -300,6 +307,7 @@ class ReviewCoordinator:
                 active_epoch=active_epoch,
                 review_run_id=review_run_id,
                 trace_by_message_id=trace_by_message_id,
+                self_platform_id=self_platform_id,
                 stage_traces=stage_traces,
             )
             return ReviewWorkflowResult(
@@ -388,6 +396,7 @@ class ReviewCoordinator:
         review_run_id: str,
         stage_traces: list[ReviewStageTrace],
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         use_partial_consumption: bool = False,
     ) -> tuple[ReviewScanResult, list[ConsumedUnreadRange], list[ReviewBlockDigestStageOutput]]:
         scanned_count = min(unread_count, self._config.overflow_threshold_messages)
@@ -402,6 +411,7 @@ class ReviewCoordinator:
             unread_ranges=unread_ranges,
             review_run_id=review_run_id,
             trace_by_message_id=trace_by_message_id,
+            self_platform_id=self_platform_id,
             stage_traces=stage_traces,
         )
         (
@@ -419,6 +429,7 @@ class ReviewCoordinator:
             summaries=compressed_ranges,
             review_run_id=review_run_id,
             trace_by_message_id=trace_by_message_id,
+            self_platform_id=self_platform_id,
             use_partial_consumption=use_partial_consumption,
             stage_traces=stage_traces,
         )
@@ -455,6 +466,7 @@ class ReviewCoordinator:
         block_digests: list[ReviewBlockDigestStageOutput] | None = None,
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         stage_traces: list[ReviewStageTrace],
     ) -> ReplyDecisionResult:
         if not scan.candidate_message_ids:
@@ -497,11 +509,17 @@ class ReviewCoordinator:
                     "candidate_message_ids": list(window.candidate_message_ids),
                     "before_messages": self._config.reply_context_before_messages,
                     "after_messages": self._config.reply_context_after_messages,
+                    **_candidate_target_metadata(
+                        window.messages,
+                        window.candidate_message_ids,
+                        self_platform_id,
+                    ),
                     **_summary_metadata_payload(scan.compressed_ranges),
                     **_block_digest_metadata_payload(selected_block_digests),
                     **_active_chat_summary_metadata(active_chat_summary),
                     **_trace_metadata_for_messages(window.messages, trace_by_message_id),
                 },
+                self_platform_id=self_platform_id,
                 previous_summary=_format_reply_previous_summary(
                     overflow=_format_overflow_summaries(scan.compressed_ranges),
                     block_digests=selected_block_digests,
@@ -570,6 +588,7 @@ class ReviewCoordinator:
         unread_ranges: list[UnreadRange],
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         stage_traces: list[ReviewStageTrace],
     ) -> list[UnreadRangeSummaryRecord]:
         summaries: list[UnreadRangeSummaryRecord] = []
@@ -605,6 +624,7 @@ class ReviewCoordinator:
                     messages=messages,
                     review_run_id=review_run_id,
                     trace_by_message_id=trace_by_message_id,
+                    self_platform_id=self_platform_id,
                     stage_traces=stage_traces,
                 )
                 if summary is not None:
@@ -622,6 +642,7 @@ class ReviewCoordinator:
         messages: list[dict],
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         stage_traces: list[ReviewStageTrace],
     ) -> UnreadRangeSummaryRecord | None:
         actual_start_msg_log_id = int(messages[0]["id"])
@@ -640,6 +661,7 @@ class ReviewCoordinator:
                 "reason": "overflow_pending_compression",
                 **_trace_metadata_for_messages(messages, trace_by_message_id),
             },
+            self_platform_id=self_platform_id,
         )
         if stage_input is None:
             return None
@@ -669,6 +691,7 @@ class ReviewCoordinator:
         active_epoch: int | None,
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         coro = self._run_active_chat_bootstrap_with_timeout(
@@ -680,6 +703,7 @@ class ReviewCoordinator:
             active_epoch=active_epoch,
             review_run_id=review_run_id,
             trace_by_message_id=trace_by_message_id,
+            self_platform_id=self_platform_id,
             stage_traces=list(stage_traces),
         )
         if self._bootstrap_task_scope is not None:
@@ -738,6 +762,7 @@ class ReviewCoordinator:
         active_epoch: int | None,
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         try:
@@ -751,6 +776,7 @@ class ReviewCoordinator:
                     active_epoch=active_epoch,
                     review_run_id=review_run_id,
                     trace_by_message_id=trace_by_message_id,
+                    self_platform_id=self_platform_id,
                     stage_traces=stage_traces,
                 ),
                 timeout=self._config.active_chat_bootstrap_timeout_seconds,
@@ -784,6 +810,7 @@ class ReviewCoordinator:
         active_epoch: int | None,
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         stage_traces: list[ReviewStageTrace],
     ) -> ActiveChatBootstrapResult:
         ended_at = self._now()
@@ -799,6 +826,7 @@ class ReviewCoordinator:
             reply=reply,
             review_run_id=review_run_id,
             trace_by_message_id=trace_by_message_id,
+            self_platform_id=self_platform_id,
             stage_traces=stage_traces,
         )
         apply_decision = None
@@ -880,6 +908,7 @@ class ReviewCoordinator:
         review_run_id: str,
         stage_traces: list[ReviewStageTrace],
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         use_partial_consumption: bool = False,
     ) -> tuple[int, int, list[int], list[str], list[ConsumedUnreadRange], list[asyncio.Task[ReviewBlockDigestStageOutput]]]:
         if self._message_store is None or max_messages <= 0:
@@ -944,6 +973,7 @@ class ReviewCoordinator:
                         **_summary_metadata_payload(summaries),
                         **_trace_metadata_for_messages(batch, trace_by_message_id),
                     },
+                    self_platform_id=self_platform_id,
                     previous_summary=_format_overflow_summaries(summaries),
                 )
                 if stage_input is not None:
@@ -958,6 +988,7 @@ class ReviewCoordinator:
                             range_end=unread_range.end_msg_log_id,
                             review_run_id=review_run_id,
                             trace_by_message_id=trace_by_message_id,
+                            self_platform_id=self_platform_id,
                             semaphore=block_digest_semaphore,
                         )
                     )
@@ -990,6 +1021,7 @@ class ReviewCoordinator:
         reply: ReplyDecisionResult,
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         stage_traces: list[ReviewStageTrace],
     ) -> tuple[int, bool, ActiveChatBootstrapStageOutput]:
         if self._message_store is None:
@@ -1024,6 +1056,7 @@ class ReviewCoordinator:
                 **_summary_metadata_payload(summaries),
                 **_trace_metadata_for_messages(tail_history, trace_by_message_id),
             },
+            self_platform_id=self_platform_id,
             previous_summary=_format_overflow_summaries(summaries),
         )
         if stage_input is None:
@@ -1046,15 +1079,19 @@ class ReviewCoordinator:
         purpose: str,
         review_run_id: str,
         metadata: dict,
+        self_platform_id: str = "",
         previous_summary: str = "",
     ) -> ReviewStageInput | None:
         if "review_run_id" not in metadata:
             metadata = {"review_run_id": review_run_id, **metadata}
+        if self_platform_id and "self_platform_id" not in metadata:
+            metadata = {"self_platform_id": self_platform_id, **metadata}
         stage_input = self._context_builder.build_for_messages(
             session_id=session_id,
             messages=messages,
             purpose=purpose,
             options=ReviewContextBuildOptions(
+                self_platform_id=self_platform_id,
                 previous_summary=previous_summary,
                 metadata=metadata,
             ),
@@ -1151,6 +1188,7 @@ class ReviewCoordinator:
         range_end: int,
         review_run_id: str,
         trace_by_message_id: dict[int, str],
+        self_platform_id: str = "",
         semaphore: asyncio.Semaphore,
     ) -> asyncio.Task[ReviewBlockDigestStageOutput]:
         start_msg_log_id = _message_id(messages[0]) if messages else None
@@ -1170,6 +1208,7 @@ class ReviewCoordinator:
                 "message_count": len(messages),
                 **_trace_metadata_for_messages(messages, trace_by_message_id),
             },
+            self_platform_id=self_platform_id,
         )
         if stage_input is None:
             coro = _noop_block_digest(
@@ -1460,6 +1499,111 @@ def _message_id(message: dict) -> int | None:
 
 def _message_ids(messages: list[dict]) -> list[int]:
     return [message_id for message in messages if (message_id := _message_id(message)) is not None]
+
+
+def _candidate_target_metadata(
+    messages: list[dict],
+    candidate_message_ids: list[int],
+    self_platform_id: str,
+) -> dict[str, object]:
+    facts = _candidate_target_facts(messages, candidate_message_ids, self_platform_id)
+    if not facts:
+        return {}
+    other_only_ids = [
+        int(fact["message_id"])
+        for fact in facts
+        if fact.get("targeted_to_other_only") is True
+    ]
+    metadata: dict[str, object] = {"candidate_target_facts": facts}
+    if other_only_ids:
+        metadata["other_target_only_candidate_message_ids"] = other_only_ids
+        metadata["candidate_has_other_target_only"] = True
+    return metadata
+
+
+def _candidate_target_facts(
+    messages: list[dict],
+    candidate_message_ids: list[int],
+    self_platform_id: str,
+) -> list[dict[str, object]]:
+    candidate_id_set = set(candidate_message_ids)
+    facts: list[dict[str, object]] = []
+    for message in messages:
+        message_id = _message_id(message)
+        if message_id is None or message_id not in candidate_id_set:
+            continue
+        try:
+            parts = parse_message_parts(message, self_platform_id=self_platform_id)
+        except Exception:
+            logger.exception(
+                "Failed to parse candidate target facts for message %s", message_id
+            )
+            continue
+        fact = _candidate_target_fact(
+            message,
+            parts=parts,
+            message_id=message_id,
+            self_platform_id=self_platform_id,
+        )
+        if fact is not None:
+            facts.append(fact)
+    return facts
+
+
+def _candidate_target_fact(
+    message: dict,
+    *,
+    parts: list[NormalizedMessagePart],
+    message_id: int,
+    self_platform_id: str,
+) -> dict[str, object] | None:
+    mention_target_ids = _part_target_ids(parts, "mention")
+    poke_target_ids = _part_target_ids(parts, "poke")
+    if not mention_target_ids and not poke_target_ids:
+        return None
+    self_id = str(self_platform_id or "").strip()
+    targets_bot = bool(
+        self_id and (self_id in mention_target_ids or self_id in poke_target_ids)
+    )
+    other_mention_ids = [target for target in mention_target_ids if target != self_id]
+    other_poke_ids = [target for target in poke_target_ids if target != self_id]
+    other_target_ids = _dedupe_preserve_order([*other_mention_ids, *other_poke_ids])
+    targeted_to_other_only = bool(other_target_ids and not targets_bot)
+    return {
+        "message_id": message_id,
+        "sender_id": str(message.get("sender_id", "") or "").strip(),
+        "mentions_bot": bool(self_id and self_id in mention_target_ids),
+        "mentions_other": bool(other_mention_ids),
+        "poke_to_bot": bool(self_id and self_id in poke_target_ids),
+        "poke_to_other": bool(other_poke_ids),
+        "targeted_to_bot": targets_bot,
+        "targeted_to_other_only": targeted_to_other_only,
+        "other_target_ids": other_target_ids,
+        "text_without_target_markers": _candidate_text_without_target_markers(parts),
+    }
+
+
+def _part_target_ids(parts: list[NormalizedMessagePart], kind: str) -> list[str]:
+    return _dedupe_preserve_order(
+        [
+            target_id
+            for part in parts
+            if part.kind == kind
+            if (target_id := str(part.platform_id or "").strip())
+        ]
+    )
+
+
+def _candidate_text_without_target_markers(parts: list[NormalizedMessagePart]) -> str:
+    return "".join(part.text for part in parts if part.kind == "text").strip()
+
+
+def _self_platform_id_from_unread(unread_messages: list[UnreadMessage]) -> str:
+    for message in unread_messages:
+        self_platform_id = str(message.self_platform_id or "").strip()
+        if self_platform_id:
+            return self_platform_id
+    return ""
 
 
 def _trace_by_message_id(unread_messages: list[UnreadMessage]) -> dict[int, str]:

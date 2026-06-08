@@ -102,6 +102,7 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
                 message_log_id=message_id,
                 sender_id="user-1",
                 created_at=float(message_id),
+                self_platform_id="bot-self",
                 trace_id=f"ingress:bot:{message_id}",
             )
         )
@@ -121,6 +122,7 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
             message_log_id=message_id,
             sender_id="user-1",
             created_at=float(message_id),
+            self_platform_id="bot-self",
             trace_id=f"ingress:bot:{message_id}",
         )
         for message_id in message_ids
@@ -172,6 +174,7 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         "active_chat_bootstrap",
     ]
     first_scan_metadata = context_builder.calls[0]["metadata"]
+    assert first_scan_metadata["self_platform_id"] == "bot-self"
     assert first_scan_metadata["trace_id"] == f"ingress:bot:{message_ids[0]}"
     assert first_scan_metadata["trace_ids"] == [
         f"ingress:bot:{message_ids[0]}",
@@ -516,6 +519,85 @@ async def test_reply_decision_groups_overlapping_candidate_contexts(tmp_path) ->
     assert result.stage_traces[1].metadata["candidate_message_ids"] == [
         message_ids[2],
         message_ids[3],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_marks_other_target_only_mention_candidates(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    before_id = _insert_message(db, raw_text=">?", created_at=1000.0)
+    candidate_id = _insert_message(
+        db,
+        raw_text="@月梅塩絮 风子",
+        content_json=(
+            '[{"type":"quote","attrs":{"id":"357983158"}},'
+            '{"type":"at","attrs":{"id":"2898394893","name":"月梅塩絮"}},'
+            '{"type":"text","attrs":{"content":" 风子"}}]'
+        ),
+        sender_id="2085430718",
+        sender_name="襁褓而从心所欲",
+        created_at=2000.0,
+    )
+    after_id = _insert_message(db, raw_text="?", created_at=3000.0)
+    for message_id in [before_id, candidate_id, after_id]:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+                self_platform_id="bot-self",
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    reply_runner = RecordingReplyDecisionRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=3,
+            reply_context_before_messages=1,
+            reply_context_after_messages=1,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        context_builder=RecordingReviewContextBuilder(),
+        scan_runner=FixedCandidateScanRunner([candidate_id]),
+        reply_runner=reply_runner,
+        now=lambda: 5.0,
+    )
+
+    await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages("bot:group:room"),
+    )
+
+    metadata = reply_runner.calls[0]["metadata"]
+    assert metadata["self_platform_id"] == "bot-self"
+    assert metadata["other_target_only_candidate_message_ids"] == [candidate_id]
+    assert metadata["candidate_has_other_target_only"] is True
+    assert metadata["candidate_target_facts"] == [
+        {
+            "message_id": candidate_id,
+            "sender_id": "2085430718",
+            "mentions_bot": False,
+            "mentions_other": True,
+            "poke_to_bot": False,
+            "poke_to_other": False,
+            "targeted_to_bot": False,
+            "targeted_to_other_only": True,
+            "other_target_ids": ["2898394893"],
+            "text_without_target_markers": "风子",
+        }
     ]
 
 
