@@ -30,6 +30,10 @@ PREFIX_PROMPT_IDS = {
     "builtin.context.inactive_alias",
     "builtin.context.long_term_memory",
 }
+IDLE_REVIEW_PLANNING_PROMPT_IDS = {
+    "review.idle_review_planning.task",
+    "review.idle_review_planning.constraints",
+}
 
 
 def test_load_prompt_component_from_markdown(tmp_path: Path) -> None:
@@ -99,6 +103,24 @@ def test_prefix_prompt_files_are_marked_internal() -> None:
             failures.append(f"{path}: missing metadata.internal=true")
         if metadata.get("prompt_role") != "prefix":
             failures.append(f"{path}: missing metadata.prompt_role=prefix")
+
+    assert failures == []
+
+
+def test_idle_review_planning_prompt_defines_conservative_time_scale() -> None:
+    failures: list[str] = []
+    for path in sorted(PROMPT_SOURCE_ROOT.glob("**/prompts/*/*.md")):
+        front_matter, body = parse_prompt_markdown(path.read_text(encoding="utf-8"), path=path)
+        prompt_id = str(front_matter["id"])
+        if prompt_id not in IDLE_REVIEW_PLANNING_PROMPT_IDS:
+            continue
+
+        if "900" not in body:
+            failures.append(f"{path}: missing settled/default review scale")
+        if "60-120" not in body:
+            failures.append(f"{path}: missing very-short interval warning")
+        if "null" not in body:
+            failures.append(f"{path}: missing default-policy null guidance")
 
     assert failures == []
 
