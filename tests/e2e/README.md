@@ -67,7 +67,7 @@ timer, rather than a manually injected signal, advances the state machine.
 ## Startup Smoke
 
 `tests/e2e/startup/` launches `main.py` in a subprocess with an isolated
-`--data-dir`, waits for the management API to serve `/api/openapi.json`, then
+`--data-dir`, waits for the management API health endpoint to respond, then
 shuts the process down. Use this lane for regressions that only appear through
 the real process entrypoint, boot controller, API app, and database migration
 sequence together.

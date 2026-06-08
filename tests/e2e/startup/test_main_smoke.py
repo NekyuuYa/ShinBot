@@ -15,7 +15,6 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
-@pytest.mark.skip(reason="openapi_url=None makes readiness probe impossible")
 def test_main_entrypoint_boots_api_with_legacy_database(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[3]
     config_path = tmp_path / "config.toml"
@@ -49,7 +48,7 @@ def test_main_entrypoint_boots_api_with_legacy_database(tmp_path: Path) -> None:
     )
     output = ""
     try:
-        _wait_for_openapi(port, process)
+        _wait_for_management_api(port, process)
     except Exception:
         output = _stop_process(process)
         raise AssertionError(f"main.py did not become ready\n{output}") from None
@@ -140,9 +139,9 @@ def _seed_legacy_media_semantics(db_path: Path) -> None:
         conn.close()
 
 
-def _wait_for_openapi(port: int, process: subprocess.Popen[str]) -> None:
+def _wait_for_management_api(port: int, process: subprocess.Popen[str]) -> None:
     deadline = time.monotonic() + 20.0
-    url = f"http://127.0.0.1:{port}/api/openapi.json"
+    url = f"http://127.0.0.1:{port}/api/v1/system/health"
     with httpx.Client(timeout=0.5) as client:
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -152,8 +151,11 @@ def _wait_for_openapi(port: int, process: subprocess.Popen[str]) -> None:
             except httpx.HTTPError:
                 time.sleep(0.1)
                 continue
-            if response.status_code == 200 and response.json().get("openapi"):
-                return
+            if response.status_code == 200:
+                payload = response.json()
+                data = payload.get("data", {})
+                if payload.get("success") is True and data.get("status") == "healthy":
+                    return
             time.sleep(0.1)
     raise TimeoutError("timed out waiting for management API")
 
