@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from shinbot.admin.prompt_definition_admin import (
     PromptDefinitionAdminError,
     PromptDefinitionFileRepository,
+    assert_no_runtime_prompt_conflict,
     get_prompt_definition_or_raise,
     normalize_prompt_definition_input,
     serialize_prompt_definition,
@@ -205,7 +206,19 @@ def _decode_file_id(file_id: str) -> tuple[str, list[str]]:
             status_code=404,
             detail={"code": "PROMPT_NOT_FOUND", "message": f"Prompt file {file_id!r} was not found"},
         )
-    return layer, [unquote(part) for part in rest.split(":")]
+    return layer, [unquote(part) for part in rest.split("~")]
+
+
+def _normalize_file_id(file_id: str) -> str:
+    layer, parts = _decode_file_id(file_id)
+    if layer == "runtime" and len(parts) == 2:
+        return _encode_file_id("runtime", parts[0], parts[1])
+    if layer == "custom" and len(parts) == 1:
+        return _encode_file_id("custom", parts[0])
+    raise HTTPException(
+        status_code=404,
+        detail={"code": "PROMPT_NOT_FOUND", "message": f"Prompt file {file_id!r} was not found"},
+    )
 
 
 def _prompt_repository(boot) -> PromptDefinitionFileRepository:
@@ -288,7 +301,7 @@ def _custom_catalog_item(payload: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _catalog_items(bot, boot, *, sync_runtime: bool = True) -> dict[str, dict[str, Any]]:
+def _catalog_items(bot, boot, *, sync_runtime: bool = False) -> dict[str, dict[str, Any]]:
     registry = _active_or_discovered_registry(bot, boot, sync_runtime=sync_runtime)
     catalog_by_id = _component_catalog_by_id(registry)
     items_by_file_id: dict[str, dict[str, Any]] = {}
@@ -314,8 +327,9 @@ def _reload_prompt_runtime(bot) -> None:
         reload_prompt_files()
 
 
-def _get_catalog_item(file_id: str, bot, boot, *, sync_runtime: bool = True) -> dict[str, Any]:
-    item = _catalog_items(bot, boot, sync_runtime=sync_runtime).get(file_id)
+def _get_catalog_item(file_id: str, bot, boot, *, sync_runtime: bool = False) -> dict[str, Any]:
+    normalized_file_id = _normalize_file_id(file_id)
+    item = _catalog_items(bot, boot, sync_runtime=sync_runtime).get(normalized_file_id)
     if item is None:
         raise HTTPException(
             status_code=404,
@@ -324,16 +338,11 @@ def _get_catalog_item(file_id: str, bot, boot, *, sync_runtime: bool = True) -> 
     return item
 
 
-def _assert_not_runtime_prompt_conflict(prompt_id: str, bot, boot) -> None:
-    registry = _active_or_discovered_registry(bot, boot, sync_runtime=False)
-    if any(manifest.prompt_id == prompt_id for manifest in registry.prompt_file_catalog.list()):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "PROMPT_FILE_CONFLICT",
-                "message": f"Prompt {prompt_id!r} conflicts with a runtime prompt file",
-            },
-        )
+def _assert_not_runtime_prompt_conflict(prompt_id: str, boot) -> None:
+    try:
+        assert_no_runtime_prompt_conflict(prompt_id, boot.data_dir)
+    except PromptDefinitionAdminError as exc:
+        _raise_admin_http_error(exc)
 
 
 def _runtime_file_data(item: dict[str, Any]) -> dict[str, Any]:
@@ -531,7 +540,7 @@ def _patch_custom_prompt(
             metadata=body.metadata if body.metadata is not None else dict(current["metadata"]),
         )
         if normalized.prompt_id != str(current["prompt_id"]):
-            _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
+            _assert_not_runtime_prompt_conflict(normalized.prompt_id, boot)
         payload = repository.update(prompt_id, normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
@@ -584,7 +593,7 @@ def create_custom_prompt(body: CustomPromptCreateRequest, bot=BotDep, boot=BootD
             tags=body.tags,
             metadata={**body.metadata, "updated_at": utc_now_iso()},
         )
-        _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
+        _assert_not_runtime_prompt_conflict(normalized.prompt_id, boot)
         payload = repository.create(normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
@@ -632,7 +641,7 @@ def delete_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
     _reload_prompt_runtime(bot)
-    return ok({"deleted": True, "fileId": file_id})
+    return ok({"deleted": True, "fileId": str(item["fileId"])})
 
 
 @router.post("/{file_id}/reset", response_model=Envelope[PromptFileReset])
@@ -658,4 +667,4 @@ def reset_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
     runtime_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_path, runtime_path)
     _reload_prompt_runtime(bot)
-    return ok({"reset": True, "fileId": file_id})
+    return ok({"reset": True, "fileId": str(item["fileId"])})

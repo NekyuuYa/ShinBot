@@ -11,6 +11,7 @@
           :model-value="item.enabled"
           color="success"
           density="compact"
+          :disabled="item.layer === 'runtime'"
           hide-details
           @update:model-value="handleToggle"
         />

@@ -512,6 +512,10 @@ const openEdit = async (item: PromptCatalogItem) => {
 }
 
 const buildPayload = (): CustomPromptCreatePayload | PromptFilePayload => {
+  if (isRuntimeEdit.value) {
+    return { content: form.content }
+  }
+
   const promptId = form.promptId.trim()
   const name = form.name.trim()
 

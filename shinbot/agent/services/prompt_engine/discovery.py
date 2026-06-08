@@ -32,7 +32,10 @@ def discover_file_backed_prompts(
         A prompt registry containing file-backed components and manifest entries.
     """
 
-    config = prompt_file_config or PromptFileLoadConfig.from_data_dir(data_dir)
+    config = prompt_file_config or PromptFileLoadConfig.from_data_dir(
+        data_dir,
+        sync_to_data=False,
+    )
     registry = PromptRegistry()
     register_identity_file_prompt_components(
         registry,

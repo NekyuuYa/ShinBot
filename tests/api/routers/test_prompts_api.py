@@ -50,9 +50,9 @@ def test_prompts_list_discovers_runtime_files_without_agent_runtime(tmp_path: Pa
     assert item["locale"] == "zh-CN"
     assert item["editable"] is True
     assert item["deletable"] is False
-    assert item["sourceStatus"] == "runtime_override"
-    assert item["loadedFrom"] == "runtime"
-    assert (tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md").is_file()
+    assert item["sourceStatus"] == "source"
+    assert item["loadedFrom"] == "source"
+    assert not (tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md").exists()
 
 
 def test_prompts_list_includes_custom_prompt_definitions(tmp_path: Path):
@@ -222,6 +222,45 @@ def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(tmp_
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"] == {"deleted": True, "fileId": file_id}
         assert not (tmp_path / "prompts" / "custom" / "prompt.user.custom.md").exists()
+
+
+def test_prompts_custom_file_id_supports_colon_prompt_id(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        create_resp = client.post(
+            "/api/v1/prompts/custom",
+            headers=headers,
+            json={
+                "promptId": "prompt:user.custom",
+                "name": "Colon Custom Prompt",
+                "stage": "instructions",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+        assert create_resp.status_code == 201
+        file_id = create_resp.json()["data"]["fileId"]
+        assert file_id == "custom~prompt%3Auser.custom"
+
+        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+        assert get_resp.status_code == 200
+        assert get_resp.json()["data"]["promptId"] == "prompt:user.custom"
+
+        patch_resp = client.patch(
+            f"/api/v1/prompts/{file_id}",
+            headers=headers,
+            json={"content": "updated"},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["data"]["content"] == "updated"
+
+        delete_resp = client.delete(f"/api/v1/prompts/{file_id}", headers=headers)
+        assert delete_resp.status_code == 200
+        assert delete_resp.json()["data"] == {"deleted": True, "fileId": file_id}
+        assert not (tmp_path / "prompts" / "custom" / "prompt:user.custom.md").exists()
 
 
 def test_custom_prompt_create_and_rename_reject_runtime_prompt_conflict(tmp_path: Path):

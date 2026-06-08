@@ -56,7 +56,18 @@ export const usePromptFilesStore = defineStore('promptFiles', () => {
   }
 
   const updateItem = async (fileId: string, payload: PromptFilePayload) => {
-    const result = await crud.runRequest(() => promptsApi.update(fileId, payload), {
+    const current = items.value.find((item) => item.fileId === fileId)
+    const isRuntime = current?.layer === 'runtime' || fileId.startsWith('runtime~')
+    const patchPayload = isRuntime
+      ? Object.prototype.hasOwnProperty.call(payload, 'content')
+        ? { content: payload.content ?? '' }
+        : null
+      : payload
+    if (!patchPayload) {
+      return null
+    }
+
+    const result = await crud.runRequest(() => promptsApi.update(fileId, patchPayload), {
       mode: 'saving',
       errorKey: 'pages.prompts.messages.updateFailed',
       successKey: 'pages.prompts.messages.updated',
@@ -85,6 +96,10 @@ export const usePromptFilesStore = defineStore('promptFiles', () => {
   }
 
   const toggleEnabled = async (fileId: string, enabled: boolean) => {
+    const current = items.value.find((item) => item.fileId === fileId)
+    if (current?.layer === 'runtime' || fileId.startsWith('runtime~')) {
+      return null
+    }
     return updateItem(fileId, { enabled })
   }
 
