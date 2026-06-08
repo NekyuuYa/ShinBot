@@ -212,7 +212,7 @@ def _prompt_repository(boot) -> PromptDefinitionFileRepository:
     return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
 
 
-def _active_or_discovered_registry(bot, boot):
+def _active_or_discovered_registry(bot, boot, *, sync_runtime: bool = True):
     agent_runtime = getattr(bot, "agent_runtime", None)
     prompt_registry = getattr(agent_runtime, "prompt_registry", None)
     catalog = getattr(prompt_registry, "prompt_file_catalog", None)
@@ -220,7 +220,14 @@ def _active_or_discovered_registry(bot, boot):
         return prompt_registry
     config = getattr(agent_runtime, "prompt_file_config", None)
     if not isinstance(config, PromptFileLoadConfig):
-        config = PromptFileLoadConfig.from_data_dir(boot.data_dir)
+        config = PromptFileLoadConfig.from_data_dir(boot.data_dir, sync_to_data=sync_runtime)
+    elif config.sync_to_data != sync_runtime:
+        config = PromptFileLoadConfig(
+            locale=config.locale,
+            fallback_locales=config.fallback_locales,
+            data_root=config.data_root,
+            sync_to_data=sync_runtime,
+        )
     return discover_file_backed_prompts(boot.data_dir, prompt_file_config=config)
 
 
@@ -281,8 +288,8 @@ def _custom_catalog_item(payload: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _catalog_items(bot, boot) -> dict[str, dict[str, Any]]:
-    registry = _active_or_discovered_registry(bot, boot)
+def _catalog_items(bot, boot, *, sync_runtime: bool = True) -> dict[str, dict[str, Any]]:
+    registry = _active_or_discovered_registry(bot, boot, sync_runtime=sync_runtime)
     catalog_by_id = _component_catalog_by_id(registry)
     items_by_file_id: dict[str, dict[str, Any]] = {}
 
@@ -307,8 +314,8 @@ def _reload_prompt_runtime(bot) -> None:
         reload_prompt_files()
 
 
-def _get_catalog_item(file_id: str, bot, boot) -> dict[str, Any]:
-    item = _catalog_items(bot, boot).get(file_id)
+def _get_catalog_item(file_id: str, bot, boot, *, sync_runtime: bool = True) -> dict[str, Any]:
+    item = _catalog_items(bot, boot, sync_runtime=sync_runtime).get(file_id)
     if item is None:
         raise HTTPException(
             status_code=404,
@@ -317,27 +324,37 @@ def _get_catalog_item(file_id: str, bot, boot) -> dict[str, Any]:
     return item
 
 
+def _assert_not_runtime_prompt_conflict(prompt_id: str, bot, boot) -> None:
+    registry = _active_or_discovered_registry(bot, boot, sync_runtime=False)
+    if any(manifest.prompt_id == prompt_id for manifest in registry.prompt_file_catalog.list()):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROMPT_FILE_CONFLICT",
+                "message": f"Prompt {prompt_id!r} conflicts with a runtime prompt file",
+            },
+        )
+
+
 def _runtime_file_data(item: dict[str, Any]) -> dict[str, Any]:
-    path = Path(str(item["runtimePath"]))
+    runtime_path = Path(str(item["runtimePath"]))
     source_path = Path(str(item["sourcePath"]))
+    path = runtime_path if runtime_path.is_file() else source_path
     if not path.is_file():
-        if not source_path.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "code": "PROMPT_NOT_FOUND",
-                    "message": f"Prompt source file for {item['id']!r} was not found",
-                },
-            )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source_path, path)
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "PROMPT_NOT_FOUND",
+                "message": f"Prompt source file for {item['id']!r} was not found",
+            },
+        )
     try:
         _front_matter, content = parse_prompt_markdown(path.read_text(encoding="utf-8"), path=path)
         component = load_prompt_component(
             path,
             locale=str(item["locale"]),
             source_path=source_path,
-            runtime_path=path,
+            runtime_path=runtime_path,
             expected_id=str(item["id"]),
         )
     except PromptFileError as exc:
@@ -374,11 +391,11 @@ def _runtime_file_data(item: dict[str, Any]) -> dict[str, Any]:
         "config": dict(_front_matter.get("config") or {}),
         "createdAt": "",
         "lastModified": str(stat.st_mtime),
-        "runtimePath": str(path),
+        "runtimePath": str(runtime_path),
         "loadedPath": str(path),
-        "sourceStatus": "runtime_override",
-        "loadedFrom": "runtime",
-        "resettable": source_path.is_file(),
+        "sourceStatus": "runtime_override" if runtime_path.is_file() else item["sourceStatus"],
+        "loadedFrom": "runtime" if runtime_path.is_file() else item["loadedFrom"],
+        "resettable": source_path.is_file() and runtime_path.is_file(),
         "metadata": metadata,
     }
 
@@ -402,10 +419,24 @@ def _custom_file_data(item: dict[str, Any], boot) -> dict[str, Any]:
 
 
 def _patch_runtime_prompt(item: dict[str, Any], body: PromptFilePatchRequest) -> dict[str, Any]:
-    if body.promptId is not None and body.promptId != item["id"]:
+    allowed_fields = {"content"}
+    requested_fields = set(body.model_fields_set)
+    blocked_fields = sorted(requested_fields - allowed_fields)
+    if blocked_fields:
         raise HTTPException(
             status_code=400,
-            detail={"code": "INVALID_ACTION", "message": "Runtime prompt id is read-only"},
+            detail={
+                "code": "INVALID_ACTION",
+                "message": "Runtime prompt files only allow content edits",
+            },
+        )
+    if "content" not in requested_fields:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_ACTION",
+                "message": "Runtime prompt PATCH requires content",
+            },
         )
     path = Path(str(item["runtimePath"]))
     if not path.is_file():
@@ -428,33 +459,6 @@ def _patch_runtime_prompt(item: dict[str, Any], body: PromptFilePatchRequest) ->
         )
     except PromptFileError as exc:
         _raise_prompt_file_error(exc)
-
-    if body.name is not None:
-        front_matter["name"] = body.name
-    if body.stage is not None:
-        front_matter["stage"] = body.stage
-    if body.type is not None:
-        front_matter["kind"] = body.type
-    if body.priority is not None:
-        front_matter["priority"] = body.priority
-    if body.version is not None:
-        front_matter["version"] = body.version
-    if body.description is not None:
-        front_matter["description"] = body.description
-    if body.enabled is not None:
-        front_matter["enabled"] = body.enabled
-    if body.templateVars is not None:
-        front_matter["template_vars"] = list(body.templateVars)
-    if body.resolverRef is not None:
-        front_matter["resolver_ref"] = body.resolverRef
-    if body.bundleRefs is not None:
-        front_matter["bundle_refs"] = list(body.bundleRefs)
-    if body.config is not None:
-        front_matter["config"] = dict(body.config)
-    if body.tags is not None:
-        front_matter["tags"] = list(body.tags)
-    if body.metadata is not None:
-        front_matter["metadata"] = dict(body.metadata)
 
     content = current_body if body.content is None else body.content
     import yaml
@@ -480,12 +484,12 @@ def _patch_runtime_prompt(item: dict[str, Any], body: PromptFilePatchRequest) ->
         _raise_prompt_file_error(exc)
     payload = _runtime_file_data(item)
     return payload
-    return payload
 
 
 def _patch_custom_prompt(
     item: dict[str, Any],
     body: PromptFilePatchRequest,
+    bot,
     boot,
 ) -> dict[str, Any]:
     prompt_id = _decode_file_id(str(item["fileId"]))[1][0]
@@ -526,6 +530,8 @@ def _patch_custom_prompt(
             tags=body.tags if body.tags is not None else list(current["tags"]),
             metadata=body.metadata if body.metadata is not None else dict(current["metadata"]),
         )
+        if normalized.prompt_id != str(current["prompt_id"]):
+            _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
         payload = repository.update(prompt_id, normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
@@ -578,6 +584,7 @@ def create_custom_prompt(body: CustomPromptCreateRequest, bot=BotDep, boot=BootD
             tags=body.tags,
             metadata={**body.metadata, "updated_at": utc_now_iso()},
         )
+        _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
         payload = repository.create(normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
@@ -590,7 +597,7 @@ def create_custom_prompt(body: CustomPromptCreateRequest, bot=BotDep, boot=BootD
 def get_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
     """Retrieve a runtime or custom prompt file."""
 
-    item = _get_catalog_item(file_id, bot, boot)
+    item = _get_catalog_item(file_id, bot, boot, sync_runtime=False)
     if item["layer"] == "runtime":
         return ok(_runtime_file_data(item))
     return ok(_custom_file_data(item, boot))
@@ -600,11 +607,11 @@ def get_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
 def patch_prompt_file(file_id: str, body: PromptFilePatchRequest, bot=BotDep, boot=BootDep):
     """Patch an editable runtime or custom prompt file."""
 
-    item = _get_catalog_item(file_id, bot, boot)
+    item = _get_catalog_item(file_id, bot, boot, sync_runtime=False)
     if item["layer"] == "runtime":
         payload = _patch_runtime_prompt(item, body)
     else:
-        payload = _patch_custom_prompt(item, body, boot)
+        payload = _patch_custom_prompt(item, body, bot, boot)
     _reload_prompt_runtime(bot)
     return ok(payload)
 

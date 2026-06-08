@@ -168,3 +168,45 @@ def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(tmp_path: Path
         )
         assert persona_source_resp.status_code == 400
         assert persona_source_resp.json()["error"]["code"] == "INVALID_ACTION"
+
+
+def test_prompt_definition_create_and_rename_reject_runtime_prompt_conflict(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        conflict_create = client.post(
+            "/api/v1/prompt-definitions",
+            headers=headers,
+            json={
+                "promptId": "review.review_scan.task",
+                "name": "Conflicting Prompt",
+                "stage": "instructions",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+        assert conflict_create.status_code == 409
+        assert conflict_create.json()["error"]["code"] == "PROMPT_FILE_CONFLICT"
+
+        create_resp = client.post(
+            "/api/v1/prompt-definitions",
+            headers=headers,
+            json={
+                "promptId": "prompt.identity.extra",
+                "name": "Identity Extra",
+                "stage": "identity",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+        assert create_resp.status_code == 201
+
+        conflict_patch = client.patch(
+            "/api/v1/prompt-definitions/prompt.identity.extra",
+            headers=headers,
+            json={"promptId": "review.review_scan.task"},
+        )
+        assert conflict_patch.status_code == 409
+        assert conflict_patch.json()["error"]["code"] == "PROMPT_FILE_CONFLICT"

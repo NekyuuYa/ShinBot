@@ -15,6 +15,8 @@ from shinbot.admin.prompt_definition_admin import (
     normalize_prompt_definition_input,
     serialize_prompt_definition,
 )
+from shinbot.agent.services.prompt_engine.discovery import discover_file_backed_prompts
+from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig
 from shinbot.api.deps import AuthRequired, BootDep
 from shinbot.api.models import Envelope, ok
 
@@ -117,6 +119,19 @@ def _prompt_repository(boot) -> PromptDefinitionFileRepository:
     return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
 
 
+def _assert_not_runtime_prompt_conflict(prompt_id: str, boot) -> None:
+    config = PromptFileLoadConfig.from_data_dir(boot.data_dir, sync_to_data=False)
+    registry = discover_file_backed_prompts(boot.data_dir, prompt_file_config=config)
+    if any(manifest.prompt_id == prompt_id for manifest in registry.prompt_file_catalog.list()):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROMPT_FILE_CONFLICT",
+                "message": f"Prompt {prompt_id!r} conflicts with a runtime prompt file",
+            },
+        )
+
+
 @router.get("", response_model=Envelope[list[PromptDefinitionData]])
 def list_prompt_definitions(boot=BootDep):
     """List all prompt definitions from the file-based repository."""
@@ -154,6 +169,7 @@ def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
             metadata=body.metadata,
         )
         assert_prompt_id_available(repository, normalized.prompt_id, current_uuid=None)
+        _assert_not_runtime_prompt_conflict(normalized.prompt_id, boot)
         payload = repository.create(normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
@@ -220,6 +236,8 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
             metadata=body.metadata if body.metadata is not None else dict(current["metadata"]),
         )
         assert_prompt_id_available(repository, normalized.prompt_id, current_uuid=prompt_uuid)
+        if normalized.prompt_id != str(current["prompt_id"]):
+            _assert_not_runtime_prompt_conflict(normalized.prompt_id, boot)
         payload = repository.update(prompt_uuid, normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)

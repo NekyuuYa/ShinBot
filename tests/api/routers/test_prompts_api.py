@@ -128,6 +128,7 @@ def test_runtime_prompt_get_patch_and_reset(tmp_path: Path):
     app = create_api_app(bot, _BootStub(tmp_path))
     headers = _auth_headers(app)
     file_id = "runtime~zh-CN~review.review_scan.task"
+    runtime_path = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
 
     with TestClient(app) as client:
         get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
@@ -135,18 +136,17 @@ def test_runtime_prompt_get_patch_and_reset(tmp_path: Path):
         original = get_resp.json()["data"]
         assert original["promptId"] == "review.review_scan.task"
         assert "未读消息" in original["content"]
+        assert not runtime_path.exists()
 
         patch_resp = client.patch(
             f"/api/v1/prompts/{file_id}",
             headers=headers,
-            json={"content": "User edited runtime prompt.", "enabled": False},
+            json={"content": "User edited runtime prompt."},
         )
         assert patch_resp.status_code == 200
         patched = patch_resp.json()["data"]
         assert patched["content"] == "User edited runtime prompt."
-        assert patched["enabled"] is False
 
-        runtime_path = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
         assert "User edited runtime prompt." in runtime_path.read_text(encoding="utf-8")
 
         reset_resp = client.post(f"/api/v1/prompts/{file_id}/reset", headers=headers)
@@ -156,6 +156,25 @@ def test_runtime_prompt_get_patch_and_reset(tmp_path: Path):
         after_reset_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
         assert after_reset_resp.status_code == 200
         assert "User edited runtime prompt." not in after_reset_resp.json()["data"]["content"]
+
+
+def test_runtime_prompt_patch_rejects_structure_fields(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+    file_id = "runtime~zh-CN~review.review_scan.task"
+    runtime_path = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/v1/prompts/{file_id}",
+            headers=headers,
+            json={"content": "User edited runtime prompt.", "stage": "identity"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_ACTION"
+    assert not runtime_path.exists()
 
 
 def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(tmp_path: Path):
@@ -203,3 +222,45 @@ def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(tmp_
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"] == {"deleted": True, "fileId": file_id}
         assert not (tmp_path / "prompts" / "custom" / "prompt.user.custom.md").exists()
+
+
+def test_custom_prompt_create_and_rename_reject_runtime_prompt_conflict(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        conflict_create = client.post(
+            "/api/v1/prompts/custom",
+            headers=headers,
+            json={
+                "promptId": "review.review_scan.task",
+                "name": "Conflicting Prompt",
+                "stage": "instructions",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+        assert conflict_create.status_code == 409
+        assert conflict_create.json()["error"]["code"] == "PROMPT_FILE_CONFLICT"
+
+        create_resp = client.post(
+            "/api/v1/prompts/custom",
+            headers=headers,
+            json={
+                "promptId": "prompt.user.custom",
+                "name": "User Custom Prompt",
+                "stage": "instructions",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+        assert create_resp.status_code == 201
+
+        conflict_patch = client.patch(
+            "/api/v1/prompts/custom~prompt.user.custom",
+            headers=headers,
+            json={"promptId": "review.review_scan.task"},
+        )
+        assert conflict_patch.status_code == 409
+        assert conflict_patch.json()["error"]["code"] == "PROMPT_FILE_CONFLICT"
