@@ -8,8 +8,12 @@ tags:
   - active_chat
   - workflow
   - handoff
+  - prefix
+  - internal
 metadata:
   builtin: true
+  internal: true
+  prompt_role: prefix
   display_name: Active Chat Review Overflow Handoff Prefix
   description: 主动聊天审查移交溢出摘要前缀。
 ---

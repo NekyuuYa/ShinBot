@@ -1,5 +1,5 @@
 ---
-id: builtin.context.active_alias
+id: builtin.context.inactive_alias
 stage: context
 kind: static_text
 version: 1.0.0
@@ -14,7 +14,7 @@ metadata:
   builtin: true
   internal: true
   prompt_role: prefix
-  display_name: 当前活跃成员映射标题
-  description: 当前活跃成员映射段落的内部标题。
+  display_name: Inactive Alias Heading
+  description: Internal heading for historical member aliases.
 ---
-### 当前活跃成员映射
+### Historical Member Aliases

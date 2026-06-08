@@ -8,8 +8,12 @@ tags:
   - active_chat
   - workflow
   - handoff
+  - prefix
+  - internal
 metadata:
   builtin: true
+  internal: true
+  prompt_role: prefix
   display_name: Active Chat Review Block Digest Handoff Prefix
   description: Prefix for review block digests handed to active chat.
 ---

@@ -5,9 +5,16 @@ kind: static_text
 version: 1.0.0
 priority: 100
 enabled: true
+tags:
+  - context
+  - memory
+  - prefix
+  - internal
 metadata:
   builtin: true
-  display_name: Long Term Memory Heading
-  description: Heading for long-term memory projection output.
+  internal: true
+  prompt_role: prefix
+  display_name: 长期记忆标题
+  description: 长期记忆投影输出的内部标题。
 ---
 ### 长期记忆

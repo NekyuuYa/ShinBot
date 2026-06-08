@@ -72,6 +72,15 @@
             hide-details
           />
         </v-col>
+        <v-col cols="12" md="3">
+          <v-switch
+            v-model="filters.showInternal"
+            :label="$t('pages.prompts.filters.showInternal')"
+            color="secondary"
+            density="compact"
+            hide-details
+          />
+        </v-col>
       </v-row>
     </v-sheet>
 
@@ -103,6 +112,8 @@
           :stage-label="$t(`pages.prompts.stages.${item.stage}`, item.stage)"
           :kind-label="$t(`pages.prompts.kinds.${item.type}`, item.type)"
           :layer-label="$t(`pages.prompts.layers.${item.layer}`, item.layer)"
+          :source-status-label="getSourceStatusLabel(item.sourceStatus)"
+          :source-status-color="getSourceStatusColor(item.sourceStatus)"
           :empty-tag-label="$t('pages.prompts.tags.untagged')"
           :edit-label="$t('common.actions.action.edit')"
           :delete-label="$t('common.actions.action.delete')"
@@ -317,7 +328,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import type {
   CustomPromptCreatePayload,
   PromptCatalogItem,
@@ -348,6 +359,7 @@ const filters = reactive({
   locale: 'all',
   stage: 'all',
   tag: 'all',
+  showInternal: false,
 })
 
 const form = reactive({
@@ -374,6 +386,23 @@ const initialSkeletonRequested = computed(
 )
 const showInitialSkeleton = useDelayedFlag(initialSkeletonRequested)
 
+const isInternalPrompt = (item: PromptCatalogItem) => {
+  const tags = item.tags.map((tag) => tag.trim().toLowerCase())
+  return (
+    tags.includes('internal') ||
+    item.metadata.internal === true ||
+    item.metadata.visibility === 'internal' ||
+    item.metadata.prompt_role === 'prefix'
+  )
+}
+
+const visiblePromptItems = computed(() => {
+  if (filters.showInternal) {
+    return store.items
+  }
+  return store.items.filter((item) => !isInternalPrompt(item))
+})
+
 const {
   activeTag,
   allTags: tagOptions,
@@ -381,7 +410,7 @@ const {
   filteredItems: tagFilteredItems,
   selectTag,
 } = useTagSidebar(
-  () => store.items,
+  () => visiblePromptItems.value,
   {
     getTags: (item) => item.tags,
     allTitle: translate('pages.prompts.tags.all'),
@@ -409,7 +438,7 @@ const layerOptions = computed(() => [
 ])
 
 const localeOptions = computed(() => {
-  const values = Array.from(new Set(store.items.map((item) => item.locale))).sort()
+  const values = Array.from(new Set(visiblePromptItems.value.map((item) => item.locale))).sort()
   return [
     { title: translate('pages.prompts.filters.allLocales'), value: 'all' },
     ...values.map((value) => ({ title: value, value })),
@@ -436,6 +465,21 @@ const tagFilterOptions = computed(() => [
   ...tagOptions.value.map((value) => ({ title: value, value })),
 ])
 
+watch(tagOptions, (values) => {
+  if (filters.tag !== 'all' && !values.includes(filters.tag)) {
+    filters.tag = 'all'
+  }
+})
+
+watch(localeOptions, (values) => {
+  if (
+    filters.locale !== 'all' &&
+    !values.some((item) => item.value === filters.locale)
+  ) {
+    filters.locale = 'all'
+  }
+})
+
 const kindOptions = computed(() => [
   { title: translate('pages.prompts.kinds.static_text'), value: 'static_text' },
   { title: translate('pages.prompts.kinds.template'), value: 'template' },
@@ -445,6 +489,20 @@ const kindOptions = computed(() => [
 ])
 
 const getPromptKey = (item: PromptCatalogItem) => item.fileId
+
+const getSourceStatusLabel = (status: string) => {
+  const key = `pages.prompts.sourceStatuses.${status}`
+  const label = translate(key)
+  return label === key ? status : label
+}
+
+const getSourceStatusColor = (status: string) => {
+  if (status === 'runtime_modified') return 'warning'
+  if (status === 'runtime_synced') return 'success'
+  if (status === 'missing_source') return 'error'
+  if (status === 'custom') return 'secondary'
+  return 'info'
+}
 
 const resetForm = () => {
   Object.assign(form, {

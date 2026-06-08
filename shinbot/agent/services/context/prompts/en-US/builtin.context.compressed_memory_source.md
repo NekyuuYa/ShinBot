@@ -1,5 +1,5 @@
 ---
-id: builtin.context.compressed_memory
+id: builtin.context.compressed_memory_source
 stage: context
 kind: static_text
 version: 1.0.0
@@ -14,7 +14,7 @@ metadata:
   builtin: true
   internal: true
   prompt_role: prefix
-  display_name: 压缩记忆标题
-  description: 压缩记忆投影输出的内部标题。
+  display_name: Compressed Memory Source Heading
+  description: Internal heading for the context block being compressed.
 ---
-### 压缩记忆
+### Context to Compress

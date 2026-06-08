@@ -105,6 +105,7 @@ def test_runtime_prompt_get_patch_and_reset(router_api):
         original = get_resp.json()["data"]
         assert original["promptId"] == "review.review_scan.task"
         assert "未读消息" in original["content"]
+        assert original["sourceStatus"] == "source"
         assert not runtime_path.exists()
 
         patch_resp = client.patch(
@@ -115,6 +116,8 @@ def test_runtime_prompt_get_patch_and_reset(router_api):
         assert patch_resp.status_code == 200
         patched = patch_resp.json()["data"]
         assert patched["content"] == "User edited runtime prompt."
+        assert patched["sourceStatus"] == "runtime_modified"
+        assert patched["loadedFrom"] == "runtime"
 
         assert "User edited runtime prompt." in runtime_path.read_text(encoding="utf-8")
 
@@ -127,7 +130,9 @@ def test_runtime_prompt_get_patch_and_reset(router_api):
             headers=router_api.headers,
         )
         assert after_reset_resp.status_code == 200
-        assert "User edited runtime prompt." not in after_reset_resp.json()["data"]["content"]
+        after_reset = after_reset_resp.json()["data"]
+        assert "User edited runtime prompt." not in after_reset["content"]
+        assert after_reset["sourceStatus"] == "runtime_synced"
 
 
 def test_runtime_prompt_patch_rejects_structure_fields(router_api):

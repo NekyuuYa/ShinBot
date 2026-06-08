@@ -15,7 +15,8 @@
     "allSources": "全部来源",
     "allLocales": "全部 Locale",
     "allStages": "全部 Stage",
-    "allTags": "全部 Tags"
+    "allTags": "全部 Tags",
+    "showInternal": "显示内部 Prompt"
   },
   "layers": {
     "runtime": "Runtime",
@@ -62,6 +63,13 @@
     "resolver": "Resolver",
     "bundle": "Bundle",
     "external_injection": "外部注入"
+  },
+  "sourceStatuses": {
+    "source": "Source",
+    "runtime_synced": "已同步",
+    "runtime_modified": "已修改",
+    "missing_source": "Source 缺失",
+    "custom": "Custom"
   },
   "overlay": {
     "createTitle": "新增 Prompt 定义",

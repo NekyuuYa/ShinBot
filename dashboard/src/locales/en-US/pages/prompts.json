@@ -15,7 +15,8 @@
     "allSources": "All sources",
     "allLocales": "All locales",
     "allStages": "All stages",
-    "allTags": "All tags"
+    "allTags": "All tags",
+    "showInternal": "Show internal prompts"
   },
   "layers": {
     "runtime": "Runtime",
@@ -62,6 +63,13 @@
     "resolver": "Resolver",
     "bundle": "Bundle",
     "external_injection": "External Injection"
+  },
+  "sourceStatuses": {
+    "source": "Source",
+    "runtime_synced": "Synced",
+    "runtime_modified": "Modified",
+    "missing_source": "Missing source",
+    "custom": "Custom"
   },
   "overlay": {
     "createTitle": "Create Prompt Definition",

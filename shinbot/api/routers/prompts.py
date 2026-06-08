@@ -258,11 +258,33 @@ def _runtime_catalog_prompt_ids(bot, boot) -> set[str]:
     }
 
 
+def _normalized_prompt_file_payload(path: Path) -> tuple[dict[str, Any], str]:
+    front_matter, body = parse_prompt_markdown(path.read_text(encoding="utf-8"), path=path)
+    return front_matter, body.strip()
+
+
+def _runtime_source_status(*, source_path: Path, runtime_path: Path) -> str:
+    if not source_path.is_file():
+        return "missing_source"
+    if not runtime_path.is_file():
+        return "source"
+    try:
+        source_payload = _normalized_prompt_file_payload(source_path)
+        runtime_payload = _normalized_prompt_file_payload(runtime_path)
+    except PromptFileError:
+        return "runtime_synced" if source_path.read_bytes() == runtime_path.read_bytes() else "runtime_modified"
+    return "runtime_synced" if source_payload == runtime_payload else "runtime_modified"
+
+
 def _runtime_catalog_item(
     manifest: PromptFileManifest,
     component_item: dict[str, Any],
 ) -> dict[str, Any]:
     manifest = manifest.refresh()
+    source_status = _runtime_source_status(
+        source_path=manifest.source_path,
+        runtime_path=manifest.runtime_path,
+    )
     item = dict(component_item)
     item.update(
         {
@@ -272,13 +294,7 @@ def _runtime_catalog_item(
             "editable": True,
             "deletable": False,
             "resettable": manifest.source_exists and manifest.runtime_exists,
-            "sourceStatus": (
-                "missing_source"
-                if not manifest.source_exists
-                else "runtime_override"
-                if manifest.runtime_exists
-                else "source"
-            ),
+            "sourceStatus": source_status,
             "loadedFrom": manifest.loaded_from,
             "sourcePath": str(manifest.source_path),
             "runtimePath": str(manifest.runtime_path),
@@ -412,7 +428,10 @@ def _runtime_file_data(item: dict[str, Any]) -> dict[str, Any]:
         "lastModified": str(stat.st_mtime),
         "runtimePath": str(runtime_path),
         "loadedPath": str(path),
-        "sourceStatus": "runtime_override" if runtime_path.is_file() else item["sourceStatus"],
+        "sourceStatus": _runtime_source_status(
+            source_path=source_path,
+            runtime_path=runtime_path,
+        ),
         "loadedFrom": "runtime" if runtime_path.is_file() else item["loadedFrom"],
         "resettable": source_path.is_file() and runtime_path.is_file(),
         "metadata": metadata,

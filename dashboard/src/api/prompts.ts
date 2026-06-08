@@ -1,5 +1,13 @@
 import { apiClient } from './client'
 
+export type PromptSourceStatus =
+  | 'source'
+  | 'runtime_synced'
+  | 'runtime_modified'
+  | 'missing_source'
+  | 'custom'
+  | string
+
 export interface PromptCatalogItem {
   id: string
   fileId: string
@@ -24,7 +32,7 @@ export interface PromptCatalogItem {
   editable: boolean
   deletable: boolean
   resettable: boolean
-  sourceStatus: string
+  sourceStatus: PromptSourceStatus
   loadedFrom: string
   sourcePath: string
   runtimePath: string

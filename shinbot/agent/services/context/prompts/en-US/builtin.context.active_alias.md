@@ -14,7 +14,7 @@ metadata:
   builtin: true
   internal: true
   prompt_role: prefix
-  display_name: 当前活跃成员映射标题
-  description: 当前活跃成员映射段落的内部标题。
+  display_name: Active Alias Heading
+  description: Internal heading for the active member alias map.
 ---
-### 当前活跃成员映射
+### Current Active Member Aliases

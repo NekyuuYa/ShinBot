@@ -12,8 +12,24 @@ from shinbot.agent.services.prompt_engine import (
 from shinbot.agent.services.prompt_engine.files import (
     PromptFileError,
     load_prompt_component,
+    parse_prompt_markdown,
     register_prompt_files,
 )
+
+PROMPT_SOURCE_ROOT = Path(__file__).resolve().parents[4] / "shinbot" / "agent"
+PROMPT_LOCALES = {"zh-CN", "en-US"}
+PREFIX_PROMPT_IDS = {
+    "active_chat.fast_mode.conversation_summary",
+    "active_chat.handoff.digest",
+    "active_chat.handoff.legacy",
+    "active_chat.handoff.overflow",
+    "builtin.context.active_alias",
+    "builtin.context.compressed_memory",
+    "builtin.context.compressed_memory_alias",
+    "builtin.context.compressed_memory_source",
+    "builtin.context.inactive_alias",
+    "builtin.context.long_term_memory",
+}
 
 
 def test_load_prompt_component_from_markdown(tmp_path: Path) -> None:
@@ -46,6 +62,45 @@ Hello from a prompt file.
     assert component.metadata["locale"] == "zh-CN"
     assert component.metadata["display_name"] == "Test Sample"
     assert component.content == "Hello from a prompt file."
+
+
+def test_builtin_prompt_files_have_zh_cn_and_en_us_sources() -> None:
+    prompt_files = sorted(PROMPT_SOURCE_ROOT.glob("**/prompts/*/*.md"))
+    assert prompt_files
+
+    locales_by_id: dict[str, set[str]] = {}
+    for path in prompt_files:
+        front_matter, _body = parse_prompt_markdown(path.read_text(encoding="utf-8"), path=path)
+        prompt_id = str(front_matter["id"])
+        locales_by_id.setdefault(prompt_id, set()).add(path.parent.name)
+
+    missing_locales = {
+        prompt_id: sorted(PROMPT_LOCALES - locales)
+        for prompt_id, locales in locales_by_id.items()
+        if locales != PROMPT_LOCALES
+    }
+
+    assert missing_locales == {}
+
+
+def test_prefix_prompt_files_are_marked_internal() -> None:
+    failures: list[str] = []
+    for path in sorted(PROMPT_SOURCE_ROOT.glob("**/prompts/*/*.md")):
+        front_matter, _body = parse_prompt_markdown(path.read_text(encoding="utf-8"), path=path)
+        prompt_id = str(front_matter["id"])
+        if prompt_id not in PREFIX_PROMPT_IDS:
+            continue
+
+        tags = {str(tag) for tag in front_matter.get("tags") or []}
+        metadata = dict(front_matter.get("metadata") or {})
+        if not {"prefix", "internal"}.issubset(tags):
+            failures.append(f"{path}: missing prefix/internal tags")
+        if metadata.get("internal") is not True:
+            failures.append(f"{path}: missing metadata.internal=true")
+        if metadata.get("prompt_role") != "prefix":
+            failures.append(f"{path}: missing metadata.prompt_role=prefix")
+
+    assert failures == []
 
 
 def test_load_prompt_component_supports_resolver_front_matter(tmp_path: Path) -> None:

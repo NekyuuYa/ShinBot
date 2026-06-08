@@ -35,6 +35,14 @@
         <v-chip size="small" variant="tonal">
           {{ kindLabel }}
         </v-chip>
+        <v-chip
+          size="small"
+          :color="sourceStatusColor"
+          variant="tonal"
+          prepend-icon="mdi-source-branch"
+        >
+          {{ sourceStatusLabel }}
+        </v-chip>
         <v-chip size="small" variant="outlined">
           v{{ item.version }}
         </v-chip>
@@ -98,6 +106,8 @@ interface Props {
   stageLabel: string
   kindLabel: string
   layerLabel: string
+  sourceStatusLabel: string
+  sourceStatusColor: string
   emptyTagLabel: string
   editLabel: string
   deleteLabel: string
