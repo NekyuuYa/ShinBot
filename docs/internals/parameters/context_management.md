@@ -7,13 +7,13 @@
 
 ## 适用范围
 
-- `shinbot.agent.context`
-- `shinbot.agent.workflow.conversation`
+- `shinbot.agent.services.context`
+- `shinbot.agent.workflows.active_chat`
 - `shinbot.admin.instance_config_admin`
 
 ## 上下文块打包参数
 
-来源：`shinbot/agent/context/context_stage_builder.py`
+来源：`shinbot/agent/services/context/builders/context_stage_builder.py`
 
 | 参数 | 默认值 | 作用 | 当前暴露状态 |
 | --- | --- | --- | --- |
@@ -29,7 +29,7 @@
 
 ## 别名重建参数
 
-来源：`shinbot/agent/context/alias_table.py`
+来源：`shinbot/agent/services/context/state/alias_table.py`
 
 | 参数 | 默认值 | 作用 | 当前暴露状态 |
 | --- | --- | --- | --- |
@@ -45,7 +45,7 @@
 
 ## 上下文淘汰与压缩参数
 
-来源：`shinbot/agent/context/eviction.py`、`shinbot/agent/workflow/conversation.py`
+来源：`shinbot/agent/services/context/runtime/eviction_runtime.py`、`shinbot/agent/services/context/utils/eviction.py`
 
 | 参数 | 默认值 | 作用 | 当前暴露状态 |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@
 
 ## 图片与消息编号相关参数
 
-来源：`shinbot/agent/context/state_store.py`
+来源：`shinbot/agent/services/context/state/state_store.py`
 
 | 参数 | 默认值 | 作用 | 当前暴露状态 |
 | --- | --- | --- | --- |

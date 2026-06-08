@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,56 @@ DEFAULT_PROMPT_DATA_ROOT = Path("data/prompts")
 
 class PromptFileError(RuntimeError):
     """Raised when a prompt markdown file cannot be loaded."""
+
+
+@dataclass(slots=True, frozen=True)
+class PromptFileManifest:
+    """Manifest entry for one file-backed prompt component."""
+
+    prompt_id: str
+    locale: str
+    source_path: Path
+    runtime_path: Path
+    loaded_path: Path
+    source_exists: bool
+    runtime_exists: bool
+    loaded_from: str
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return a JSON-serialisable manifest payload."""
+
+        payload = asdict(self)
+        payload["source_path"] = str(self.source_path)
+        payload["runtime_path"] = str(self.runtime_path)
+        payload["loaded_path"] = str(self.loaded_path)
+        return payload
+
+
+class PromptFileCatalogService:
+    """In-memory catalog of registered file-backed prompt files."""
+
+    def __init__(self) -> None:
+        """Initialize an empty prompt-file catalog."""
+
+        self._entries: dict[tuple[str, str], PromptFileManifest] = {}
+
+    def record(self, manifest: PromptFileManifest) -> None:
+        """Record or replace one manifest entry."""
+
+        self._entries[(manifest.locale, manifest.prompt_id)] = manifest
+
+    def list(self) -> list[PromptFileManifest]:
+        """Return all manifest entries in a stable order."""
+
+        return sorted(
+            self._entries.values(),
+            key=lambda item: (item.locale, item.prompt_id),
+        )
+
+    def get(self, *, prompt_id: str, locale: str) -> PromptFileManifest | None:
+        """Return one manifest entry by prompt ID and locale."""
+
+        return self._entries.get((locale, prompt_id))
 
 
 @dataclass(slots=True, frozen=True)
@@ -90,6 +140,7 @@ def register_prompt_files(
         if sync_to_data:
             _ensure_runtime_prompt(source_path, runtime_path)
         load_path = runtime_path if sync_to_data and runtime_path.exists() else source_path
+        loaded_from = "runtime" if load_path == runtime_path else "source"
         component = load_prompt_component(
             load_path,
             locale=selected_locale,
@@ -98,6 +149,20 @@ def register_prompt_files(
             expected_id=prompt_id,
         )
         registry.upsert_component(component)
+        catalog = getattr(registry, "prompt_file_catalog", None)
+        if isinstance(catalog, PromptFileCatalogService):
+            catalog.record(
+                PromptFileManifest(
+                    prompt_id=prompt_id,
+                    locale=selected_locale,
+                    source_path=source_path,
+                    runtime_path=runtime_path,
+                    loaded_path=load_path,
+                    source_exists=source_path.exists(),
+                    runtime_exists=runtime_path.exists(),
+                    loaded_from=loaded_from,
+                )
+            )
         registered.append(component)
     return registered
 
@@ -248,7 +313,9 @@ __all__ = [
     "DEFAULT_PROMPT_FALLBACK_LOCALE",
     "DEFAULT_PROMPT_LOCALE",
     "PromptFileError",
+    "PromptFileCatalogService",
     "PromptFileLoadConfig",
+    "PromptFileManifest",
     "load_prompt_component",
     "parse_prompt_markdown",
     "register_prompt_files",

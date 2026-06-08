@@ -4,8 +4,8 @@
       <template #prepend>
         <v-avatar color="primary" variant="tonal" icon="mdi-text-box-outline" />
       </template>
-      <v-card-title class="text-break">{{ item.name }}</v-card-title>
-      <v-card-subtitle>{{ item.promptId }}</v-card-subtitle>
+      <v-card-title class="text-break">{{ item.displayName }}</v-card-title>
+      <v-card-subtitle>{{ item.id }}</v-card-subtitle>
       <template #append>
         <v-switch
           :model-value="item.enabled"
@@ -25,6 +25,12 @@
         <v-chip size="small" color="info" variant="tonal">
           {{ stageLabel }}
         </v-chip>
+        <v-chip size="small" color="primary" variant="tonal">
+          {{ layerLabel }}
+        </v-chip>
+        <v-chip size="small" variant="outlined">
+          {{ item.locale }}
+        </v-chip>
         <v-chip size="small" variant="tonal">
           {{ kindLabel }}
         </v-chip>
@@ -38,7 +44,7 @@
       <div class="d-flex flex-wrap ga-2">
         <v-chip
           v-for="tag in item.tags"
-          :key="`${item.uuid}-${tag}`"
+          :key="`${item.fileId}-${tag}`"
           size="small"
           color="secondary"
           variant="tonal"
@@ -62,6 +68,16 @@
       </v-btn>
       <v-spacer />
       <v-btn
+        v-if="item.resettable"
+        color="secondary"
+        variant="text"
+        prepend-icon="mdi-restore"
+        @click="emit('reset', item)"
+      >
+        {{ resetLabel }}
+      </v-btn>
+      <v-btn
+        v-if="item.deletable"
         color="error"
         variant="text"
         prepend-icon="mdi-delete-outline"
@@ -74,27 +90,30 @@
 </template>
 
 <script setup lang="ts">
-import type { PromptDefinition } from '@/api/promptDefinitions'
+import type { PromptCatalogItem } from '@/api/prompts'
 
 interface Props {
-  item: PromptDefinition
+  item: PromptCatalogItem
   stageLabel: string
   kindLabel: string
+  layerLabel: string
   emptyTagLabel: string
   editLabel: string
   deleteLabel: string
+  resetLabel: string
 }
 
 const props = defineProps<Props>()
 
 const emit = defineEmits<{
-  edit: [item: PromptDefinition]
-  delete: [item: PromptDefinition]
+  edit: [item: PromptCatalogItem]
+  delete: [item: PromptCatalogItem]
+  reset: [item: PromptCatalogItem]
   toggle: [uuid: string, enabled: boolean]
 }>()
 
 const handleToggle = (value: boolean | null) => {
-  emit('toggle', props.item.uuid, Boolean(value))
+  emit('toggle', props.item.fileId, Boolean(value))
 }
 </script>
 

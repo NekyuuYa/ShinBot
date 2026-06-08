@@ -6,17 +6,19 @@
 
 ## 目录分层
 
-- `core/`
+- [`core/`](core/README.md)
   - 核心交互模型、消息模型、资源模型。
   - 回答系统最底层的语义和流转方式。
-- `runtime/`
+- [`runtime/`](runtime/README.md)
   - 运行时机制，例如命令、会话、权限、启动生命周期。
-- `extensibility/`
+- [`extensibility/`](extensibility/README.md)
   - 插件、适配器和扩展能力边界。
-- `interfaces/`
+- [`interfaces/`](interfaces/README.md)
   - 对外界面的设计，包括 WebUI 与前后端通信。
-- `governance/`
+- [`governance/`](governance/README.md)
   - 术语、命名、文档级约束等治理性内容。
+
+根目录下的设计文档用于尚不适合归入单一子目录、但仍属于长期能力规格的内容。
 
 ## 当前文件
 
@@ -43,6 +45,7 @@
 - `tool_registry_and_manager.md`
 - `attention_driven_conversation_workflow.md`
 - `media_semantics_and_meme_handling.md`
+- `logging_observability.md`
 
 ### `extensibility/`
 
@@ -54,11 +57,16 @@
 - `webui_design_spec.md`
 - `api_communication_spec.md`
 - `model_runtime_webui_spec.md`
+
+### 根目录
+
+- `config_provider_schema.md` — Provider-owned 配置 schema 的字段、默认值和校验规则。
 - `webui_plugin_install.md` — Dashboard 插件安装、更新、卸载能力规划。
 
 ### `governance/`
 
 - `glossary.md`
+- `document_status.md`
 
 ## 新文档放置规则
 
@@ -66,6 +74,7 @@
 - Agent 内某个具体能力规格：放 `runtime/`
 - 平台接入规范：放 `extensibility/`
 - Dashboard 页面与交互：放 `interfaces/`
+- Dashboard 实现维护说明：放 `../dashboard/`
 - 新的核心语义模型：放 `core/`
 - 数据库、运行记录和存储边界：放 `runtime/`
 
@@ -74,7 +83,7 @@
 以下文档写于早期 Agent 方案阶段，已完成审计：
 
 - `runtime/attention_driven_conversation_workflow.md`
-  - **状态**：部分现行。核心概念（SessionAttentionState、exponential decay、response profiles、tool-driven reply）已被 `scheduler/` 和 `active_chat/` 实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `active_chat/coordinator.py`，workflow 执行已迁移到 `workflow/`。
+  - **状态**：部分现行。核心概念（session attention、exponential decay、response profiles、tool-driven reply）已被 `scheduler/`、`coordinators/active_chat/` 和 `workflows/active_chat/` 实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。
   - **保留原因**：仍可作为 attention 模型和 response profile 的设计参考。
 - `runtime/media_semantics_and_meme_handling.md`
   - **状态**：现行。fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis 等核心设计均已实现于 `media/`。

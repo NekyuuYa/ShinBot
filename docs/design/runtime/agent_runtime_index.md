@@ -16,9 +16,9 @@
 | `tool_registry_and_manager.md` | **现行** | ToolRegistry + ToolManager 统一注册、宿主解耦、权限治理。 |
 | `agent_model_runtime.md` | **现行** | ModelRuntime 统一接入层：Provider → Model → Route → Execution Runtime 四层架构。Model 接入独立于 Agent，可服务非 Agent 调用。 |
 | `logging_observability.md` | **现行** | 后端日志与可观测性设计：事件名、日志层级、敏感内容边界和生产排障链路。 |
-| `active_chat_workflow.md` | **现行** | Active Chat 双层触发模型（Interest + Attention）、会话生命周期、semantic wait、batch 处理。核心设计已实现于 `active_chat/` + `scheduler/`。 |
-| `media_semantics_and_meme_handling.md` | **现行** | 媒体 fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis。核心设计已实现于 `media/`。 |
-| `attention_driven_conversation_workflow.md` | **部分现行** | 核心概念（SessionAttentionState、exponential decay、response profiles、tool-driven reply）已实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `active_chat/coordinator.py`。 |
+| `active_chat_workflow.md` | **现行** | Active Chat 双层触发模型（Interest + Attention）、会话生命周期、semantic wait、batch 处理。核心设计已实现于 `scheduler/`、`coordinators/active_chat/` 和 `workflows/active_chat/`。 |
+| `media_semantics_and_meme_handling.md` | **现行** | 媒体 fingerprint/dedup、sticker vs image 分流、semantic cache、reanalysis。核心设计已实现于 `services/media/`。 |
+| `attention_driven_conversation_workflow.md` | **部分现行** | 核心概念（session attention、exponential decay、response profiles、tool-driven reply）已实现。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `coordinators/active_chat/`，单轮执行在 `workflows/active_chat/`。 |
 
 ## 已归档参考
 
@@ -37,8 +37,8 @@
 
 - `ActiveChatWorkflow` → `ActiveChatCoordinator`（session 生命周期、pending buffer、semantic wait、round scheduling）
 - `ReviewWorkflow` → `ReviewCoordinator`（4 阶段编排 + scheduler 回调）
-- `workflow/conversation.py` WorkflowRunner 混合体 → 拆分为 `AttentionCoordinator`（coordinator）+ `WorkflowRunner`（纯 LLM 循环）
-- `workflow/tool_loop.py` 和 `active_chat/tool_loop.py` 重复的 `_parse_tool_call` → 提取到 `tools/parsing.py`
+- 旧 `workflow/conversation.py` 混合体 → 拆分为 `scheduler/`、`coordinators/active_chat/` 和 `workflows/active_chat/`
+- active chat tool loop 现位于 `workflows/active_chat/tool_loop.py`
 
 ## 历史参考（.agent/ 目录）
 

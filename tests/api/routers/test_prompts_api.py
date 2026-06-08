@@ -8,8 +8,6 @@ from shinbot.admin.prompt_definition_admin import (
     PromptDefinitionFileRepository,
     normalize_prompt_definition_input,
 )
-from shinbot.agent.runtime import install_agent_runtime
-from shinbot.agent.services.prompt_engine import PromptComponent, PromptComponentKind, PromptStage
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
 
@@ -34,26 +32,8 @@ def _auth_headers(app) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_prompts_list_route_returns_registered_prompt_components(tmp_path: Path):
+def test_prompts_list_discovers_runtime_files_without_agent_runtime(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
-    install_agent_runtime(bot)
-    assert bot.agent_runtime is not None
-    bot.agent_runtime.prompt_registry.register_component(
-        PromptComponent(
-            id="prompt.identity.extra",
-            stage=PromptStage.IDENTITY,
-            kind=PromptComponentKind.STATIC_TEXT,
-            content="identity text",
-            priority=20,
-            tags=["identity", "agent"],
-            metadata={
-                "display_name": "Identity Extra",
-                "description": "Additional identity prompt",
-                "owner_plugin_id": "plugin.identity",
-                "owner_module": "shinbot.plugins.identity",
-            },
-        )
-    )
     app = create_api_app(bot, _BootStub(tmp_path))
     headers = _auth_headers(app)
 
@@ -63,39 +43,19 @@ def test_prompts_list_route_returns_registered_prompt_components(tmp_path: Path)
     assert response.status_code == 200
     payload = response.json()["data"]
     payload_by_id = {item["id"]: item for item in payload}
-    assert {
-        "prompt.identity.extra",
-        "builtin.instructions.identity_map",
-        "builtin.constraints.identity_behavior",
-    } <= set(payload_by_id)
-    assert payload_by_id["prompt.identity.extra"] == {
-        "id": "prompt.identity.extra",
-        "displayName": "Identity Extra",
-        "description": "Additional identity prompt",
-        "stage": "identity",
-        "type": "static_text",
-        "version": "1.0.0",
-        "priority": 20,
-        "enabled": True,
-        "resolverRef": "",
-        "templateVars": [],
-        "bundleRefs": [],
-        "tags": ["identity", "agent"],
-        "sourceType": "agent_plugin",
-        "sourceId": "plugin.identity",
-        "ownerPluginId": "plugin.identity",
-        "ownerModule": "shinbot.plugins.identity",
-        "modulePath": "",
-        "metadata": {
-            "display_name": "Identity Extra",
-            "description": "Additional identity prompt",
-            "owner_plugin_id": "plugin.identity",
-            "owner_module": "shinbot.plugins.identity",
-        },
-    }
+    assert "review.review_scan.task" in payload_by_id
+    item = payload_by_id["review.review_scan.task"]
+    assert item["fileId"] == "runtime~zh-CN~review.review_scan.task"
+    assert item["layer"] == "runtime"
+    assert item["locale"] == "zh-CN"
+    assert item["editable"] is True
+    assert item["deletable"] is False
+    assert item["sourceStatus"] == "runtime_override"
+    assert item["loadedFrom"] == "runtime"
+    assert (tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md").is_file()
 
 
-def test_prompts_list_route_includes_file_prompt_definitions(tmp_path: Path):
+def test_prompts_list_includes_custom_prompt_definitions(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     PromptDefinitionFileRepository.from_data_dir(tmp_path).create(
         normalize_prompt_definition_input(
@@ -129,10 +89,12 @@ def test_prompts_list_route_includes_file_prompt_definitions(tmp_path: Path):
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    payload_by_id = {item["id"]: item for item in payload}
-    assert "prompt.user.custom" in payload_by_id
-    assert payload_by_id["prompt.user.custom"] == {
+    payload_by_file_id = {item["fileId"]: item for item in payload}
+    assert payload_by_file_id["custom~prompt.user.custom"] == {
         "id": "prompt.user.custom",
+        "fileId": "custom~prompt.user.custom",
+        "layer": "custom",
+        "locale": "custom",
         "displayName": "User Custom Prompt",
         "description": "Custom prompt from file",
         "stage": "instructions",
@@ -149,5 +111,95 @@ def test_prompts_list_route_includes_file_prompt_definitions(tmp_path: Path):
         "ownerPluginId": "",
         "ownerModule": "",
         "modulePath": "",
+        "editable": True,
+        "deletable": True,
+        "resettable": False,
+        "sourceStatus": "custom",
+        "loadedFrom": "custom",
+        "sourcePath": "",
+        "runtimePath": str(tmp_path / "prompts" / "custom" / "prompt.user.custom.md"),
+        "loadedPath": str(tmp_path / "prompts" / "custom" / "prompt.user.custom.md"),
         "metadata": {},
     }
+
+
+def test_runtime_prompt_get_patch_and_reset(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+    file_id = "runtime~zh-CN~review.review_scan.task"
+
+    with TestClient(app) as client:
+        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+        assert get_resp.status_code == 200
+        original = get_resp.json()["data"]
+        assert original["promptId"] == "review.review_scan.task"
+        assert "未读消息" in original["content"]
+
+        patch_resp = client.patch(
+            f"/api/v1/prompts/{file_id}",
+            headers=headers,
+            json={"content": "User edited runtime prompt.", "enabled": False},
+        )
+        assert patch_resp.status_code == 200
+        patched = patch_resp.json()["data"]
+        assert patched["content"] == "User edited runtime prompt."
+        assert patched["enabled"] is False
+
+        runtime_path = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
+        assert "User edited runtime prompt." in runtime_path.read_text(encoding="utf-8")
+
+        reset_resp = client.post(f"/api/v1/prompts/{file_id}/reset", headers=headers)
+        assert reset_resp.status_code == 200
+        assert reset_resp.json()["data"] == {"reset": True, "fileId": file_id}
+
+        after_reset_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+        assert after_reset_resp.status_code == 200
+        assert "User edited runtime prompt." not in after_reset_resp.json()["data"]["content"]
+
+
+def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    app = create_api_app(bot, _BootStub(tmp_path))
+    headers = _auth_headers(app)
+
+    with TestClient(app) as client:
+        create_resp = client.post(
+            "/api/v1/prompts/custom",
+            headers=headers,
+            json={
+                "promptId": "prompt.user.custom",
+                "name": "User Custom Prompt",
+                "stage": "instructions",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+        assert create_resp.status_code == 201
+        file_id = create_resp.json()["data"]["fileId"]
+        assert file_id == "custom~prompt.user.custom"
+
+        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+        assert get_resp.status_code == 200
+        assert get_resp.json()["data"]["content"] == "hello"
+
+        patch_resp = client.patch(
+            f"/api/v1/prompts/{file_id}",
+            headers=headers,
+            json={"content": "updated", "tags": ["user"]},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["data"]["content"] == "updated"
+        assert patch_resp.json()["data"]["tags"] == ["user"]
+
+        runtime_delete_resp = client.delete(
+            "/api/v1/prompts/runtime~zh-CN~review.review_scan.task",
+            headers=headers,
+        )
+        assert runtime_delete_resp.status_code == 400
+        assert runtime_delete_resp.json()["error"]["code"] == "INVALID_ACTION"
+
+        delete_resp = client.delete(f"/api/v1/prompts/{file_id}", headers=headers)
+        assert delete_resp.status_code == 200
+        assert delete_resp.json()["data"] == {"deleted": True, "fileId": file_id}
+        assert not (tmp_path / "prompts" / "custom" / "prompt.user.custom.md").exists()

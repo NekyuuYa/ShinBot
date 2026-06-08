@@ -1,10 +1,25 @@
 {
   "kicker": "提示词工程",
-  "title": "提示词定义管理",
-  "subtitle": "按标签管理 Prompt 组件。支持新增、编辑、启用/禁用及删除。",
+  "title": "Prompt 文件管理",
+  "subtitle": "管理 runtime prompt 文件和 custom prompt 定义。",
   "actions": {
     "refresh": "刷新",
-    "addPrompt": "添加 Prompt"
+    "addPrompt": "添加 Prompt",
+    "reset": "重置为 source"
+  },
+  "filters": {
+    "source": "来源",
+    "locale": "Locale",
+    "stage": "Stage",
+    "tags": "Tags",
+    "allSources": "全部来源",
+    "allLocales": "全部 Locale",
+    "allStages": "全部 Stage",
+    "allTags": "全部 Tags"
+  },
+  "layers": {
+    "runtime": "Runtime",
+    "custom": "Custom"
   },
   "tags": {
     "title": "标签分类",
@@ -16,6 +31,7 @@
   },
   "fields": {
     "promptId": "Prompt ID",
+    "locale": "Locale",
     "name": "显示名称",
     "stage": "阶段",
     "type": "类型",
@@ -68,11 +84,14 @@
     "created": "Prompt 定义已创建",
     "updated": "Prompt 定义已更新",
     "deleted": "Prompt 定义已删除",
+    "reset": "Prompt 已重置为 source",
     "createFailed": "创建 Prompt 定义失败",
     "updateFailed": "更新 Prompt 定义失败",
     "deleteFailed": "删除 Prompt 定义失败",
+    "resetFailed": "重置 Prompt 失败",
     "requiredFields": "请填写 Prompt ID、名称、阶段和类型",
     "invalidJson": "JSON 格式无效，请检查后重试",
-    "confirmDelete": "确认删除 Prompt 定义「{name}」吗？"
+    "confirmDelete": "确认删除 Prompt 定义「{name}」吗？",
+    "confirmReset": "确认把 runtime prompt「{name}」重置为 source 文件吗？"
   }
 }

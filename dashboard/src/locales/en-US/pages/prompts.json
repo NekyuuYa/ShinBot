@@ -1,10 +1,25 @@
 {
   "kicker": "Prompt Engineering",
-  "title": "Prompt Definitions",
-  "subtitle": "Manage prompt components by tag. Create, edit, enable/disable or delete definitions.",
+  "title": "Prompt Files",
+  "subtitle": "Manage runtime prompt files and custom prompt definitions.",
   "actions": {
     "refresh": "Refresh",
-    "addPrompt": "Add Prompt"
+    "addPrompt": "Add Prompt",
+    "reset": "Reset to Source"
+  },
+  "filters": {
+    "source": "Source",
+    "locale": "Locale",
+    "stage": "Stage",
+    "tags": "Tags",
+    "allSources": "All sources",
+    "allLocales": "All locales",
+    "allStages": "All stages",
+    "allTags": "All tags"
+  },
+  "layers": {
+    "runtime": "Runtime",
+    "custom": "Custom"
   },
   "tags": {
     "title": "Tag Categories",
@@ -16,6 +31,7 @@
   },
   "fields": {
     "promptId": "Prompt ID",
+    "locale": "Locale",
     "name": "Display Name",
     "stage": "Stage",
     "type": "Kind",
@@ -68,11 +84,14 @@
     "created": "Prompt definition created",
     "updated": "Prompt definition updated",
     "deleted": "Prompt definition deleted",
+    "reset": "Prompt reset to source",
     "createFailed": "Failed to create prompt definition",
     "updateFailed": "Failed to update prompt definition",
     "deleteFailed": "Failed to delete prompt definition",
+    "resetFailed": "Failed to reset prompt",
     "requiredFields": "Prompt ID, Name, Stage, and Kind are required",
     "invalidJson": "Invalid JSON format",
-    "confirmDelete": "Delete prompt definition \"{name}\"?"
+    "confirmDelete": "Delete prompt definition \"{name}\"?",
+    "confirmReset": "Reset runtime prompt \"{name}\" to its source file?"
   }
 }

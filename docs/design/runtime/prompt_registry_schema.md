@@ -1,6 +1,6 @@
 # ShinBot 技术规范：PromptRegistry 数据结构 (PromptRegistry Schema)
 
-> **审计状态 (2026-05-10)**：现行。核心数据结构（PromptComponent、PromptSource、PromptProfile、PromptAssemblyRequest/Result、PromptSnapshot、PromptStageBlock）已实现于 `prompt_manager/`。
+> **审计状态 (2026-06-07)**：现行。核心数据结构（PromptComponent、PromptSource、PromptProfile、PromptAssemblyRequest/Result、PromptBuildRequest/Result、PromptSnapshot、PromptStageBlock）已实现于 `shinbot/agent/services/prompt_engine/schema.py`。
 
 本文档定义 PromptRegistry 实现所需的核心数据结构、字段约束与运行关系。
 

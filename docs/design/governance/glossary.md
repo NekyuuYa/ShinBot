@@ -1,5 +1,7 @@
 # ShinBot 名词解释 (Glossary)
 
+> **审计状态 (2026-06-08)**：部分现行。核心、插件、权限和持久化术语已按当前实现修正；Attention 相关条目保留为历史 attention workflow 概念，当前 active chat 实现以 `../runtime/active_chat_workflow.md` 和 `../../architecture/agent_module_layers.md` 为准。
+
 ## 1. 实例 (Instance / instance_id)
 - **定义**: 每一个独立的 Bot 账号或连接端点。
 - **作用**: 用于会话隔离和路由。用户在配置中指定其使用的 **适配器类型**。
@@ -43,23 +45,23 @@
 
 ## 12. 审计日志 (AuditLog)
 - **定义**: 对每次命令执行（包括权限结果、耗时、成功/失败状态）所产生的结构化日志记录。
-- **存储**: 持久化到 `data/audit/audit_YYYY-MM-DD.jsonl`，按日轮转。
+- **存储**: 当前可写入数据库 `audit_logs`，并可旁路持久化到 `data/audit/audit_YYYY-MM-DD.jsonl`，按日轮转。
 
 ## 13. 管道 (Pipeline)
 - **定义**: 消息从适配器进入系统后经历的有序处理阶段序列，包含 Ingress、路由、权限校验、命令分发和 Egress 等阶段。
 - **作用**: 提供统一的消息处理生命周期，允许在各阶段插入拦截器逻辑。
 
 ## 14. 注意力 (Attention)
-- **定义**: 绑定在 `Session` 上的全局运行时状态，用于表示当前会话“值得被送入 conversation workflow 的程度”。
-- **作用**: 累积多条群聊消息的价值信号，并在达到有效阈值后触发 workflow。
+- **定义**: Active Chat 中的短周期触发状态，用于表示 pending 消息是否值得触发一轮 LLM。
+- **作用**: 累积多条消息的价值信号，达到动态阈值后进入 semantic wait 并批量触发 active chat round。
 
 ## 15. Sender Weight
-- **定义**: 某个 sender 在某个 `Session` 内对全局 attention 增量的影响权重。
-- **作用**: 区分不同用户发言对会话注意力增长的贡献强弱。通常拆分为 `stable_weight` 与 `runtime_weight` 两层。
+- **定义**: 早期 attention workflow 设计中的概念，表示某个 sender 在某个 `Session` 内对全局 attention 增量的影响权重。
+- **状态**: 当前 active chat 尚未实现稳定的 per-sender weight 状态；消息贡献主要由 mention、reply、poke、bot 自己消息等特征计算。
 
 ## 16. Attention Batch
-- **定义**: attention 达到阈值后，从 `last_consumed_msg_log_id` 之后 claim 出来、送入 workflow 的一段连续未消费消息区间。
-- **作用**: 将 workflow 的输入单位从“单条消息”提升为“成批消息片段”，降低逐消息触发成本。
+- **定义**: active chat attention 达到阈值并经过 semantic wait 后，由 pending buffer 形成的 `ActiveChatBatch`。
+- **作用**: 将 LLM 输入单位从“单条消息”提升为“成批消息片段”，降低逐消息触发成本。
 
 ## 17. Media Fingerprint
 - **定义**: 对媒体资源计算得到的稳定识别信息，通常包含 `raw_hash` 与视觉近似用的 `strict_dhash`。

@@ -11,6 +11,7 @@ from shinbot.agent.services.prompt_engine.dynamic_components import (
     active_chat_instruction_component_id,
     review_stage_instruction_component_id,
 )
+from shinbot.agent.services.prompt_engine.files import PromptFileCatalogService
 from shinbot.agent.services.prompt_engine.message_builder import PromptMessageBuilder
 from shinbot.agent.services.prompt_engine.rendering import (
     expand_component_tree,
@@ -87,6 +88,7 @@ class PromptRegistry:
         self._context_manager = context_manager
         self._identity_store = identity_store
         self._message_builder = message_builder or PromptMessageBuilder()
+        self.prompt_file_catalog = PromptFileCatalogService()
 
     # ── Registration ────────────────────────────────────────────────────
 
