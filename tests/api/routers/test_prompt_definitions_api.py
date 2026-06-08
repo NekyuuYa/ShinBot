@@ -1,42 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
-from shinbot.api.app import create_api_app
-from shinbot.core.application.app import ShinBot
 
+def test_prompt_definition_crud_roundtrip(router_api):
+    tmp_path = router_api.data_dir
 
-class _BootStub:
-    def __init__(self, data_dir: Path) -> None:
-        self.config = {
-            "admin": {
-                "username": "admin",
-                "password": "admin",
-                "jwt_secret": "test-secret-that-is-long-enough-for-hs256",
-                "jwt_expire_hours": 24,
-            }
-        }
-        self.data_dir = data_dir
-        self.dashboard_dist_dir = None
-        self.dashboard_index_file = None
-
-
-def _auth_headers(app) -> dict[str, str]:
-    token = app.state.auth_config.create_token()
-    return {"Authorization": f"Bearer {token}"}
-
-
-def test_prompt_definition_crud_roundtrip(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
-
-    with TestClient(app) as client:
+    with TestClient(router_api.app) as client:
         create_resp = client.post(
             "/api/v1/prompt-definitions",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt.identity.extra",
                 "name": "Identity Extra",
@@ -65,13 +38,16 @@ def test_prompt_definition_crud_roundtrip(tmp_path: Path):
 
         prompt_uuid = created["uuid"]
 
-        get_resp = client.get(f"/api/v1/prompt-definitions/{prompt_uuid}", headers=headers)
+        get_resp = client.get(
+            f"/api/v1/prompt-definitions/{prompt_uuid}",
+            headers=router_api.headers,
+        )
         assert get_resp.status_code == 200
         assert get_resp.json()["data"]["uuid"] == prompt_uuid
 
         patch_resp = client.patch(
             f"/api/v1/prompt-definitions/{prompt_uuid}",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt.instructions.chat",
                 "name": "Chat Instructions",
@@ -94,28 +70,24 @@ def test_prompt_definition_crud_roundtrip(tmp_path: Path):
         assert not (tmp_path / "prompts" / "custom" / "prompt.identity.extra.md").exists()
         assert (tmp_path / "prompts" / "custom" / "prompt.instructions.chat.md").is_file()
 
-        list_resp = client.get("/api/v1/prompt-definitions", headers=headers)
+        list_resp = client.get("/api/v1/prompt-definitions", headers=router_api.headers)
         assert list_resp.status_code == 200
         assert len(list_resp.json()["data"]) == 1
         assert list_resp.json()["data"][0]["uuid"] == "prompt.instructions.chat"
 
         delete_resp = client.delete(
             "/api/v1/prompt-definitions/prompt.instructions.chat",
-            headers=headers,
+            headers=router_api.headers,
         )
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"]["deleted"] is True
 
 
-def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
-
-    with TestClient(app) as client:
+def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(router_api):
+    with TestClient(router_api.app) as client:
         first_resp = client.post(
             "/api/v1/prompt-definitions",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt.identity.extra",
                 "name": "Identity Extra",
@@ -128,7 +100,7 @@ def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(tmp_path: Path
 
         duplicate_resp = client.post(
             "/api/v1/prompt-definitions",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt.identity.extra",
                 "name": "Identity Extra 2",
@@ -142,7 +114,7 @@ def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(tmp_path: Path
 
         invalid_resp = client.post(
             "/api/v1/prompt-definitions",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt.instructions.bad",
                 "name": "Bad Template",
@@ -156,7 +128,7 @@ def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(tmp_path: Path
 
         persona_source_resp = client.post(
             "/api/v1/prompt-definitions",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "persona.legacy",
                 "name": "Legacy Persona Prompt",
@@ -170,15 +142,11 @@ def test_prompt_definition_rejects_duplicate_id_and_invalid_shape(tmp_path: Path
         assert persona_source_resp.json()["error"]["code"] == "INVALID_ACTION"
 
 
-def test_prompt_definition_create_and_rename_reject_runtime_prompt_conflict(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
-
-    with TestClient(app) as client:
+def test_prompt_definition_create_and_rename_reject_runtime_prompt_conflict(router_api):
+    with TestClient(router_api.app) as client:
         conflict_create = client.post(
             "/api/v1/prompt-definitions",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "review.review_scan.task",
                 "name": "Conflicting Prompt",
@@ -192,7 +160,7 @@ def test_prompt_definition_create_and_rename_reject_runtime_prompt_conflict(tmp_
 
         create_resp = client.post(
             "/api/v1/prompt-definitions",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt.identity.extra",
                 "name": "Identity Extra",
@@ -205,8 +173,28 @@ def test_prompt_definition_create_and_rename_reject_runtime_prompt_conflict(tmp_
 
         conflict_patch = client.patch(
             "/api/v1/prompt-definitions/prompt.identity.extra",
-            headers=headers,
+            headers=router_api.headers,
             json={"promptId": "review.review_scan.task"},
         )
         assert conflict_patch.status_code == 409
         assert conflict_patch.json()["error"]["code"] == "PROMPT_FILE_CONFLICT"
+
+
+def test_prompt_definition_runtime_conflict_uses_exact_registry_id(router_api):
+    prompt_id = "review.review_scan.task.custom.extension.with.long.prompt.id"
+
+    with TestClient(router_api.app) as client:
+        create_resp = client.post(
+            "/api/v1/prompt-definitions",
+            headers=router_api.headers,
+            json={
+                "promptId": prompt_id,
+                "name": "Long Custom Prompt",
+                "stage": "instructions",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+
+    assert create_resp.status_code == 201
+    assert create_resp.json()["data"]["promptId"] == prompt_id

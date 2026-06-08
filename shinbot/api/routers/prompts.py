@@ -248,15 +248,22 @@ def _component_catalog_by_id(registry) -> dict[str, dict[str, Any]]:
     return {item["id"]: _prompt_dict(item) for item in registry.list_component_catalog()}
 
 
+def _runtime_catalog_prompt_ids(bot, boot) -> set[str]:
+    registry = _active_or_discovered_registry(bot, boot, sync_runtime=False)
+    component_ids = {str(item["id"]) for item in registry.list_component_catalog()}
+    return {
+        manifest.prompt_id
+        for manifest in registry.prompt_file_catalog.list()
+        if manifest.prompt_id in component_ids
+    }
+
+
 def _runtime_catalog_item(
     manifest: PromptFileManifest,
     component_item: dict[str, Any],
 ) -> dict[str, Any]:
+    manifest = manifest.refresh()
     item = dict(component_item)
-    runtime_exists = manifest.runtime_path.exists()
-    source_exists = manifest.source_path.exists()
-    loaded_from = "runtime" if runtime_exists else manifest.loaded_from
-    loaded_path = manifest.runtime_path if runtime_exists else manifest.loaded_path
     item.update(
         {
             "fileId": _encode_file_id("runtime", manifest.locale, manifest.prompt_id),
@@ -264,18 +271,18 @@ def _runtime_catalog_item(
             "locale": manifest.locale,
             "editable": True,
             "deletable": False,
-            "resettable": source_exists and runtime_exists,
+            "resettable": manifest.source_exists and manifest.runtime_exists,
             "sourceStatus": (
                 "missing_source"
-                if not source_exists
+                if not manifest.source_exists
                 else "runtime_override"
-                if runtime_exists
+                if manifest.runtime_exists
                 else "source"
             ),
-            "loadedFrom": loaded_from,
+            "loadedFrom": manifest.loaded_from,
             "sourcePath": str(manifest.source_path),
             "runtimePath": str(manifest.runtime_path),
-            "loadedPath": str(loaded_path),
+            "loadedPath": str(manifest.loaded_path),
         }
     )
     return item
@@ -338,9 +345,12 @@ def _get_catalog_item(file_id: str, bot, boot, *, sync_runtime: bool = False) ->
     return item
 
 
-def _assert_not_runtime_prompt_conflict(prompt_id: str, boot) -> None:
+def _assert_not_runtime_prompt_conflict(prompt_id: str, bot, boot) -> None:
     try:
-        assert_no_runtime_prompt_conflict(prompt_id, boot.data_dir)
+        assert_no_runtime_prompt_conflict(
+            prompt_id,
+            runtime_prompt_ids=_runtime_catalog_prompt_ids(bot, boot),
+        )
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
 
@@ -540,7 +550,7 @@ def _patch_custom_prompt(
             metadata=body.metadata if body.metadata is not None else dict(current["metadata"]),
         )
         if normalized.prompt_id != str(current["prompt_id"]):
-            _assert_not_runtime_prompt_conflict(normalized.prompt_id, boot)
+            _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
         payload = repository.update(prompt_id, normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
@@ -593,7 +603,7 @@ def create_custom_prompt(body: CustomPromptCreateRequest, bot=BotDep, boot=BootD
             tags=body.tags,
             metadata={**body.metadata, "updated_at": utc_now_iso()},
         )
-        _assert_not_runtime_prompt_conflict(normalized.prompt_id, boot)
+        _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
         payload = repository.create(normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)

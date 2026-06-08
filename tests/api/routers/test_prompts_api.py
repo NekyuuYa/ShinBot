@@ -1,44 +1,18 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from shinbot.admin.prompt_definition_admin import (
     PromptDefinitionFileRepository,
     normalize_prompt_definition_input,
 )
-from shinbot.api.app import create_api_app
-from shinbot.core.application.app import ShinBot
 
 
-class _BootStub:
-    def __init__(self, data_dir: Path) -> None:
-        self.config = {
-            "admin": {
-                "username": "admin",
-                "password": "admin",
-                "jwt_secret": "test-secret-that-is-long-enough-for-hs256",
-                "jwt_expire_hours": 24,
-            }
-        }
-        self.data_dir = data_dir
-        self.dashboard_dist_dir = None
-        self.dashboard_index_file = None
+def test_prompts_list_discovers_runtime_files_without_agent_runtime(router_api):
+    tmp_path = router_api.data_dir
 
-
-def _auth_headers(app) -> dict[str, str]:
-    token = app.state.auth_config.create_token()
-    return {"Authorization": f"Bearer {token}"}
-
-
-def test_prompts_list_discovers_runtime_files_without_agent_runtime(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
-
-    with TestClient(app) as client:
-        response = client.get("/api/v1/prompts", headers=headers)
+    with TestClient(router_api.app) as client:
+        response = client.get("/api/v1/prompts", headers=router_api.headers)
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -55,8 +29,8 @@ def test_prompts_list_discovers_runtime_files_without_agent_runtime(tmp_path: Pa
     assert not (tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md").exists()
 
 
-def test_prompts_list_includes_custom_prompt_definitions(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
+def test_prompts_list_includes_custom_prompt_definitions(router_api):
+    tmp_path = router_api.data_dir
     PromptDefinitionFileRepository.from_data_dir(tmp_path).create(
         normalize_prompt_definition_input(
             prompt_id="prompt.user.custom",
@@ -81,11 +55,8 @@ def test_prompts_list_includes_custom_prompt_definitions(tmp_path: Path):
             metadata={"display_name": "User Custom Prompt"},
         )
     )
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
-
-    with TestClient(app) as client:
-        response = client.get("/api/v1/prompts", headers=headers)
+    with TestClient(router_api.app) as client:
+        response = client.get("/api/v1/prompts", headers=router_api.headers)
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -123,15 +94,13 @@ def test_prompts_list_includes_custom_prompt_definitions(tmp_path: Path):
     }
 
 
-def test_runtime_prompt_get_patch_and_reset(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
+def test_runtime_prompt_get_patch_and_reset(router_api):
+    tmp_path = router_api.data_dir
     file_id = "runtime~zh-CN~review.review_scan.task"
     runtime_path = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
 
-    with TestClient(app) as client:
-        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+    with TestClient(router_api.app) as client:
+        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=router_api.headers)
         assert get_resp.status_code == 200
         original = get_resp.json()["data"]
         assert original["promptId"] == "review.review_scan.task"
@@ -140,7 +109,7 @@ def test_runtime_prompt_get_patch_and_reset(tmp_path: Path):
 
         patch_resp = client.patch(
             f"/api/v1/prompts/{file_id}",
-            headers=headers,
+            headers=router_api.headers,
             json={"content": "User edited runtime prompt."},
         )
         assert patch_resp.status_code == 200
@@ -149,26 +118,27 @@ def test_runtime_prompt_get_patch_and_reset(tmp_path: Path):
 
         assert "User edited runtime prompt." in runtime_path.read_text(encoding="utf-8")
 
-        reset_resp = client.post(f"/api/v1/prompts/{file_id}/reset", headers=headers)
+        reset_resp = client.post(f"/api/v1/prompts/{file_id}/reset", headers=router_api.headers)
         assert reset_resp.status_code == 200
         assert reset_resp.json()["data"] == {"reset": True, "fileId": file_id}
 
-        after_reset_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+        after_reset_resp = client.get(
+            f"/api/v1/prompts/{file_id}",
+            headers=router_api.headers,
+        )
         assert after_reset_resp.status_code == 200
         assert "User edited runtime prompt." not in after_reset_resp.json()["data"]["content"]
 
 
-def test_runtime_prompt_patch_rejects_structure_fields(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
+def test_runtime_prompt_patch_rejects_structure_fields(router_api):
+    tmp_path = router_api.data_dir
     file_id = "runtime~zh-CN~review.review_scan.task"
     runtime_path = tmp_path / "prompts" / "zh-CN" / "review.review_scan.task.md"
 
-    with TestClient(app) as client:
+    with TestClient(router_api.app) as client:
         response = client.patch(
             f"/api/v1/prompts/{file_id}",
-            headers=headers,
+            headers=router_api.headers,
             json={"content": "User edited runtime prompt.", "stage": "identity"},
         )
 
@@ -177,15 +147,13 @@ def test_runtime_prompt_patch_rejects_structure_fields(tmp_path: Path):
     assert not runtime_path.exists()
 
 
-def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
+def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(router_api):
+    tmp_path = router_api.data_dir
 
-    with TestClient(app) as client:
+    with TestClient(router_api.app) as client:
         create_resp = client.post(
             "/api/v1/prompts/custom",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt.user.custom",
                 "name": "User Custom Prompt",
@@ -198,13 +166,13 @@ def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(tmp_
         file_id = create_resp.json()["data"]["fileId"]
         assert file_id == "custom~prompt.user.custom"
 
-        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=router_api.headers)
         assert get_resp.status_code == 200
         assert get_resp.json()["data"]["content"] == "hello"
 
         patch_resp = client.patch(
             f"/api/v1/prompts/{file_id}",
-            headers=headers,
+            headers=router_api.headers,
             json={"content": "updated", "tags": ["user"]},
         )
         assert patch_resp.status_code == 200
@@ -213,26 +181,24 @@ def test_prompts_custom_create_get_patch_delete_and_runtime_delete_rejected(tmp_
 
         runtime_delete_resp = client.delete(
             "/api/v1/prompts/runtime~zh-CN~review.review_scan.task",
-            headers=headers,
+            headers=router_api.headers,
         )
         assert runtime_delete_resp.status_code == 400
         assert runtime_delete_resp.json()["error"]["code"] == "INVALID_ACTION"
 
-        delete_resp = client.delete(f"/api/v1/prompts/{file_id}", headers=headers)
+        delete_resp = client.delete(f"/api/v1/prompts/{file_id}", headers=router_api.headers)
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"] == {"deleted": True, "fileId": file_id}
         assert not (tmp_path / "prompts" / "custom" / "prompt.user.custom.md").exists()
 
 
-def test_prompts_custom_file_id_supports_colon_prompt_id(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
+def test_prompts_custom_file_id_supports_colon_prompt_id(router_api):
+    tmp_path = router_api.data_dir
 
-    with TestClient(app) as client:
+    with TestClient(router_api.app) as client:
         create_resp = client.post(
             "/api/v1/prompts/custom",
-            headers=headers,
+            headers=router_api.headers,
             json={
                 "promptId": "prompt:user.custom",
                 "name": "Colon Custom Prompt",
@@ -245,30 +211,28 @@ def test_prompts_custom_file_id_supports_colon_prompt_id(tmp_path: Path):
         file_id = create_resp.json()["data"]["fileId"]
         assert file_id == "custom~prompt%3Auser.custom"
 
-        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=headers)
+        get_resp = client.get(f"/api/v1/prompts/{file_id}", headers=router_api.headers)
         assert get_resp.status_code == 200
         assert get_resp.json()["data"]["promptId"] == "prompt:user.custom"
 
         patch_resp = client.patch(
             f"/api/v1/prompts/{file_id}",
-            headers=headers,
+            headers=router_api.headers,
             json={"content": "updated"},
         )
         assert patch_resp.status_code == 200
         assert patch_resp.json()["data"]["content"] == "updated"
 
-        delete_resp = client.delete(f"/api/v1/prompts/{file_id}", headers=headers)
+        delete_resp = client.delete(f"/api/v1/prompts/{file_id}", headers=router_api.headers)
         assert delete_resp.status_code == 200
         assert delete_resp.json()["data"] == {"deleted": True, "fileId": file_id}
         assert not (tmp_path / "prompts" / "custom" / "prompt:user.custom.md").exists()
 
 
-def test_custom_prompt_create_and_rename_reject_runtime_prompt_conflict(tmp_path: Path):
-    bot = ShinBot(data_dir=tmp_path)
-    app = create_api_app(bot, _BootStub(tmp_path))
-    headers = _auth_headers(app)
+def test_custom_prompt_create_and_rename_reject_runtime_prompt_conflict(router_api):
+    headers = router_api.headers
 
-    with TestClient(app) as client:
+    with TestClient(router_api.app) as client:
         conflict_create = client.post(
             "/api/v1/prompts/custom",
             headers=headers,
@@ -303,3 +267,23 @@ def test_custom_prompt_create_and_rename_reject_runtime_prompt_conflict(tmp_path
         )
         assert conflict_patch.status_code == 409
         assert conflict_patch.json()["error"]["code"] == "PROMPT_FILE_CONFLICT"
+
+
+def test_custom_prompt_runtime_conflict_uses_exact_registry_id(router_api):
+    prompt_id = "review.review_scan.task.custom.extension.with.long.prompt.id"
+
+    with TestClient(router_api.app) as client:
+        create_resp = client.post(
+            "/api/v1/prompts/custom",
+            headers=router_api.headers,
+            json={
+                "promptId": prompt_id,
+                "name": "Long Custom Prompt",
+                "stage": "instructions",
+                "type": "static_text",
+                "content": "hello",
+            },
+        )
+
+    assert create_resp.status_code == 201
+    assert create_resp.json()["data"]["promptId"] == prompt_id

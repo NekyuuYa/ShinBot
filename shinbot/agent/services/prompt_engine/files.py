@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -36,13 +36,36 @@ class PromptFileManifest:
     runtime_exists: bool
     loaded_from: str
 
+    def refresh(self) -> PromptFileManifest:
+        """Return a copy with file existence fields refreshed from disk."""
+
+        source_exists = self.source_path.exists()
+        runtime_exists = self.runtime_path.exists()
+        if runtime_exists:
+            loaded_from = "runtime"
+            loaded_path = self.runtime_path
+        elif source_exists:
+            loaded_from = "source"
+            loaded_path = self.source_path
+        else:
+            loaded_from = self.loaded_from
+            loaded_path = self.loaded_path
+        return replace(
+            self,
+            source_exists=source_exists,
+            runtime_exists=runtime_exists,
+            loaded_from=loaded_from,
+            loaded_path=loaded_path,
+        )
+
     def to_payload(self) -> dict[str, Any]:
         """Return a JSON-serialisable manifest payload."""
 
-        payload = asdict(self)
-        payload["source_path"] = str(self.source_path)
-        payload["runtime_path"] = str(self.runtime_path)
-        payload["loaded_path"] = str(self.loaded_path)
+        manifest = self.refresh()
+        payload = asdict(manifest)
+        payload["source_path"] = str(manifest.source_path)
+        payload["runtime_path"] = str(manifest.runtime_path)
+        payload["loaded_path"] = str(manifest.loaded_path)
         return payload
 
 
@@ -63,14 +86,20 @@ class PromptFileCatalogService:
         """Return all manifest entries in a stable order."""
 
         return sorted(
-            self._entries.values(),
+            (item.refresh() for item in self._entries.values()),
             key=lambda item: (item.locale, item.prompt_id),
         )
 
     def get(self, *, prompt_id: str, locale: str) -> PromptFileManifest | None:
         """Return one manifest entry by prompt ID and locale."""
 
-        return self._entries.get((locale, prompt_id))
+        manifest = self._entries.get((locale, prompt_id))
+        return manifest.refresh() if manifest is not None else None
+
+    def prompt_ids(self) -> set[str]:
+        """Return the set of registered file-backed prompt IDs."""
+
+        return {manifest.prompt_id for manifest in self._entries.values()}
 
 
 @dataclass(slots=True, frozen=True)

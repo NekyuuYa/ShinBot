@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -620,22 +621,21 @@ def assert_prompt_id_available(
         )
 
 
-def assert_no_runtime_prompt_conflict(prompt_id: str, data_dir: Path | str) -> None:
+def assert_no_runtime_prompt_conflict(
+    prompt_id: str,
+    *,
+    runtime_prompt_ids: Iterable[str],
+) -> None:
     """Assert that a custom prompt ID does not shadow a runtime prompt file.
 
     Args:
         prompt_id: The custom prompt ID to validate.
-        data_dir: ShinBot data directory used for runtime prompt discovery.
+        runtime_prompt_ids: Prompt IDs from the active runtime prompt catalog.
 
     Raises:
         PromptDefinitionAdminError: If the ID is owned by a runtime prompt file.
     """
-    from shinbot.agent.services.prompt_engine.discovery import discover_file_backed_prompts
-    from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig
-
-    config = PromptFileLoadConfig.from_data_dir(data_dir, sync_to_data=False)
-    registry = discover_file_backed_prompts(data_dir, prompt_file_config=config)
-    if any(manifest.prompt_id == prompt_id for manifest in registry.prompt_file_catalog.list()):
+    if prompt_id in set(runtime_prompt_ids):
         raise PromptDefinitionAdminError(
             status_code=409,
             code="PROMPT_FILE_CONFLICT",
@@ -711,6 +711,7 @@ __all__ = [
     "PromptDefinitionAdminError",
     "PromptDefinitionDraft",
     "PromptDefinitionFileRepository",
+    "assert_no_runtime_prompt_conflict",
     "assert_prompt_id_available",
     "get_prompt_definition_or_raise",
     "normalize_prompt_definition_input",
