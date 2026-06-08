@@ -102,4 +102,4 @@ class BaseAdapter(ABC):
 
 1. **深度解析**: 对于仅提供资源 ID 的复合消息（如聊天记录），适配器应在 Ingress 阶段自动拉取详情并构建完整的 AST。
 2. **非标标准化**: 将各平台特有的交互（戳一戳、红包、小程序）统一映射为 `sb:` 命名空间的标准元素或 `internal` 规范 API。
-3. **接口透传**: 严格遵循 `docs/design/11_internal_api_registry.md` 中的规范暴露平台特有能力。
+3. **接口透传**: 按本文档第 5 节的 `internal.{platform}.{action}` 命名空间暴露平台特有能力；如后续恢复独立内部 API 注册表，应在这里补充有效链接。

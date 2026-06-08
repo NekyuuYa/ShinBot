@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -620,6 +621,28 @@ def assert_prompt_id_available(
         )
 
 
+def assert_no_runtime_prompt_conflict(
+    prompt_id: str,
+    *,
+    runtime_prompt_ids: Iterable[str],
+) -> None:
+    """Assert that a custom prompt ID does not shadow a runtime prompt file.
+
+    Args:
+        prompt_id: The custom prompt ID to validate.
+        runtime_prompt_ids: Prompt IDs from the active runtime prompt catalog.
+
+    Raises:
+        PromptDefinitionAdminError: If the ID is owned by a runtime prompt file.
+    """
+    if prompt_id in set(runtime_prompt_ids):
+        raise PromptDefinitionAdminError(
+            status_code=409,
+            code="PROMPT_FILE_CONFLICT",
+            message=f"Prompt {prompt_id!r} conflicts with a runtime prompt file",
+        )
+
+
 def render_prompt_definition_markdown(draft: PromptDefinitionDraft) -> str:
     """Render a prompt definition draft as Markdown with YAML front-matter.
 
@@ -688,6 +711,7 @@ __all__ = [
     "PromptDefinitionAdminError",
     "PromptDefinitionDraft",
     "PromptDefinitionFileRepository",
+    "assert_no_runtime_prompt_conflict",
     "assert_prompt_id_available",
     "get_prompt_definition_or_raise",
     "normalize_prompt_definition_input",

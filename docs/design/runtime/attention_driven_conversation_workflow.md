@@ -1,6 +1,6 @@
 # ShinBot 技术规范：注意力驱动的群聊会话工作流 (Attention-Driven Conversation Workflow)
 
-> **审计状态 (2026-05-10)**：部分现行。核心概念（SessionAttentionState、exponential decay、response profiles、tool-driven reply）已实现于 `scheduler/` + `active_chat/`。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。调度职责已迁移到 `scheduler/` + `active_chat/coordinator.py`，workflow 执行已迁移到 `workflow/`。分层约束以 `../../architecture/agent_module_layers.md` 为准。
+> **审计状态 (2026-06-07)**：部分现行。核心概念（session attention、exponential decay、response profiles、tool-driven reply）已实现于 `shinbot/agent/scheduler/`、`shinbot/agent/coordinators/active_chat/` 和 `shinbot/agent/workflows/active_chat/`。SenderWeightState、Robust Interrupt 多因子累积等高级特性尚未实现。分层约束以 `../../architecture/agent_module_layers.md` 为准。
 
 本文档定义 ShinBot 在群聊自然语言场景中的新会话工作流。
 

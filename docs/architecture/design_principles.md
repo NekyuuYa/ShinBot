@@ -1,5 +1,7 @@
 # ShinBot Design Principles — Distilled from docs/
 
+> **审计状态 (2026-06-08)**：历史提炼文档，部分现行。本文可用于理解早期架构意图，但不是唯一现行约束；Agent runtime、调度器、持久化和管理 API 的当前边界应优先参考 `agent_module_layers.md`、`agent_context_boundary.md`、`../design/runtime/agent_runtime_index.md` 和源码。
+
 Extracted from 15 project documents. Each principle below represents validated **user intent** (the "what and why"), separated from Gemini's implementation specifics (the "how").
 
 ---

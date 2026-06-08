@@ -1,5 +1,7 @@
 # ShinBot 技术规范：数据库与持久化架构 (Database Persistence Architecture)
 
+> **审计状态 (2026-06-08)**：部分现行。当前实现采用 SQLite + `sqlite3` + `DatabaseManager` + `schema.py` 内建迁移/建表语句，repository 实现位于 `shinbot/persistence/repositories/`。本文中“哪些数据进入数据库、哪些保留文件系统”的边界仍然有效；早期关于 SQLAlchemy/Alembic 和 `models/`、`migrations/`、`services/` 子目录的规划已被当前实现取代。
+
 本文档定义 ShinBot 引入数据库后的持久化边界、数据分层与演进路径。
 
 目标不是“把所有数据都塞进数据库”，而是建立一套清晰、可迁移、可审计的持久化体系：
@@ -133,37 +135,41 @@
 
 ### 4.3 访问层
 
-建议使用：
+当前实现使用 Python 标准库 `sqlite3`：
 
-- `SQLAlchemy 2.x`
-- `Alembic` 进行 schema migration
+- `DatabaseManager.connect()` 提供事务作用域连接，并启用 WAL 与 foreign keys。
+- `schema.py` 负责内建 schema bootstrap / migration。
+- `records.py` 放持久化记录 dataclass。
+- `repositories/` 放按领域拆分的 repository。
+- `repos.py` 仅作为旧导入兼容 facade。
 
 约束：
 
-- Pydantic 领域模型不直接等价于数据库模型。
-- 数据库模型只用于持久化层。
-- 业务逻辑通过 repository / service 访问数据库。
+- Pydantic 领域模型不直接等价于持久化记录。
+- 业务逻辑通过 repository 或 admin helper 访问数据库。
+- 不要在 API router、Agent workflow 或插件中散落裸 SQL。
+- 未来若切换 SQLAlchemy/Alembic，应保持上层 repository contract 稳定。
 
 ---
 
 ## 5. 总体架构
 
-持久化层建议拆为以下结构：
+当前持久化层结构：
 
 1. `shinbot/persistence/engine.py`
-   - 负责数据库 URL、engine、session factory 初始化。
-2. `shinbot/persistence/models/`
-   - SQLAlchemy ORM 模型定义。
-3. `shinbot/persistence/repos/`
-   - repository 层，负责查询与写入。
-4. `shinbot/persistence/migrations/`
-   - Alembic 迁移脚本。
-5. `shinbot/persistence/services/`
-   - 面向业务的聚合写入，例如模型执行记录、会话更新、审计落库。
+   - `DatabaseManager`，负责 SQLite bootstrap、事务连接和 repository 聚合入口。
+2. `shinbot/persistence/schema.py`
+   - SQLite schema bootstrap / migration 语句。
+3. `shinbot/persistence/records.py`
+   - 持久化层记录类型。
+4. `shinbot/persistence/repositories/`
+   - repository 层，按领域负责查询与写入。
+5. `shinbot/persistence/repos.py`
+   - 旧 repository 导入路径的兼容 facade。
 
 调用关系应为：
 
-`API / Runtime / Plugin / Agent -> Service -> Repository -> DB Session -> Database`
+`API / Runtime / Plugin / Agent -> Admin Helper / Runtime Service -> Repository -> DatabaseManager.connect() -> SQLite`
 
 而不是：
 
@@ -355,21 +361,21 @@
 
 ### 9.1 分阶段迁移
 
-建议按以下顺序推进：
+当前已完成：
 
 1. 引入数据库基础设施
-   - engine、session factory、迁移框架
-2. 迁移模型运行时元数据
-   - Provider / Model / Route
-3. 迁移 Session 与实例配置
-4. 迁移结构化审计与模型执行记录
-5. 再接入 Agent 线程、运行记录与工具调用
+   - `DatabaseManager`、SQLite schema bootstrap、repository 分层。
+2. 迁移运行记录与索引
+   - Session、message logs、audit logs、AI interactions、prompt snapshots、model execution、model usage、media、Agent scheduler state、review summaries。
+3. 保留部分配置为文件主存
+   - instance config 与 model registry 仍通过 repository facade 管理文件数据。
 
-这样做的原因：
+后续继续推进：
 
-- 模型运行时和 Agent 是后续新功能，先落数据库成本最低。
-- Session 和审计已经有现成结构，迁移收益高。
-- 调试 JSONL、资源文件可以晚一点再统一索引。
+1. 明确哪些管理配置应从文件主存迁移到数据库主存。
+2. 为已有文件主存配置提供幂等迁移工具。
+3. 为长期统计和 WebUI 查询补齐必要索引。
+4. 评估是否需要 SQLAlchemy/Alembic 或 PostgreSQL 后端。
 
 ### 9.2 双写过渡
 
@@ -444,24 +450,21 @@
 
 ---
 
-## 13. 首版实现建议
+## 13. 当前实现状态与后续建议
 
-建议的第一阶段实现范围：
+当前已经落地：
 
-1. 引入 `SQLAlchemy + Alembic`
-2. 提供统一数据库配置与初始化
-3. 先落这四组表：
-   - Provider / Model / Route
-   - Session
-   - Audit Log
-   - Model Execution Record
-4. 保持资源文件、调试 JSONL、普通日志继续走文件系统
+- SQLite 数据库初始化与 schema bootstrap。
+- Session、Audit Log、Message Log、AI Interaction、Prompt Snapshot、Model Execution、Model Usage、Media、Agent Scheduler State、Review Summary 等结构化表。
+- `DatabaseManager` 聚合 repository，运行时通过 repository 访问持久化层。
+- 资源文件、调试 JSONL、普通日志继续走文件系统。
 
-这是一个比较稳的切入点：
+后续建议：
 
-- 能直接服务 Agent / LiteLLM 设计
-- 能提升 WebUI 管理能力
-- 不会一次性重写整个项目的 I/O 习惯
+1. 为 `schema.py` 中的迁移语句建立更明确的版本化策略。
+2. 梳理仍以文件为主存的管理配置，决定哪些迁入数据库，哪些继续保留文件可编辑性。
+3. 为高频 WebUI 查询补充索引和 repository 方法，而不是让 router 拼 SQL。
+4. 如果未来引入 PostgreSQL 或 SQLAlchemy/Alembic，先通过 repository contract 做适配，不直接冲击业务层。
 
 ---
 

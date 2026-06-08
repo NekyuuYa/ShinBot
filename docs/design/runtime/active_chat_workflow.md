@@ -156,13 +156,13 @@ interest 耗尽 / exit_active → scheduler 退出 ACTIVE_CHAT
 
 | 概念 | 实现 |
 |------|------|
-| Attention 贡献计算 | `active_chat/attention.py` — `ActiveChatAttention` |
-| Interest 效果映射 | `active_chat/actions.py` — `interest_effect_for_round()` |
-| Interest 衰减与策略 | `scheduler/active_chat_policy.py` — `ActiveChatPolicy` |
-| Tick timer | `scheduler/active_chat_timer.py` — `ActiveChatTickTimer` |
-| 会话生命周期 | `active_chat/coordinator.py` — `ActiveChatCoordinator` |
-| 单轮 LLM 执行 | `active_chat/runner.py` — `ActiveChatFastRunner` |
-| Tool loop | `active_chat/tool_loop.py` — `ActiveChatToolLoop` |
+| Attention 贡献计算 | `shinbot/agent/coordinators/active_chat/attention.py` — `ActiveChatAttention` |
+| Interest 效果映射 | `shinbot/agent/coordinators/active_chat/actions.py` — `interest_effect_for_round()` |
+| Interest 衰减与策略 | `shinbot/agent/scheduler/active_chat_policy.py` — `ActiveChatPolicy` |
+| Tick timer | `shinbot/agent/scheduler/active_chat_timer.py` — `ActiveChatTickTimer` |
+| 会话生命周期 | `shinbot/agent/coordinators/active_chat/coordinator.py` — `ActiveChatCoordinator` |
+| 单轮 LLM 执行 | `shinbot/agent/workflows/active_chat/runner.py` — `ActiveChatFastRunner` |
+| Tool loop | `shinbot/agent/workflows/active_chat/tool_loop.py` — `ActiveChatToolLoop` |
 
 ---
 

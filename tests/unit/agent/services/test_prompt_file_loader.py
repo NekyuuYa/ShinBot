@@ -163,6 +163,44 @@ def test_register_prompt_files_syncs_runtime_copy_when_requested(tmp_path: Path)
     runtime_path = data_root / "en-US" / "review.review_scan.task.md"
     assert runtime_path.exists()
     assert components[0].metadata["prompt_file"] == str(runtime_path)
+    manifest = registry.prompt_file_catalog.get(
+        prompt_id="review.review_scan.task",
+        locale="en-US",
+    )
+    assert manifest is not None
+    assert manifest.prompt_id == "review.review_scan.task"
+    assert manifest.runtime_path == runtime_path
+    assert manifest.runtime_exists is True
+    assert manifest.loaded_path == runtime_path
+    assert manifest.loaded_from == "runtime"
+
+
+def test_prompt_file_catalog_refreshes_manifest_file_status(tmp_path: Path) -> None:
+    registry = PromptRegistry()
+    data_root = tmp_path / "data-prompts"
+
+    register_prompt_files(
+        registry,
+        package="shinbot.agent.runners.review_scan",
+        prompt_ids=["review.review_scan.task"],
+        locale="en-US",
+        data_root=data_root,
+        sync_to_data=True,
+    )
+
+    runtime_path = data_root / "en-US" / "review.review_scan.task.md"
+    runtime_path.unlink()
+
+    manifest = registry.prompt_file_catalog.get(
+        prompt_id="review.review_scan.task",
+        locale="en-US",
+    )
+
+    assert manifest is not None
+    assert manifest.runtime_exists is False
+    assert manifest.source_exists is True
+    assert manifest.loaded_from == "source"
+    assert manifest.loaded_path == manifest.source_path
 
 
 def test_register_prompt_files_uses_existing_runtime_copy(tmp_path: Path) -> None:

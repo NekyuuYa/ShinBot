@@ -37,10 +37,22 @@
 7. `design/core/core_philosophy.md`
 8. `design/core/message_workflow.md`
 9. `design/runtime/agent_runtime_index.md`
-10. `design/runtime/prompt_registry.md`
-11. `design/runtime/tool_registry_and_manager.md`
-12. `design/extensibility/plugin_system_design.md`
-13. `plugins/capabilities.md`
+10. `design/governance/document_status.md`
+11. `design/runtime/prompt_registry.md`
+12. `design/runtime/tool_registry_and_manager.md`
+13. `design/extensibility/plugin_system_design.md`
+14. `plugins/capabilities.md`
+
+## 一级入口
+
+- [架构边界](architecture/README.md)
+- [设计规范](design/README.md)
+- [文档状态](design/governance/document_status.md)
+- [实现说明](internals/README.md)
+- [插件开发](plugins/README.md)
+- [Dashboard](dashboard/README.md)
+- [外部参考](references/README.md)
+- [归档文档](archive/README.md)
 
 ## 维护规则
 

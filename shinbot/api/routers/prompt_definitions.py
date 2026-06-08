@@ -10,12 +10,18 @@ from pydantic import BaseModel, Field
 from shinbot.admin.prompt_definition_admin import (
     PromptDefinitionAdminError,
     PromptDefinitionFileRepository,
+    assert_no_runtime_prompt_conflict,
     assert_prompt_id_available,
     get_prompt_definition_or_raise,
     normalize_prompt_definition_input,
     serialize_prompt_definition,
 )
-from shinbot.api.deps import AuthRequired, BootDep
+from shinbot.agent.services.prompt_engine.discovery import discover_file_backed_prompts
+from shinbot.agent.services.prompt_engine.files import (
+    PromptFileCatalogService,
+    PromptFileLoadConfig,
+)
+from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import Envelope, ok
 
 router = APIRouter(
@@ -117,6 +123,42 @@ def _prompt_repository(boot) -> PromptDefinitionFileRepository:
     return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
 
 
+def _active_or_discovered_registry(bot, boot):
+    agent_runtime = getattr(bot, "agent_runtime", None)
+    prompt_registry = getattr(agent_runtime, "prompt_registry", None)
+    catalog = getattr(prompt_registry, "prompt_file_catalog", None)
+    if isinstance(catalog, PromptFileCatalogService) and catalog.list():
+        return prompt_registry
+    config = getattr(agent_runtime, "prompt_file_config", None)
+    if not isinstance(config, PromptFileLoadConfig):
+        config = PromptFileLoadConfig.from_data_dir(boot.data_dir, sync_to_data=False)
+    elif config.sync_to_data:
+        config = PromptFileLoadConfig(
+            locale=config.locale,
+            fallback_locales=config.fallback_locales,
+            data_root=config.data_root,
+            sync_to_data=False,
+        )
+    return discover_file_backed_prompts(boot.data_dir, prompt_file_config=config)
+
+
+def _runtime_catalog_prompt_ids(bot, boot) -> set[str]:
+    registry = _active_or_discovered_registry(bot, boot)
+    component_ids = {str(item["id"]) for item in registry.list_component_catalog()}
+    return {
+        manifest.prompt_id
+        for manifest in registry.prompt_file_catalog.list()
+        if manifest.prompt_id in component_ids
+    }
+
+
+def _assert_not_runtime_prompt_conflict(prompt_id: str, bot, boot) -> None:
+    assert_no_runtime_prompt_conflict(
+        prompt_id,
+        runtime_prompt_ids=_runtime_catalog_prompt_ids(bot, boot),
+    )
+
+
 @router.get("", response_model=Envelope[list[PromptDefinitionData]])
 def list_prompt_definitions(boot=BootDep):
     """List all prompt definitions from the file-based repository."""
@@ -127,7 +169,7 @@ def list_prompt_definitions(boot=BootDep):
 
 
 @router.post("", status_code=201, response_model=Envelope[PromptDefinitionData])
-def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
+def create_prompt_definition(body: PromptDefinitionRequest, bot=BotDep, boot=BootDep):
     """Create a new prompt definition and persist it to the file repository."""
     try:
         repository = _prompt_repository(boot)
@@ -154,6 +196,7 @@ def create_prompt_definition(body: PromptDefinitionRequest, boot=BootDep):
             metadata=body.metadata,
         )
         assert_prompt_id_available(repository, normalized.prompt_id, current_uuid=None)
+        _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
         payload = repository.create(normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)
@@ -172,7 +215,12 @@ def get_prompt_definition(prompt_uuid: str, boot=BootDep):
 
 
 @router.patch("/{prompt_uuid}", response_model=Envelope[PromptDefinitionData])
-def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest, boot=BootDep):
+def patch_prompt_definition(
+    prompt_uuid: str,
+    body: PromptDefinitionPatchRequest,
+    bot=BotDep,
+    boot=BootDep,
+):
     """Partially update a prompt definition by its UUID."""
     try:
         repository = _prompt_repository(boot)
@@ -220,6 +268,8 @@ def patch_prompt_definition(prompt_uuid: str, body: PromptDefinitionPatchRequest
             metadata=body.metadata if body.metadata is not None else dict(current["metadata"]),
         )
         assert_prompt_id_available(repository, normalized.prompt_id, current_uuid=prompt_uuid)
+        if normalized.prompt_id != str(current["prompt_id"]):
+            _assert_not_runtime_prompt_conflict(normalized.prompt_id, bot, boot)
         payload = repository.update(prompt_uuid, normalized)
     except PromptDefinitionAdminError as exc:
         _raise_admin_http_error(exc)

@@ -1,6 +1,6 @@
 # ShinBot 技术规范：PromptRegistry（提示词注册表）
 
-> **审计状态 (2026-05-10)**：现行。七阶段装配协议已实现。所有模型调用（WorkflowRunner、ActiveChatFastRunner、ReviewLLMStage、MediaInspectionRunner、AttentionCoordinator context compression）均通过 PromptRegistry 组装 messages。PromptComponent 注册、PromptBuildRequest、PromptSnapshot 快照记录均已实现于 `prompt_manager/`。
+> **审计状态 (2026-06-07)**：现行。七阶段装配协议已实现于 `shinbot/agent/services/prompt_engine/`。Agent review runners、ActiveChatFastRunner 和 MediaInspectionRunner 等模型调用均通过 PromptRegistry 组装 messages。PromptComponent、PromptAssemblyRequest、PromptBuildRequest 和 PromptSnapshot 等结构均由 `services/prompt_engine/schema.py` 定义。
 
 本文档定义 ShinBot 在 Agent、系统任务与插件侧的统一 Prompt 编排机制。
 
