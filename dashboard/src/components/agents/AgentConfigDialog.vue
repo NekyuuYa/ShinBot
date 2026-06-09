@@ -36,74 +36,35 @@
         </v-tabs>
 
         <v-window v-model="activeAgentTab" class="agent-tab-window">
-          <v-window-item value="identity">
-            <provider-schema-form
-              v-model="form.config"
-              :provider="agentProvider"
-              :issues="profileIssues"
-              :field-prefixes="['agent.id', 'agent.mode', 'agent.persona_id']"
-              :model-ref-route-options="modelRefRouteOptions"
-              :model-ref-provider-groups="modelRefProviderGroups"
-              :advanced-label="$t('pages.agents.labels.advancedFields')"
-              :empty-text="$t('pages.agents.empty.noFields')"
-              :json-error-text="$t('pages.agents.messages.invalidJson')"
-            />
-          </v-window-item>
+          <v-window-item
+            v-for="tab in agentTabs"
+            :key="tab.value"
+            :value="tab.value"
+          >
+            <div class="agent-config-sections">
+              <section
+                v-for="section in agentSections[tab.value]"
+                :key="section.value"
+                class="agent-config-section"
+              >
+                <div class="agent-config-section__heading">
+                  <v-icon :icon="section.icon" size="18" />
+                  <span>{{ section.label }}</span>
+                </div>
 
-          <v-window-item value="defaults">
-            <provider-schema-form
-              v-model="form.config"
-              :provider="agentProvider"
-              :issues="profileIssues"
-              :field-prefixes="['agent.prompt_files', 'agent.defaults']"
-              :model-ref-route-options="modelRefRouteOptions"
-              :model-ref-provider-groups="modelRefProviderGroups"
-              :advanced-label="$t('pages.agents.labels.advancedFields')"
-              :empty-text="$t('pages.agents.empty.noFields')"
-              :json-error-text="$t('pages.agents.messages.invalidJson')"
-            />
-          </v-window-item>
-
-          <v-window-item value="review">
-            <provider-schema-form
-              v-model="form.config"
-              :provider="agentProvider"
-              :issues="profileIssues"
-              :field-prefixes="['agent.review']"
-              :model-ref-route-options="modelRefRouteOptions"
-              :model-ref-provider-groups="modelRefProviderGroups"
-              :advanced-label="$t('pages.agents.labels.advancedFields')"
-              :empty-text="$t('pages.agents.empty.noFields')"
-              :json-error-text="$t('pages.agents.messages.invalidJson')"
-            />
-          </v-window-item>
-
-          <v-window-item value="active">
-            <provider-schema-form
-              v-model="form.config"
-              :provider="agentProvider"
-              :issues="profileIssues"
-              :field-prefixes="['agent.active_chat']"
-              :model-ref-route-options="modelRefRouteOptions"
-              :model-ref-provider-groups="modelRefProviderGroups"
-              :advanced-label="$t('pages.agents.labels.advancedFields')"
-              :empty-text="$t('pages.agents.empty.noFields')"
-              :json-error-text="$t('pages.agents.messages.invalidJson')"
-            />
-          </v-window-item>
-
-          <v-window-item value="advanced">
-            <provider-schema-form
-              v-model="form.config"
-              :provider="agentProvider"
-              :issues="profileIssues"
-              :field-prefixes="['agent.context', 'agent.summaries', 'agent.media']"
-              :model-ref-route-options="modelRefRouteOptions"
-              :model-ref-provider-groups="modelRefProviderGroups"
-              :advanced-label="$t('pages.agents.labels.advancedFields')"
-              :empty-text="$t('pages.agents.empty.noFields')"
-              :json-error-text="$t('pages.agents.messages.invalidJson')"
-            />
+                <provider-schema-form
+                  v-model="form.config"
+                  :provider="agentProvider"
+                  :issues="profileIssues"
+                  :field-prefixes="section.fieldPrefixes"
+                  :model-ref-route-options="modelRefRouteOptions"
+                  :model-ref-provider-groups="modelRefProviderGroups"
+                  :advanced-label="$t('pages.agents.labels.advancedFields')"
+                  :empty-text="$t('pages.agents.empty.noFields')"
+                  :json-error-text="$t('pages.agents.messages.invalidJson')"
+                />
+              </section>
+            </div>
           </v-window-item>
         </v-window>
 
@@ -158,9 +119,16 @@ import ProviderSchemaForm from '@/components/config/ProviderSchemaForm.vue'
 
 type AgentFormTab = 'identity' | 'defaults' | 'review' | 'active' | 'advanced'
 
+interface AgentFormSection {
+  value: string
+  label: string
+  icon: string
+  fieldPrefixes: string[]
+}
+
 const visible = defineModel<boolean>('visible', { required: true })
 const activeAgentTab = defineModel<AgentFormTab>('activeAgentTab', { required: true })
-const form = defineModel<{ fileName: string; config: ConfigRecord }>('form', {
+let form = defineModel<{ fileName: string; config: ConfigRecord }>('form', {
   required: true,
 })
 
@@ -212,6 +180,220 @@ const agentTabs = computed(() => [
     icon: 'mdi-code-json',
   },
 ])
+
+const agentSections = computed<Record<AgentFormTab, AgentFormSection[]>>(() => ({
+  identity: [
+    {
+      value: 'profile',
+      label: t('pages.agents.sections.profile'),
+      icon: 'mdi-card-account-details-outline',
+      fieldPrefixes: ['agent.id', 'agent.mode', 'agent.persona_id'],
+    },
+  ],
+  defaults: [
+    {
+      value: 'prompt-files',
+      label: t('pages.agents.sections.promptFiles'),
+      icon: 'mdi-file-document-multiple-outline',
+      fieldPrefixes: ['agent.prompt_files'],
+    },
+    {
+      value: 'model-defaults',
+      label: t('pages.agents.sections.modelDefaults'),
+      icon: 'mdi-robot-outline',
+      fieldPrefixes: [
+        'agent.defaults.llm',
+        'agent.defaults.caller',
+        'agent.defaults.profile_id',
+        'agent.defaults.max_model_retries',
+        'agent.defaults.retry_backoff_seconds',
+        'agent.defaults.params',
+      ],
+    },
+    {
+      value: 'message-format',
+      label: t('pages.agents.sections.messageFormat'),
+      icon: 'mdi-message-text-outline',
+      fieldPrefixes: ['agent.defaults.message_format'],
+    },
+  ],
+  review: [
+    {
+      value: 'review-schedule',
+      label: t('pages.agents.sections.reviewSchedule'),
+      icon: 'mdi-clock-outline',
+      fieldPrefixes: [
+        'agent.review.enabled',
+        'agent.review.default_review_after_seconds',
+        'agent.review.default_review_reason',
+        'agent.review.review_due_tick_interval_seconds',
+        'agent.review.mention_wake_count',
+        'agent.review.mention_wake_window_seconds',
+        'agent.review.nearby_candidate_merge_gap',
+      ],
+    },
+    {
+      value: 'review-context',
+      label: t('pages.agents.sections.reviewContext'),
+      icon: 'mdi-format-list-numbered',
+      fieldPrefixes: [
+        'agent.review.scan_batch_size',
+        'agent.review.reply_context_before_messages',
+        'agent.review.reply_context_after_messages',
+        'agent.review.tail_history_before_seconds',
+        'agent.review.tail_history_limit',
+        'agent.review.active_chat_summary_max_age_seconds',
+      ],
+    },
+    {
+      value: 'review-overflow',
+      label: t('pages.agents.sections.reviewOverflow'),
+      icon: 'mdi-inbox-arrow-down-outline',
+      fieldPrefixes: [
+        'agent.review.overflow_threshold_messages',
+        'agent.review.overflow_compression_batch_size',
+        'agent.review.block_digest_concurrency',
+        'agent.review.bootstrap_timeout_seconds',
+        'agent.review.block_digest_retry_on_429',
+      ],
+    },
+    {
+      value: 'review-scan-stage',
+      label: t('pages.agents.sections.reviewScanStage'),
+      icon: 'mdi-radar',
+      fieldPrefixes: ['agent.review.scan'],
+    },
+    {
+      value: 'review-reply-stage',
+      label: t('pages.agents.sections.reviewReplyStage'),
+      icon: 'mdi-reply-outline',
+      fieldPrefixes: ['agent.review.reply_decision'],
+    },
+    {
+      value: 'review-digest-stage',
+      label: t('pages.agents.sections.reviewDigestStage'),
+      icon: 'mdi-text-box-search-outline',
+      fieldPrefixes: [
+        'agent.review.block_digest',
+        'agent.review.overflow_compression',
+      ],
+    },
+    {
+      value: 'review-active-stage',
+      label: t('pages.agents.sections.reviewActiveStage'),
+      icon: 'mdi-chat-plus-outline',
+      fieldPrefixes: ['agent.review.active_chat_bootstrap'],
+    },
+    {
+      value: 'review-idle-planning',
+      label: t('pages.agents.sections.reviewIdlePlanning'),
+      icon: 'mdi-calendar-clock',
+      fieldPrefixes: [
+        'agent.review.idle_review_planning',
+        'agent.review.idle_review_planning_min_after_seconds',
+        'agent.review.idle_review_planning_max_after_seconds',
+      ],
+    },
+  ],
+  active: [
+    {
+      value: 'active-lifecycle',
+      label: t('pages.agents.sections.activeLifecycle'),
+      icon: 'mdi-progress-clock',
+      fieldPrefixes: [
+        'agent.active_chat.enabled',
+        'agent.active_chat.initial_interest',
+        'agent.active_chat.half_life_seconds',
+        'agent.active_chat.tick_interval_seconds',
+        'agent.active_chat.idle_interest_threshold',
+        'agent.active_chat.max_interest',
+        'agent.active_chat.post_round_attention_multiplier',
+        'agent.active_chat.conversation_message_limit',
+      ],
+    },
+    {
+      value: 'active-interest-inputs',
+      label: t('pages.agents.sections.activeInterestInputs'),
+      icon: 'mdi-message-arrow-right-outline',
+      fieldPrefixes: [
+        'agent.active_chat.interest_delta.normal_message',
+        'agent.active_chat.interest_delta.mention_self',
+        'agent.active_chat.interest_delta.reply_to_self',
+        'agent.active_chat.interest_delta.poke',
+        'agent.active_chat.interest_delta.mention_other',
+      ],
+    },
+    {
+      value: 'active-interest-outcomes',
+      label: t('pages.agents.sections.activeInterestOutcomes'),
+      icon: 'mdi-chat-check-outline',
+      fieldPrefixes: [
+        'agent.active_chat.interest_delta.send_reply',
+        'agent.active_chat.interest_delta.send_reply_low',
+        'agent.active_chat.interest_delta.no_reply',
+        'agent.active_chat.interest_delta.no_reply_strong',
+        'agent.active_chat.interest_delta.send_poke',
+        'agent.active_chat.interest_delta.request_think_mode',
+        'agent.active_chat.interest_delta.retry_failed',
+        'agent.active_chat.interest_delta.exit_active',
+      ],
+    },
+    {
+      value: 'active-attention-inputs',
+      label: t('pages.agents.sections.activeAttentionInputs'),
+      icon: 'mdi-eye-outline',
+      fieldPrefixes: [
+        'agent.active_chat.attention.base_contribution',
+        'agent.active_chat.attention.mention_self_contribution',
+        'agent.active_chat.attention.mention_other_contribution',
+        'agent.active_chat.attention.reply_to_self_contribution',
+        'agent.active_chat.attention.poke_self_contribution',
+        'agent.active_chat.attention.poke_other_contribution',
+        'agent.active_chat.attention.bot_self_contribution',
+      ],
+    },
+    {
+      value: 'active-attention-thresholds',
+      label: t('pages.agents.sections.activeAttentionThresholds'),
+      icon: 'mdi-speedometer',
+      fieldPrefixes: [
+        'agent.active_chat.attention.contribution_decay_k',
+        'agent.active_chat.attention.threshold',
+        'agent.active_chat.attention.reference_interest',
+        'agent.active_chat.attention.threshold_min',
+        'agent.active_chat.attention.threshold_max',
+        'agent.active_chat.attention.semantic_wait_ms',
+        'agent.active_chat.attention.post_round_accumulated_multiplier',
+      ],
+    },
+    {
+      value: 'active-fast-mode',
+      label: t('pages.agents.sections.activeFastMode'),
+      icon: 'mdi-run-fast',
+      fieldPrefixes: ['agent.active_chat.fast_mode'],
+    },
+  ],
+  advanced: [
+    {
+      value: 'context',
+      label: t('pages.agents.sections.context'),
+      icon: 'mdi-text-box-outline',
+      fieldPrefixes: ['agent.context'],
+    },
+    {
+      value: 'summaries',
+      label: t('pages.agents.sections.summaries'),
+      icon: 'mdi-file-document-edit-outline',
+      fieldPrefixes: ['agent.summaries'],
+    },
+    {
+      value: 'media',
+      label: t('pages.agents.sections.media'),
+      icon: 'mdi-image-outline',
+      fieldPrefixes: ['agent.media'],
+    },
+  ],
+}))
 </script>
 
 <style scoped lang="scss">
@@ -309,12 +491,37 @@ const agentTabs = computed(() => [
 
 .agent-tab-window {
   min-height: 430px;
-  padding-top: 10px;
   background: rgb(var(--v-theme-surface));
 }
 
-.agent-tab-window :deep(.provider-schema-form) {
-  padding: 24px;
+.agent-config-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 18px 24px 24px;
+}
+
+.agent-config-section {
+  padding: 18px 0 22px;
+  border-bottom: 1px solid $border-color-soft;
+}
+
+.agent-config-section:last-child {
+  border-bottom: 0;
+}
+
+.agent-config-section__heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: rgba(var(--v-theme-on-surface), 0.82);
+  font-size: $font-size-sm;
+  font-weight: 800;
+}
+
+.agent-config-section__heading .v-icon {
+  color: rgb(var(--v-theme-primary));
 }
 
 .agent-tab-window :deep(.v-field) {
@@ -337,9 +544,16 @@ const agentTabs = computed(() => [
     padding: 18px 18px 14px;
   }
 
-  .agent-dialog__file-row,
-  .agent-tab-window :deep(.provider-schema-form) {
+  .agent-dialog__file-row {
     padding: 18px;
+  }
+
+  .agent-config-sections {
+    padding: 10px 18px 18px;
+  }
+
+  .agent-config-section {
+    padding: 16px 0 20px;
   }
 
   .agent-dialog__actions {
