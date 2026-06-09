@@ -100,7 +100,7 @@ class LLMReplyDecisionStageRunner:
                 model_target_resolver=routing.model_target_resolver,
             ),
             tool_manager=tool_manager,
-            tool_names=["no_reply", "send_reply", "send_poke"],
+            tool_names=["no_reply", "send_reply", "send_poke", "send_reaction"],
             repair_prompt=repair_component.content if repair_component else "",
             repair_reason="reply_decision_toolless_output",
             tool_transform=_review_reply_tool_schema,
@@ -159,6 +159,15 @@ class LLMReplyDecisionStageRunner:
         has_reply_call = any(
             call.name == "send_reply" for call in parsed_calls
         )
+        reaction_validation_error = _reaction_target_validation_error(
+            parsed_calls,
+            target_message_ids=target_message_ids,
+        )
+        if reaction_validation_error:
+            return ReplyDecisionStageOutput(
+                target_message_ids=target_message_ids,
+                reason=reaction_validation_error,
+            )
         quote_validation_error = _reply_quote_validation_error(
             stage_input,
             parsed_calls,
@@ -175,11 +184,12 @@ class LLMReplyDecisionStageRunner:
         reply_message_ids: list[int] = []
         reply_count = 0
         poke_count = 0
+        reaction_count = 0
         saw_no_reply = False
         run_id = str(plan.execution_id or "")
         for call_index, parsed_call in enumerate(parsed_calls):
             tool_name = parsed_call.name
-            if tool_name not in {"send_reply", "no_reply", "send_poke"}:
+            if tool_name not in {"send_reply", "no_reply", "send_poke", "send_reaction"}:
                 continue
             if tool_name == "no_reply":
                 saw_no_reply = True
@@ -225,15 +235,20 @@ class LLMReplyDecisionStageRunner:
                 if output_message_id is not None:
                     reply_message_ids.append(output_message_id)
                 continue
+            if tool_name == "send_reaction":
+                reaction_count += 1
+                continue
             poke_count += 1
-        if replied:
+        if replied or reaction_count:
             return ReplyDecisionStageOutput(
                 replied=True,
                 reply_message_id=reply_message_id,
                 reply_message_ids=reply_message_ids,
                 target_message_ids=target_message_ids,
                 reason=_reply_tool_reason(
-                    reply_count=reply_count, poke_count=poke_count
+                    reply_count=reply_count,
+                    poke_count=poke_count,
+                    reaction_count=reaction_count,
                 ),
             )
         if saw_no_reply:
@@ -277,6 +292,27 @@ def _reply_quote_validation_error(
             return "reply_tool_quote_message_log_id_not_candidate"
         if quote_message_log_id in other_only_ids:
             return "reply_tool_quote_message_log_id_targets_other_only"
+    return ""
+
+
+def _reaction_target_validation_error(
+    parsed_calls: list[Any],
+    *,
+    target_message_ids: list[int],
+) -> str:
+    target_message_id_set = set(target_message_ids)
+    for call in parsed_calls:
+        if call.name != "send_reaction":
+            continue
+        message_log_id = optional_int(
+            call.arguments.get("message_log_id")
+            or call.arguments.get("target_message_log_id")
+            or call.arguments.get("quote_message_log_id")
+        )
+        if message_log_id is None:
+            continue
+        if message_log_id not in target_message_id_set:
+            return "reaction_tool_message_log_id_not_candidate"
     return ""
 
 
@@ -327,6 +363,19 @@ def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
                 ),
             },
         }
+    if function.get("name") == "send_reaction":
+        return {
+            **tool,
+            "function": {
+                **function,
+                "description": (
+                    str(function.get("description") or "")
+                    + "\nReview reply requirement: send_reaction may be used as a "
+                    "standalone lightweight visible response. Prefer message_log_id "
+                    "and target one of the candidate message ids."
+                ),
+            },
+        }
     if function.get("name") != "send_reply":
         return tool
     reviewed = {
@@ -359,9 +408,19 @@ def _review_reply_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
     return reviewed
 
 
-def _reply_tool_reason(*, reply_count: int, poke_count: int) -> str:
+def _reply_tool_reason(*, reply_count: int, poke_count: int, reaction_count: int = 0) -> str:
+    parts: list[str] = []
+    if reply_count:
+        include_reply_count = reply_count != 1 or poke_count > 0 or reaction_count > 0
+        parts.append(
+            f"send_reply_tool:{reply_count}" if include_reply_count else "send_reply_tool"
+        )
     if poke_count:
-        return f"send_reply_tool:{reply_count};send_poke_tool:{poke_count}"
-    return (
-        f"send_reply_tool:{reply_count}" if reply_count != 1 else "send_reply_tool"
-    )
+        parts.append(f"send_poke_tool:{poke_count}")
+    if reaction_count:
+        parts.append(
+            f"send_reaction_tool:{reaction_count}"
+            if reaction_count != 1
+            else "send_reaction_tool"
+        )
+    return ";".join(parts) or "reply_tool"

@@ -17,7 +17,8 @@ metadata:
 The previous active_chat fast-mode round did not call any tools, or called tools that returned errors. This stage does not send bare text to users, and failed terminal actions are not treated as final results.
 Please use the assistant/tool error messages above, re-evaluate, and must call tools:
 - When a reply is needed, call one or more send_reply in send order.
-- For lightweight interaction only, call send_poke alone.
+- For lightweight reaction only, call send_reaction alone.
+- For poke-like interaction only, call send_poke alone.
 - When no response is needed, call no_reply with intensity=normal or strong.
 - To end active chat, call exit_active with a clear reason.
 Do not repeat invalid arguments. Do not output bare text as a final reply again.

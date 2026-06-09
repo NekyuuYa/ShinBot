@@ -385,7 +385,7 @@ async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
         assert {
             tool["function"]["name"]
             for tool in call.tools
-        } >= {"send_reply", "no_reply", "send_poke", "exit_active"}
+        } >= {"send_reply", "no_reply", "send_poke", "send_reaction", "exit_active"}
         assert "request_think_mode" not in {
             tool["function"]["name"]
             for tool in call.tools

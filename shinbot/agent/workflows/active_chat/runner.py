@@ -556,7 +556,7 @@ class ActiveChatFastRunner:
     def _active_chat_tools(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
         instance_id = instance_id_from_session(batch.session_id)
         builtin_tools = self._tool_manager.build_request_tools(
-            ["send_reply", "no_reply", "send_poke"],
+            ["send_reply", "no_reply", "send_poke", "send_reaction"],
             caller=self._config.caller,
             instance_id=instance_id,
             session_id=batch.session_id,
@@ -838,7 +838,7 @@ def _active_chat_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(function, dict):
         return tool
     name = function.get("name")
-    if name not in {"send_reply", "no_reply", "send_poke"}:
+    if name not in {"send_reply", "no_reply", "send_poke", "send_reaction"}:
         return tool
     reviewed = {
         **tool,
@@ -885,6 +885,12 @@ def _active_chat_tool_description(name: Any, function: dict[str, Any]) -> str:
         )
     if name == "send_poke":
         return base + "\nActive chat rule: send_poke may be used as a standalone action."
+    if name == "send_reaction":
+        return (
+            base
+            + "\nActive chat rule: send_reaction may be used as a standalone "
+            "lightweight acknowledgement when text would be too much."
+        )
     return base
 
 

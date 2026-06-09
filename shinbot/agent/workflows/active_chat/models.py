@@ -14,6 +14,7 @@ class ActiveChatActionKind(StrEnum):
 
     WATCH = "watch"
     NO_REPLY = "no_reply"
+    SEND_REACTION = "send_reaction"
     SEND_POKE = "send_poke"
     SEND_REPLY = "send_reply"
     REQUEST_THINK_MODE = "request_think_mode"

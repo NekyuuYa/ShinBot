@@ -51,13 +51,17 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
 
     call = model_runtime.calls[0]
     tool_names = [tool["function"]["name"] for tool in call.tools]
-    assert tool_names == ["no_reply", "send_reply", "send_poke"]
+    assert tool_names == ["no_reply", "send_reply", "send_poke", "send_reaction"]
     assert tool_manager.build_request_tool_calls[0]["tags"] == {"chat_action"}
     send_reply_tool = call.tools[1]
     send_poke_tool = call.tools[2]
+    send_reaction_tool = call.tools[3]
     assert "quote_message_log_id" not in send_reply_tool["function"]["parameters"]["required"]
     assert "first send_reply" in send_reply_tool["function"]["description"]
     assert "only takes effect after at least one send_reply" in send_poke_tool["function"][
+        "description"
+    ]
+    assert "standalone lightweight visible response" in send_reaction_tool["function"][
         "description"
     ]
     assert call.response_format is None
@@ -113,6 +117,7 @@ async def test_reply_decision_runner_adds_configured_extra_tools() -> None:
         "no_reply",
         "send_reply",
         "send_poke",
+        "send_reaction",
         "attention.inspect_state",
     ]
     assert tool_manager.build_request_tool_calls[0]["tags"] == {"chat_action"}
@@ -277,6 +282,87 @@ async def test_reply_decision_runner_ignores_standalone_poke() -> None:
 
     assert result.replied is False
     assert result.reason == "llm_reply_decision_no_terminal_tool"
+    assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_allows_standalone_reaction() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reaction",
+                            "arguments": '{"message_log_id": 7, "emoji_id": "128077"}',
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is True
+    assert result.reply_message_ids == []
+    assert result.target_message_ids == [7]
+    assert result.reason == "send_reaction_tool"
+    assert [call.tool_name for call in tool_manager.execute_calls] == ["send_reaction"]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_requires_reaction_to_target_candidate() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reaction",
+                            "arguments": '{"message_log_id": 99, "emoji_id": "128077"}',
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}, {"id": 99, "raw_text": "nearby"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [7]
+    assert result.reason == "reaction_tool_message_log_id_not_candidate"
     assert tool_manager.execute_calls == []
 
 

@@ -492,6 +492,7 @@ def _active_chat_interest_effect_config(
         send_reply_low_delta=_float(interest_delta.get("send_reply_low"), 5.0),
         no_reply_delta=_float(interest_delta.get("no_reply"), -5.0),
         no_reply_strong_delta=_float(interest_delta.get("no_reply_strong"), -10.0),
+        send_reaction_delta=_float(interest_delta.get("send_reaction"), 2.0),
         send_poke_delta=_float(interest_delta.get("send_poke"), 3.0),
         request_think_mode_delta=_float(interest_delta.get("request_think_mode"), 6.0),
         retry_failed_delta=_float(interest_delta.get("retry_failed"), -3.0),

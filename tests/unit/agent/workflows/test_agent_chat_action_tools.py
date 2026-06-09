@@ -20,6 +20,7 @@ class FakeAdapter:
         self.platform = "test"
         self.fail_once = fail_once
         self.sent: list[tuple[str, list[object]]] = []
+        self.api_calls: list[tuple[str, dict[str, object]]] = []
 
     async def send(self, session_id: str, elements: list[object]) -> FakeSendHandle:
         if self.fail_once:
@@ -27,6 +28,10 @@ class FakeAdapter:
             raise RuntimeError("temporary send failure")
         self.sent.append((session_id, list(elements)))
         return FakeSendHandle(message_id=f"platform-{len(self.sent)}")
+
+    async def call_api(self, method: str, params: dict[str, object]) -> dict[str, object]:
+        self.api_calls.append((method, dict(params)))
+        return {"ok": True, "method": method}
 
 
 class FakeAdapterManager:
@@ -177,3 +182,39 @@ async def test_send_reply_fails_when_adapter_is_offline() -> None:
     assert result.error_code == "tool_execution_failed"
     assert "offline" in result.error_message.lower()
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_calls_adapter_reaction_api() -> None:
+    adapter = FakeAdapter()
+    manager = _register_tools(adapter)
+
+    result = await manager.execute(
+        ToolCallRequest(
+            tool_name="send_reaction",
+            arguments={
+                "message_id": "platform-msg-1",
+                "emoji_id": "128077",
+                "reason": "ack",
+            },
+            caller="test.active_chat",
+            instance_id="bot",
+            session_id="bot:group:room",
+        )
+    )
+
+    assert result.success is True
+    assert result.output["action"] == "send_reaction"
+    assert result.output["sent"] is True
+    assert result.output["message_id"] == "platform-msg-1"
+    assert result.output["emoji_id"] == "128077"
+    assert adapter.api_calls == [
+        (
+            "reaction.create",
+            {
+                "message_id": "platform-msg-1",
+                "emoji_id": "128077",
+                "session_id": "bot:group:room",
+            },
+        )
+    ]

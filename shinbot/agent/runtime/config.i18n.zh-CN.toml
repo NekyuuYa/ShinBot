@@ -402,6 +402,10 @@ description = "普通不回复决策后的兴趣变化。"
 label = "强不回复兴趣变化"
 description = "强不回复决策后的兴趣变化。"
 
+[fields."agent.active_chat.interest_delta.send_reaction"]
+label = "发送表态兴趣变化"
+description = "给消息贴表情表态后的兴趣变化。"
+
 [fields."agent.active_chat.interest_delta.send_poke"]
 label = "发送戳一戳兴趣变化"
 description = "发送戳一戳动作后的兴趣变化。"

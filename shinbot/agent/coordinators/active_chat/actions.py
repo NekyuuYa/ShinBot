@@ -29,6 +29,7 @@ class ActiveChatInterestEffectConfig:
     send_reply_low_delta: float = 5.0
     no_reply_delta: float = -5.0
     no_reply_strong_delta: float = -10.0
+    send_reaction_delta: float = 2.0
     send_poke_delta: float = 3.0
     request_think_mode_delta: float = 6.0
     retry_failed_delta: float = -3.0
@@ -50,6 +51,11 @@ def interest_effect_for_round(
         return ActiveChatInterestEffect(delta=resolved_config.no_reply_delta, reason=result.reason)
     if action == ActiveChatActionKind.SEND_POKE:
         return ActiveChatInterestEffect(delta=resolved_config.send_poke_delta, reason=result.reason)
+    if action == ActiveChatActionKind.SEND_REACTION:
+        return ActiveChatInterestEffect(
+            delta=resolved_config.send_reaction_delta,
+            reason=result.reason,
+        )
     if action == ActiveChatActionKind.SEND_REPLY:
         if result.reply_intensity == ActiveChatReplyIntensity.ENGAGED:
             return ActiveChatInterestEffect(

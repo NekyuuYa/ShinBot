@@ -766,6 +766,12 @@ default = -10.0
 description = "Interest delta after a strong no-reply decision."
 
 [[fields]]
+path = "agent.active_chat.interest_delta.send_reaction"
+type = "float"
+default = 2.0
+description = "Interest delta after a message reaction action."
+
+[[fields]]
 path = "agent.active_chat.interest_delta.send_poke"
 type = "float"
 default = 3.0

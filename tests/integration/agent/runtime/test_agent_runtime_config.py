@@ -85,6 +85,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                         "mention_other": 2,
                         "poke": 4,
                         "send_reply": 11,
+                        "send_reaction": 2.5,
                         "no_reply": -6,
                     },
                     "attention": {
@@ -143,6 +144,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.active_chat_attention_config.base_threshold == 9
     assert config.active_chat_attention_config.semantic_wait_ms == 123
     assert config.active_chat_interest_effect_config.send_reply_delta == 11
+    assert config.active_chat_interest_effect_config.send_reaction_delta == 2.5
     assert config.active_chat_interest_effect_config.no_reply_delta == -6
     assert config.active_chat_fast_runner_config.llm == "[route]route-fast"
     assert config.active_chat_fast_runner_config.default_llm == "[route]route-default"

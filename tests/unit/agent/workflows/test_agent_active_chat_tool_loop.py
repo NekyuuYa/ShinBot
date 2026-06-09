@@ -49,6 +49,21 @@ class FakeToolManager:
                     "hint": "internal poke hint",
                 },
             )
+        if call.tool_name == "send_reaction":
+            return ToolCallResult(
+                tool_name=call.tool_name,
+                success=True,
+                output={
+                    "action": "send_reaction",
+                    "sent": True,
+                    "reaction_action": call.arguments.get("action", "add"),
+                    "message_id": call.arguments.get("message_id", ""),
+                    "emoji_id": call.arguments.get("emoji_id", ""),
+                    "adapter_result": {"raw": "platform detail"},
+                    "terminate_round": True,
+                    "hint": "internal reaction hint",
+                },
+            )
         if call.tool_name == "fail_tool":
             return ToolCallResult(
                 tool_name=call.tool_name,
@@ -141,6 +156,39 @@ async def test_active_chat_tool_loop_allows_poke_as_independent_action() -> None
         "terminate_round": True,
     }
     assert "platform detail" not in result.tool_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_active_chat_tool_loop_allows_reaction_as_independent_action() -> None:
+    manager = FakeToolManager()
+    loop = ActiveChatToolLoop()
+
+    result = await loop.execute(
+        [
+            make_tool_call(
+                "send_reaction",
+                {"message_id": "platform-msg-1", "emoji_id": "128077"},
+            )
+        ],
+        tool_manager=manager,
+        instance_id="bot",
+        session_id="bot:group:room",
+    )
+
+    assert [call.tool_name for call in manager.calls] == ["send_reaction"]
+    assert result.round_result.success is True
+    assert result.round_result.action == ActiveChatActionKind.SEND_REACTION
+    assert json.loads(result.tool_messages[0]["content"]) == {
+        "success": True,
+        "action": "send_reaction",
+        "sent": True,
+        "reaction_action": "add",
+        "message_id": "platform-msg-1",
+        "emoji_id": "128077",
+        "terminate_round": True,
+    }
+    assert "platform detail" not in result.tool_messages[0]["content"]
+    assert "internal reaction hint" not in result.tool_messages[0]["content"]
 
 
 @pytest.mark.asyncio

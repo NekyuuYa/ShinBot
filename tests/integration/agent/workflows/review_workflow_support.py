@@ -519,6 +519,21 @@ class FakeReviewToolManager:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_reaction",
+                    "description": "send reaction",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message_log_id": {"type": "integer"},
+                            "emoji_id": {"type": "string"},
+                        },
+                        "required": ["emoji_id"],
+                    },
+                },
+            },
         ]
         if kwargs.get("tags") == {"knowledge"}:
             return [

@@ -181,6 +181,11 @@ class _ActionState:
             if not self.reason:
                 self.reason = _reason_from(arguments)
             return
+        if tool_name == "send_reaction":
+            self._promote(ActiveChatActionKind.SEND_REACTION)
+            if not self.reason:
+                self.reason = _reason_from(arguments)
+            return
         if tool_name == "no_reply":
             self._promote(ActiveChatActionKind.NO_REPLY)
             self.no_reply_intensity = max(
@@ -280,6 +285,13 @@ def _trace_tool_output(tool_name: str, output: Any, *, success: bool) -> dict[st
         _copy_if_present(output, result, "session_type")
         _copy_if_present(output, result, "terminate_round")
         return result
+    if action == "send_reaction":
+        _copy_if_present(output, result, "sent")
+        _copy_if_present(output, result, "reaction_action")
+        _copy_if_present(output, result, "message_id")
+        _copy_if_present(output, result, "emoji_id")
+        _copy_if_present(output, result, "terminate_round")
+        return result
     if action in _VIRTUAL_TOOL_NAMES:
         _copy_if_present(output, result, "reason")
         return result
@@ -313,11 +325,12 @@ def _action_rank(action: ActiveChatActionKind) -> int:
     return {
         ActiveChatActionKind.WATCH: 0,
         ActiveChatActionKind.NO_REPLY: 1,
-        ActiveChatActionKind.SEND_POKE: 2,
-        ActiveChatActionKind.SEND_REPLY: 3,
-        ActiveChatActionKind.REQUEST_THINK_MODE: 4,
-        ActiveChatActionKind.EXIT_ACTIVE: 5,
-        ActiveChatActionKind.RETRY_FAILED: 6,
+        ActiveChatActionKind.SEND_REACTION: 2,
+        ActiveChatActionKind.SEND_POKE: 3,
+        ActiveChatActionKind.SEND_REPLY: 4,
+        ActiveChatActionKind.REQUEST_THINK_MODE: 5,
+        ActiveChatActionKind.EXIT_ACTIVE: 6,
+        ActiveChatActionKind.RETRY_FAILED: 7,
     }[action]
 
 

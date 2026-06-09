@@ -111,7 +111,7 @@ def register_chat_action_tools(
     context_manager: ContextManager | None = None,
     send_reply_idempotency_store: SendReplyIdempotencyStore | None = None,
 ) -> None:
-    """Register shared chat action tools (send_reply, no_reply, send_poke)."""
+    """Register shared chat action tools for Agent-visible chat interactions."""
 
     idempotency_store = send_reply_idempotency_store or SendReplyIdempotencyStore()
 
@@ -381,6 +381,118 @@ def register_chat_action_tools(
         )
     )
 
+    # ── send_reaction ───────────────────────────────────────────────
+
+    async def _send_reaction(arguments: dict[str, Any], ctx: ToolExecutionContext) -> Any:
+        session_id = ctx.session_id
+        instance_id = ctx.instance_id
+        if not session_id:
+            return {"error": "session_id not available in execution context"}
+        if not instance_id:
+            return {"error": "instance_id not available in execution context"}
+
+        emoji_id = _first_non_empty_str(arguments, "emoji_id", "emoji", "reaction")
+        if not emoji_id:
+            return {"error": "emoji_id is required"}
+        action = str(arguments.get("action", "add") or "add").strip().lower()
+        if action not in {"add", "remove"}:
+            return {"error": "action must be 'add' or 'remove'"}
+        terminate_round = bool(arguments.get("terminate_round", True))
+        message_id = _resolve_reaction_message_id(
+            arguments,
+            database=database,
+            session_id=session_id,
+        )
+        if isinstance(message_id, dict):
+            raise ValueError(str(message_id.get("error", "invalid reaction target")))
+
+        adapter = adapter_manager.get_instance(instance_id)
+        if adapter is None:
+            return {
+                "error": f"Adapter not found for instance {instance_id}",
+            }
+        if not adapter_manager.is_connected(instance_id):
+            raise RuntimeError(f"Platform adapter {instance_id} is offline")
+
+        method = "reaction.delete" if action == "remove" else "reaction.create"
+        result = await adapter.call_api(
+            method,
+            {
+                "message_id": message_id,
+                "emoji_id": emoji_id,
+                "session_id": session_id,
+            },
+        )
+
+        return {
+            "action": "send_reaction",
+            "sent": True,
+            "reaction_action": action,
+            "message_id": message_id,
+            "emoji_id": emoji_id,
+            "terminate_round": terminate_round,
+            "adapter_result": result,
+            "hint": "消息表态已更新。",
+        }
+
+    reaction_description = (
+        "给当前会话中的某条消息贴表情/取消表情，用于轻量表态而不是发送文本。\n"
+        "适用场景：表示已看到、赞同、好笑、安慰、轻量回应上下文；当需要说明理由、"
+        "回答问题或补充信息时，请使用 send_reply。\n"
+        "优先使用 message_log_id：填写上下文里 [msgid:123] 的数字 123，系统会解析"
+        "对应平台 message_id。若上下文明确给出了原平台 message_id，也可直接填写 "
+        "message_id；不要同时填写两个字段。\n"
+        "emoji_id 必须是平台支持的表情 ID；不要填写自然语言描述。action 默认 add，"
+        "取消表态时使用 remove。\n"
+        "terminate_round 默认 true：表态后结束本次聊天 workflow。只有确实需要继续"
+        "调用工具或继续多步行动时才设为 false。"
+    )
+    reaction_schema = {
+        "type": "object",
+        "properties": {
+            "message_id": {
+                "type": "string",
+                "description": (
+                    "可选。要表态的原平台消息 ID。若使用 message_log_id，则不要填写此字段。"
+                ),
+            },
+            "message_log_id": {
+                "type": "integer",
+                "description": (
+                    "推荐。要表态的 ShinBot message log id，填写上下文里 [msgid:123] 的数字 123。"
+                ),
+            },
+            "emoji_id": {
+                "type": "string",
+                "description": "平台支持的表情 ID，例如 OneBot/QQ 的 emoji id。",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["add", "remove"],
+                "description": "add 为贴表情，remove 为取消表情；默认 add。",
+            },
+            "terminate_round": {
+                "type": "boolean",
+                "description": "是否在表态后立即结束当前聊天 workflow 轮次，默认 true",
+            },
+        },
+        "required": ["emoji_id"],
+    }
+
+    registry.register_tool(
+        ToolDefinition(
+            id=f"{_OWNER_ID}.send_reaction",
+            name="send_reaction",
+            description=reaction_description,
+            input_schema=reaction_schema,
+            handler=_send_reaction,
+            owner_type=_OWNER_TYPE,
+            owner_id=_OWNER_ID,
+            visibility=ToolVisibility.PUBLIC,
+            tags=[CHAT_ACTION_TOOL_TAG],
+        )
+    )
+
 
 def _session_type(session_id: str) -> str:
     rest = _session_rest(session_id)
@@ -448,6 +560,57 @@ def _resolve_quote_message_id(
             "error": (
                 f"message_log_id {message_log_id} has no platform_msg_id "
                 "and cannot be quoted"
+            )
+        }
+    return platform_msg_id
+
+
+def _resolve_reaction_message_id(
+    arguments: dict[str, Any],
+    *,
+    database: DatabaseManager | None,
+    session_id: str,
+) -> str | dict[str, str]:
+    message_id = _first_non_empty_str(
+        arguments,
+        "message_id",
+        "target_message_id",
+        "platform_msg_id",
+        "target_platform_msg_id",
+    )
+    if message_id:
+        return message_id
+
+    raw_log_id = _first_present(
+        arguments,
+        "message_log_id",
+        "target_message_log_id",
+        "quote_message_log_id",
+    )
+    if raw_log_id in (None, ""):
+        return {"error": "message_id or message_log_id is required"}
+    if database is None:
+        return {"error": "database not available to resolve message_log_id"}
+
+    try:
+        message_log_id = int(raw_log_id)
+    except (TypeError, ValueError):
+        return {"error": "message_log_id must be an integer"}
+    if message_log_id <= 0:
+        return {"error": "message_log_id must be positive"}
+
+    record = database.message_logs.get(message_log_id)
+    if record is None:
+        return {"error": f"message_log_id {message_log_id} not found"}
+    if str(record.get("session_id") or "") != session_id:
+        return {"error": f"message_log_id {message_log_id} is not in current session"}
+
+    platform_msg_id = str(record.get("platform_msg_id") or "").strip()
+    if not platform_msg_id:
+        return {
+            "error": (
+                f"message_log_id {message_log_id} has no platform_msg_id "
+                "and cannot be reacted to"
             )
         }
     return platform_msg_id
