@@ -367,6 +367,51 @@ async def test_reply_decision_runner_requires_reaction_to_target_candidate() -> 
 
 
 @pytest.mark.asyncio
+async def test_reply_decision_runner_requires_platform_reaction_to_target_candidate() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "tool-1",
+                        "function": {
+                            "name": "send_reaction",
+                            "arguments": (
+                                '{"message_id": "platform-nearby", "emoji_id": "128077"}'
+                            ),
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[
+                {"id": 7, "platform_msg_id": "platform-candidate", "raw_text": "hello"},
+                {"id": 99, "platform_msg_id": "platform-nearby", "raw_text": "nearby"},
+            ],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.target_message_ids == [7]
+    assert result.reason == "reaction_tool_platform_message_id_not_candidate"
+    assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
 async def test_reply_decision_runner_requires_quoted_reply_message() -> None:
     tool_manager = FakeReviewToolManager()
     model_runtime = FakeModelRuntime(

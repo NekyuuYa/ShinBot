@@ -160,6 +160,7 @@ class LLMReplyDecisionStageRunner:
             call.name == "send_reply" for call in parsed_calls
         )
         reaction_validation_error = _reaction_target_validation_error(
+            stage_input,
             parsed_calls,
             target_message_ids=target_message_ids,
         )
@@ -296,13 +297,25 @@ def _reply_quote_validation_error(
 
 
 def _reaction_target_validation_error(
+    stage_input: ReviewStageInput,
     parsed_calls: list[Any],
     *,
     target_message_ids: list[int],
 ) -> str:
     target_message_id_set = set(target_message_ids)
+    candidate_platform_message_ids = _candidate_platform_message_ids(
+        stage_input,
+        target_message_ids=target_message_ids,
+    )
     for call in parsed_calls:
         if call.name != "send_reaction":
+            continue
+        platform_message_id = _reaction_platform_message_id(call.arguments)
+        if platform_message_id:
+            if not candidate_platform_message_ids:
+                return "reaction_tool_platform_message_id_unverifiable"
+            if platform_message_id not in candidate_platform_message_ids:
+                return "reaction_tool_platform_message_id_not_candidate"
             continue
         message_log_id = optional_int(
             call.arguments.get("message_log_id")
@@ -314,6 +327,33 @@ def _reaction_target_validation_error(
         if message_log_id not in target_message_id_set:
             return "reaction_tool_message_log_id_not_candidate"
     return ""
+
+
+def _candidate_platform_message_ids(
+    stage_input: ReviewStageInput,
+    *,
+    target_message_ids: list[int],
+) -> set[str]:
+    target_message_id_set = set(target_message_ids)
+    result: set[str] = set()
+    for message in stage_input.source_messages:
+        message_id = optional_int(message.get("id"))
+        if message_id not in target_message_id_set:
+            continue
+        platform_message_id = str(message.get("platform_msg_id") or "").strip()
+        if platform_message_id:
+            result.add(platform_message_id)
+    return result
+
+
+def _reaction_platform_message_id(arguments: dict[str, Any]) -> str:
+    value = (
+        arguments.get("message_id")
+        or arguments.get("target_message_id")
+        or arguments.get("platform_msg_id")
+        or arguments.get("target_platform_msg_id")
+    )
+    return str(value or "").strip()
 
 
 def _other_target_only_candidate_message_ids(stage_input: ReviewStageInput) -> set[int]:

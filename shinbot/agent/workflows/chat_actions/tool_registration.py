@@ -387,16 +387,16 @@ def register_chat_action_tools(
         session_id = ctx.session_id
         instance_id = ctx.instance_id
         if not session_id:
-            return {"error": "session_id not available in execution context"}
+            raise RuntimeError("session_id not available in execution context")
         if not instance_id:
-            return {"error": "instance_id not available in execution context"}
+            raise RuntimeError("instance_id not available in execution context")
 
         emoji_id = _first_non_empty_str(arguments, "emoji_id", "emoji", "reaction")
         if not emoji_id:
-            return {"error": "emoji_id is required"}
+            raise ValueError("emoji_id is required")
         action = str(arguments.get("action", "add") or "add").strip().lower()
         if action not in {"add", "remove"}:
-            return {"error": "action must be 'add' or 'remove'"}
+            raise ValueError("action must be 'add' or 'remove'")
         terminate_round = bool(arguments.get("terminate_round", True))
         message_id = _resolve_reaction_message_id(
             arguments,
@@ -408,9 +408,7 @@ def register_chat_action_tools(
 
         adapter = adapter_manager.get_instance(instance_id)
         if adapter is None:
-            return {
-                "error": f"Adapter not found for instance {instance_id}",
-            }
+            raise RuntimeError(f"Adapter not found for instance {instance_id}")
         if not adapter_manager.is_connected(instance_id):
             raise RuntimeError(f"Platform adapter {instance_id} is offline")
 

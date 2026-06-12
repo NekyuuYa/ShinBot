@@ -218,3 +218,49 @@ async def test_send_reaction_calls_adapter_reaction_api() -> None:
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_invalid_action_fails_tool_call() -> None:
+    adapter = FakeAdapter()
+    manager = _register_tools(adapter)
+
+    result = await manager.execute(
+        ToolCallRequest(
+            tool_name="send_reaction",
+            arguments={
+                "message_id": "platform-msg-1",
+                "emoji_id": "128077",
+                "action": "toggle",
+            },
+            caller="test.active_chat",
+            instance_id="bot",
+            session_id="bot:group:room",
+        )
+    )
+
+    assert result.success is False
+    assert result.error_code == "tool_execution_failed"
+    assert "action must be" in result.error_message
+    assert adapter.api_calls == []
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_missing_execution_context_fails_tool_call() -> None:
+    adapter = FakeAdapter()
+    manager = _register_tools(adapter)
+
+    result = await manager.execute(
+        ToolCallRequest(
+            tool_name="send_reaction",
+            arguments={"message_id": "platform-msg-1", "emoji_id": "128077"},
+            caller="test.active_chat",
+            instance_id="",
+            session_id="bot:group:room",
+        )
+    )
+
+    assert result.success is False
+    assert result.error_code == "tool_execution_failed"
+    assert "instance_id not available" in result.error_message
+    assert adapter.api_calls == []
