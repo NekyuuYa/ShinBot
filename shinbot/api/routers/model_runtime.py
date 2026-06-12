@@ -350,8 +350,8 @@ class CostModelData(BaseModel):
     cacheReadTokens: int
     cacheWriteTokens: int
     estimatedCost: float
-    averageLatencyMs: float
-    averageTimeToFirstTokenMs: float
+    averageLatencyMs: float | None
+    averageTimeToFirstTokenMs: float | None
     lastSeenAt: str
     daily: list[CostBucketData] | None = None
     hourly: list[CostBucketData] | None = None
@@ -372,8 +372,8 @@ class CostAnalysisSummaryData(BaseModel):
     cacheReadTokens: int
     cacheWriteTokens: int
     estimatedCost: float
-    averageLatencyMs: float
-    averageTimeToFirstTokenMs: float
+    averageLatencyMs: float | None
+    averageTimeToFirstTokenMs: float | None
 
 
 class CostAnalysisTimelineData(BaseModel):
