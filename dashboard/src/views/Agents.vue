@@ -51,8 +51,12 @@
       :review-note-label="$t('pages.agents.labels.reviewNote')"
       :last-audit-label="$t('pages.agents.labels.lastAudit')"
       :no-value-label="$t('pages.agents.labels.noValue')"
+      :trigger-review-label="$t('pages.agents.actions.triggerReview')"
+      :force-idle-label="$t('pages.agents.actions.forceIdle')"
       :format-timestamp="formatTimestamp"
       :format-review-interval="formatReviewInterval"
+      @trigger-review="handleTriggerReview"
+      @force-idle="handleForceIdle"
     />
 
     <div class="agents-toolbar mb-6">
@@ -374,6 +378,38 @@ async function refreshPage() {
   } finally {
     hasLoadedProfiles.value = true;
     isLoading.value = false;
+  }
+}
+
+async function handleTriggerReview(sessionId: string) {
+  try {
+    await apiClient.unwrap(agentsApi.triggerReview(sessionId));
+    uiStore.showSnackbar(
+      translate("pages.agents.messages.triggerReviewSuccess"),
+      "success",
+    );
+    await loadRuntimeProfiles();
+  } catch (errorDetail: unknown) {
+    error.value = getErrorMessage(
+      errorDetail,
+      translate("pages.agents.messages.triggerReviewFailed"),
+    );
+  }
+}
+
+async function handleForceIdle(sessionId: string) {
+  try {
+    await apiClient.unwrap(agentsApi.forceIdle(sessionId));
+    uiStore.showSnackbar(
+      translate("pages.agents.messages.forceIdleSuccess"),
+      "success",
+    );
+    await loadRuntimeProfiles();
+  } catch (errorDetail: unknown) {
+    error.value = getErrorMessage(
+      errorDetail,
+      translate("pages.agents.messages.forceIdleFailed"),
+    );
   }
 }
 

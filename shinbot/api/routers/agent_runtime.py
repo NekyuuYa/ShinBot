@@ -251,3 +251,36 @@ def get_agent_runtime_overview(bot=BotDep, boot=BootDep):
             )
         )
     return ok([profile.model_dump() for profile in profiles])
+
+
+class _ManualActionData(BaseModel):
+    """Response payload for a manual scheduler action."""
+
+    sessionId: str
+    success: bool
+
+
+@router.post(
+    "/sessions/{session_id:path}/trigger-review",
+    response_model=Envelope[_ManualActionData],
+)
+async def trigger_session_review(session_id: str, bot=BotDep, boot=BootDep):
+    """Manually trigger a review for a session by bringing the review plan forward to now."""
+    agent_runtime = getattr(bot, "agent_runtime", None)
+    if agent_runtime is None:
+        return ok({"sessionId": session_id, "success": False})
+    triggered = await agent_runtime.trigger_review(session_id)
+    return ok({"sessionId": session_id, "success": triggered})
+
+
+@router.post(
+    "/sessions/{session_id:path}/force-idle",
+    response_model=Envelope[_ManualActionData],
+)
+async def force_session_idle(session_id: str, bot=BotDep, boot=BootDep):
+    """Force a session back to IDLE from any active state."""
+    agent_runtime = getattr(bot, "agent_runtime", None)
+    if agent_runtime is None:
+        return ok({"sessionId": session_id, "success": False})
+    changed = await agent_runtime.force_idle(session_id)
+    return ok({"sessionId": session_id, "success": changed})

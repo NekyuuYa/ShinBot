@@ -46,7 +46,7 @@ from shinbot.agent.scheduler import (
     ReviewDueTimerService,
 )
 from shinbot.agent.scheduler.active_chat_policy import DefaultActiveChatPolicy
-from shinbot.agent.scheduler.models import ActiveChatBootstrapApplyDecision
+from shinbot.agent.scheduler.models import ActiveChatBootstrapApplyDecision, AgentState
 from shinbot.agent.scheduler.review_policy import DefaultReviewPolicy
 from shinbot.agent.services.context import ContextManager
 from shinbot.agent.services.context.active_chat_context import ActiveChatContextBuilderAdapter
@@ -830,6 +830,109 @@ class AgentRuntime:
                 now=checked_at,
                 reason="session_unmuted",
             )
+
+    async def trigger_review(self, session_id: str) -> bool:
+        """Bring the review plan forward to now and run the due review.
+
+        This is a non-invasive manual trigger: it adjusts the review plan
+        timing and lets the existing scheduler logic decide the actual state
+        transition.  Only succeeds when the session is in IDLE or REVIEW
+        state; returns ``False`` for all other states without side effects.
+
+        Args:
+            session_id: The session to trigger a review for.
+
+        Returns:
+            ``True`` if the review was triggered, ``False`` if the session
+            was not found or is in a state that cannot accept a review.
+        """
+        checked_at = time.time()
+        for profile in self._unique_profiles():
+            scheduler = profile.agent_scheduler
+            if session_id not in set(scheduler.list_session_ids()):
+                continue
+            current_state = scheduler.state_for(session_id)
+            if current_state not in {AgentState.IDLE, AgentState.REVIEW}:
+                logger.info(
+                    format_log_event(
+                        "agent.runtime.manual_review_skipped",
+                        session_id=session_id,
+                        state=current_state.value,
+                        profile_id=profile.profile_id,
+                    )
+                )
+                return False
+            scheduler.bring_review_plan_forward(
+                session_id,
+                next_review_at=checked_at,
+                now=checked_at,
+                reason="manual_trigger",
+            )
+            decision = await scheduler.run_due_review(session_id, now=checked_at)
+            started = bool(getattr(decision, "review_workflow_started", False))
+            logger.info(
+                format_log_event(
+                    "agent.runtime.manual_review_triggered",
+                    session_id=session_id,
+                    review_workflow_started=started,
+                    state=getattr(decision.state, "value", str(decision.state)),
+                    profile_id=profile.profile_id,
+                )
+            )
+            return started
+        return False
+
+    async def force_idle(self, session_id: str) -> bool:
+        """Force a session back to IDLE from any active state.
+
+        Delegates to the appropriate scheduler completion method depending
+        on the current state, so transitions follow normal signal-flow
+        rules rather than bypassing the state machine.
+
+        Args:
+            session_id: The session to return to idle.
+
+        Returns:
+            ``True`` if the state was changed or already idle, ``False``
+            if the session was not found or the current state is unhandled.
+        """
+        for profile in self._unique_profiles():
+            scheduler = profile.agent_scheduler
+            if session_id not in set(scheduler.list_session_ids()):
+                continue
+            current_state = scheduler.state_for(session_id)
+            if current_state == AgentState.IDLE:
+                return True
+            if current_state == AgentState.REVIEW:
+                scheduler.complete_review(session_id, enter_active_chat=False)
+            elif current_state == AgentState.ACTIVE_REPLY:
+                await scheduler.complete_active_reply(session_id, review_after=False)
+            elif current_state == AgentState.ACTIVE_CHAT:
+                scheduler.adjust_active_chat_interest(
+                    session_id, force_exit=True, reason="manual_force_idle",
+                )
+            else:
+                logger.warning(
+                    format_log_event(
+                        "agent.runtime.force_idle_unhandled_state",
+                        session_id=session_id,
+                        state=current_state.value,
+                        profile_id=profile.profile_id,
+                    )
+                )
+                return False
+            new_state = scheduler.state_for(session_id)
+            logger.info(
+                format_log_event(
+                    "agent.runtime.force_idle",
+                    session_id=session_id,
+                    previous_state=current_state.value,
+                    new_state=new_state.value,
+                    profile_id=profile.profile_id,
+                )
+            )
+            return True
+        return False
 
     def start_background_tasks(self) -> None:
         """Start Agent background services once an event loop is available."""

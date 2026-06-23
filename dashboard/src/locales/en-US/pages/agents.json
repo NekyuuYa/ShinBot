@@ -4,7 +4,9 @@
   "subtitle": "Manage Agent runtime profiles under data/agents and edit each profile by configuration section.",
   "actions": {
     "refresh": "Refresh",
-    "addAgent": "Add Agent"
+    "addAgent": "Add Agent",
+    "triggerReview": "Trigger Review",
+    "forceIdle": "Force Idle"
   },
   "tags": {
     "title": "Tag Categories",
@@ -110,6 +112,10 @@
     "deleteFailed": "Failed to delete agent",
     "requiredFields": "Agent ID, Name, and Persona UUID are required",
     "invalidJson": "Invalid JSON format",
-    "confirmDelete": "Delete agent {name}?"
+    "confirmDelete": "Delete agent {name}?",
+    "triggerReviewSuccess": "Review triggered",
+    "triggerReviewFailed": "Failed to trigger review",
+    "forceIdleSuccess": "Forced to idle state",
+    "forceIdleFailed": "Failed to force idle"
   }
 }

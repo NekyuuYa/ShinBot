@@ -114,6 +114,11 @@ export interface AgentRuntimeProfile {
   sessions: AgentRuntimeSession[]
 }
 
+export interface ManualActionResponse {
+  sessionId: string
+  success: boolean
+}
+
 export const agentsApi = {
   list() {
     return apiClient.get<Agent[]>('/agents')
@@ -139,5 +144,17 @@ export const agentsApi = {
 
   runtimeOverview(config?: { suppressErrorNotify?: boolean }) {
     return apiClient.get<AgentRuntimeProfile[]>('/agent-runtime', config)
+  },
+
+  triggerReview(sessionId: string) {
+    return apiClient.post<ManualActionResponse>(
+      `/agent-runtime/sessions/${encodeURIComponent(sessionId)}/trigger-review`
+    )
+  },
+
+  forceIdle(sessionId: string) {
+    return apiClient.post<ManualActionResponse>(
+      `/agent-runtime/sessions/${encodeURIComponent(sessionId)}/force-idle`
+    )
   },
 }

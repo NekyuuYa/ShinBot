@@ -111,6 +111,28 @@
                     session.latestAudit ? session.latestAudit.timestamp : noValueLabel
                   }}</strong>
                 </div>
+                <div class="session-actions mt-3">
+                  <v-btn
+                    v-if="session.state === 'idle'"
+                    size="small"
+                    variant="tonal"
+                    color="primary"
+                    prepend-icon="mdi-refresh"
+                    @click="$emit('triggerReview', session.sessionId)"
+                  >
+                    {{ triggerReviewLabel }}
+                  </v-btn>
+                  <v-btn
+                    v-if="session.state !== 'idle'"
+                    size="small"
+                    variant="tonal"
+                    color="warning"
+                    prepend-icon="mdi-stop-circle-outline"
+                    @click="$emit('forceIdle', session.sessionId)"
+                  >
+                    {{ forceIdleLabel }}
+                  </v-btn>
+                </div>
               </v-expansion-panel-text>
             </v-expansion-panel>
           </v-expansion-panels>
@@ -141,8 +163,15 @@ defineProps<{
   reviewNoteLabel: string
   lastAuditLabel: string
   noValueLabel: string
+  triggerReviewLabel: string
+  forceIdleLabel: string
   formatTimestamp: (value: number) => string
   formatReviewInterval: (value: number | null | undefined) => string
+}>()
+
+defineEmits<{
+  triggerReview: [sessionId: string]
+  forceIdle: [sessionId: string]
 }>()
 
 function platformStatus(platformState: AgentRuntimePlatformState): {
@@ -206,5 +235,12 @@ function platformStatus(platformState: AgentRuntimePlatformState): {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+.session-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(var(--v-border-color), 0.12);
 }
 </style>

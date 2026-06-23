@@ -4,7 +4,9 @@
   "subtitle": "管理 data/agents 下的 Agent 运行配置，并按配置分区编辑每个 Agent。",
   "actions": {
     "refresh": "刷新",
-    "addAgent": "添加 Agent"
+    "addAgent": "添加 Agent",
+    "triggerReview": "触发 Review",
+    "forceIdle": "强制空闲"
   },
   "tags": {
     "title": "标签分类",
@@ -110,6 +112,10 @@
     "deleteFailed": "删除 Agent 失败",
     "requiredFields": "请填写 Agent ID、名称和 Persona UUID",
     "invalidJson": "JSON 格式无效，请检查后重试",
-    "confirmDelete": "确认删除 Agent {name} 吗？"
+    "confirmDelete": "确认删除 Agent {name} 吗？",
+    "triggerReviewSuccess": "已触发 Review",
+    "triggerReviewFailed": "触发 Review 失败",
+    "forceIdleSuccess": "已强制切换到空闲状态",
+    "forceIdleFailed": "强制切换空闲失败"
   }
 }
