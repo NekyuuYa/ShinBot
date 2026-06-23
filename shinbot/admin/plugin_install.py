@@ -35,7 +35,7 @@ from shinbot.core.plugins.types import PluginState
 PLUGIN_INSTALL_MANIFEST_VERSION = 1
 PLUGIN_INSTALL_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 PLUGIN_INSTALL_MAX_EXTRACTED_BYTES = 100 * 1024 * 1024
-_VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
+_VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_", "shinbot_converter_")
 _VALID_ROLE_VALUES = {"logic", "adapter"}
 _GITHUB_REF_RE = re.compile(r"^[A-Za-z0-9._/\-]{1,200}$")
 

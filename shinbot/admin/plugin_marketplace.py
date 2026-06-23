@@ -29,7 +29,7 @@ OFFICIAL_MARKETPLACE_REF = "main"
 OFFICIAL_MARKETPLACE_PLUGIN_ROOT = "plugins"
 PLUGIN_MARKETPLACE_CACHE_TTL_SECONDS = 6 * 60 * 60
 PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION = 1
-_VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_")
+_VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_", "shinbot_converter_")
 _VALID_ROLE_VALUES = {"logic", "adapter"}
 
 
