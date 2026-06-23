@@ -242,7 +242,11 @@ def update_plugin_config_or_raise(
         try:
             callback(normalized_config)
         except Exception:
-            logger.debug("Config update callback failed for plugin %s", plugin_id, exc_info=True)
+            logger.warning(
+                "Config update callback failed for plugin %s",
+                plugin_id,
+                exc_info=True,
+            )
 
     return plugin
 
