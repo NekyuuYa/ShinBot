@@ -819,6 +819,18 @@ class AgentRuntime:
                 persisted["state"] = state
                 self.database.sessions.upsert(persisted)
 
+        checked_at = time.time()
+        for profile in self._unique_profiles():
+            scheduler = profile.agent_scheduler
+            if session_id not in set(scheduler.list_session_ids()):
+                continue
+            scheduler.bring_review_plan_forward(
+                session_id,
+                next_review_at=checked_at,
+                now=checked_at,
+                reason="session_unmuted",
+            )
+
     def start_background_tasks(self) -> None:
         """Start Agent background services once an event loop is available."""
 

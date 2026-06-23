@@ -382,7 +382,7 @@ class AgentScheduler:
         if isinstance(prepared, AgentScheduleDecision):
             decision = prepared
         else:
-            self._bring_review_plan_forward(
+            self.bring_review_plan_forward(
                 signal.session_id,
                 next_review_at=pause_until,
                 now=prepared.checked_at,
@@ -413,7 +413,7 @@ class AgentScheduler:
         """
         checked_at = self._now() if now is None else now
         current_state = self._state_store.get_state(session_id)
-        self._bring_review_plan_forward(
+        self.bring_review_plan_forward(
             session_id,
             next_review_at=pause_until,
             now=checked_at,
@@ -1843,7 +1843,7 @@ class AgentScheduler:
             )
         )
 
-    def _bring_review_plan_forward(
+    def bring_review_plan_forward(
         self,
         session_id: str,
         *,
