@@ -33,6 +33,7 @@ from shinbot.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from shinbot.core.platform.adapter_manager import AdapterManager
+    from shinbot.core.plugins.cron_manager import PluginCronManager
 
 logger = get_logger(__name__, source="plugins", color="yellow")
 
@@ -141,6 +142,7 @@ class PluginManager:
         model_runtime: ModelRuntimeObserverRegistry | None = None,
         agent_runtime: Any | None = None,
         database: Any | None = None,
+        cron_manager: PluginCronManager | None = None,
         config_provider_registry: ConfigProviderRegistry | None = None,
     ) -> None:
         """Initialize the plugin manager.
@@ -160,6 +162,7 @@ class PluginManager:
             model_runtime: Registry for model runtime observers.
             agent_runtime: Runtime object exposed to the agent system.
             database: Shared database handle passed to plugins.
+            cron_manager: Plugin cron scheduler for timed tasks.
             config_provider_registry: Registry of plugin configuration
                 providers. Creates a new empty registry if *None*.
         """
@@ -173,6 +176,7 @@ class PluginManager:
         self._model_runtime = model_runtime
         self._agent_runtime = agent_runtime
         self._database = database
+        self._cron_manager = cron_manager
         self.config_provider_registry = config_provider_registry or ConfigProviderRegistry()
         self._plugins: dict[str, PluginMeta] = {}
         self._plugin_objects: dict[str, Plugin] = {}
@@ -190,6 +194,7 @@ class PluginManager:
         tool_registry: ToolRegistry | None = None,
         model_runtime: ModelRuntimeObserverRegistry | None = None,
         agent_runtime: Any | None = None,
+        cron_manager: PluginCronManager | None = None,
     ) -> None:
         """Attach optional runtime capabilities for subsequently built Plugin objects."""
         if tool_registry is not None:
@@ -198,6 +203,8 @@ class PluginManager:
             self._model_runtime = model_runtime
         if agent_runtime is not None:
             self._agent_runtime = agent_runtime
+        if cron_manager is not None:
+            self._cron_manager = cron_manager
         for plugin in self._plugin_objects.values():
             if tool_registry is not None:
                 plugin._tool_registry = tool_registry
@@ -205,6 +212,8 @@ class PluginManager:
                 plugin._model_runtime = model_runtime
             if agent_runtime is not None:
                 plugin.agent_runtime = agent_runtime
+            if cron_manager is not None:
+                plugin._cron_manager = cron_manager
 
     async def preregister_model_runtime_extensions(
         self,
@@ -257,6 +266,7 @@ class PluginManager:
             model_runtime=self._model_runtime,
             agent_runtime=self._agent_runtime,
             database=self._database,
+            cron_manager=self._cron_manager,
         )
 
     @property
@@ -1180,6 +1190,8 @@ class PluginManager:
         if plg is not None and self._model_runtime is not None:
             for observer in plg._registered_model_observers:
                 self._model_runtime.unregister_observer(observer)
+        if plg is not None and self._cron_manager is not None:
+            self._cron_manager.remove_jobs(plugin_id)
 
         if module and hasattr(module, "teardown"):
             try:

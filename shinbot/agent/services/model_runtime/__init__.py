@@ -13,11 +13,13 @@ from shinbot.agent.services.model_runtime.service import (
     TranscriptionResult,
     VideoResult,
 )
+from shinbot.agent.services.model_runtime.types import LLMCallResult
 
 __all__ = [
     "EmbedResult",
     "GenerateResult",
     "ImageResult",
+    "LLMCallResult",
     "ModelCallError",
     "ModelRuntime",
     "ModelRuntimeCall",

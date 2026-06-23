@@ -19,6 +19,9 @@ dependencies = [
     "websockets>=16.0",
 ]
 
+[project.optional-dependencies]
+cron = ["apscheduler>=3.10,<4"]
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"

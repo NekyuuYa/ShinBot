@@ -24,7 +24,9 @@ from shinbot.schema.elements import MessageElement
 from shinbot.utils.logger import get_plugin_logger
 
 if TYPE_CHECKING:
+    from shinbot.agent.services.model_runtime import LLMCallResult
     from shinbot.core.platform.adapter_manager import AdapterManager, MessageHandle
+    from shinbot.core.plugins.cron_manager import PluginCronManager
     from shinbot.persistence.engine import DatabaseManager
 
 
@@ -57,6 +59,7 @@ class Plugin:
         model_runtime: ModelRuntimeObserverRegistry | None = None,
         agent_runtime: Any | None = None,
         database: DatabaseManager | None = None,
+        cron_manager: PluginCronManager | None = None,
     ):
         """Initialize the plugin capability object.
 
@@ -77,6 +80,7 @@ class Plugin:
             model_runtime:    Observer registry for model-runtime events.
             agent_runtime:    Reference to the agent runtime, if any.
             database:         Shared database manager instance.
+            cron_manager:     Plugin cron scheduler for timed tasks.
         """
         self.plugin_id = plugin_id
         self._command_registry = command_registry
@@ -89,6 +93,7 @@ class Plugin:
         self._model_runtime = model_runtime
         self.agent_runtime = agent_runtime
         self.database = database
+        self._cron_manager = cron_manager
         self.data_dir = (
             Path(data_dir) if data_dir is not None else Path("data") / "plugin_data" / plugin_id
         )
@@ -490,6 +495,246 @@ class Plugin:
             )
             self._tool_registry.register_tool(definition)
             self._registered_tools.append(tool_id)
+            return func
+
+        return decorator
+
+    # ── LLM calling ────────────────────────────────────────────────────
+
+    async def llm_call(
+        self,
+        *,
+        prompt: str = "",
+        system_prompt: str | None = None,
+        model_id: str | None = None,
+        route_id: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        purpose: str = "",
+    ) -> LLMCallResult:
+        """Call an LLM directly, bypassing the agent workflow loop.
+
+        This is the primary API for plugins that need to send a prompt
+        to an LLM and receive a text response — e.g. for content
+        analysis, summarisation, or structured data extraction.
+
+        Args:
+            prompt:          User prompt text.  Ignored when *messages* is
+                             provided.
+            system_prompt:   Optional system prompt prepended to the
+                             conversation.
+            model_id:        Explicit model ID (mutually exclusive with
+                             *route_id*).
+            route_id:        Model route ID for load-balanced/failover
+                             selection (mutually exclusive with *model_id*).
+            messages:        Full OpenAI-format messages list.  When
+                             provided, *prompt* and *system_prompt* are
+                             ignored.
+            response_format: JSON Schema dict to constrain output format.
+            temperature:     Sampling temperature (optional, uses model
+                             default when omitted).
+            max_tokens:      Maximum output tokens (optional).
+            purpose:         Human-readable description for logging.
+
+        Returns:
+            An :class:`LLMCallResult` with ``text``, ``usage``,
+            ``model_id``, ``provider_id``, ``execution_id``,
+            and ``raw_response`` fields.
+
+        Raises:
+            RuntimeError:  If the model runtime is not available.
+            ValueError:    If both *model_id* and *route_id* are specified,
+                          or if no prompt/messages are provided.
+            ModelCallError: If the call fails after all retries.
+        """
+        from shinbot.agent.services.model_runtime import (
+            LLMCallResult as _LLMCallResult,
+        )
+        from shinbot.agent.services.model_runtime import (
+            ModelRuntimeCall,
+        )
+
+        if model_id is not None and route_id is not None:
+            raise ValueError(
+                "model_id and route_id are mutually exclusive; "
+                "specify only one."
+            )
+
+        if self.agent_runtime is None or not hasattr(self.agent_runtime, "model_runtime"):
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot call LLM: "
+                "no ModelRuntime is available in this Plugin object."
+            )
+
+        model_runtime = self.agent_runtime.model_runtime
+
+        # Build messages list
+        if messages is None:
+            if not prompt:
+                raise ValueError(
+                    "llm_call requires either a non-empty `prompt` "
+                    "or a `messages` list."
+                )
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+        # Build params
+        params: dict[str, Any] = {}
+        if temperature is not None:
+            params["temperature"] = temperature
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
+
+        call = ModelRuntimeCall(
+            caller=self.plugin_id,
+            model_id=model_id,
+            route_id=route_id,
+            purpose=purpose or f"{self.plugin_id}.llm_call",
+            messages=messages,
+            response_format=response_format,
+            params=params,
+        )
+
+        result = await model_runtime.generate(call)
+
+        return _LLMCallResult(
+            text=result.text,
+            usage=result.usage,
+            model_id=result.model_id,
+            provider_id=result.provider_id,
+            execution_id=result.execution_id,
+            raw_response=result.raw_response,
+        )
+
+    # ── Model / Provider enumeration ──────────────────────────────────
+
+    def list_models(self, *, provider_id: str | None = None) -> list[dict[str, Any]]:
+        """List configured model definitions.
+
+        Args:
+            provider_id: Filter models by provider ID (optional).
+
+        Returns:
+            A list of model definition dicts, each containing keys
+            such as ``id``, ``provider_id``, ``display_name``, etc.
+
+        Raises:
+            RuntimeError: If no database is available.
+        """
+        if self.database is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot list models: "
+                "no DatabaseManager is available in this Plugin object."
+            )
+        return self.database.model_registry.list_models(provider_id=provider_id)
+
+    def get_model(self, model_id: str) -> dict[str, Any] | None:
+        """Get a single model definition by ID.
+
+        Args:
+            model_id: The model identifier.
+
+        Returns:
+            The model definition dict, or ``None`` if not found.
+
+        Raises:
+            RuntimeError: If no database is available.
+        """
+        if self.database is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot get model: "
+                "no DatabaseManager is available in this Plugin object."
+            )
+        return self.database.model_registry.get_model(model_id)
+
+    def list_providers(self) -> list[dict[str, Any]]:
+        """List configured LLM provider definitions.
+
+        Returns:
+            A list of provider definition dicts, each containing keys
+            such as ``id``, ``type``, ``base_url``, etc.
+
+        Raises:
+            RuntimeError: If no database is available.
+        """
+        if self.database is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot list providers: "
+                "no DatabaseManager is available in this Plugin object."
+            )
+        return self.database.model_registry.list_providers()
+
+    def get_provider(self, provider_id: str) -> dict[str, Any] | None:
+        """Get a single provider definition by ID.
+
+        Args:
+            provider_id: The provider identifier.
+
+        Returns:
+            The provider definition dict, or ``None`` if not found.
+
+        Raises:
+            RuntimeError: If no database is available.
+        """
+        if self.database is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot get provider: "
+                "no DatabaseManager is available in this Plugin object."
+            )
+        return self.database.model_registry.get_provider(provider_id)
+
+    # ── Cron scheduling ───────────────────────────────────────────────
+
+    def on_cron(
+        self,
+        cron_expr: str,
+        *,
+        timezone: str | None = None,
+        job_id: str | None = None,
+        description: str = "",
+    ) -> Callable:
+        """Register a cron-scheduled task.
+
+        Can be used as a decorator::
+
+            @plg.on_cron("0 23 * * *", description="Daily report")
+            async def daily_report():
+                ...
+
+        Args:
+            cron_expr:   Standard 5-field cron expression
+                         (minute hour day month day_of_week).
+            timezone:    Optional timezone name (e.g. ``"Asia/Shanghai"``).
+                         Defaults to the system timezone.
+            job_id:      Explicit job ID.  Auto-generated if omitted.
+            description: Human-readable description for logging.
+
+        Returns:
+            A decorator that wraps the scheduled function.
+
+        Raises:
+            RuntimeError: If no cron manager is available.
+            ValueError:   If *cron_expr* is not a valid 5-field expression.
+        """
+        if self._cron_manager is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot register cron jobs: "
+                "no cron manager is available in this Plugin object."
+            )
+
+        def decorator(func: Callable) -> Callable:
+            self._cron_manager.add_cron_job(
+                self.plugin_id,
+                func,
+                cron_expr,
+                timezone=timezone,
+                job_id=job_id,
+                description=description,
+            )
             return func
 
         return decorator

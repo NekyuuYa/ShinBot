@@ -35,6 +35,7 @@ from shinbot.core.message_routes import (
     make_text_command_route_rule,
 )
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter
+from shinbot.core.plugins.cron_manager import PluginCronManager
 from shinbot.core.plugins.manager import PluginManager
 from shinbot.core.security.audit import AuditLogger
 from shinbot.core.security.permission import PermissionEngine
@@ -93,6 +94,7 @@ class ShinBot:
         self.model_runtime_system: Any | None = None
         self.model_runtime: Any | None = None
         self.agent_runtime: Any | None = None
+        self.cron_manager = PluginCronManager()
         self.plugin_manager = PluginManager(
             command_registry=self.command_registry,
             keyword_registry=self.keyword_registry,
@@ -103,6 +105,7 @@ class ShinBot:
             tool_registry=self.tool_registry,
             data_dir=data_dir,
             database=self.database,
+            cron_manager=self.cron_manager,
             config_provider_registry=self.config_provider_registry,
         )
 
@@ -210,6 +213,7 @@ class ShinBot:
             tool_registry=self.tool_registry,
             model_runtime=self.model_runtime,
             agent_runtime=self.agent_runtime,
+            cron_manager=self.cron_manager,
         )
         ingress_handler = getattr(runtime, "handle_ingress_message", None)
         if ingress_handler is not None:

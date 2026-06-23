@@ -104,3 +104,19 @@ class VideoResult:
 
 class ModelCallError(RuntimeError):
     """Model invocation failure after route resolution/fallback."""
+
+
+@dataclass(slots=True)
+class LLMCallResult:
+    """Simplified LLM call result for plugin use.
+
+    Returned by :meth:`Plugin.llm_call` as a lightweight alternative to
+    the full :class:`GenerateResult` used internally by the agent runtime.
+    """
+
+    text: str
+    usage: dict[str, Any]
+    model_id: str
+    provider_id: str
+    execution_id: str
+    raw_response: Any = None

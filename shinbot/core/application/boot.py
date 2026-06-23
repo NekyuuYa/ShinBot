@@ -109,6 +109,10 @@ class BootController:
         # 3) Notify plugins and free plugin resources.
         await self.bot.plugin_manager.unload_all_plugins_async()
 
+        # 3b) Shut down the plugin cron scheduler.
+        if self.bot.cron_manager is not None:
+            self.bot.cron_manager.shutdown()
+
         # 4) Persist session state.
         for session in self.bot.session_manager.all_sessions:
             self.bot.session_manager.update(session)
