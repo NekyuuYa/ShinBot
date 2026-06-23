@@ -147,6 +147,7 @@ class BootController:
         self._init_dashboard_static_config()
         try:
             self.bot = self._create_core_application()
+            self.bot.plugin_manager._boot = self
             await self._preregister_model_runtime_extensions()
             self._mount_model_runtime()
             self._mount_agent_runtime()

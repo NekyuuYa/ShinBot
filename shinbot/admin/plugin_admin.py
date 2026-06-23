@@ -235,6 +235,15 @@ def update_plugin_config_or_raise(
             message=f"Failed to persist configuration for plugin {plugin_id!r}",
         )
 
+    # Notify the plugin module of config changes (e.g. for bridge-layer sync)
+    module = plugin_module(bot.plugin_manager, plugin_id)
+    callback = getattr(module, "__on_config_updated__", None) if module else None
+    if callback is not None:
+        try:
+            callback(normalized_config)
+        except Exception:
+            logger.debug("Config update callback failed for plugin %s", plugin_id, exc_info=True)
+
     return plugin
 
 

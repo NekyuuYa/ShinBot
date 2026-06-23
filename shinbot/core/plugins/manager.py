@@ -183,6 +183,7 @@ class PluginManager:
         self._modules: dict[str, Any] = {}
         self._declared_metadata: dict[str, dict[str, Any]] = {}
         self._pre_registered_runtime_plugins: set[str] = set()
+        self._boot: Any | None = None  # Set by BootController after creation
 
         self._root_data_dir = Path(data_dir) if data_dir is not None else Path("data")
         self._plugin_data_root = self._root_data_dir / "plugin_data"
@@ -267,6 +268,7 @@ class PluginManager:
             agent_runtime=self._agent_runtime,
             database=self._database,
             cron_manager=self._cron_manager,
+            plugin_manager=self,
         )
 
     @property

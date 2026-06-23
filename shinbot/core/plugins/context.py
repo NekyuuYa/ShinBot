@@ -60,6 +60,7 @@ class Plugin:
         agent_runtime: Any | None = None,
         database: DatabaseManager | None = None,
         cron_manager: PluginCronManager | None = None,
+        plugin_manager: Any | None = None,
     ):
         """Initialize the plugin capability object.
 
@@ -81,6 +82,8 @@ class Plugin:
             agent_runtime:    Reference to the agent runtime, if any.
             database:         Shared database manager instance.
             cron_manager:     Plugin cron scheduler for timed tasks.
+            plugin_manager:   Reference to the PluginManager (for advanced
+                            plugins that need to manage virtual plugins).
         """
         self.plugin_id = plugin_id
         self._command_registry = command_registry
@@ -94,6 +97,7 @@ class Plugin:
         self.agent_runtime = agent_runtime
         self.database = database
         self._cron_manager = cron_manager
+        self._plugin_manager = plugin_manager
         self.data_dir = (
             Path(data_dir) if data_dir is not None else Path("data") / "plugin_data" / plugin_id
         )
