@@ -251,6 +251,7 @@ class ReviewCoordinator:
                 else scheduler.count_unread_messages(session_id)
             )
             scan, consumed_ranges, block_digests = await self._run_review_scan(
+                scheduler=scheduler,
                 session_id=session_id,
                 unread_count=unread_count,
                 unread_ranges=unread_ranges,
@@ -390,6 +391,7 @@ class ReviewCoordinator:
     async def _run_review_scan(
         self,
         *,
+        scheduler: ReviewSchedulerPort | None = None,
         session_id: str,
         unread_count: int,
         unread_ranges: list[UnreadRange],
@@ -422,6 +424,7 @@ class ReviewCoordinator:
             consumed_ranges,
             block_digest_tasks,
         ) = await self._load_scan_batches(
+            scheduler=scheduler,
             session_id=session_id,
             unread_ranges=unread_ranges,
             max_messages=scanned_count,
@@ -902,6 +905,7 @@ class ReviewCoordinator:
         session_id: str,
         unread_ranges: list[UnreadRange],
         *,
+        scheduler: ReviewSchedulerPort | None = None,
         max_messages: int,
         prefer_tail: bool,
         summaries: list[UnreadRangeSummaryRecord],
@@ -998,6 +1002,10 @@ class ReviewCoordinator:
                     candidate_message_ids.extend(stage_output.candidate_message_ids)
                     if stage_output.reason.strip():
                         scan_reasons.append(stage_output.reason.strip())
+                # Persist progress for this batch immediately so a forced
+                # shutdown mid-scan only loses the in-flight batch instead of
+                # the whole review run (which would re-scan from scratch).
+                self._persist_scan_batch_consumption(scheduler, session_id, batch)
                 remaining -= len(batch)
                 offset += len(batch)
             if offset > 0:
@@ -1315,6 +1323,70 @@ class ReviewCoordinator:
 
         scheduler.mark_ranges_review_consumed(_dedupe_preserve_order(whole_range_ids))
         return applied
+
+    def _persist_scan_batch_consumption(
+        self,
+        scheduler: ReviewSchedulerPort | None,
+        session_id: str,
+        batch: list[dict],
+    ) -> None:
+        """Durably mark one scanned batch consumed as soon as it is scanned.
+
+        Consumption is otherwise applied once at the end of the whole review
+        run, so a forced shutdown mid-scan loses every already-scanned batch
+        and the next run re-scans the entire backlog. Persisting per batch
+        bounds that loss to the single in-flight batch.
+
+        The containing unread range is re-resolved on every call because
+        ``split_review_consumed`` deletes the original range and recreates the
+        unconsumed remainder under a new id, so a cached range id would be
+        stale after the first batch.
+
+        Args:
+            scheduler: Scheduler surface used to persist consumption, if any.
+            session_id: Session whose unread ranges are being consumed.
+            batch: Messages scanned in this batch (contiguous by msg log id).
+        """
+        if scheduler is None or not batch:
+            return
+        split = getattr(scheduler, "split_review_consumed", None)
+        if split is None:
+            return
+        first_id = _message_id(batch[0])
+        last_id = _message_id(batch[-1])
+        if first_id is None or last_id is None:
+            return
+        if last_id < first_id:
+            first_id, last_id = last_id, first_id
+        try:
+            ranges = scheduler.unread_ranges(session_id, limit=10_000)
+            target = next(
+                (
+                    item
+                    for item in ranges
+                    if item.id is not None
+                    and item.start_msg_log_id <= first_id
+                    and last_id <= item.end_msg_log_id
+                ),
+                None,
+            )
+            if target is None or target.id is None:
+                return
+            split(
+                range_id=target.id,
+                consumed_start_msg_log_id=first_id,
+                consumed_end_msg_log_id=last_id,
+            )
+        except Exception:
+            logger.warning(
+                format_log_event(
+                    "agent.review.scan.incremental_consume_failed",
+                    session_id=session_id,
+                    start_msg_log_id=first_id,
+                    end_msg_log_id=last_id,
+                ),
+                exc_info=True,
+            )
 
     def _planned_overflow_compression(
         self,

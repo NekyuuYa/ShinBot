@@ -29,7 +29,26 @@ from review_workflow_support import (
     pytest,
 )
 
+from shinbot.agent.runners.review_models import ReviewScanStageOutput
 from shinbot.agent.runtime.task_manager import AgentTaskManager
+
+
+class _InterruptingReviewScanRunner:
+    """Scan runner that fails on the Nth call to simulate a forced shutdown."""
+
+    def __init__(self, *, fail_on_call: int) -> None:
+        self.calls = 0
+        self._fail_on_call = fail_on_call
+
+    async def run(self, stage_input) -> ReviewScanStageOutput:
+        self.calls += 1
+        if self.calls >= self._fail_on_call:
+            raise RuntimeError("simulated forced shutdown mid-scan")
+        message_ids = [message["id"] for message in stage_input.source_messages]
+        return ReviewScanStageOutput(
+            candidate_message_ids=[],
+            reason=f"scanned_{len(message_ids)}",
+        )
 
 
 @pytest.mark.asyncio
@@ -949,3 +968,74 @@ async def test_active_chat_bootstrap_runner_receives_tail_history_and_reply_fact
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_review_scan_persists_progress_per_batch_on_interrupt(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    message_ids = [
+        _insert_message(db, raw_text=f"m{index}", created_at=float(index * 1000))
+        for index in range(1, 6)
+    ]
+    for message_id in message_ids:
+        db.agent_scheduler.add_unread(
+            UnreadMessage(
+                session_id="bot:group:room",
+                message_log_id=message_id,
+                sender_id="user-1",
+                created_at=float(message_id),
+                self_platform_id="bot-self",
+                trace_id=f"ingress:bot:{message_id}",
+            )
+        )
+    review_plan = FixedReviewPolicy().initial_plan(session_id="bot:group:room", now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review("bot:group:room", now=10.0)
+    unread_snapshot = [
+        UnreadMessage(
+            session_id="bot:group:room",
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=float(message_id),
+            self_platform_id="bot-self",
+            trace_id=f"ingress:bot:{message_id}",
+        )
+        for message_id in message_ids
+    ]
+
+    # Scan runner interrupts after the first batch (batch size 2 over 5
+    # messages → batches [m1,m2], [m3,m4], [m5]; it fails on the 2nd batch).
+    failing_scan_runner = _InterruptingReviewScanRunner(fail_on_call=2)
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(review_scan_batch_size=2),
+        message_store=DatabaseReviewMessageStore(db),
+        scan_runner=failing_scan_runner,
+        context_builder=RecordingReviewContextBuilder(),
+        now=lambda: 5.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id="bot:group:room",
+        review_plan=review_plan,
+        unread_messages=unread_snapshot,
+    )
+
+    # The review run failed mid-scan, but the first batch (m1, m2) was already
+    # consumed durably, so only the unscanned remainder stays unread: a restart
+    # resumes from the checkpoint instead of re-scanning the whole backlog.
+    assert result.failed is True
+    assert failing_scan_runner.calls == 2
+    remaining = [
+        message.message_log_id
+        for message in scheduler.unread_messages("bot:group:room")
+    ]
+    assert remaining == message_ids[2:]
