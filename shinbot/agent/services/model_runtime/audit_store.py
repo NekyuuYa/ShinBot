@@ -140,15 +140,22 @@ class ModelAuditPayloadStore:
         if not self.root.exists():
             return 0
         current = now or datetime.now(UTC)
+        ttl_seconds = max(self.ttl_seconds, 1)
+        # Fast path: skip files whose mtime is still inside the TTL window.
+        # A full stat+parse of every file was the root cause of the event-loop
+        # pinning (~16k files × ~8 MB each parsed on every model call).
+        cutoff_epoch = current.timestamp() - ttl_seconds
         deleted = 0
         for path in self.root.glob("*.json"):
             try:
+                if path.stat().st_mtime > cutoff_epoch:
+                    continue
                 payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                if _is_expired(payload.get("expires_at"), now=current):
+                    _unlink_quietly(path)
+                    deleted += 1
+            except OSError:
                 continue
-            if _is_expired(payload.get("expires_at"), now=current):
-                _unlink_quietly(path)
-                deleted += 1
         return deleted
 
     def _path_for(self, execution_id: str) -> Path:
