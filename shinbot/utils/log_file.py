@@ -109,8 +109,8 @@ def build_file_log_handler(
     handler.setLevel(level)
     handler.addFilter(record_filter)
     handler.setFormatter(formatter)
-    handler._shinbot_file_handler = True  # type: ignore[attr-defined]
-    handler._shinbot_file_path = str(path)  # type: ignore[attr-defined]
+    handler._shinbot_file_handler = True
+    handler._shinbot_file_path = str(path)
     return handler
 
 

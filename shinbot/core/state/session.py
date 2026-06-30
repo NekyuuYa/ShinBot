@@ -251,7 +251,7 @@ class SessionManager:
         return self._locks[session_id]
 
     @asynccontextmanager
-    async def session_lock(self, session_id: str):  # type: ignore[return]
+    async def session_lock(self, session_id: str):
         """Async context manager that grants exclusive access to a session.
 
         Acquire this before reading or writing session state to prevent

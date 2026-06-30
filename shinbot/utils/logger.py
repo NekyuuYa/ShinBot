@@ -293,7 +293,7 @@ class RuntimeLogManager:
                 datefmt=_CONSOLE_DATE_FORMAT,
             )
         )
-        console._shinbot_console_handler = True  # type: ignore[attr-defined]
+        console._shinbot_console_handler = True
         return console
 
     def replace_console_handler(
@@ -767,7 +767,7 @@ def normalize_third_party_noise_policy(
         if strict:
             raise ValueError(f"Unsupported third-party noise policy: {policy}")
         normalized = DEFAULT_THIRD_PARTY_NOISE_POLICY
-    return normalized  # type: ignore[return-value]
+    return normalized
 
 
 def _level_from_name(level_name: str, *, default: int) -> int:

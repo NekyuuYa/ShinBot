@@ -379,7 +379,7 @@ def create_api_app(
             return
         await status_manager.connect(websocket)
 
-        async def _keepalive():
+        async def _keepalive() -> None:
             try:
                 while True:
                     # Receive to detect client disconnect; we ignore the data.

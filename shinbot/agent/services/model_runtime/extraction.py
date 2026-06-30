@@ -70,7 +70,7 @@ def response_to_dict(response: Any) -> dict[str, Any]:
         A dictionary representation of *response*.
     """
     if hasattr(response, "model_dump"):
-        return response.model_dump()  # type: ignore[no-any-return]
+        return response.model_dump()
     if isinstance(response, dict):
         return response
     if hasattr(response, "__dict__"):

@@ -21,6 +21,7 @@ from shinbot.agent.services.prompt_engine.files import (
     PromptFileCatalogService,
     PromptFileLoadConfig,
 )
+from shinbot.agent.services.prompt_engine.registry import PromptRegistry
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import Envelope, ok
 
@@ -123,7 +124,7 @@ def _prompt_repository(boot) -> PromptDefinitionFileRepository:
     return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
 
 
-def _active_or_discovered_registry(bot, boot):
+def _active_or_discovered_registry(bot, boot) -> PromptRegistry:
     agent_runtime = getattr(bot, "agent_runtime", None)
     prompt_registry = getattr(agent_runtime, "prompt_registry", None)
     catalog = getattr(prompt_registry, "prompt_file_catalog", None)

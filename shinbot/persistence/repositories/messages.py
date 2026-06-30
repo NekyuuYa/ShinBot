@@ -46,7 +46,7 @@ class MessageLogRepository(Repository, ContextProvider):
                     record.routing_skip_reason,
                 ),
             )
-            return cursor.lastrowid  # type: ignore[return-value]
+            return cursor.lastrowid
 
     def mark_read(self, msg_id: int) -> None:
         """Mark a message log entry as read.

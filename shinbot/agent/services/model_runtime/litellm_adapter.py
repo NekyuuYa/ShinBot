@@ -62,7 +62,7 @@ def video_generation(**kwargs: Any) -> Any:
         raise NotImplementedError(
             "LiteLLM does not support video_generation on the installed version"
         )
-    return litellm.video_generation(**kwargs)  # type: ignore[attr-defined]
+    return litellm.video_generation(**kwargs)
 
 
 def get_model_info(
