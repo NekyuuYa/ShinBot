@@ -152,7 +152,7 @@ def _clear_session_cookie(response: Response, auth_config: AuthConfig) -> None:
 
 
 @router.get("/login", include_in_schema=False)
-async def login_method_not_allowed():
+async def login_method_not_allowed() -> None:
     """Explicitly surface wrong-method access as 405 for /auth/login."""
     raise HTTPException(
         status_code=405,
@@ -169,7 +169,7 @@ async def login(
     request: Request,
     response: Response,
     auth_config: AuthConfigDep,
-):
+) -> dict[str, Any]:
     """Exchange credentials for an authenticated session cookie."""
     _check_rate_limit(request)
 
@@ -190,14 +190,14 @@ async def login(
 
 
 @router.post("/logout", response_model=Envelope[LogoutPayload])
-async def logout(response: Response, auth_config: AuthConfigDep):
+async def logout(response: Response, auth_config: AuthConfigDep) -> dict[str, Any]:
     """Clear the session cookie to log the user out."""
     _clear_session_cookie(response, auth_config)
     return ok({"logged_out": True})
 
 
 @router.get("/profile", dependencies=AuthRequired, response_model=Envelope[ProfilePayload])
-async def get_profile(auth_config: AuthConfigDep):
+async def get_profile(auth_config: AuthConfigDep) -> dict[str, Any]:
     """Return the current authenticated user's profile."""
     return ok(
         {
@@ -213,8 +213,8 @@ async def update_profile(
     request: Request,
     response: Response,
     auth_config: AuthConfigDep,
-    boot=BootDep,
-):
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Update username and/or password, re-issue session cookie."""
     username = body.username.strip()
     if not username:

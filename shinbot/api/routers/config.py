@@ -438,19 +438,19 @@ def _model_runtime_effectively_enabled(
 
 
 @router.get("", response_model=Envelope[ConfigWorkspace])
-async def get_config_workspace(bot=BotDep, boot=BootDep):
+async def get_config_workspace(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Return the full configuration workspace for the dashboard."""
     return ok(_config_workspace(bot=bot, boot=boot))
 
 
 @router.post("/validate", response_model=Envelope[ConfigValidationResult])
-async def validate_config(body: ValidateConfigRequest, bot=BotDep, boot=BootDep):
+async def validate_config(body: ValidateConfigRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Validate a configuration payload without persisting it."""
     return ok(_config_validation_result(config=body.config, bot=bot, boot=boot))
 
 
 @router.put("", response_model=Envelope[SaveConfigResult])
-async def save_config(body: SaveConfigRequest, bot=BotDep, boot=BootDep):
+async def save_config(body: SaveConfigRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Save the full configuration and return updated workspace."""
     return _save_config_payload(
         bot=bot,
@@ -463,9 +463,9 @@ async def save_config(body: SaveConfigRequest, bot=BotDep, boot=BootDep):
 @router.put("/adapter-instances", response_model=Envelope[SaveConfigResult])
 async def save_adapter_instances(
     body: SaveAdapterInstancesRequest,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Replace adapter instances in config and save."""
     next_config = deepcopy(boot.config)
     next_config["adapter_instances"] = deepcopy(body.adapterInstances)
@@ -478,7 +478,7 @@ async def save_adapter_instances(
 
 
 @router.put("/bots", response_model=Envelope[SaveConfigResult])
-async def save_bots(body: SaveBotsRequest, bot=BotDep, boot=BootDep):
+async def save_bots(body: SaveBotsRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Replace bot definitions in config and save."""
     next_config = deepcopy(boot.config)
     next_config["bots"] = deepcopy(body.bots)

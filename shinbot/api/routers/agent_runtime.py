@@ -224,7 +224,7 @@ def _task_overview(bot: Any, bot_id: str) -> list[dict[str, Any]]:
 
 
 @router.get("", response_model=Envelope[list[AgentRuntimeProfile]])
-def get_agent_runtime_overview(bot=BotDep, boot=BootDep):
+def get_agent_runtime_overview(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Return an overview of all agent runtime profiles, sessions, and tasks."""
     profiles: list[AgentRuntimeProfile] = []
     for bot_config in getattr(boot, "bot_service_configs", ()):
@@ -264,7 +264,7 @@ class _ManualActionData(BaseModel):
     "/sessions/{session_id:path}/trigger-review",
     response_model=Envelope[_ManualActionData],
 )
-async def trigger_session_review(session_id: str, bot=BotDep, boot=BootDep):
+async def trigger_session_review(session_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Manually trigger a review for a session by bringing the review plan forward to now."""
     agent_runtime = getattr(bot, "agent_runtime", None)
     if agent_runtime is None:
@@ -277,7 +277,7 @@ async def trigger_session_review(session_id: str, bot=BotDep, boot=BootDep):
     "/sessions/{session_id:path}/force-idle",
     response_model=Envelope[_ManualActionData],
 )
-async def force_session_idle(session_id: str, bot=BotDep, boot=BootDep):
+async def force_session_idle(session_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Force a session back to IDLE from any active state."""
     agent_runtime = getattr(bot, "agent_runtime", None)
     if agent_runtime is None:

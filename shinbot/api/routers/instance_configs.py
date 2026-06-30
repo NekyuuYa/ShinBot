@@ -112,7 +112,7 @@ def _patch_value(body: InstanceConfigPatchRequest, field_name: str, current_valu
 
 
 @router.get("", response_model=Envelope[list[InstanceConfigData]])
-def list_instance_configs(bot=BotDep):
+def list_instance_configs(bot: Any = BotDep) -> dict[str, Any]:
     """List all instance configurations."""
     return ok(
         [serialize_instance_config(item) for item in bot.database.instance_configs.list()]
@@ -120,7 +120,7 @@ def list_instance_configs(bot=BotDep):
 
 
 @router.post("", status_code=201, response_model=Envelope[InstanceConfigData])
-def create_instance_config(body: InstanceConfigRequest, bot=BotDep, boot=BootDep):
+def create_instance_config(body: InstanceConfigRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Create a new instance configuration after validating references."""
     try:
         normalized = normalize_instance_config_input(
@@ -165,7 +165,7 @@ def create_instance_config(body: InstanceConfigRequest, bot=BotDep, boot=BootDep
 
 
 @router.get("/{config_uuid}", response_model=Envelope[InstanceConfigData])
-def get_instance_config(config_uuid: str, bot=BotDep):
+def get_instance_config(config_uuid: str, bot: Any = BotDep) -> dict[str, Any]:
     """Retrieve a single instance configuration by UUID."""
     try:
         payload = get_instance_config_or_raise(bot.database, config_uuid)
@@ -178,9 +178,9 @@ def get_instance_config(config_uuid: str, bot=BotDep):
 def patch_instance_config(
     config_uuid: str,
     body: InstanceConfigPatchRequest,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Partially update an existing instance configuration."""
     try:
         current = get_instance_config_or_raise(bot.database, config_uuid)
@@ -284,7 +284,7 @@ def patch_instance_config(
 
 
 @router.delete("/{config_uuid}", response_model=Envelope[InstanceConfigDeletedData])
-def delete_instance_config(config_uuid: str, bot=BotDep):
+def delete_instance_config(config_uuid: str, bot: Any = BotDep) -> dict[str, Any]:
     """Delete an instance configuration by UUID."""
     try:
         get_instance_config_or_raise(bot.database, config_uuid)
