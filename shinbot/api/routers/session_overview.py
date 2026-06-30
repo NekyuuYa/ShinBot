@@ -568,9 +568,9 @@ def _validated_batch_request(database: Any, body: SessionBatchActionRequest) -> 
 @router.get("", response_model=Envelope[list[SessionOverviewItem]])
 def get_session_overview(
     preview_limit: int = Query(default=10, ge=1, le=50),
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Get a full overview of all sessions including history, audit logs, agent state, and summaries."""
     database = getattr(bot, "database", None)
     if database is None:
@@ -761,8 +761,8 @@ def get_session_history_page(
     session_id: str,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=50, alias="pageSize"),
-    bot=BotDep,
-):
+    bot: Any = BotDep,
+) -> dict[str, Any]:
     """Get one page of persisted message history for a session."""
 
     database = _session_storage(bot)
@@ -771,7 +771,7 @@ def get_session_history_page(
 
 
 @router.delete("/{session_id:path}/history", response_model=Envelope[SessionClearedData])
-def clear_session_history(session_id: str, bot=BotDep, boot=BootDep):
+def clear_session_history(session_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Clear message history and message-derived state while keeping the session shell."""
     database = _session_storage(bot)
     existing = _existing_session_or_404(database, session_id)
@@ -786,7 +786,7 @@ def clear_session_history(session_id: str, bot=BotDep, boot=BootDep):
 
 
 @router.delete("/{session_id:path}/audit-logs", response_model=Envelope[SessionClearedData])
-def clear_session_audit_logs(session_id: str, bot=BotDep):
+def clear_session_audit_logs(session_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Clear audit logs for a session while keeping all other records."""
     database = _session_storage(bot)
     _existing_session_or_404(database, session_id)
@@ -795,7 +795,7 @@ def clear_session_audit_logs(session_id: str, bot=BotDep):
 
 
 @router.post("/batch/history", response_model=Envelope[SessionBatchActionData])
-def clear_session_history_batch(body: SessionBatchActionRequest, bot=BotDep, boot=BootDep):
+def clear_session_history_batch(body: SessionBatchActionRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Clear message history and derived state for multiple sessions."""
     database = _session_storage(bot)
     existing_sessions, missing_session_ids = _validated_batch_request(database, body)
@@ -820,7 +820,7 @@ def clear_session_history_batch(body: SessionBatchActionRequest, bot=BotDep, boo
 
 
 @router.post("/batch/audit-logs", response_model=Envelope[SessionBatchActionData])
-def clear_session_audit_logs_batch(body: SessionBatchActionRequest, bot=BotDep):
+def clear_session_audit_logs_batch(body: SessionBatchActionRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Clear audit logs for multiple sessions."""
     database = _session_storage(bot)
     existing_sessions, missing_session_ids = _validated_batch_request(database, body)
@@ -838,7 +838,7 @@ def clear_session_audit_logs_batch(body: SessionBatchActionRequest, bot=BotDep):
 
 
 @router.post("/batch/delete", response_model=Envelope[SessionBatchActionData])
-def delete_session_overview_batch(body: SessionBatchActionRequest, bot=BotDep, boot=BootDep):
+def delete_session_overview_batch(body: SessionBatchActionRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Delete multiple sessions and their related persisted/runtime state."""
     database = _session_storage(bot)
     existing_sessions, missing_session_ids = _validated_batch_request(database, body)
@@ -865,7 +865,7 @@ def delete_session_overview_batch(body: SessionBatchActionRequest, bot=BotDep, b
 
 
 @router.delete("/{session_id:path}", response_model=Envelope[SessionDeletedData])
-def delete_session_overview_entry(session_id: str, bot=BotDep, boot=BootDep):
+def delete_session_overview_entry(session_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Delete a session and its related persisted/runtime state."""
     database = _session_storage(bot)
     existing = _existing_session_or_404(database, session_id)

@@ -221,11 +221,11 @@ def _normalize_file_id(file_id: str) -> str:
     )
 
 
-def _prompt_repository(boot) -> PromptDefinitionFileRepository:
+def _prompt_repository(boot: Any) -> PromptDefinitionFileRepository:
     return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
 
 
-def _active_or_discovered_registry(bot, boot, *, sync_runtime: bool = True):
+def _active_or_discovered_registry(bot: Any, boot: Any, *, sync_runtime: bool = True) -> Any:
     agent_runtime = getattr(bot, "agent_runtime", None)
     prompt_registry = getattr(agent_runtime, "prompt_registry", None)
     catalog = getattr(prompt_registry, "prompt_file_catalog", None)
@@ -244,11 +244,11 @@ def _active_or_discovered_registry(bot, boot, *, sync_runtime: bool = True):
     return discover_file_backed_prompts(boot.data_dir, prompt_file_config=config)
 
 
-def _component_catalog_by_id(registry) -> dict[str, dict[str, Any]]:
+def _component_catalog_by_id(registry: Any) -> dict[str, dict[str, Any]]:
     return {item["id"]: _prompt_dict(item) for item in registry.list_component_catalog()}
 
 
-def _runtime_catalog_prompt_ids(bot, boot) -> set[str]:
+def _runtime_catalog_prompt_ids(bot: Any, boot: Any) -> set[str]:
     registry = _active_or_discovered_registry(bot, boot, sync_runtime=False)
     component_ids = {str(item["id"]) for item in registry.list_component_catalog()}
     return {
@@ -324,7 +324,7 @@ def _custom_catalog_item(payload: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _catalog_items(bot, boot, *, sync_runtime: bool = False) -> dict[str, dict[str, Any]]:
+def _catalog_items(bot: Any, boot: Any, *, sync_runtime: bool = False) -> dict[str, dict[str, Any]]:
     registry = _active_or_discovered_registry(bot, boot, sync_runtime=sync_runtime)
     catalog_by_id = _component_catalog_by_id(registry)
     items_by_file_id: dict[str, dict[str, Any]] = {}
@@ -343,14 +343,14 @@ def _catalog_items(bot, boot, *, sync_runtime: bool = False) -> dict[str, dict[s
     return items_by_file_id
 
 
-def _reload_prompt_runtime(bot) -> None:
+def _reload_prompt_runtime(bot: Any) -> None:
     agent_runtime = getattr(bot, "agent_runtime", None)
     reload_prompt_files = getattr(agent_runtime, "reload_prompt_files", None)
     if callable(reload_prompt_files):
         reload_prompt_files()
 
 
-def _get_catalog_item(file_id: str, bot, boot, *, sync_runtime: bool = False) -> dict[str, Any]:
+def _get_catalog_item(file_id: str, bot: Any, boot: Any, *, sync_runtime: bool = False) -> dict[str, Any]:
     normalized_file_id = _normalize_file_id(file_id)
     item = _catalog_items(bot, boot, sync_runtime=sync_runtime).get(normalized_file_id)
     if item is None:
@@ -361,7 +361,7 @@ def _get_catalog_item(file_id: str, bot, boot, *, sync_runtime: bool = False) ->
     return item
 
 
-def _assert_not_runtime_prompt_conflict(prompt_id: str, bot, boot) -> None:
+def _assert_not_runtime_prompt_conflict(prompt_id: str, bot: Any, boot: Any) -> None:
     try:
         assert_no_runtime_prompt_conflict(
             prompt_id,
@@ -438,7 +438,7 @@ def _runtime_file_data(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _custom_file_data(item: dict[str, Any], boot) -> dict[str, Any]:
+def _custom_file_data(item: dict[str, Any], boot: Any) -> dict[str, Any]:
     prompt_id = _decode_file_id(str(item["fileId"]))[1][0]
     try:
         payload = get_prompt_definition_or_raise(_prompt_repository(boot), prompt_id)
@@ -527,8 +527,8 @@ def _patch_runtime_prompt(item: dict[str, Any], body: PromptFilePatchRequest) ->
 def _patch_custom_prompt(
     item: dict[str, Any],
     body: PromptFilePatchRequest,
-    bot,
-    boot,
+    bot: Any,
+    boot: Any,
 ) -> dict[str, Any]:
     prompt_id = _decode_file_id(str(item["fileId"]))[1][0]
     try:
@@ -578,7 +578,7 @@ def _patch_custom_prompt(
 
 
 @router.get("", response_model=Envelope[list[PromptCatalogItem]])
-async def list_prompts(bot=BotDep, boot=BootDep):
+async def list_prompts(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """List registered runtime prompt files and custom prompt definitions."""
 
     items = sorted(
@@ -595,7 +595,7 @@ async def list_prompts(bot=BotDep, boot=BootDep):
 
 
 @router.post("/custom", status_code=201, response_model=Envelope[PromptFileData])
-def create_custom_prompt(body: CustomPromptCreateRequest, bot=BotDep, boot=BootDep):
+def create_custom_prompt(body: CustomPromptCreateRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Create a new custom prompt file."""
 
     try:
@@ -632,7 +632,7 @@ def create_custom_prompt(body: CustomPromptCreateRequest, bot=BotDep, boot=BootD
 
 
 @router.get("/{file_id}", response_model=Envelope[PromptFileData])
-def get_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
+def get_prompt_file(file_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Retrieve a runtime or custom prompt file."""
 
     item = _get_catalog_item(file_id, bot, boot, sync_runtime=False)
@@ -642,7 +642,7 @@ def get_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
 
 
 @router.patch("/{file_id}", response_model=Envelope[PromptFileData])
-def patch_prompt_file(file_id: str, body: PromptFilePatchRequest, bot=BotDep, boot=BootDep):
+def patch_prompt_file(file_id: str, body: PromptFilePatchRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Patch an editable runtime or custom prompt file."""
 
     item = _get_catalog_item(file_id, bot, boot, sync_runtime=False)
@@ -655,7 +655,7 @@ def patch_prompt_file(file_id: str, body: PromptFilePatchRequest, bot=BotDep, bo
 
 
 @router.delete("/{file_id}", response_model=Envelope[PromptFileDeleted])
-def delete_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
+def delete_prompt_file(file_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Delete a custom prompt file."""
 
     item = _get_catalog_item(file_id, bot, boot)
@@ -674,7 +674,7 @@ def delete_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
 
 
 @router.post("/{file_id}/reset", response_model=Envelope[PromptFileReset])
-def reset_prompt_file(file_id: str, bot=BotDep, boot=BootDep):
+def reset_prompt_file(file_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Reset a runtime prompt copy to the source prompt content."""
 
     item = _get_catalog_item(file_id, bot, boot)

@@ -72,7 +72,7 @@ class HealthData(BaseModel):
 
 
 @public_router.get("/health", response_model=Envelope[HealthData])
-async def get_health():
+async def get_health() -> dict[str, Any]:
     """Return a public health check for process liveness."""
     return ok({"status": "healthy"})
 
@@ -109,7 +109,7 @@ def _apply_update_guards(
 
 
 @router.get("/runtime", response_model=Envelope[RuntimeStateData])
-async def get_runtime_state(runtime_control=RuntimeControlDep):
+async def get_runtime_state(runtime_control: Any = RuntimeControlDep) -> dict[str, Any]:
     """Get current runtime state including pending restart requests."""
     return ok(
         {
@@ -120,13 +120,13 @@ async def get_runtime_state(runtime_control=RuntimeControlDep):
 
 
 @router.get("/logging", response_model=Envelope[LoggingStateData])
-async def get_logging_state():
+async def get_logging_state() -> dict[str, Any]:
     """Get current logging configuration including level, handlers, and source settings."""
     return ok(logging_runtime_snapshot())
 
 
 @router.patch("/logging", response_model=Envelope[LoggingStateData])
-async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot=BootDep):
+async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot: Any = BootDep) -> dict[str, Any]:
     """Update logging configuration at runtime, optionally persisting to config file."""
     try:
         state = apply_logging_runtime_config(
@@ -166,9 +166,9 @@ async def update_logging_state(body: UpdateLoggingRuntimeRequest, boot=BootDep):
 @router.get("/update", response_model=Envelope[dict[str, Any]])
 async def get_update_state(
     auth_config: AuthConfigDep,
-    runtime_control=RuntimeControlDep,
-    framework_update=FrameworkUpdateDep,
-):
+    runtime_control: Any = RuntimeControlDep,
+    framework_update: Any = FrameworkUpdateDep,
+) -> dict[str, Any]:
     """Inspect available updates and return status with guard conditions."""
     try:
         status = await framework_update.inspect()
@@ -190,7 +190,7 @@ async def get_update_state(
 
 
 @router.post("/restart", response_model=Envelope[RestartAcceptedData])
-async def request_restart(body: RestartRuntimeRequest, runtime_control=RuntimeControlDep):
+async def request_restart(body: RestartRuntimeRequest, runtime_control: Any = RuntimeControlDep) -> dict[str, Any]:
     """Request a manual or update-driven restart of the bot process."""
     try:
         request = runtime_control.request_restart(
@@ -219,9 +219,9 @@ async def request_restart(body: RestartRuntimeRequest, runtime_control=RuntimeCo
 @router.post("/update", response_model=Envelope[dict[str, Any]])
 async def pull_update_and_restart(
     auth_config: AuthConfigDep,
-    runtime_control=RuntimeControlDep,
-    framework_update=FrameworkUpdateDep,
-):
+    runtime_control: Any = RuntimeControlDep,
+    framework_update: Any = FrameworkUpdateDep,
+) -> dict[str, Any]:
     """Pull the latest framework update and schedule a restart."""
     if auth_config.is_using_default_credentials():
         raise HTTPException(
@@ -262,8 +262,8 @@ async def pull_update_and_restart(
 @router.get("/dashboard-build", response_model=Envelope[dict[str, Any]])
 async def get_dashboard_build_state(
     auth_config: AuthConfigDep,
-    dashboard_build=DashboardBuildDep,
-):
+    dashboard_build: Any = DashboardBuildDep,
+) -> dict[str, Any]:
     """Get the current dashboard build status including guard conditions."""
     status = await dashboard_build.inspect()
 
@@ -279,8 +279,8 @@ async def get_dashboard_build_state(
 @router.post("/dashboard-build", response_model=Envelope[dict[str, Any]])
 async def build_dashboard(
     auth_config: AuthConfigDep,
-    dashboard_build=DashboardBuildDep,
-):
+    dashboard_build: Any = DashboardBuildDep,
+) -> dict[str, Any]:
     """Trigger a dashboard production build and return the result."""
     if auth_config.is_using_default_credentials():
         raise HTTPException(

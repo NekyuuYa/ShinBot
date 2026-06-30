@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -79,7 +80,7 @@ class CommandPermissionData(BaseModel):
     permissionOverridden: bool
 
 
-def _permission_service(bot, boot) -> PermissionGroupService:
+def _permission_service(bot: Any, boot: Any) -> PermissionGroupService:
     return PermissionGroupService.from_config_path(
         _permission_config_path(boot),
         engine=getattr(bot, "permission_engine", None),
@@ -88,7 +89,7 @@ def _permission_service(bot, boot) -> PermissionGroupService:
     )
 
 
-def _permission_config_path(boot) -> Path:
+def _permission_config_path(boot: Any) -> Path:
     config_path = getattr(boot, "config_path", None)
     if config_path is not None:
         return Path(config_path)
@@ -104,7 +105,7 @@ def _permission_config_path(boot) -> Path:
     )
 
 
-def _sync_boot_permissions_config(boot) -> None:
+def _sync_boot_permissions_config(boot: Any) -> None:
     """Keep BootController's in-memory config aligned with TOML permission writes."""
     config = getattr(boot, "config", None)
     if not isinstance(config, dict):
@@ -142,7 +143,7 @@ def _binding_data(record: PermissionBindingRecord) -> PermissionBindingData:
     return PermissionBindingData(scopeKey=record.key, groups=groups, groupIds=groups)
 
 
-def _command_permission_data(command, registry) -> CommandPermissionData:
+def _command_permission_data(command: Any, registry: Any) -> CommandPermissionData:
     return CommandPermissionData(
         name=command.name,
         defaultPermission=registry.default_permission_for(command.name),
@@ -173,7 +174,7 @@ def _raise_admin_http_error(exc: CommandAdminError) -> None:
 
 
 @router.get("/permissions/groups", response_model=Envelope[list[PermissionGroupData]])
-async def list_permission_groups(bot=BotDep, boot=BootDep):
+async def list_permission_groups(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """List all permission groups."""
     service = _permission_service(bot, boot)
     return ok([_group_data(record).model_dump() for record in service.list_groups()])
@@ -182,9 +183,9 @@ async def list_permission_groups(bot=BotDep, boot=BootDep):
 @router.post("/permissions/groups", response_model=Envelope[PermissionGroupData])
 async def create_permission_group(
     payload: PermissionGroupCreatePayload,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Create a permission group."""
     service = _permission_service(bot, boot)
     try:
@@ -202,7 +203,7 @@ async def create_permission_group(
 
 
 @router.get("/permissions/groups/{group_id}", response_model=Envelope[PermissionGroupData])
-async def get_permission_group(group_id: str, bot=BotDep, boot=BootDep):
+async def get_permission_group(group_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Get one permission group."""
     service = _permission_service(bot, boot)
     group = service.get_group(group_id)
@@ -221,9 +222,9 @@ async def get_permission_group(group_id: str, bot=BotDep, boot=BootDep):
 async def update_permission_group(
     group_id: str,
     payload: PermissionGroupUpdatePayload,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Update one permission group."""
     service = _permission_service(bot, boot)
     try:
@@ -241,7 +242,7 @@ async def update_permission_group(
 
 
 @router.delete("/permissions/groups/{group_id}", response_model=Envelope[dict[str, bool]])
-async def delete_permission_group(group_id: str, bot=BotDep, boot=BootDep):
+async def delete_permission_group(group_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Delete one custom permission group."""
     service = _permission_service(bot, boot)
     try:
@@ -256,9 +257,9 @@ async def delete_permission_group(group_id: str, bot=BotDep, boot=BootDep):
 async def list_permission_bindings(
     scopeKey: str | None = Query(default=None),
     groupId: str | None = Query(default=None),
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """List permission bindings, optionally filtered by scope key or group ID."""
     service = _permission_service(bot, boot)
     try:
@@ -272,9 +273,9 @@ async def list_permission_bindings(
 async def set_permission_binding(
     scope_key: str,
     payload: PermissionBindingPayload,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Replace the groups bound to one permission scope key."""
     service = _permission_service(bot, boot)
     try:
@@ -289,9 +290,9 @@ async def set_permission_binding(
 async def delete_permission_binding(
     scope_key: str,
     groupId: str | None = Query(default=None),
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Delete a binding key, or remove one group from that binding when groupId is supplied."""
     service = _permission_service(bot, boot)
     try:
@@ -306,9 +307,9 @@ async def delete_permission_binding(
 async def update_command_permission(
     command_name: str,
     payload: CommandPermissionPayload,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Override one command's required permission."""
     registry = getattr(bot, "command_registry", None)
     if registry is None:
@@ -330,7 +331,7 @@ async def update_command_permission(
 
 
 @router.delete("/commands/{command_name}/permission", response_model=Envelope[CommandPermissionData])
-async def reset_command_permission(command_name: str, bot=BotDep, boot=BootDep):
+async def reset_command_permission(command_name: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Remove one command permission override and restore the plugin default."""
     registry = getattr(bot, "command_registry", None)
     if registry is None:
