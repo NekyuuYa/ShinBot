@@ -57,7 +57,7 @@ class ActiveChatContextBuilderAdapter:
 
     def __init__(
         self,
-        context_manager=None,
+        context_manager: Any = None,
         *,
         message_formatter: MessageFormatterService | None = None,
         message_format_config: MessageFormatConfig | None = None,

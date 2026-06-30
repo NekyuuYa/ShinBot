@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, register_prompt_files
 from shinbot.agent.services.prompt_engine.schema import PromptStage
 
@@ -13,7 +15,7 @@ REVIEW_COMPRESSION_COMPONENT_IDS: dict[PromptStage, list[str]] = {
 
 
 def register_review_compression_prompt_components(
-    registry,
+    registry: Any,
     *,
     prompt_file_config: PromptFileLoadConfig | None = None,
 ) -> None:

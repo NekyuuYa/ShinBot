@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from shinbot.agent.services.media.config import (
     BUILTIN_MEDIA_INSPECTION_PROMPT_ID,
     BUILTIN_MEDIA_REANALYSIS_PROMPT_ID,
@@ -12,7 +14,7 @@ from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, reg
 
 
 def register_media_prompt_components(
-    registry,
+    registry: Any,
     *,
     prompt_file_config: PromptFileLoadConfig | None = None,
 ) -> None:

@@ -770,14 +770,14 @@ async def _fetch_provider_catalog(database: Any, provider_id: str) -> list[dict[
 
 
 @router.get("/providers", response_model=Envelope[list[ProviderData]])
-async def list_providers(bot=BotDep):
+async def list_providers(bot: Any = BotDep) -> dict[str, Any]:
     """List all registered model providers."""
     providers = bot.database.model_registry.list_providers()
     return ok([_serialize_provider(item) for item in providers])
 
 
 @router.get("/metadata/backends", response_model=Envelope[list[BackendMetadataData]])
-async def list_backend_metadata():
+async def list_backend_metadata() -> dict[str, Any]:
     """List registered model backend descriptors for management clients."""
 
     return ok(
@@ -789,7 +789,7 @@ async def list_backend_metadata():
 
 
 @router.get("/metadata/provider-types", response_model=Envelope[list[ProviderTypeMetadataData]])
-async def list_provider_type_metadata():
+async def list_provider_type_metadata() -> dict[str, Any]:
     """List registered model provider descriptors for management clients."""
 
     return ok(
@@ -804,7 +804,7 @@ async def list_provider_type_metadata():
 
 
 @router.post("/providers", status_code=201, response_model=Envelope[ProviderData])
-async def create_provider(body: ProviderRequest, bot=BotDep):
+async def create_provider(body: ProviderRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Create a new model provider with authentication and default parameters."""
     _require_provider_type(body.type)
     if bot.database.model_registry.get_provider(body.id) is not None:
@@ -832,7 +832,7 @@ async def create_provider(body: ProviderRequest, bot=BotDep):
 
 
 @router.patch("/providers/{provider_id:path}", response_model=Envelope[ProviderData])
-async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotDep):
+async def update_provider(provider_id: str, body: ProviderPatchRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Partially update an existing model provider."""
     current = _require_provider(bot.database, provider_id)
     next_type = body.type if body.type is not None else current["type"]
@@ -877,7 +877,7 @@ async def update_provider(provider_id: str, body: ProviderPatchRequest, bot=BotD
 
 
 @router.delete("/providers/{provider_id:path}", response_model=Envelope[DeletedData])
-async def delete_provider(provider_id: str, bot=BotDep):
+async def delete_provider(provider_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Delete a model provider and all its associated models."""
     _require_provider(bot.database, provider_id)
     bot.database.model_registry.delete_provider(provider_id)
@@ -885,14 +885,14 @@ async def delete_provider(provider_id: str, bot=BotDep):
 
 
 @router.get("/providers/{provider_id:path}/catalog", response_model=Envelope[list[dict[str, Any]]])
-async def get_provider_catalog(provider_id: str, bot=BotDep):
+async def get_provider_catalog(provider_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Fetch the model catalog from a provider's remote API."""
     catalog = await _fetch_provider_catalog(bot.database, provider_id)
     return ok(catalog)
 
 
 @router.post("/providers/{provider_id:path}/probe", response_model=Envelope[dict[str, Any]])
-async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDep):
+async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Probe a provider's connectivity by sending a test request."""
     try:
         return ok(
@@ -909,20 +909,20 @@ async def probe_provider(provider_id: str, body: ProviderProbeRequest, bot=BotDe
 
 
 @router.get("/providers/{provider_id:path}", response_model=Envelope[ProviderData])
-async def get_provider(provider_id: str, bot=BotDep):
+async def get_provider(provider_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Retrieve a single model provider by ID."""
     return ok(_serialize_provider(_require_provider(bot.database, provider_id)))
 
 
 @router.get("/models", response_model=Envelope[list[ModelData]])
-async def list_models(providerId: str | None = Query(default=None), bot=BotDep):
+async def list_models(providerId: str | None = Query(default=None), bot: Any = BotDep) -> dict[str, Any]:
     """List all model definitions, optionally filtered by provider."""
     models = bot.database.model_registry.list_models(provider_id=providerId)
     return ok([_serialize_model(item) for item in models])
 
 
 @router.post("/models", status_code=201, response_model=Envelope[ModelData])
-async def create_model(body: ModelRequest, bot=BotDep):
+async def create_model(body: ModelRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Create a new model definition with cost metadata and capabilities."""
     if bot.database.model_registry.get_model(body.id) is not None:
         raise HTTPException(
@@ -955,13 +955,13 @@ async def create_model(body: ModelRequest, bot=BotDep):
 
 
 @router.get("/models/{model_id:path}", response_model=Envelope[ModelData])
-async def get_model(model_id: str, bot=BotDep):
+async def get_model(model_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Retrieve a single model definition by ID."""
     return ok(_serialize_model(_require_model(bot.database, model_id)))
 
 
 @router.patch("/models/{model_id:path}", response_model=Envelope[ModelData])
-async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
+async def update_model(model_id: str, body: ModelPatchRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Partially update an existing model definition."""
     current = _require_model(bot.database, model_id)
     provider_id = body.providerId if body.providerId is not None else current["provider_id"]
@@ -1008,7 +1008,7 @@ async def update_model(model_id: str, body: ModelPatchRequest, bot=BotDep):
 
 
 @router.delete("/models/{model_id:path}", response_model=Envelope[DeletedData])
-async def delete_model(model_id: str, bot=BotDep):
+async def delete_model(model_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Delete a model definition by ID."""
     _require_model(bot.database, model_id)
     bot.database.model_registry.delete_model(model_id)
@@ -1016,7 +1016,7 @@ async def delete_model(model_id: str, bot=BotDep):
 
 
 @router.get("/routes", response_model=Envelope[list[RouteData]])
-async def list_routes(bot=BotDep):
+async def list_routes(bot: Any = BotDep) -> dict[str, Any]:
     """List all model routes with their members."""
     routes = bot.database.model_registry.list_routes()
     return ok(
@@ -1028,7 +1028,7 @@ async def list_routes(bot=BotDep):
 
 
 @router.post("/routes", status_code=201, response_model=Envelope[RouteData])
-async def create_route(body: RouteRequest, bot=BotDep):
+async def create_route(body: RouteRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Create a new model routing configuration with member assignments."""
     if bot.database.model_registry.get_route(body.id) is not None:
         raise HTTPException(
@@ -1069,7 +1069,7 @@ async def create_route(body: RouteRequest, bot=BotDep):
 
 
 @router.get("/routes/{route_id:path}", response_model=Envelope[RouteData])
-async def get_route(route_id: str, bot=BotDep):
+async def get_route(route_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Retrieve a single model route with its members."""
     route = _require_route(bot.database, route_id)
     members = bot.database.model_registry.list_route_members(route_id)
@@ -1077,7 +1077,7 @@ async def get_route(route_id: str, bot=BotDep):
 
 
 @router.patch("/routes/{route_id:path}", response_model=Envelope[RouteData])
-async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
+async def update_route(route_id: str, body: RoutePatchRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Partially update an existing model route and its members."""
     current = _require_route(bot.database, route_id)
     next_id = body.id if body.id is not None else route_id
@@ -1133,7 +1133,7 @@ async def update_route(route_id: str, body: RoutePatchRequest, bot=BotDep):
 
 
 @router.delete("/routes/{route_id:path}", response_model=Envelope[DeletedData])
-async def delete_route(route_id: str, bot=BotDep):
+async def delete_route(route_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Delete a model route by ID."""
     _require_route(bot.database, route_id)
     bot.database.model_registry.delete_route(route_id)
@@ -1141,7 +1141,7 @@ async def delete_route(route_id: str, bot=BotDep):
 
 
 @router.get("/executions", response_model=Envelope[list[ExecutionData]])
-async def list_model_executions(limit: int = Query(default=50, ge=1, le=200), bot=BotDep):
+async def list_model_executions(limit: int = Query(default=50, ge=1, le=200), bot: Any = BotDep) -> dict[str, Any]:
     """List recent model execution records."""
     records = bot.database.model_executions.list_recent(limit=limit)
     return ok([_serialize_execution(item) for item in records])
@@ -1159,7 +1159,7 @@ async def list_model_execution_audit_records(
     instanceId: str | None = Query(default=None),
     success: bool | None = Query(default=None),
     query: str | None = Query(default=None, max_length=200),
-    bot=BotDep,
+    bot: Any = BotDep,
 ):
     """List execution audit records with filtering and pagination."""
     records = bot.database.model_executions.list_audit_records(
@@ -1178,7 +1178,7 @@ async def list_model_execution_audit_records(
 
 
 @router.get("/executions/{execution_id:path}/payload", response_model=Envelope[ExecutionPayloadData])
-async def get_model_execution_payload(execution_id: str, bot=BotDep):
+async def get_model_execution_payload(execution_id: str, bot: Any = BotDep) -> dict[str, Any]:
     """Retrieve the full audit payload for a specific execution."""
     store = ModelAuditPayloadStore(bot.database.config.data_dir)
     payload = store.read(execution_id)
@@ -1209,7 +1209,7 @@ async def get_model_execution_payload(execution_id: str, bot=BotDep):
 
 
 @router.get("/token-summary", response_model=Envelope[TokenSummaryData])
-async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotDep):
+async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot: Any = BotDep) -> dict[str, Any]:
     """Get token usage summary over the specified number of days."""
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     summary = bot.database.model_executions.summarize_tokens(since=since)
@@ -1220,7 +1220,7 @@ async def get_token_summary(days: int = Query(default=7, ge=1, le=365), bot=BotD
 async def get_cost_analysis(
     days: int = Query(default=7, ge=1, le=30),
     modelLimit: int = Query(default=8, ge=1, le=16),
-    bot=BotDep,
+    bot: Any = BotDep,
 ):
     """Get detailed cost analysis with timeline and per-model breakdowns."""
     now = datetime.now(UTC)

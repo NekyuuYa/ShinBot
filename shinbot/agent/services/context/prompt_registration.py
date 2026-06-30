@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from shinbot.agent.services.context.projectors.headings import (
     ACTIVE_ALIAS_COMPONENT_ID,
     COMPRESSED_MEMORY_ALIAS_COMPONENT_ID,
@@ -14,7 +16,7 @@ from shinbot.agent.services.prompt_engine.files import PromptFileLoadConfig, reg
 
 
 def register_context_prompt_components(
-    registry,
+    registry: Any,
     *,
     prompt_file_config: PromptFileLoadConfig | None = None,
 ) -> None:

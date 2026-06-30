@@ -1,8 +1,8 @@
-from typing import Any
-
 """Builtin plugin: baseline text commands for message platforms."""
 
 from __future__ import annotations
+
+from typing import Any
 
 import re
 import time

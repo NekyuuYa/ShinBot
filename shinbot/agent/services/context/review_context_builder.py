@@ -47,7 +47,7 @@ class ReviewContextBuilder(Protocol):
 class ReviewContextBuilderAdapter:
     """Thin adapter over existing ContextManager construction surfaces."""
 
-    def __init__(self, context_manager=None) -> None:
+    def __init__(self, context_manager: Any = None) -> None:
         self._context_manager = context_manager
 
     def build_for_messages(

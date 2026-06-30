@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
 from shinbot.agent.runners.review_block_digest import (
     LLMReviewBlockDigestStageRunner,
@@ -381,7 +381,7 @@ class ReviewRunnerFactory:
 
 
 def register_review_prompt_components(
-    registry,
+    registry: Any,
     *,
     prompt_file_config: PromptFileLoadConfig | None = None,
 ) -> None:

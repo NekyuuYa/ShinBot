@@ -102,7 +102,7 @@ def create_api_app(
     # ── Lifespan (startup / shutdown hooks) ──────────────────────────
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> Any:
         """FastAPI lifespan context manager.
 
         On startup the async log handler is installed and the log

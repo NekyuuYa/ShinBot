@@ -320,7 +320,7 @@ class ActiveReplyDispatcher:
         *,
         session_id: str,
         active_chat_state: ActiveChatState,
-        review_result_summary=None,
+        review_result_summary: Any = None,
         initial_unread_messages: list[UnreadMessage] | None = None,
     ) -> None:
         """Start an active chat workflow session for the given session.
