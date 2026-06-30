@@ -44,7 +44,7 @@ class AIInteractionRepository(Repository):
                     record.prompt_snapshot_id,
                 ),
             )
-            return cursor.lastrowid
+            return int(cursor.lastrowid)
 
     def get_by_execution(self, execution_id: str) -> dict[str, Any] | None:
         """Return an AI interaction record by execution ID, or ``None``.
