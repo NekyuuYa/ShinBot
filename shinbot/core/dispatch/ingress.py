@@ -741,8 +741,10 @@ class MessageIngress:
                     logger.debug("Interceptor blocked event: %s", interceptor.__name__)
                     return ROUTING_SKIP_INTERCEPTOR_BLOCKED
             except Exception:
-                logger.exception("Interceptor error: %s", interceptor.__name__)
-                return ROUTING_SKIP_INTERCEPTOR_BLOCKED
+                logger.exception(
+                    "Interceptor error (fail-open): %s", interceptor.__name__
+                )
+                continue
         return None
 
     async def _run_pre_route_hooks(self, dispatch_context: RouteDispatchContext) -> None:
