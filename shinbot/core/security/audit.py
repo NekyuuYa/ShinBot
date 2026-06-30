@@ -199,8 +199,8 @@ class AuditLogger:
         # Guard against unbounded file growth
         try:
             if log_file.exists() and log_file.stat().st_size >= self._MAX_FILE_SIZE_BYTES:
-                logger.warning(
-                    "Audit log %s exceeds %d bytes; skipping write",
+                logger.error(
+                    "Audit log %s exceeds %d bytes; audit records are being DROPPED",
                     log_file,
                     self._MAX_FILE_SIZE_BYTES,
                 )
@@ -241,8 +241,11 @@ class AuditLogger:
                 except ValueError:
                     continue
                 if file_date < cutoff:
-                    path.unlink()
-                    removed += 1
+                    try:
+                        path.unlink()
+                        removed += 1
+                    except OSError:
+                        logger.warning("Failed to delete audit log %s", path)
             if removed:
                 logger.info(
                     "Cleaned up %d audit log file(s) older than %d days",

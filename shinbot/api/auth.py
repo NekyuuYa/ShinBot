@@ -89,7 +89,11 @@ class AuthConfig:
 
     def is_using_default_credentials(self) -> bool:
         """Check if credentials are still factory defaults (admin/admin)."""
-        return self.username == self.DEFAULT_USERNAME and self._password == self.DEFAULT_PASSWORD
+        if self.username != self.DEFAULT_USERNAME:
+            return False
+        if self._password.startswith(_BCRYPT_PREFIX) and _HAS_BCRYPT:
+            return bcrypt.checkpw(self.DEFAULT_PASSWORD.encode(), self._password.encode())
+        return self._password == self.DEFAULT_PASSWORD
 
     def set_credentials(self, username: str, password: str) -> None:
         """Update the in-memory admin credentials, hashing the password with bcrypt."""
