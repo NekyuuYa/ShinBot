@@ -335,6 +335,8 @@ class SessionManager:
             The removed :class:`Session`, or ``None`` if it did not exist.
         """
         removed = self._sessions.pop(session_id, None)
+        # Clean up the per-session lock to prevent unbounded growth.
+        self._locks.pop(session_id, None)
         if delete_persisted and self._session_repo is not None:
             self._session_repo.delete(session_id)
         return removed

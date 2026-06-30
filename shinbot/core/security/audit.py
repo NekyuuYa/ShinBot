@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +52,9 @@ class AuditLog:
 class AuditLogger:
     """Centralized audit logging for command execution."""
 
+    _MAX_LOG_AGE_DAYS: int = 30
+    _MAX_FILE_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
     def __init__(
         self,
         data_dir: Path | str | None = None,
@@ -65,6 +68,7 @@ class AuditLogger:
         """
         self._audit_repo = audit_repo
         self._data_dir: Path | None = None
+        self._last_cleanup_date: str | None = None
         if data_dir:
             audit_path = Path(data_dir) / "audit"
             audit_path.mkdir(parents=True, exist_ok=True)
@@ -192,8 +196,58 @@ class AuditLogger:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         log_file = self._data_dir / f"audit_{today}.jsonl"
 
+        # Guard against unbounded file growth
+        try:
+            if log_file.exists() and log_file.stat().st_size >= self._MAX_FILE_SIZE_BYTES:
+                logger.warning(
+                    "Audit log %s exceeds %d bytes; skipping write",
+                    log_file,
+                    self._MAX_FILE_SIZE_BYTES,
+                )
+                return
+        except Exception:
+            logger.exception("Failed to check audit log file size for %s", log_file)
+            return
+
         try:
             with log_file.open("a", encoding="utf-8") as f:
                 f.write(entry.to_json() + "\n")
         except Exception:
             logger.exception("Failed to persist audit log to %s", log_file)
+
+        # Run cleanup once per day on the first write of a new day
+        if self._last_cleanup_date != today:
+            self._last_cleanup_date = today
+            self._cleanup_old_logs()
+
+    def _cleanup_old_logs(self) -> None:
+        """Remove audit log files older than ``_MAX_LOG_AGE_DAYS``.
+
+        Age is determined from the date embedded in the filename
+        (``audit_YYYY-MM-DD.jsonl``), not from filesystem mtime.
+        Failures are logged but never propagate to the caller.
+        """
+        if not self._data_dir:
+            return
+
+        try:
+            cutoff = datetime.now(UTC).date() - timedelta(days=self._MAX_LOG_AGE_DAYS)
+            removed = 0
+            for path in self._data_dir.glob("audit_*.jsonl"):
+                stem = path.stem  # e.g. "audit_2026-06-28"
+                date_part = stem.removeprefix("audit_")
+                try:
+                    file_date = datetime.strptime(date_part, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                if file_date < cutoff:
+                    path.unlink()
+                    removed += 1
+            if removed:
+                logger.info(
+                    "Cleaned up %d audit log file(s) older than %d days",
+                    removed,
+                    self._MAX_LOG_AGE_DAYS,
+                )
+        except Exception:
+            logger.exception("Failed to clean up old audit log files")

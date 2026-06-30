@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import time
@@ -9,6 +10,21 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import jwt
+
+try:
+    import bcrypt
+
+    _HAS_BCRYPT = True
+except ImportError:
+    _HAS_BCRYPT = False
+    logging.getLogger(__name__).warning(
+        "bcrypt is not installed; passwords will be stored and compared as plaintext. "
+        "Install with: uv add bcrypt"
+    )
+
+_BCRYPT_PREFIX = "$2b$"
+
+logger = logging.getLogger(__name__)
 
 
 class AuthConfig:
@@ -30,7 +46,10 @@ class AuthConfig:
     def __init__(self, config: dict[str, Any], data_dir: Path) -> None:
         admin_cfg = config.get("admin", {})
         self.username: str = admin_cfg.get("username", self.DEFAULT_USERNAME)
-        self._password: str = admin_cfg.get("password", self.DEFAULT_PASSWORD)
+        # Prefer password_hash (bcrypt) over plaintext password for migration
+        password_hash = admin_cfg.get("password_hash", "")
+        password_plain = admin_cfg.get("password", self.DEFAULT_PASSWORD)
+        self._password: str = password_hash if password_hash else password_plain
         self.jwt_expire_hours: int = int(admin_cfg.get("jwt_expire_hours", 24))
         self.session_cookie_name: str = (
             str(admin_cfg.get("auth_cookie_name", "shinbot_session")).strip()
@@ -59,7 +78,13 @@ class AuthConfig:
         """Verify username and password using constant-time comparison."""
         # Use constant-time comparison to prevent timing attacks.
         username_ok = secrets.compare_digest(username, self.username)
-        password_ok = secrets.compare_digest(password, self._password)
+        if self._password.startswith(_BCRYPT_PREFIX):
+            if not _HAS_BCRYPT:
+                logger.error("Cannot verify bcrypt hash: bcrypt is not installed")
+                return False
+            password_ok = bcrypt.checkpw(password.encode(), self._password.encode())
+        else:
+            password_ok = secrets.compare_digest(password, self._password)
         return username_ok and password_ok
 
     def is_using_default_credentials(self) -> bool:
@@ -67,9 +92,16 @@ class AuthConfig:
         return self.username == self.DEFAULT_USERNAME and self._password == self.DEFAULT_PASSWORD
 
     def set_credentials(self, username: str, password: str) -> None:
-        """Update the in-memory admin credentials."""
+        """Update the in-memory admin credentials, hashing the password with bcrypt."""
         self.username = username
-        self._password = password
+        self._password = self._hash_password(password)
+
+    @staticmethod
+    def _hash_password(password: str) -> str:
+        """Hash a password with bcrypt. Falls back to plaintext if bcrypt is unavailable."""
+        if _HAS_BCRYPT:
+            return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        return password
 
     # ── Token lifecycle ──────────────────────────────────────────────
 

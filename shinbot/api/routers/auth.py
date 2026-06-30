@@ -267,9 +267,12 @@ async def update_profile(
 
     admin_cfg = boot.config.setdefault("admin", {})
     previous_username = admin_cfg.get("username", auth_config.username)
-    previous_password = admin_cfg.get("password", "")
+    previous_password_hash = admin_cfg.get("password_hash", "")
+    previous_password_plain = admin_cfg.get("password", "")
     admin_cfg["username"] = username
-    admin_cfg["password"] = new_password
+    admin_cfg["password_hash"] = AuthConfig._hash_password(new_password)
+    # Remove legacy plaintext key if present
+    admin_cfg.pop("password", None)
 
     saved = False
     try:
@@ -279,7 +282,13 @@ async def update_profile(
 
     if not saved:
         admin_cfg["username"] = previous_username
-        admin_cfg["password"] = previous_password
+        # Restore previous password (hash or plaintext)
+        admin_cfg.pop("password_hash", None)
+        admin_cfg.pop("password", None)
+        if previous_password_hash:
+            admin_cfg["password_hash"] = previous_password_hash
+        elif previous_password_plain:
+            admin_cfg["password"] = previous_password_plain
         raise HTTPException(
             status_code=500,
             detail={

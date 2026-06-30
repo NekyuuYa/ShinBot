@@ -124,7 +124,10 @@ def test_profile_update_persists_credentials_and_returns_refreshed_token(tmp_pat
 
     assert boot.save_config_calls == 1
     assert boot.config["admin"]["username"] == "owner"
-    assert boot.config["admin"]["password"] == "strong-password"
+    # Password should be stored as bcrypt hash, not plaintext
+    assert "password" not in boot.config["admin"]
+    assert "password_hash" in boot.config["admin"]
+    assert boot.config["admin"]["password_hash"].startswith("$2b$")
 
     assert login_old.status_code == 401
     assert login_new.status_code == 200
@@ -150,7 +153,9 @@ def test_profile_update_rollback_when_config_persist_fails(tmp_path: Path):
     assert login.status_code == 200
     assert response.status_code == 500
     assert boot.config["admin"]["username"] == "admin"
+    # On rollback, the original plaintext password should be restored
     assert boot.config["admin"]["password"] == "admin"
+    assert "password_hash" not in boot.config["admin"]
 
 
 def test_logout_clears_session_cookie(tmp_path: Path):

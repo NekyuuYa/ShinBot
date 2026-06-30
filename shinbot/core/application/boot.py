@@ -9,6 +9,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+try:
+    import bcrypt
+
+    _HAS_BCRYPT = True
+except ImportError:
+    _HAS_BCRYPT = False
+
 from shinbot.admin.command_admin import apply_command_enabled_overrides
 from shinbot.core.application.app import ShinBot
 from shinbot.core.application.boot_preflight import (
@@ -595,6 +602,8 @@ class BootController:
         can log in and change it via the Dashboard.  The generated password
         is persisted to the configured main config file and is NOT the well-known "admin/admin"
         default, so the system is safe from the moment it starts.
+
+        Migrates plaintext passwords to bcrypt hashes on first boot after update.
         """
         admin_cfg = self.config.get("admin")
         if not isinstance(admin_cfg, dict):
@@ -604,9 +613,36 @@ class BootController:
         if not admin_cfg.get("username"):
             admin_cfg["username"] = "admin"
             changed = True
-        if not admin_cfg.get("password"):
+
+        # Migration: convert plaintext password to bcrypt hash
+        has_hash = bool(admin_cfg.get("password_hash"))
+        has_plain = bool(admin_cfg.get("password"))
+
+        if has_hash:
+            # Already migrated; nothing to do
+            pass
+        elif has_plain:
+            # Migrate plaintext password to bcrypt hash
+            plaintext = admin_cfg["password"]
+            if _HAS_BCRYPT:
+                hashed = bcrypt.hashpw(plaintext.encode(), bcrypt.gensalt()).decode()
+                admin_cfg["password_hash"] = hashed
+                del admin_cfg["password"]
+                changed = True
+                logger.info("Migrated admin password from plaintext to bcrypt hash")
+            else:
+                logger.warning(
+                    "bcrypt is not installed; plaintext password will remain in config. "
+                    "Install with: uv add bcrypt"
+                )
+        else:
+            # No password configured at all; generate one
             generated = secrets.token_urlsafe(16)
-            admin_cfg["password"] = generated
+            if _HAS_BCRYPT:
+                hashed = bcrypt.hashpw(generated.encode(), bcrypt.gensalt()).decode()
+                admin_cfg["password_hash"] = hashed
+            else:
+                admin_cfg["password"] = generated
             changed = True
             # Print the generated password prominently so the operator can
             # copy it. Use stderr so the credential block preserves ordering
