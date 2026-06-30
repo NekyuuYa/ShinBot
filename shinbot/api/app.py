@@ -9,6 +9,7 @@ Implements the communication contract defined in 16_api_communication_spec.md:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -252,30 +253,93 @@ def create_api_app(
     async def _require_ws_auth(websocket: WebSocket, token: str | None) -> bool:
         """Validate the session for WebSocket connections.
 
+        Authentication is attempted in the following order:
+
+        1. **Session cookie** -- Browsers automatically attach cookies during the
+           WebSocket handshake, so the dashboard authenticates with the same
+           session cookie used for HTTP.
+        2. **Query-string token** -- Accepted for backward compatibility but a
+           deprecation warning is logged because query strings leak tokens in
+           proxy/nginx access logs.
+        3. **First-message auth** -- The connection is accepted, then the server
+           waits up to 10 seconds for a JSON message of the form
+           ``{"type": "auth", "token": "<jwt>"}``.  If the token is missing or
+           invalid the socket is closed with code 4001 (Unauthorized).
+
         Returns True if valid, False (and closes the socket) if not.
-        Browsers automatically attach cookies during the WebSocket handshake, so
-        the dashboard authenticates with the same session cookie used for HTTP.
-        The query-token fallback is kept for non-browser clients.
         """
         auth_config = websocket.app.state.auth_config
-        resolved_token = websocket.cookies.get(auth_config.session_cookie_name) or token
-        if not resolved_token:
-            logger.warning("WS connection rejected: Missing session from %s", websocket.client)
-            await websocket.close(code=1008, reason="Unauthorized: token required")
-            return False
+
+        # 1. Cookie auth (preferred for browsers).
+        cookie_token = websocket.cookies.get(auth_config.session_cookie_name)
+        if cookie_token:
+            try:
+                auth_config.decode_token(cookie_token)
+            except _jwt.InvalidTokenError as e:
+                logger.warning("WS connection rejected: Invalid cookie from %s: %s", websocket.client, e)
+                await websocket.close(code=1008, reason="Unauthorized: invalid token")
+                return False
+            except Exception as e:
+                logger.error("WS connection rejected: Internal error during auth: %s", e)
+                await websocket.close(code=1011, reason="Internal server error")
+                return False
+            await websocket.accept()
+            return True
+
+        # 2. Query-string token (deprecated, kept for backward compatibility).
+        if token:
+            logger.warning(
+                "WS token passed via query string from %s -- this is deprecated "
+                "and will be removed in a future release. Use first-message auth "
+                '({"type": "auth", "token": "..."}) instead.',
+                websocket.client,
+            )
+            try:
+                auth_config.decode_token(token)
+            except _jwt.InvalidTokenError as e:
+                logger.warning("WS connection rejected: Invalid query token from %s: %s", websocket.client, e)
+                await websocket.close(code=1008, reason="Unauthorized: invalid token")
+                return False
+            except Exception as e:
+                logger.error("WS connection rejected: Internal error during auth: %s", e)
+                await websocket.close(code=1011, reason="Internal server error")
+                return False
+            await websocket.accept()
+            return True
+
+        # 3. First-message auth -- accept the socket then wait for credentials.
+        await websocket.accept()
         try:
-            auth_config.decode_token(resolved_token)
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+            if len(raw) > 1024:
+                logger.warning("WS connection rejected: Auth message too large from %s", websocket.client)
+                await websocket.close(code=4001, reason="Unauthorized: auth message too large")
+                return False
+            msg = json.loads(raw)
+            if msg.get("type") != "auth" or not msg.get("token"):
+                logger.warning("WS connection rejected: Invalid auth message from %s", websocket.client)
+                await websocket.close(code=4001, reason="Unauthorized: invalid auth message")
+                return False
+            auth_config.decode_token(msg["token"])
+        except TimeoutError:
+            logger.warning("WS connection rejected: Auth timeout from %s", websocket.client)
+            await websocket.close(code=4001, reason="Unauthorized: auth timeout")
+            return False
         except _jwt.InvalidTokenError as e:
             logger.warning("WS connection rejected: Invalid token from %s: %s", websocket.client, e)
-            await websocket.close(code=1008, reason="Unauthorized: invalid token")
+            await websocket.close(code=4001, reason="Unauthorized: invalid token")
+            return False
+        except json.JSONDecodeError:
+            logger.warning("WS connection rejected: Malformed auth message from %s", websocket.client)
+            await websocket.close(code=4001, reason="Unauthorized: invalid auth message")
+            return False
+        except WebSocketDisconnect:
+            logger.debug("WS client disconnected during auth from %s", websocket.client)
             return False
         except Exception as e:
             logger.error("WS connection rejected: Internal error during auth: %s", e)
             await websocket.close(code=1011, reason="Internal server error")
             return False
-
-        # IMPORTANT: Handshake must be accepted before any data transfer or connection registration.
-        await websocket.accept()
         return True
 
     @app.websocket("/ws/logs")
