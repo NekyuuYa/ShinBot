@@ -41,14 +41,6 @@
               :disabled="authStore.isLoading"
             />
 
-            <v-checkbox
-              v-model="form.rememberMe"
-              :label="$t('pages.auth.rememberMe')"
-              color="primary"
-              hide-details
-              class="mb-6"
-            />
-
             <v-alert
               v-if="authStore.error"
               type="error"
@@ -93,7 +85,6 @@ const authStore = useAuthStore();
 const form = reactive({
   username: "",
   password: "",
-  rememberMe: false,
 });
 
 const handleLogin = async () => {
