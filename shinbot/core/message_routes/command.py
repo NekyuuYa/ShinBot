@@ -250,7 +250,9 @@ class CommandRegistry:
                         raw_args=raw_args,
                         prefix=prefix,
                     )
-                return None
+                # Fallthrough: prefix matched text but command is not P0_PREFIX
+                # (or not found). Continue to next prefix, then P1_EXACT/P2_REGEX.
+                continue
 
         cmd = self._exact_commands.get(stripped)
         if cmd is not None and cmd.enabled:
