@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 from pathlib import Path
 from typing import Any
 
 from shinbot.core.application.paths import project_root_from_config, resolve_project_path
 from shinbot.core.application.runtime_control import RestartReason, RuntimeControl
+from shinbot.utils.logger import get_logger
 
 from .common import DEFAULT_FRAMEWORK_UPDATE_TIMEOUT_SECONDS, MAX_OUTPUT_CHARS, SystemUpdateError
+
+logger = get_logger(__name__, source="framework_command", color="cyan")
 
 
 class FrameworkUpdateCommandService:
@@ -85,12 +89,37 @@ class FrameworkUpdateCommandService:
                     status_code=self._status_code_for_block(status["blockCode"]),
                 )
 
-            process = await asyncio.create_subprocess_shell(
-                self._command,
-                cwd=self._workdir,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            if not self._command:
+                raise SystemUpdateError(
+                    code="UPDATE_NOT_ALLOWED",
+                    message="Framework update command is empty",
+                    status_code=400,
+                )
+
+            try:
+                cmd_parts = shlex.split(self._command)
+            except ValueError as exc:
+                raise SystemUpdateError(
+                    code="UPDATE_NOT_ALLOWED",
+                    message=f"Framework update command is malformed: {exc}",
+                    status_code=400,
+                ) from exc
+
+            logger.debug("Framework update command parsed: %s", cmd_parts)
+
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_parts,
+                    cwd=self._workdir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            except OSError as exc:
+                raise SystemUpdateError(
+                    code="UPDATE_NOT_ALLOWED",
+                    message=f"Framework update command failed to execute: {exc}",
+                    status_code=503,
+                ) from exc
 
             try:
                 stdout, _ = await asyncio.wait_for(process.communicate(), timeout=self._timeout)

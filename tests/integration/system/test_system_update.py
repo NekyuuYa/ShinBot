@@ -445,12 +445,12 @@ async def test_framework_update_command_service_runs_command_and_requests_restar
         async def communicate(self):
             return b"updated\n", None
 
-    async def fake_create_subprocess_shell(*args, **kwargs):
-        assert args == ("echo updated",)
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        assert args == ("echo", "updated")
         assert kwargs["cwd"] == tmp_path
         return _Process()
 
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     status = await service.inspect()
     result = await service.run_and_request_restart(
