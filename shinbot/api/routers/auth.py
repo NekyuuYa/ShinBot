@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+import time
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -13,6 +16,94 @@ from shinbot.api.models import EC, Envelope, ok
 from shinbot.api.schemas import LoginPayload, LogoutPayload, ProfilePayload
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# --- Login rate limiting -------------------------------------------------
+
+_MAX_FAILED_ATTEMPTS = 5
+_ATTEMPT_WINDOW_SECONDS = 60.0
+_BLOCK_DURATION_SECONDS = 300.0
+
+
+@dataclass
+class _RateLimitEntry:
+    """Per-IP rate-limit state for the login endpoint."""
+
+    fail_count: int = 0
+    first_fail_time: float = 0.0
+    blocked_until: float = 0.0
+
+
+_rate_limits: dict[str, _RateLimitEntry] = {}
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract the client IP from the direct connection."""
+    if request.client is not None:
+        return request.client.host
+    return "unknown"
+
+
+def _evict_stale_entries(now: float) -> None:
+    """Remove entries whose block window has fully expired to cap memory."""
+    stale_ips = [
+        ip
+        for ip, entry in _rate_limits.items()
+        if entry.blocked_until <= now
+        and (now - entry.first_fail_time) > _BLOCK_DURATION_SECONDS
+    ]
+    for ip in stale_ips:
+        del _rate_limits[ip]
+
+
+def _check_rate_limit(request: Request) -> None:
+    """Raise 429 if the caller's IP is currently blocked."""
+    now = time.monotonic()
+    _evict_stale_entries(now)
+
+    ip = _get_client_ip(request)
+    entry = _rate_limits.get(ip)
+    if entry is None:
+        return
+
+    # Still inside the block window?
+    if entry.blocked_until > now:
+        retry_after = math.ceil(entry.blocked_until - now)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "RATE_LIMITED",
+                "message": "Too many failed login attempts. Try again later.",
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _record_failure(request: Request) -> None:
+    """Record a failed login attempt; block IP after exceeding the threshold."""
+    now = time.monotonic()
+    ip = _get_client_ip(request)
+    entry = _rate_limits.get(ip)
+
+    if entry is None:
+        _rate_limits[ip] = _RateLimitEntry(fail_count=1, first_fail_time=now)
+        return
+
+    # Reset the window if it has expired
+    if (now - entry.first_fail_time) > _ATTEMPT_WINDOW_SECONDS:
+        entry.fail_count = 1
+        entry.first_fail_time = now
+        entry.blocked_until = 0.0
+        return
+
+    entry.fail_count += 1
+    if entry.fail_count >= _MAX_FAILED_ATTEMPTS:
+        entry.blocked_until = now + _BLOCK_DURATION_SECONDS
+
+
+def _clear_rate_limit(request: Request) -> None:
+    """Clear rate-limit state on successful login."""
+    ip = _get_client_ip(request)
+    _rate_limits.pop(ip, None)
 
 
 class LoginRequest(BaseModel):
@@ -80,7 +171,10 @@ async def login(
     auth_config: AuthConfigDep,
 ):
     """Exchange credentials for an authenticated session cookie."""
+    _check_rate_limit(request)
+
     if not auth_config.verify_password(body.username, body.password):
+        _record_failure(request)
         raise HTTPException(
             status_code=401,
             detail={
@@ -89,6 +183,7 @@ async def login(
             },
         )
 
+    _clear_rate_limit(request)
     token = auth_config.create_token(subject=body.username)
     _set_session_cookie(response, auth_config, token, request)
     return ok(_login_payload(auth_config, subject=body.username))
