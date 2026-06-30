@@ -625,6 +625,12 @@ class BootController:
             admin_cfg["jwt_expire_hours"] = 24
             changed = True
 
+        _WEAK_PASSWORDS = {"admin", "password", "123456", "admin123"}
+        if admin_cfg.get("password") in _WEAK_PASSWORDS:
+            logger.warning(
+                "Weak or default admin password detected. Please change your password immediately."
+            )
+
         self.config["admin"] = admin_cfg
 
         if changed:
