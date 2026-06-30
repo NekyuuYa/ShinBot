@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Callable
 from pathlib import Path
@@ -107,7 +108,47 @@ class Plugin:
         self._registered_routes: list[str] = []
         self._registered_tools: list[str] = []
         self._registered_model_observers: list[ModelRuntimeObserver] = []
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self.logger = get_plugin_logger(plugin_id)
+
+    # ── Background task management ────────────────────────────────────
+
+    def create_task(self, coro: Any, *, name: str | None = None) -> asyncio.Task[Any]:
+        """Create and track a background task for this plugin.
+
+        Plugins should use this instead of ``asyncio.create_task()`` so
+        that the plugin manager can cancel and await the task during
+        unload.  Tasks created here are automatically removed from the
+        tracking set when they complete.
+
+        Args:
+            coro: The coroutine to run as a background task.
+            name: Optional name for debugging (shows in ``asyncio.all_tasks()``).
+
+        Returns:
+            The :class:`asyncio.Task` that was created.
+        """
+        task = asyncio.create_task(coro, name=f"plugin.{self.plugin_id}.{name or 'bg'}")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    @property
+    def background_tasks(self) -> frozenset[asyncio.Task[Any]]:
+        """Return the set of currently running background tasks."""
+        return frozenset(self._background_tasks)
+
+    async def cancel_background_tasks(self) -> None:
+        """Cancel and await all background tasks owned by this plugin.
+
+        Safe to call even if no tasks are running.
+        """
+        if not self._background_tasks:
+            return
+        for task in self._background_tasks:
+            task.cancel()
+        await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
 
     def on_command(
         self,

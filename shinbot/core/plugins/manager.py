@@ -1183,6 +1183,18 @@ class PluginManager:
         except Exception:
             logger.exception("Error in on_disable() for plugin %s", plugin_id)
 
+        # Cancel background tasks before unregistering handlers — tasks may
+        # still reference the plugin's registered resources during cleanup.
+        if plg is not None:
+            task_count = len(plg.background_tasks)
+            if task_count:
+                logger.debug(
+                    "Cancelling %d background task(s) for plugin %s",
+                    task_count,
+                    plugin_id,
+                )
+                await plg.cancel_background_tasks()
+
         cmd_count = self._command_registry.unregister_by_owner(plugin_id)
         evt_count = self._event_bus.off_all(plugin_id)
         self._keyword_registry.unregister_by_owner(plugin_id)
