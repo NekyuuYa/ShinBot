@@ -21,18 +21,22 @@ class ContextEvictionConfig:
 
 
 def extract_total_tokens(usage: dict[str, Any] | None) -> int:
-    """Extract the combined input and output token count from usage data.
+    """Extract the input token count from usage data.
+
+    Only input tokens are counted because the eviction budget
+    (``max_context_tokens``) represents the model's input context window
+    limit.  Output tokens (model responses, tool calls) do not consume
+    input context space and must not be included.
 
     Args:
         usage: Token usage dict from the model runtime, or None.
 
     Returns:
-        Total token count, floored at zero.
+        Input token count, floored at zero.
     """
     payload = usage or {}
     input_tokens = int(payload.get("input_tokens", 0) or 0)
-    output_tokens = int(payload.get("output_tokens", 0) or 0)
-    return max(0, input_tokens + output_tokens)
+    return max(0, input_tokens)
 
 
 def select_blocks_for_eviction(
