@@ -1,3 +1,5 @@
+from typing import Any
+
 """Builtin plugin: baseline text commands for message platforms."""
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ _DURATION_UNITS = {
 }
 
 
-def _is_command_visible(command, ctx) -> bool:
+def _is_command_visible(command: Any, ctx: Any) -> bool:
     return (
         command.enabled
         and (ctx is None or bot_plugin_enabled_for_context(ctx, command.owner))
@@ -33,7 +35,7 @@ def _is_command_visible(command, ctx) -> bool:
     )
 
 
-def _render_help_lines(plugin: Plugin, ctx=None) -> list[str]:
+def _render_help_lines(plugin: Plugin, ctx: Any = None) -> list[str]:
     prefix = "/"
     if ctx is not None and ctx.command_match is not None and ctx.command_match.prefix:
         prefix = ctx.command_match.prefix
@@ -96,7 +98,7 @@ def _format_duration(seconds: float) -> str:
     return "".join(parts) or "0s"
 
 
-def _permission_binding_keys(ctx) -> tuple[str, str]:
+def _permission_binding_keys(ctx: Any) -> tuple[str, str]:
     identity_id = ctx.bot_id or ctx.adapter.instance_id
     session_scope = ctx.bot_session_id or ctx.session_id
     platform_user_id = ctx.user_id
@@ -108,7 +110,7 @@ def _permission_binding_keys(ctx) -> tuple[str, str]:
     )
 
 
-def _current_pause_until(ctx, plugin: Plugin) -> float | None:
+def _current_pause_until(ctx: Any, plugin: Plugin) -> float | None:
     runtime = plugin.agent_runtime
     if runtime is not None:
         getter = getattr(runtime, "session_pause_until", None)
@@ -117,7 +119,7 @@ def _current_pause_until(ctx, plugin: Plugin) -> float | None:
     return get_agent_pause_until(ctx.session)
 
 
-async def _clear_agent_pause(ctx, plugin: Plugin) -> bool:
+async def _clear_agent_pause(ctx: Any, plugin: Plugin) -> bool:
     """Clear the current session agent pause if runtime support is available."""
     runtime = plugin.agent_runtime
     if runtime is None:

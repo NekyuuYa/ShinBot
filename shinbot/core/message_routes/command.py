@@ -416,7 +416,7 @@ class TextCommandDispatcher:
     def _log_command_audit(
         self,
         *,
-        bot,
+        bot: Any,
         command_name: str,
         plugin_id: str | None,
         permission_required: str,
@@ -442,7 +442,7 @@ class TextCommandDispatcher:
             metadata=metadata,
         )
 
-    def _update_session(self, session) -> None:
+    def _update_session(self, session: Any) -> None:
         if self._session_manager is not None:
             self._session_manager.update(session)
 

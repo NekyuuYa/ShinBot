@@ -68,7 +68,7 @@ def stream_top_level_array(
     key: str,
     *,
     chunk_size: int = 65536,
-):
+) -> Any:
     """Yield one object at a time from a top-level JSON array field."""
 
     decoder = json.JSONDecoder()

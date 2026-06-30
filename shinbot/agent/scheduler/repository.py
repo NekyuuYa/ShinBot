@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from shinbot.agent.scheduler.inbox import AgentInbox
 from shinbot.agent.scheduler.models import (
@@ -988,7 +989,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         return int(row["cnt"]) if row is not None else 0
 
     @staticmethod
-    def _can_extend_tail_range(conn, message: UnreadMessage, tail) -> bool:
+    def _can_extend_tail_range(conn: Any, message: UnreadMessage, tail: Any) -> bool:
         if int(tail["end_msg_log_id"]) >= message.message_log_id:
             return False
         if float(tail["end_at"]) > message.created_at:

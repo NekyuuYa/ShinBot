@@ -120,11 +120,11 @@ def _raise_admin_http_error(exc: PromptDefinitionAdminError) -> None:
     ) from exc
 
 
-def _prompt_repository(boot) -> PromptDefinitionFileRepository:
+def _prompt_repository(boot: Any) -> PromptDefinitionFileRepository:
     return PromptDefinitionFileRepository.from_data_dir(boot.data_dir)
 
 
-def _active_or_discovered_registry(bot, boot) -> PromptRegistry:
+def _active_or_discovered_registry(bot: Any, boot: Any) -> PromptRegistry:
     agent_runtime = getattr(bot, "agent_runtime", None)
     prompt_registry = getattr(agent_runtime, "prompt_registry", None)
     catalog = getattr(prompt_registry, "prompt_file_catalog", None)
@@ -143,7 +143,7 @@ def _active_or_discovered_registry(bot, boot) -> PromptRegistry:
     return discover_file_backed_prompts(boot.data_dir, prompt_file_config=config)
 
 
-def _runtime_catalog_prompt_ids(bot, boot) -> set[str]:
+def _runtime_catalog_prompt_ids(bot: Any, boot: Any) -> set[str]:
     registry = _active_or_discovered_registry(bot, boot)
     component_ids = {str(item["id"]) for item in registry.list_component_catalog()}
     return {
@@ -153,7 +153,7 @@ def _runtime_catalog_prompt_ids(bot, boot) -> set[str]:
     }
 
 
-def _assert_not_runtime_prompt_conflict(prompt_id: str, bot, boot) -> None:
+def _assert_not_runtime_prompt_conflict(prompt_id: str, bot: Any, boot: Any) -> None:
     assert_no_runtime_prompt_conflict(
         prompt_id,
         runtime_prompt_ids=_runtime_catalog_prompt_ids(bot, boot),
@@ -161,7 +161,7 @@ def _assert_not_runtime_prompt_conflict(prompt_id: str, bot, boot) -> None:
 
 
 @router.get("", response_model=Envelope[list[PromptDefinitionData]])
-def list_prompt_definitions(boot=BootDep):
+def list_prompt_definitions(boot: Any = BootDep):
     """List all prompt definitions from the file-based repository."""
     try:
         return ok([serialize_prompt_definition(item) for item in _prompt_repository(boot).list()])
@@ -170,7 +170,7 @@ def list_prompt_definitions(boot=BootDep):
 
 
 @router.post("", status_code=201, response_model=Envelope[PromptDefinitionData])
-def create_prompt_definition(body: PromptDefinitionRequest, bot=BotDep, boot=BootDep):
+def create_prompt_definition(body: PromptDefinitionRequest, bot: Any = BotDep, boot: Any = BootDep):
     """Create a new prompt definition and persist it to the file repository."""
     try:
         repository = _prompt_repository(boot)
@@ -206,7 +206,7 @@ def create_prompt_definition(body: PromptDefinitionRequest, bot=BotDep, boot=Boo
 
 
 @router.get("/{prompt_uuid}", response_model=Envelope[PromptDefinitionData])
-def get_prompt_definition(prompt_uuid: str, boot=BootDep):
+def get_prompt_definition(prompt_uuid: str, boot: Any = BootDep):
     """Retrieve a single prompt definition by its UUID."""
     try:
         payload = get_prompt_definition_or_raise(_prompt_repository(boot), prompt_uuid)
@@ -219,8 +219,8 @@ def get_prompt_definition(prompt_uuid: str, boot=BootDep):
 def patch_prompt_definition(
     prompt_uuid: str,
     body: PromptDefinitionPatchRequest,
-    bot=BotDep,
-    boot=BootDep,
+    bot: Any = BotDep,
+    boot: Any = BootDep,
 ):
     """Partially update a prompt definition by its UUID."""
     try:
@@ -279,7 +279,7 @@ def patch_prompt_definition(
 
 
 @router.delete("/{prompt_uuid}", response_model=Envelope[PromptDefinitionDeleted])
-def delete_prompt_definition(prompt_uuid: str, boot=BootDep):
+def delete_prompt_definition(prompt_uuid: str, boot: Any = BootDep):
     """Delete a prompt definition by its UUID."""
     try:
         _prompt_repository(boot).delete(prompt_uuid)

@@ -253,7 +253,7 @@ class Message(BaseModel):
     def __getitem__(self, index: int) -> MessageElement:
         return self.elements[index]
 
-    def __iter__(self):
+    def __iter__(self) -> Any:
         return iter(self.elements)
 
     def __bool__(self) -> bool:

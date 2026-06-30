@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 import jwt
 from fastapi import Depends, HTTPException, Request
@@ -21,23 +21,23 @@ async def _auth_config(request: Request) -> AuthConfig:
     return request.app.state.auth_config
 
 
-async def _bot(request: Request):
+async def _bot(request: Request) -> Any:
     return request.app.state.bot
 
 
-async def _boot_controller(request: Request):
+async def _boot_controller(request: Request) -> Any:
     return request.app.state.boot_controller
 
 
-async def _runtime_control(request: Request):
+async def _runtime_control(request: Request) -> Any:
     return request.app.state.runtime_control
 
 
-async def _dashboard_build_service(request: Request):
+async def _dashboard_build_service(request: Request) -> Any:
     return request.app.state.dashboard_build_service
 
 
-async def _framework_update_service(request: Request):
+async def _framework_update_service(request: Request) -> Any:
     return request.app.state.framework_update_service
 
 

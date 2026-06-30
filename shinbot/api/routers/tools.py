@@ -58,7 +58,7 @@ def _tool_dict(definition: Any) -> dict[str, Any]:
 
 
 @router.get("", response_model=Envelope[list[ToolData]])
-async def list_tools(bot=BotDep):
+async def list_tools(bot: Any = BotDep) -> dict[str, Any]:
     """List all registered tools for dashboard management."""
     tool_registry = getattr(bot, "tool_registry", None)
     if tool_registry is None:

@@ -69,7 +69,7 @@ async def _read_limited_archive_body(request: Request) -> bytes:
 
 
 @router.get("", response_model=Envelope[dict[str, Any]])
-async def list_plugin_install_sources(bot=BotDep, boot=BootDep):
+async def list_plugin_install_sources(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """List WebUI-managed plugin source records."""
     service = build_plugin_install_service(bot, boot)
     try:
@@ -79,7 +79,7 @@ async def list_plugin_install_sources(bot=BotDep, boot=BootDep):
 
 
 @router.get("/tasks/{task_id}", response_model=Envelope[dict[str, Any]])
-async def get_plugin_install_task(task_id: str, bot=BotDep, boot=BootDep):
+async def get_plugin_install_task(task_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Get an in-memory plugin install task status."""
     service = build_plugin_install_service(bot, boot)
     task = service.get_task(task_id)
@@ -92,7 +92,7 @@ async def get_plugin_install_task(task_id: str, bot=BotDep, boot=BootDep):
 
 
 @router.post("/github/preview", response_model=Envelope[dict[str, Any]])
-async def preview_github_plugin_install(payload: GithubPluginInstallRequest, bot=BotDep, boot=BootDep):
+async def preview_github_plugin_install(payload: GithubPluginInstallRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Preview a GitHub plugin archive without installing it."""
     service = build_plugin_install_service(bot, boot)
     try:
@@ -108,7 +108,7 @@ async def preview_github_plugin_install(payload: GithubPluginInstallRequest, bot
 
 
 @router.post("/github", response_model=Envelope[dict[str, Any]])
-async def install_github_plugin(payload: GithubPluginInstallRequest, bot=BotDep, boot=BootDep):
+async def install_github_plugin(payload: GithubPluginInstallRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Install a plugin from a GitHub repository archive."""
     service = build_plugin_install_service(bot, boot)
     try:
@@ -129,8 +129,8 @@ async def install_github_plugin(payload: GithubPluginInstallRequest, bot=BotDep,
 async def preview_archive_plugin_install(
     request: Request,
     filename: str = Query(default=""),
-    bot=BotDep,
-    boot=BootDep,
+    bot: Any = BotDep,
+    boot: Any = BootDep,
 ):
     """Preview a raw application/zip plugin archive without installing it."""
     service = build_plugin_install_service(bot, boot)
@@ -147,8 +147,8 @@ async def install_archive_plugin(
     enable_after_install: bool = Query(default=True),
     allow_overwrite: bool = Query(default=False),
     filename: str = Query(default=""),
-    bot=BotDep,
-    boot=BootDep,
+    bot: Any = BotDep,
+    boot: Any = BootDep,
 ):
     """Install a plugin from a raw application/zip request body."""
     service = build_plugin_install_service(bot, boot)
@@ -170,8 +170,8 @@ async def install_archive_plugin(
 async def update_webui_plugin(
     plugin_id: str,
     enable_after_install: bool = Query(default=True),
-    bot=BotDep,
-    boot=BootDep,
+    bot: Any = BotDep,
+    boot: Any = BootDep,
 ):
     """Update a WebUI-managed GitHub plugin."""
     service = build_plugin_install_service(bot, boot)
@@ -182,7 +182,7 @@ async def update_webui_plugin(
 
 
 @router.delete("/{plugin_id}", response_model=Envelope[dict[str, Any]])
-async def uninstall_webui_plugin(plugin_id: str, bot=BotDep, boot=BootDep):
+async def uninstall_webui_plugin(plugin_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Uninstall a WebUI-managed plugin while preserving plugin data."""
     service = build_plugin_install_service(bot, boot)
     try:

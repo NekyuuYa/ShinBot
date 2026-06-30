@@ -291,7 +291,7 @@ class AgentRuntimeProfile:
             )
         )
 
-    def _create_agent_scheduler(self, workflow_dispatcher) -> AgentScheduler:
+    def _create_agent_scheduler(self, workflow_dispatcher: Any) -> AgentScheduler:
         store = getattr(self._owner.database, "agent_scheduler", None)
         return AgentScheduler(
             workflow_dispatcher=workflow_dispatcher,
@@ -962,7 +962,7 @@ class AgentRuntime:
             is_reply_to_bot=message.is_reply_to_bot,
         )
 
-    def _resolve_instance_runtime_config(self, instance_id: str):
+    def _resolve_instance_runtime_config(self, instance_id: str) -> Any:
         return resolve_instance_runtime_config(self._instance_config_payload(instance_id))
 
     def _instance_config_payload(self, instance_id: str) -> dict[str, Any] | None:

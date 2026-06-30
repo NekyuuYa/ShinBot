@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -49,7 +51,7 @@ def _raise_admin_http_error(exc: CommandAdminError) -> None:
 
 
 @router.get("", response_model=Envelope[list[CommandData]])
-async def list_commands(bot=BotDep):
+async def list_commands(bot: Any = BotDep) -> dict[str, Any]:
     """List all registered runtime commands for dashboard management."""
     registry = getattr(bot, "command_registry", None)
     if registry is None:
@@ -62,9 +64,9 @@ async def list_commands(bot=BotDep):
 async def update_command(
     command_name: str,
     payload: CommandEnabledPayload,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Update command runtime management state."""
     registry = getattr(bot, "command_registry", None)
     if registry is None:

@@ -171,7 +171,7 @@ async def serve_with_operator_cli(*, boot: Any, api_host: str, api_port: int, se
         await task
 
 
-def _history_for_boot(boot: Any):
+def _history_for_boot(boot: Any) -> Any:
     data_dir = getattr(boot, "data_dir", None)
     if data_dir is None:
         return InMemoryHistory()
