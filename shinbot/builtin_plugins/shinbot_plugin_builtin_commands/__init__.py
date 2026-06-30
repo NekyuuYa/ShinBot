@@ -146,7 +146,7 @@ def setup(plg: Plugin) -> None:
         usage="/help",
         permission="cmd.help",
     )
-    async def help_command(ctx, _args: str) -> None:
+    async def help_command(ctx: Any, _args: str) -> None:
         await ctx.send("\n".join(_render_help_lines(plg, ctx)))
 
     @plg.on_command(
@@ -155,7 +155,7 @@ def setup(plg: Plugin) -> None:
         usage="/ping",
         permission="cmd.ping",
     )
-    async def ping_command(ctx, _args: str) -> None:
+    async def ping_command(ctx: Any, _args: str) -> None:
         await ctx.send("pong")
 
     @plg.on_command(
@@ -165,7 +165,7 @@ def setup(plg: Plugin) -> None:
         usage="/about",
         permission="cmd.about",
     )
-    async def about_command(ctx, _args: str) -> None:
+    async def about_command(ctx: Any, _args: str) -> None:
         prefixes = _format_prefixes(ctx.session.config.prefixes)
         await ctx.send(f"ShinBot {shinbot.__version__}\n命令前缀：{prefixes}")
 
@@ -175,7 +175,7 @@ def setup(plg: Plugin) -> None:
         usage="/whoami",
         permission="cmd.whoami",
     )
-    async def whoami_command(ctx, _args: str) -> None:
+    async def whoami_command(ctx: Any, _args: str) -> None:
         global_key, session_key = _permission_binding_keys(ctx)
         platform_user_id = ctx.user_id
         if platform_user_id and ":" not in platform_user_id:
@@ -197,7 +197,7 @@ def setup(plg: Plugin) -> None:
         usage="/mute 15m | /mute 3h5m | /mute off",
         permission="cmd.mute",
     )
-    async def mute_command(ctx, args: str) -> None:
+    async def mute_command(ctx: Any, args: str) -> None:
         runtime = plg.agent_runtime
         if runtime is None:
             await ctx.send("当前未挂载 agent runtime，无法暂停 agent 活动")
@@ -249,5 +249,5 @@ def setup(plg: Plugin) -> None:
         usage="/unmute",
         permission="cmd.mute",
     )
-    async def unmute_command(ctx, _args: str) -> None:
+    async def unmute_command(ctx: Any, _args: str) -> None:
         await _clear_agent_pause(ctx, plg)

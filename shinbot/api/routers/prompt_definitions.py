@@ -161,7 +161,7 @@ def _assert_not_runtime_prompt_conflict(prompt_id: str, bot: Any, boot: Any) -> 
 
 
 @router.get("", response_model=Envelope[list[PromptDefinitionData]])
-def list_prompt_definitions(boot: Any = BootDep):
+def list_prompt_definitions(boot: Any = BootDep) -> dict[str, Any]:
     """List all prompt definitions from the file-based repository."""
     try:
         return ok([serialize_prompt_definition(item) for item in _prompt_repository(boot).list()])
@@ -170,7 +170,7 @@ def list_prompt_definitions(boot: Any = BootDep):
 
 
 @router.post("", status_code=201, response_model=Envelope[PromptDefinitionData])
-def create_prompt_definition(body: PromptDefinitionRequest, bot: Any = BotDep, boot: Any = BootDep):
+def create_prompt_definition(body: PromptDefinitionRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Create a new prompt definition and persist it to the file repository."""
     try:
         repository = _prompt_repository(boot)
@@ -206,7 +206,7 @@ def create_prompt_definition(body: PromptDefinitionRequest, bot: Any = BotDep, b
 
 
 @router.get("/{prompt_uuid}", response_model=Envelope[PromptDefinitionData])
-def get_prompt_definition(prompt_uuid: str, boot: Any = BootDep):
+def get_prompt_definition(prompt_uuid: str, boot: Any = BootDep) -> dict[str, Any]:
     """Retrieve a single prompt definition by its UUID."""
     try:
         payload = get_prompt_definition_or_raise(_prompt_repository(boot), prompt_uuid)
@@ -221,7 +221,7 @@ def patch_prompt_definition(
     body: PromptDefinitionPatchRequest,
     bot: Any = BotDep,
     boot: Any = BootDep,
-):
+) -> dict[str, Any]:
     """Partially update a prompt definition by its UUID."""
     try:
         repository = _prompt_repository(boot)
@@ -279,7 +279,7 @@ def patch_prompt_definition(
 
 
 @router.delete("/{prompt_uuid}", response_model=Envelope[PromptDefinitionDeleted])
-def delete_prompt_definition(prompt_uuid: str, boot: Any = BootDep):
+def delete_prompt_definition(prompt_uuid: str, boot: Any = BootDep) -> dict[str, Any]:
     """Delete a prompt definition by its UUID."""
     try:
         _prompt_repository(boot).delete(prompt_uuid)

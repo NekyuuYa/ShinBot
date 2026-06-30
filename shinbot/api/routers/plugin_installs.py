@@ -131,7 +131,7 @@ async def preview_archive_plugin_install(
     filename: str = Query(default=""),
     bot: Any = BotDep,
     boot: Any = BootDep,
-):
+) -> dict[str, Any]:
     """Preview a raw application/zip plugin archive without installing it."""
     service = build_plugin_install_service(bot, boot)
     try:
@@ -149,7 +149,7 @@ async def install_archive_plugin(
     filename: str = Query(default=""),
     bot: Any = BotDep,
     boot: Any = BootDep,
-):
+) -> dict[str, Any]:
     """Install a plugin from a raw application/zip request body."""
     service = build_plugin_install_service(bot, boot)
     try:
@@ -172,7 +172,7 @@ async def update_webui_plugin(
     enable_after_install: bool = Query(default=True),
     bot: Any = BotDep,
     boot: Any = BootDep,
-):
+) -> dict[str, Any]:
     """Update a WebUI-managed GitHub plugin."""
     service = build_plugin_install_service(bot, boot)
     try:

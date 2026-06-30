@@ -1009,7 +1009,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
 
     @staticmethod
     def _remaining_ranges_after_consumed(
-        conn,
+        conn: Any,
         unread_range: UnreadRange,
         *,
         consumed_start_msg_log_id: int,
@@ -1036,7 +1036,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
 
     @staticmethod
     def _range_for_message_bounds(
-        conn,
+        conn: Any,
         source: UnreadRange,
         *,
         start_msg_log_id: int,
@@ -1072,7 +1072,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         )
 
     @staticmethod
-    def _high_priority_from_row(row) -> HighPriorityEvent:
+    def _high_priority_from_row(row: Any) -> HighPriorityEvent:
         try:
             kind = HighPriorityEventKind(str(row["kind"]))
         except ValueError:
@@ -1087,7 +1087,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         )
 
     @staticmethod
-    def _unread_range_from_row(row) -> UnreadRange:
+    def _unread_range_from_row(row: Any) -> UnreadRange:
         return UnreadRange(
             id=int(row["id"]),
             session_id=str(row["session_id"]),
@@ -1101,7 +1101,7 @@ class AgentSchedulerRepository(Repository, AgentInbox, AgentStateStore):
         )
 
     @staticmethod
-    def _review_plan_from_row(row) -> ReviewPlan:
+    def _review_plan_from_row(row: Any) -> ReviewPlan:
         try:
             sensitivity = MentionSensitivity(str(row["mention_sensitivity"]))
         except ValueError:

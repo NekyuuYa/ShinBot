@@ -1160,7 +1160,7 @@ async def list_model_execution_audit_records(
     success: bool | None = Query(default=None),
     query: str | None = Query(default=None, max_length=200),
     bot: Any = BotDep,
-):
+) -> dict[str, Any]:
     """List execution audit records with filtering and pagination."""
     records = bot.database.model_executions.list_audit_records(
         limit=limit,
@@ -1221,7 +1221,7 @@ async def get_cost_analysis(
     days: int = Query(default=7, ge=1, le=30),
     modelLimit: int = Query(default=8, ge=1, le=16),
     bot: Any = BotDep,
-):
+) -> dict[str, Any]:
     """Get detailed cost analysis with timeline and per-model breakdowns."""
     now = datetime.now(UTC)
     since_dt = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)

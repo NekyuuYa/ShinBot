@@ -90,7 +90,7 @@ class ActiveChatCoordinator:
         *,
         session_id: str,
         active_chat_state: ActiveChatState,
-        review_result_summary=None,
+        review_result_summary: Any = None,
     ) -> ActiveChatStartResult:
         """Initialize an active chat session without triggering an LLM round."""
         async with self._get_lock(session_id):
@@ -130,8 +130,7 @@ class ActiveChatCoordinator:
     async def notify_message(
         self,
         *,
-        scheduler,
-        session_id: str,
+        scheduler: Any,         session_id: str,
         message_log_id: int,
         sender_id: str,
         response_profile: str,
@@ -297,7 +296,7 @@ class ActiveChatCoordinator:
         self._running_rounds.clear()
         self._states.clear()
 
-    async def flush_now(self, *, scheduler, session_id: str) -> None:
+    async def flush_now(self, *, scheduler: Any, session_id: str) -> None:
         """Immediately flush pending active-chat messages for a session."""
         current_task = asyncio.current_task()
         async with self._get_lock(session_id):
@@ -385,8 +384,7 @@ class ActiveChatCoordinator:
     def _arm_semantic_wait_locked(
         self,
         *,
-        scheduler,
-        session_id: str,
+        scheduler: Any,         session_id: str,
         sender_id: str,
         previous_sender_id: str,
     ) -> tuple[bool, bool]:
@@ -467,8 +465,7 @@ class ActiveChatCoordinator:
     async def _semantic_wait_then_flush(
         self,
         *,
-        scheduler,
-        session_id: str,
+        scheduler: Any,         session_id: str,
         wait_seconds: float,
     ) -> None:
         try:
@@ -510,7 +507,7 @@ class ActiveChatCoordinator:
                 )
             )
 
-    async def _flush(self, *, session_id: str, scheduler) -> None:
+    async def _flush(self, *, session_id: str, scheduler: Any) -> None:
         try:
             async with self._get_lock(session_id):
                 state = self._states.get(session_id)
@@ -754,8 +751,7 @@ class ActiveChatCoordinator:
     def _arm_next_round_if_pending_locked(
         self,
         *,
-        scheduler,
-        session_id: str,
+        scheduler: Any,         session_id: str,
         state: ActiveChatAttentionState,
     ) -> None:
         if not state.pending_buffer:
