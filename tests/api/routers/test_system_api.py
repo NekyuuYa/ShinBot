@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from shinbot.api.app import create_api_app
@@ -46,22 +47,29 @@ def _make_app(tmp_path, *, non_default_creds: bool = False):
 
     bot = ShinBot(data_dir=tmp_path)
     boot = _BootStub(tmp_path)
-    if non_default_creds:
-        boot.config["admin"]["username"] = "owner"
-        boot.config["admin"]["password"] = "admin"
-        from shinbot.api.auth import AuthConfig
-
-        ac = AuthConfig(boot.config, boot.data_dir)
-        boot.config["admin"]["password_hash"] = ac._hash_password("admin")
-        del boot.config["admin"]["password"]
     runtime_control = RuntimeControl()
     app = create_api_app(bot, boot, runtime_control=runtime_control)
+    if non_default_creds:
+        app.state.auth_config.set_credentials("owner", "s3cret-pw")
+        boot.config["admin"]["username"] = "owner"
+        boot.config["admin"]["password_hash"] = app.state.auth_config._password
+        boot.config["admin"].pop("password", None)
     token = app.state.auth_config.create_token()
     return app, token, boot, runtime_control
 
 
 def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def app_factory(tmp_path):
+    """Pytest fixture that returns a factory for creating test apps."""
+
+    def factory(*, non_default_creds: bool = False):
+        return _make_app(tmp_path, non_default_creds=non_default_creds)
+
+    return factory
 
 
 # ── Public endpoints ─────────────────────────────────────────────────────────
@@ -326,6 +334,22 @@ class TestLoggingState:
         body = response.json()
         assert body["data"]["thirdPartyNoise"] == "debug"
 
+    def test_patch_logging_persist_third_party_noise(self, tmp_path):
+        app, token, boot, _ = _make_app(tmp_path)
+
+        with TestClient(app) as client:
+            response = client.patch(
+                "/api/v1/system/logging",
+                json={"thirdPartyNoise": "on", "persist": True},
+                headers=_auth_headers(token),
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["thirdPartyNoise"] == "on"
+        assert boot.save_config_calls == 1
+        assert boot.config["logging"]["third_party_noise"] == "on"
+
     def test_logging_requires_auth(self, tmp_path):
         app, _, _, _ = _make_app(tmp_path)
 
@@ -333,6 +357,94 @@ class TestLoggingState:
             response = client.get("/api/v1/system/logging")
 
         assert response.status_code == 401
+
+
+# ── _apply_update_guards (pure function) ─────────────────────────────────────
+
+
+class TestApplyUpdateGuards:
+    """Unit tests for the _apply_update_guards pure function."""
+
+    def test_returns_unchanged_when_no_guards_apply(self):
+        from shinbot.api.routers.system import _apply_update_guards
+
+        status = {"canUpdate": True, "currentVersion": "1.0.0"}
+        result = _apply_update_guards(
+            status,
+            credentials_change_required=False,
+            restart_request=None,
+        )
+
+        assert result["canUpdate"] is True
+        assert result["credentialsChangeRequired"] is False
+        assert result["restartRequested"] is False
+        assert result["restartRequest"] is None
+        assert result.get("blockCode") is None
+
+    def test_blocks_when_default_credentials(self):
+        from shinbot.api.routers.system import _apply_update_guards
+
+        status = {"canUpdate": True}
+        result = _apply_update_guards(
+            status,
+            credentials_change_required=True,
+            restart_request=None,
+        )
+
+        assert result["canUpdate"] is False
+        assert result["blockCode"] == "default_credentials"
+        assert "default admin credentials" in result["blockMessage"]
+        assert result["credentialsChangeRequired"] is True
+
+    def test_blocks_when_restart_pending(self):
+        from shinbot.api.routers.system import _apply_update_guards
+
+        status = {"canUpdate": True}
+        restart_req = {"reason": "manual", "requested_at": 1}
+        result = _apply_update_guards(
+            status,
+            credentials_change_required=False,
+            restart_request=restart_req,
+        )
+
+        assert result["canUpdate"] is False
+        assert result["blockCode"] == "restart_pending"
+        assert "restart" in result["blockMessage"].lower()
+        assert result["restartRequested"] is True
+        assert result["restartRequest"] is restart_req
+
+    def test_default_credentials_take_priority_over_restart(self):
+        """When both guards apply, the credentials guard blocks first."""
+        from shinbot.api.routers.system import _apply_update_guards
+
+        status = {"canUpdate": True}
+        restart_req = {"reason": "update", "requested_at": 2}
+        result = _apply_update_guards(
+            status,
+            credentials_change_required=True,
+            restart_request=restart_req,
+        )
+
+        # credentials_change_required triggers the early return
+        assert result["canUpdate"] is False
+        assert result["blockCode"] == "default_credentials"
+        assert result["restartRequested"] is True
+        assert result["restartRequest"] is restart_req
+
+    def test_restart_guard_does_not_apply_when_can_update_false(self):
+        """If canUpdate was already False, restart guard should not override blockCode."""
+        from shinbot.api.routers.system import _apply_update_guards
+
+        status = {"canUpdate": False}
+        result = _apply_update_guards(
+            status,
+            credentials_change_required=False,
+            restart_request={"reason": "manual"},
+        )
+
+        # canUpdate was already False, so restart guard condition (guarded.get("canUpdate")) is falsy
+        assert result["canUpdate"] is False
+        assert result.get("blockCode") is None
 
 
 # ── Update state (GET) ──────────────────────────────────────────────────────
@@ -445,6 +557,14 @@ class TestUpdateState:
         body = response.json()
         assert body["success"] is False
         assert body["error"]["code"] == EC.UPDATE_FAILED
+
+    def test_update_state_requires_auth(self, tmp_path):
+        app, _, _, _ = _make_app(tmp_path, non_default_creds=True)
+
+        with TestClient(app) as client:
+            response = client.get("/api/v1/system/update")
+
+        assert response.status_code == 401
 
 
 # ── Update apply (POST) ─────────────────────────────────────────────────────
