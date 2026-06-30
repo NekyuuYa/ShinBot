@@ -40,7 +40,7 @@ snapshot_ttl = 10800
 
 [admin]
 username = "admin"
-password = "admin" # Change before deploying.
+password = ""  # Empty = auto-generated on first run. Check terminal output.
 jwt_expire_hours = 24
 
 # jwt_secret = "" # Empty means auto-generate data/admin_secret.key.
