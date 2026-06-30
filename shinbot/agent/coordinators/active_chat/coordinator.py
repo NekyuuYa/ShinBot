@@ -130,7 +130,8 @@ class ActiveChatCoordinator:
     async def notify_message(
         self,
         *,
-        scheduler: Any,         session_id: str,
+        scheduler: Any,
+        session_id: str,
         message_log_id: int,
         sender_id: str,
         response_profile: str,
@@ -384,7 +385,8 @@ class ActiveChatCoordinator:
     def _arm_semantic_wait_locked(
         self,
         *,
-        scheduler: Any,         session_id: str,
+        scheduler: Any,
+        session_id: str,
         sender_id: str,
         previous_sender_id: str,
     ) -> tuple[bool, bool]:
@@ -465,7 +467,8 @@ class ActiveChatCoordinator:
     async def _semantic_wait_then_flush(
         self,
         *,
-        scheduler: Any,         session_id: str,
+        scheduler: Any,
+        session_id: str,
         wait_seconds: float,
     ) -> None:
         try:
@@ -639,9 +642,7 @@ class ActiveChatCoordinator:
                     result.conversation_messages_delta,
                 )
 
-            consumed_message_log_ids = (
-                result.consumed_message_log_ids or batch.message_log_ids
-            )
+            consumed_message_log_ids = result.consumed_message_log_ids or batch.message_log_ids
             scheduler.mark_active_chat_consumed(session_id, consumed_message_log_ids)
             effect = interest_effect_for_round(result, self._interest_effect_config)
             self.last_batches[session_id] = batch
@@ -698,14 +699,8 @@ class ActiveChatCoordinator:
                     "agent.active_chat.round.failed",
                     session_id=session_id,
                     error_code=type(exc).__name__,
-                    message_log_ids=(
-                        _message_ids(messages) if "messages" in locals() else []
-                    ),
-                    trace_id=(
-                        _trace_id_from_messages(messages)
-                        if "messages" in locals()
-                        else ""
-                    ),
+                    message_log_ids=(_message_ids(messages) if "messages" in locals() else []),
+                    trace_id=(_trace_id_from_messages(messages) if "messages" in locals() else ""),
                 )
             )
             self._restore_pending(
@@ -751,7 +746,8 @@ class ActiveChatCoordinator:
     def _arm_next_round_if_pending_locked(
         self,
         *,
-        scheduler: Any,         session_id: str,
+        scheduler: Any,
+        session_id: str,
         state: ActiveChatAttentionState,
     ) -> None:
         if not state.pending_buffer:
