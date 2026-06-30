@@ -118,13 +118,13 @@ def _raise_admin_http_error(exc: InstanceAdminError) -> None:
 
 
 @router.get("", response_model=Envelope[list[InstanceData]])
-async def list_instances(bot=BotDep, boot=BootDep):
+async def list_instances(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """List all registered bot instances with their status."""
     return ok(list_instance_payloads(bot=bot, boot=boot))
 
 
 @router.post("", status_code=201, response_model=Envelope[InstanceData])
-async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep):
+async def create_instance(body: CreateInstanceRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Create a new adapter instance and persist the configuration."""
     adapter = body.adapter or body.adapterType or ""
     instance_id = body.id or body.name or adapter
@@ -154,7 +154,7 @@ async def create_instance(body: CreateInstanceRequest, bot=BotDep, boot=BootDep)
 
 
 @router.patch("/{instance_id}", response_model=Envelope[InstanceData])
-async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotDep, boot=BootDep):
+async def update_instance(instance_id: str, body: PatchInstanceRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Update an existing adapter instance configuration."""
     try:
         inst = update_instance_runtime(
@@ -181,7 +181,7 @@ async def update_instance(instance_id: str, body: PatchInstanceRequest, bot=BotD
 
 
 @router.delete("/{instance_id}", response_model=Envelope[InstanceDeletedData])
-async def delete_instance(instance_id: str, bot=BotDep, boot=BootDep):
+async def delete_instance(instance_id: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Delete a bot instance and remove it from the configuration."""
     try:
         await delete_instance_runtime(bot=bot, boot=boot, instance_id=instance_id)
@@ -197,7 +197,7 @@ async def delete_instance(instance_id: str, bot=BotDep, boot=BootDep):
 
 
 @router.post("/{instance_id}/control", response_model=Envelope[InstanceControlData])
-async def control_instance(instance_id: str, body: ControlRequest, bot=BotDep):
+async def control_instance(instance_id: str, body: ControlRequest, bot: Any = BotDep) -> dict[str, Any]:
     """Start or stop a bot instance at runtime."""
     try:
         state = await control_instance_runtime(

@@ -46,7 +46,7 @@ def _raise_marketplace_http_error(exc: PluginMarketplaceError) -> None:
 
 
 @router.get("/sources", response_model=Envelope[dict[str, Any]])
-async def list_plugin_marketplace_sources(bot=BotDep, boot=BootDep):
+async def list_plugin_marketplace_sources(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """List configured plugin marketplace sources."""
     service = build_plugin_marketplace_service(bot, boot)
     return ok(service.list_sources())
@@ -56,9 +56,9 @@ async def list_plugin_marketplace_sources(bot=BotDep, boot=BootDep):
 async def list_plugin_marketplace(
     source: str = Query(default=OFFICIAL_MARKETPLACE_SOURCE_ID),
     refresh: bool = Query(default=False),
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """List plugins from a marketplace source."""
     service = build_plugin_marketplace_service(bot, boot)
     try:
@@ -72,9 +72,9 @@ async def get_plugin_marketplace_item(
     plugin_id: str,
     source: str = Query(default=OFFICIAL_MARKETPLACE_SOURCE_ID),
     refresh: bool = Query(default=False),
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Get one plugin from a marketplace source."""
     service = build_plugin_marketplace_service(bot, boot)
     try:
@@ -87,9 +87,9 @@ async def get_plugin_marketplace_item(
 async def preview_plugin_marketplace_item(
     plugin_id: str,
     payload: PluginMarketplaceSourceRequest | None = None,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Preview installing one marketplace plugin."""
     service = build_plugin_marketplace_service(bot, boot)
     source = payload.source if payload is not None else OFFICIAL_MARKETPLACE_SOURCE_ID
@@ -104,9 +104,9 @@ async def preview_plugin_marketplace_item(
 async def install_plugin_marketplace_item(
     plugin_id: str,
     payload: PluginMarketplaceInstallRequest | None = None,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Install one marketplace plugin."""
     service = build_plugin_marketplace_service(bot, boot)
     request_payload = payload or PluginMarketplaceInstallRequest()

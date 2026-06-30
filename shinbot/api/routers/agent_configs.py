@@ -167,7 +167,7 @@ def _write_profile(path: Path, config: dict[str, Any]) -> None:
 
 
 @router.get("", response_model=Envelope[list[AgentConfigProfile]])
-async def list_agent_configs(bot=BotDep, boot=BootDep):
+async def list_agent_configs(bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """List all agent configuration profiles from the agents directory."""
     directory = _agents_dir(boot)
     if not directory.is_dir():
@@ -181,7 +181,7 @@ async def list_agent_configs(bot=BotDep, boot=BootDep):
 
 
 @router.get("/{file_name}", response_model=Envelope[AgentConfigProfile])
-async def get_agent_config(file_name: str, bot=BotDep, boot=BootDep):
+async def get_agent_config(file_name: str, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Retrieve a single agent configuration profile by file name."""
     path = _profile_path(boot, file_name)
     if not path.is_file():
@@ -196,7 +196,7 @@ async def get_agent_config(file_name: str, bot=BotDep, boot=BootDep):
 
 
 @router.post("", response_model=Envelope[AgentConfigProfile])
-async def create_agent_config(body: SaveAgentConfigRequest, bot=BotDep, boot=BootDep):
+async def create_agent_config(body: SaveAgentConfigRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Create a new agent configuration profile from a TOML config."""
     file_name = _normalize_file_name(body.fileName, body.config)
     path = _agents_dir(boot) / file_name
@@ -228,9 +228,9 @@ async def create_agent_config(body: SaveAgentConfigRequest, bot=BotDep, boot=Boo
 async def update_agent_config(
     file_name: str,
     body: SaveAgentConfigRequest,
-    bot=BotDep,
-    boot=BootDep,
-):
+    bot: Any = BotDep,
+    boot: Any = BootDep,
+) -> dict[str, Any]:
     """Update an existing agent configuration profile."""
     path = _profile_path(boot, file_name)
     if not path.is_file():
@@ -258,7 +258,7 @@ async def update_agent_config(
 
 
 @router.delete("/{file_name}", response_model=Envelope[AgentConfigDeleteResult])
-async def delete_agent_config(file_name: str, boot=BootDep):
+async def delete_agent_config(file_name: str, boot: Any = BootDep) -> dict[str, Any]:
     """Delete an agent configuration profile by file name."""
     path = _profile_path(boot, file_name)
     if not path.is_file():

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -54,7 +56,7 @@ class PersonaDeletedData(BaseModel):
     uuid: str
 
 
-def _persona_repository(boot) -> PersonaFileRepository:
+def _persona_repository(boot: Any) -> PersonaFileRepository:
     return PersonaFileRepository.from_data_dir(boot.data_dir)
 
 
@@ -66,7 +68,7 @@ def _raise_admin_http_error(exc: PersonaFileError) -> None:
 
 
 @router.get("", response_model=Envelope[list[PersonaData]])
-def list_personas(boot=BootDep):
+def list_personas(boot: Any = BootDep) -> dict[str, Any]:
     """List all personas stored on disk."""
     try:
         return ok([serialize_persona(item) for item in _persona_repository(boot).list()])
@@ -75,7 +77,7 @@ def list_personas(boot=BootDep):
 
 
 @router.post("", status_code=201, response_model=Envelope[PersonaData])
-def create_persona(body: PersonaRequest, boot=BootDep):
+def create_persona(body: PersonaRequest, boot: Any = BootDep) -> dict[str, Any]:
     """Create a new persona with the given name, prompt text, and tags."""
     try:
         payload = _persona_repository(boot).create(
@@ -92,7 +94,7 @@ def create_persona(body: PersonaRequest, boot=BootDep):
 
 
 @router.get("/{persona_uuid}", response_model=Envelope[PersonaData])
-def get_persona(persona_uuid: str, boot=BootDep):
+def get_persona(persona_uuid: str, boot: Any = BootDep) -> dict[str, Any]:
     """Retrieve a single persona by its UUID."""
     try:
         payload = _persona_repository(boot).get(persona_uuid)
@@ -108,7 +110,7 @@ def get_persona(persona_uuid: str, boot=BootDep):
 
 
 @router.patch("/{persona_uuid}", response_model=Envelope[PersonaData])
-def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot=BootDep):
+def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot: Any = BootDep) -> dict[str, Any]:
     """Partially update an existing persona's fields."""
     try:
         repository = _persona_repository(boot)
@@ -138,7 +140,7 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot=BootDep):
 
 
 @router.delete("/{persona_uuid}", response_model=Envelope[PersonaDeletedData])
-def delete_persona(persona_uuid: str, boot=BootDep):
+def delete_persona(persona_uuid: str, boot: Any = BootDep) -> dict[str, Any]:
     """Delete a persona by its UUID."""
     try:
         _persona_repository(boot).delete(persona_uuid)
