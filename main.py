@@ -25,6 +25,9 @@ async def _run(
     api_host: str,
     api_port: int,
     operator_cli: bool | None,
+    ssl_certfile: str | None = None,
+    ssl_keyfile: str | None = None,
+    ssl_keyfile_password: str | None = None,
 ) -> int:
     runtime_control = RuntimeControl()
     controller = BootController(
@@ -36,12 +39,23 @@ async def _run(
 
     api_app = controller.create_api_app(runtime_control)
 
+    # Resolve SSL config from CLI args or config file
+    admin_cfg = controller.config.get("admin", {})
+    resolved_certfile = ssl_certfile or admin_cfg.get("ssl_certfile", "") or None
+    resolved_keyfile = ssl_keyfile or admin_cfg.get("ssl_keyfile", "") or None
+    resolved_keyfile_password = (
+        ssl_keyfile_password or admin_cfg.get("ssl_keyfile_password", "") or None
+    )
+
     uv_cfg = uvicorn.Config(
         api_app,
         host=api_host,
         port=api_port,
         log_config=None,  # use our own logging config from BootController
         access_log=False,
+        ssl_certfile=resolved_certfile,
+        ssl_keyfile=resolved_keyfile,
+        ssl_keyfile_password=resolved_keyfile_password,
     )
     server = uvicorn.Server(uv_cfg)
 
@@ -57,7 +71,8 @@ async def _run(
 
     restart_task = asyncio.create_task(_watch_restart_requests())
 
-    logger.info("Management API starting on http://%s:%d", api_host, api_port)
+    scheme = "https" if resolved_certfile or resolved_keyfile else "http"
+    logger.info("Management API starting on %s://%s:%d", scheme, api_host, api_port)
 
     attach_operator_cli = (
         operator_cli
@@ -123,6 +138,24 @@ def main() -> None:
         metavar="PORT",
         help="Management API listen port (default: 3945)",
     )
+    parser.add_argument(
+        "--ssl-certfile",
+        default=None,
+        metavar="FILE",
+        help="SSL certificate file for HTTPS (overrides config)",
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        default=None,
+        metavar="FILE",
+        help="SSL private key file for HTTPS (overrides config)",
+    )
+    parser.add_argument(
+        "--ssl-keyfile-password",
+        default=None,
+        metavar="PASSWORD",
+        help="Password for encrypted SSL key file",
+    )
     cli_group = parser.add_mutually_exclusive_group()
     cli_group.add_argument(
         "--operator-cli",
@@ -172,6 +205,9 @@ def main() -> None:
                 args.api_host,
                 args.api_port,
                 args.operator_cli,
+                args.ssl_certfile,
+                args.ssl_keyfile,
+                args.ssl_keyfile_password,
             )
         )
         if exit_code in {
