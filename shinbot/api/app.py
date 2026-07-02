@@ -175,6 +175,28 @@ def create_api_app(
         allow_headers=["*"],
     )
 
+    # ── Request body size limit ────────────────────────────────────────
+    # Default 50MB limit for API requests to prevent memory exhaustion.
+    # Individual endpoints may have stricter limits (e.g., plugin install at 20MB).
+    max_request_body_size = 50 * 1024 * 1024  # 50MB
+
+    @app.middleware("http")
+    async def _limit_request_body(request: Request, call_next: Any) -> Any:
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > max_request_body_size:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "PAYLOAD_TOO_LARGE",
+                        "message": f"Request body exceeds {max_request_body_size // (1024 * 1024)}MB limit",
+                    },
+                    "timestamp": int(time.time()),
+                },
+            )
+        return await call_next(request)
+
     # ── Exception handlers (Envelope wrapping) ───────────────────────
 
     @app.exception_handler(Exception)
