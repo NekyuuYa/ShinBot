@@ -164,7 +164,7 @@ async def test_review_runner_factory_uses_llm_stages_by_default() -> None:
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
         purpose="review_scan",
-        source_messages=[{"id": 1}],
+        source_messages=[{"id": 9}],
     )
 
     scan = await factory.create_review_scan_runner().run(stage_input)
@@ -250,7 +250,7 @@ async def test_review_runner_factory_builds_enabled_llm_stage() -> None:
     stage_input = ReviewStageInput(
         session_id="bot:group:room",
         purpose="review_scan",
-        source_messages=[{"id": 1}],
+        source_messages=[{"id": 9}],
     )
 
     scan = await factory.create_review_scan_runner().run(stage_input)
