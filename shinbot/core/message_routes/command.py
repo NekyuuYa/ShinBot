@@ -60,7 +60,7 @@ class CommandDef:
     usage: str = ""
     permission: str = ""  # Required permission node (e.g. "cmd.weather")
     priority: CommandPriority = CommandPriority.P0_PREFIX
-    pattern: re.Pattern | None = None  # For P2 regex commands
+    pattern: re.Pattern[str] | None = None  # For P2 regex commands
     owner: str | None = None  # Plugin ID that registered this command
     enabled: bool = True
 
@@ -78,7 +78,7 @@ class CommandMatch:
     priority: CommandPriority
     raw_args: str = ""  # Remaining text after command trigger
     prefix: str = ""  # Actual matched command prefix for P0 commands
-    regex_match: re.Match | None = None  # For P2 matches
+    regex_match: re.Match[str] | None = None  # For P2 matches
 
 
 class CommandRegistry:
@@ -424,7 +424,7 @@ class TextCommandDispatcher:
         execution_time_ms: float,
         success: bool,
         error: str,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         if self._audit_logger is None:
             return

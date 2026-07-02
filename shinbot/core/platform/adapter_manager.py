@@ -94,10 +94,10 @@ class BaseAdapter(ABC):
     def __init__(self, instance_id: str, platform: str):
         self.instance_id = instance_id
         self.platform = platform
-        self._event_callback: Callable | None = None
+        self._event_callback: Callable[..., Any] | None = None
         self._connection_state_callback: Callable[[bool], None] | None = None
 
-    def set_event_callback(self, callback: Callable) -> None:
+    def set_event_callback(self, callback: Callable[..., Any]) -> None:
         """Set the callback that the adapter calls when it receives events.
 
         The callback signature should be:
@@ -183,7 +183,7 @@ class AdapterManager:
     """
 
     def __init__(self, *, offline_grace_seconds: float = 15.0) -> None:
-        self._factories: dict[str, Callable] = {}
+        self._factories: dict[str, Callable[..., Any]] = {}
         self._instances: dict[str, BaseAdapter] = {}
         self._running: set[str] = set()
         self._connection_states: dict[str, AdapterConnectionState] = {}
@@ -191,7 +191,7 @@ class AdapterManager:
 
     # ── Factory registration ─────────────────────────────────────────
 
-    def register_adapter(self, platform: str, factory: Callable) -> None:
+    def register_adapter(self, platform: str, factory: Callable[..., Any]) -> None:
         """Register a factory callable for a platform name.
 
         The factory must be callable with signature:
@@ -226,7 +226,7 @@ class AdapterManager:
         self,
         instance_id: str,
         platform: str,
-        event_callback: Callable | None = None,
+        event_callback: Callable[..., Any] | None = None,
         **kwargs: Any,
     ) -> BaseAdapter:
         """Create an adapter instance from a registered factory.

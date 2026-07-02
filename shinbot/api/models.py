@@ -62,11 +62,11 @@ class EC:
     SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
 
 
-def ok(data: Any = None) -> dict:
+def ok(data: Any = None) -> dict[str, Any]:
     """Wrap successful response data in standard Envelope."""
     return Envelope(success=True, data=data).model_dump()
 
 
-def fail(code: str, message: str) -> dict:
+def fail(code: str, message: str) -> dict[str, Any]:
     """Wrap error in standard Envelope (use for direct JSONResponse construction)."""
     return Envelope(success=False, error=ErrorBody(code=code, message=message)).model_dump()

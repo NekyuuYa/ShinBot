@@ -83,14 +83,14 @@ logger = get_logger(__name__, source="agent:review", color="green")
 @dataclass(slots=True)
 class _ReplyDecisionWindow:
     candidate_message_ids: list[int]
-    messages: list[dict] = field(default_factory=list)
+    messages: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def message_ids(self) -> list[int]:
         """Return extracted message IDs from the loaded messages in this window."""
         return _message_ids(self.messages)
 
-    def overlaps(self, messages: list[dict]) -> bool:
+    def overlaps(self, messages: list[dict[str, Any]]) -> bool:
         """Check whether any of the given messages overlap with this window.
         Args:
             messages: Messages to check for overlap.
@@ -101,7 +101,7 @@ class _ReplyDecisionWindow:
         own_ids = set(self.message_ids)
         return any(_message_id(message) in own_ids for message in messages)
 
-    def extend(self, *, candidate_message_id: int, messages: list[dict]) -> None:
+    def extend(self, *, candidate_message_id: int, messages: list[dict[str, Any]]) -> None:
         """Extend the window with a new candidate and merge additional messages.
         Messages are deduplicated by ID and sorted by creation time.
 
@@ -110,7 +110,7 @@ class _ReplyDecisionWindow:
             messages: Additional context messages to merge into the window.
         """
         self.candidate_message_ids.append(candidate_message_id)
-        merged: dict[int, dict] = {
+        merged: dict[int, dict[str, Any]] = {
             message_id: message
             for message in self.messages
             if (message_id := _message_id(message)) is not None
@@ -642,7 +642,7 @@ class ReviewCoordinator:
         self,
         *,
         session_id: str,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         review_run_id: str,
         trace_by_message_id: dict[int, str],
         self_platform_id: str = "",
@@ -1083,10 +1083,10 @@ class ReviewCoordinator:
         self,
         *,
         session_id: str,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         purpose: str,
         review_run_id: str,
-        metadata: dict,
+        metadata: dict[str, Any],
         self_platform_id: str = "",
         previous_summary: str = "",
     ) -> ReviewStageInput | None:
@@ -1189,7 +1189,7 @@ class ReviewCoordinator:
         self,
         *,
         session_id: str,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         block_index: int,
         range_id: int | None,
         range_start: int,
@@ -1328,7 +1328,7 @@ class ReviewCoordinator:
         self,
         scheduler: ReviewSchedulerPort | None,
         session_id: str,
-        batch: list[dict],
+        batch: list[dict[str, Any]],
     ) -> None:
         """Durably mark one scanned batch consumed as soon as it is scanned.
 
@@ -1562,19 +1562,19 @@ def _dedupe_preserve_order[T](items: list[T]) -> list[T]:
     return result
 
 
-def _message_id(message: dict) -> int | None:
+def _message_id(message: dict[str, Any]) -> int | None:
     value = message.get("id")
     if isinstance(value, int):
         return value
     return None
 
 
-def _message_ids(messages: list[dict]) -> list[int]:
+def _message_ids(messages: list[dict[str, Any]]) -> list[int]:
     return [message_id for message in messages if (message_id := _message_id(message)) is not None]
 
 
 def _candidate_target_metadata(
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     candidate_message_ids: list[int],
     self_platform_id: str,
 ) -> dict[str, object]:
@@ -1594,7 +1594,7 @@ def _candidate_target_metadata(
 
 
 def _candidate_target_facts(
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     candidate_message_ids: list[int],
     self_platform_id: str,
 ) -> list[dict[str, object]]:
@@ -1623,7 +1623,7 @@ def _candidate_target_facts(
 
 
 def _candidate_target_fact(
-    message: dict,
+    message: dict[str, Any],
     *,
     parts: list[NormalizedMessagePart],
     message_id: int,
@@ -1689,7 +1689,7 @@ def _trace_by_message_id(unread_messages: list[UnreadMessage]) -> dict[int, str]
 
 
 def _trace_metadata_for_messages(
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     trace_by_message_id: dict[int, str],
 ) -> dict[str, object]:
     trace_ids = _dedupe_preserve_order(
@@ -1910,7 +1910,7 @@ def _select_reply_block_digests(
     digests: list[ReviewBlockDigestStageOutput],
     *,
     candidate_message_ids: list[int],
-    messages: list[dict],
+    messages: list[dict[str, Any]],
 ) -> list[ReviewBlockDigestStageOutput]:
     if not digests:
         return []

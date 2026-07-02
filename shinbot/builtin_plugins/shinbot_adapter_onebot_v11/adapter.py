@@ -379,7 +379,7 @@ class OneBotV11Adapter(BaseAdapter):
         self.config = config
         self._running = False
         self._ws: Any | None = None
-        self._recv_task: asyncio.Task | None = None
+        self._recv_task: asyncio.Task[None] | None = None
         self._event_tasks: set[asyncio.Task[Any]] = set()
         self._self_id: str = config.self_id
         self._detected_platform: str = platform

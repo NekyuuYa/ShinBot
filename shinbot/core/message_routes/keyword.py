@@ -38,7 +38,7 @@ class KeywordDef:
     ignore_case: bool = True
     regex: bool = False
     owner: str | None = None
-    compiled_pattern: re.Pattern | None = field(default=None, repr=False)
+    compiled_pattern: re.Pattern[str] | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -49,7 +49,7 @@ class KeywordMatch:
     matched_text: str
     start: int
     end: int
-    regex_match: re.Match | None = None
+    regex_match: re.Match[str] | None = None
 
 
 class KeywordRegistry:

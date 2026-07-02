@@ -161,7 +161,7 @@ class Plugin:
         mode: CommandMode = CommandMode.DELEGATED,
         priority: CommandPriority = CommandPriority.P0_PREFIX,
         pattern: str | None = None,
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         """Register a text command triggered by a ``!name`` prefix or alias.
 
         Can be used as a decorator::
@@ -188,7 +188,7 @@ class Plugin:
         """
         import re as _re
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             """Register the wrapped function as a text command handler."""
             compiled_pattern = _re.compile(pattern) if pattern else None
             cmd = CommandDef(
@@ -216,7 +216,7 @@ class Plugin:
         priority: int = 100,
         ignore_case: bool = True,
         regex: bool = False,
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         """Register a keyword trigger that fires when a message matches *pattern*.
 
         Keywords are matched against incoming message text independently of
@@ -249,7 +249,7 @@ class Plugin:
                 "no KeywordRegistry is available in this Plugin object."
             )
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             """Register the wrapped function as a keyword trigger handler."""
             keyword = KeywordDef(
                 pattern=pattern,
@@ -274,7 +274,7 @@ class Plugin:
         priority: int = 100,
         match_mode: RouteMatchMode = RouteMatchMode.NORMAL,
         enabled: bool = True,
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         """Register a custom routing rule matched by a :class:`RouteCondition`.
 
         Use this for fine-grained control over which messages reach a handler.
@@ -312,7 +312,7 @@ class Plugin:
                 "no RouteTable/RouteTargetRegistry is available in this Plugin object."
             )
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             """Register the wrapped function as a custom route handler."""
             seq = len(self._registered_routes) + 1
             resolved_target = target or f"plugin.{self.plugin_id}.{func.__name__}.{seq}"
@@ -351,7 +351,7 @@ class Plugin:
         event_type: str,
         *,
         priority: int = 100,
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         """Register a handler for a non-message event on the shared :class:`EventBus`.
 
         Message-prefixed events (starting with ``"message-"``) are routed via
@@ -377,7 +377,7 @@ class Plugin:
         """
         _ensure_non_message_event(event_type)
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             """Register the wrapped function as an event bus handler."""
             self._event_bus.on(event_type, func, priority=priority, owner=self.plugin_id)
             self._registered_events.append(event_type)
@@ -412,7 +412,7 @@ class Plugin:
             )
         return await adapter.send(session_id, elements)
 
-    def register_adapter_factory(self, name: str, factory: Callable) -> None:
+    def register_adapter_factory(self, name: str, factory: Callable[..., Any]) -> None:
         """Register a platform adapter factory with the :class:`AdapterManager`.
 
         Adapter factories create :class:`BaseAdapter` instances for a given
@@ -476,7 +476,7 @@ class Plugin:
         timeout_seconds: float = 30.0,
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         """Register an agent tool that the LLM can invoke during a workflow.
 
         Tools are the primary mechanism for giving the model access to
@@ -517,7 +517,7 @@ class Plugin:
                 f"Plugin {self.plugin_id!r} cannot register tools: no ToolRegistry is available."
             )
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             """Register the wrapped function as an agent tool definition."""
             tool_id = f"{self.plugin_id}.{name}"
             definition = ToolDefinition(
@@ -741,7 +741,7 @@ class Plugin:
         timezone: str | None = None,
         job_id: str | None = None,
         description: str = "",
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         """Register a cron-scheduled task.
 
         Can be used as a decorator::
@@ -771,7 +771,7 @@ class Plugin:
                 "no cron manager is available in this Plugin object."
             )
 
-        def decorator(func: Callable) -> Callable:
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             self._cron_manager.add_cron_job(
                 self.plugin_id,
                 func,

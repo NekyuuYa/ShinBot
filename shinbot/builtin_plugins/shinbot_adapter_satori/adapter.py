@@ -108,8 +108,8 @@ class SatoriAdapter(BaseAdapter):
         self._detected_platform: str = platform  # Overwritten by READY data
         self._ws: Any | None = None
         self._running = False
-        self._recv_task: asyncio.Task | None = None
-        self._ping_task: asyncio.Task | None = None
+        self._recv_task: asyncio.Task[None] | None = None
+        self._ping_task: asyncio.Task[None] | None = None
         self._event_worker_task: asyncio.Task[None] | None = None
         self._event_queue: asyncio.Queue[UnifiedEvent] | None = None
         self._http: httpx.AsyncClient | None = None
