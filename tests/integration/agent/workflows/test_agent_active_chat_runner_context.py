@@ -367,7 +367,7 @@ async def test_active_chat_fast_runner_injects_compacted_conversation_summary() 
         model_runtime.calls[0].messages,
         ensure_ascii=False,
     )
-    assert "Active chat compacted conversation trace summary" in rendered_prompt_text
+    assert "主动聊天压缩会话轨迹摘要" in rendered_prompt_text
     assert "compacted_messages" in rendered_prompt_text
     assert "send_reply" in rendered_prompt_text
 
