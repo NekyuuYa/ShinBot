@@ -68,6 +68,33 @@ jobs:
       - name: Run ruff check
         run: uv run --group dev ruff check .
 
+  security:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Install pip-audit
+        run: uv pip install pip-audit
+
+      - name: Run dependency audit
+        run: uv run pip-audit --require-hashes --disable-pip --requirement uv.lock || uv run pip-audit
+
   typecheck:
     name: Mypy Typecheck
     runs-on: ubuntu-latest
