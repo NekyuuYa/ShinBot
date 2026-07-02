@@ -96,13 +96,67 @@ class ConfigWorkspace(BaseModel):
     plugins: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ConfigChangeDetail(BaseModel):
+    """Detail about a single config section change."""
+
+    section: str = ""
+    reloadBehavior: str = "restart"  # "hot" or "restart"
+    changed: bool = False
+
+
 class SaveConfigResult(BaseModel):
     """Result returned after saving configuration."""
 
     saved: bool = True
     requiresRestart: bool = True
+    changes: list[ConfigChangeDetail] = Field(default_factory=list)
     validation: ConfigValidationResult = Field(default_factory=ConfigValidationResult)
     workspace: ConfigWorkspace = Field(default_factory=ConfigWorkspace)
+
+
+# Maps top-level config sections to their reload behavior.
+# "hot" = applied immediately after save, "restart" = requires process restart.
+_CONFIG_SECTION_RELOAD_BEHAVIOR: dict[str, str] = {
+    "bots": "hot",
+    "command_overrides": "hot",
+    "permissions": "hot",
+    "adapter_instances": "restart",
+    "logging": "restart",
+    "database": "restart",
+    "runtime": "restart",
+    "plugins": "restart",
+    "admin": "restart",
+}
+
+
+def _diff_config_sections(
+    old_config: dict[str, Any],
+    new_config: dict[str, Any],
+) -> list[ConfigChangeDetail]:
+    """Compare two config dicts and return per-section change details.
+
+    Args:
+        old_config: The previous configuration.
+        new_config: The new configuration.
+
+    Returns:
+        A list of ``ConfigChangeDetail`` for every known section.
+    """
+    all_sections = sorted(
+        set(_CONFIG_SECTION_RELOAD_BEHAVIOR) | set(old_config) | set(new_config)
+    )
+    details: list[ConfigChangeDetail] = []
+    for section in all_sections:
+        behavior = _CONFIG_SECTION_RELOAD_BEHAVIOR.get(section, "restart")
+        changed = old_config.get(section) != new_config.get(section)
+        details.append(
+            ConfigChangeDetail(
+                section=section,
+                reloadBehavior=behavior,
+                changed=changed,
+            )
+        )
+    return details
 
 
 def _config_validation_result(
@@ -232,6 +286,7 @@ def _save_config_payload(
             },
         )
 
+    old_config = deepcopy(boot.config)
     boot.config.clear()
     boot.config.update(deepcopy(next_config))
     if not boot.save_config():
@@ -244,10 +299,16 @@ def _save_config_payload(
         )
     _apply_runtime_config_updates(bot=bot, boot=boot)
 
+    changes = _diff_config_sections(old_config, next_config)
+    requires_restart = any(
+        detail.changed and detail.reloadBehavior == "restart" for detail in changes
+    )
+
     return ok(
         {
             "saved": True,
-            "requiresRestart": True,
+            "requiresRestart": requires_restart,
+            "changes": [detail.model_dump() for detail in changes],
             "validation": validation,
             "workspace": _config_workspace(bot=bot, boot=boot),
         }
