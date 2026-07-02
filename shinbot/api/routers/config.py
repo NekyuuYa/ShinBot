@@ -207,6 +207,7 @@ def _config_workspace(
     *,
     bot: Any,
     boot: Any,
+    requires_restart: bool = True,
 ) -> dict[str, Any]:
     config = deepcopy(boot.config)
     validation = _config_validation_result(config=config, bot=bot, boot=boot)
@@ -222,7 +223,7 @@ def _config_workspace(
             "modelEnabled": model_runtime_required,
             "agentMounted": getattr(bot, "agent_runtime", None) is not None,
             "adapterInstances": _adapter_instance_runtime_payload(bot=bot, config=config),
-            "requiresRestartAfterSave": True,
+            "requiresRestartAfterSave": requires_restart,
         },
         "templates": _config_templates(),
         "options": _config_options(bot=bot),
@@ -310,7 +311,7 @@ def _save_config_payload(
             "requiresRestart": requires_restart,
             "changes": [detail.model_dump() for detail in changes],
             "validation": validation,
-            "workspace": _config_workspace(bot=bot, boot=boot),
+            "workspace": _config_workspace(bot=bot, boot=boot, requires_restart=requires_restart),
         }
     )
 
