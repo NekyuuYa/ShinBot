@@ -115,7 +115,7 @@ async def test_ingress_schedules_sticker_summary_for_custom_image_emoji(tmp_path
     )
 
     image_path = _write_png(tmp_path / "assets" / "ingress-sticker.png", color=(255, 128, 0))
-    content = Message.from_elements(MessageElement.img(str(image_path), sub_type="1")).to_xml()
+    content = Message.from_elements(MessageElement.img(str(image_path), sub_type="3")).to_xml()
 
     await ingress.process_event(_make_group_event(content, message_id="msg-sticker-1"), adapter)
 

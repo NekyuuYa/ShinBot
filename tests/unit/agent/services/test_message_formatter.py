@@ -189,7 +189,7 @@ def test_format_content_json_image_thumbnail_prefers_description(monkeypatch, tm
 def test_format_content_json_emoji_semantic_mode(monkeypatch, tmp_path) -> None:
     img_file = tmp_path / "emoji.png"
     img_file.write_bytes(b"\x89PNGfake")
-    content = json.dumps([{"type": "img", "attrs": {"src": str(img_file), "sub_type": 1}}])
+    content = json.dumps([{"type": "img", "attrs": {"src": str(img_file), "sub_type": 3}}])
     records = [_make_record(content_json=content, raw_text="")]
     config = MessageFormatConfig(emoji_mode=EmojiMode.SEMANTIC, pack_mode=PackMode.PACK)
 

@@ -143,7 +143,7 @@ def test_media_service_custom_image_emoji_requests_sticker_summary_immediately(t
     service = MediaService(db)
 
     image_path = _write_png(tmp_path / "assets" / "sticker.png")
-    message = Message.from_elements(MessageElement.img(str(image_path), sub_type="1"))
+    message = Message.from_elements(MessageElement.img(str(image_path), sub_type="3"))
 
     first = service.ingest_message_media(
         session_id="inst:group:stickers",
@@ -182,12 +182,12 @@ def test_media_service_qq_image_sub_type_mapping(tmp_path):
     service = MediaService(db)
 
     normal_path = _write_png(tmp_path / "assets" / "normal.png", color=(0, 0, 255))
-    custom_path = _write_png(tmp_path / "assets" / "custom.png", color=(0, 255, 0))
-    store_path = _write_png(tmp_path / "assets" / "store.png", color=(255, 0, 0))
+    flash_path = _write_png(tmp_path / "assets" / "flash.png", color=(0, 255, 0))
+    sticker_path = _write_png(tmp_path / "assets" / "sticker.png", color=(255, 0, 0))
     message = Message.from_elements(
         MessageElement.img(str(normal_path), sub_type="0"),
-        MessageElement.img(str(custom_path), sub_type="1"),
-        MessageElement.img(str(store_path), sub_type="None"),
+        MessageElement.img(str(flash_path), sub_type="1"),
+        MessageElement.img(str(sticker_path), sub_type="3"),
     )
 
     items = service.ingest_message_media(
@@ -199,18 +199,18 @@ def test_media_service_qq_image_sub_type_mapping(tmp_path):
     )
 
     assert len(items) == 3
-    assert [item.is_custom_emoji for item in items] == [False, True, True]
-    assert [item.should_request_inspection for item in items] == [False, True, True]
+    assert [item.is_custom_emoji for item in items] == [False, False, True]
+    assert [item.should_request_inspection for item in items] == [False, False, True]
 
 
-def test_context_parts_treat_store_emoji_sub_type_as_custom_emoji(tmp_path):
-    image_path = _write_png(tmp_path / "assets" / "store-context.png")
+def test_context_parts_treat_sticker_sub_type_as_custom_emoji(tmp_path):
+    image_path = _write_png(tmp_path / "assets" / "sticker-context.png")
     record = {
         "content_json": json.dumps(
             [
                 {
                     "type": "img",
-                    "attrs": {"src": str(image_path), "sub_type": "None"},
+                    "attrs": {"src": str(image_path), "sub_type": "3"},
                 }
             ],
             ensure_ascii=False,
