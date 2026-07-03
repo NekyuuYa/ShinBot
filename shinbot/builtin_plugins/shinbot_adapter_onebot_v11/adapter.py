@@ -901,6 +901,8 @@ class OneBotV11Adapter(BaseAdapter):
         if post_type == "notice":
             if payload.get("notice_type") == "notify" and payload.get("sub_type") == "poke":
                 return self._decode_poke_notice(payload)
+            if payload.get("notice_type") == "message_reaction":
+                return self._decode_reaction_notice(payload)
             return self._decode_notice_event(payload)
 
         if post_type == "request":
@@ -1040,6 +1042,51 @@ class OneBotV11Adapter(BaseAdapter):
                 content=poke_xml,
             ),
             operator=User(id=user_id),
+        )
+
+    def _decode_reaction_notice(self, payload: dict[str, Any]) -> UnifiedEvent:
+        """Decode a message_reaction notice (Lagrange/NapCat extension).
+
+        Args:
+            payload: Raw event payload with notice_type="message_reaction".
+
+        Returns:
+            A UnifiedEvent representing the reaction.
+        """
+        user_id = str(payload.get("user_id", ""))
+        message_id = str(payload.get("message_id", ""))
+        emoji_id = str(payload.get("emoji_id", ""))
+        sub_type = str(payload.get("sub_type", "add")).strip().lower()
+        group_id = payload.get("group_id")
+
+        channel: Channel
+        guild: Guild | None = None
+        if group_id is not None:
+            group = str(group_id)
+            channel = Channel(id=group, type=0)
+            guild = Guild(id=group)
+        else:
+            channel = Channel(id=f"private:{user_id}", type=1)
+
+        return UnifiedEvent(
+            id=self._safe_int(payload.get("time")),
+            type="message-reaction",
+            self_id=str(payload.get("self_id", "")),
+            platform="qq",
+            timestamp=self._normalize_timestamp(payload.get("time")),
+            user=User(id=user_id),
+            channel=channel,
+            guild=guild,
+            operator=User(id=user_id),
+            message=MessagePayload(
+                id=f"reaction-{message_id}-{emoji_id}-{sub_type}",
+                content="",
+            ),
+            metadata={
+                "reaction_message_id": message_id,
+                "reaction_emoji_id": emoji_id,
+                "reaction_action": sub_type,
+            },
         )
 
     def _decode_notice_event(self, payload: dict[str, Any]) -> UnifiedEvent:
