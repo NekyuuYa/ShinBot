@@ -66,7 +66,7 @@ def register_active_chat_prompt_components(
         ],
     )
 
-    if "active_chat.fast_mode.batch" not in getattr(registry, "_resolvers", {}):
+    if not registry.has_resolver("active_chat.fast_mode.batch"):
         registry.register_resolver(
             "active_chat.fast_mode.batch",
             resolve_active_chat_fast_mode_batch,

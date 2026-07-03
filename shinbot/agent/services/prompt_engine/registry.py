@@ -14,6 +14,7 @@ from shinbot.agent.services.prompt_engine.dynamic_components import (
 from shinbot.agent.services.prompt_engine.files import PromptFileCatalogService
 from shinbot.agent.services.prompt_engine.message_builder import PromptMessageBuilder
 from shinbot.agent.services.prompt_engine.rendering import (
+    _extract_content_blocks,
     expand_component_tree,
     infer_component_source,
     render_component_text,
@@ -149,6 +150,17 @@ class PromptRegistry:
         if name in self._resolvers:
             raise ValueError(f"Prompt resolver {name!r} is already registered")
         self._resolvers[name] = fn
+
+    def has_resolver(self, name: str) -> bool:
+        """Return ``True`` if a resolver with the given name is registered.
+
+        Args:
+            name: The resolver name to check.
+
+        Returns:
+            ``True`` if the resolver exists, ``False`` otherwise.
+        """
+        return name in self._resolvers
 
     def attach_context_manager(self, context_manager: ContextManager | None) -> None:
         """Attach (or detach) the context manager used for memory assembly.
@@ -548,11 +560,17 @@ class PromptRegistry:
         resolver_output = resolver(hydrated_request, dynamic_component, source)
         if isinstance(resolver_output, dict):
             dynamic_text = str(resolver_output.get("text", "")).strip()
+            dynamic_content_blocks = _extract_content_blocks(
+                resolver_output.get("content_blocks")
+            )
             dynamic_metadata = {
-                key: value for key, value in resolver_output.items() if key != "text"
+                key: value
+                for key, value in resolver_output.items()
+                if key not in ("text", "content_blocks")
             }
         else:
             dynamic_text = str(resolver_output).strip()
+            dynamic_content_blocks = None
             dynamic_metadata = {}
 
         if not dynamic_text:
@@ -567,6 +585,7 @@ class PromptRegistry:
                 priority=dynamic_component.priority,
                 source=source,
                 rendered_text=dynamic_text,
+                rendered_content_blocks=dynamic_content_blocks,
                 text_hash=stable_text_hash(dynamic_text),
                 metadata={**dict(dynamic_component.metadata), **dynamic_metadata},
             )
@@ -696,66 +715,6 @@ class PromptRegistry:
             records_by_stage[PromptStage.CONSTRAINTS].append(constraint_record)
             ordered_records.append(constraint_record)
 
-    def _inject_runtime_prompts(
-        self,
-        request: PromptAssemblyRequest,
-        records_by_stage: dict[PromptStage, list[PromptComponentRecord]],
-        ordered_records: list[PromptComponentRecord],
-    ) -> None:
-        for component_id in (
-            self.BUILTIN_MESSAGE_TEXT_PROMPT_COMPONENT_ID,
-            self.BUILTIN_CURRENT_TIME_PROMPT_COMPONENT_ID,
-        ):
-            component = self._components.get(component_id)
-            if component is None or not component.enabled:
-                continue
-
-            has_record = any(
-                record.component_id == component.id and bool(record.rendered_text.strip())
-                for record in ordered_records
-            )
-            if has_record:
-                continue
-
-            source = infer_component_source(component)
-            resolver = self._resolvers.get(component.resolver_ref)
-            if resolver is None:
-                raise ValueError(f"Prompt resolver {component.resolver_ref!r} is not registered")
-
-            resolver_output = resolver(request, component, source)
-            if isinstance(resolver_output, dict):
-                rendered_text = str(resolver_output.get("text", "")).strip()
-                rendered_content_blocks = _normalize_content_blocks(
-                    resolver_output.get("content_blocks")
-                )
-                rendered_metadata = {
-                    key: value
-                    for key, value in resolver_output.items()
-                    if key not in ("text", "content_blocks")
-                }
-            else:
-                rendered_text = str(resolver_output).strip()
-                rendered_content_blocks = None
-                rendered_metadata = {}
-
-            if not rendered_text:
-                continue
-
-            record = PromptComponentRecord(
-                component_id=component.id,
-                stage=component.stage,
-                kind=component.kind,
-                version=component.version,
-                priority=component.priority,
-                source=source,
-                rendered_text=rendered_text,
-                rendered_content_blocks=rendered_content_blocks,
-                text_hash=stable_text_hash(rendered_text),
-                metadata={**dict(component.metadata), **rendered_metadata},
-            )
-            records_by_stage[component.stage].append(record)
-            ordered_records.append(record)
-
     # ── Internal: signature ──────────────────────────────────────────────
 
     def _build_signature(self, stages: list[PromptStageBlock]) -> str:
@@ -817,11 +776,6 @@ class PromptRegistry:
             _source=source,
         )
 
-
-def _normalize_content_blocks(value: Any) -> list[dict[str, Any]] | None:
-    from shinbot.agent.services.prompt_engine.rendering import _extract_content_blocks
-
-    return _extract_content_blocks(value)
 
 
 def _resolve_now_ms(value: Any) -> int | None:

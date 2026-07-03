@@ -44,7 +44,7 @@ def register_media_instruction_components(registry: PromptRegistry) -> None:
                 },
             )
         )
-    if MEDIA_PROMPT_RESOLVER not in getattr(registry, "_resolvers", {}):
+    if not registry.has_resolver(MEDIA_PROMPT_RESOLVER):
         registry.register_resolver(MEDIA_PROMPT_RESOLVER, resolve_media_instruction)
 
 

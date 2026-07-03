@@ -49,7 +49,7 @@ def register_review_stage_instruction_components(registry: PromptRegistry) -> No
                 },
             )
         )
-    if REVIEW_STAGE_INSTRUCTION_RESOLVER not in getattr(registry, "_resolvers", {}):
+    if not registry.has_resolver(REVIEW_STAGE_INSTRUCTION_RESOLVER):
         registry.register_resolver(
             REVIEW_STAGE_INSTRUCTION_RESOLVER,
             resolve_review_stage_instruction,
