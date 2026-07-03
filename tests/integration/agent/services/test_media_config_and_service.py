@@ -27,7 +27,7 @@ def test_media_inspection_config_uses_builtin_fallback():
     assert resolved.uses_builtin_llm is True
     assert resolved.prompt_ref == BUILTIN_MEDIA_INSPECTION_PROMPT_ID
     assert resolved.uses_builtin_prompt is True
-    assert "digest no longer than 50" in resolved.builtin_prompt
+    assert "不超过 50 个中文字符" in resolved.builtin_prompt
 
 
 def test_media_inspection_config_prefers_user_overrides():

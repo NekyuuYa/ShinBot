@@ -73,7 +73,7 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
     assert [message["role"] for message in call.messages] == ["system", "user"]
     system_content = call.messages[0]["content"]
     assert system_content[0]["type"] == "text"
-    assert "You are ShinBot's media inspection agent." in system_content[0]["text"]
+    assert "你是 ShinBot 的媒体检查代理" in system_content[0]["text"]
     user_content = call.messages[-1]["content"]
     assert user_content[0]["type"] == "text"
     assert "repeat_count_14d=3" in user_content[0]["text"]
@@ -202,7 +202,7 @@ async def test_sticker_summary_uses_separate_runtime_caller(tmp_path):
     assert call.metadata["summary_mode"] == "sticker"
     assert "media.sticker_summary.instruction" in call.metadata["prompt_component_ids"]
     assert [message["role"] for message in call.messages] == ["system", "user"]
-    assert "You are ShinBot's sticker summary agent." in call.messages[0]["content"][0]["text"]
+    assert "你是 ShinBot 的表情包摘要代理" in call.messages[0]["content"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -267,6 +267,6 @@ def test_media_reanalysis_messages_use_prompt_registry(tmp_path):
     )
 
     assert [message["role"] for message in messages] == ["system", "user"]
-    assert "media reanalysis agent" in messages[0]["content"][0]["text"]
+    assert "媒体重新分析代理" in messages[0]["content"][0]["text"]
     assert "这张图是什么？" in messages[1]["content"][0]["text"]
     assert messages[1]["content"][1]["type"] == "image_url"

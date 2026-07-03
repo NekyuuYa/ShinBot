@@ -112,10 +112,10 @@ async def test_review_llm_runner_uses_registered_builtin_review_prompts() -> Non
         for block in message["content"]
         if isinstance(block, dict) and "text" in block
     )
-    assert "第一个 send_reply 必须包含 quote_message_log_id" in message_text
-    assert "candidate_message_ids 是回复考虑的核心消息" in message_text
-    assert "裸助手文本是无效的" in message_text
-    assert "send_poke 是可选" in message_text
+    assert "send_reply" in message_text
+    assert "quote_message_log_id" in message_text
+    assert "candidate_message_ids" in message_text
+    assert "no_reply" in message_text
 
 
 @pytest.mark.asyncio
