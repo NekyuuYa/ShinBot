@@ -107,6 +107,49 @@ class MediaInspectionRunner:
                 lambda _task, raw_hash=item.raw_hash: self._inflight.pop(raw_hash, None)
             )
 
+    async def ensure_descriptions(
+        self,
+        *,
+        instance_id: str,
+        session_id: str,
+        raw_hashes: list[str],
+        prefer_sticker_model: bool = False,
+    ) -> None:
+        """Ensure semantic descriptions exist for the given media hashes.
+
+        Waits for any in-flight inspections, then runs on-demand inspection
+        for any hashes still missing a verified digest.
+
+        Args:
+            instance_id: Platform instance identifier.
+            session_id: Conversation session identifier.
+            raw_hashes: List of SHA-256 hashes to check.
+            prefer_sticker_model: When True, use the sticker-specific model.
+        """
+        missing: list[str] = []
+        for raw_hash in raw_hashes:
+            semantics = self._database.media_semantics.get(raw_hash)
+            if semantics is not None and bool(semantics.get("verified_by_model")):
+                continue
+            inflight = self._inflight.get(raw_hash)
+            if inflight is not None:
+                try:
+                    await inflight
+                except Exception:
+                    pass
+                semantics = self._database.media_semantics.get(raw_hash)
+                if semantics is not None and bool(semantics.get("verified_by_model")):
+                    continue
+            missing.append(raw_hash)
+
+        for raw_hash in missing:
+            await self.inspect_raw_hash(
+                instance_id=instance_id,
+                session_id=session_id,
+                raw_hash=raw_hash,
+                prefer_sticker_model=prefer_sticker_model,
+            )
+
     async def inspect_raw_hash(
         self,
         *,

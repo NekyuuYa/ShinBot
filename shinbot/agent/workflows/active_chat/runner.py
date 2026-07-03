@@ -99,6 +99,7 @@ class ActiveChatFastRunner:
         message_store: ActiveChatMessageStore | None = None,
         context_builder: ActiveChatContextBuilder | None = None,
         message_formatter: MessageFormatterService | None = None,
+        media_ingress: Any | None = None,
         tool_loop: ActiveChatToolLoop | None = None,
         pending_message_provider: (
             Callable[
@@ -115,6 +116,7 @@ class ActiveChatFastRunner:
         self._message_store = message_store
         self._context_builder = context_builder
         self._message_formatter = message_formatter
+        self._media_ingress = media_ingress
         self._tool_loop = tool_loop or ActiveChatToolLoop()
         self._pending_message_provider = pending_message_provider
         self._config = config or ActiveChatFastRunnerConfig()
@@ -122,6 +124,15 @@ class ActiveChatFastRunner:
     async def run(self, batch: ActiveChatBatch) -> ActiveChatRoundResult:
         """Execute one active chat fast-mode round."""
         try:
+            # Ensure image descriptions are available before formatting
+            if self._media_ingress is not None and self._message_formatter is not None:
+                instance_id = instance_id_from_session(batch.session_id)
+                await self._media_ingress.ensure_image_descriptions(
+                    instance_id=instance_id,
+                    session_id=batch.session_id,
+                    messages=list(batch.messages),
+                )
+
             messages, metadata = self._build_model_call_parts(batch)
         except Exception as exc:
             logger.exception(
