@@ -18,6 +18,8 @@ metadata:
 - 第一条 `send_reply` 必须包含 `quote_message_log_id`，指向正在回答的核心消息（因为审查回复可能涉及较早时间线）
 - 后续 `send_reply` 在延续同一回复序列时可省略 `quote_message_log_id`
 - `send_reaction` 应优先包含 `message_log_id`，且该 id 应来自 `candidate_message_ids`
+  - 常用表情：👍(128077) 收到/赞同，😄(14) 开心，😂(128514) 好笑，❤️(10084) 喜欢
+  - 如需查询完整列表，调用 `list_emoji`
 - `send_poke` 仅在伴随至少一个 `send_reply` 时才有意义
 
 ### 指向性判断规则

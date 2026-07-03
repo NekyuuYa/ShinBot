@@ -435,15 +435,19 @@ def register_chat_action_tools(
 
     reaction_description = (
         "给当前会话中的某条消息贴表情/取消表情，用于轻量表态而不是发送文本。\n"
-        "适用场景：表示已看到、赞同、好笑、安慰、轻量回应上下文；当需要说明理由、"
-        "回答问题或补充信息时，请使用 send_reply。\n"
-        "优先使用 message_log_id：填写上下文里 [msgid:123] 的数字 123，系统会解析"
-        "对应平台 message_id。若上下文明确给出了原平台 message_id，也可直接填写 "
-        "message_id；不要同时填写两个字段。\n"
-        "emoji_id 必须是平台支持的表情 ID；不要填写自然语言描述。action 默认 add，"
-        "取消表态时使用 remove。\n"
-        "terminate_round 默认 true：表态后结束本次聊天 workflow。只有确实需要继续"
-        "调用工具或继续多步行动时才设为 false。"
+        "适用场景：\n"
+        "- 收到/确认：👍 (128077)\n"
+        "- 赞同/认可：😄 (14)\n"
+        "- 好笑/有趣：😂 (128514)\n"
+        "- 安慰/同情：😢 (5) 或 😊 (128522)\n"
+        "- 不赞同：👎 (128078)\n"
+        "- 惊讶：😮 (128559)\n"
+        "- 爱心/喜欢：❤️ (10084)\n"
+        "当需要说明理由、回答问题或补充信息时，请使用 send_reply。\n"
+        "emoji_id 必须是平台支持的数字 ID，不要填写自然语言描述。"
+        "如需查询完整表情列表，调用 list_emoji 工具。\n"
+        "优先使用 message_log_id：填写上下文里 [msgid:123] 的数字 123。\n"
+        "terminate_round 默认 true：表态后结束本次聊天 workflow。"
     )
     reaction_schema = {
         "type": "object",
@@ -490,6 +494,65 @@ def register_chat_action_tools(
             tags=[CHAT_ACTION_TOOL_TAG],
         )
     )
+
+    # ── list_emoji ─────────────────────────────────────────────────
+
+    def _list_emoji(arguments: dict[str, Any], ctx: ToolExecutionContext) -> Any:
+        """Return a list of available emoji IDs for the current platform."""
+        return {
+            "action": "list_emoji",
+            "platform": "qq",
+            "emojis": _QQ_EMOJI_TABLE,
+        }
+
+    list_emoji_description = (
+        "查询当前平台支持的表情 ID 列表。当需要使用 send_reaction 但不确定"
+        "可用的 emoji_id 时调用此工具。"
+    )
+    list_emoji_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {},
+    }
+
+    registry.register_tool(
+        ToolDefinition(
+            id=f"{_OWNER_ID}.list_emoji",
+            name="list_emoji",
+            description=list_emoji_description,
+            input_schema=list_emoji_schema,
+            handler=_list_emoji,
+            owner_type=_OWNER_TYPE,
+            owner_id=_OWNER_ID,
+            visibility=ToolVisibility.PUBLIC,
+            tags=[CHAT_ACTION_TOOL_TAG],
+        )
+    )
+
+
+# ── QQ Emoji Table ────────────────────────────────────────────────
+
+_QQ_EMOJI_TABLE: list[dict[str, str]] = [
+    {"id": "14", "name": "开心", "example": "😄"},
+    {"id": "1", "name": "微笑", "example": "😊"},
+    {"id": "5", "name": "难过", "example": "😢"},
+    {"id": "128077", "name": "赞", "example": "👍"},
+    {"id": "128078", "name": "踩", "example": "👎"},
+    {"id": "128514", "name": "笑哭", "example": "😂"},
+    {"id": "128516", "name": "大笑", "example": "😄"},
+    {"id": "128522", "name": "微笑", "example": "😊"},
+    {"id": "128548", "name": "生气", "example": "😤"},
+    {"id": "128557", "name": "大哭", "example": "😭"},
+    {"id": "128559", "name": "惊讶", "example": "😮"},
+    {"id": "128564", "name": "无语", "example": "😑"},
+    {"id": "10084", "name": "爱心", "example": "❤️"},
+    {"id": "128154", "name": "恶魔", "example": "😈"},
+    {"id": "128155", "name": "天使", "example": "😇"},
+    {"id": "128536", "name": "得意", "example": "😏"},
+    {"id": "128528", "name": "酷", "example": "😎"},
+    {"id": "128546", "name": "闭嘴", "example": "🤐"},
+    {"id": "129300", "name": "思考", "example": "🤔"},
+    {"id": "129320", "name": "抱拳", "example": "🙏"},
+]
 
 
 def _session_type(session_id: str) -> str:
