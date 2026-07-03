@@ -112,13 +112,13 @@ def test_media_service_tracks_repeat_threshold_and_sliding_ttl(tmp_path):
 
     assert len(first) == 1
     assert first[0].occurrence_count == 1
-    assert first[0].should_request_inspection is False
+    assert first[0].should_request_inspection is True  # threshold=1, first occurrence triggers
     assert second[0].occurrence_count == 2
-    assert second[0].should_request_inspection is False
+    assert second[0].should_request_inspection is True
     assert third[0].occurrence_count == 3
     assert third[0].should_request_inspection is True
     assert late[0].occurrence_count == 1
-    assert late[0].should_request_inspection is False
+    assert late[0].should_request_inspection is True  # new window, count=1 >= threshold
 
     asset = db.media_assets.get(third[0].raw_hash)
     occurrence = db.session_media_occurrences.get("inst:group:1", third[0].raw_hash)
@@ -200,7 +200,8 @@ def test_media_service_qq_image_sub_type_mapping(tmp_path):
 
     assert len(items) == 3
     assert [item.is_custom_emoji for item in items] == [False, False, True]
-    assert [item.should_request_inspection for item in items] == [False, False, True]
+    # With threshold=1, all images trigger inspection on first occurrence
+    assert [item.should_request_inspection for item in items] == [True, True, True]
 
 
 def test_context_parts_treat_sticker_sub_type_as_custom_emoji(tmp_path):

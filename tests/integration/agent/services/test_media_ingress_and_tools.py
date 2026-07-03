@@ -64,7 +64,7 @@ async def test_ingress_ingests_local_image_media(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ingress_schedules_media_inspection_on_third_repeat(tmp_path):
+async def test_ingress_schedules_media_inspection_on_first_occurrence(tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
     media_service = MediaService(db)
@@ -80,22 +80,17 @@ async def test_ingress_schedules_media_inspection_on_third_repeat(tmp_path):
 
     image_path = _write_png(tmp_path / "assets" / "repeat.png", color=(64, 64, 64))
     content = Message.from_elements(MessageElement.img(str(image_path))).to_xml()
-    for index in range(3):
-        await ingress.process_event(
-            _make_group_event(
-                content,
-                user_id=f"user-{index}",
-                message_id=f"msg-repeat-{index}",
-            ),
-            adapter,
-        )
+    await ingress.process_event(
+        _make_group_event(content, user_id="user-0", message_id="msg-0"),
+        adapter,
+    )
 
     assert len(inspection_runner.calls) == 1
     scheduled = inspection_runner.calls[0]
     assert scheduled["instance_id"] == "test-bot"
     assert scheduled["session_id"] == "test-bot:group:group:1"
     assert len(scheduled["items"]) == 1
-    assert scheduled["items"][0].occurrence_count == 3
+    assert scheduled["items"][0].occurrence_count == 1
     assert scheduled["items"][0].should_request_inspection is True
 
 
