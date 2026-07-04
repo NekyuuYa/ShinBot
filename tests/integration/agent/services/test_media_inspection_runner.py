@@ -69,7 +69,7 @@ async def test_media_inspection_runner_persists_verified_semantics(tmp_path):
     assert len(runtime.calls) == 1
     call = runtime.calls[0]
     assert call.caller == "media.inspection_runner"
-    assert call.response_format["type"] == "json_schema"
+    assert call.response_format["type"] == "json_object"
     assert [message["role"] for message in call.messages] == ["system", "user"]
     system_content = call.messages[0]["content"]
     assert system_content[0]["type"] == "text"

@@ -5,28 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# Use json_object instead of json_schema for broader model compatibility.
+# Not all models support the strict json_schema response format.
 MEDIA_INSPECTION_RESPONSE_FORMAT: dict[str, Any] = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "media_inspection_result",
-        "schema": {
-            "type": "object",
-            "properties": {
-                "kind": {
-                    "type": "string",
-                    "enum": ["generic_image", "meme_image", "emoji_native"],
-                },
-                "digest": {"type": "string"},
-                "confidence_band": {
-                    "type": "string",
-                    "enum": ["low", "medium", "high"],
-                },
-                "reason": {"type": "string"},
-            },
-            "required": ["kind", "digest", "confidence_band", "reason"],
-            "additionalProperties": False,
-        },
-    },
+    "type": "json_object",
 }
 
 
