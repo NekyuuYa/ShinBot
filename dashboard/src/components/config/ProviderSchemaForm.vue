@@ -22,6 +22,7 @@
             :model-value="fieldValue(field)"
             :model-ref-route-options="modelRefRouteOptions"
             :model-ref-provider-groups="modelRefProviderGroups"
+            :persona-ref-options="personaRefOptions"
             :disabled="disabled"
             :density="density"
             :json-error-text="jsonErrorText"
@@ -117,6 +118,7 @@ interface Props {
   density?: FieldDensity;
   modelRefRouteOptions?: ModelRefRouteOption[];
   modelRefProviderGroups?: ModelRefProviderGroup[];
+  personaRefOptions?: Array<{ title: string; value: string }>;
   advancedLabel?: string;
   emptyText?: string;
   jsonErrorText?: string;
@@ -131,6 +133,7 @@ const props = withDefaults(defineProps<Props>(), {
   density: "comfortable",
   modelRefRouteOptions: () => [],
   modelRefProviderGroups: () => [],
+  personaRefOptions: () => [],
   advancedLabel: "Advanced",
   emptyText: "No configurable fields.",
   jsonErrorText: "Invalid JSON.",

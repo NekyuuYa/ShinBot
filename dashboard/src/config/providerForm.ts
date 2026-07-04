@@ -26,6 +26,7 @@ export type ConfigFormComponent =
   | 'json'
   | 'array-object'
   | 'model-ref'
+  | 'persona-ref'
 
 export interface ConfigFormOption {
   title: string
@@ -88,6 +89,7 @@ function fieldComponentFor(field: ConfigFieldDefinition): ConfigFormComponent {
   const explicitComponent = metadataString(field, 'component')
   if (
     explicitComponent === 'model-ref' ||
+    explicitComponent === 'persona-ref' ||
     explicitComponent === 'text' ||
     explicitComponent === 'number' ||
     explicitComponent === 'switch' ||

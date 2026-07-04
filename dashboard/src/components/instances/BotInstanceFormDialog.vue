@@ -146,14 +146,24 @@
             />
           </v-col>
           <v-col cols="12" md="8">
-            <v-text-field
+            <v-select
               v-model="form.agent.config"
+              :items="agentConfigOptions"
               :label="$t('pages.instances.form.agentConfig')"
               :hint="$t('pages.instances.form.agentConfigHint')"
+              item-title="title"
+              item-value="value"
               density="comfortable"
               variant="outlined"
               persistent-hint
-            />
+              clearable
+            >
+              <template v-if="agentConfigOptions.length === 0" #no-data>
+                <v-list-item>
+                  <v-list-item-title>{{ $t('pages.instances.empty.noAgentConfigs') }}</v-list-item-title>
+                </v-list-item>
+              </template>
+            </v-select>
           </v-col>
         </v-row>
 
@@ -286,6 +296,7 @@ interface Props {
   adapterOptions: SelectOption[]
   pluginOptions: SelectOption[]
   agentModeOptions: SelectOption[]
+  agentConfigOptions: SelectOption[]
   editing?: boolean
   saving?: boolean
   errorText?: string
@@ -295,6 +306,7 @@ const props = withDefaults(defineProps<Props>(), {
   editing: false,
   saving: false,
   errorText: '',
+  agentConfigOptions: () => [],
 })
 
 const emit = defineEmits<{

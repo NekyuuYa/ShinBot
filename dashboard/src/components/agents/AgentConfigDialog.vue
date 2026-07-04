@@ -59,6 +59,7 @@
                   :field-prefixes="section.fieldPrefixes"
                   :model-ref-route-options="modelRefRouteOptions"
                   :model-ref-provider-groups="modelRefProviderGroups"
+                  :persona-ref-options="personaRefOptions ?? []"
                   :advanced-label="$t('pages.agents.labels.advancedFields')"
                   :empty-text="$t('pages.agents.empty.noFields')"
                   :json-error-text="$t('pages.agents.messages.invalidJson')"
@@ -145,6 +146,7 @@ defineProps<{
     providerType: string
     items: Array<{ value: string; title: string; subtitle: string; kind: 'configured' | 'catalog' }>
   }>
+  personaRefOptions?: Array<{ title: string; value: string }>
 }>()
 
 defineEmits<{

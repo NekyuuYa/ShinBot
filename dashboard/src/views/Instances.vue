@@ -99,6 +99,7 @@
       :adapter-options="adapterOptions"
       :plugin-options="pluginOptions"
       :agent-mode-options="agentModeOptions"
+      :agent-config-options="agentConfigOptions"
       :editing="editingIndex >= 0"
       :saving="configStore.isSaving"
       :error-text="editorError"
@@ -143,6 +144,8 @@ import {
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { localizedConfigIssueMessage } from '@/config'
 import { useConfigWorkspaceStore } from '@/stores/configWorkspace'
+import { agentConfigsApi, type AgentConfigProfile } from '@/api/agentConfigs'
+import { apiClient } from '@/api/client'
 
 const { locale, t } = useI18n()
 const configStore = useConfigWorkspaceStore()
@@ -154,6 +157,22 @@ const editingIndex = ref(-1)
 const editorError = ref('')
 const editorForm = ref<BotInstanceFormState>(createEmptyBotForm())
 const hasLoadedWorkspace = ref(false)
+const agentConfigProfiles = ref<AgentConfigProfile[]>([])
+
+async function loadAgentConfigs() {
+  try {
+    const data = await apiClient.unwrap(
+      agentConfigsApi.list({ suppressErrorNotify: true }),
+    )
+    agentConfigProfiles.value = data ?? []
+  } catch {
+    agentConfigProfiles.value = []
+  }
+}
+
+onMounted(() => {
+  loadAgentConfigs()
+})
 
 const botRecords = computed<ConfigRecord[]>(() => {
   const value = configStore.draft.bots
@@ -206,6 +225,16 @@ const agentModeOptions = computed<SelectOption[]>(() =>
   (configStore.workspace?.options.agentModes ?? ['none', 'simple', 'full']).map((mode) => ({
     title: agentModeLabel(mode),
     value: mode,
+  }))
+)
+
+const agentConfigOptions = computed<SelectOption[]>(() =>
+  agentConfigProfiles.value.map((profile) => ({
+    title: profile.agentId || profile.fileName,
+    value: profile.fileName,
+    props: {
+      subtitle: `${profile.mode} - ${profile.fileName}`,
+    },
   }))
 )
 

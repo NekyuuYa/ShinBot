@@ -61,7 +61,8 @@
   "empty": {
     "noPlatform": "未绑定",
     "noMessagePlatforms": "还没有可绑定的消息平台，请先到消息平台页面创建。",
-    "noBindings": "还没有消息路由绑定。"
+    "noBindings": "还没有消息路由绑定。",
+    "noAgentConfigs": "还没有 Agent 配置，请先到 Agent 页面创建。"
   },
   "validation": {
     "title": "当前机器人配置存在校验问题",

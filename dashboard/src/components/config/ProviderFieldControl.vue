@@ -79,6 +79,23 @@
     @update:model-value="updateScalarValue"
   />
 
+  <v-select
+    v-else-if="field.component === 'persona-ref'"
+    :model-value="scalarText"
+    :items="personaRefOptions"
+    :label="field.label"
+    :hint="field.description"
+    :error-messages="errorMessages"
+    :disabled="disabled"
+    :density="density"
+    item-title="title"
+    item-value="value"
+    variant="outlined"
+    persistent-hint
+    clearable
+    @update:model-value="updateScalarValue"
+  />
+
   <v-text-field
     v-else
     :model-value="scalarText"
@@ -145,6 +162,7 @@ interface Props {
   density?: FieldDensity
   modelRefRouteOptions?: ModelRefRouteOption[]
   modelRefProviderGroups?: ModelRefProviderGroup[]
+  personaRefOptions?: Array<{ title: string; value: string }>
   jsonErrorText?: string
 }
 
@@ -153,6 +171,7 @@ const props = withDefaults(defineProps<Props>(), {
   density: 'comfortable',
   modelRefRouteOptions: () => [],
   modelRefProviderGroups: () => [],
+  personaRefOptions: () => [],
   jsonErrorText: 'Invalid JSON.',
 })
 

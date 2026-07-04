@@ -23,6 +23,7 @@ path = "agent.persona_id"
 type = "string"
 default = ""
 description = "Persona id selected by this Agent profile."
+metadata = { component = "persona-ref" }
 
 [[fields]]
 path = "agent.prompt_files.locale"

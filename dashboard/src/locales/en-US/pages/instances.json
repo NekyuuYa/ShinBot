@@ -61,7 +61,8 @@
   "empty": {
     "noPlatform": "Unbound",
     "noMessagePlatforms": "No message platforms are available. Create one on the Message Platforms page first.",
-    "noBindings": "No message routing bindings yet."
+    "noBindings": "No message routing bindings yet.",
+    "noAgentConfigs": "No agent configs available. Create one on the Agents page first."
   },
   "validation": {
     "title": "The current bot config has validation issues",

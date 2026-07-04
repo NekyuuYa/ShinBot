@@ -149,6 +149,7 @@
       :is-saving="isSaving"
       :model-ref-route-options="modelRefRouteOptions"
       :model-ref-provider-groups="modelRefProviderGroups"
+      :persona-ref-options="personaRefOptions"
       @save="saveProfile"
     />
   </v-container>
@@ -175,6 +176,7 @@ import { useDelayedFlag } from "@/composables/useDelayedFlag";
 import { translate } from "@/plugins/i18n";
 import { useConfigWorkspaceStore } from "@/stores/configWorkspace";
 import { useModelRuntimeStore } from "@/stores/modelRuntime";
+import { usePersonasStore } from "@/stores/personas";
 import { useUiStore } from "@/stores/ui";
 import { normalizeTimestampMs } from "@/utils/time";
 import { getErrorMessage } from "@/utils/error";
@@ -187,6 +189,7 @@ const AGENT_RUNTIME_PROVIDER_ID = "shinbot.agent.runtime";
 const { t, locale } = useI18n();
 const configStore = useConfigWorkspaceStore();
 const modelRuntimeStore = useModelRuntimeStore();
+const personasStore = usePersonasStore();
 const uiStore = useUiStore();
 const { confirm } = useConfirmDialog();
 
@@ -261,6 +264,13 @@ const modelRefProviderGroups = computed(() =>
     }))
     .filter((group) => group.items.length > 0)
     .sort((left, right) => left.providerName.localeCompare(right.providerName)),
+);
+
+const personaRefOptions = computed(() =>
+  personasStore.personas.map((persona) => ({
+    title: persona.name || persona.uuid,
+    value: persona.uuid,
+  }))
 );
 
 const initialSkeletonRequested = computed(
@@ -515,6 +525,7 @@ async function removeProfile(profile: AgentConfigProfile) {
 
 onMounted(() => {
   void refreshPage();
+  void personasStore.fetchPersonas();
 });
 </script>
 
