@@ -241,8 +241,35 @@ class MediaInspectionRunner:
                 else "media.inspection_runner"
             )
             purpose = "sticker_summary" if prefer_sticker_model else "media_inspection"
-            result = await self._model_runtime.generate(
-                ModelRuntimeCall(
+            call = ModelRuntimeCall(
+                route_id=route_id or None,
+                model_id=model_id or None,
+                caller=caller,
+                session_id=session_id,
+                instance_id=instance_id,
+                purpose=purpose,
+                messages=messages,
+                response_format=MEDIA_INSPECTION_RESPONSE_FORMAT,
+                metadata={
+                    "raw_hash": raw_hash,
+                    "inspection_agent_ref": selected_agent_ref,
+                    "inspection_prompt_ref": selected_prompt_ref,
+                    "inspection_llm_ref": resolved_llm_ref,
+                    "summary_mode": "sticker" if prefer_sticker_model else "image",
+                    "prompt_component_ids": [
+                        media_instruction_component_id(purpose)
+                    ],
+                },
+            )
+            try:
+                result = await self._model_runtime.generate(call)
+            except ModelCallError:
+                # Retry without response_format for models that don't support it
+                logger.debug(
+                    "Retrying media inspection without response_format for %s",
+                    raw_hash,
+                )
+                call = ModelRuntimeCall(
                     route_id=route_id or None,
                     model_id=model_id or None,
                     caller=caller,
@@ -250,7 +277,7 @@ class MediaInspectionRunner:
                     instance_id=instance_id,
                     purpose=purpose,
                     messages=messages,
-                    response_format=MEDIA_INSPECTION_RESPONSE_FORMAT,
+                    response_format=None,
                     metadata={
                         "raw_hash": raw_hash,
                         "inspection_agent_ref": selected_agent_ref,
@@ -262,7 +289,7 @@ class MediaInspectionRunner:
                         ],
                     },
                 )
-            )
+                result = await self._model_runtime.generate(call)
         except ModelCallError:
             logger.exception("Media inspection model call failed for %s", raw_hash)
             return None
