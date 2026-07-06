@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from shinbot.admin.persona_files import (
+    FewShotExample,
     PersonaFileError,
     PersonaFileRepository,
     serialize_persona,
@@ -22,12 +23,18 @@ router = APIRouter(
 )
 
 
+class FewShotExampleRequest(BaseModel):
+    user: str
+    assistant: str
+
+
 class PersonaRequest(BaseModel):
     id: str | None = None
     name: str
     promptText: str
     tags: list[str] = Field(default_factory=list)
     enabled: bool = True
+    fewShotExamples: list[FewShotExampleRequest] = Field(default_factory=list)
 
 
 class PersonaPatchRequest(BaseModel):
@@ -35,6 +42,7 @@ class PersonaPatchRequest(BaseModel):
     promptText: str | None = None
     tags: list[str] | None = None
     enabled: bool | None = None
+    fewShotExamples: list[FewShotExampleRequest] | None = None
 
 
 class PersonaData(BaseModel):
@@ -47,6 +55,7 @@ class PersonaData(BaseModel):
     enabled: bool
     createdAt: str
     lastModified: str
+    fewShotExamples: list[FewShotExampleRequest] = Field(default_factory=list)
 
 
 class PersonaDeletedData(BaseModel):
@@ -80,12 +89,17 @@ def list_personas(boot: Any = BootDep) -> dict[str, Any]:
 def create_persona(body: PersonaRequest, boot: Any = BootDep) -> dict[str, Any]:
     """Create a new persona with the given name, prompt text, and tags."""
     try:
+        few_shot = [
+            FewShotExample(user=ex.user, assistant=ex.assistant)
+            for ex in body.fewShotExamples
+        ]
         payload = _persona_repository(boot).create(
             persona_id=body.id,
             name=body.name,
             prompt_text=body.promptText,
             tags=body.tags,
             enabled=body.enabled,
+            few_shot=few_shot or None,
         )
     except PersonaFileError as exc:
         _raise_admin_http_error(exc)
@@ -126,12 +140,27 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot: Any = Boot
             body.promptText if body.promptText is not None else str(current["prompt_text"] or "")
         )
         next_tags = body.tags if body.tags is not None else list(current["tags"])
+        next_few_shot = None
+        if body.fewShotExamples is not None:
+            next_few_shot = [
+                FewShotExample(user=ex.user, assistant=ex.assistant)
+                for ex in body.fewShotExamples
+            ]
+        else:
+            raw_few_shot = current.get("few_shot", [])
+            if isinstance(raw_few_shot, list):
+                next_few_shot = [
+                    FewShotExample(user=str(ex["user"]), assistant=str(ex["assistant"]))
+                    for ex in raw_few_shot
+                    if isinstance(ex, dict)
+                ]
         payload = repository.update(
             persona_uuid,
             name=next_name,
             prompt_text=next_prompt_text,
             tags=next_tags,
             enabled=body.enabled if body.enabled is not None else bool(current["enabled"]),
+            few_shot=next_few_shot,
         )
     except PersonaFileError as exc:
         _raise_admin_http_error(exc)

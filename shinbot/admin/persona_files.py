@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,6 +21,14 @@ from shinbot.persistence.records import utc_now_iso
 
 PERSONA_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 DEFAULT_PERSONA_ID = "default"
+
+
+@dataclass(slots=True)
+class FewShotExample:
+    """A single few-shot example for a persona."""
+
+    user: str
+    assistant: str
 
 
 @dataclass(slots=True)
@@ -49,6 +57,7 @@ class PersonaFileRecord:
     path: Path
     version: str = "1.0.0"
     description: str = ""
+    few_shot: list[FewShotExample] = field(default_factory=list)
 
 
 class PersonaFileRepository:
@@ -135,6 +144,7 @@ class PersonaFileRepository:
         prompt_text: str,
         tags: list[str],
         enabled: bool,
+        few_shot: list[FewShotExample] | None = None,
     ) -> dict[str, object]:
         """Create a new persona file on disk.
 
@@ -144,6 +154,7 @@ class PersonaFileRepository:
             prompt_text: The prompt body text.
             tags: List of tags.
             enabled: Whether the persona is enabled.
+            few_shot: Optional list of few-shot examples.
 
         Returns:
             Serialised payload of the newly created persona.
@@ -177,6 +188,7 @@ class PersonaFileRepository:
             enabled=enabled,
             created_at=now,
             updated_at=now,
+            few_shot=few_shot,
         )
         payload = self.get(normalized_id)
         assert payload is not None
@@ -190,6 +202,7 @@ class PersonaFileRepository:
         prompt_text: str,
         tags: list[str],
         enabled: bool,
+        few_shot: list[FewShotExample] | None = None,
     ) -> dict[str, object]:
         """Update an existing persona file on disk.
 
@@ -199,6 +212,7 @@ class PersonaFileRepository:
             prompt_text: New prompt body text.
             tags: New list of tags.
             enabled: New enabled state.
+            few_shot: Optional list of few-shot examples.
 
         Returns:
             Serialised payload of the updated persona.
@@ -234,6 +248,7 @@ class PersonaFileRepository:
             updated_at=utc_now_iso(),
             version=str(current.get("version") or "1.0.0"),
             description=str(current.get("description") or ""),
+            few_shot=few_shot,
         )
         payload = self.get(normalized_id)
         assert payload is not None
@@ -298,6 +313,7 @@ class PersonaFileRepository:
             path=path,
             version=str(front_matter.get("version") or "1.0.0"),
             description=str(front_matter.get("description") or ""),
+            few_shot=_parse_few_shot(front_matter.get("few_shot")),
         )
 
     def _write_file(
@@ -313,6 +329,7 @@ class PersonaFileRepository:
         updated_at: str,
         version: str = "1.0.0",
         description: str = "",
+        few_shot: list[FewShotExample] | None = None,
     ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         text = render_persona_markdown(
@@ -325,6 +342,7 @@ class PersonaFileRepository:
             updated_at=updated_at,
             version=version,
             description=description,
+            few_shot=few_shot,
         )
         path.write_text(text, encoding="utf-8")
 
@@ -349,6 +367,7 @@ def serialize_persona_record(record: PersonaFileRecord) -> dict[str, object]:
         "path": str(record.path),
         "version": record.version,
         "description": record.description,
+        "few_shot": [{"user": ex.user, "assistant": ex.assistant} for ex in record.few_shot],
     }
 
 
@@ -361,6 +380,7 @@ def serialize_persona(payload: dict[str, object]) -> dict[str, object]:
     Returns:
         A dict with camelCase keys for the front-end.
     """
+    few_shot = payload.get("few_shot", [])
     return {
         "uuid": payload["uuid"],
         "name": payload["name"],
@@ -369,6 +389,11 @@ def serialize_persona(payload: dict[str, object]) -> dict[str, object]:
         "enabled": payload["enabled"],
         "createdAt": payload["created_at"],
         "lastModified": payload["updated_at"],
+        "fewShotExamples": [
+            {"user": ex["user"], "assistant": ex["assistant"]}
+            for ex in few_shot
+            if isinstance(ex, dict)
+        ],
     }
 
 
@@ -394,6 +419,22 @@ def persona_prompt_component(payload: dict[str, object]) -> PromptComponent:
         A PromptComponent placed in the ``IDENTITY`` stage.
     """
     persona_id = normalize_persona_id(str(payload["uuid"]))
+    prompt_text = str(payload.get("prompt_text") or "").strip()
+
+    # Append few-shot examples if present
+    few_shot = payload.get("few_shot", [])
+    if isinstance(few_shot, list) and few_shot:
+        few_shot_lines = ["", "---", "对话示例："]
+        for ex in few_shot:
+            if isinstance(ex, dict):
+                user = str(ex.get("user") or "").strip()
+                assistant = str(ex.get("assistant") or "").strip()
+                if user and assistant:
+                    few_shot_lines.append(f"用户: {user}")
+                    few_shot_lines.append(f"助手: {assistant}")
+                    few_shot_lines.append("")
+        prompt_text = prompt_text + "\n" + "\n".join(few_shot_lines).strip()
+
     return PromptComponent(
         id=persona_component_id(persona_id),
         stage=PromptStage.IDENTITY,
@@ -401,7 +442,7 @@ def persona_prompt_component(payload: dict[str, object]) -> PromptComponent:
         version=str(payload.get("version") or "1.0.0"),
         priority=100,
         enabled=bool(payload.get("enabled", True)),
-        content=str(payload.get("prompt_text") or "").strip(),
+        content=prompt_text,
         tags=[str(item) for item in _list(payload.get("tags"))],
         metadata={
             "display_name": str(payload.get("name") or persona_id),
@@ -496,6 +537,7 @@ def render_persona_markdown(
     updated_at: str,
     version: str = "1.0.0",
     description: str = "",
+    few_shot: list[FewShotExample] | None = None,
 ) -> str:
     """Render a persona as a Markdown file with YAML front-matter.
 
@@ -509,6 +551,7 @@ def render_persona_markdown(
         updated_at: ISO timestamp of last update.
         version: Semantic version string.
         description: Optional human-readable description.
+        few_shot: Optional list of few-shot examples.
 
     Returns:
         A complete Markdown string with YAML front-matter.
@@ -522,6 +565,11 @@ def render_persona_markdown(
     ]
     if description:
         lines.append(f"description: {_yaml_string(description)}")
+    if few_shot:
+        lines.append("few_shot:")
+        for ex in few_shot:
+            lines.append(f"  - user: {_yaml_string(ex.user)}")
+            lines.append(f"    assistant: {_yaml_string(ex.assistant)}")
     lines.extend(
         [
             "tags:",
@@ -552,6 +600,21 @@ def _sort_key(record: PersonaFileRecord) -> tuple[int, str, str]:
 
 def _list(value: object) -> list[object]:
     return list(value) if isinstance(value, list | tuple) else []
+
+
+def _parse_few_shot(value: object) -> list[FewShotExample]:
+    """Parse few-shot examples from YAML front-matter."""
+    if not isinstance(value, list):
+        return []
+    examples: list[FewShotExample] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        user = str(item.get("user") or "").strip()
+        assistant = str(item.get("assistant") or "").strip()
+        if user and assistant:
+            examples.append(FewShotExample(user=user, assistant=assistant))
+    return examples
 
 
 def _yaml_bool(value: bool) -> str:
