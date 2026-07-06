@@ -517,9 +517,13 @@ const refreshTask = async () => {
 }
 
 const sourceLabel = (sourceType: PluginInstallSourceType) => {
-  return sourceType === 'github'
-    ? t('pages.plugins.install.githubSource')
-    : t('pages.plugins.install.archiveSource')
+  if (sourceType === 'github') {
+    return t('pages.plugins.install.githubSource')
+  }
+  if (sourceType === 'marketplace') {
+    return t('pages.plugins.tabs.marketplace')
+  }
+  return t('pages.plugins.install.archiveSource')
 }
 
 const taskColor = (status: PluginInstallTask['status']) => {

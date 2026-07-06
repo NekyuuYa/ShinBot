@@ -224,6 +224,7 @@ class PluginManager:
         install_fn: Any,
         uninstall_fn: Any | None = None,
         validate_fn: Any | None = None,
+        target_dir: Path | str | None = None,
     ) -> None:
         """Register a custom plugin installer.
 
@@ -242,6 +243,7 @@ class PluginManager:
             install_fn=install_fn,
             uninstall_fn=uninstall_fn,
             validate_fn=validate_fn,
+            target_dir=target_dir,
         )
 
     def register_marketplace_source(
@@ -277,6 +279,14 @@ class PluginManager:
             installer_type=installer_type,
             owner_plugin_id=owner_plugin_id,
         )
+
+    def _unregister_marketplace_entries_by_owner(self, plugin_id: str) -> None:
+        if self._boot is None:
+            return
+        service = getattr(self._boot, "plugin_marketplace_service", None)
+        if service is None or not hasattr(service, "unregister_owner"):
+            return
+        service.unregister_owner(plugin_id)
 
     async def preregister_model_runtime_extensions(
         self,
@@ -429,6 +439,7 @@ class PluginManager:
             self._event_bus.off_all(plugin_id)
             self._keyword_registry.unregister_by_owner(plugin_id)
             self._unregister_routes_by_owner(plugin_id)
+            self._unregister_marketplace_entries_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -638,6 +649,7 @@ class PluginManager:
             self._event_bus.off_all(plugin_id)
             self._keyword_registry.unregister_by_owner(plugin_id)
             self._unregister_routes_by_owner(plugin_id)
+            self._unregister_marketplace_entries_by_owner(plugin_id)
             if self._tool_registry is not None:
                 self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
             raise
@@ -1261,6 +1273,7 @@ class PluginManager:
         evt_count = self._event_bus.off_all(plugin_id)
         self._keyword_registry.unregister_by_owner(plugin_id)
         self._unregister_routes_by_owner(plugin_id)
+        self._unregister_marketplace_entries_by_owner(plugin_id)
         if self._tool_registry is not None:
             self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
         if plg is not None and self._model_runtime is not None:

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
+
 from shinbot.agent.runners._review_base import ReviewLLMRunnerConfig
 from shinbot.agent.runners.review_block_digest import (
     LLMReviewBlockDigestStageRunner,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -117,6 +118,53 @@ def _plugin_archive_zip(*, version: str = "0.1.0") -> bytes:
     return stream.getvalue()
 
 
+def _custom_metadata_archive_zip(*, version: str = "1.0.0") -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr(
+            "repo/cool_plugin/metadata.yaml",
+            "\n".join(
+                [
+                    "name: cool_plugin",
+                    f"version: {version}",
+                    "desc: Custom marketplace plugin",
+                    "author: Tests",
+                    "",
+                ]
+            ),
+        )
+    return stream.getvalue()
+
+
+def _custom_plugin_archive_zip(*, version: str = "1.0.0") -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr(
+            "repo/cool_plugin/metadata.yaml",
+            "\n".join(
+                [
+                    "name: cool_plugin",
+                    f"version: {version}",
+                    "desc: Custom marketplace plugin",
+                    "author: Tests",
+                    "",
+                ]
+            ),
+        )
+        archive.writestr("repo/cool_plugin/main.py", "# custom plugin\n")
+    return stream.getvalue()
+
+
+def _parse_simple_yaml(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
 def _patch_sparse_archives(
     monkeypatch,
     archives_by_scope: dict[str, list[bytes]],
@@ -150,6 +198,160 @@ def test_plugin_marketplace_sources_returns_official_source(tmp_path: Path):
     assert source["id"] == "official"
     assert source["repository_url"] == "https://github.com/NekyuuYa/shinbot-plugins"
     assert source["ref"] == "main"
+
+
+def test_plugin_marketplace_unregisters_plugin_owned_sources(tmp_path: Path):
+    client, bot, boot, headers = _client(tmp_path)
+    service = plugin_marketplace.build_plugin_marketplace_service(bot, boot)
+
+    async def install_fn(plugin_path: Path) -> bool:
+        return plugin_path.exists()
+
+    service.register_installer(
+        "custom",
+        owner_plugin_id="owner_plugin",
+        install_fn=install_fn,
+    )
+    service.register_source(
+        source_id="custom-source",
+        name="Custom Source",
+        repository_url="https://github.com/example/custom-source",
+        installer_type="custom",
+        owner_plugin_id="owner_plugin",
+    )
+
+    with client:
+        listed = client.get("/api/v1/plugin-marketplace/sources", headers=headers)
+
+    assert listed.status_code == 200
+    assert {item["id"] for item in listed.json()["data"]["sources"]} == {
+        "official",
+        "custom-source",
+    }
+
+    service.unregister_owner("owner_plugin")
+
+    with client:
+        listed_after = client.get("/api/v1/plugin-marketplace/sources", headers=headers)
+
+    assert listed_after.status_code == 200
+    assert [item["id"] for item in listed_after.json()["data"]["sources"]] == ["official"]
+
+
+def test_plugin_marketplace_custom_source_uses_registered_installer(
+    tmp_path: Path,
+    monkeypatch,
+):
+    expected_metadata_paths = ["*/metadata.json", "*/metadata.yaml", "*/metadata.yml"]
+    calls: list[tuple[str, list[str]]] = []
+
+    async def fake_create_sparse_archive(self, source, *, sparse_paths):
+        if sparse_paths == expected_metadata_paths:
+            calls.append(("metadata", sparse_paths))
+            return plugin_marketplace.PluginMarketplaceArchive(
+                content=_custom_metadata_archive_zip(),
+                resolved_ref="custom-resolved",
+            )
+        calls.append(("plugin", sparse_paths))
+        return plugin_marketplace.PluginMarketplaceArchive(
+            content=_custom_plugin_archive_zip(),
+            resolved_ref="custom-resolved",
+        )
+
+    monkeypatch.setattr(
+        plugin_marketplace.PluginMarketplaceService,
+        "_create_sparse_archive",
+        fake_create_sparse_archive,
+    )
+
+    target_dir = tmp_path / "custom_plugins"
+    install_calls: list[dict[str, object]] = []
+
+    def validate_fn(plugin_path: Path) -> dict[str, object] | None:
+        metadata_path = plugin_path / "metadata.yaml"
+        if not metadata_path.is_file():
+            return None
+        raw = _parse_simple_yaml(metadata_path)
+        return {
+            "id": raw["name"],
+            "name": "Cool Plugin",
+            "version": raw["version"],
+            "description": raw["desc"],
+            "author": raw["author"],
+        }
+
+    async def install_fn(
+        plugin_path: Path,
+        *,
+        target_dir: Path,
+        source_info: dict[str, object] | None = None,
+    ) -> bool:
+        install_calls.append(source_info or {})
+        target = target_dir / plugin_path.name
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(plugin_path, target)
+        return True
+
+    client, bot, boot, headers = _client(tmp_path)
+    service = plugin_marketplace.build_plugin_marketplace_service(bot, boot)
+    service.register_installer(
+        "custom",
+        owner_plugin_id="owner_plugin",
+        install_fn=install_fn,
+        validate_fn=validate_fn,
+        target_dir=target_dir,
+    )
+    service.register_source(
+        source_id="custom-source",
+        name="Custom Source",
+        repository_url="https://github.com/example/custom-source",
+        plugin_root=".",
+        installer_type="custom",
+        owner_plugin_id="owner_plugin",
+    )
+
+    with client:
+        listed = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "custom-source"},
+        )
+        install = client.post(
+            "/api/v1/plugin-marketplace/cool_plugin/install",
+            headers=headers,
+            json={"source": "custom-source", "enable_after_install": True},
+        )
+        listed_after = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "custom-source"},
+        )
+
+    assert listed.status_code == 200
+    first_item = listed.json()["data"]["plugins"][0]
+    assert first_item["plugin_id"] == "cool_plugin"
+    assert first_item["name"] == "Cool Plugin"
+    assert first_item["plugin_path"] == "cool_plugin"
+    assert first_item["installed"] is False
+
+    assert install.status_code == 200
+    assert install.json()["data"]["status"] == "succeeded"
+    assert install.json()["data"]["plugin_id"] == "cool_plugin"
+    assert (target_dir / "cool_plugin" / "main.py").is_file()
+    assert install_calls[0]["source"]["id"] == "custom-source"
+
+    installed_item = listed_after.json()["data"]["plugins"][0]
+    assert installed_item["installed"] is True
+    assert installed_item["managed_by_webui"] is True
+    assert installed_item["installed_version"] == "1.0.0"
+    assert installed_item["can_install"] is False
+    assert installed_item["installed_source"]["source_type"] == "marketplace"
+    assert installed_item["installed_source"]["installer_type"] == "custom"
+    assert calls == [
+        ("metadata", expected_metadata_paths),
+        ("plugin", ["cool_plugin/**"]),
+    ]
 
 
 def test_plugin_marketplace_lists_monorepo_plugins(tmp_path: Path, monkeypatch):

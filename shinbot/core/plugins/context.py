@@ -740,6 +740,7 @@ class Plugin:
         install_fn: Callable[..., Any],
         uninstall_fn: Callable[..., Any] | None = None,
         validate_fn: Callable[..., Any] | None = None,
+        target_dir: Path | str | None = None,
     ) -> None:
         """Register a custom plugin installer for a specific plugin type.
 
@@ -749,6 +750,7 @@ class Plugin:
             install_fn:     Async function to install a plugin.
             uninstall_fn:   Optional async function to uninstall a plugin.
             validate_fn:    Optional function to validate plugin metadata.
+            target_dir:     Optional installer-owned target directory.
         """
         if self._plugin_manager is None:
             raise RuntimeError(
@@ -762,6 +764,7 @@ class Plugin:
                 install_fn=install_fn,
                 uninstall_fn=uninstall_fn,
                 validate_fn=validate_fn,
+                target_dir=target_dir,
             )
 
     def register_marketplace_source(

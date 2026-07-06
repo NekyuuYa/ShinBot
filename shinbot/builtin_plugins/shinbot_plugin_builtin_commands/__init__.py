@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import re
 import time
 from collections.abc import Sequence
+from typing import Any
 
 import shinbot
 from shinbot.core.application.bot_routing import bot_plugin_enabled_for_context

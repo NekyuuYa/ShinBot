@@ -55,7 +55,7 @@ export interface PluginMetadata {
   [key: string]: unknown
 }
 
-export type PluginInstallSourceType = 'github' | 'archive'
+export type PluginInstallSourceType = 'github' | 'archive' | 'marketplace'
 
 export interface PluginInstallSource {
   plugin_id?: string
@@ -69,6 +69,8 @@ export interface PluginInstallSource {
   installed_version: string
   managed_by_webui: boolean
   archive_sha256?: string
+  installer_type?: string
+  marketplace_source_id?: string
   can_update?: boolean
   can_uninstall?: boolean
 }
@@ -139,6 +141,8 @@ export interface PluginMarketplaceSource {
   repo_url?: string
   ref: string
   plugin_root: string
+  installer_type?: string
+  owner_plugin_id?: string
 }
 
 export interface PluginMarketplaceItem {

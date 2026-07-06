@@ -166,6 +166,9 @@ const sourceLabel = computed(() => {
   if (installSource.value.source_type === 'github') {
     return t('pages.plugins.install.githubSource')
   }
+  if (installSource.value.source_type === 'marketplace') {
+    return t('pages.plugins.tabs.marketplace')
+  }
   return t('pages.plugins.install.archiveSource')
 })
 const sourceIcon = computed(() => {
@@ -175,7 +178,10 @@ const sourceIcon = computed(() => {
   if (!installSource.value) {
     return 'mdi-folder-outline'
   }
-  return installSource.value.source_type === 'github' ? 'mdi-github' : 'mdi-folder-zip'
+  if (installSource.value.source_type === 'github') {
+    return 'mdi-github'
+  }
+  return installSource.value.source_type === 'marketplace' ? 'mdi-storefront-outline' : 'mdi-folder-zip'
 })
 const sourceColor = computed(() => {
   if (isBuiltin.value) {
@@ -184,7 +190,10 @@ const sourceColor = computed(() => {
   if (!installSource.value) {
     return 'grey'
   }
-  return installSource.value.source_type === 'github' ? 'primary' : 'secondary'
+  if (installSource.value.source_type === 'github') {
+    return 'primary'
+  }
+  return installSource.value.source_type === 'marketplace' ? 'info' : 'secondary'
 })
 
 const handleToggle = async () => {

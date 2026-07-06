@@ -38,6 +38,7 @@ PLUGIN_INSTALL_MAX_EXTRACTED_BYTES = 100 * 1024 * 1024
 _VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_", "shinbot_converter_")
 _VALID_ROLE_VALUES = {"logic", "adapter"}
 _GITHUB_REF_RE = re.compile(r"^[A-Za-z0-9._/\-]{1,200}$")
+type PluginInstallSourceType = Literal["github", "archive", "marketplace"]
 
 
 @dataclass(slots=True)
@@ -125,7 +126,7 @@ class PluginInstallRecord:
     """One WebUI-managed plugin source record."""
 
     plugin_id: str
-    source_type: Literal["github", "archive"]
+    source_type: PluginInstallSourceType
     source_url: str
     ref: str
     resolved_ref: str
@@ -135,6 +136,8 @@ class PluginInstallRecord:
     plugin_path: str = ""
     managed_by_webui: bool = True
     archive_sha256: str = ""
+    installer_type: str = ""
+    marketplace_source_id: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         """Return a manifest-compatible dict."""
@@ -150,14 +153,16 @@ class PluginInstallRecord:
             "installed_version": self.installed_version,
             "managed_by_webui": self.managed_by_webui,
             "archive_sha256": self.archive_sha256,
+            "installer_type": self.installer_type,
+            "marketplace_source_id": self.marketplace_source_id,
         }
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> PluginInstallRecord:
         """Build a source record from manifest data."""
         source_type = value.get("source_type")
-        if source_type not in {"github", "archive"}:
-            raise ValueError("source_type must be 'github' or 'archive'")
+        if source_type not in {"github", "archive", "marketplace"}:
+            raise ValueError("source_type must be 'github', 'archive', or 'marketplace'")
         plugin_id = value.get("plugin_id")
         if not isinstance(plugin_id, str) or not plugin_id:
             raise ValueError("plugin_id must be a non-empty string")
@@ -177,6 +182,8 @@ class PluginInstallRecord:
             installed_version=str(value.get("installed_version", "0.0.0")),
             managed_by_webui=bool(value.get("managed_by_webui", True)),
             archive_sha256=str(value.get("archive_sha256", "")),
+            installer_type=str(value.get("installer_type", "")),
+            marketplace_source_id=str(value.get("marketplace_source_id", "")),
         )
 
 
@@ -275,7 +282,7 @@ class PluginPackagePreview:
     legacy_dependencies: list[str]
     missing_required_dependencies: list[str]
     missing_optional_dependencies: list[str]
-    source_type: Literal["github", "archive"]
+    source_type: PluginInstallSourceType
     source_url: str
     ref: str
     resolved_ref: str
@@ -557,10 +564,14 @@ class PluginInstallService:
                     code="PLUGIN_INSTALL_TARGET_UNMANAGED",
                     message=f"Plugin {plugin_id!r} is not managed by WebUI",
                 )
-            await self._unload_if_loaded(plugin_id)
-            target = self._plugin_target(plugin_id)
-            if target.exists():
-                shutil.rmtree(target)
+            if record.source_type == "marketplace":
+                await self._unload_if_loaded(plugin_id)
+                await self._uninstall_marketplace_plugin(plugin_id, record)
+            else:
+                await self._unload_if_loaded(plugin_id)
+                target = self._plugin_target(plugin_id)
+                if target.exists():
+                    shutil.rmtree(target)
             records.pop(plugin_id, None)
             self.manifest.save(records)
             self.task_registry.update(
@@ -587,12 +598,29 @@ class PluginInstallService:
         task = self.task_registry.get(task_id)
         return task.as_dict() if task is not None else None
 
+    async def _uninstall_marketplace_plugin(
+        self,
+        plugin_id: str,
+        record: PluginInstallRecord,
+    ) -> None:
+        """Delegate uninstall for marketplace-managed custom plugin records."""
+        from shinbot.admin.plugin_marketplace import (
+            PluginMarketplaceError,
+            build_plugin_marketplace_service,
+        )
+
+        marketplace = build_plugin_marketplace_service(self.bot, self.boot)
+        try:
+            await marketplace.uninstall_installed_plugin(plugin_id, record)
+        except PluginMarketplaceError as exc:
+            raise PluginInstallError(exc.status_code, exc.code, exc.message) from exc
+
     async def _run_archive_install(
         self,
         task: PluginInstallTask,
         archive_bytes: bytes,
         *,
-        source_type: Literal["github", "archive"],
+        source_type: PluginInstallSourceType,
         source_url: str,
         ref: str,
         resolved_ref: str,
@@ -749,7 +777,7 @@ class PluginInstallService:
         self,
         extract_root: Path,
         *,
-        source_type: Literal["github", "archive"],
+        source_type: PluginInstallSourceType,
         source_url: str,
         ref: str,
         resolved_ref: str,
