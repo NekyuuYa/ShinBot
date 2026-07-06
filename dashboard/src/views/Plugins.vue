@@ -32,8 +32,19 @@
         </v-tabs>
       </v-col>
       <v-spacer />
-      <v-col v-if="activeTab === 'marketplace' && pluginsStore.marketplaceSource" cols="12" md="auto" class="pa-0">
-        <v-chip color="primary" variant="tonal" class="text-break">
+      <v-col v-if="activeTab === 'marketplace'" cols="12" md="auto" class="pa-0">
+        <v-select
+          v-if="pluginsStore.marketplaceSources.length > 1"
+          v-model="selectedSourceId"
+          :items="sourceOptions"
+          item-title="name"
+          item-value="id"
+          density="compact"
+          variant="outlined"
+          hide-details
+          @update:model-value="handleSourceChange"
+        />
+        <v-chip v-else-if="pluginsStore.marketplaceSource" color="primary" variant="tonal" class="text-break">
           <v-icon start icon="mdi-github" />
           {{ pluginsStore.marketplaceSource.name }}
         </v-chip>
@@ -196,6 +207,15 @@ const installDialogVisible = ref(false)
 const activePlugin = ref<Plugin | null>(null)
 const activeSchema = ref<PluginConfigSchema | null>(null)
 const schemaForm = ref<Record<string, unknown>>({})
+const selectedSourceId = ref('official')
+
+const sourceOptions = computed(() =>
+  pluginsStore.marketplaceSources.map((s) => ({ id: s.id, name: s.name }))
+)
+
+const handleSourceChange = (sourceId: string) => {
+  void pluginsStore.fetchMarketplace(sourceId, { refresh: true })
+}
 
 const initialSkeletonRequested = computed(
   () => pluginsStore.isLoading && pluginsStore.plugins.length === 0
