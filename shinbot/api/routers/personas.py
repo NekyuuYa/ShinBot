@@ -150,7 +150,7 @@ def patch_persona(persona_uuid: str, body: PersonaPatchRequest, boot: Any = Boot
             raw_few_shot = current.get("few_shot", [])
             if isinstance(raw_few_shot, list):
                 next_few_shot = [
-                    FewShotExample(user=str(ex["user"]), assistant=str(ex["assistant"]))
+                    FewShotExample(user=str(ex.get("user", "")), assistant=str(ex.get("assistant", "")))
                     for ex in raw_few_shot
                     if isinstance(ex, dict)
                 ]

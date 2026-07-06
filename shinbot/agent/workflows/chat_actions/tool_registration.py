@@ -447,7 +447,10 @@ def register_chat_action_tools(
         "emoji_id 必须是平台支持的数字 ID，不要填写自然语言描述。"
         "如需查询完整表情列表，调用 list_emoji 工具。\n"
         "优先使用 message_log_id：填写上下文里 [msgid:123] 的数字 123。\n"
+        "若上下文明确给出了原平台 message_id，也可直接填写 message_id；不要同时填写两个字段。\n"
+        "action 默认 add，取消表态时使用 remove。\n"
         "terminate_round 默认 true：表态后结束本次聊天 workflow。"
+        "只有确实需要继续调用工具或继续多步行动时才设为 false。"
     )
     reaction_schema = {
         "type": "object",

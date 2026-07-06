@@ -123,16 +123,23 @@ class ActiveChatFastRunner:
 
     async def run(self, batch: ActiveChatBatch) -> ActiveChatRoundResult:
         """Execute one active chat fast-mode round."""
-        try:
-            # Ensure image descriptions are available before formatting
-            if self._media_ingress is not None and self._message_formatter is not None:
+        # Ensure image descriptions are available before formatting (best-effort)
+        if self._media_ingress is not None and self._message_formatter is not None:
+            try:
                 instance_id = instance_id_from_session(batch.session_id)
                 await self._media_ingress.ensure_image_descriptions(
                     instance_id=instance_id,
                     session_id=batch.session_id,
                     messages=list(batch.messages),
                 )
+            except Exception:
+                logger.debug(
+                    "ensure_image_descriptions failed for session %s, proceeding without",
+                    batch.session_id,
+                    exc_info=True,
+                )
 
+        try:
             messages, metadata = self._build_model_call_parts(batch)
         except Exception as exc:
             logger.exception(

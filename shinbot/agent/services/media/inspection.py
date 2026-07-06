@@ -136,7 +136,12 @@ class MediaInspectionRunner:
                 try:
                     await inflight
                 except Exception:
-                    pass
+                    logger.debug(
+                        "In-flight media inspection failed for %s, skipping retry",
+                        raw_hash,
+                        exc_info=True,
+                    )
+                    continue
                 semantics = self._database.media_semantics.get(raw_hash)
                 if semantics is not None and bool(semantics.get("verified_by_model")):
                     continue
@@ -265,8 +270,8 @@ class MediaInspectionRunner:
                 result = await self._model_runtime.generate(call)
             except ModelCallError:
                 # Retry without response_format for models that don't support it
-                logger.debug(
-                    "Retrying media inspection without response_format for %s",
+                logger.warning(
+                    "Media inspection with response_format failed for %s, retrying without",
                     raw_hash,
                 )
                 call = ModelRuntimeCall(
@@ -291,7 +296,7 @@ class MediaInspectionRunner:
                 )
                 result = await self._model_runtime.generate(call)
         except ModelCallError:
-            logger.exception("Media inspection model call failed for %s", raw_hash)
+            logger.exception("Media inspection model call failed for %s (both attempts)", raw_hash)
             return None
 
         payload = parse_media_inspection_payload(result.text)

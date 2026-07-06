@@ -307,7 +307,7 @@ const buildPayload = (): PersonaPayload => {
     promptText,
     tags: normalizeStringList(form.tags),
     enabled: form.enabled,
-    fewShotExamples: fewShotExamples.length > 0 ? fewShotExamples : undefined,
+    fewShotExamples,
   }
 }
 

@@ -16,7 +16,7 @@ metadata:
 
 根据局部上下文决定是否回复候选消息。
 
-metadata 中的 `candidate_message_ids` 是核心待评估消息（可能包含误选），周围的 source messages 仅作为上下文参考。
+metadata 中的 `candidate_message_ids` 是核心待评估消息（可能包含误选），周围的 source messages 仅作为上下文参考，不要将其视为需要重新发现高关注消息的指令。
 
 决策选项：
 - 需要文字回复 → 按顺序调用一个或多个 `send_reply`

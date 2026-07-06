@@ -424,14 +424,14 @@ def persona_prompt_component(payload: dict[str, object]) -> PromptComponent:
     # Append few-shot examples if present
     few_shot = payload.get("few_shot", [])
     if isinstance(few_shot, list) and few_shot:
-        few_shot_lines = ["", "---", "对话示例："]
+        few_shot_lines = ["", "---", "Examples:"]
         for ex in few_shot:
             if isinstance(ex, dict):
                 user = str(ex.get("user") or "").strip()
                 assistant = str(ex.get("assistant") or "").strip()
                 if user and assistant:
-                    few_shot_lines.append(f"用户: {user}")
-                    few_shot_lines.append(f"助手: {assistant}")
+                    few_shot_lines.append(f"User: {user}")
+                    few_shot_lines.append(f"Assistant: {assistant}")
                     few_shot_lines.append("")
         prompt_text = prompt_text + "\n" + "\n".join(few_shot_lines).strip()
 
