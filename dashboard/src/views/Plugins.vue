@@ -214,7 +214,7 @@ const sourceOptions = computed(() =>
 )
 
 const handleSourceChange = (sourceId: string) => {
-  void pluginsStore.fetchMarketplace(sourceId, { refresh: true })
+  void pluginsStore.fetchMarketplace(sourceId)
 }
 
 const initialSkeletonRequested = computed(

@@ -293,22 +293,28 @@ export const pluginsApi = {
   listMarketplace(source = 'official', refresh = false) {
     return apiClient.get<PluginMarketplaceResponse>('/plugin-marketplace', {
       params: { source, refresh },
+      timeout: 120000,
     })
   },
 
   getMarketplacePlugin(id: string, source = 'official') {
     return apiClient.get<PluginMarketplaceItemResponse>(`/plugin-marketplace/${id}`, {
       params: { source },
+      timeout: 120000,
     })
   },
 
   previewMarketplacePlugin(id: string, source = 'official') {
     return apiClient.post<PluginInstallPreview>(`/plugin-marketplace/${id}/preview`, {
       source,
+    }, {
+      timeout: 120000,
     })
   },
 
   installMarketplacePlugin(id: string, payload: PluginMarketplaceInstallPayload = {}) {
-    return apiClient.post<PluginInstallTask>(`/plugin-marketplace/${id}/install`, payload)
+    return apiClient.post<PluginInstallTask>(`/plugin-marketplace/${id}/install`, payload, {
+      timeout: 120000,
+    })
   },
 }
