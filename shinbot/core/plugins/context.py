@@ -732,6 +732,77 @@ class Plugin:
             )
         return self.database.model_registry.get_provider(provider_id)
 
+    # ── Plugin marketplace and installer registration ──────────────────
+
+    def register_plugin_installer(
+        self,
+        installer_type: str,
+        install_fn: Callable[..., Any],
+        uninstall_fn: Callable[..., Any] | None = None,
+        validate_fn: Callable[..., Any] | None = None,
+    ) -> None:
+        """Register a custom plugin installer for a specific plugin type.
+
+        Args:
+            installer_type: Unique identifier for the installer type
+                          (e.g. ``"astrbot"``).
+            install_fn:     Async function to install a plugin.
+            uninstall_fn:   Optional async function to uninstall a plugin.
+            validate_fn:    Optional function to validate plugin metadata.
+        """
+        if self._plugin_manager is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot register installer: "
+                "no PluginManager is available."
+            )
+        if hasattr(self._plugin_manager, "register_plugin_installer"):
+            self._plugin_manager.register_plugin_installer(
+                installer_type,
+                owner_plugin_id=self.plugin_id,
+                install_fn=install_fn,
+                uninstall_fn=uninstall_fn,
+                validate_fn=validate_fn,
+            )
+
+    def register_marketplace_source(
+        self,
+        *,
+        source_id: str,
+        name: str,
+        source_type: str = "github_monorepo",
+        repository_url: str,
+        ref: str = "main",
+        plugin_root: str = "plugins",
+        installer_type: str = "shinbot",
+    ) -> None:
+        """Register a plugin marketplace source.
+
+        Args:
+            source_id:       Unique source identifier.
+            name:            Display name for the source.
+            source_type:     Source type (currently only ``"github_monorepo"``).
+            repository_url:  GitHub repository URL.
+            ref:             Git ref (branch/tag/commit).
+            plugin_root:     Root directory within the repo for plugins.
+            installer_type:  Installer type to use for plugins from this source.
+        """
+        if self._plugin_manager is None:
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot register marketplace source: "
+                "no PluginManager is available."
+            )
+        if hasattr(self._plugin_manager, "register_marketplace_source"):
+            self._plugin_manager.register_marketplace_source(
+                source_id=source_id,
+                name=name,
+                source_type=source_type,
+                repository_url=repository_url,
+                ref=ref,
+                plugin_root=plugin_root,
+                installer_type=installer_type,
+                owner_plugin_id=self.plugin_id,
+            )
+
     # ── Cron scheduling ───────────────────────────────────────────────
 
     def on_cron(

@@ -216,6 +216,68 @@ class PluginManager:
             if cron_manager is not None:
                 plugin._cron_manager = cron_manager
 
+    def register_plugin_installer(
+        self,
+        installer_type: str,
+        *,
+        owner_plugin_id: str,
+        install_fn: Any,
+        uninstall_fn: Any | None = None,
+        validate_fn: Any | None = None,
+    ) -> None:
+        """Register a custom plugin installer.
+
+        Delegates to the marketplace service if available.
+        """
+        if self._boot is None:
+            return
+        from shinbot.admin.plugin_marketplace import build_plugin_marketplace_service
+
+        marketplace = build_plugin_marketplace_service(
+            getattr(self._boot, "bot", None), self._boot
+        )
+        marketplace.register_installer(
+            installer_type,
+            owner_plugin_id=owner_plugin_id,
+            install_fn=install_fn,
+            uninstall_fn=uninstall_fn,
+            validate_fn=validate_fn,
+        )
+
+    def register_marketplace_source(
+        self,
+        *,
+        source_id: str,
+        name: str,
+        source_type: str = "github_monorepo",
+        repository_url: str,
+        ref: str = "main",
+        plugin_root: str = "plugins",
+        installer_type: str = "shinbot",
+        owner_plugin_id: str = "",
+    ) -> None:
+        """Register a plugin marketplace source.
+
+        Delegates to the marketplace service if available.
+        """
+        if self._boot is None:
+            return
+        from shinbot.admin.plugin_marketplace import build_plugin_marketplace_service
+
+        marketplace = build_plugin_marketplace_service(
+            getattr(self._boot, "bot", None), self._boot
+        )
+        marketplace.register_source(
+            source_id=source_id,
+            name=name,
+            source_type=source_type,
+            repository_url=repository_url,
+            ref=ref,
+            plugin_root=plugin_root,
+            installer_type=installer_type,
+            owner_plugin_id=owner_plugin_id,
+        )
+
     async def preregister_model_runtime_extensions(
         self,
         user_dir: Path | str | None = None,

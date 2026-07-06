@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import shutil
 import time
 import uuid
@@ -32,6 +33,8 @@ PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION = 1
 _VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_", "shinbot_converter_")
 _VALID_ROLE_VALUES = {"logic", "adapter"}
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(slots=True)
 class PluginMarketplaceError(RuntimeError):
@@ -55,6 +58,7 @@ class PluginMarketplaceSource:
     repository_url: str
     ref: str
     plugin_root: str
+    installer_type: str = "shinbot"
 
     def as_dict(self) -> dict[str, Any]:
         """Return an API-friendly source payload."""
@@ -66,6 +70,7 @@ class PluginMarketplaceSource:
             "repo_url": self.repository_url,
             "ref": self.ref,
             "plugin_root": self.plugin_root,
+            "installer_type": self.installer_type,
         }
 
 
@@ -177,7 +182,85 @@ class PluginMarketplaceService:
         self.plugins_dir = self.data_dir / "plugins"
         self.cache_dir = self.data_dir / "plugin_marketplace_cache"
         self.manifest = PluginInstallManifest(self.data_dir)
-        self.sources = {OFFICIAL_MARKETPLACE_SOURCE.id: OFFICIAL_MARKETPLACE_SOURCE}
+        self.sources: dict[str, PluginMarketplaceSource] = {
+            OFFICIAL_MARKETPLACE_SOURCE.id: OFFICIAL_MARKETPLACE_SOURCE
+        }
+        self._plugin_installers: dict[str, dict[str, Any]] = {}
+
+    def register_source(
+        self,
+        *,
+        source_id: str,
+        name: str,
+        source_type: str = "github_monorepo",
+        repository_url: str,
+        ref: str = "main",
+        plugin_root: str = "plugins",
+        installer_type: str = "shinbot",
+        owner_plugin_id: str = "",
+    ) -> None:
+        """Register a marketplace source from a plugin.
+
+        Args:
+            source_id:       Unique source identifier.
+            name:            Display name.
+            source_type:     Source type.
+            repository_url:  GitHub repository URL.
+            ref:             Git ref.
+            plugin_root:     Plugin root directory in repo.
+            installer_type:  Installer type for this source.
+            owner_plugin_id: Plugin that registered this source.
+        """
+        source = PluginMarketplaceSource(
+            id=source_id,
+            name=name,
+            source_type=source_type,
+            repository_url=repository_url,
+            ref=ref,
+            plugin_root=plugin_root,
+            installer_type=installer_type,
+        )
+        self.sources[source_id] = source
+        logger.info(
+            "Registered marketplace source %r from plugin %r (installer=%s)",
+            source_id,
+            owner_plugin_id,
+            installer_type,
+        )
+
+    def register_installer(
+        self,
+        installer_type: str,
+        *,
+        owner_plugin_id: str,
+        install_fn: Any,
+        uninstall_fn: Any | None = None,
+        validate_fn: Any | None = None,
+    ) -> None:
+        """Register a custom plugin installer.
+
+        Args:
+            installer_type:  Unique installer type identifier.
+            owner_plugin_id: Plugin that registered this installer.
+            install_fn:      Async function to install a plugin.
+            uninstall_fn:    Optional async function to uninstall.
+            validate_fn:     Optional function to validate metadata.
+        """
+        self._plugin_installers[installer_type] = {
+            "install": install_fn,
+            "uninstall": uninstall_fn,
+            "validate": validate_fn,
+            "owner": owner_plugin_id,
+        }
+        logger.info(
+            "Registered plugin installer %r from plugin %r",
+            installer_type,
+            owner_plugin_id,
+        )
+
+    def get_installer(self, installer_type: str) -> dict[str, Any] | None:
+        """Get a registered installer by type."""
+        return self._plugin_installers.get(installer_type)
 
     def list_sources(self) -> dict[str, Any]:
         """Return configured marketplace sources."""
