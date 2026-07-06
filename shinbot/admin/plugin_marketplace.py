@@ -303,6 +303,27 @@ class PluginMarketplaceService:
         """Get a registered installer by type."""
         return self._plugin_installers.get(installer_type)
 
+    def list_installers(self) -> dict[str, Any]:
+        """Return custom plugin installers available to WebUI install flows."""
+        installers = [
+            {
+                "type": "shinbot",
+                "name": "ShinBot",
+                "owner_plugin_id": "",
+                "target_dir": "",
+            }
+        ]
+        installers.extend(
+            {
+                "type": installer_type,
+                "name": installer_type,
+                "owner_plugin_id": str(installer.get("owner") or ""),
+                "target_dir": str(installer.get("target_dir") or ""),
+            }
+            for installer_type, installer in sorted(self._plugin_installers.items())
+        )
+        return {"installers": installers}
+
     def unregister_owner(self, owner_plugin_id: str) -> None:
         """Remove marketplace sources and installers registered by a plugin."""
         if not owner_plugin_id:
@@ -581,6 +602,174 @@ class PluginMarketplaceService:
         finally:
             shutil.rmtree(service.tmp_dir / task.task_id, ignore_errors=True)
 
+    async def preview_custom_github(
+        self,
+        *,
+        installer_type: str,
+        repository_url: str,
+        ref: str = "main",
+        plugin_path: str = "",
+    ) -> dict[str, Any]:
+        """Preview a custom-installer plugin from a direct GitHub repository."""
+        source = self._direct_custom_source(
+            installer_type=installer_type,
+            source_url=repository_url,
+            ref=ref,
+        )
+        archive = await self._load_github_zip_archive(
+            source,
+            cache_scope="direct",
+        )
+        item, metadata = self._custom_item_from_archive(
+            source,
+            archive,
+            plugin_path=plugin_path,
+        )
+        return self._custom_preview_payload(item, archive, metadata)
+
+    async def install_custom_github(
+        self,
+        *,
+        installer_type: str,
+        repository_url: str,
+        ref: str = "main",
+        plugin_path: str = "",
+        enable_after_install: bool = True,
+        allow_overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Install a custom-installer plugin from a direct GitHub repository."""
+        source = self._direct_custom_source(
+            installer_type=installer_type,
+            source_url=repository_url,
+            ref=ref,
+        )
+        archive = await self._load_github_zip_archive(
+            source,
+            cache_scope="direct",
+        )
+        item, _ = self._custom_item_from_archive(
+            source,
+            archive,
+            plugin_path=plugin_path,
+        )
+        return await self._install_custom_plugin(
+            item,
+            archive,
+            enable_after_install=enable_after_install,
+            allow_overwrite=allow_overwrite,
+        )
+
+    async def preview_custom_archive(
+        self,
+        *,
+        installer_type: str,
+        archive_bytes: bytes,
+        filename: str = "",
+    ) -> dict[str, Any]:
+        """Preview a custom-installer plugin from an uploaded archive."""
+        source = self._direct_custom_source(
+            installer_type=installer_type,
+            source_url=filename or "uploaded_archive",
+            ref="",
+        )
+        archive = PluginMarketplaceArchive(content=archive_bytes, resolved_ref="")
+        item, metadata = self._custom_item_from_archive(source, archive, plugin_path="")
+        return self._custom_preview_payload(item, archive, metadata)
+
+    async def install_custom_archive(
+        self,
+        *,
+        installer_type: str,
+        archive_bytes: bytes,
+        filename: str = "",
+        enable_after_install: bool = True,
+        allow_overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Install a custom-installer plugin from an uploaded archive."""
+        source = self._direct_custom_source(
+            installer_type=installer_type,
+            source_url=filename or "uploaded_archive",
+            ref="",
+        )
+        archive = PluginMarketplaceArchive(content=archive_bytes, resolved_ref="")
+        item, _ = self._custom_item_from_archive(source, archive, plugin_path="")
+        return await self._install_custom_plugin(
+            item,
+            archive,
+            enable_after_install=enable_after_install,
+            allow_overwrite=allow_overwrite,
+        )
+
+    def _direct_custom_source(
+        self,
+        *,
+        installer_type: str,
+        source_url: str,
+        ref: str,
+    ) -> PluginMarketplaceSource:
+        if installer_type == "shinbot":
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_INSTALLER_INVALID",
+                message="Direct custom install requires a non-shinbot installer",
+            )
+        self._installer_or_raise(installer_type)
+        return PluginMarketplaceSource(
+            id=f"direct:{installer_type}",
+            name=f"Direct {installer_type} install",
+            source_type="github_monorepo",
+            repository_url=source_url,
+            ref=ref,
+            plugin_root="",
+            installer_type=installer_type,
+        )
+
+    def _custom_item_from_archive(
+        self,
+        source: PluginMarketplaceSource,
+        archive: PluginMarketplaceArchive,
+        *,
+        plugin_path: str,
+    ) -> tuple[PluginMarketplaceItem, dict[str, Any]]:
+        service = build_plugin_install_service(self.bot, self.boot)
+        task_id = f"inspect-{uuid.uuid4().hex}"
+        try:
+            _, extract_root = service._prepare_archive_workspace(task_id, archive.content)
+            placeholder = PluginMarketplaceItem(
+                plugin_id="",
+                name="",
+                version="",
+                description="",
+                author="",
+                role="logic",
+                entry="",
+                permissions=[],
+                required_dependencies=[],
+                optional_dependencies=[],
+                legacy_dependencies=[],
+                tags=[],
+                homepage="",
+                repository=source.repository_url,
+                plugin_path=plugin_path,
+                source=source,
+                ref=source.ref,
+            )
+            plugin_root = self._custom_plugin_root_from_archive(placeholder, extract_root)
+            metadata = self._validate_custom_plugin_root(source, plugin_root)
+            item = self._custom_item_from_metadata(
+                source,
+                metadata,
+                metadata_name="",
+                plugin_path=plugin_path,
+            )
+            item.repository = source.repository_url
+            item.ref = source.ref
+            return item, metadata
+        except PluginInstallError as exc:
+            raise PluginMarketplaceError(exc.status_code, exc.code, exc.message) from exc
+        finally:
+            shutil.rmtree(service.tmp_dir / task_id, ignore_errors=True)
+
     def _custom_plugin_root_from_archive(
         self,
         item: PluginMarketplaceItem,
@@ -723,6 +912,7 @@ class PluginMarketplaceService:
             "ref": _item_ref(item),
             "resolved_ref": archive.resolved_ref,
             "plugin_path": item.plugin_path,
+            "installer_type": item.source.installer_type,
             "archive_sha256": hashlib.sha256(archive.content).hexdigest(),
             "target_exists": target_exists,
             "target_managed_by_webui": target_exists,

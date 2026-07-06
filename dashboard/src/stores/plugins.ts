@@ -8,6 +8,7 @@ import {
   type ConfigSchemaField,
   type JsonSchemaProperty,
   type GithubPluginInstallPayload,
+  type PluginInstaller,
   type PluginInstallPreview,
   type PluginInstallSource,
   type PluginInstallTask,
@@ -48,6 +49,7 @@ export const usePluginsStore = defineStore('plugins', () => {
   const plugins = crud.items
   const pluginSchemas = ref<Record<string, PluginConfigSchema>>({})
   const installSources = ref<PluginInstallSource[]>([])
+  const installers = ref<PluginInstaller[]>([{ type: 'shinbot', name: 'ShinBot' }])
   const marketplaceSources = ref<PluginMarketplaceSource[]>([])
   const marketplaceItems = ref<PluginMarketplaceItem[]>([])
   const marketplaceSource = ref<PluginMarketplaceSource | null>(null)
@@ -254,6 +256,7 @@ export const usePluginsStore = defineStore('plugins', () => {
       errorKey: 'pages.plugins.install.sourcesLoadFailed',
       onSuccess: (data) => {
         installSources.value = data?.plugins ?? []
+        installers.value = data?.installers ?? [{ type: 'shinbot', name: 'ShinBot' }]
       },
     })
 
@@ -297,7 +300,7 @@ export const usePluginsStore = defineStore('plugins', () => {
   }
 
   const previewGithubInstall = async (
-    payload: Pick<GithubPluginInstallPayload, 'url' | 'ref' | 'plugin_path'>
+    payload: Pick<GithubPluginInstallPayload, 'url' | 'ref' | 'plugin_path' | 'installer_type'>
   ): Promise<PluginInstallPreview | null> => {
     return await runInstallRequest(
       () => pluginsApi.previewGithubInstall(payload),
@@ -310,9 +313,12 @@ export const usePluginsStore = defineStore('plugins', () => {
     )
   }
 
-  const previewArchiveInstall = async (file: File): Promise<PluginInstallPreview | null> => {
+  const previewArchiveInstall = async (
+    file: File,
+    installerType = 'shinbot'
+  ): Promise<PluginInstallPreview | null> => {
     return await runInstallRequest(
-      () => pluginsApi.previewArchiveInstall(file, file.name),
+      () => pluginsApi.previewArchiveInstall(file, file.name, installerType),
       {
         errorKey: 'pages.plugins.install.previewFailed',
         onSuccess: () => {
@@ -338,13 +344,14 @@ export const usePluginsStore = defineStore('plugins', () => {
 
   const installArchive = async (
     file: File,
-    options: { enable_after_install: boolean; allow_overwrite: boolean }
+    options: { enable_after_install: boolean; allow_overwrite: boolean; installer_type?: string }
   ): Promise<PluginInstallTask | null> => {
     return await runInstallRequest(
       () => pluginsApi.installArchive(file, {
         filename: file.name,
         enable_after_install: options.enable_after_install,
         allow_overwrite: options.allow_overwrite,
+        installer_type: options.installer_type,
       }),
       {
         errorKey: 'pages.plugins.install.installFailed',
@@ -426,6 +433,7 @@ export const usePluginsStore = defineStore('plugins', () => {
     plugins,
     pluginSchemas,
     installSources,
+    installers,
     marketplaceSources,
     marketplaceItems,
     marketplaceSource,

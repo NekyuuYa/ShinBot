@@ -16,6 +16,19 @@
           </v-tab>
         </v-tabs>
 
+        <v-select
+          v-model="installerType"
+          :items="installerOptions"
+          item-title="title"
+          item-value="value"
+          :label="$t('pages.plugins.install.installerType')"
+          prepend-inner-icon="mdi-puzzle-outline"
+          variant="outlined"
+          density="comfortable"
+          hide-details="auto"
+          class="mb-4"
+        />
+
         <v-window v-model="sourceMode">
           <v-window-item value="github">
             <v-row>
@@ -127,6 +140,14 @@
             </div>
             <v-chip color="primary" variant="tonal" size="small">
               {{ sourceLabel(preview.source_type) }}
+            </v-chip>
+            <v-chip
+              v-if="preview.installer_type && preview.installer_type !== 'shinbot'"
+              color="secondary"
+              variant="tonal"
+              size="small"
+            >
+              {{ installerLabel(preview.installer_type) }}
             </v-chip>
             <v-chip :color="preview.can_install ? 'success' : 'error'" variant="tonal" size="small">
               {{
@@ -344,6 +365,7 @@ const githubUrl = ref('')
 const githubRef = ref('main')
 const githubPluginPath = ref('')
 const archiveInput = ref<File | File[] | null>(null)
+const installerType = ref('shinbot')
 const enableAfterInstall = ref(true)
 const allowOverwrite = ref(false)
 const preview = ref<PluginInstallPreview | null>(null)
@@ -355,6 +377,22 @@ const selectedArchive = computed(() => {
     return archiveInput.value[0] ?? null
   }
   return archiveInput.value
+})
+
+const installerOptions = computed(() => {
+  const seen = new Set<string>()
+  return pluginsStore.installers
+    .filter((installer) => {
+      if (!installer.type || seen.has(installer.type)) {
+        return false
+      }
+      seen.add(installer.type)
+      return true
+    })
+    .map((installer) => ({
+      title: installerLabel(installer.type),
+      value: installer.type,
+    }))
 })
 
 const canPreview = computed(() => {
@@ -402,12 +440,13 @@ const resetForm = () => {
   githubRef.value = 'main'
   githubPluginPath.value = ''
   archiveInput.value = null
+  installerType.value = 'shinbot'
   enableAfterInstall.value = true
   allowOverwrite.value = false
   resetResult()
 }
 
-watch([sourceMode, githubUrl, githubRef, githubPluginPath, archiveInput], () => {
+watch([sourceMode, githubUrl, githubRef, githubPluginPath, archiveInput, installerType], () => {
   resetResult()
   allowOverwrite.value = false
 })
@@ -417,6 +456,11 @@ watch(
   (visible) => {
     if (!visible) {
       resetForm()
+      return
+    }
+    void pluginsStore.fetchInstallSources()
+    if (!pluginsStore.installers.some((installer) => installer.type === installerType.value)) {
+      installerType.value = 'shinbot'
     }
   }
 )
@@ -436,6 +480,7 @@ const buildSourceFingerprint = () => {
       url: githubUrl.value.trim(),
       ref: githubRef.value.trim() || 'main',
       pluginPath: githubPluginPath.value.trim(),
+      installerType: installerType.value,
     })
   }
 
@@ -445,6 +490,7 @@ const buildSourceFingerprint = () => {
     name: file?.name ?? '',
     size: file?.size ?? 0,
     lastModified: file?.lastModified ?? 0,
+    installerType: installerType.value,
   })
 }
 
@@ -460,6 +506,7 @@ const handlePreview = async () => {
       url: githubUrl.value.trim(),
       ref: githubRef.value.trim() || 'main',
       plugin_path: githubPluginPath.value.trim(),
+      installer_type: installerType.value,
     })
     if (fingerprint === buildSourceFingerprint()) {
       preview.value = result
@@ -469,7 +516,7 @@ const handlePreview = async () => {
   }
 
   if (selectedArchive.value) {
-    const result = await pluginsStore.previewArchiveInstall(selectedArchive.value)
+    const result = await pluginsStore.previewArchiveInstall(selectedArchive.value, installerType.value)
     if (fingerprint === buildSourceFingerprint()) {
       preview.value = result
       previewFingerprint.value = result ? fingerprint : ''
@@ -493,11 +540,13 @@ const handleInstall = async () => {
       plugin_path: githubPluginPath.value.trim(),
       enable_after_install: enableAfterInstall.value,
       allow_overwrite: allowOverwrite.value,
+      installer_type: installerType.value,
     })
   } else if (selectedArchive.value) {
     task.value = await pluginsStore.installArchive(selectedArchive.value, {
       enable_after_install: enableAfterInstall.value,
       allow_overwrite: allowOverwrite.value,
+      installer_type: installerType.value,
     })
   }
 
@@ -524,6 +573,16 @@ const sourceLabel = (sourceType: PluginInstallSourceType) => {
     return t('pages.plugins.tabs.marketplace')
   }
   return t('pages.plugins.install.archiveSource')
+}
+
+const installerLabel = (type: string) => {
+  if (type === 'shinbot') {
+    return t('pages.plugins.install.shinbotInstaller')
+  }
+  if (type === 'astrbot') {
+    return t('pages.plugins.install.astrbotInstaller')
+  }
+  return type
 }
 
 const taskColor = (status: PluginInstallTask['status']) => {

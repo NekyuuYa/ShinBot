@@ -75,8 +75,16 @@ export interface PluginInstallSource {
   can_uninstall?: boolean
 }
 
+export interface PluginInstaller {
+  type: string
+  name: string
+  owner_plugin_id?: string
+  target_dir?: string
+}
+
 export interface PluginInstallSourcesResponse {
   plugins: PluginInstallSource[]
+  installers?: PluginInstaller[]
 }
 
 export interface PluginInstallPreview {
@@ -98,6 +106,7 @@ export interface PluginInstallPreview {
   ref: string
   resolved_ref: string
   plugin_path: string
+  installer_type?: string
   archive_sha256: string
   target_exists: boolean
   target_managed_by_webui: boolean
@@ -111,12 +120,14 @@ export interface GithubPluginInstallPayload {
   plugin_path?: string
   enable_after_install?: boolean
   allow_overwrite?: boolean
+  installer_type?: string
 }
 
 export interface PluginArchiveInstallOptions {
   filename?: string
   enable_after_install?: boolean
   allow_overwrite?: boolean
+  installer_type?: string
 }
 
 export interface PluginInstallTask {
@@ -246,13 +257,14 @@ export const pluginsApi = {
     return apiClient.post<PluginInstallTask>('/plugin-installs/github', payload)
   },
 
-  previewArchiveInstall(file: Blob, filename = '') {
+  previewArchiveInstall(file: Blob, filename = '', installerType = 'shinbot') {
     return apiClient.post<PluginInstallPreview>('/plugin-installs/archive/preview', file, {
       headers: {
         'Content-Type': 'application/zip',
       },
       params: {
         filename,
+        installer_type: installerType,
       },
     })
   },
@@ -266,6 +278,7 @@ export const pluginsApi = {
         filename: options.filename ?? '',
         enable_after_install: options.enable_after_install ?? true,
         allow_overwrite: options.allow_overwrite ?? false,
+        installer_type: options.installer_type ?? 'shinbot',
       },
     })
   },

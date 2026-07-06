@@ -12,6 +12,10 @@ from shinbot.admin.plugin_install import (
     PluginInstallError,
     build_plugin_install_service,
 )
+from shinbot.admin.plugin_marketplace import (
+    PluginMarketplaceError,
+    build_plugin_marketplace_service,
+)
 from shinbot.api.deps import AuthRequired, BootDep, BotDep
 from shinbot.api.models import Envelope, ok
 
@@ -32,9 +36,10 @@ class GithubPluginInstallRequest(BaseModel):
     plugin_path: str = ""
     enable_after_install: bool = True
     allow_overwrite: bool = False
+    installer_type: str = "shinbot"
 
 
-def _raise_install_http_error(exc: PluginInstallError) -> None:
+def _raise_install_http_error(exc: PluginInstallError | PluginMarketplaceError) -> None:
     raise HTTPException(
         status_code=exc.status_code,
         detail={"code": exc.code, "message": exc.message},
@@ -73,8 +78,10 @@ async def list_plugin_install_sources(bot: Any = BotDep, boot: Any = BootDep) ->
     """List WebUI-managed plugin source records."""
     service = build_plugin_install_service(bot, boot)
     try:
-        return ok(service.list_sources())
-    except PluginInstallError as exc:
+        payload = service.list_sources()
+        payload.update(build_plugin_marketplace_service(bot, boot).list_installers())
+        return ok(payload)
+    except (PluginInstallError, PluginMarketplaceError) as exc:
         _raise_install_http_error(exc)
 
 
@@ -94,8 +101,17 @@ async def get_plugin_install_task(task_id: str, bot: Any = BotDep, boot: Any = B
 @router.post("/github/preview", response_model=Envelope[dict[str, Any]])
 async def preview_github_plugin_install(payload: GithubPluginInstallRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Preview a GitHub plugin archive without installing it."""
-    service = build_plugin_install_service(bot, boot)
     try:
+        if payload.installer_type != "shinbot":
+            return ok(
+                await build_plugin_marketplace_service(bot, boot).preview_custom_github(
+                    installer_type=payload.installer_type,
+                    repository_url=payload.url,
+                    ref=payload.ref,
+                    plugin_path=payload.plugin_path,
+                )
+            )
+        service = build_plugin_install_service(bot, boot)
         return ok(
             await service.preview_github(
                 payload.url,
@@ -103,15 +119,26 @@ async def preview_github_plugin_install(payload: GithubPluginInstallRequest, bot
                 plugin_path=payload.plugin_path,
             )
         )
-    except PluginInstallError as exc:
+    except (PluginInstallError, PluginMarketplaceError) as exc:
         _raise_install_http_error(exc)
 
 
 @router.post("/github", response_model=Envelope[dict[str, Any]])
 async def install_github_plugin(payload: GithubPluginInstallRequest, bot: Any = BotDep, boot: Any = BootDep) -> dict[str, Any]:
     """Install a plugin from a GitHub repository archive."""
-    service = build_plugin_install_service(bot, boot)
     try:
+        if payload.installer_type != "shinbot":
+            return ok(
+                await build_plugin_marketplace_service(bot, boot).install_custom_github(
+                    installer_type=payload.installer_type,
+                    repository_url=payload.url,
+                    ref=payload.ref,
+                    plugin_path=payload.plugin_path,
+                    enable_after_install=payload.enable_after_install,
+                    allow_overwrite=payload.allow_overwrite,
+                )
+            )
+        service = build_plugin_install_service(bot, boot)
         return ok(
             await service.install_github(
                 payload.url,
@@ -121,7 +148,7 @@ async def install_github_plugin(payload: GithubPluginInstallRequest, bot: Any = 
                 allow_overwrite=payload.allow_overwrite,
             )
         )
-    except PluginInstallError as exc:
+    except (PluginInstallError, PluginMarketplaceError) as exc:
         _raise_install_http_error(exc)
 
 
@@ -129,15 +156,24 @@ async def install_github_plugin(payload: GithubPluginInstallRequest, bot: Any = 
 async def preview_archive_plugin_install(
     request: Request,
     filename: str = Query(default=""),
+    installer_type: str = Query(default="shinbot"),
     bot: Any = BotDep,
     boot: Any = BootDep,
 ) -> dict[str, Any]:
     """Preview a raw application/zip plugin archive without installing it."""
-    service = build_plugin_install_service(bot, boot)
     try:
         archive_bytes = await _read_limited_archive_body(request)
+        if installer_type != "shinbot":
+            return ok(
+                await build_plugin_marketplace_service(bot, boot).preview_custom_archive(
+                    installer_type=installer_type,
+                    archive_bytes=archive_bytes,
+                    filename=filename,
+                )
+            )
+        service = build_plugin_install_service(bot, boot)
         return ok(await service.preview_archive(archive_bytes, filename=filename))
-    except PluginInstallError as exc:
+    except (PluginInstallError, PluginMarketplaceError) as exc:
         _raise_install_http_error(exc)
 
 
@@ -147,13 +183,24 @@ async def install_archive_plugin(
     enable_after_install: bool = Query(default=True),
     allow_overwrite: bool = Query(default=False),
     filename: str = Query(default=""),
+    installer_type: str = Query(default="shinbot"),
     bot: Any = BotDep,
     boot: Any = BootDep,
 ) -> dict[str, Any]:
     """Install a plugin from a raw application/zip request body."""
-    service = build_plugin_install_service(bot, boot)
     try:
         archive_bytes = await _read_limited_archive_body(request)
+        if installer_type != "shinbot":
+            return ok(
+                await build_plugin_marketplace_service(bot, boot).install_custom_archive(
+                    installer_type=installer_type,
+                    archive_bytes=archive_bytes,
+                    filename=filename,
+                    enable_after_install=enable_after_install,
+                    allow_overwrite=allow_overwrite,
+                )
+            )
+        service = build_plugin_install_service(bot, boot)
         return ok(
             await service.install_archive(
                 archive_bytes,
@@ -162,7 +209,7 @@ async def install_archive_plugin(
                 allow_overwrite=allow_overwrite,
             )
         )
-    except PluginInstallError as exc:
+    except (PluginInstallError, PluginMarketplaceError) as exc:
         _raise_install_http_error(exc)
 
 

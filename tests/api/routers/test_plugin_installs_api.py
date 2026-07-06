@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import shutil
 import stat
 import sys
 import zipfile
@@ -11,6 +12,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import shinbot.admin.plugin_install as plugin_install
+import shinbot.admin.plugin_marketplace as plugin_marketplace
 import shinbot.core.plugins.dependencies as plugin_dependencies
 from shinbot.api.app import create_api_app
 from shinbot.core.application.app import ShinBot
@@ -170,6 +172,67 @@ def _symlink_zip() -> bytes:
     return stream.getvalue()
 
 
+def _custom_plugin_zip(*, name: str = "cool_plugin", version: str = "1.0.0") -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr(
+            "cool-plugin-main/metadata.yaml",
+            "\n".join(
+                [
+                    f"name: {name}",
+                    f"version: {version}",
+                    "desc: Custom plugin",
+                    "author: Tests",
+                    "",
+                ]
+            ),
+        )
+        archive.writestr("cool-plugin-main/main.py", "# custom plugin\n")
+    return stream.getvalue()
+
+
+def _parse_simple_yaml(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def _register_custom_installer(bot: ShinBot, boot: _BootStub, target_dir: Path) -> None:
+    def validate_fn(plugin_path: Path) -> dict[str, object] | None:
+        metadata_path = plugin_path / "metadata.yaml"
+        if not metadata_path.is_file():
+            return None
+        raw = _parse_simple_yaml(metadata_path)
+        return {
+            "id": raw["name"],
+            "name": raw["name"],
+            "version": raw["version"],
+            "description": raw["desc"],
+            "author": raw["author"],
+        }
+
+    async def install_fn(plugin_path: Path, *, target_dir: Path) -> bool:
+        metadata = _parse_simple_yaml(plugin_path / "metadata.yaml")
+        target = target_dir / metadata["name"]
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(plugin_path, target)
+        return True
+
+    service = plugin_marketplace.build_plugin_marketplace_service(bot, boot)
+    service.register_installer(
+        "astrbot",
+        owner_plugin_id="shinbot_converter_astrbot",
+        install_fn=install_fn,
+        validate_fn=validate_fn,
+        target_dir=target_dir,
+    )
+
+
 def test_archive_preview_validates_dependencies_without_installing(tmp_path: Path):
     client, _bot, _boot, headers = _client(tmp_path)
     with client:
@@ -251,6 +314,47 @@ def test_archive_install_loads_plugin_and_writes_manifest(tmp_path: Path):
     assert source["source_type"] == "archive"
     plugin_payload = plugins_response.json()["data"][0]
     assert plugin_payload["metadata"]["install_source"]["can_uninstall"] is True
+
+
+def test_custom_archive_install_uses_registered_installer(tmp_path: Path):
+    client, bot, boot, headers = _client(tmp_path)
+    target_dir = tmp_path / "custom_plugins"
+    _register_custom_installer(bot, boot, target_dir)
+
+    with client:
+        sources = client.get("/api/v1/plugin-installs", headers=headers)
+        preview = client.post(
+            "/api/v1/plugin-installs/archive/preview?filename=cool.zip&installer_type=astrbot",
+            headers={**headers, "Content-Type": "application/zip"},
+            content=_custom_plugin_zip(),
+        )
+        install = client.post(
+            "/api/v1/plugin-installs/archive?filename=cool.zip&installer_type=astrbot",
+            headers={**headers, "Content-Type": "application/zip"},
+            content=_custom_plugin_zip(),
+        )
+        records = client.get("/api/v1/plugin-installs", headers=headers)
+
+    assert sources.status_code == 200
+    installers = {item["type"] for item in sources.json()["data"]["installers"]}
+    assert installers == {"shinbot", "astrbot"}
+
+    assert preview.status_code == 200
+    preview_payload = preview.json()["data"]
+    assert preview_payload["plugin_id"] == "cool_plugin"
+    assert preview_payload["source_type"] == "marketplace"
+    assert preview_payload["installer_type"] == "astrbot"
+    assert preview_payload["can_install"] is True
+
+    assert install.status_code == 200
+    assert install.json()["data"]["status"] == "succeeded"
+    assert (target_dir / "cool_plugin" / "main.py").is_file()
+
+    source = records.json()["data"]["plugins"][0]
+    assert source["plugin_id"] == "cool_plugin"
+    assert source["source_type"] == "marketplace"
+    assert source["source_url"] == "cool.zip"
+    assert source["installer_type"] == "astrbot"
 
 
 def test_archive_install_installs_pyproject_dependencies(tmp_path: Path, monkeypatch):
@@ -405,6 +509,56 @@ def test_github_install_downloads_archive_and_records_source(
     assert source["source_url"] == "https://github.com/NekyuuYa/shinbot-plugin-demo"
     assert source["ref"] == "v0.1.0"
     assert source["resolved_ref"] == ""
+
+
+def test_custom_github_install_uses_registered_installer(
+    tmp_path: Path,
+    monkeypatch,
+):
+    downloads: list[tuple[str, str]] = []
+
+    async def fake_download_github_zip_archive(self, source):
+        downloads.append((source.repository_url, source.ref))
+        return plugin_marketplace.PluginMarketplaceArchive(
+            content=_custom_plugin_zip(version="2.0.0"),
+            resolved_ref="custom-ref",
+        )
+
+    monkeypatch.setattr(
+        plugin_marketplace.PluginMarketplaceService,
+        "_download_github_zip_archive",
+        fake_download_github_zip_archive,
+    )
+
+    client, bot, boot, headers = _client(tmp_path)
+    target_dir = tmp_path / "custom_plugins"
+    _register_custom_installer(bot, boot, target_dir)
+
+    with client:
+        response = client.post(
+            "/api/v1/plugin-installs/github",
+            headers=headers,
+            json={
+                "url": "https://github.com/example/cool-plugin",
+                "ref": "v2.0.0",
+                "installer_type": "astrbot",
+            },
+        )
+        sources_response = client.get("/api/v1/plugin-installs", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "succeeded"
+    assert downloads == [("https://github.com/example/cool-plugin", "v2.0.0")]
+    assert (target_dir / "cool_plugin" / "main.py").is_file()
+
+    source = sources_response.json()["data"]["plugins"][0]
+    assert source["plugin_id"] == "cool_plugin"
+    assert source["source_type"] == "marketplace"
+    assert source["source_url"] == "https://github.com/example/cool-plugin"
+    assert source["ref"] == "v2.0.0"
+    assert source["resolved_ref"] == "custom-ref"
+    assert source["installed_version"] == "2.0.0"
+    assert source["installer_type"] == "astrbot"
 
 
 def test_github_managed_plugin_can_update_from_manifest_source(tmp_path: Path, monkeypatch):
