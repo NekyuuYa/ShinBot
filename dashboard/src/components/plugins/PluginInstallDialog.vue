@@ -16,68 +16,101 @@
           </v-tab>
         </v-tabs>
 
-        <v-select
-          v-model="installerType"
-          :items="installerOptions"
-          item-title="title"
-          item-value="value"
-          :label="$t('pages.plugins.install.installerType')"
-          prepend-inner-icon="mdi-puzzle-outline"
-          variant="outlined"
-          density="comfortable"
-          hide-details="auto"
-          class="mb-4"
-        />
+        <div class="install-field mb-4">
+          <label class="install-field-label" for="plugin-installer-type">
+            {{ $t('pages.plugins.install.installerType') }}
+          </label>
+          <v-select
+            id="plugin-installer-type"
+            v-model="installerType"
+            :items="installerOptions"
+            item-title="title"
+            item-value="value"
+            :aria-label="$t('pages.plugins.install.installerType')"
+            prepend-inner-icon="mdi-puzzle-outline"
+            variant="outlined"
+            density="comfortable"
+            hide-details="auto"
+          />
+        </div>
 
         <v-window v-model="sourceMode">
           <v-window-item value="github">
             <v-row>
               <v-col cols="12" md="8">
-                <v-text-field
-                  v-model.trim="githubUrl"
-                  :label="$t('pages.plugins.install.githubUrl')"
-                  prepend-inner-icon="mdi-link-variant"
-                  variant="outlined"
-                  density="comfortable"
-                  hide-details="auto"
-                />
+                <div class="install-field">
+                  <label class="install-field-label" for="plugin-github-url">
+                    {{ $t('pages.plugins.install.githubUrl') }}
+                  </label>
+                  <v-text-field
+                    id="plugin-github-url"
+                    v-model.trim="githubUrl"
+                    :aria-label="$t('pages.plugins.install.githubUrl')"
+                    :placeholder="$t('pages.plugins.install.githubUrl')"
+                    prepend-inner-icon="mdi-link-variant"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details="auto"
+                  />
+                </div>
               </v-col>
               <v-col cols="12" md="4">
-                <v-text-field
-                  v-model.trim="githubRef"
-                  :label="$t('pages.plugins.install.githubRef')"
-                  prepend-inner-icon="mdi-source-branch"
-                  variant="outlined"
-                  density="comfortable"
-                  hide-details="auto"
-                />
+                <div class="install-field">
+                  <label class="install-field-label" for="plugin-github-ref">
+                    {{ $t('pages.plugins.install.githubRef') }}
+                  </label>
+                  <v-text-field
+                    id="plugin-github-ref"
+                    v-model.trim="githubRef"
+                    :aria-label="$t('pages.plugins.install.githubRef')"
+                    :placeholder="$t('pages.plugins.install.githubRef')"
+                    prepend-inner-icon="mdi-source-branch"
+                    variant="outlined"
+                    density="comfortable"
+                    hide-details="auto"
+                  />
+                </div>
               </v-col>
               <v-col cols="12">
-                <v-text-field
-                  v-model.trim="githubPluginPath"
-                  :label="$t('pages.plugins.install.githubPluginPath')"
-                  :hint="$t('pages.plugins.install.githubPluginPathHint')"
-                  prepend-inner-icon="mdi-folder-search-outline"
-                  variant="outlined"
-                  density="comfortable"
-                  persistent-hint
-                />
+                <div class="install-field">
+                  <label class="install-field-label" for="plugin-github-path">
+                    {{ $t('pages.plugins.install.githubPluginPath') }}
+                  </label>
+                  <v-text-field
+                    id="plugin-github-path"
+                    v-model.trim="githubPluginPath"
+                    :aria-label="$t('pages.plugins.install.githubPluginPath')"
+                    :placeholder="$t('pages.plugins.install.githubPluginPath')"
+                    :hint="$t('pages.plugins.install.githubPluginPathHint')"
+                    prepend-inner-icon="mdi-folder-search-outline"
+                    variant="outlined"
+                    density="comfortable"
+                    persistent-hint
+                  />
+                </div>
               </v-col>
             </v-row>
           </v-window-item>
 
           <v-window-item value="archive">
-            <v-file-input
-              v-model="archiveInput"
-              :label="$t('pages.plugins.install.archiveFile')"
-              accept=".zip,application/zip,application/x-zip-compressed"
-              prepend-icon=""
-              prepend-inner-icon="mdi-folder-zip"
-              variant="outlined"
-              density="comfortable"
-              clearable
-              hide-details="auto"
-            />
+            <div class="install-field">
+              <label class="install-field-label" for="plugin-archive-file">
+                {{ $t('pages.plugins.install.archiveFile') }}
+              </label>
+              <v-file-input
+                id="plugin-archive-file"
+                v-model="archiveInput"
+                :aria-label="$t('pages.plugins.install.archiveFile')"
+                :placeholder="$t('pages.plugins.install.archiveFile')"
+                accept=".zip,application/zip,application/x-zip-compressed"
+                prepend-icon=""
+                prepend-inner-icon="mdi-folder-zip"
+                variant="outlined"
+                density="comfortable"
+                clearable
+                hide-details="auto"
+              />
+            </div>
           </v-window-item>
         </v-window>
 
@@ -610,6 +643,19 @@ const dependencyLabel = (item: string, missingItems: string[]) => {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 8px;
   padding: 16px;
+}
+
+.install-field-label {
+  display: block;
+  margin-bottom: 6px;
+  color: rgba(var(--v-theme-on-surface), 0.74);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.install-field :deep(.v-field) {
+  min-height: 48px;
 }
 
 .meta-line {
