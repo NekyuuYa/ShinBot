@@ -1,5 +1,10 @@
 import { apiClient } from './client'
 
+export interface FewShotExample {
+  user: string
+  assistant: string
+}
+
 export interface Persona {
   uuid: string
   name: string
@@ -8,6 +13,7 @@ export interface Persona {
   enabled: boolean
   createdAt: string
   lastModified: string
+  fewShotExamples: FewShotExample[]
 }
 
 export interface PersonaPayload {
@@ -15,6 +21,7 @@ export interface PersonaPayload {
   promptText: string
   tags: string[]
   enabled: boolean
+  fewShotExamples?: FewShotExample[]
 }
 
 export const personasApi = {

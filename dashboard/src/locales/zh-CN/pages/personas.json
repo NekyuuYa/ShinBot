@@ -4,7 +4,8 @@
   "subtitle": "按标签组织人格，并通过弹出层创建或编辑人格设定。",
   "actions": {
     "refresh": "刷新",
-    "addPersona": "添加人格"
+    "addPersona": "添加人格",
+    "addFewShot": "添加示例"
   },
   "tags": {
     "title": "标签分类",
@@ -18,7 +19,13 @@
     "name": "名称",
     "promptText": "人格 Prompt",
     "tags": "标签",
-    "enabled": "启用"
+    "enabled": "启用",
+    "fewShotExamples": "对话示例 (Few-shot)",
+    "fewShotUser": "用户消息",
+    "fewShotAssistant": "助手回复"
+  },
+  "labels": {
+    "fewShotExample": "示例 {n}"
   },
   "overlay": {
     "createTitle": "新增人格",
@@ -33,7 +40,8 @@
     "subtitle": "当前标签下没有可展示的人格，点击右上角按钮创建一个。"
   },
   "hints": {
-    "promptText": "用于定义人格设定；支持多行文本。"
+    "promptText": "用于定义人格设定；支持多行文本。",
+    "fewShotEmpty": "暂无对话示例。添加示例可以帮助模型更好地理解期望的回复风格。"
   },
   "messages": {
     "loadFailed": "加载人格列表失败",

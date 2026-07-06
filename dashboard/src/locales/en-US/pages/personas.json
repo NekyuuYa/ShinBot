@@ -4,7 +4,8 @@
   "subtitle": "Manage personas by tag and update persona settings through an overlay form.",
   "actions": {
     "refresh": "Refresh",
-    "addPersona": "Add Persona"
+    "addPersona": "Add Persona",
+    "addFewShot": "Add Example"
   },
   "tags": {
     "title": "Tag Categories",
@@ -18,7 +19,13 @@
     "name": "Name",
     "promptText": "Persona Prompt",
     "tags": "Tags",
-    "enabled": "Enabled"
+    "enabled": "Enabled",
+    "fewShotExamples": "Conversation Examples (Few-shot)",
+    "fewShotUser": "User Message",
+    "fewShotAssistant": "Assistant Reply"
+  },
+  "labels": {
+    "fewShotExample": "Example {n}"
   },
   "overlay": {
     "createTitle": "Create Persona",
@@ -33,7 +40,8 @@
     "subtitle": "No personas match the current tag. Create one from the top-right action."
   },
   "hints": {
-    "promptText": "Defines the persona identity and behavior. Multi-line text is supported."
+    "promptText": "Defines the persona identity and behavior. Multi-line text is supported.",
+    "fewShotEmpty": "No conversation examples yet. Adding examples helps the model better understand the expected reply style."
   },
   "messages": {
     "loadFailed": "Failed to load personas",

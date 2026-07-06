@@ -158,6 +158,66 @@
                 variant="outlined"
               />
             </v-col>
+            <v-col cols="12">
+              <div class="d-flex align-center mb-2">
+                <span class="text-subtitle-2">{{ $t('pages.personas.fields.fewShotExamples') }}</span>
+                <v-spacer />
+                <v-btn
+                  size="small"
+                  variant="tonal"
+                  color="primary"
+                  prepend-icon="mdi-plus"
+                  @click="addFewShotExample"
+                >
+                  {{ $t('pages.personas.actions.addFewShot') }}
+                </v-btn>
+              </div>
+              <div
+                v-if="form.fewShotExamples.length === 0"
+                class="text-body-2 text-medium-emphasis"
+              >
+                {{ $t('pages.personas.hints.fewShotEmpty') }}
+              </div>
+              <v-card
+                v-for="(example, index) in form.fewShotExamples"
+                :key="index"
+                variant="outlined"
+                class="mb-3"
+              >
+                <v-card-text class="pa-3">
+                  <div class="d-flex align-center mb-2">
+                    <span class="text-caption text-medium-emphasis">
+                      {{ $t('pages.personas.labels.fewShotExample', { n: index + 1 }) }}
+                    </span>
+                    <v-spacer />
+                    <v-btn
+                      icon="mdi-delete-outline"
+                      size="small"
+                      variant="text"
+                      color="error"
+                      @click="removeFewShotExample(index)"
+                    />
+                  </div>
+                  <v-text-field
+                    v-model="example.user"
+                    :label="$t('pages.personas.fields.fewShotUser')"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    class="mb-2"
+                  />
+                  <v-textarea
+                    v-model="example.assistant"
+                    :label="$t('pages.personas.fields.fewShotAssistant')"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    rows="2"
+                    auto-grow
+                  />
+                </v-card-text>
+              </v-card>
+            </v-col>
           </v-row>
 
           <v-alert v-if="localError || personasStore.error" type="error" class="mt-2">
@@ -182,7 +242,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 
-import type { Persona, PersonaPayload } from '@/api/personas'
+import type { FewShotExample, Persona, PersonaPayload } from '@/api/personas'
 import AppPageHeader from '@/components/AppPageHeader.vue'
 import DualPaneListView from '@/components/DualPaneListView.vue'
 import SidebarListCard from '@/components/SidebarListCard.vue'
@@ -203,6 +263,7 @@ const form = reactive({
   promptText: '',
   tags: [] as string[],
   enabled: true,
+  fewShotExamples: [] as FewShotExample[],
 })
 
 const resetForm = () => {
@@ -210,6 +271,7 @@ const resetForm = () => {
   form.promptText = ''
   form.tags = []
   form.enabled = true
+  form.fewShotExamples = []
 }
 
 const populateForm = (persona: Persona) => {
@@ -217,6 +279,15 @@ const populateForm = (persona: Persona) => {
   form.promptText = persona.promptText
   form.tags = [...persona.tags]
   form.enabled = persona.enabled
+  form.fewShotExamples = (persona.fewShotExamples || []).map((ex) => ({ ...ex }))
+}
+
+const addFewShotExample = () => {
+  form.fewShotExamples.push({ user: '', assistant: '' })
+}
+
+const removeFewShotExample = (index: number) => {
+  form.fewShotExamples.splice(index, 1)
 }
 
 const buildPayload = (): PersonaPayload => {
@@ -227,11 +298,16 @@ const buildPayload = (): PersonaPayload => {
     throw new Error(translate('pages.personas.messages.requiredFields'))
   }
 
+  const fewShotExamples = form.fewShotExamples
+    .filter((ex) => ex.user.trim() && ex.assistant.trim())
+    .map((ex) => ({ user: ex.user.trim(), assistant: ex.assistant.trim() }))
+
   return {
     name,
     promptText,
     tags: normalizeStringList(form.tags),
     enabled: form.enabled,
+    fewShotExamples: fewShotExamples.length > 0 ? fewShotExamples : undefined,
   }
 }
 
