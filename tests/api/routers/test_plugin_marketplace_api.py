@@ -155,6 +155,25 @@ def _custom_plugin_archive_zip(*, version: str = "1.0.0") -> bytes:
     return stream.getvalue()
 
 
+def _custom_plugin_repo_zip(*, version: str = "1.0.0") -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr(
+            "cool-plugin-main/metadata.yaml",
+            "\n".join(
+                [
+                    "name: cool_plugin",
+                    f"version: {version}",
+                    "desc: Custom marketplace plugin",
+                    "author: Tests",
+                    "",
+                ]
+            ),
+        )
+        archive.writestr("cool-plugin-main/main.py", "# custom plugin\n")
+    return stream.getvalue()
+
+
 def _parse_simple_yaml(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -352,6 +371,130 @@ def test_plugin_marketplace_custom_source_uses_registered_installer(
         ("metadata", expected_metadata_paths),
         ("plugin", ["cool_plugin/**"]),
     ]
+
+
+def test_plugin_marketplace_github_index_source_downloads_selected_repo(
+    tmp_path: Path,
+    monkeypatch,
+):
+    async def fail_sparse_archive(self, source, *, sparse_paths):
+        raise AssertionError("github_index sources must not use sparse checkout")
+
+    async def fake_download_github_file(self, source, index_path):
+        assert source.repository_url == "https://github.com/example/plugin-index"
+        assert index_path == "plugins.json"
+        payload = {
+            "cool_plugin": {
+                "display_name": "Cool Plugin",
+                "desc": "Custom marketplace plugin",
+                "author": "Tests",
+                "repo": "https://github.com/example/cool-plugin",
+                "tags": ["custom"],
+            }
+        }
+        return json.dumps(payload).encode("utf-8"), "index-sha"
+
+    zip_downloads: list[tuple[str, str]] = []
+
+    async def fake_download_github_zip_archive(self, source):
+        zip_downloads.append((source.repository_url, source.ref))
+        return plugin_marketplace.PluginMarketplaceArchive(
+            content=_custom_plugin_repo_zip(),
+            resolved_ref="plugin-sha",
+        )
+
+    monkeypatch.setattr(
+        plugin_marketplace.PluginMarketplaceService,
+        "_create_sparse_archive",
+        fail_sparse_archive,
+    )
+    monkeypatch.setattr(
+        plugin_marketplace.PluginMarketplaceService,
+        "_download_github_file",
+        fake_download_github_file,
+    )
+    monkeypatch.setattr(
+        plugin_marketplace.PluginMarketplaceService,
+        "_download_github_zip_archive",
+        fake_download_github_zip_archive,
+    )
+
+    target_dir = tmp_path / "custom_plugins"
+
+    def validate_fn(plugin_path: Path) -> dict[str, object] | None:
+        metadata_path = plugin_path / "metadata.yaml"
+        if not metadata_path.is_file():
+            return None
+        raw = _parse_simple_yaml(metadata_path)
+        return {
+            "id": raw["name"],
+            "name": "Cool Plugin",
+            "version": raw["version"],
+            "description": raw["desc"],
+            "author": raw["author"],
+        }
+
+    async def install_fn(plugin_path: Path, *, target_dir: Path) -> bool:
+        metadata = _parse_simple_yaml(plugin_path / "metadata.yaml")
+        target = target_dir / metadata["name"]
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(plugin_path, target)
+        return True
+
+    client, bot, boot, headers = _client(tmp_path)
+    service = plugin_marketplace.build_plugin_marketplace_service(bot, boot)
+    service.register_installer(
+        "custom",
+        owner_plugin_id="owner_plugin",
+        install_fn=install_fn,
+        validate_fn=validate_fn,
+        target_dir=target_dir,
+    )
+    service.register_source(
+        source_id="custom-index",
+        name="Custom Index",
+        source_type="github_index",
+        repository_url="https://github.com/example/plugin-index",
+        plugin_root="plugins.json",
+        installer_type="custom",
+        owner_plugin_id="owner_plugin",
+    )
+
+    with client:
+        listed = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "custom-index"},
+        )
+        install = client.post(
+            "/api/v1/plugin-marketplace/cool_plugin/install",
+            headers=headers,
+            json={"source": "custom-index", "enable_after_install": True},
+        )
+        listed_after = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "custom-index"},
+        )
+
+    assert listed.status_code == 200
+    item = listed.json()["data"]["plugins"][0]
+    assert item["plugin_id"] == "cool_plugin"
+    assert item["repository"] == "https://github.com/example/cool-plugin"
+    assert item["ref"] == "HEAD"
+    assert item["plugin_path"] == ""
+
+    assert install.status_code == 200
+    assert install.json()["data"]["status"] == "succeeded"
+    assert (target_dir / "cool_plugin" / "main.py").is_file()
+    assert zip_downloads == [("https://github.com/example/cool-plugin", "HEAD")]
+
+    installed_item = listed_after.json()["data"]["plugins"][0]
+    assert installed_item["installed"] is True
+    assert installed_item["installed_source"]["source_url"] == "https://github.com/example/cool-plugin"
+    assert installed_item["installed_source"]["ref"] == "HEAD"
+    assert installed_item["installed_source"]["marketplace_source_id"] == "custom-index"
 
 
 def test_plugin_marketplace_lists_monorepo_plugins(tmp_path: Path, monkeypatch):

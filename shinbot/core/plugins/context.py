@@ -783,7 +783,7 @@ class Plugin:
         Args:
             source_id:       Unique source identifier.
             name:            Display name for the source.
-            source_type:     Source type (currently only ``"github_monorepo"``).
+            source_type:     Source type (``"github_monorepo"`` or ``"github_index"``).
             repository_url:  GitHub repository URL.
             ref:             Git ref (branch/tag/commit).
             plugin_root:     Root directory within the repo for plugins.

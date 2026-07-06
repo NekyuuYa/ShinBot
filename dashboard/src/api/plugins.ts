@@ -136,7 +136,7 @@ export interface PluginInstallTask {
 export interface PluginMarketplaceSource {
   id: string
   name: string
-  source_type: 'github_monorepo'
+  source_type: 'github_monorepo' | 'github_index'
   repository_url: string
   repo_url?: string
   ref: string

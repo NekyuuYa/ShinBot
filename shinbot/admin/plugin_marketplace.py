@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import inspect
 import json
@@ -15,7 +17,9 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
+
+import httpx
 
 from shinbot.admin.plugin_install import (
     PLUGIN_INSTALL_MAX_ARCHIVE_BYTES,
@@ -34,6 +38,8 @@ PLUGIN_MARKETPLACE_CACHE_TTL_SECONDS = 6 * 60 * 60
 PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION = 1
 _VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_", "shinbot_converter_")
 _VALID_ROLE_VALUES = {"logic", "adapter"}
+_GITHUB_INDEX_DEFAULT_PATH = "plugins.json"
+_GITHUB_INDEX_PLUGIN_REF = "HEAD"
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +62,7 @@ class PluginMarketplaceSource:
 
     id: str
     name: str
-    source_type: Literal["github_monorepo"]
+    source_type: Literal["github_monorepo", "github_index"]
     repository_url: str
     ref: str
     plugin_root: str
@@ -98,6 +104,7 @@ class PluginMarketplaceItem:
     repository: str
     plugin_path: str
     source: PluginMarketplaceSource
+    ref: str = ""
     installed: bool = False
     installed_version: str = ""
     installed_source: dict[str, Any] | None = None
@@ -132,7 +139,7 @@ class PluginMarketplaceItem:
             "homepage": self.homepage,
             "repository": self.repository,
             "repository_url": self.source.repository_url,
-            "ref": self.source.ref,
+            "ref": self.ref or self.source.ref,
             "plugin_path": self.plugin_path,
             "installed": self.installed,
             "installed_version": self.installed_version,
@@ -219,8 +226,8 @@ class PluginMarketplaceService:
             raise ValueError("marketplace source_id must be non-empty")
         if source_id == OFFICIAL_MARKETPLACE_SOURCE_ID and owner_plugin_id:
             raise ValueError("plugins cannot override the official marketplace source")
-        if source_type != "github_monorepo":
-            raise ValueError("only github_monorepo marketplace sources are supported")
+        if source_type not in {"github_monorepo", "github_index"}:
+            raise ValueError("only github_monorepo and github_index marketplace sources are supported")
         existing = self.sources.get(source_id)
         if (
             existing is not None
@@ -234,7 +241,7 @@ class PluginMarketplaceService:
         source = PluginMarketplaceSource(
             id=source_id,
             name=name,
-            source_type="github_monorepo",
+            source_type=source_type,
             repository_url=repository_url,
             ref=ref,
             plugin_root=plugin_root,
@@ -337,12 +344,7 @@ class PluginMarketplaceService:
     ) -> dict[str, Any]:
         """Return discovered marketplace plugins with local install state."""
         source = self._source_or_raise(source_id)
-        archive = await self._load_sparse_archive(
-            source,
-            sparse_paths=self._metadata_sparse_paths(source),
-            cache_scope="metadata",
-            refresh=refresh,
-        )
+        archive = await self._load_metadata_archive(source, refresh=refresh)
         items = self._scan_monorepo_archive(source, archive.content)
         return {
             "source": source.as_dict(),
@@ -382,8 +384,8 @@ class PluginMarketplaceService:
         service = build_plugin_install_service(self.bot, self.boot)
         try:
             return await service.preview_github_archive(
-                item.source.repository_url,
-                item.source.ref,
+                _item_source_url(item),
+                _item_ref(item),
                 archive_bytes=archive.content,
                 resolved_ref=archive.resolved_ref,
                 plugin_path=item.plugin_path,
@@ -412,8 +414,8 @@ class PluginMarketplaceService:
         service = build_plugin_install_service(self.bot, self.boot)
         try:
             return await service.install_github_archive(
-                item.source.repository_url,
-                item.source.ref,
+                _item_source_url(item),
+                _item_ref(item),
                 archive_bytes=archive.content,
                 resolved_ref=archive.resolved_ref,
                 plugin_path=item.plugin_path,
@@ -431,20 +433,10 @@ class PluginMarketplaceService:
         refresh: bool = False,
     ) -> tuple[PluginMarketplaceItem, PluginMarketplaceArchive]:
         source = self._source_or_raise(source_id)
-        metadata_archive = await self._load_sparse_archive(
-            source,
-            sparse_paths=self._metadata_sparse_paths(source),
-            cache_scope="metadata",
-            refresh=refresh,
-        )
+        metadata_archive = await self._load_metadata_archive(source, refresh=refresh)
         for item in self._scan_monorepo_archive(source, metadata_archive.content):
             if item.plugin_id == plugin_id:
-                plugin_archive = await self._load_sparse_archive(
-                    source,
-                    sparse_paths=[f"{item.plugin_path}/**"],
-                    cache_scope=f"plugin:{item.plugin_path}",
-                    refresh=refresh,
-                )
+                plugin_archive = await self._load_plugin_archive(item, refresh=refresh)
                 return item, plugin_archive
         raise PluginMarketplaceError(
             status_code=404,
@@ -492,7 +484,7 @@ class PluginMarketplaceService:
         task_id = f"preview-{uuid.uuid4().hex}"
         try:
             _, extract_root = service._prepare_archive_workspace(task_id, archive.content)
-            plugin_root = service._repo_relative_path(extract_root, item.plugin_path)
+            plugin_root = self._custom_plugin_root_from_archive(item, extract_root)
             metadata = self._validate_custom_plugin_root(item.source, plugin_root)
             return self._custom_preview_payload(item, archive, metadata)
         except PluginInstallError as exc:
@@ -520,7 +512,7 @@ class PluginMarketplaceService:
                 plugin_id=item.plugin_id,
             )
             _, extract_root = service._prepare_archive_workspace(task.task_id, archive.content)
-            plugin_root = service._repo_relative_path(extract_root, item.plugin_path)
+            plugin_root = self._custom_plugin_root_from_archive(item, extract_root)
             metadata = self._validate_custom_plugin_root(item.source, plugin_root)
             plugin_id = _custom_plugin_id(metadata, fallback=item.plugin_id)
             target_dir = self._custom_installer_target_dir(installer)
@@ -588,6 +580,32 @@ class PluginMarketplaceService:
             raise error from exc
         finally:
             shutil.rmtree(service.tmp_dir / task.task_id, ignore_errors=True)
+
+    def _custom_plugin_root_from_archive(
+        self,
+        item: PluginMarketplaceItem,
+        extract_root: Path,
+    ) -> Path:
+        service = build_plugin_install_service(self.bot, self.boot)
+        if item.plugin_path:
+            return service._repo_relative_path(extract_root, item.plugin_path)
+        roots = [extract_root]
+        roots.extend(path for path in sorted(extract_root.iterdir()) if path.is_dir())
+        metadata_names = {"metadata.yaml", "metadata.yml", "metadata.json"}
+        matches = [path for path in roots if any((path / name).is_file() for name in metadata_names)]
+        if not matches:
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+                message="Plugin archive does not contain custom plugin metadata",
+            )
+        if len(matches) > 1:
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+                message="Plugin archive contains multiple custom plugin metadata roots",
+            )
+        return matches[0]
 
     async def uninstall_installed_plugin(
         self,
@@ -701,8 +719,8 @@ class PluginMarketplaceService:
             "missing_required_dependencies": missing_required,
             "missing_optional_dependencies": missing_optional,
             "source_type": "marketplace",
-            "source_url": item.source.repository_url,
-            "ref": item.source.ref,
+            "source_url": _item_source_url(item),
+            "ref": _item_ref(item),
             "resolved_ref": archive.resolved_ref,
             "plugin_path": item.plugin_path,
             "archive_sha256": hashlib.sha256(archive.content).hexdigest(),
@@ -726,8 +744,8 @@ class PluginMarketplaceService:
         records[plugin_id] = PluginInstallRecord(
             plugin_id=plugin_id,
             source_type="marketplace",
-            source_url=item.source.repository_url,
-            ref=item.source.ref,
+            source_url=_item_source_url(item),
+            ref=_item_ref(item),
             resolved_ref=archive.resolved_ref,
             plugin_path=item.plugin_path,
             installed_at=installed_at,
@@ -807,6 +825,184 @@ class PluginMarketplaceService:
             cache_scope=cache_scope,
             resolved_ref=archive.resolved_ref,
         )
+
+    async def _load_metadata_archive(
+        self,
+        source: PluginMarketplaceSource,
+        *,
+        refresh: bool = False,
+    ) -> PluginMarketplaceArchive:
+        if source.source_type == "github_index":
+            return await self._load_github_index_archive(source, refresh=refresh)
+        return await self._load_sparse_archive(
+            source,
+            sparse_paths=self._metadata_sparse_paths(source),
+            cache_scope="metadata",
+            refresh=refresh,
+        )
+
+    async def _load_plugin_archive(
+        self,
+        item: PluginMarketplaceItem,
+        *,
+        refresh: bool = False,
+    ) -> PluginMarketplaceArchive:
+        if item.source.source_type == "github_index":
+            source = PluginMarketplaceSource(
+                id=f"{item.source.id}:{item.plugin_id}",
+                name=item.name,
+                source_type="github_monorepo",
+                repository_url=item.repository,
+                ref=item.ref or _GITHUB_INDEX_PLUGIN_REF,
+                plugin_root="",
+                installer_type=item.source.installer_type,
+                owner_plugin_id=item.source.owner_plugin_id,
+            )
+            return await self._load_github_zip_archive(
+                source,
+                cache_scope="plugin",
+                refresh=refresh,
+            )
+        return await self._load_sparse_archive(
+            item.source,
+            sparse_paths=[f"{item.plugin_path}/**"],
+            cache_scope=f"plugin:{item.plugin_path}",
+            refresh=refresh,
+        )
+
+    async def _load_github_index_archive(
+        self,
+        source: PluginMarketplaceSource,
+        *,
+        refresh: bool = False,
+    ) -> PluginMarketplaceArchive:
+        if not refresh:
+            cached = self._load_cached_archive(source, cache_scope="metadata")
+            if cached is not None:
+                return cached
+
+        index_path = _github_index_path(source.plugin_root)
+        content, resolved_ref = await self._download_github_file(source, index_path)
+        archive_content = _zip_single_file(f"repo/{index_path}", content)
+        if len(archive_content) > PLUGIN_INSTALL_MAX_ARCHIVE_BYTES:
+            raise PluginMarketplaceError(
+                status_code=413,
+                code="PLUGIN_MARKETPLACE_ARCHIVE_INVALID",
+                message="Plugin marketplace index is too large",
+            )
+        return self._save_cached_archive(
+            source,
+            archive_content,
+            cache_scope="metadata",
+            resolved_ref=resolved_ref,
+        )
+
+    async def _load_github_zip_archive(
+        self,
+        source: PluginMarketplaceSource,
+        *,
+        cache_scope: str,
+        refresh: bool = False,
+    ) -> PluginMarketplaceArchive:
+        if not refresh:
+            cached = self._load_cached_archive(source, cache_scope=cache_scope)
+            if cached is not None:
+                return cached
+
+        archive = await self._download_github_zip_archive(source)
+        if len(archive.content) > PLUGIN_INSTALL_MAX_ARCHIVE_BYTES:
+            raise PluginMarketplaceError(
+                status_code=413,
+                code="PLUGIN_MARKETPLACE_ARCHIVE_INVALID",
+                message="Plugin marketplace archive is too large",
+            )
+        return self._save_cached_archive(
+            source,
+            archive.content,
+            cache_scope=cache_scope,
+            resolved_ref=archive.resolved_ref,
+        )
+
+    async def _download_github_file(
+        self,
+        source: PluginMarketplaceSource,
+        index_path: str,
+    ) -> tuple[bytes, str]:
+        owner, repo = _parse_github_repo(source.repository_url)
+        _validate_github_ref(source.ref)
+        url = (
+            f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/contents/"
+            f"{quote(index_path, safe='/')}?ref={quote(source.ref, safe='')}"
+        )
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(20.0, connect=8.0),
+                headers={"User-Agent": "ShinBot-WebUI-Plugin-Marketplace"},
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise PluginMarketplaceError(
+                status_code=502,
+                code="PLUGIN_MARKETPLACE_SOURCE_UNAVAILABLE",
+                message=f"Failed to fetch GitHub marketplace index: {exc.response.status_code}",
+            ) from exc
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            raise PluginMarketplaceError(
+                status_code=502,
+                code="PLUGIN_MARKETPLACE_SOURCE_UNAVAILABLE",
+                message=f"Failed to fetch GitHub marketplace index: {exc}",
+            ) from exc
+        if not isinstance(payload, dict) or payload.get("type") != "file":
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
+                message="GitHub marketplace index path must point to a file",
+            )
+        encoded = payload.get("content")
+        if not isinstance(encoded, str):
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
+                message="GitHub marketplace index did not include file content",
+            )
+        try:
+            content = base64.b64decode(encoded, validate=False)
+        except (binascii.Error, ValueError) as exc:
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
+                message=f"GitHub marketplace index content is invalid: {exc}",
+            ) from exc
+        return content, str(payload.get("sha") or "")
+
+    async def _download_github_zip_archive(
+        self,
+        source: PluginMarketplaceSource,
+    ) -> PluginMarketplaceArchive:
+        owner, repo = _parse_github_repo(source.repository_url)
+        _validate_github_ref(source.ref)
+        url = (
+            f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/zipball/"
+            f"{quote(source.ref, safe='')}"
+        )
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                headers={"User-Agent": "ShinBot-WebUI-Plugin-Marketplace"},
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise PluginMarketplaceError(
+                status_code=502,
+                code="PLUGIN_MARKETPLACE_SOURCE_UNAVAILABLE",
+                message=f"Failed to download GitHub plugin archive: {exc}",
+            ) from exc
+        return PluginMarketplaceArchive(content=response.content, resolved_ref=source.ref)
 
     def _load_cached_archive(
         self,
@@ -997,6 +1193,7 @@ class PluginMarketplaceService:
             "\0".join(
                 [
                     source.id,
+                    source.source_type,
                     source.repository_url,
                     source.ref,
                     source.plugin_root,
@@ -1012,6 +1209,8 @@ class PluginMarketplaceService:
         source: PluginMarketplaceSource,
         archive_bytes: bytes,
     ) -> list[PluginMarketplaceItem]:
+        if source.source_type == "github_index":
+            return self._scan_github_index_archive(source, archive_bytes)
         if source.installer_type != "shinbot":
             return self._scan_custom_monorepo_archive(source, archive_bytes)
         try:
@@ -1033,6 +1232,60 @@ class PluginMarketplaceService:
                 code="PLUGIN_MARKETPLACE_INDEX_INVALID",
                 message=f"Invalid plugin marketplace archive: {exc}",
             ) from exc
+        if not items:
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+                message="Plugin marketplace source did not contain plugin metadata",
+            )
+        return sorted(items, key=lambda item: item.plugin_id)
+
+    def _scan_github_index_archive(
+        self,
+        source: PluginMarketplaceSource,
+        archive_bytes: bytes,
+    ) -> list[PluginMarketplaceItem]:
+        self._installer_or_raise(source.installer_type)
+        index_path = _github_index_path(source.plugin_root)
+        try:
+            with zipfile.ZipFile(BytesIO(archive_bytes)) as archive:
+                payload = json.loads(archive.read(f"repo/{index_path}").decode("utf-8"))
+        except KeyError as exc:
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+                message=f"Plugin marketplace index {index_path!r} was not found",
+            ) from exc
+        except (OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+                message=f"Invalid plugin marketplace index: {exc}",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise PluginMarketplaceError(
+                status_code=422,
+                code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+                message="Plugin marketplace index must contain an object",
+            )
+
+        items: list[PluginMarketplaceItem] = []
+        seen_plugin_ids: set[str] = set()
+        for raw_plugin_id, raw_metadata in payload.items():
+            if not isinstance(raw_plugin_id, str) or not isinstance(raw_metadata, dict):
+                continue
+            try:
+                item = self._github_index_item_from_metadata(
+                    source,
+                    raw_plugin_id,
+                    raw_metadata,
+                )
+            except PluginMarketplaceError:
+                continue
+            if item.plugin_id in seen_plugin_ids:
+                continue
+            seen_plugin_ids.add(item.plugin_id)
+            items.append(item)
         if not items:
             raise PluginMarketplaceError(
                 status_code=422,
@@ -1163,6 +1416,46 @@ class PluginMarketplaceService:
             repository=_custom_metadata_string(metadata, "repository", source.repository_url),
             plugin_path=plugin_path,
             source=source,
+        )
+
+    def _github_index_item_from_metadata(
+        self,
+        source: PluginMarketplaceSource,
+        raw_plugin_id: str,
+        metadata: dict[str, Any],
+    ) -> PluginMarketplaceItem:
+        plugin_id = _custom_plugin_id(metadata, fallback=raw_plugin_id)
+        repository = _normalize_index_repository_url(
+            _custom_metadata_string(metadata, "repo", "")
+            or _custom_metadata_string(metadata, "repository", "")
+        )
+        _parse_github_repo(repository)
+        ref = _custom_metadata_string(metadata, "ref", "") or _custom_metadata_string(
+            metadata,
+            "branch",
+            "",
+        )
+        if ref:
+            _validate_github_ref(ref)
+        return PluginMarketplaceItem(
+            plugin_id=plugin_id,
+            name=_custom_metadata_display_name(metadata, plugin_id),
+            version=_custom_metadata_string(metadata, "version", "0.0.0"),
+            description=_custom_metadata_description(metadata),
+            author=_custom_metadata_string(metadata, "author", ""),
+            role=_custom_metadata_role(metadata),
+            entry=_custom_metadata_string(metadata, "entry", ""),
+            permissions=_custom_metadata_string_list(metadata, "permissions"),
+            required_dependencies=_custom_metadata_string_list(metadata, "required_dependencies"),
+            optional_dependencies=_custom_metadata_string_list(metadata, "optional_dependencies"),
+            legacy_dependencies=_custom_metadata_string_list(metadata, "dependencies"),
+            tags=_custom_metadata_string_list(metadata, "tags"),
+            homepage=_custom_metadata_string(metadata, "social_link", "")
+            or _custom_metadata_string(metadata, "homepage", ""),
+            repository=repository,
+            plugin_path="",
+            source=source,
+            ref=ref or _GITHUB_INDEX_PLUGIN_REF,
         )
 
     def _enrich_item(self, item: PluginMarketplaceItem) -> PluginMarketplaceItem:
@@ -1314,6 +1607,59 @@ def build_plugin_marketplace_service(bot: Any, boot: Any) -> PluginMarketplaceSe
     service = PluginMarketplaceService(bot=bot, boot=boot)
     boot.plugin_marketplace_service = service
     return service
+
+
+def _github_index_path(value: str) -> str:
+    raw = value.strip().strip("/") or _GITHUB_INDEX_DEFAULT_PATH
+    if raw == ".":
+        raw = _GITHUB_INDEX_DEFAULT_PATH
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts or "." in path.parts or path.name != path.parts[-1]:
+        raise PluginMarketplaceError(
+            status_code=422,
+            code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
+            message="GitHub marketplace index path must stay inside the repository",
+        )
+    if path.name != _GITHUB_INDEX_DEFAULT_PATH:
+        raise PluginMarketplaceError(
+            status_code=422,
+            code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
+            message="GitHub marketplace index path must point to plugins.json",
+        )
+    return path.as_posix()
+
+
+def _zip_single_file(name: str, content: bytes) -> bytes:
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, content)
+    return output.getvalue()
+
+
+def _normalize_index_repository_url(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise PluginMarketplaceError(
+            status_code=422,
+            code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+            message="Indexed marketplace plugin must include repo",
+        )
+    parsed = urlparse(raw)
+    normalized = parsed._replace(query="", fragment="").geturl().rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    owner, repo = _parse_github_repo(normalized)
+    return f"https://github.com/{owner}/{repo}"
+
+
+def _item_source_url(item: PluginMarketplaceItem) -> str:
+    if item.source.source_type == "github_index":
+        return item.repository
+    return item.source.repository_url
+
+
+def _item_ref(item: PluginMarketplaceItem) -> str:
+    return item.ref or item.source.ref
 
 
 def _safe_workspace_child(root: Path, plugin_path: str) -> Path:
