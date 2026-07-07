@@ -72,6 +72,22 @@ class TestMessageElement:
         assert el.attrs == {}
         assert el.children == []
 
+    def test_message_factory(self):
+        child = MessageElement.text("node text")
+        el = MessageElement.message([child], id="10001", nickname="ShinBot", time=1711111111)
+
+        assert el.type == "message"
+        assert el.attrs == {"id": "10001", "nickname": "ShinBot", "time": 1711111111}
+        assert el.children == [child]
+
+    def test_forward_factory(self):
+        node = MessageElement.message([MessageElement.text("folded")], id="10001")
+        el = MessageElement.forward([node])
+
+        assert el.type == "message"
+        assert el.attrs == {"forward": "true"}
+        assert el.children == [node]
+
     def test_is_text_property(self):
         assert MessageElement.text("hi").is_text is True
         assert MessageElement.br().is_text is False

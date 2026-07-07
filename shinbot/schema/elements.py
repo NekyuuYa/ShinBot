@@ -165,6 +165,40 @@ class MessageElement(BaseModel):
         """Create a line-break element."""
         return cls(type="br")
 
+    @classmethod
+    def message(
+        cls,
+        children: list[MessageElement] | None = None,
+        *,
+        id: str | None = None,
+        nickname: str | None = None,
+        name: str | None = None,
+        time: int | None = None,
+        forward: bool = False,
+    ) -> Self:
+        """Create a message container or one forward-message node.
+
+        For outgoing forward messages, ``id`` is the displayed sender UIN and
+        ``nickname``/``name`` is the displayed sender name.
+        """
+        attrs: dict[str, Any] = {}
+        if id is not None:
+            attrs["id"] = id
+        if nickname is not None:
+            attrs["nickname"] = nickname
+        if name is not None:
+            attrs["name"] = name
+        if time is not None:
+            attrs["time"] = time
+        if forward:
+            attrs["forward"] = "true"
+        return cls(type="message", attrs=attrs, children=children or [])
+
+    @classmethod
+    def forward(cls, nodes: list[MessageElement]) -> Self:
+        """Create an outgoing collapsed/forward-message container."""
+        return cls.message(nodes, forward=True)
+
     # ── Helpers ──────────────────────────────────────────────────────
 
     @property

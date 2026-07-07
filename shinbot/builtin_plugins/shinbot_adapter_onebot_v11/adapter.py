@@ -57,6 +57,12 @@ def _format_ob11_file_src(src: Any) -> str:
     return raw
 
 
+def _truthy_attr(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class OneBotV11Config(BaseModel):
     mode: Literal["forward", "reverse"] = Field(default="reverse")
     url: str = Field(default="ws://127.0.0.1:3001")
@@ -510,12 +516,20 @@ class OneBotV11Adapter(BaseAdapter):
         Returns:
             A MessageHandle containing the platform-assigned message ID.
         """
+        channel = self._decode_session_id(target_session)
+        forward_nodes = self._outgoing_forward_nodes(elements)
+        if forward_nodes is not None:
+            result = await self._send_forward_message(channel, forward_nodes)
+            msg_id = str(result.get("message_id", "")) if isinstance(result, dict) else ""
+            return MessageHandle(
+                message_id=msg_id, adapter_ref=self, platform_data={"session_id": target_session}
+            )
+
         message: list[dict[str, Any]] = []
         for el in elements:
             converted = self._element_to_ob11(el)
             if converted is not None:
                 message.append(converted)
-        channel = self._decode_session_id(target_session)
 
         if channel.startswith("private:"):
             user_id = channel[len("private:") :]
@@ -537,6 +551,31 @@ class OneBotV11Adapter(BaseAdapter):
         return MessageHandle(
             message_id=msg_id, adapter_ref=self, platform_data={"session_id": target_session}
         )
+
+    async def _send_forward_message(
+        self, channel: str, nodes: list[MessageElement]
+    ) -> dict[str, Any]:
+        messages = [self._element_to_ob11_forward_node(node) for node in nodes]
+        messages = [node for node in messages if node is not None]
+        if channel.startswith("private:"):
+            user_id = channel[len("private:") :]
+            result = await self._call_ob11_api(
+                "send_private_forward_msg",
+                {
+                    "user_id": int(user_id) if user_id.isdigit() else user_id,
+                    "messages": messages,
+                },
+            )
+        else:
+            group_id = channel
+            result = await self._call_ob11_api(
+                "send_group_forward_msg",
+                {
+                    "group_id": int(group_id) if str(group_id).isdigit() else group_id,
+                    "messages": messages,
+                },
+            )
+        return result if isinstance(result, dict) else {}
 
     async def call_api(self, method: str, params: dict[str, Any]) -> Any:
         """Execute a platform-specific API call through the OneBot v11 adapter.
@@ -1383,6 +1422,46 @@ class OneBotV11Adapter(BaseAdapter):
 
         return rest
 
+    def _outgoing_forward_nodes(
+        self, elements: list[MessageElement]
+    ) -> list[MessageElement] | None:
+        if len(elements) == 1:
+            root = elements[0]
+            if root.type == "message" and _truthy_attr(root.attrs.get("forward")):
+                return [child for child in root.children if child.type == "message"]
+
+        return None
+
+    def _element_to_ob11_forward_node(self, node: MessageElement) -> dict[str, Any] | None:
+        if node.type != "message":
+            return None
+
+        content: list[dict[str, Any]] = []
+        for child in node.children:
+            converted = self._element_to_ob11(child)
+            if converted is not None:
+                content.append(converted)
+
+        sender_id = str(
+            node.attrs.get("uin")
+            or node.attrs.get("user_id")
+            or node.attrs.get("id")
+            or self._self_id
+            or "0"
+        )
+        nickname = str(node.attrs.get("nickname") or node.attrs.get("name") or "ShinBot")
+        data: dict[str, Any] = {
+            "name": nickname,
+            "uin": int(sender_id) if sender_id.isdigit() else sender_id,
+            "content": content,
+        }
+        if "time" in node.attrs:
+            try:
+                data["time"] = int(node.attrs["time"])
+            except (TypeError, ValueError):
+                data["time"] = node.attrs["time"]
+        return {"type": "node", "data": data}
+
     def _element_to_ob11(self, el: MessageElement) -> dict[str, Any] | None:
         if el.type == "text":
             return {"type": "text", "data": {"text": str(el.attrs.get("content", ""))}}
@@ -1424,7 +1503,7 @@ class OneBotV11Adapter(BaseAdapter):
         if el.type == "qq:mface":
             return {"type": "mface", "data": dict(el.attrs)}
         if el.type == "message":
-            return None  # Forward node containers are ingress-only
+            return None  # Forward node containers are handled by send().
         return {"type": "text", "data": {"text": elements_to_xml([el])}}
 
     def _normalize_timestamp(self, value: Any) -> int | None:

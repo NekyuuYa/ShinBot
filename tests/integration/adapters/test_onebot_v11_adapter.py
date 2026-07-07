@@ -418,6 +418,115 @@ async def test_fetch_forward_nodes_supports_message_style_payload(adapter: OneBo
 
 
 @pytest.mark.asyncio
+async def test_send_group_forward_message(adapter: OneBotV11Adapter):
+    called: dict[str, object] = {}
+
+    async def _fake_call(action: str, params: dict[str, object]):
+        called["action"] = action
+        called["params"] = params
+        return {"message_id": 901}
+
+    adapter._call_ob11_api = _fake_call  # type: ignore[method-assign]
+
+    handle = await adapter.send(
+        "ob11-test:group:778899",
+        [
+            MessageElement.forward(
+                [
+                    MessageElement.message(
+                        [MessageElement.text("台风快讯")],
+                        id="10001",
+                        nickname="NMC",
+                    ),
+                    MessageElement.message(
+                        [MessageElement.img("https://example.test/track.jpg")],
+                        id="10001",
+                        nickname="NMC",
+                    ),
+                ]
+            )
+        ],
+    )
+
+    assert handle.message_id == "901"
+    assert called == {
+        "action": "send_group_forward_msg",
+        "params": {
+            "group_id": 778899,
+            "messages": [
+                {
+                    "type": "node",
+                    "data": {
+                        "name": "NMC",
+                        "uin": 10001,
+                        "content": [{"type": "text", "data": {"text": "台风快讯"}}],
+                    },
+                },
+                {
+                    "type": "node",
+                    "data": {
+                        "name": "NMC",
+                        "uin": 10001,
+                        "content": [
+                            {
+                                "type": "image",
+                                "data": {"file": "https://example.test/track.jpg"},
+                            }
+                        ],
+                    },
+                },
+            ],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_send_private_forward_message(adapter: OneBotV11Adapter):
+    called: dict[str, object] = {}
+
+    async def _fake_call(action: str, params: dict[str, object]):
+        called["action"] = action
+        called["params"] = params
+        return {"message_id": 902}
+
+    adapter._self_id = "10001"
+    adapter._call_ob11_api = _fake_call  # type: ignore[method-assign]
+
+    handle = await adapter.send(
+        "ob11-test:private:123456",
+        [
+            MessageElement.forward(
+                [MessageElement.message([MessageElement.text("折叠内容")], nickname="Bot")]
+            )
+        ],
+    )
+
+    assert handle.message_id == "902"
+    assert called == {
+        "action": "send_private_forward_msg",
+        "params": {
+            "user_id": 123456,
+            "messages": [
+                {
+                    "type": "node",
+                    "data": {
+                        "name": "Bot",
+                        "uin": 10001,
+                        "content": [{"type": "text", "data": {"text": "折叠内容"}}],
+                    },
+                }
+            ],
+        },
+    }
+
+
+def test_unmarked_message_node_list_is_not_forward(adapter: OneBotV11Adapter):
+    nodes = [MessageElement.message([MessageElement.text("普通容器")], nickname="Bot")]
+
+    assert adapter._outgoing_forward_nodes(nodes) is None
+
+
+@pytest.mark.asyncio
 async def test_nested_forward_respects_depth_limit(adapter: OneBotV11Adapter):
     calls: list[str] = []
 
