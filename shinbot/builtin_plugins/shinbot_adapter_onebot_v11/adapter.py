@@ -1470,7 +1470,12 @@ class OneBotV11Adapter(BaseAdapter):
                 return {"type": "at", "data": {"qq": "all"}}
             return {"type": "at", "data": {"qq": str(el.attrs.get("id", ""))}}
         if el.type == "img":
-            return {"type": "image", "data": {"file": _format_ob11_file_src(el.attrs.get("src"))}}
+            data: dict[str, Any] = {"file": _format_ob11_file_src(el.attrs.get("src"))}
+            for key in ("subType", "sub_type"):
+                if key in el.attrs and str(el.attrs[key]).strip().lower() not in {"", "none"}:
+                    data["subType"] = str(el.attrs[key])
+                    break
+            return {"type": "image", "data": data}
         if el.type == "audio":
             return {"type": "record", "data": {"file": _format_ob11_file_src(el.attrs.get("src"))}}
         if el.type == "video":

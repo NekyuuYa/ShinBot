@@ -60,6 +60,20 @@ def test_encode_local_media_paths_as_base64(adapter: OneBotV11Adapter, tmp_path:
     }
 
 
+def test_encode_image_segment_preserves_sub_type(
+    adapter: OneBotV11Adapter, tmp_path: Path
+):
+    image_path = tmp_path / "render.gif"
+    image_path.write_bytes(b"gif-bytes")
+
+    segment = adapter._element_to_ob11(MessageElement.img(str(image_path), sub_type="0"))
+
+    assert segment == {
+        "type": "image",
+        "data": {"file": "base64://Z2lmLWJ5dGVz", "subType": "0"},
+    }
+
+
 def test_encode_local_file_uri_as_base64(adapter: OneBotV11Adapter, tmp_path: Path):
     image_path = tmp_path / "render image.png"
     image_path.write_bytes(b"png-bytes")
