@@ -503,13 +503,12 @@ def test_github_install_downloads_archive_and_records_source(
 
     assert response.status_code == 200
     assert bot.plugin_manager.get_plugin("shinbot_plugin_github_demo") is not None
-    assert str(captured["url"]).endswith("/repos/NekyuuYa/shinbot-plugin-demo/zipball/v0.1.0")
+    assert str(captured["url"]).endswith("/NekyuuYa/shinbot-plugin-demo/zip/v0.1.0")
     source = sources_response.json()["data"]["plugins"][0]
     assert source["source_type"] == "github"
     assert source["source_url"] == "https://github.com/NekyuuYa/shinbot-plugin-demo"
     assert source["ref"] == "v0.1.0"
     assert source["resolved_ref"] == ""
-
 
 def test_custom_github_install_uses_registered_installer(
     tmp_path: Path,

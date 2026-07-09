@@ -1162,9 +1162,7 @@ class PluginInstallService:
     async def _download_github_archive(self, url: str, ref: str) -> tuple[bytes, str]:
         owner, repo = _parse_github_repo(url)
         _validate_github_ref(ref)
-        archive_url = (
-            f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/zipball/{quote(ref, safe='')}"
-        )
+        archive_url = _github_codeload_zip_url(owner, repo, ref)
         try:
             async with httpx.AsyncClient(
                 follow_redirects=True,
@@ -1315,6 +1313,10 @@ def _parse_github_repo(url: str) -> tuple[str, str]:
 def _normalize_github_url(url: str) -> str:
     owner, repo = _parse_github_repo(url)
     return f"https://github.com/{owner}/{repo}"
+
+
+def _github_codeload_zip_url(owner: str, repo: str, ref: str) -> str:
+    return f"https://codeload.github.com/{quote(owner)}/{quote(repo)}/zip/{quote(ref, safe='')}"
 
 
 def _validate_github_ref(ref: str) -> None:

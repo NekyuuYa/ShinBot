@@ -42,6 +42,18 @@ def _client(tmp_path: Path) -> tuple[TestClient, ShinBot, _BootStub, dict[str, s
     return TestClient(app), bot, boot, headers
 
 
+def _register_monorepo_source(bot: ShinBot, boot: _BootStub, source_id: str = "monorepo") -> None:
+    service = plugin_marketplace.build_plugin_marketplace_service(bot, boot)
+    service.register_source(
+        source_id=source_id,
+        name="Monorepo Test Source",
+        source_type="github_monorepo",
+        repository_url="https://github.com/NekyuuYa/shinbot-plugins",
+        ref="main",
+        plugin_root="plugins",
+    )
+
+
 def _metadata_archive_zip(
     *,
     version: str = "0.1.0",
@@ -496,20 +508,24 @@ def test_plugin_marketplace_github_index_source_downloads_selected_repo(
     assert installed_item["installed_source"]["ref"] == "HEAD"
     assert installed_item["installed_source"]["marketplace_source_id"] == "custom-index"
 
-
 def test_plugin_marketplace_lists_monorepo_plugins(tmp_path: Path, monkeypatch):
     calls = _patch_sparse_archives(
         monkeypatch,
         {"metadata": [_metadata_archive_zip()], "plugin": []},
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
-        response = client.get("/api/v1/plugin-marketplace", headers=headers)
+        response = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert payload["source"]["id"] == "official"
+    assert payload["source"]["id"] == "monorepo"
     plugins = {item["plugin_id"]: item for item in payload["plugins"]}
     demo = plugins["shinbot_plugin_market_demo"]
     assert demo["plugin_path"] == "plugins/shinbot_plugin_market_demo"
@@ -529,15 +545,24 @@ def test_plugin_marketplace_reuses_cached_archive(tmp_path: Path, monkeypatch):
             "plugin": [_plugin_archive_zip()],
         },
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
-        first = client.get("/api/v1/plugin-marketplace", headers=headers)
-        second = client.get("/api/v1/plugin-marketplace", headers=headers)
+        first = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
+        second = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
         preview = client.post(
             "/api/v1/plugin-marketplace/shinbot_plugin_market_demo/preview",
             headers=headers,
-            json={"source": "official"},
+            json={"source": "monorepo"},
         )
 
     assert first.status_code == 200
@@ -562,14 +587,19 @@ def test_plugin_marketplace_refresh_bypasses_cached_archive(tmp_path: Path, monk
             "plugin": [],
         },
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
-        first = client.get("/api/v1/plugin-marketplace", headers=headers)
+        first = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
         refreshed = client.get(
             "/api/v1/plugin-marketplace",
             headers=headers,
-            params={"refresh": "true"},
+            params={"source": "monorepo", "refresh": "true"},
         )
 
     assert first.status_code == 200
@@ -594,10 +624,15 @@ def test_plugin_marketplace_marks_missing_required_dependency(tmp_path: Path, mo
             "plugin": [],
         },
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
-        response = client.get("/api/v1/plugin-marketplace", headers=headers)
+        response = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
 
     assert response.status_code == 200
     demo = {
@@ -615,15 +650,20 @@ def test_plugin_marketplace_installs_selected_monorepo_plugin(tmp_path: Path, mo
             "plugin": [_plugin_archive_zip()],
         },
     )
-    client, bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
         install = client.post(
             "/api/v1/plugin-marketplace/shinbot_plugin_market_demo/install",
             headers=headers,
-            json={"enable_after_install": True},
+            json={"source": "monorepo", "enable_after_install": True},
         )
-        listed = client.get("/api/v1/plugin-marketplace", headers=headers)
+        listed = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
 
     assert install.status_code == 200
     assert install.json()["data"]["status"] == "succeeded"
@@ -650,13 +690,14 @@ def test_plugin_marketplace_preview_uses_selected_plugin_path(tmp_path: Path, mo
             "plugin": [_plugin_archive_zip()],
         },
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
         response = client.post(
             "/api/v1/plugin-marketplace/shinbot_plugin_market_demo/preview",
             headers=headers,
-            json={"source": "official"},
+            json={"source": "monorepo"},
         )
 
     assert response.status_code == 200
@@ -690,10 +731,15 @@ def test_plugin_marketplace_blocks_unmanaged_existing_plugin(tmp_path: Path, mon
         monkeypatch,
         {"metadata": [_metadata_archive_zip()], "plugin": []},
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
-        response = client.get("/api/v1/plugin-marketplace", headers=headers)
+        response = client.get(
+            "/api/v1/plugin-marketplace",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
 
     assert response.status_code == 200
     demo = {
@@ -714,12 +760,13 @@ def test_plugin_marketplace_reports_update_available(tmp_path: Path, monkeypatch
             "plugin": [_plugin_archive_zip(version="0.1.0")],
         },
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
     with client:
         install = client.post(
             "/api/v1/plugin-marketplace/shinbot_plugin_market_demo/install",
             headers=headers,
-            json={"enable_after_install": True},
+            json={"source": "monorepo", "enable_after_install": True},
         )
     assert install.status_code == 200
 
@@ -731,7 +778,7 @@ def test_plugin_marketplace_reports_update_available(tmp_path: Path, monkeypatch
         listed = client.get(
             "/api/v1/plugin-marketplace",
             headers=headers,
-            params={"refresh": "true"},
+            params={"source": "monorepo", "refresh": "true"},
         )
 
     demo = {
@@ -748,10 +795,15 @@ def test_plugin_marketplace_get_unknown_plugin_returns_404(tmp_path: Path, monke
         monkeypatch,
         {"metadata": [_metadata_archive_zip()], "plugin": []},
     )
-    client, _bot, _boot, headers = _client(tmp_path)
+    client, bot, boot, headers = _client(tmp_path)
+    _register_monorepo_source(bot, boot)
 
     with client:
-        response = client.get("/api/v1/plugin-marketplace/shinbot_plugin_missing", headers=headers)
+        response = client.get(
+            "/api/v1/plugin-marketplace/shinbot_plugin_missing",
+            headers=headers,
+            params={"source": "monorepo"},
+        )
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PLUGIN_MARKETPLACE_ITEM_NOT_FOUND"

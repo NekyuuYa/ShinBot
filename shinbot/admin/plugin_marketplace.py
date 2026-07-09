@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import hashlib
 import inspect
 import json
@@ -33,7 +31,7 @@ from shinbot.admin.plugin_install import (
 OFFICIAL_MARKETPLACE_SOURCE_ID = "official"
 OFFICIAL_MARKETPLACE_REPOSITORY_URL = "https://github.com/NekyuuYa/shinbot-plugins"
 OFFICIAL_MARKETPLACE_REF = "main"
-OFFICIAL_MARKETPLACE_PLUGIN_ROOT = "plugins"
+OFFICIAL_MARKETPLACE_PLUGIN_ROOT = "plugins.json"
 PLUGIN_MARKETPLACE_CACHE_TTL_SECONDS = 6 * 60 * 60
 PLUGIN_MARKETPLACE_CACHE_SCHEMA_VERSION = 1
 _VALID_PLUGIN_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_", "shinbot_converter_")
@@ -175,7 +173,7 @@ class PluginMarketplaceArchive:
 OFFICIAL_MARKETPLACE_SOURCE = PluginMarketplaceSource(
     id=OFFICIAL_MARKETPLACE_SOURCE_ID,
     name="ShinBot Official Plugins",
-    source_type="github_monorepo",
+    source_type="github_index",
     repository_url=OFFICIAL_MARKETPLACE_REPOSITORY_URL,
     ref=OFFICIAL_MARKETPLACE_REF,
     plugin_root=OFFICIAL_MARKETPLACE_PLUGIN_ROOT,
@@ -1121,8 +1119,8 @@ class PluginMarketplaceService:
         owner, repo = _parse_github_repo(source.repository_url)
         _validate_github_ref(source.ref)
         url = (
-            f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/contents/"
-            f"{quote(index_path, safe='/')}?ref={quote(source.ref, safe='')}"
+            f"https://raw.githubusercontent.com/{quote(owner)}/{quote(repo)}/"
+            f"{quote(source.ref, safe='')}/{quote(index_path, safe='/')}"
         )
         try:
             async with httpx.AsyncClient(
@@ -1132,41 +1130,19 @@ class PluginMarketplaceService:
             ) as client:
                 response = await client.get(url)
                 response.raise_for_status()
-                payload = response.json()
         except httpx.HTTPStatusError as exc:
             raise PluginMarketplaceError(
                 status_code=502,
                 code="PLUGIN_MARKETPLACE_SOURCE_UNAVAILABLE",
                 message=f"Failed to fetch GitHub marketplace index: {exc.response.status_code}",
             ) from exc
-        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        except httpx.HTTPError as exc:
             raise PluginMarketplaceError(
                 status_code=502,
                 code="PLUGIN_MARKETPLACE_SOURCE_UNAVAILABLE",
                 message=f"Failed to fetch GitHub marketplace index: {exc}",
             ) from exc
-        if not isinstance(payload, dict) or payload.get("type") != "file":
-            raise PluginMarketplaceError(
-                status_code=422,
-                code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
-                message="GitHub marketplace index path must point to a file",
-            )
-        encoded = payload.get("content")
-        if not isinstance(encoded, str):
-            raise PluginMarketplaceError(
-                status_code=422,
-                code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
-                message="GitHub marketplace index did not include file content",
-            )
-        try:
-            content = base64.b64decode(encoded, validate=False)
-        except (binascii.Error, ValueError) as exc:
-            raise PluginMarketplaceError(
-                status_code=422,
-                code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
-                message=f"GitHub marketplace index content is invalid: {exc}",
-            ) from exc
-        return content, str(payload.get("sha") or "")
+        return response.content, source.ref
 
     async def _download_github_zip_archive(
         self,
@@ -1174,10 +1150,7 @@ class PluginMarketplaceService:
     ) -> PluginMarketplaceArchive:
         owner, repo = _parse_github_repo(source.repository_url)
         _validate_github_ref(source.ref)
-        url = (
-            f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/zipball/"
-            f"{quote(source.ref, safe='')}"
-        )
+        url = _github_codeload_zip_url(owner, repo, source.ref)
         try:
             async with httpx.AsyncClient(
                 follow_redirects=True,
@@ -1627,6 +1600,10 @@ class PluginMarketplaceService:
         )
         if ref:
             _validate_github_ref(ref)
+        plugin_path = _normalize_index_plugin_path(
+            _custom_metadata_string(metadata, "plugin_path", "")
+            or _custom_metadata_string(metadata, "path", "")
+        )
         return PluginMarketplaceItem(
             plugin_id=plugin_id,
             name=_custom_metadata_display_name(metadata, plugin_id),
@@ -1643,7 +1620,7 @@ class PluginMarketplaceService:
             homepage=_custom_metadata_string(metadata, "social_link", "")
             or _custom_metadata_string(metadata, "homepage", ""),
             repository=repository,
-            plugin_path="",
+            plugin_path=plugin_path,
             source=source,
             ref=ref or _GITHUB_INDEX_PLUGIN_REF,
         )
@@ -1682,8 +1659,8 @@ class PluginMarketplaceService:
         same_source = bool(
             record
             and record.source_type == "github"
-            and record.source_url == item.source.repository_url
-            and (record.ref or item.source.ref) == item.source.ref
+            and record.source_url == _item_source_url(item)
+            and (record.ref or _item_ref(item)) == _item_ref(item)
             and record.plugin_path == item.plugin_path
         )
         update_available = bool(installed and managed and same_source and installed_version != item.version)
@@ -1840,6 +1817,26 @@ def _normalize_index_repository_url(value: str) -> str:
         normalized = normalized[:-4]
     owner, repo = _parse_github_repo(normalized)
     return f"https://github.com/{owner}/{repo}"
+
+
+def _normalize_index_plugin_path(value: str) -> str:
+    raw = value.strip().strip("/")
+    if not raw:
+        return ""
+    if "\\" in raw:
+        raise PluginMarketplaceError(
+            status_code=422,
+            code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+            message="Indexed marketplace plugin_path must use forward slashes",
+        )
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts or "." in path.parts:
+        raise PluginMarketplaceError(
+            status_code=422,
+            code="PLUGIN_MARKETPLACE_INDEX_INVALID",
+            message="Indexed marketplace plugin_path must be a relative repository directory",
+        )
+    return path.as_posix()
 
 
 def _item_source_url(item: PluginMarketplaceItem) -> str:
@@ -2058,6 +2055,10 @@ def _validate_github_ref(ref: str) -> None:
             code="PLUGIN_MARKETPLACE_SOURCE_INVALID",
             message="Invalid GitHub marketplace ref",
         )
+
+
+def _github_codeload_zip_url(owner: str, repo: str, ref: str) -> str:
+    return f"https://codeload.github.com/{quote(owner)}/{quote(repo)}/zip/{quote(ref, safe='')}"
 
 
 def _normalize_sparse_path(value: str) -> str:
