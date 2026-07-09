@@ -508,6 +508,41 @@ def test_plugin_marketplace_github_index_source_downloads_selected_repo(
     assert installed_item["installed_source"]["ref"] == "HEAD"
     assert installed_item["installed_source"]["marketplace_source_id"] == "custom-index"
 
+
+def test_plugin_marketplace_github_index_source_allows_builtin_shinbot_installer(
+    tmp_path: Path,
+    monkeypatch,
+):
+    async def fake_download_github_file(self, source, index_path):
+        payload = {
+            "shinbot_plugin_index_demo": {
+                "id": "shinbot_plugin_index_demo",
+                "name": "Index Demo",
+                "version": "0.1.0",
+                "description": "Demo plugin from indexed marketplace",
+                "author": "Tests",
+                "entry": "shinbot_plugin_index_demo/__init__.py",
+                "repo": "https://github.com/example/shinbot_plugin_index_demo",
+            }
+        }
+        return json.dumps(payload).encode("utf-8"), "index-sha"
+
+    monkeypatch.setattr(
+        plugin_marketplace.PluginMarketplaceService,
+        "_download_github_file",
+        fake_download_github_file,
+    )
+
+    client, _bot, _boot, headers = _client(tmp_path)
+
+    with client:
+        response = client.get("/api/v1/plugin-marketplace", headers=headers)
+
+    assert response.status_code == 200
+    plugins = response.json()["data"]["plugins"]
+    assert plugins[0]["plugin_id"] == "shinbot_plugin_index_demo"
+
+
 def test_plugin_marketplace_lists_monorepo_plugins(tmp_path: Path, monkeypatch):
     calls = _patch_sparse_archives(
         monkeypatch,

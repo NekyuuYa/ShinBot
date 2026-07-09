@@ -299,6 +299,8 @@ class PluginMarketplaceService:
 
     def get_installer(self, installer_type: str) -> dict[str, Any] | None:
         """Get a registered installer by type."""
+        if installer_type == "shinbot":
+            return _builtin_shinbot_installer()
         return self._plugin_installers.get(installer_type)
 
     def list_installers(self) -> dict[str, Any]:
@@ -474,7 +476,7 @@ class PluginMarketplaceService:
         return source
 
     def _installer_or_raise(self, installer_type: str) -> dict[str, Any]:
-        installer = self._plugin_installers.get(installer_type)
+        installer = self.get_installer(installer_type)
         if installer is None:
             raise PluginMarketplaceError(
                 status_code=409,
@@ -1774,6 +1776,16 @@ def build_plugin_marketplace_service(bot: Any, boot: Any) -> PluginMarketplaceSe
     service = PluginMarketplaceService(bot=bot, boot=boot)
     boot.plugin_marketplace_service = service
     return service
+
+
+def _builtin_shinbot_installer() -> dict[str, Any]:
+    return {
+        "install": None,
+        "uninstall": None,
+        "validate": None,
+        "owner": "",
+        "target_dir": "",
+    }
 
 
 def _github_index_path(value: str) -> str:
