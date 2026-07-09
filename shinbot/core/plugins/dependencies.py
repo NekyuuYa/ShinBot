@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 _SYNCED_DEPENDENCY_SETS: set[tuple[str, tuple[str, ...]]] = set()
+_DEPENDENCY_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
 
 
 @dataclass(slots=True)
@@ -39,6 +41,7 @@ async def sync_plugin_python_dependencies(plugin_id: str, plugin_root: Path) -> 
         *dependencies,
     )
     if returncode == 0:
+        await _install_dependency_assets(plugin_id, dependencies)
         _SYNCED_DEPENDENCY_SETS.add(cache_key)
         return dependencies
     if "No module named pip" in _process_output(stdout, stderr):
@@ -51,6 +54,7 @@ async def sync_plugin_python_dependencies(plugin_id: str, plugin_root: Path) -> 
             *dependencies,
         )
         if returncode == 0:
+            await _install_dependency_assets(plugin_id, dependencies)
             _SYNCED_DEPENDENCY_SETS.add(cache_key)
             return dependencies
     detail = _process_output(stdout, stderr)
@@ -90,6 +94,35 @@ def plugin_python_dependencies(plugin_root: Path) -> list[str]:
             message="plugin pyproject.toml project.dependencies must be a list of strings",
         )
     return [item.strip() for item in dependencies if item.strip()]
+
+
+async def _install_dependency_assets(plugin_id: str, dependencies: list[str]) -> None:
+    if not any(_dependency_package_name(item) == "playwright" for item in dependencies):
+        return
+    stdout, stderr, returncode = await _run_dependency_installer(
+        sys.executable,
+        "-m",
+        "playwright",
+        "install",
+        "chromium",
+    )
+    if returncode != 0:
+        detail = _process_output(stdout, stderr)
+        raise PluginDependencyError(
+            status_code=500,
+            code="PLUGIN_INSTALL_DEPENDENCY_ASSET_INSTALL_FAILED",
+            message=(
+                f"Failed to install Playwright browser assets for plugin {plugin_id!r}: "
+                f"{detail}"
+            ),
+        )
+
+
+def _dependency_package_name(value: str) -> str:
+    match = _DEPENDENCY_NAME_RE.match(value)
+    if match is None:
+        return ""
+    return match.group(1).lower().replace("_", "-")
 
 
 def _process_output(stdout: bytes, stderr: bytes) -> str:

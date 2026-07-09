@@ -403,6 +403,53 @@ def test_archive_install_installs_pyproject_dependencies(tmp_path: Path, monkeyp
     ]
 
 
+def test_archive_install_installs_playwright_browser_assets(tmp_path: Path, monkeypatch):
+    captured: list[tuple[str, ...]] = []
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"installed", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.append(tuple(str(arg) for arg in args))
+        return _FakeProcess()
+
+    monkeypatch.setattr(
+        plugin_dependencies.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    client, bot, _boot, headers = _client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/plugin-installs/archive?filename=demo.zip",
+            headers={**headers, "Content-Type": "application/zip"},
+            content=_plugin_zip(pyproject_dependencies=["playwright>=1.45.0"]),
+        )
+
+    assert response.status_code == 200
+    assert bot.plugin_manager.get_plugin("shinbot_plugin_install_demo") is not None
+    assert captured == [
+        (
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "playwright>=1.45.0",
+        ),
+        (
+            sys.executable,
+            "-m",
+            "playwright",
+            "install",
+            "chromium",
+        ),
+    ]
+
+
 def test_archive_install_falls_back_to_uv_when_pip_module_is_missing(
     tmp_path: Path,
     monkeypatch,
