@@ -447,9 +447,11 @@ class FakeModelRuntime:
         if isinstance(response, dict):
             text = str(response.get("text", "") or "")
             tool_calls = list(response.get("tool_calls", []))
+            execution_id = str(response.get("execution_id", "exec-1") or "")
         else:
             text = response
             tool_calls = []
+            execution_id = "exec-1"
         return type(
             "FakeGenerateResult",
             (),
@@ -457,7 +459,7 @@ class FakeModelRuntime:
                 "text": text,
                 "tool_calls": tool_calls,
                 "raw_response": None,
-                "execution_id": "exec-1",
+                "execution_id": execution_id,
                 "route_id": "",
                 "provider_id": "",
                 "model_id": "",

@@ -355,41 +355,43 @@ class ModelRuntime:
             started_at = started.isoformat()
             route_id = call.route_id or attempt["model"]["id"]
             response_payload: dict[str, Any] | None = None
-            plan = self._backend.plan_request(
-                provider=attempt["provider"],
-                model=attempt["model"],
-                call=call,
-                timeout_override=attempt["timeout_override"],
-                operation=mode,
-            )
-            logger.debug(
-                format_log_event(
-                    "model.call.start",
-                    operation=operation,
-                    mode=mode,
-                    execution_id=execution_id,
-                    route_id=route_id,
-                    provider_id=attempt["provider"]["id"],
-                    model_id=attempt["model"]["id"],
-                    caller=call.caller,
-                    purpose=call.purpose,
-                    session_id=call.session_id,
-                    instance_id=call.instance_id,
-                    trace_id=call.metadata.get("trace_id"),
-                    fallback_from_model_id=previous_model_id,
-                    backend=plan.backend_name,
-                )
-            )
-            await self._notify_observers(
-                self._build_request_observer_payload(
-                    mode=mode,
-                    execution_id=execution_id,
-                    call=call,
-                    attempt=attempt,
-                    plan=plan,
-                )
-            )
+            plan: BackendRequestPlan | None = None
+            success_persisted = False
             try:
+                plan = self._backend.plan_request(
+                    provider=attempt["provider"],
+                    model=attempt["model"],
+                    call=call,
+                    timeout_override=attempt["timeout_override"],
+                    operation=mode,
+                )
+                logger.debug(
+                    format_log_event(
+                        "model.call.start",
+                        operation=operation,
+                        mode=mode,
+                        execution_id=execution_id,
+                        route_id=route_id,
+                        provider_id=attempt["provider"]["id"],
+                        model_id=attempt["model"]["id"],
+                        caller=call.caller,
+                        purpose=call.purpose,
+                        session_id=call.session_id,
+                        instance_id=call.instance_id,
+                        trace_id=call.metadata.get("trace_id"),
+                        fallback_from_model_id=previous_model_id,
+                        backend=plan.backend_name,
+                    )
+                )
+                await self._notify_observers(
+                    self._build_request_observer_payload(
+                        mode=mode,
+                        execution_id=execution_id,
+                        call=call,
+                        attempt=attempt,
+                        plan=plan,
+                    )
+                )
                 response = await asyncio.to_thread(self._backend.invoke, plan)
                 finished = utc_now()
                 finished_at = finished.isoformat()
@@ -468,6 +470,7 @@ class ModelRuntime:
                     currency="USD" if record_estimated_cost else "",
                 )
                 persist_model_execution(self._database, record)
+                success_persisted = True
 
                 if after_success is not None:
                     after_success(execution, call)
@@ -508,82 +511,42 @@ class ModelRuntime:
                     )
                 )
                 return execution, data
+            except asyncio.CancelledError as exc:
+                if not success_persisted:
+                    await self._record_failed_attempt(
+                        execution_id=execution_id,
+                        operation=operation,
+                        mode=mode,
+                        started_at=started,
+                        route_id=route_id,
+                        call=call,
+                        attempt=attempt,
+                        plan=plan,
+                        response_payload=response_payload,
+                        record_prompt_snapshot=record_prompt_snapshot,
+                        notify_response=notify_response,
+                        previous_model_id=previous_model_id,
+                        exc=exc,
+                    )
+                raise
             except Exception as exc:  # noqa: BLE001
-                finished = utc_now()
-                latency_ms = (finished - started).total_seconds() * 1000
-                audit_metadata = self._persist_audit_payload(
+                await self._record_failed_attempt(
                     execution_id=execution_id,
                     operation=operation,
+                    mode=mode,
                     started_at=started,
-                    finished_at=finished,
+                    route_id=route_id,
                     call=call,
                     attempt=attempt,
                     plan=plan,
                     response_payload=response_payload,
-                    return_payload=None,
-                    status="error",
-                    error={
-                        "code": type(exc).__name__,
-                        "message": str(exc),
-                    },
+                    record_prompt_snapshot=record_prompt_snapshot,
+                    notify_response=notify_response,
+                    previous_model_id=previous_model_id,
+                    exc=exc,
                 )
-                record = ModelExecutionRecord(
-                    id=execution_id,
-                    route_id=route_id,
-                    provider_id=attempt["provider"]["id"],
-                    model_id=attempt["model"]["id"],
-                    caller=call.caller,
-                    session_id=call.session_id,
-                    instance_id=call.instance_id,
-                    purpose=call.purpose,
-                    started_at=started_at,
-                    finished_at=finished.isoformat(),
-                    latency_ms=latency_ms,
-                    success=False,
-                    error_code=type(exc).__name__,
-                    error_message=str(exc),
-                    fallback_from_model_id=previous_model_id,
-                    fallback_reason="provider_error" if previous_model_id else "",
-                    prompt_snapshot_id=call.prompt_snapshot_id if record_prompt_snapshot else "",
-                    metadata=self._build_execution_metadata(
-                        call=call,
-                        attempt=attempt,
-                        audit_metadata=audit_metadata,
-                    ),
-                )
-                persist_model_execution(self._database, record)
-                if notify_response:
-                    await self._notify_observers(
-                        self._build_error_observer_payload(
-                            mode=mode,
-                            execution_id=execution_id,
-                            call=call,
-                            attempt=attempt,
-                            latency_ms=latency_ms,
-                            exc=exc,
-                        )
-                    )
                 previous_model_id = attempt["model"]["id"]
                 last_error = exc
-                logger.debug(
-                    format_log_event(
-                        "model.call.finish",
-                        status="error",
-                        operation=operation,
-                        mode=mode,
-                        execution_id=execution_id,
-                        route_id=route_id,
-                        provider_id=attempt["provider"]["id"],
-                        model_id=attempt["model"]["id"],
-                        caller=call.caller,
-                        purpose=call.purpose,
-                        session_id=call.session_id,
-                        trace_id=call.metadata.get("trace_id"),
-                        latency_ms=f"{latency_ms:.2f}",
-                        backend=plan.backend_name,
-                        error_code=type(exc).__name__,
-                    )
-                )
 
         logger.warning(
             format_log_event(
@@ -601,6 +564,101 @@ class ModelRuntime:
             )
         )
         raise ModelCallError(str(last_error) if last_error else failure_message)
+
+    async def _record_failed_attempt(
+        self,
+        *,
+        execution_id: str,
+        operation: str,
+        mode: BackendOperation,
+        started_at: datetime,
+        route_id: str,
+        call: ModelRuntimeCall,
+        attempt: dict[str, Any],
+        plan: BackendRequestPlan | None,
+        response_payload: dict[str, Any] | None,
+        record_prompt_snapshot: bool,
+        notify_response: bool,
+        previous_model_id: str,
+        exc: BaseException,
+    ) -> None:
+        finished = utc_now()
+        latency_ms = (finished - started_at).total_seconds() * 1000
+        audit_metadata = self._persist_audit_payload(
+            execution_id=execution_id,
+            operation=operation,
+            started_at=started_at,
+            finished_at=finished,
+            call=call,
+            attempt=attempt,
+            plan=plan,
+            response_payload=response_payload,
+            return_payload=None,
+            status="error",
+            error={
+                "code": type(exc).__name__,
+                "message": str(exc),
+            },
+        )
+        record = ModelExecutionRecord(
+            id=execution_id,
+            route_id=route_id,
+            provider_id=attempt["provider"]["id"],
+            model_id=attempt["model"]["id"],
+            caller=call.caller,
+            session_id=call.session_id,
+            instance_id=call.instance_id,
+            purpose=call.purpose,
+            started_at=started_at.isoformat(),
+            finished_at=finished.isoformat(),
+            latency_ms=latency_ms,
+            success=False,
+            error_code=type(exc).__name__,
+            error_message=str(exc),
+            fallback_from_model_id=previous_model_id,
+            fallback_reason="provider_error" if previous_model_id else "",
+            prompt_snapshot_id=call.prompt_snapshot_id if record_prompt_snapshot else "",
+            metadata=self._build_execution_metadata(
+                call=call,
+                attempt=attempt,
+                audit_metadata=audit_metadata,
+            ),
+        )
+        persist_model_execution(self._database, record)
+        if notify_response:
+            await self._notify_observers(
+                self._build_error_observer_payload(
+                    mode=mode,
+                    execution_id=execution_id,
+                    call=call,
+                    attempt=attempt,
+                    latency_ms=latency_ms,
+                    exc=exc,
+                )
+            )
+        logger.debug(
+            format_log_event(
+                "model.call.finish",
+                status="error",
+                operation=operation,
+                mode=mode,
+                execution_id=execution_id,
+                route_id=route_id,
+                provider_id=attempt["provider"]["id"],
+                model_id=attempt["model"]["id"],
+                caller=call.caller,
+                purpose=call.purpose,
+                session_id=call.session_id,
+                trace_id=call.metadata.get("trace_id"),
+                latency_ms=f"{latency_ms:.2f}",
+                backend=(
+                    plan.backend_name
+                    if plan is not None
+                    else getattr(self._backend, "name", "")
+                ),
+                error_code=type(exc).__name__,
+            )
+        )
 
     def _build_request_observer_payload(
         self,
@@ -682,7 +740,7 @@ class ModelRuntime:
         call: ModelRuntimeCall,
         attempt: dict[str, Any],
         latency_ms: float,
-        exc: Exception,
+        exc: BaseException,
     ) -> dict[str, Any]:
         usage = self._empty_usage()
         payload = self._base_observer_payload(
@@ -767,7 +825,7 @@ class ModelRuntime:
         finished_at: datetime,
         call: ModelRuntimeCall,
         attempt: dict[str, Any],
-        plan: BackendRequestPlan,
+        plan: BackendRequestPlan | None,
         response_payload: dict[str, Any] | None,
         return_payload: dict[str, Any] | None,
         status: str,
@@ -795,9 +853,19 @@ class ModelRuntime:
                     "response_format": sanitize_payload_for_audit(call.response_format),
                     "params": sanitize_payload_for_audit(call.params),
                     "metadata": sanitize_payload_for_audit(call.metadata),
-                    "kwargs": sanitize_payload_for_audit(plan.safe_payload),
-                    "backend": plan.backend_name,
-                    "backend_model": plan.backend_model,
+                    "kwargs": sanitize_payload_for_audit(
+                        plan.safe_payload if plan is not None else {}
+                    ),
+                    "backend": (
+                        plan.backend_name
+                        if plan is not None
+                        else getattr(self._backend, "name", "")
+                    ),
+                    "backend_model": (
+                        plan.backend_model
+                        if plan is not None
+                        else str(attempt["model"].get("backend_model") or "")
+                    ),
                     "prompt_snapshot_id": call.prompt_snapshot_id,
                     "started_at": started_at.isoformat(),
                 },

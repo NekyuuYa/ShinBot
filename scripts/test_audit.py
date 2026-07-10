@@ -113,14 +113,18 @@ def call_has_reason(node: ast.AST) -> bool:
     for keyword in node.keywords:
         if keyword.arg == "reason" and literal_non_empty(keyword.value):
             return True
-    return len(node.args) >= 1 and literal_non_empty(node.args[0])
+    return (
+        marker_name(node) == "skip"
+        and len(node.args) >= 1
+        and literal_non_empty(node.args[0])
+    )
 
 
 def literal_non_empty(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and isinstance(node.value, str) and bool(node.value.strip())
 
 
-def collect_pytestmark_markers(node: ast.Assign | ast.AnnAssign) -> set[str]:
+def collect_pytestmark_markers(node: ast.Assign | ast.AnnAssign) -> list[ast.AST]:
     targets: list[ast.AST]
     if isinstance(node, ast.Assign):
         targets = list(node.targets)
@@ -130,9 +134,9 @@ def collect_pytestmark_markers(node: ast.Assign | ast.AnnAssign) -> set[str]:
         value = node.value
 
     if not any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets):
-        return set()
+        return []
     if value is None:
-        return set()
+        return []
 
     candidates: list[ast.AST]
     if isinstance(value, (ast.List, ast.Tuple)):
@@ -140,7 +144,7 @@ def collect_pytestmark_markers(node: ast.Assign | ast.AnnAssign) -> set[str]:
     else:
         candidates = [value]
 
-    return {name for item in candidates if (name := marker_name(item))}
+    return [item for item in candidates if marker_name(item)]
 
 
 def audit_file(path: Path) -> TestFileAudit:
@@ -158,21 +162,25 @@ def audit_file(path: Path) -> TestFileAudit:
         audit.parse_error = f"{exc.msg} at line {exc.lineno}"
         return audit
 
+    def record_marker(marker: ast.AST) -> None:
+        name = marker_name(marker)
+        if not name:
+            return
+        audit.markers.add(name)
+        if name not in KNOWN_MARKERS:
+            audit.unknown_markers.append((marker.lineno, name))
+        if name in {"skip", "skipif", "xfail"} and not call_has_reason(marker):
+            audit.missing_reasons.append((marker.lineno, name))
+
     def record_markers(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
         for decorator in node.decorator_list:
-            name = marker_name(decorator)
-            if not name:
-                continue
-            audit.markers.add(name)
-            if name not in KNOWN_MARKERS:
-                audit.unknown_markers.append((decorator.lineno, name))
-            if name in {"skip", "skipif", "xfail"} and not call_has_reason(decorator):
-                audit.missing_reasons.append((decorator.lineno, name))
+            record_marker(decorator)
 
     test_name_counts: Counter[str] = Counter()
     for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            audit.markers.update(collect_pytestmark_markers(node))
+            for marker in collect_pytestmark_markers(node):
+                record_marker(marker)
 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
             "test"
@@ -200,7 +208,9 @@ def audit_file(path: Path) -> TestFileAudit:
 
 
 def discover_test_files() -> list[Path]:
-    return sorted(TESTS_DIR.rglob("test_*.py"))
+    files = set(TESTS_DIR.rglob("test_*.py"))
+    files.update(TESTS_DIR.rglob("*_test.py"))
+    return sorted(files)
 
 
 def build_summary(audits: list[TestFileAudit]) -> dict[str, Any]:

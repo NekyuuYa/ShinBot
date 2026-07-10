@@ -1,5 +1,7 @@
 """Tests for plugin lifecycle and registration."""
 
+import asyncio
+import inspect
 import json
 import sys
 import tempfile
@@ -17,12 +19,13 @@ from shinbot.core.config_provider import ConfigProviderRegistry, load_provider_s
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteCondition, RouteTable
-from shinbot.core.message_routes.command import CommandRegistry
+from shinbot.core.message_routes.command import CommandDef, CommandRegistry
 from shinbot.core.message_routes.keyword import KeywordRegistry
 from shinbot.core.platform.adapter_manager import AdapterManager
 from shinbot.core.plugins.context import Plugin
 from shinbot.core.plugins.manager import PluginManager, _topo_sort
 from shinbot.core.plugins.types import PluginRole, PluginState
+from tests.conftest import MockAdapter, make_message_event
 
 
 def _make_plugin_module(
@@ -120,6 +123,73 @@ class TestPlugin:
             self.plg.on_event("message-created")
 
         assert self.event_bus.handler_count("message-created") == 0
+
+    @pytest.mark.asyncio
+    async def test_begin_deactivation_rejects_and_closes_new_task_coroutine(self):
+        async def worker() -> None:
+            await asyncio.sleep(0)
+
+        coroutine = worker()
+        self.plg.begin_deactivation()
+
+        with pytest.raises(RuntimeError, match="during deactivation"):
+            self.plg.create_task(coroutine, name="late-worker")
+
+        assert self.plg.task_creation_frozen is True
+        assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
+        assert self.plg.background_tasks == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_cancel_background_tasks_blocks_derivative_task_creation(self):
+        cancellation_started = asyncio.Event()
+        derivative_rejected = asyncio.Event()
+
+        async def derivative() -> None:
+            await asyncio.Event().wait()
+
+        async def worker() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancellation_started.set()
+                try:
+                    self.plg.create_task(derivative(), name="derivative")
+                except RuntimeError:
+                    derivative_rejected.set()
+
+        task = self.plg.create_task(worker(), name="worker")
+        await asyncio.sleep(0)
+
+        await self.plg.cancel_background_tasks()
+
+        assert task.cancelled()
+        assert cancellation_started.is_set()
+        assert derivative_rejected.is_set()
+        assert self.plg.task_creation_frozen is True
+        assert self.plg.background_tasks == frozenset()
+
+    def test_adapter_factory_registration_is_owned_by_plugin(self):
+        adapter_manager = AdapterManager()
+
+        def original_factory(**kwargs):
+            return kwargs
+
+        def plugin_factory(**kwargs):
+            return kwargs
+
+        adapter_manager.register_adapter("shared", original_factory, owner="original-owner")
+        plugin = Plugin(
+            "adapter-plugin",
+            self.cmd_reg,
+            self.event_bus,
+            adapter_manager=adapter_manager,
+        )
+
+        plugin.register_adapter_factory("shared", plugin_factory)
+        adapter_manager.unregister_adapter("shared", owner=plugin.plugin_id)
+
+        assert adapter_manager._factories["shared"] is original_factory
+        assert plugin._registered_adapter_factories == ["shared"]
 
     def test_on_keyword_decorator(self):
         @self.plg.on_keyword("hello")
@@ -601,6 +671,909 @@ class TestPluginManager:
         meta = await self.mgr.load_plugin_async("async1", "test_plugin_async_load")
         assert meta.state == PluginState.ACTIVE
         assert self.cmd_reg.get("async_cmd") is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_phase", ["setup", "on_enable"])
+    async def test_load_failure_rolls_back_all_registered_resources(
+        self,
+        failure_phase: str,
+    ) -> None:
+        class _ModelRuntime:
+            def __init__(self) -> None:
+                self.observers: list[object] = []
+
+            def register_observer(self, observer: object) -> None:
+                self.observers.append(observer)
+
+            def unregister_observer(self, observer: object) -> None:
+                self.observers = [item for item in self.observers if item is not observer]
+
+        class _CronManager:
+            def __init__(self) -> None:
+                self.jobs: dict[str, list[str]] = {}
+                self.removed_owners: list[str] = []
+
+            def add_cron_job(
+                self,
+                plugin_id: str,
+                func,
+                cron_expr: str,
+                *,
+                timezone: str | None = None,
+                job_id: str | None = None,
+                description: str = "",
+            ) -> str:
+                del func, cron_expr, timezone, description
+                resolved_job_id = job_id or f"{plugin_id}-job"
+                self.jobs.setdefault(plugin_id, []).append(resolved_job_id)
+                return resolved_job_id
+
+            def remove_jobs(self, plugin_id: str) -> int:
+                self.removed_owners.append(plugin_id)
+                return len(self.jobs.pop(plugin_id, []))
+
+        command_registry = CommandRegistry()
+        event_bus = EventBus()
+        keyword_registry = KeywordRegistry()
+        route_table = RouteTable()
+        route_targets = RouteTargetRegistry()
+        tool_registry = ToolRegistry()
+        adapter_manager = AdapterManager()
+        model_runtime = _ModelRuntime()
+        cron_manager = _CronManager()
+        manager = PluginManager(
+            command_registry,
+            event_bus,
+            keyword_registry=keyword_registry,
+            route_table=route_table,
+            route_targets=route_targets,
+            adapter_manager=adapter_manager,
+            tool_registry=tool_registry,
+            model_runtime=model_runtime,
+            cron_manager=cron_manager,
+            data_dir=self._tmp_data_dir,
+        )
+        boot = types.SimpleNamespace(data_dir=self._tmp_data_dir, bot=None)
+        manager._boot = boot
+
+        task_started = asyncio.Event()
+        task_cancelled = asyncio.Event()
+        background_tasks: list[asyncio.Task[object]] = []
+        plugin_contexts: list[Plugin] = []
+
+        async def background_worker() -> None:
+            task_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                task_cancelled.set()
+
+        def observer(event: dict[str, object]) -> None:
+            del event
+
+        async def install_plugin(*args, **kwargs) -> None:
+            del args, kwargs
+
+        async def setup(plg: Plugin) -> None:
+            plugin_contexts.append(plg)
+
+            @plg.on_command("partial_command")
+            async def command_handler(ctx, args):
+                pass
+
+            @plg.on_event("partial-event")
+            async def event_handler(event):
+                pass
+
+            @plg.on_keyword("partial-keyword")
+            async def keyword_handler(ctx, match):
+                pass
+
+            @plg.on_route(
+                RouteCondition(),
+                rule_id="partial-route",
+                target="partial-target",
+            )
+            async def route_handler(ctx, rule):
+                pass
+
+            @plg.tool(
+                name="partial_tool",
+                description="Partial tool",
+                input_schema={"type": "object", "properties": {}},
+            )
+            async def partial_tool(arguments, runtime):
+                return None
+
+            @plg.on_cron("* * * * *", job_id="partial-cron")
+            async def cron_handler() -> None:
+                pass
+
+            plg.register_adapter_factory("partial-platform", lambda **kwargs: kwargs)
+            plg.register_model_runtime_observer(observer)
+            plg.register_marketplace_source(
+                source_id="partial-source",
+                name="Partial source",
+                repository_url="https://example.invalid/partial.git",
+            )
+            plg.register_plugin_installer("partial-installer", install_plugin)
+            background_tasks.append(plg.create_task(background_worker(), name="worker"))
+            await task_started.wait()
+            if failure_phase == "setup":
+                raise RuntimeError("setup failed")
+
+        async def on_enable(plg: Plugin) -> None:
+            del plg
+            if failure_phase == "on_enable":
+                raise RuntimeError("on_enable failed")
+
+        _make_plugin_module(
+            f"test_plugin_partial_{failure_phase}",
+            setup_fn=setup,
+            on_enable=on_enable,
+        )
+
+        with pytest.raises(RuntimeError, match=f"{failure_phase} failed"):
+            await manager.load_plugin_async(
+                "partial-plugin",
+                f"test_plugin_partial_{failure_phase}",
+            )
+
+        marketplace = boot.plugin_marketplace_service
+        assert command_registry.get("partial_command") is None
+        assert event_bus.handler_count("partial-event") == 0
+        assert keyword_registry.match("partial-keyword") == []
+        assert all(rule.id != "partial-route" for rule in route_table.rules)
+        assert route_targets.get("partial-target") is None
+        assert tool_registry.get_tool_by_name("partial_tool") is None
+        assert "partial-platform" not in adapter_manager.registered_platforms
+        assert model_runtime.observers == []
+        assert cron_manager.jobs == {}
+        assert cron_manager.removed_owners == ["partial-plugin"]
+        assert "partial-source" not in marketplace.sources
+        assert marketplace.get_installer("partial-installer") is None
+        assert background_tasks[0].cancelled()
+        assert task_cancelled.is_set()
+        assert plugin_contexts[0].background_tasks == frozenset()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_phase", ["setup", "on_enable"])
+    async def test_load_failure_freezes_context_without_background_tasks(
+        self,
+        failure_phase: str,
+    ) -> None:
+        plugin_contexts: list[Plugin] = []
+
+        async def setup(plg: Plugin) -> None:
+            plugin_contexts.append(plg)
+            if failure_phase == "setup":
+                raise RuntimeError("setup failed")
+
+        async def on_enable(plg: Plugin) -> None:
+            del plg
+            if failure_phase == "on_enable":
+                raise RuntimeError("on_enable failed")
+
+        module_name = f"test_plugin_frozen_{failure_phase}"
+        _make_plugin_module(
+            module_name,
+            setup_fn=setup,
+            on_enable=on_enable,
+        )
+
+        with pytest.raises(RuntimeError, match=f"{failure_phase} failed"):
+            await self.mgr.load_plugin_async("frozen-plugin", module_name)
+
+        plugin = plugin_contexts[0]
+        assert plugin.task_creation_frozen is True
+
+        async def late_worker() -> None:
+            await asyncio.sleep(0)
+
+        coroutine = late_worker()
+        with pytest.raises(RuntimeError, match="during deactivation"):
+            plugin.create_task(coroutine)
+        assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cancel_phase", ["setup", "on_enable"])
+    async def test_cancelled_load_restores_override_and_freezes_context(
+        self,
+        cancel_phase: str,
+    ) -> None:
+        plugin_id = "cancelled-load"
+        module_name = f"test_plugin_cancelled_load_{cancel_phase}"
+        phase_started = asyncio.Event()
+        plugin_contexts: list[Plugin] = []
+
+        async def original_handler(_ctx, _args) -> None:
+            pass
+
+        original = CommandDef(
+            name="shared-command",
+            handler=original_handler,
+            owner="original-owner",
+        )
+        self.cmd_reg.register(original)
+
+        async def setup(plg: Plugin) -> None:
+            plugin_contexts.append(plg)
+
+            @plg.on_command("shared-command")
+            async def override_handler(_ctx, _args) -> None:
+                pass
+
+            if cancel_phase == "setup":
+                phase_started.set()
+                await asyncio.Event().wait()
+
+        async def on_enable(_plg: Plugin) -> None:
+            if cancel_phase == "on_enable":
+                phase_started.set()
+                await asyncio.Event().wait()
+
+        _make_plugin_module(
+            module_name,
+            setup_fn=setup,
+            on_enable=on_enable,
+        )
+
+        load_task = asyncio.create_task(
+            self.mgr.load_plugin_async(plugin_id, module_name)
+        )
+        await phase_started.wait()
+        assert self.cmd_reg.get("shared-command") is not original
+
+        load_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await load_task
+
+        assert self.cmd_reg.get("shared-command") is original
+        assert plugin_contexts[0].task_creation_frozen is True
+        assert self.mgr.get_plugin(plugin_id) is None
+        assert not self.route_targets.accepts_tasks(plugin_id)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_load_for_same_plugin_runs_setup_once(self) -> None:
+        plugin_id = "concurrent-load"
+        module_name = "test_plugin_concurrent_load"
+        setup_started = asyncio.Event()
+        allow_setup_to_finish = asyncio.Event()
+        setup_calls = 0
+
+        async def setup(plg: Plugin) -> None:
+            nonlocal setup_calls
+            setup_calls += 1
+
+            @plg.on_command("concurrent-command")
+            async def handler(_ctx, _args) -> None:
+                pass
+
+            setup_started.set()
+            await allow_setup_to_finish.wait()
+
+        _make_plugin_module(module_name, setup_fn=setup)
+
+        first_load = asyncio.create_task(
+            self.mgr.load_plugin_async(plugin_id, module_name)
+        )
+        await setup_started.wait()
+        second_load = asyncio.create_task(
+            self.mgr.load_plugin_async(plugin_id, module_name)
+        )
+        await asyncio.sleep(0)
+
+        assert setup_calls == 1
+        assert not second_load.done()
+
+        allow_setup_to_finish.set()
+        meta = await first_load
+        with pytest.raises(ValueError, match="already loaded"):
+            await second_load
+
+        assert meta.state == PluginState.ACTIVE
+        assert setup_calls == 1
+        command = self.cmd_reg.get("concurrent-command")
+        assert command is not None
+        assert command.owner == plugin_id
+
+    @pytest.mark.asyncio
+    async def test_cancelled_disable_finishes_cleanup_and_commits_state(self) -> None:
+        plugin_id = "cancelled-disable"
+        module_name = "test_plugin_cancelled_disable"
+        disable_started = asyncio.Event()
+        teardown_called = asyncio.Event()
+
+        def setup(plg: Plugin) -> None:
+            @plg.on_command("cancelled-disable-command")
+            async def handler(_ctx, _args) -> None:
+                pass
+
+        async def on_disable(_plg: Plugin) -> None:
+            disable_started.set()
+            await asyncio.Event().wait()
+
+        def teardown() -> None:
+            teardown_called.set()
+
+        _make_plugin_module(
+            module_name,
+            setup_fn=setup,
+            on_disable=on_disable,
+            teardown_fn=teardown,
+        )
+        meta = await self.mgr.load_plugin_async(plugin_id, module_name)
+
+        disable_task = asyncio.create_task(self.mgr.disable_plugin_async(plugin_id))
+        await disable_started.wait()
+        disable_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await disable_task
+
+        assert meta.state == PluginState.DISABLED
+        assert self.cmd_reg.get("cancelled-disable-command") is None
+        assert teardown_called.is_set()
+        assert not self.route_targets.accepts_tasks(plugin_id)
+
+    @pytest.mark.asyncio
+    async def test_handler_can_disable_its_own_plugin_without_self_await(self) -> None:
+        plugin_id = "self-disabling"
+        module_name = "test_plugin_self_disabling"
+        bot = ShinBot(data_dir=self._tmp_data_dir)
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("self-disable-test", "mock")
+        handler_finished = asyncio.Event()
+
+        def setup(plg: Plugin) -> None:
+            @plg.on_command("self-disable")
+            async def handler(_ctx, _args) -> None:
+                meta = await bot.plugin_manager.disable_plugin_async(plugin_id)
+                assert meta.state == PluginState.DISABLED
+                handler_finished.set()
+
+        _make_plugin_module(module_name, setup_fn=setup)
+        await bot.plugin_manager.load_plugin_async(plugin_id, module_name)
+
+        await bot.message_ingress.process_event(
+            make_message_event(content="/self-disable", instance_id="self-disable-test"),
+            adapter,
+        )
+        await asyncio.wait_for(handler_finished.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+
+        meta = bot.plugin_manager.get_plugin(plugin_id)
+        assert meta is not None
+        assert meta.state == PluginState.DISABLED
+        assert bot.command_registry.get("self-disable") is None
+        assert bot.route_targets.pending_task_count_for_owner(plugin_id) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["disable", "unload"])
+    async def test_background_task_can_deactivate_its_own_plugin(
+        self,
+        operation: str,
+    ) -> None:
+        plugin_id = f"background-self-{operation}"
+        module_name = f"test_plugin_background_self_{operation}"
+        worker_ready = asyncio.Event()
+        start_lifecycle = asyncio.Event()
+        lifecycle_finished = asyncio.Event()
+        plugin_contexts: list[Plugin] = []
+        background_tasks: list[asyncio.Task[None]] = []
+
+        async def lifecycle_worker() -> None:
+            worker_ready.set()
+            await start_lifecycle.wait()
+            if operation == "disable":
+                meta = await self.mgr.disable_plugin_async(plugin_id)
+                assert meta.state == PluginState.DISABLED
+            else:
+                assert await self.mgr.unload_plugin_async(plugin_id) is True
+            lifecycle_finished.set()
+
+        def setup(plg: Plugin) -> None:
+            plugin_contexts.append(plg)
+
+            @plg.on_command("background-owned-command")
+            async def handler(_ctx, _args) -> None:
+                pass
+
+            background_tasks.append(
+                plg.create_task(lifecycle_worker(), name="self-deactivate")
+            )
+
+        _make_plugin_module(module_name, setup_fn=setup)
+        await self.mgr.load_plugin_async(plugin_id, module_name)
+        await worker_ready.wait()
+
+        start_lifecycle.set()
+        await asyncio.wait_for(lifecycle_finished.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+
+        assert self.cmd_reg.get("background-owned-command") is None
+        assert background_tasks[0].done()
+        assert plugin_contexts[0].background_tasks == frozenset()
+        if operation == "disable":
+            meta = self.mgr.get_plugin(plugin_id)
+            assert meta is not None
+            assert meta.state == PluginState.DISABLED
+        else:
+            assert self.mgr.get_plugin(plugin_id) is None
+
+    @pytest.mark.asyncio
+    async def test_unload_unregisters_adapter_factories(self) -> None:
+        adapter_manager = AdapterManager()
+        manager = PluginManager(
+            CommandRegistry(),
+            EventBus(),
+            adapter_manager=adapter_manager,
+            data_dir=self._tmp_data_dir,
+        )
+
+        def setup(plg: Plugin) -> None:
+            plg.register_adapter_factory("owned-platform", lambda **kwargs: kwargs)
+
+        _make_plugin_module("test_plugin_adapter_factory", setup_fn=setup)
+
+        await manager.load_plugin_async("adapter-owner", "test_plugin_adapter_factory")
+        assert "owned-platform" in adapter_manager.registered_platforms
+
+        assert await manager.unload_plugin_async("adapter-owner") is True
+        assert "owned-platform" not in adapter_manager.registered_platforms
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["disable_enable", "reload"])
+    async def test_adapter_owner_lifecycle_rebuilds_running_instance(
+        self,
+        operation: str,
+    ) -> None:
+        plugin_id = f"adapter-lifecycle-{operation}"
+        module_name = f"test_plugin_adapter_lifecycle_{operation}"
+        route_targets = RouteTargetRegistry()
+        adapter_manager = AdapterManager()
+        manager = PluginManager(
+            CommandRegistry(),
+            EventBus(task_supervisor=route_targets),
+            route_targets=route_targets,
+            adapter_manager=adapter_manager,
+            data_dir=self._tmp_data_dir,
+        )
+        setup_generation = 0
+        created_adapters: list[MockAdapter] = []
+        lifecycle: list[tuple[str, int, bool]] = []
+        startup_callbacks: list[tuple[int, bool]] = []
+
+        async def startup_callback(generation: int) -> None:
+            startup_callbacks.append(
+                (generation, route_targets.accepts_tasks(plugin_id))
+            )
+
+        def setup(plg: Plugin) -> None:
+            nonlocal setup_generation
+            setup_generation += 1
+            generation = setup_generation
+
+            class OwnedAdapter(MockAdapter):
+                async def start(self) -> None:
+                    lifecycle.append(
+                        ("start", generation, route_targets.accepts_tasks(plugin_id))
+                    )
+                    if self._event_callback is not None:
+                        result = self._event_callback(generation)
+                        if inspect.isawaitable(result):
+                            await result
+                    await super().start()
+
+                async def shutdown(self) -> None:
+                    lifecycle.append(
+                        ("shutdown", generation, route_targets.accepts_tasks(plugin_id))
+                    )
+                    await super().shutdown()
+
+            def factory(instance_id: str, platform: str, **_kwargs: object) -> MockAdapter:
+                adapter = OwnedAdapter(instance_id=instance_id, platform=platform)
+                created_adapters.append(adapter)
+                return adapter
+
+            plg.register_adapter_factory("owned-platform", factory)
+
+        def on_disable(_plg: Plugin) -> None:
+            lifecycle.append(
+                ("on_disable", setup_generation, route_targets.accepts_tasks(plugin_id))
+            )
+
+        def teardown() -> None:
+            lifecycle.append(
+                ("teardown", setup_generation, route_targets.accepts_tasks(plugin_id))
+            )
+
+        _make_plugin_module(
+            module_name,
+            setup_fn=setup,
+            on_disable=on_disable,
+            teardown_fn=teardown,
+        )
+        await manager.load_plugin_async(plugin_id, module_name)
+        original = adapter_manager.create_instance(
+            "owned-1",
+            "owned-platform",
+            event_callback=startup_callback,
+        )
+        await adapter_manager.start_instance("owned-1")
+
+        if operation == "disable_enable":
+            await manager.disable_plugin_async(plugin_id)
+            assert adapter_manager.get_instance("owned-1") is None
+            assert adapter_manager.has_instance_spec("owned-1")
+            await manager.enable_plugin_async(plugin_id)
+        else:
+            await manager.reload_plugin_async(plugin_id)
+
+        restored = adapter_manager.get_instance("owned-1")
+        assert restored is not None
+        assert restored is not original
+        assert adapter_manager.is_running("owned-1")
+        assert created_adapters == [original, restored]
+        assert lifecycle == [
+            ("start", 1, True),
+            ("on_disable", 1, False),
+            ("shutdown", 1, False),
+            ("teardown", 1, False),
+            ("start", 2, True),
+        ]
+        assert startup_callbacks == [(1, True), (2, True)]
+
+        assert await manager.unload_plugin_async(plugin_id) is True
+        assert adapter_manager.get_instance("owned-1") is None
+        assert not adapter_manager.has_instance_spec("owned-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["disable", "unload", "reload"])
+    async def test_adapter_shutdown_failure_still_commits_plugin_deactivation(
+        self,
+        operation: str,
+    ) -> None:
+        plugin_id = f"adapter-shutdown-failure-{operation}"
+        module_name = f"test_plugin_adapter_shutdown_failure_{operation}"
+        route_targets = RouteTargetRegistry()
+        command_registry = CommandRegistry()
+        adapter_manager = AdapterManager()
+        manager = PluginManager(
+            command_registry,
+            EventBus(task_supervisor=route_targets),
+            route_targets=route_targets,
+            adapter_manager=adapter_manager,
+            data_dir=self._tmp_data_dir,
+        )
+        setup_generation = 0
+        created_adapters: list[MockAdapter] = []
+        callback_events: list[str] = []
+        disabled_generations: list[int] = []
+        teardown_generations: list[int] = []
+
+        def setup(plg: Plugin) -> None:
+            nonlocal setup_generation
+            setup_generation += 1
+            generation = setup_generation
+
+            @plg.on_command("owned-command")
+            async def owned_command(_ctx, _args) -> None:
+                return None
+
+            class OwnedAdapter(MockAdapter):
+                def __init__(self, instance_id: str, platform: str):
+                    super().__init__(instance_id, platform)
+                    self.shutdown_attempted = False
+                    self.allow_shutdown = generation != 1
+
+                async def shutdown(self) -> None:
+                    self.shutdown_attempted = True
+                    if not self.allow_shutdown:
+                        raise RuntimeError("shutdown failed")
+                    await super().shutdown()
+
+            def factory(
+                instance_id: str,
+                platform: str,
+                **_kwargs: object,
+            ) -> MockAdapter:
+                adapter = OwnedAdapter(instance_id, platform)
+                created_adapters.append(adapter)
+                return adapter
+
+            plg.register_adapter_factory("owned-platform", factory)
+
+        def on_disable(_plg: Plugin) -> None:
+            disabled_generations.append(setup_generation)
+
+        def teardown() -> None:
+            teardown_generations.append(setup_generation)
+
+        _make_plugin_module(
+            module_name,
+            setup_fn=setup,
+            on_disable=on_disable,
+            teardown_fn=teardown,
+        )
+        await manager.load_plugin_async(plugin_id, module_name)
+        original = adapter_manager.create_instance(
+            "owned-1",
+            "owned-platform",
+            event_callback=callback_events.append,
+        )
+        await adapter_manager.start_instance("owned-1")
+
+        if operation == "disable":
+            meta = await manager.disable_plugin_async(plugin_id)
+
+            assert meta.state == PluginState.DISABLED
+            assert manager.get_plugin(plugin_id) is meta
+            assert adapter_manager.has_instance_spec("owned-1")
+            assert not route_targets.accepts_tasks(plugin_id)
+            assert command_registry.get("owned-command") is None
+
+            with pytest.raises(RuntimeError, match="previous adapter is still active"):
+                await manager.enable_plugin_async(plugin_id)
+            assert meta.state == PluginState.DISABLED
+            assert manager.get_plugin(plugin_id) is meta
+            assert len(created_adapters) == 1
+
+            original.allow_shutdown = True  # type: ignore[attr-defined]
+            enabled = await manager.enable_plugin_async(plugin_id)
+            assert enabled.state == PluginState.ACTIVE
+        elif operation == "unload":
+            assert await manager.unload_plugin_async(plugin_id) is True
+
+            assert manager.get_plugin(plugin_id) is None
+            assert adapter_manager.has_instance_spec("owned-1")
+            assert not route_targets.accepts_tasks(plugin_id)
+            assert command_registry.get("owned-command") is None
+        else:
+            with pytest.raises(RuntimeError, match="previous adapter is still active"):
+                await manager.reload_plugin_async(plugin_id)
+            assert manager.get_plugin(plugin_id) is None
+            assert adapter_manager.has_instance_spec("owned-1")
+            assert not route_targets.accepts_tasks(plugin_id)
+            assert command_registry.get("owned-command") is None
+            assert len(created_adapters) == 1
+
+            original.allow_shutdown = True  # type: ignore[attr-defined]
+            reloaded = await manager.load_plugin_async(plugin_id, module_name)
+            assert reloaded.state == PluginState.ACTIVE
+            assert manager.get_plugin(plugin_id) is reloaded
+
+        assert disabled_generations == [1]
+        assert teardown_generations == [1]
+        assert original.shutdown_attempted  # type: ignore[attr-defined]
+        assert adapter_manager.get_instance("owned-1") is not original
+        assert original._event_callback is not None
+        assert await original._event_callback("stale") is None
+        assert callback_events == []
+
+        if operation != "unload":
+            restored = adapter_manager.get_instance("owned-1")
+            assert restored is not None
+            assert adapter_manager.is_running("owned-1")
+            assert route_targets.accepts_tasks(plugin_id)
+            assert command_registry.get("owned-command") is not None
+            assert restored._event_callback is not None
+            assert await restored._event_callback("fresh") is None
+            assert callback_events == ["fresh"]
+            assert await manager.unload_plugin_async(plugin_id) is True
+        else:
+            original.allow_shutdown = True  # type: ignore[attr-defined]
+            assert await adapter_manager.delete_instance("owned-1") is True
+            assert not adapter_manager.has_instance_spec("owned-1")
+
+        assert len(created_adapters) == (1 if operation == "unload" else 2)
+
+    @pytest.mark.asyncio
+    async def test_failed_adapter_plugin_setup_drains_new_owner_instances(self) -> None:
+        plugin_id = "adapter-setup-failure"
+        module_name = "test_plugin_adapter_setup_failure"
+        route_targets = RouteTargetRegistry()
+        adapter_manager = AdapterManager()
+        manager = PluginManager(
+            CommandRegistry(),
+            EventBus(task_supervisor=route_targets),
+            route_targets=route_targets,
+            adapter_manager=adapter_manager,
+            data_dir=self._tmp_data_dir,
+        )
+        created: list[MockAdapter] = []
+
+        async def setup(plg: Plugin) -> None:
+            def factory(instance_id: str, platform: str, **_kwargs: object) -> MockAdapter:
+                adapter = MockAdapter(instance_id=instance_id, platform=platform)
+                created.append(adapter)
+                return adapter
+
+            plg.register_adapter_factory("partial-platform", factory)
+            adapter_manager.create_instance("partial-1", "partial-platform")
+            await adapter_manager.start_instance("partial-1")
+            raise RuntimeError("setup failed")
+
+        _make_plugin_module(module_name, setup_fn=setup)
+
+        with pytest.raises(RuntimeError, match="setup failed"):
+            await manager.load_plugin_async(plugin_id, module_name)
+
+        assert created[0].stopped is True
+        assert adapter_manager.get_instance("partial-1") is None
+        assert not adapter_manager.has_instance_spec("partial-1")
+        assert "partial-platform" not in adapter_manager.registered_platforms
+
+    @pytest.mark.asyncio
+    async def test_disable_waits_for_route_tasks_and_enable_resumes_owner(self) -> None:
+        plugin_id = "route-owner"
+        module_name = "test_plugin_route_owner"
+        bot = ShinBot(data_dir=self._tmp_data_dir)
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("route-test", "mock")
+        first_started = asyncio.Event()
+        first_cancelled = asyncio.Event()
+        second_started = asyncio.Event()
+        setup_generation = 0
+        lifecycle_observations: list[tuple[str, bool, int]] = []
+
+        def setup(plg: Plugin) -> None:
+            nonlocal setup_generation
+            setup_generation += 1
+            generation = setup_generation
+
+            @plg.on_route(
+                RouteCondition(event_types=frozenset({"message-created"})),
+                rule_id="route-owner-rule",
+                target="route-owner-target",
+            )
+            async def route_handler(ctx, rule) -> None:
+                del ctx, rule
+                if generation == 1:
+                    first_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        first_cancelled.set()
+                        raise
+                second_started.set()
+
+        async def on_disable(plg: Plugin) -> None:
+            del plg
+            lifecycle_observations.append(
+                (
+                    "on_disable",
+                    first_cancelled.is_set(),
+                    bot.route_targets.pending_task_count_for_owner(plugin_id),
+                )
+            )
+
+        def teardown() -> None:
+            lifecycle_observations.append(
+                (
+                    "teardown",
+                    first_cancelled.is_set(),
+                    bot.route_targets.pending_task_count_for_owner(plugin_id),
+                )
+            )
+
+        _make_plugin_module(
+            module_name,
+            setup_fn=setup,
+            teardown_fn=teardown,
+            on_disable=on_disable,
+        )
+        await bot.plugin_manager.load_plugin_async(plugin_id, module_name)
+
+        await bot.message_ingress.process_event(
+            make_message_event(content="first", instance_id="route-test"),
+            adapter,
+        )
+        await first_started.wait()
+        assert bot.route_targets.pending_task_count_for_owner(plugin_id) == 1
+
+        meta = await bot.plugin_manager.disable_plugin_async(plugin_id)
+
+        assert meta.state == PluginState.DISABLED
+        assert lifecycle_observations == [
+            ("on_disable", True, 0),
+            ("teardown", True, 0),
+        ]
+        assert bot.route_targets.pending_task_count_for_owner(plugin_id) == 0
+        assert not bot.route_targets.accepts_tasks(plugin_id)
+
+        enabled = await bot.plugin_manager.enable_plugin_async(plugin_id)
+        assert enabled.state == PluginState.ACTIVE
+        assert bot.route_targets.accepts_tasks(plugin_id)
+
+        await bot.message_ingress.process_event(
+            make_message_event(content="second", instance_id="route-test"),
+            adapter,
+        )
+        await second_started.wait()
+
+        assert setup_generation == 2
+        await bot.plugin_manager.unload_plugin_async(plugin_id)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler_kind", ["command", "keyword", "event"])
+    async def test_disable_cancels_framework_dispatched_owned_handler(
+        self,
+        handler_kind: str,
+    ) -> None:
+        plugin_id = f"owned-{handler_kind}"
+        module_name = f"test_plugin_owned_{handler_kind}"
+        bot = ShinBot(data_dir=self._tmp_data_dir)
+        bot.adapter_manager.register_adapter("mock", MockAdapter)
+        adapter = bot.add_adapter("owned-test", "mock")
+        handler_started = asyncio.Event()
+        handler_cancelled = asyncio.Event()
+        lifecycle_observations: list[tuple[str, bool, int]] = []
+
+        async def owned_handler(*_args: object) -> None:
+            handler_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                handler_cancelled.set()
+                raise
+
+        def setup(plg: Plugin) -> None:
+            if handler_kind == "command":
+                plg.on_command("owned-command")(owned_handler)
+            elif handler_kind == "keyword":
+                plg.on_keyword("owned-keyword")(owned_handler)
+            else:
+                plg.on_event("owned-event")(owned_handler)
+
+        async def on_disable(plg: Plugin) -> None:
+            del plg
+            lifecycle_observations.append(
+                (
+                    "on_disable",
+                    handler_cancelled.is_set(),
+                    bot.route_targets.pending_task_count_for_owner(plugin_id),
+                )
+            )
+
+        def teardown() -> None:
+            lifecycle_observations.append(
+                (
+                    "teardown",
+                    handler_cancelled.is_set(),
+                    bot.route_targets.pending_task_count_for_owner(plugin_id),
+                )
+            )
+
+        _make_plugin_module(
+            module_name,
+            setup_fn=setup,
+            teardown_fn=teardown,
+            on_disable=on_disable,
+        )
+        await bot.plugin_manager.load_plugin_async(plugin_id, module_name)
+
+        event_task: asyncio.Task[list[object]] | None = None
+        if handler_kind == "event":
+            event_task = asyncio.create_task(bot.event_bus.emit("owned-event", object()))
+        else:
+            content = "/owned-command" if handler_kind == "command" else "owned-keyword"
+            await bot.message_ingress.process_event(
+                make_message_event(content=content, instance_id="owned-test"),
+                adapter,
+            )
+        await handler_started.wait()
+        assert bot.route_targets.pending_task_count_for_owner(plugin_id) == 1
+
+        await bot.plugin_manager.disable_plugin_async(plugin_id)
+        if event_task is not None:
+            await asyncio.gather(event_task, return_exceptions=True)
+
+        assert lifecycle_observations == [
+            ("on_disable", True, 0),
+            ("teardown", True, 0),
+        ]
+        assert bot.route_targets.pending_task_count_for_owner(plugin_id) == 0
+        await bot.plugin_manager.unload_plugin_async(plugin_id)
 
 
 # ── _topo_sort unit tests ──────────────────────────────────────────────

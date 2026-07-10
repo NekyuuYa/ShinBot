@@ -50,6 +50,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
                 },
                 "review": {
                     "scan_batch_size": 7,
+                    "reply_commit_timeout_seconds": 0.25,
                     "mention_wake_count": 3,
                     "default_review_after_seconds": 12,
                     "default_review_reason": "e2e_fast_review",
@@ -114,6 +115,7 @@ def test_agent_runtime_config_mapping_wires_runtime_knobs(tmp_path: Path) -> Non
     assert config.default_message_format_config.inject_sender is False
     assert config.default_message_format_config.inject_record_id is True
     assert config.review_workflow_config.review_scan_batch_size == 7
+    assert config.review_workflow_config.reply_commit_timeout_seconds == 0.25
     assert config.review_workflow_config.active_chat_summary_max_age_seconds == 999
     assert config.summary_markdown_config.enabled is True
     assert config.summary_markdown_config.directory == tmp_path / "summary-docs"

@@ -701,30 +701,50 @@ async def drain_agent_runtime(
         return
     wait_for_bootstraps = bool(config.get("waitForBootstraps", False))
     wait_for_active_chat = bool(config.get("waitForActiveChat", False))
-    if not wait_for_bootstraps and not wait_for_active_chat:
-        return
     runtime = getattr(bot, "agent_runtime", None)
     if runtime is None:
         return
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    while True:
+        # Let task done callbacks publish failure snapshots before deciding
+        # that no live review work remains.
         await asyncio.sleep(0)
-        pending = []
+        pending: list[asyncio.Task[Any]] = []
+        failures: list[Any] = []
         for profile in _agent_runtime_profiles(runtime):
+            pending.extend(_review_workflow_tasks(runtime, profile))
+            failures.extend(_review_workflow_failures(runtime, profile))
+            pending.extend(_review_reply_commit_tasks(profile))
             if wait_for_bootstraps:
                 coordinator = getattr(profile, "review_coordinator", None)
                 if coordinator is not None:
-                    await coordinator.wait_pending_bootstraps()
-                    pending.extend(
+                    bootstrap_tasks = [
                         task
                         for task in getattr(coordinator, "_bootstrap_tasks", set())
                         if not task.done()
-                    )
+                    ]
+                    pending.extend(bootstrap_tasks)
+                    if bootstrap_tasks:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise _agent_runtime_drain_timeout(timeout, pending)
+                        _done, still_pending = await asyncio.wait(
+                            bootstrap_tasks,
+                            timeout=remaining,
+                        )
+                        if still_pending:
+                            raise _agent_runtime_drain_timeout(timeout, pending)
             if wait_for_active_chat:
                 pending.extend(_active_chat_workflow_tasks(runtime, profile))
+        if failures:
+            raise _agent_runtime_drain_failure(failures)
+        pending = [task for task in pending if not task.done()]
         if not pending:
             return
-    await asyncio.sleep(0)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _agent_runtime_drain_timeout(timeout, pending)
+        await asyncio.sleep(min(0.01, remaining))
 
 
 def _agent_runtime_profiles(runtime: Any) -> list[Any]:
@@ -741,6 +761,53 @@ def _active_chat_workflow_tasks(runtime: Any, profile: Any) -> list[asyncio.Task
         return []
     bot_part = str(getattr(profile, "bot_id", "") or getattr(profile, "profile_id", ""))
     return list(task_manager.tasks(prefix=f"agent:{bot_part}:active_chat_workflow"))
+
+
+def _review_workflow_tasks(runtime: Any, profile: Any) -> list[asyncio.Task[Any]]:
+    task_manager = getattr(runtime, "task_manager", None)
+    if task_manager is None:
+        return []
+    bot_part = str(getattr(profile, "bot_id", "") or getattr(profile, "profile_id", ""))
+    return list(task_manager.tasks(prefix=f"agent:{bot_part}:review_workflow"))
+
+
+def _review_workflow_failures(runtime: Any, profile: Any) -> list[Any]:
+    task_manager = getattr(runtime, "task_manager", None)
+    if task_manager is None:
+        return []
+    failures = getattr(task_manager, "failures", None)
+    if not callable(failures):
+        return []
+    bot_part = str(getattr(profile, "bot_id", "") or getattr(profile, "profile_id", ""))
+    return list(failures(prefix=f"agent:{bot_part}:review_workflow"))
+
+
+def _review_reply_commit_tasks(profile: Any) -> list[asyncio.Task[Any]]:
+    coordinator = getattr(profile, "review_coordinator", None)
+    pending = getattr(coordinator, "pending_reply_commit_tasks", None)
+    if not callable(pending):
+        return []
+    return list(pending())
+
+
+def _agent_runtime_drain_failure(failures: list[Any]) -> RuntimeError:
+    details = sorted(
+        f"{str(getattr(failure, 'name', '') or '<unknown>')}: "
+        f"{str(getattr(failure, 'error', '') or 'unknown error')}"
+        for failure in failures
+    )
+    return RuntimeError(f"agent review workflow failed: {'; '.join(details)}")
+
+
+def _agent_runtime_drain_timeout(
+    timeout: float,
+    tasks: list[asyncio.Task[Any]],
+) -> TimeoutError:
+    names = sorted({task.get_name() for task in tasks})
+    pending_names = ", ".join(names) if names else "<unknown>"
+    return TimeoutError(
+        f"agent runtime drain timed out after {timeout:.3f}s; pending tasks: {pending_names}"
+    )
 
 
 def _optional_float(value: Any) -> float | None:

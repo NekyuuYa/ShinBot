@@ -45,6 +45,7 @@ class ReplyDecisionStageOutput:
     reply_message_ids: list[int] = field(default_factory=list)
     target_message_ids: list[int] = field(default_factory=list)
     reason: str = "noop_reply_decision"
+    consumption_deferred: bool = False
 
 
 @dataclass(slots=True, frozen=True)

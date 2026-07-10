@@ -255,6 +255,7 @@ const agentSections = computed<Record<AgentFormTab, AgentFormSection[]>>(() => (
         'agent.review.overflow_threshold_messages',
         'agent.review.overflow_compression_batch_size',
         'agent.review.block_digest_concurrency',
+        'agent.review.reply_commit_timeout_seconds',
         'agent.review.bootstrap_timeout_seconds',
         'agent.review.block_digest_retry_on_429',
       ],

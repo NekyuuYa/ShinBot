@@ -130,6 +130,10 @@ description = "审阅阶段允许使用的主动聊天摘要最大年龄。"
 label = "区块摘要并发数"
 description = "区块摘要阶段允许并发运行的任务数量。"
 
+[fields."agent.review.reply_commit_timeout_seconds"]
+label = "回复提交等待超时"
+description = "审阅被取消后等待回复阶段安全结束的最长时间；超时后任务将脱离关闭等待。"
+
 [fields."agent.review.bootstrap_timeout_seconds"]
 label = "启动审阅超时"
 description = "主动聊天启动审阅的超时时间。"

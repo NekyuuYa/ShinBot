@@ -1,5 +1,7 @@
 """Tests for platform adapter management."""
 
+import asyncio
+
 import pytest
 
 from shinbot.core.platform.adapter_manager import AdapterManager, BaseAdapter, MessageHandle
@@ -149,6 +151,208 @@ class TestAdapterManager:
     def test_unregister_adapter(self):
         self.mgr.unregister_adapter("mock")
         assert "mock" not in self.mgr.registered_platforms
+
+    def test_unregister_owner_restores_previous_factory(self):
+        def original_factory(instance_id, platform, **kwargs):
+            adapter = MockAdapter(instance_id, platform, **kwargs)
+            adapter.factory_source = "original"
+            return adapter
+
+        def override_factory(instance_id, platform, **kwargs):
+            adapter = MockAdapter(instance_id, platform, **kwargs)
+            adapter.factory_source = "override"
+            return adapter
+
+        self.mgr.register_adapter("stacked", original_factory, owner="plugin-a")
+        self.mgr.register_adapter("stacked", override_factory, owner="plugin-b")
+
+        self.mgr.unregister_adapter("stacked", owner="plugin-b")
+
+        adapter = self.mgr.create_instance("stacked-1", "stacked")
+        assert adapter.factory_source == "original"  # type: ignore[attr-defined]
+
+    def test_unregister_earlier_owner_keeps_later_override(self):
+        def earlier_factory(instance_id, platform, **kwargs):
+            adapter = MockAdapter(instance_id, platform, **kwargs)
+            adapter.factory_source = "earlier"
+            return adapter
+
+        def later_factory(instance_id, platform, **kwargs):
+            adapter = MockAdapter(instance_id, platform, **kwargs)
+            adapter.factory_source = "later"
+            return adapter
+
+        self.mgr.register_adapter("stacked", earlier_factory, owner="plugin-a")
+        self.mgr.register_adapter("stacked", later_factory, owner="plugin-b")
+
+        self.mgr.unregister_adapter("stacked", owner="plugin-a")
+
+        adapter = self.mgr.create_instance("stacked-1", "stacked")
+        assert adapter.factory_source == "later"  # type: ignore[attr-defined]
+
+    def test_unregister_without_owner_clears_owned_registration_stack(self):
+        self.mgr.register_adapter("stacked", MockAdapter, owner="plugin-a")
+        self.mgr.register_adapter("stacked", MockAdapter, owner="plugin-b")
+
+        self.mgr.unregister_adapter("stacked")
+
+        assert "stacked" not in self.mgr.registered_platforms
+
+    @pytest.mark.asyncio
+    async def test_suspend_resume_owner_rebuilds_running_instance_from_new_factory(self):
+        callback_events: list[str] = []
+
+        def callback(event: str):
+            callback_events.append(event)
+
+        def old_factory(instance_id, platform, **kwargs):
+            adapter = MockAdapter(instance_id, platform, **kwargs)
+            adapter.factory_source = "old"
+            adapter.factory_kwargs = kwargs
+            return adapter
+
+        def new_factory(instance_id, platform, **kwargs):
+            adapter = MockAdapter(instance_id, platform, **kwargs)
+            adapter.factory_source = "new"
+            adapter.factory_kwargs = kwargs
+            return adapter
+
+        self.mgr.register_adapter("owned", old_factory, owner="plugin-a")
+        original = self.mgr.create_instance(
+            "owned-1",
+            "owned",
+            event_callback=callback,
+            token="secret",
+        )
+        await self.mgr.start_instance("owned-1")
+
+        assert self.mgr.get_instance_owner("owned-1") == "plugin-a"
+        assert await self.mgr.suspend_owner_instances("plugin-a") == ["owned-1"]
+        assert original.shut_down  # type: ignore[attr-defined]
+        assert self.mgr.get_instance("owned-1") is None
+        assert self.mgr.has_instance_spec("owned-1")
+
+        self.mgr.unregister_adapter("owned", owner="plugin-a")
+        self.mgr.register_adapter("owned", new_factory, owner="plugin-a")
+        assert await self.mgr.resume_owner_instances("plugin-a") == ["owned-1"]
+
+        restored = self.mgr.get_instance("owned-1")
+        assert restored is not None
+        assert restored is not original
+        assert restored.factory_source == "new"  # type: ignore[attr-defined]
+        assert restored.factory_kwargs == {"token": "secret"}  # type: ignore[attr-defined]
+        assert self.mgr.is_running("owned-1")
+
+        assert original._event_callback is not None
+        assert restored._event_callback is not None
+        assert await original._event_callback("stale") is None
+        assert callback_events == []
+        assert await restored._event_callback("fresh") is None
+        assert callback_events == ["fresh"]
+
+        original._notify_connection_state(True)
+        assert not self.mgr.is_connected("owned-1")
+        restored._notify_connection_state(True)
+        assert self.mgr.is_connected("owned-1")
+
+    @pytest.mark.asyncio
+    async def test_suspend_owner_ignores_instances_created_by_later_override(self):
+        self.mgr.register_adapter("owned", MockAdapter, owner="plugin-a")
+        self.mgr.register_adapter("owned", MockAdapter, owner="plugin-b")
+        adapter = self.mgr.create_instance("owned-1", "owned")
+        await self.mgr.start_instance("owned-1")
+
+        assert self.mgr.get_instance_owner("owned-1") == "plugin-b"
+        assert await self.mgr.suspend_owner_instances("plugin-a") == []
+        assert self.mgr.get_instance("owned-1") is adapter
+        assert self.mgr.is_running("owned-1")
+
+    @pytest.mark.asyncio
+    async def test_suspend_owner_serializes_with_in_flight_start(self):
+        start_entered = asyncio.Event()
+        release_start = asyncio.Event()
+
+        class BlockingStartAdapter(MockAdapter):
+            async def start(self):
+                start_entered.set()
+                await release_start.wait()
+                await super().start()
+
+        self.mgr.register_adapter("owned", BlockingStartAdapter, owner="plugin-a")
+        adapter = self.mgr.create_instance("owned-1", "owned")
+        start_task = asyncio.create_task(self.mgr.start_instance("owned-1"))
+        await start_entered.wait()
+
+        suspend_task = asyncio.create_task(self.mgr.suspend_owner_instances("plugin-a"))
+        await asyncio.sleep(0)
+        assert not suspend_task.done()
+        assert self.mgr.get_instance("owned-1") is adapter
+
+        release_start.set()
+        await start_task
+        assert await suspend_task == ["owned-1"]
+        assert adapter.shut_down  # type: ignore[attr-defined]
+        assert self.mgr.get_instance("owned-1") is None
+        assert not self.mgr.is_running("owned-1")
+
+    @pytest.mark.asyncio
+    async def test_suspend_owner_detaches_all_instances_when_one_shutdown_fails(self):
+        class FailingShutdownAdapter(MockAdapter):
+            def __init__(self, instance_id: str, platform: str):
+                super().__init__(instance_id, platform)
+                self.shutdown_attempted = False
+                self.allow_shutdown = False
+
+            async def shutdown(self):
+                self.shutdown_attempted = True
+                if not self.allow_shutdown:
+                    raise RuntimeError("shutdown failed")
+                await super().shutdown()
+
+        created: list[MockAdapter] = []
+
+        def factory(instance_id, platform, **_kwargs):
+            if instance_id == "failing":
+                adapter = FailingShutdownAdapter(instance_id, platform)
+            else:
+                adapter = MockAdapter(instance_id, platform)
+            created.append(adapter)
+            return adapter
+
+        self.mgr.register_adapter("owned", factory, owner="plugin-a")
+        failing = self.mgr.create_instance("failing", "owned")
+        healthy = self.mgr.create_instance("healthy", "owned")
+        await self.mgr.start_instance("failing")
+        await self.mgr.start_instance("healthy")
+
+        assert await self.mgr.suspend_owner_instances("plugin-a") == [
+            "failing",
+            "healthy",
+        ]
+
+        assert failing.shutdown_attempted  # type: ignore[attr-defined]
+        assert healthy.shut_down  # type: ignore[attr-defined]
+        assert self.mgr.get_instance("failing") is None
+        assert self.mgr.get_instance("healthy") is None
+        assert self.mgr.has_instance_spec("failing")
+        assert self.mgr.has_instance_spec("healthy")
+        assert not self.mgr.is_running("failing")
+        assert not self.mgr.is_running("healthy")
+
+        with pytest.raises(RuntimeError, match="previous adapter is still active"):
+            await self.mgr.resume_owner_instances("plugin-a")
+        assert len(created) == 2
+        assert self.mgr.get_instance("failing") is None
+        assert self.mgr.get_instance("healthy") is None
+
+        failing.allow_shutdown = True  # type: ignore[attr-defined]
+        assert await self.mgr.resume_owner_instances("plugin-a") == [
+            "failing",
+            "healthy",
+        ]
+        assert len(created) == 4
+        assert self.mgr.get_instance("failing") is not failing
+        assert self.mgr.get_instance("healthy") is not healthy
 
     def test_event_callback(self):
         called = []

@@ -10,7 +10,10 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from shinbot.core.dispatch.ingress import RouteTargetRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +76,18 @@ class EventBus:
     order (lower number = higher priority).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, task_supervisor: RouteTargetRegistry | None = None) -> None:
+        """Initialize the event bus.
+
+        Args:
+            task_supervisor: Optional owner-aware handler task supervisor.
+        """
         # event_type → [(priority, handler, owner_id)]
         self._handlers: dict[str, list[tuple[int, EventHandler, str | None]]] = defaultdict(list)
         # handler id → circuit-breaker state (keyed by id() — safe because
         # handlers are held in _handlers, preventing GC until explicitly removed)
         self._circuit: dict[int, _CircuitState] = {}
+        self._task_supervisor = task_supervisor
 
     def on(
         self,
@@ -140,11 +149,21 @@ class EventBus:
         handlers.sort(key=lambda x: x[0])
 
         for _priority, handler, owner in handlers:
+            if self._task_supervisor is not None and not self._task_supervisor.accepts_tasks(owner):
+                continue
             cb = self._circuit.setdefault(id(handler), _CircuitState())
             if cb.is_open:
                 continue
             try:
-                result = await handler(*args, **kwargs)
+                handler_call = handler(*args, **kwargs)
+                if self._task_supervisor is not None:
+                    result = await self._task_supervisor.run_owned_awaitable(
+                        handler_call,
+                        owner=owner,
+                        name=f"event.{owner or 'core'}.{event_type}",
+                    )
+                else:
+                    result = await handler_call
                 cb.on_success()
                 if result is not None:
                     results.append(result)

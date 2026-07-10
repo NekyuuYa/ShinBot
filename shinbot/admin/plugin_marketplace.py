@@ -284,6 +284,12 @@ class PluginMarketplaceService:
             raise TypeError("uninstall_fn must be callable")
         if validate_fn is not None and not callable(validate_fn):
             raise TypeError("validate_fn must be callable")
+        existing = self._plugin_installers.get(installer_type)
+        if existing is not None and existing.get("owner") != owner_plugin_id:
+            raise ValueError(
+                f"plugin installer {installer_type!r} is already owned by "
+                f"{existing.get('owner') or '<unowned>'!r}"
+            )
         self._plugin_installers[installer_type] = {
             "install": install_fn,
             "uninstall": uninstall_fn,

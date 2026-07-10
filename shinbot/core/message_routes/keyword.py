@@ -20,7 +20,7 @@ from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 
 if TYPE_CHECKING:
-    from shinbot.core.dispatch.ingress import RouteDispatchContext
+    from shinbot.core.dispatch.ingress import RouteDispatchContext, RouteTargetRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -166,15 +166,18 @@ class KeywordDispatcher:
         keyword_registry: KeywordRegistry,
         *,
         session_manager: SessionManager | None = None,
+        task_supervisor: RouteTargetRegistry | None = None,
     ) -> None:
         """Initialize the dispatcher with a keyword registry.
 
         Args:
             keyword_registry: Registry containing registered keyword triggers.
             session_manager: Optional session manager for persisting session state.
+            task_supervisor: Optional owner-aware handler task supervisor.
         """
         self._keyword_registry = keyword_registry
         self._session_manager = session_manager
+        self._task_supervisor = task_supervisor
 
     def matches(
         self,
@@ -221,7 +224,19 @@ class KeywordDispatcher:
             if bot.is_stopped:
                 break
             try:
-                handler_result = await match.keyword.handler(bot, match)
+                if self._task_supervisor is not None and not self._task_supervisor.accepts_tasks(
+                    match.keyword.owner
+                ):
+                    continue
+                handler_call = match.keyword.handler(bot, match)
+                if self._task_supervisor is not None:
+                    handler_result = await self._task_supervisor.run_owned_awaitable(
+                        handler_call,
+                        owner=match.keyword.owner,
+                        name=f"keyword.{match.keyword.owner or 'core'}.{match.keyword.pattern}",
+                    )
+                else:
+                    handler_result = await handler_call
                 if handler_result is not None:
                     logger.warning(
                         "Keyword handler %s returned a value that was ignored; use bot.send()",

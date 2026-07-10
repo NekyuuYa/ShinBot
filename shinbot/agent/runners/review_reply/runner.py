@@ -156,9 +156,6 @@ class LLMReplyDecisionStageRunner:
 
         target_message_ids = _candidate_message_ids_from_stage(stage_input)
         parsed_calls = self._template.parse_tool_calls(plan.tool_calls)
-        has_reply_call = any(
-            call.name == "send_reply" for call in parsed_calls
-        )
         reaction_validation_error = _reaction_target_validation_error(
             stage_input,
             parsed_calls,
@@ -188,21 +185,26 @@ class LLMReplyDecisionStageRunner:
         reaction_count = 0
         saw_no_reply = False
         run_id = str(plan.execution_id or "")
-        for call_index, parsed_call in enumerate(parsed_calls):
+        action_ordinals: dict[str, int] = {}
+        reply_committed = False
+        for parsed_call in parsed_calls:
             tool_name = parsed_call.name
             if tool_name not in {"send_reply", "no_reply", "send_poke", "send_reaction"}:
                 continue
             if tool_name == "no_reply":
                 saw_no_reply = True
                 continue
-            if tool_name == "send_poke" and not has_reply_call:
+            action_ordinal = action_ordinals.get(tool_name, 0)
+            action_ordinals[tool_name] = action_ordinal + 1
+            if tool_name == "send_poke" and not reply_committed:
                 continue
             call_arguments = dict(parsed_call.arguments)
-            if tool_name == "send_reply" and run_id:
-                call_arguments.setdefault(
-                    "idempotency_key",
-                    f"{run_id}:{call_index}",
-                )
+            call_arguments["idempotency_key"] = _review_action_idempotency_key(
+                session_id=stage_input.session_id,
+                candidate_message_ids=target_message_ids,
+                tool_name=tool_name,
+                action_ordinal=action_ordinal,
+            )
             tool_result = await self._tool_manager.execute(
                 ToolCallRequest(
                     tool_name=tool_name,
@@ -223,7 +225,19 @@ class LLMReplyDecisionStageRunner:
                     target_message_ids=target_message_ids,
                     reason=f"reply_tool_failed:{tool_result.error_code}",
                 )
+            if _tool_result_in_flight(tool_result.output):
+                return ReplyDecisionStageOutput(
+                    target_message_ids=target_message_ids,
+                    reason=f"{tool_name}_tool_pending:in_flight",
+                    consumption_deferred=True,
+                )
             if tool_name == "send_reply":
+                if not _tool_result_committed(tool_result.output):
+                    return ReplyDecisionStageOutput(
+                        target_message_ids=target_message_ids,
+                        reason="reply_tool_failed:reply_not_committed",
+                    )
+                reply_committed = True
                 replied = True
                 reply_count += 1
                 if reply_message_id is None:
@@ -269,6 +283,39 @@ def _candidate_message_ids_from_stage(stage_input: ReviewStageInput) -> list[int
     if isinstance(values, list):
         return int_list(values)
     return int_list([stage_input.metadata.get("candidate_message_id")])
+
+
+def _review_action_idempotency_key(
+    *,
+    session_id: str,
+    candidate_message_ids: list[int],
+    tool_name: str,
+    action_ordinal: int,
+) -> str:
+    candidate_key = ",".join(
+        str(message_id) for message_id in sorted(set(candidate_message_ids))
+    )
+    return f"review:{session_id}:{candidate_key}:{tool_name}:{action_ordinal}"
+
+
+def _tool_result_committed(output: Any) -> bool:
+    if not isinstance(output, dict):
+        return True
+    if output.get("error"):
+        return False
+    if output.get("deduplicated") is True:
+        return str(output.get("deduplicated_reason") or "") == "completed"
+    if "sent" in output:
+        return output.get("sent") is True
+    return True
+
+
+def _tool_result_in_flight(output: Any) -> bool:
+    return bool(
+        isinstance(output, dict)
+        and output.get("deduplicated") is True
+        and str(output.get("deduplicated_reason") or "") == "in_flight"
+    )
 
 
 def _reply_quote_validation_error(

@@ -521,6 +521,7 @@ def update_instance_runtime(
 
     if adapter is not None:
         apply_runtime_config_patch(adapter=adapter, config_patch=config_patch)
+    bot.adapter_manager.update_instance_kwargs(instance_id, config_patch)
 
     return inst
 
@@ -547,7 +548,7 @@ async def delete_instance_runtime(*, bot: Any, boot: Any, instance_id: str) -> N
             message=f"Instance {instance_id!r} not found",
         )
 
-    if adapter is not None:
+    if adapter is not None or mgr.has_instance_spec(instance_id):
         await mgr.delete_instance(instance_id)
 
     if index is not None:

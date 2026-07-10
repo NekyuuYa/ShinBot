@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections import OrderedDict
@@ -28,14 +29,14 @@ CHAT_ACTION_TOOL_TAG = "chat_action"
 
 @dataclass(slots=True, frozen=True)
 class SendReplyIdempotencyClaim:
-    """Result of checking whether one send_reply call may proceed."""
+    """Result of checking whether one chat action call may proceed."""
 
     accepted: bool
     deduplicated_reason: str = ""
 
 
 class SendReplyIdempotencyStore:
-    """Bounded in-memory idempotency guard for system-injected reply keys."""
+    """Bounded in-memory idempotency guard for system-injected action keys."""
 
     def __init__(
         self,
@@ -202,6 +203,9 @@ def register_chat_action_tools(
                 elements.append(MessageElement.quote(quote_message_id))
             elements.append(MessageElement.text(text))
             handle = await adapter.send(session_id, elements)
+        except asyncio.CancelledError:
+            idempotency_store.finish(idempotency_key)
+            raise
         except Exception:
             idempotency_store.release(idempotency_key)
             raise
@@ -315,6 +319,7 @@ def register_chat_action_tools(
         user_id = str(arguments.get("user_id", "") or "").strip()
         if not user_id:
             return {"error": "user_id is required"}
+        idempotency_key = str(arguments.get("idempotency_key") or "").strip()
         terminate_round = bool(arguments.get("terminate_round", True))
 
         adapter = adapter_manager.get_instance(instance_id)
@@ -325,19 +330,39 @@ def register_chat_action_tools(
         if not adapter_manager.is_connected(instance_id):
             raise RuntimeError(f"Platform adapter {instance_id} is offline")
 
+        idempotency_claim = idempotency_store.begin(idempotency_key)
+        if not idempotency_claim.accepted:
+            return {
+                "action": "send_poke",
+                "sent": False,
+                "deduplicated": True,
+                "deduplicated_reason": idempotency_claim.deduplicated_reason,
+                "idempotency_key": idempotency_key,
+                "hint": "此戳一戳动作已发送或正在发送，跳过重复执行。",
+            }
+
         params: dict[str, Any] = {"user_id": user_id}
         session_type = _session_type(session_id)
         group_id = _group_id_from_session(session_id)
         if group_id:
             params["group_id"] = group_id
 
-        result = await adapter.call_api(f"internal.{adapter.platform}.poke", params)
+        try:
+            result = await adapter.call_api(f"internal.{adapter.platform}.poke", params)
+        except asyncio.CancelledError:
+            idempotency_store.finish(idempotency_key)
+            raise
+        except Exception:
+            idempotency_store.release(idempotency_key)
+            raise
+        idempotency_store.finish(idempotency_key)
 
         return {
             "action": "send_poke",
             "sent": True,
             "user_id": user_id,
             "session_type": session_type or "unknown",
+            "idempotency_key": idempotency_key,
             "terminate_round": terminate_round,
             "adapter_result": result,
             "hint": "戳一戳已发送。",
@@ -397,6 +422,7 @@ def register_chat_action_tools(
         action = str(arguments.get("action", "add") or "add").strip().lower()
         if action not in {"add", "remove"}:
             raise ValueError("action must be 'add' or 'remove'")
+        idempotency_key = str(arguments.get("idempotency_key") or "").strip()
         terminate_round = bool(arguments.get("terminate_round", True))
         message_id = _resolve_reaction_message_id(
             arguments,
@@ -412,15 +438,34 @@ def register_chat_action_tools(
         if not adapter_manager.is_connected(instance_id):
             raise RuntimeError(f"Platform adapter {instance_id} is offline")
 
+        idempotency_claim = idempotency_store.begin(idempotency_key)
+        if not idempotency_claim.accepted:
+            return {
+                "action": "send_reaction",
+                "sent": False,
+                "deduplicated": True,
+                "deduplicated_reason": idempotency_claim.deduplicated_reason,
+                "idempotency_key": idempotency_key,
+                "hint": "此消息表态已更新或正在更新，跳过重复执行。",
+            }
+
         method = "reaction.delete" if action == "remove" else "reaction.create"
-        result = await adapter.call_api(
-            method,
-            {
-                "message_id": message_id,
-                "emoji_id": emoji_id,
-                "session_id": session_id,
-            },
-        )
+        try:
+            result = await adapter.call_api(
+                method,
+                {
+                    "message_id": message_id,
+                    "emoji_id": emoji_id,
+                    "session_id": session_id,
+                },
+            )
+        except asyncio.CancelledError:
+            idempotency_store.finish(idempotency_key)
+            raise
+        except Exception:
+            idempotency_store.release(idempotency_key)
+            raise
+        idempotency_store.finish(idempotency_key)
 
         return {
             "action": "send_reaction",
@@ -428,6 +473,7 @@ def register_chat_action_tools(
             "reaction_action": action,
             "message_id": message_id,
             "emoji_id": emoji_id,
+            "idempotency_key": idempotency_key,
             "terminate_round": terminate_round,
             "adapter_result": result,
             "hint": "消息表态已更新。",

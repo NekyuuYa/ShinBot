@@ -55,6 +55,7 @@ overflow_compression_batch_size = 500
 reply_context_before_messages = 30
 reply_context_after_messages = 10
 block_digest_concurrency = 4
+reply_commit_timeout_seconds = 20
 bootstrap_timeout_seconds = 20
 
 

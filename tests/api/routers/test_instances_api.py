@@ -113,6 +113,74 @@ def test_update_instance_route_returns_full_instance_payload(tmp_path: Path):
     }
 
 
+def test_update_suspended_instance_updates_rebuild_kwargs(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    created: list[tuple[MockAdapter, dict[str, object]]] = []
+
+    def factory(instance_id: str, platform: str, **kwargs: object) -> MockAdapter:
+        adapter = MockAdapter(instance_id, platform)
+        created.append((adapter, dict(kwargs)))
+        return adapter
+
+    bot.adapter_manager.register_adapter("owned", factory, owner="adapter-plugin")
+    bot.add_adapter("inst-1", "owned", token="abc")
+    asyncio.run(bot.adapter_manager.suspend_owner_instances("adapter-plugin"))
+
+    boot = _BootStub(tmp_path)
+    boot.config["adapter_instances"] = [
+        {
+            "id": "inst-1",
+            "name": "Instance 1",
+            "adapter": "owned",
+            "config": {"token": "abc"},
+            "createdAt": 1,
+            "lastModified": 1,
+        }
+    ]
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.patch(
+            "/api/v1/instances/inst-1",
+            headers=_auth_headers(app),
+            json={"config": {"token": "xyz"}},
+        )
+
+    assert response.status_code == 200
+    asyncio.run(bot.adapter_manager.resume_owner_instances("adapter-plugin"))
+    assert created[1][1] == {"token": "xyz"}
+
+
+def test_delete_suspended_instance_discards_rebuild_snapshot(tmp_path: Path):
+    bot = ShinBot(data_dir=tmp_path)
+    bot.adapter_manager.register_adapter("owned", MockAdapter, owner="adapter-plugin")
+    bot.add_adapter("inst-1", "owned")
+    asyncio.run(bot.adapter_manager.suspend_owner_instances("adapter-plugin"))
+
+    boot = _BootStub(tmp_path)
+    boot.config["adapter_instances"] = [
+        {
+            "id": "inst-1",
+            "name": "Instance 1",
+            "adapter": "owned",
+            "config": {},
+            "createdAt": 1,
+            "lastModified": 1,
+        }
+    ]
+    app = create_api_app(bot, boot)
+
+    with TestClient(app) as client:
+        response = client.delete(
+            "/api/v1/instances/inst-1",
+            headers=_auth_headers(app),
+        )
+
+    assert response.status_code == 200
+    assert not bot.adapter_manager.has_instance_spec("inst-1")
+    assert boot.config["adapter_instances"] == []
+
+
 def test_instances_runtime_config_serializes_dataclass_adapter_config(tmp_path: Path):
     bot = ShinBot(data_dir=tmp_path)
     adapter = SatoriAdapter(

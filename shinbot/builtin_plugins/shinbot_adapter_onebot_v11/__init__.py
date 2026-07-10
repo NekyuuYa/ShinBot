@@ -163,9 +163,7 @@ def setup(plg: Plugin) -> None:
     plg.register_adapter_factory("onebot_v11", _onebot_factory)
 
 
-async def on_disable(plg: Plugin) -> None:
+async def on_disable(_plg: Plugin) -> None:
     from .adapter import _GATEWAY
 
     await _GATEWAY.shutdown_all()
-    if plg._adapter_manager is not None:
-        plg._adapter_manager.unregister_adapter("onebot_v11")

@@ -150,6 +150,9 @@ class AgentRuntimeProfile:
             summary_service=owner.summary_service,
             review_config=self.review_workflow_config,
         )
+        self._workflow_dispatcher.bind_review_task_scope(
+            self._owner.task_manager.scope(self._task_namespace("review_workflow"))
+        )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
         self.review_due_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
         self.review_due_timer.bind_task_scope(
@@ -201,6 +204,9 @@ class AgentRuntimeProfile:
             idle_review_planning_runner=runner_factory.create_idle_review_planning_runner(),
             review_run_recorder=owner._record_review_workflow_run,
         )
+        self._workflow_dispatcher.bind_review_task_scope(
+            self._owner.task_manager.scope(self._task_namespace("review_workflow"))
+        )
         self.agent_scheduler = self._create_agent_scheduler(self._workflow_dispatcher)
         self.review_due_timer.bind_agent_runtime(self._owner, bot_id=self.bot_id)
         self.review_due_timer.bind_task_scope(
@@ -234,6 +240,9 @@ class AgentRuntimeProfile:
     async def shutdown(self) -> None:
         """Shut down profile-owned background tasks."""
 
+        await self._owner.task_manager.shutdown(
+            prefix=self._task_namespace("review_workflow")
+        )
         if self.review_coordinator is not None:
             await self.review_coordinator.shutdown()
         self._workflow_dispatcher.flush_active_chat_summaries()

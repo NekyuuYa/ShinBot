@@ -87,11 +87,16 @@ def test_builtin_agent_config_provider_is_registered(tmp_path: Path):
             "/api/v1/config-providers/agent/shinbot.agent.runtime",
             headers=_auth_headers(app),
         )
+        defaults = client.get(
+            "/api/v1/config-providers/agent/shinbot.agent.runtime/defaults",
+            headers=_auth_headers(app),
+        )
 
     assert catalog.status_code == 200
     assert [item["id"] for item in catalog.json()["data"]] == ["shinbot.agent.runtime"]
     assert detail.status_code == 200
     payload = detail.json()["data"]
+    assert defaults.status_code == 200
     assert payload["kind"] == "agent"
     assert payload["metadata"]["i18n"]["zh-CN"]["display_name"] == "ShinBot Agent 运行配置"
     field_i18n = {
@@ -101,6 +106,14 @@ def test_builtin_agent_config_provider_is_registered(tmp_path: Path):
     assert field_i18n["agent.id"]["label"] == "Agent ID"
     assert field_i18n["agent.mode"]["choices"] == {"simple": "简单模式", "full": "完整模式"}
     assert field_i18n["agent.persona_id"]["label"] == "人格 ID"
+    fields_by_path = {field["path"]: field for field in payload["fields"]}
+    reply_commit_timeout = fields_by_path["agent.review.reply_commit_timeout_seconds"]
+    assert reply_commit_timeout["default"] == 20.0
+    assert reply_commit_timeout["min"] == 0.0
+    assert reply_commit_timeout["metadata"]["i18n"]["zh-CN"]["label"] == (
+        "回复提交等待超时"
+    )
+    assert defaults.json()["data"]["agent"]["review"]["reply_commit_timeout_seconds"] == 20.0
     assert "agent.active_chat.initial_interest" in {
         field["path"] for field in payload["fields"]
     }

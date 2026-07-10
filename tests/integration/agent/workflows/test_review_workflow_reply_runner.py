@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
 from review_workflow_support import (
     FakeModelRuntime,
     FakeReviewToolManager,
@@ -13,6 +16,99 @@ from review_workflow_support import (
     _make_prompt_registry,
     pytest,
 )
+
+from shinbot.agent.services.tools import ToolManager, ToolRegistry
+from shinbot.agent.workflows.chat_actions.tool_registration import (
+    SendReplyIdempotencyStore,
+    register_chat_action_tools,
+)
+
+
+class _SendHandle:
+    def __init__(self, message_id: str) -> None:
+        self.message_id = message_id
+
+
+class _ReviewActionAdapter:
+    instance_id = "bot"
+    platform = "test"
+
+    def __init__(
+        self,
+        *,
+        block_on_attempt: int | None = None,
+        fail_on_attempts: set[int] | None = None,
+    ) -> None:
+        self.block_on_attempt = block_on_attempt
+        self.fail_on_attempts = set(fail_on_attempts or set())
+        self.send_started = asyncio.Event()
+        self.release_send = asyncio.Event()
+        self.attempts: list[tuple[str, list[object]]] = []
+        self.sent: list[tuple[str, list[object]]] = []
+        self.api_calls: list[tuple[str, dict[str, object]]] = []
+
+    async def send(self, session_id: str, elements: list[object]) -> _SendHandle:
+        self.attempts.append((session_id, list(elements)))
+        attempt = len(self.attempts)
+        if attempt == self.block_on_attempt:
+            self.send_started.set()
+            await self.release_send.wait()
+        if attempt in self.fail_on_attempts:
+            raise RuntimeError(f"send attempt {attempt} failed")
+        self.sent.append((session_id, list(elements)))
+        return _SendHandle(f"platform-{len(self.sent)}")
+
+    async def call_api(self, method: str, params: dict[str, object]) -> dict[str, object]:
+        self.api_calls.append((method, dict(params)))
+        return {"ok": True, "method": method, "params": params}
+
+
+class _ReviewActionAdapterManager:
+    def __init__(self, adapter: _ReviewActionAdapter) -> None:
+        self.adapter = adapter
+
+    def get_instance(self, instance_id: str) -> _ReviewActionAdapter | None:
+        return self.adapter if instance_id == self.adapter.instance_id else None
+
+    def is_connected(self, instance_id: str) -> bool:
+        return instance_id == self.adapter.instance_id
+
+
+def _real_review_tool_manager(
+    adapter: _ReviewActionAdapter,
+    *,
+    store: SendReplyIdempotencyStore,
+) -> ToolManager:
+    registry = ToolRegistry()
+    register_chat_action_tools(
+        registry,
+        adapter_manager=_ReviewActionAdapterManager(adapter),  # type: ignore[arg-type]
+        send_reply_idempotency_store=store,
+    )
+    return ToolManager(registry)
+
+
+def _reply_tool_call(
+    tool_id: str,
+    *,
+    text: str,
+    quote_message_log_id: int | None = None,
+) -> dict[str, object]:
+    arguments: dict[str, object] = {"text": text}
+    if quote_message_log_id is not None:
+        arguments.update(
+            {
+                "quote_message_log_id": quote_message_log_id,
+                "quote_message_id": f"platform-{quote_message_log_id}",
+            }
+        )
+    return {
+        "id": tool_id,
+        "function": {
+            "name": "send_reply",
+            "arguments": json.dumps(arguments),
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -183,8 +279,265 @@ async def test_reply_decision_runner_executes_multiple_replies_in_order() -> Non
     assert tool_manager.execute_calls[0].arguments["quote_message_log_id"] == 7
     assert "quote_message_log_id" not in tool_manager.execute_calls[1].arguments
     assert [call.arguments["idempotency_key"] for call in tool_manager.execute_calls] == [
-        "exec-1:0",
-        "exec-1:1",
+        "review:bot:group:room:7,8:send_reply:0",
+        "review:bot:group:room:7,8:send_reply:1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_uses_stable_reply_slots_across_model_runs() -> None:
+    tool_manager = FakeReviewToolManager()
+    tool_calls = [
+        {
+            "id": "tool-poke",
+            "function": {
+                "name": "send_poke",
+                "arguments": '{"user_id": "user-1"}',
+            },
+        },
+        {
+            "id": "tool-reply-1",
+            "function": {
+                "name": "send_reply",
+                "arguments": (
+                    '{"text": "first", "quote_message_log_id": 8, '
+                    '"idempotency_key": "model-chosen-random-key"}'
+                ),
+            },
+        },
+        {
+            "id": "tool-reaction",
+            "function": {
+                "name": "send_reaction",
+                "arguments": '{"message_log_id": 7, "emoji_id": "128077"}',
+            },
+        },
+        {
+            "id": "tool-reply-2",
+            "function": {
+                "name": "send_reply",
+                "arguments": '{"text": "second"}',
+            },
+        },
+    ]
+    model_runtime = FakeModelRuntime(
+        [
+            {"execution_id": "exec-old", "tool_calls": tool_calls},
+            {"execution_id": "exec-replacement", "tool_calls": tool_calls},
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="reply_decision",
+        source_messages=[{"id": 7, "raw_text": "hello"}, {"id": 8, "raw_text": "world"}],
+        metadata={"candidate_message_ids": [8, 7, 8]},
+    )
+
+    await runner.run(stage_input)
+    first_run_keys = [
+        call.arguments["idempotency_key"]
+        for call in tool_manager.execute_calls
+        if call.tool_name == "send_reply"
+    ]
+    await runner.run(stage_input)
+    second_run_keys = [
+        call.arguments["idempotency_key"]
+        for call in tool_manager.execute_calls
+        if call.tool_name == "send_reply"
+    ][2:]
+
+    expected_keys = [
+        "review:bot:group:room:7,8:send_reply:0",
+        "review:bot:group:room:7,8:send_reply:1",
+    ]
+    assert first_run_keys == expected_keys
+    assert second_run_keys == expected_keys
+    assert [
+        call.run_id
+        for call in tool_manager.execute_calls
+        if call.tool_name == "send_reply"
+    ] == ["exec-old", "exec-old", "exec-replacement", "exec-replacement"]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_defers_in_flight_slot_until_failed_send_releases() -> None:
+    adapter = _ReviewActionAdapter(block_on_attempt=1, fail_on_attempts={1})
+    tool_manager = _real_review_tool_manager(
+        adapter,
+        store=SendReplyIdempotencyStore(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="reply_decision",
+        source_messages=[{"id": 7, "raw_text": "hello"}],
+        metadata={"candidate_message_ids": [7]},
+    )
+    def make_runner(execution_id: str, text: str) -> LLMReplyDecisionStageRunner:
+        return LLMReplyDecisionStageRunner(
+            FakeModelRuntime(
+                [
+                    {
+                        "execution_id": execution_id,
+                        "tool_calls": [
+                            _reply_tool_call(
+                                f"reply-{execution_id}",
+                                text=text,
+                                quote_message_log_id=7,
+                            )
+                        ],
+                    }
+                ]
+            ),
+            config=ReviewLLMRunnerConfig(caller="test.review"),
+            prompt_registry=_make_prompt_registry(),
+            tool_manager=tool_manager,
+        )
+
+    old_task = asyncio.create_task(make_runner("old", "old reply").run(stage_input))
+    await adapter.send_started.wait()
+    replacement_result = await make_runner("replacement", "replacement reply").run(
+        stage_input
+    )
+
+    assert replacement_result.replied is False
+    assert replacement_result.consumption_deferred is True
+    assert replacement_result.reason == "send_reply_tool_pending:in_flight"
+    assert len(adapter.attempts) == 1
+    assert adapter.sent == []
+
+    adapter.release_send.set()
+    old_result = await old_task
+    assert old_result.replied is False
+    assert old_result.reason == "reply_tool_failed:tool_execution_failed"
+
+    retried_result = await make_runner("retry", "retry reply").run(stage_input)
+
+    assert retried_result.replied is True
+    assert retried_result.consumption_deferred is False
+    assert len(adapter.attempts) == 2
+    assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_retries_only_released_later_slot() -> None:
+    adapter = _ReviewActionAdapter(fail_on_attempts={2})
+    tool_manager = _real_review_tool_manager(
+        adapter,
+        store=SendReplyIdempotencyStore(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="reply_decision",
+        source_messages=[{"id": 7, "raw_text": "hello"}],
+        metadata={"candidate_message_ids": [7]},
+    )
+
+    def make_runner(execution_id: str, prefix: str) -> LLMReplyDecisionStageRunner:
+        return LLMReplyDecisionStageRunner(
+            FakeModelRuntime(
+                [
+                    {
+                        "execution_id": execution_id,
+                        "tool_calls": [
+                            _reply_tool_call(
+                                f"{prefix}-first",
+                                text=f"{prefix} first",
+                                quote_message_log_id=7,
+                            ),
+                            _reply_tool_call(
+                                f"{prefix}-second",
+                                text=f"{prefix} second",
+                            ),
+                        ],
+                    }
+                ]
+            ),
+            config=ReviewLLMRunnerConfig(caller="test.review"),
+            prompt_registry=_make_prompt_registry(),
+            tool_manager=tool_manager,
+        )
+
+    old_result = await make_runner("exec-old", "old").run(stage_input)
+    replacement_result = await make_runner("exec-replacement", "new").run(stage_input)
+
+    assert old_result.reason == "reply_tool_failed:tool_execution_failed"
+    assert replacement_result.replied is True
+    assert replacement_result.reason == "send_reply_tool:2"
+    assert len(adapter.attempts) == 3
+    assert len(adapter.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_deduplicates_committed_companion_actions() -> None:
+    adapter = _ReviewActionAdapter(fail_on_attempts={2})
+    tool_manager = _real_review_tool_manager(
+        adapter,
+        store=SendReplyIdempotencyStore(),
+    )
+    stage_input = ReviewStageInput(
+        session_id="bot:group:room",
+        purpose="reply_decision",
+        source_messages=[
+            {
+                "id": 7,
+                "platform_msg_id": "platform-7",
+                "raw_text": "hello",
+            }
+        ],
+        metadata={"candidate_message_ids": [7]},
+    )
+    tool_calls = [
+        _reply_tool_call(
+            "reply-first",
+            text="first reply",
+            quote_message_log_id=7,
+        ),
+        {
+            "id": "poke-after-reply",
+            "function": {
+                "name": "send_poke",
+                "arguments": '{"user_id": "user-1"}',
+            },
+        },
+        {
+            "id": "reaction-after-reply",
+            "function": {
+                "name": "send_reaction",
+                "arguments": (
+                    '{"message_id": "platform-7", "emoji_id": "128077"}'
+                ),
+            },
+        },
+        _reply_tool_call("reply-second", text="second reply"),
+    ]
+
+    def make_runner(execution_id: str) -> LLMReplyDecisionStageRunner:
+        return LLMReplyDecisionStageRunner(
+            FakeModelRuntime(
+                [{"execution_id": execution_id, "tool_calls": tool_calls}]
+            ),
+            config=ReviewLLMRunnerConfig(caller="test.review"),
+            prompt_registry=_make_prompt_registry(),
+            tool_manager=tool_manager,
+        )
+
+    first_result = await make_runner("exec-old").run(stage_input)
+    replacement_result = await make_runner("exec-replacement").run(stage_input)
+
+    assert first_result.reason == "reply_tool_failed:tool_execution_failed"
+    assert replacement_result.replied is True
+    assert replacement_result.reason == "send_reply_tool:2;send_poke_tool:1;send_reaction_tool"
+    assert len(adapter.attempts) == 3
+    assert len(adapter.sent) == 2
+    assert [method for method, _params in adapter.api_calls] == [
+        "internal.test.poke",
+        "reaction.create",
     ]
 
 
@@ -238,9 +591,8 @@ async def test_reply_decision_runner_allows_poke_after_reply_only() -> None:
 
     assert result.replied is True
     assert result.reply_message_ids == [42]
-    assert result.reason == "send_reply_tool:1;send_poke_tool:2"
+    assert result.reason == "send_reply_tool:1;send_poke_tool:1"
     assert [call.tool_name for call in tool_manager.execute_calls] == [
-        "send_poke",
         "send_reply",
         "send_poke",
     ]

@@ -7,10 +7,11 @@ import importlib
 import inspect
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from shinbot.core.config_provider import (
     ConfigProviderLoadError,
@@ -36,6 +37,8 @@ if TYPE_CHECKING:
     from shinbot.core.plugins.cron_manager import PluginCronManager
 
 logger = get_logger(__name__, source="plugins", color="yellow")
+
+_T = TypeVar("_T")
 
 _VALID_PREFIXES = ("shinbot_plugin_", "shinbot_adapter_", "shinbot_debug_", "shinbot_converter_")
 _BUILTIN_PLUGINS_DIR = Path(__file__).resolve().parents[2] / "builtin_plugins"
@@ -183,6 +186,8 @@ class PluginManager:
         self._modules: dict[str, Any] = {}
         self._declared_metadata: dict[str, dict[str, Any]] = {}
         self._pre_registered_runtime_plugins: set[str] = set()
+        self._lifecycle_locks: dict[str, asyncio.Lock] = {}
+        self._lifecycle_lock_owners: dict[str, asyncio.Task[Any]] = {}
         self._boot: Any | None = None  # Set by BootController after creation
 
         self._root_data_dir = Path(data_dir) if data_dir is not None else Path("data")
@@ -409,6 +414,20 @@ class PluginManager:
             Exception: Re-raises any error from module import or setup,
                 after cleaning up partial registrations.
         """
+        async with self._lifecycle_lock(plugin_id):
+            return await self._load_plugin_locked(
+                plugin_id,
+                module_path,
+                declared_metadata=declared_metadata,
+            )
+
+    async def _load_plugin_locked(
+        self,
+        plugin_id: str,
+        module_path: str,
+        *,
+        declared_metadata: dict[str, Any] | None = None,
+    ) -> PluginMeta:
         if plugin_id in self._plugins:
             raise ValueError(f"Plugin {plugin_id!r} is already loaded")
 
@@ -429,19 +448,32 @@ class PluginManager:
 
         self._register_config_provider_from_module(plugin_id, module)
         plg = self._build_plg(plugin_id)
+        adapter_instance_baseline = self._adapter_instance_ids(plugin_id)
 
         try:
+            await self._block_plugin_route_tasks(plugin_id)
             await self._invoke(module.setup, plg)
             await self._invoke_hook(module, "on_enable", plg)
+            self._resume_plugin_route_tasks(plugin_id)
+            await self._resume_plugin_adapter_instances(plugin_id)
+        except asyncio.CancelledError:
+            await self._run_cancellation_safe(
+                self._cleanup_plugin_registrations(
+                    plugin_id,
+                    plg,
+                    preserve_adapter_instance_ids=adapter_instance_baseline,
+                )
+            )
+            raise
         except Exception:
             logger.exception("Error loading plugin %s", plugin_id)
-            self._command_registry.unregister_by_owner(plugin_id)
-            self._event_bus.off_all(plugin_id)
-            self._keyword_registry.unregister_by_owner(plugin_id)
-            self._unregister_routes_by_owner(plugin_id)
-            self._unregister_marketplace_entries_by_owner(plugin_id)
-            if self._tool_registry is not None:
-                self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
+            await self._run_cancellation_safe(
+                self._cleanup_plugin_registrations(
+                    plugin_id,
+                    plg,
+                    preserve_adapter_instance_ids=adapter_instance_baseline,
+                )
+            )
             raise
 
         meta = self._build_plugin_meta(
@@ -502,22 +534,46 @@ class PluginManager:
             *True* if the plugin was found and unloaded, *False* if it
             was not loaded.
         """
-        meta = self._plugins.pop(plugin_id, None)
+        async with self._lifecycle_lock(plugin_id):
+            return await self._unload_plugin_locked(
+                plugin_id,
+                remove_module=remove_module,
+                remove_declared_metadata=remove_declared_metadata,
+                preserve_adapter_instances=False,
+            )
+
+    async def _unload_plugin_locked(
+        self,
+        plugin_id: str,
+        *,
+        remove_module: bool,
+        remove_declared_metadata: bool,
+        preserve_adapter_instances: bool,
+    ) -> bool:
+        meta = self._plugins.get(plugin_id)
         if meta is None:
             return False
-        cmd_count, evt_count = await self._deactivate_plugin_runtime(
-            plugin_id,
-            meta,
-            remove_module=remove_module,
-        )
+        try:
+            cmd_count, evt_count = await self._deactivate_plugin_runtime(
+                plugin_id,
+                meta,
+                remove_module=remove_module,
+                preserve_adapter_instances=preserve_adapter_instances,
+            )
+        except asyncio.CancelledError:
+            self._plugins.pop(plugin_id, None)
+            if remove_declared_metadata:
+                self._declared_metadata.pop(plugin_id, None)
+            raise
+        self._plugins.pop(plugin_id, None)
+        if remove_declared_metadata:
+            self._declared_metadata.pop(plugin_id, None)
         logger.info(
             "Unloaded plugin %s (removed %d commands, %d event handlers)",
             plugin_id,
             cmd_count,
             evt_count,
         )
-        if remove_declared_metadata:
-            self._declared_metadata.pop(plugin_id, None)
         return True
 
     async def unload_all_plugins_async(self) -> None:
@@ -560,17 +616,26 @@ class PluginManager:
         Raises:
             ValueError: If the plugin is not loaded.
         """
+        async with self._lifecycle_lock(plugin_id):
+            return await self._disable_plugin_locked(plugin_id)
+
+    async def _disable_plugin_locked(self, plugin_id: str) -> PluginMeta:
         meta = self._plugins.get(plugin_id)
         if meta is None:
             raise ValueError(f"Plugin {plugin_id!r} is not loaded")
         if meta.state == PluginState.DISABLED:
             return meta
 
-        cmd_count, evt_count = await self._deactivate_plugin_runtime(
-            plugin_id,
-            meta,
-            remove_module=False,
-        )
+        try:
+            cmd_count, evt_count = await self._deactivate_plugin_runtime(
+                plugin_id,
+                meta,
+                remove_module=False,
+                preserve_adapter_instances=True,
+            )
+        except asyncio.CancelledError:
+            meta.state = PluginState.DISABLED
+            raise
         meta.state = PluginState.DISABLED
         logger.info(
             "Disabled plugin %s (removed %d commands, %d event handlers)",
@@ -618,6 +683,10 @@ class PluginManager:
             Exception: Re-raises any error from module import or setup,
                 after cleaning up partial registrations.
         """
+        async with self._lifecycle_lock(plugin_id):
+            return await self._enable_plugin_locked(plugin_id)
+
+    async def _enable_plugin_locked(self, plugin_id: str) -> PluginMeta:
         meta = self._plugins.get(plugin_id)
         if meta is None:
             raise ValueError(f"Plugin {plugin_id!r} is not loaded")
@@ -638,20 +707,31 @@ class PluginManager:
 
         self._register_config_provider_from_module(plugin_id, module)
         plg = self._build_plg(plugin_id)
+        adapter_instance_baseline = self._adapter_instance_ids(plugin_id)
         try:
+            await self._block_plugin_route_tasks(plugin_id)
             await self._invoke(module.setup, plg)
             await self._invoke_hook(module, "on_enable", plg)
+            self._resume_plugin_route_tasks(plugin_id)
+            await self._resume_plugin_adapter_instances(plugin_id)
+        except asyncio.CancelledError:
+            await self._run_cancellation_safe(
+                self._cleanup_plugin_registrations(
+                    plugin_id,
+                    plg,
+                    preserve_adapter_instance_ids=adapter_instance_baseline,
+                )
+            )
+            raise
         except Exception:
-            # Clean up any handlers registered by setup() so no ghost handlers
-            # remain in the EventBus or CommandRegistry when enable fails.
             logger.exception("Error enabling plugin %s; reverting handler registrations", plugin_id)
-            self._command_registry.unregister_by_owner(plugin_id)
-            self._event_bus.off_all(plugin_id)
-            self._keyword_registry.unregister_by_owner(plugin_id)
-            self._unregister_routes_by_owner(plugin_id)
-            self._unregister_marketplace_entries_by_owner(plugin_id)
-            if self._tool_registry is not None:
-                self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
+            await self._run_cancellation_safe(
+                self._cleanup_plugin_registrations(
+                    plugin_id,
+                    plg,
+                    preserve_adapter_instance_ids=adapter_instance_baseline,
+                )
+            )
             raise
 
         name, version, description, author, role = self._resolve_identity_fields(
@@ -1116,16 +1196,21 @@ class PluginManager:
             Exception: Re-raises any error from module reload or setup,
                 after cleaning up partial registrations.
         """
+        async with self._lifecycle_lock(plugin_id):
+            return await self._reload_plugin_locked(plugin_id)
+
+    async def _reload_plugin_locked(self, plugin_id: str) -> PluginMeta:
         meta = self._plugins.get(plugin_id)
         if meta is None:
             raise ValueError(f"Plugin {plugin_id!r} is not loaded")
 
         module_path = meta.module_path
         declared_metadata = self._declared_metadata.get(plugin_id)
-        await self.unload_plugin_async(
+        await self._unload_plugin_locked(
             plugin_id,
             remove_module=False,
             remove_declared_metadata=False,
+            preserve_adapter_instances=True,
         )
 
         existing = sys.modules.get(module_path)
@@ -1140,19 +1225,33 @@ class PluginManager:
         self._register_config_provider_from_module(plugin_id, module)
 
         plg = self._build_plg(plugin_id)
+        adapter_instance_baseline = self._adapter_instance_ids(plugin_id)
         try:
+            await self._block_plugin_route_tasks(plugin_id)
             await self._invoke(module.setup, plg)
             await self._invoke_hook(module, "on_enable", plg)
+            self._resume_plugin_route_tasks(plugin_id)
+            await self._resume_plugin_adapter_instances(plugin_id)
+        except asyncio.CancelledError:
+            await self._run_cancellation_safe(
+                self._cleanup_plugin_registrations(
+                    plugin_id,
+                    plg,
+                    preserve_adapter_instance_ids=adapter_instance_baseline,
+                )
+            )
+            raise
         except Exception:
             logger.exception(
                 "Error during reload of plugin %s; reverting handler registrations", plugin_id
             )
-            self._command_registry.unregister_by_owner(plugin_id)
-            self._event_bus.off_all(plugin_id)
-            self._keyword_registry.unregister_by_owner(plugin_id)
-            self._unregister_routes_by_owner(plugin_id)
-            if self._tool_registry is not None:
-                self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
+            await self._run_cancellation_safe(
+                self._cleanup_plugin_registrations(
+                    plugin_id,
+                    plg,
+                    preserve_adapter_instance_ids=adapter_instance_baseline,
+                )
+            )
             raise
 
         new_meta = self._build_plugin_meta(
@@ -1248,17 +1347,97 @@ class PluginManager:
         meta: PluginMeta,
         *,
         remove_module: bool,
+        preserve_adapter_instances: bool,
     ) -> tuple[int, int]:
         module = self._modules.get(plugin_id)
         plg = self._plugin_objects.get(plugin_id)
+        lifecycle_task = asyncio.current_task()
 
         try:
-            await self._invoke_hook(module, "on_disable", plg)
-        except Exception:
-            logger.exception("Error in on_disable() for plugin %s", plugin_id)
+            if plg is not None:
+                plg.begin_deactivation()
+            await self._block_plugin_route_tasks(
+                plugin_id,
+                preserve_task=lifecycle_task,
+            )
+            try:
+                await self._invoke_hook(module, "on_disable", plg)
+            except Exception:
+                logger.exception("Error in on_disable() for plugin %s", plugin_id)
+        except asyncio.CancelledError:
+            await self._run_cancellation_safe(
+                self._finalize_plugin_deactivation(
+                    plugin_id,
+                    meta,
+                    module=module,
+                    plg=plg,
+                    remove_module=remove_module,
+                    preserve_task=lifecycle_task,
+                    preserve_adapter_instances=preserve_adapter_instances,
+                )
+            )
+            raise
 
-        # Cancel background tasks before unregistering handlers — tasks may
-        # still reference the plugin's registered resources during cleanup.
+        return await self._run_cancellation_safe(
+            self._finalize_plugin_deactivation(
+                plugin_id,
+                meta,
+                module=module,
+                plg=plg,
+                remove_module=remove_module,
+                preserve_task=lifecycle_task,
+                preserve_adapter_instances=preserve_adapter_instances,
+            )
+        )
+
+    async def _finalize_plugin_deactivation(
+        self,
+        plugin_id: str,
+        meta: PluginMeta,
+        *,
+        module: Any | None,
+        plg: Plugin | None,
+        remove_module: bool,
+        preserve_task: asyncio.Task[Any] | None,
+        preserve_adapter_instances: bool,
+    ) -> tuple[int, int]:
+        cmd_count, evt_count = await self._cleanup_plugin_registrations(
+            plugin_id,
+            plg,
+            preserve_task=preserve_task,
+        )
+
+        try:
+            if module and hasattr(module, "teardown"):
+                try:
+                    await self._invoke(module.teardown)
+                except Exception:
+                    logger.exception("Error in teardown() for plugin %s", plugin_id)
+        finally:
+            self._modules.pop(plugin_id, None)
+            self._plugin_objects.pop(plugin_id, None)
+
+            if not preserve_adapter_instances and self._adapter_manager is not None:
+                self._adapter_manager.discard_owner_instance_snapshots(plugin_id)
+
+            if remove_module and meta.module_path in sys.modules:
+                del sys.modules[meta.module_path]
+
+        return cmd_count, evt_count
+
+    async def _cleanup_plugin_registrations(
+        self,
+        plugin_id: str,
+        plg: Plugin | None,
+        *,
+        preserve_task: asyncio.Task[Any] | None = None,
+        preserve_adapter_instance_ids: set[str] | None = None,
+    ) -> tuple[int, int]:
+        """Remove runtime resources registered by one plugin context."""
+        await self._block_plugin_route_tasks(
+            plugin_id,
+            preserve_task=preserve_task,
+        )
         if plg is not None:
             task_count = len(plg.background_tasks)
             if task_count:
@@ -1267,7 +1446,8 @@ class PluginManager:
                     task_count,
                     plugin_id,
                 )
-                await plg.cancel_background_tasks()
+            await plg.cancel_background_tasks(preserve_task=preserve_task)
+        await self._suspend_plugin_adapter_instances(plugin_id)
 
         cmd_count = self._command_registry.unregister_by_owner(plugin_id)
         evt_count = self._event_bus.off_all(plugin_id)
@@ -1276,25 +1456,51 @@ class PluginManager:
         self._unregister_marketplace_entries_by_owner(plugin_id)
         if self._tool_registry is not None:
             self._tool_registry.unregister_owner(ToolOwnerType.PLUGIN, plugin_id)
+        if plg is not None and self._adapter_manager is not None:
+            for factory_name in plg._registered_adapter_factories:
+                self._adapter_manager.unregister_adapter(factory_name, owner=plugin_id)
+            plg._registered_adapter_factories.clear()
         if plg is not None and self._model_runtime is not None:
             for observer in plg._registered_model_observers:
                 self._model_runtime.unregister_observer(observer)
-        if plg is not None and self._cron_manager is not None:
+            plg._registered_model_observers.clear()
+        if self._cron_manager is not None:
             self._cron_manager.remove_jobs(plugin_id)
-
-        if module and hasattr(module, "teardown"):
-            try:
-                await self._invoke(module.teardown)
-            except Exception:
-                logger.exception("Error in teardown() for plugin %s", plugin_id)
-
-        self._modules.pop(plugin_id, None)
-        self._plugin_objects.pop(plugin_id, None)
-
-        if remove_module and meta.module_path in sys.modules:
-            del sys.modules[meta.module_path]
-
+        if preserve_adapter_instance_ids is not None and self._adapter_manager is not None:
+            self._adapter_manager.discard_owner_instance_snapshots(
+                plugin_id,
+                preserve_instance_ids=preserve_adapter_instance_ids,
+            )
         return cmd_count, evt_count
+
+    def _adapter_instance_ids(self, plugin_id: str) -> set[str]:
+        if self._adapter_manager is None:
+            return set()
+        return set(self._adapter_manager.instance_ids_for_owner(plugin_id))
+
+    async def _suspend_plugin_adapter_instances(self, plugin_id: str) -> None:
+        if self._adapter_manager is not None:
+            await self._adapter_manager.suspend_owner_instances(plugin_id)
+
+    async def _resume_plugin_adapter_instances(self, plugin_id: str) -> None:
+        if self._adapter_manager is not None:
+            await self._adapter_manager.resume_owner_instances(plugin_id)
+
+    async def _block_plugin_route_tasks(
+        self,
+        plugin_id: str,
+        *,
+        preserve_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        if self._route_targets is not None:
+            await self._route_targets.cancel_owner_tasks(
+                plugin_id,
+                preserve_task=preserve_task,
+            )
+
+    def _resume_plugin_route_tasks(self, plugin_id: str) -> None:
+        if self._route_targets is not None:
+            self._route_targets.resume_owner_tasks(plugin_id)
 
     def _unregister_routes_by_owner(self, plugin_id: str) -> None:
         if self._route_table is not None:
@@ -1405,6 +1611,41 @@ class PluginManager:
             raise ValueError(f"metadata.role must be one of: {valid_roles}")
 
         return metadata
+
+    @asynccontextmanager
+    async def _lifecycle_lock(self, plugin_id: str) -> AsyncIterator[None]:
+        current_task = asyncio.current_task()
+        if current_task is not None and self._lifecycle_lock_owners.get(plugin_id) is current_task:
+            raise RuntimeError(f"Plugin lifecycle operation is not reentrant: {plugin_id}")
+
+        lock = self._lifecycle_locks.setdefault(plugin_id, asyncio.Lock())
+        async with lock:
+            if current_task is not None:
+                self._lifecycle_lock_owners[plugin_id] = current_task
+            try:
+                yield
+            finally:
+                if self._lifecycle_lock_owners.get(plugin_id) is current_task:
+                    self._lifecycle_lock_owners.pop(plugin_id, None)
+
+    async def _run_cancellation_safe(self, awaitable: Awaitable[_T]) -> _T:
+        task = asyncio.ensure_future(awaitable)
+        cancellation: asyncio.CancelledError | None = None
+
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                if task.done():
+                    if not task.cancelled():
+                        cancellation = exc
+                    break
+                cancellation = exc
+
+        result = task.result()
+        if cancellation is not None:
+            raise cancellation
+        return result
 
     async def _invoke_hook(self, module: Any, hook_name: str, plg: Plugin | None) -> None:
         if module is None or not hasattr(module, hook_name):

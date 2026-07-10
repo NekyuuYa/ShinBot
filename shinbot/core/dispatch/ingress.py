@@ -110,6 +110,159 @@ class RouteTargetRegistry:
     def __init__(self) -> None:
         self._handlers: dict[str, RouteTargetHandler] = {}
         self._owners: dict[str, str | None] = {}
+        self._target_tasks: set[asyncio.Future[Any]] = set()
+        self._target_tasks_by_owner: dict[str, set[asyncio.Future[Any]]] = {}
+        self._blocked_task_owners: set[str] = set()
+        self._closing = False
+
+    @property
+    def pending_task_count(self) -> int:
+        """Return the number of route target tasks still in flight."""
+        return len(self._target_tasks)
+
+    def pending_task_count_for_owner(self, owner: str) -> int:
+        """Return the number of in-flight target tasks owned by ``owner``."""
+        return len(self._target_tasks_by_owner.get(owner, ()))
+
+    def accepts_tasks(self, owner: str | None) -> bool:
+        """Return whether new target work may be scheduled for ``owner``."""
+        return not self._closing and (owner is None or owner not in self._blocked_task_owners)
+
+    def schedule_awaitable(
+        self,
+        result: Awaitable[None],
+        *,
+        rule: RouteRule,
+        trace_id: str,
+    ) -> asyncio.Future[Any] | None:
+        """Schedule and track one asynchronous route target invocation."""
+        owner = rule.owner
+        if not self.accepts_tasks(owner):
+            _discard_awaitable(result)
+            return None
+
+        task = asyncio.ensure_future(result)
+        if isinstance(task, asyncio.Task):
+            task.set_name(f"route.target.{rule.id}")
+        self._target_tasks.add(task)
+        if owner is not None:
+            self._target_tasks_by_owner.setdefault(owner, set()).add(task)
+        task.add_done_callback(
+            lambda done, task_owner=owner, matched_rule=rule, task_trace_id=trace_id: (
+                self._route_target_done(
+                    done,
+                    owner=task_owner,
+                    rule=matched_rule,
+                    trace_id=task_trace_id,
+                )
+            )
+        )
+        return task
+
+    async def run_owned_awaitable(
+        self,
+        result: Awaitable[Any],
+        *,
+        owner: str | None,
+        name: str,
+    ) -> Any:
+        """Run one handler invocation under the owning plugin's task scope."""
+        if not self.accepts_tasks(owner):
+            _discard_awaitable(result)
+            raise asyncio.CancelledError(f"route target owner is inactive: {owner or '<none>'}")
+
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task in self._target_tasks:
+            owner_was_tracked = False
+            if owner is not None:
+                owner_tasks = self._target_tasks_by_owner.setdefault(owner, set())
+                owner_was_tracked = current_task in owner_tasks
+                owner_tasks.add(current_task)
+            try:
+                return await result
+            finally:
+                if owner is not None and not owner_was_tracked:
+                    self._remove_owner_task(current_task, owner=owner)
+
+        task = asyncio.ensure_future(result)
+        if isinstance(task, asyncio.Task):
+            task.set_name(name)
+        self._target_tasks.add(task)
+        if owner is not None:
+            self._target_tasks_by_owner.setdefault(owner, set()).add(task)
+        task.add_done_callback(
+            lambda done, task_owner=owner: self._owned_task_done(
+                done,
+                owner=task_owner,
+            )
+        )
+        return await task
+
+    async def cancel_owner_tasks(
+        self,
+        owner: str,
+        *,
+        preserve_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        """Block and drain an owner's tasks, preserving its lifecycle caller."""
+        self._blocked_task_owners.add(owner)
+        tasks = tuple(
+            task
+            for task in self._target_tasks_by_owner.get(owner, ())
+            if task is not preserve_task
+        )
+        await _cancel_and_await(tasks)
+
+    def resume_owner_tasks(self, owner: str) -> None:
+        """Allow route target tasks for an owner blocked during deactivation."""
+        self._blocked_task_owners.discard(owner)
+
+    async def shutdown(self) -> None:
+        """Stop accepting target work, then cancel and await all in-flight tasks."""
+        self._closing = True
+        tasks = tuple(self._target_tasks)
+        await _cancel_and_await(tasks)
+
+    def _route_target_done(
+        self,
+        task: asyncio.Future[Any],
+        *,
+        owner: str | None,
+        rule: RouteRule,
+        trace_id: str,
+    ) -> None:
+        self._remove_target_task(task, owner=owner)
+        _log_route_target_task_result(task, rule, trace_id=trace_id)
+
+    def _owned_task_done(
+        self,
+        task: asyncio.Future[Any],
+        *,
+        owner: str | None,
+    ) -> None:
+        self._remove_target_task(task, owner=owner)
+
+    def _remove_target_task(
+        self,
+        task: asyncio.Future[Any],
+        *,
+        owner: str | None,
+    ) -> None:
+        self._target_tasks.discard(task)
+        self._remove_owner_task(task, owner=owner)
+
+    def _remove_owner_task(
+        self,
+        task: asyncio.Future[Any],
+        *,
+        owner: str | None,
+    ) -> None:
+        if owner is not None:
+            owner_tasks = self._target_tasks_by_owner.get(owner)
+            if owner_tasks is not None:
+                owner_tasks.discard(task)
+                if not owner_tasks:
+                    self._target_tasks_by_owner.pop(owner, None)
 
     def register(
         self,
@@ -200,6 +353,15 @@ class MessageIngress:
         self._bot_router = bot_router
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._pre_route_hooks: list[PreRouteHook] = []
+
+    @property
+    def pending_target_task_count(self) -> int:
+        """Return the number of route target tasks still in flight."""
+        return self._route_targets.pending_task_count
+
+    async def shutdown(self) -> None:
+        """Cancel and await all in-flight route target tasks."""
+        await self._route_targets.shutdown()
 
     def add_interceptor(self, interceptor: Interceptor, priority: int = 100) -> None:
         """Register an interceptor that can block events before routing.
@@ -474,7 +636,8 @@ class MessageIngress:
                 adapter=adapter,
                 session=session,
                 message_context=message_context,
-                rule_filter=lambda rule: bot_route_rule_enabled_for_context(rule, message_context),
+                rule_filter=lambda rule: self._route_targets.accepts_tasks(rule.owner)
+                and bot_route_rule_enabled_for_context(rule, message_context),
             ),
         )
         if not matched_rules:
@@ -630,7 +793,13 @@ class MessageIngress:
                 trace_id=trace_id,
             )
 
-        matched_rules = self._route_table.match(event, message)
+        matched_rules = self._route_table.match(
+            event,
+            message,
+            RouteMatchContext(
+                rule_filter=lambda rule: self._route_targets.accepts_tasks(rule.owner),
+            ),
+        )
         if matched_rules:
             self._mark_dispatched(message_log_id)
         else:
@@ -786,6 +955,18 @@ class MessageIngress:
         matched_rules: list[RouteRule],
     ) -> None:
         for rule in matched_rules:
+            if not self._route_targets.accepts_tasks(rule.owner):
+                logger.debug(
+                    format_log_event(
+                        "route.target.skipped",
+                        rule_id=rule.id,
+                        target=rule.target,
+                        reason="target_supervisor_closed",
+                        message_log_id=dispatch_context.message_log_id,
+                        trace_id=dispatch_context.trace_id,
+                    )
+                )
+                continue
             handler = self._route_targets.get(rule.target)
             if handler is None:
                 logger.error(
@@ -814,23 +995,21 @@ class MessageIngress:
                 continue
 
             if inspect.isawaitable(result):
-                logger.debug(
-                    format_log_event(
-                        "route.target.scheduled",
-                        rule_id=rule.id,
-                        target=rule.target,
-                        message_log_id=dispatch_context.message_log_id,
-                        trace_id=dispatch_context.trace_id,
-                    )
+                task = self._route_targets.schedule_awaitable(
+                    result,
+                    rule=rule,
+                    trace_id=dispatch_context.trace_id,
                 )
-                task = asyncio.create_task(result)
-                task.add_done_callback(
-                    lambda done, matched_rule=rule: _log_route_target_task_result(
-                        done,
-                        matched_rule,
-                        trace_id=dispatch_context.trace_id,
+                if task is not None:
+                    logger.debug(
+                        format_log_event(
+                            "route.target.scheduled",
+                            rule_id=rule.id,
+                            target=rule.target,
+                            message_log_id=dispatch_context.message_log_id,
+                            trace_id=dispatch_context.trace_id,
+                        )
                     )
-                )
 
 
 def is_event_fresh(
@@ -868,8 +1047,29 @@ def build_ingress_trace_id(adapter: BaseAdapter, event: UnifiedEvent) -> str:
     return f"ingress:{adapter.instance_id}:{token}"
 
 
+async def _cancel_and_await(tasks: tuple[asyncio.Future[Any], ...]) -> None:
+    current_task = asyncio.current_task()
+    pending = tuple(task for task in tasks if task is not current_task)
+    if not pending:
+        return
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _discard_awaitable(result: Awaitable[Any]) -> None:
+    if inspect.iscoroutine(result):
+        result.close()
+        return
+    if isinstance(result, asyncio.Future):
+        result.cancel()
+        return
+    task = asyncio.ensure_future(result)
+    task.cancel()
+
+
 def _log_route_target_task_result(
-    done: asyncio.Task[Any],
+    done: asyncio.Future[Any],
     rule: RouteRule,
     *,
     trace_id: str,

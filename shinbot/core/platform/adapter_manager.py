@@ -10,9 +10,12 @@ interaction goes through the BaseAdapter interface.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +32,24 @@ class AdapterConnectionState:
     connected: bool = False
     last_connected_at: float | None = None
     last_disconnected_at: float | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class _AdapterFactoryRegistration:
+    factory: Callable[..., Any]
+    owner: str | None = None
+
+
+@dataclass(slots=True)
+class _AdapterInstanceSpec:
+    instance_id: str
+    platform: str
+    event_callback: Callable[..., Any] | None
+    kwargs: dict[str, Any]
+    owner: str | None
+    suspended: bool = False
+    resume_running: bool = False
+    quarantined_adapter: BaseAdapter | None = None
 
 
 class MessageHandle:
@@ -184,20 +205,37 @@ class AdapterManager:
 
     def __init__(self, *, offline_grace_seconds: float = 15.0) -> None:
         self._factories: dict[str, Callable[..., Any]] = {}
+        self._factory_registrations: dict[str, list[_AdapterFactoryRegistration]] = {}
         self._instances: dict[str, BaseAdapter] = {}
+        self._instance_specs: dict[str, _AdapterInstanceSpec] = {}
+        self._instance_locks: dict[str, asyncio.Lock] = {}
+        self._blocked_instance_owners: set[str] = set()
         self._running: set[str] = set()
         self._connection_states: dict[str, AdapterConnectionState] = {}
         self._offline_grace_seconds = max(0.0, float(offline_grace_seconds))
 
     # ── Factory registration ─────────────────────────────────────────
 
-    def register_adapter(self, platform: str, factory: Callable[..., Any]) -> None:
+    def register_adapter(
+        self,
+        platform: str,
+        factory: Callable[..., Any],
+        *,
+        owner: str | None = None,
+    ) -> None:
         """Register a factory callable for a platform name.
 
         The factory must be callable with signature:
             factory(instance_id, platform, **kwargs) -> BaseAdapter
 
         Called by adapter plugins at load time via Plugin.register_adapter_factory().
+
+        Args:
+            platform: Platform name used for adapter instance creation.
+            factory: Callable that creates an adapter instance.
+            owner: Optional registration owner. Owned registrations form an
+                override stack so removing one owner can restore the previous
+                factory without disturbing later overrides.
         """
         if not callable(factory):
             raise TypeError(f"{factory!r} must be a callable factory")
@@ -206,13 +244,46 @@ class AdapterManager:
                 format_log_event(
                     "adapter.factory.override",
                     platform=platform,
+                    owner=owner or "",
                 )
             )
+        registrations = self._factory_registrations.setdefault(platform, [])
+        registrations.append(_AdapterFactoryRegistration(factory=factory, owner=owner))
         self._factories[platform] = factory
-        logger.info(format_log_event("adapter.factory.registered", platform=platform))
+        logger.info(
+            format_log_event(
+                "adapter.factory.registered",
+                platform=platform,
+                owner=owner or "",
+            )
+        )
 
-    def unregister_adapter(self, platform: str) -> None:
-        """Remove a registered adapter factory."""
+    def unregister_adapter(self, platform: str, *, owner: str | None = None) -> None:
+        """Remove adapter factory registrations for a platform.
+
+        Args:
+            platform: Platform name whose registration should be removed.
+            owner: Registration owner to remove. When omitted, all registrations
+                are removed to preserve the legacy unowned API behavior.
+        """
+        if owner is None:
+            self._factory_registrations.pop(platform, None)
+            self._factories.pop(platform, None)
+            return
+
+        registrations = self._factory_registrations.get(platform)
+        if not registrations:
+            return
+        remaining = [
+            registration for registration in registrations if registration.owner != owner
+        ]
+        if len(remaining) == len(registrations):
+            return
+        if remaining:
+            self._factory_registrations[platform] = remaining
+            self._factories[platform] = remaining[-1].factory
+            return
+        self._factory_registrations.pop(platform, None)
         self._factories.pop(platform, None)
 
     @property
@@ -237,36 +308,264 @@ class AdapterManager:
             event_callback: Async callback for incoming events.
             **kwargs: Additional arguments passed to the adapter constructor.
         """
-        if platform not in self._factories:
+        registration = self._active_factory_registration(platform)
+        if registration is None:
             available = ", ".join(self._factories.keys()) or "(none)"
             raise ValueError(
                 f"No adapter registered for platform {platform!r}. Available: {available}"
             )
-        if instance_id in self._instances:
+        if registration.owner is not None and registration.owner in self._blocked_instance_owners:
+            raise RuntimeError(
+                f"Adapter factory owner {registration.owner!r} is inactive"
+            )
+        if instance_id in self._instance_specs:
             raise ValueError(f"Instance {instance_id!r} already exists")
 
-        adapter_cls = self._factories[platform]
-        adapter = adapter_cls(instance_id=instance_id, platform=platform, **kwargs)
-
-        if event_callback is not None:
-            adapter.set_event_callback(event_callback)
-        adapter.set_connection_state_callback(
-            lambda connected, *, _instance_id=instance_id: self._handle_connection_state_change(
-                _instance_id,
-                connected,
-            )
+        spec = _AdapterInstanceSpec(
+            instance_id=instance_id,
+            platform=platform,
+            event_callback=event_callback,
+            kwargs=dict(kwargs),
+            owner=registration.owner,
         )
-
-        self._instances[instance_id] = adapter
-        self._connection_states[instance_id] = AdapterConnectionState()
+        adapter = self._instantiate_instance(spec, registration)
+        self._instance_specs[instance_id] = spec
         logger.info(
             format_log_event(
                 "adapter.instance.created",
                 instance_id=instance_id,
                 platform=platform,
+                owner=registration.owner or "",
             )
         )
         return adapter
+
+    def get_instance_owner(self, instance_id: str) -> str | None:
+        """Return the factory owner captured when an instance was created."""
+
+        spec = self._instance_specs.get(instance_id)
+        return spec.owner if spec is not None else None
+
+    def instance_ids_for_owner(
+        self,
+        owner: str,
+        *,
+        include_suspended: bool = True,
+    ) -> list[str]:
+        """Return instance IDs created from factories registered by ``owner``."""
+
+        return sorted(
+            spec.instance_id
+            for spec in self._instance_specs.values()
+            if spec.owner == owner and (include_suspended or not spec.suspended)
+        )
+
+    def has_instance_spec(self, instance_id: str) -> bool:
+        """Return whether a live or suspended runtime instance spec exists."""
+
+        return instance_id in self._instance_specs
+
+    def update_instance_kwargs(self, instance_id: str, patch: dict[str, Any]) -> bool:
+        """Update saved constructor kwargs used when an instance is rebuilt."""
+
+        spec = self._instance_specs.get(instance_id)
+        if spec is None:
+            return False
+        spec.kwargs.update(patch)
+        return True
+
+    async def suspend_owner_instances(self, owner: str) -> list[str]:
+        """Shutdown and detach instances owned by a plugin, retaining rebuild specs."""
+
+        self._blocked_instance_owners.add(owner)
+        specs = [
+            spec
+            for spec in self._instance_specs.values()
+            if spec.owner == owner and not spec.suspended and spec.instance_id in self._instances
+        ]
+        if not specs:
+            return []
+
+        async with AsyncExitStack() as stack:
+            for spec in sorted(specs, key=lambda item: item.instance_id):
+                await stack.enter_async_context(self._instance_lock(spec.instance_id))
+
+            specs = [
+                spec
+                for spec in specs
+                if self._instance_specs.get(spec.instance_id) is spec
+                and not spec.suspended
+                and spec.instance_id in self._instances
+            ]
+            was_running = {
+                spec.instance_id: spec.instance_id in self._running
+                for spec in specs
+            }
+            shutdown_errors: list[tuple[str, Exception]] = []
+            for spec in specs:
+                adapter = self._instances[spec.instance_id]
+                try:
+                    await self._stop_instance_locked(spec.instance_id)
+                except Exception as exc:
+                    spec.quarantined_adapter = adapter
+                    shutdown_errors.append((spec.instance_id, exc))
+                    logger.exception(
+                        format_log_event(
+                            "adapter.instance.owner_suspend_stop_failed",
+                            instance_id=spec.instance_id,
+                            platform=spec.platform,
+                            owner=owner,
+                            error_code=type(exc).__name__,
+                        )
+                    )
+                else:
+                    spec.quarantined_adapter = None
+
+            for spec in specs:
+                instance_id = spec.instance_id
+                self._instances.pop(instance_id, None)
+                self._running.discard(instance_id)
+                self._connection_states.pop(instance_id, None)
+                spec.suspended = True
+                spec.resume_running = was_running[instance_id]
+        if shutdown_errors:
+            logger.error(
+                format_log_event(
+                    "adapter.owner.suspended_with_errors",
+                    owner=owner,
+                    failed_instance_ids=",".join(
+                        instance_id for instance_id, _exc in shutdown_errors
+                    ),
+                    error_codes=",".join(
+                        type(exc).__name__ for _instance_id, exc in shutdown_errors
+                    ),
+                )
+            )
+        logger.info(
+            format_log_event(
+                "adapter.owner.suspended",
+                owner=owner,
+                instance_ids=",".join(sorted(spec.instance_id for spec in specs)),
+            )
+        )
+        return sorted(spec.instance_id for spec in specs)
+
+    async def resume_owner_instances(self, owner: str) -> list[str]:
+        """Rebuild suspended owner instances and restore their prior running state."""
+
+        specs = sorted(
+            (
+                spec
+                for spec in self._instance_specs.values()
+                if spec.owner == owner and spec.suspended
+            ),
+            key=lambda item: item.instance_id,
+        )
+        if not specs:
+            self._blocked_instance_owners.discard(owner)
+            return []
+
+        async with AsyncExitStack() as stack:
+            for spec in specs:
+                await stack.enter_async_context(self._instance_lock(spec.instance_id))
+
+            specs = [
+                spec
+                for spec in specs
+                if self._instance_specs.get(spec.instance_id) is spec
+                and spec.suspended
+                and spec.instance_id not in self._instances
+            ]
+            for spec in specs:
+                quarantined = spec.quarantined_adapter
+                if quarantined is None:
+                    continue
+                try:
+                    await quarantined.shutdown()
+                except Exception as exc:
+                    logger.exception(
+                        format_log_event(
+                            "adapter.instance.quarantine_stop_failed",
+                            instance_id=spec.instance_id,
+                            platform=spec.platform,
+                            owner=owner,
+                            error_code=type(exc).__name__,
+                        )
+                    )
+                    raise RuntimeError(
+                        f"Cannot restore adapter instance {spec.instance_id!r}: "
+                        "the previous adapter is still active"
+                    ) from exc
+                spec.quarantined_adapter = None
+
+            registrations: dict[str, _AdapterFactoryRegistration] = {}
+            for spec in specs:
+                registration = self._active_factory_registration(spec.platform)
+                if registration is None or registration.owner != owner:
+                    raise RuntimeError(
+                        f"Cannot restore adapter instance {spec.instance_id!r}: active factory "
+                        f"for {spec.platform!r} is not owned by {owner!r}"
+                    )
+                registrations[spec.instance_id] = registration
+
+            rebuilt: list[_AdapterInstanceSpec] = []
+            try:
+                for spec in specs:
+                    self._instantiate_instance(spec, registrations[spec.instance_id])
+                    rebuilt.append(spec)
+                for spec in specs:
+                    if spec.resume_running:
+                        await self._start_instance_locked(spec.instance_id)
+            except BaseException:
+                for spec in reversed(rebuilt):
+                    adapter = self._instances.get(spec.instance_id)
+                    try:
+                        await self._stop_instance_locked(spec.instance_id)
+                    except Exception:
+                        spec.quarantined_adapter = adapter
+                        logger.exception(
+                            "Failed to shutdown adapter instance %s after owner restore failed",
+                            spec.instance_id,
+                        )
+                    else:
+                        spec.quarantined_adapter = None
+                    self._instances.pop(spec.instance_id, None)
+                    self._running.discard(spec.instance_id)
+                    self._connection_states.pop(spec.instance_id, None)
+                raise
+
+            for spec in specs:
+                spec.suspended = False
+                spec.resume_running = False
+        self._blocked_instance_owners.discard(owner)
+        logger.info(
+            format_log_event(
+                "adapter.owner.resumed",
+                owner=owner,
+                instance_ids=",".join(spec.instance_id for spec in specs),
+            )
+        )
+        return [spec.instance_id for spec in specs]
+
+    def discard_owner_instance_snapshots(
+        self,
+        owner: str,
+        *,
+        preserve_instance_ids: set[str] | frozenset[str] = frozenset(),
+    ) -> int:
+        """Discard suspended instance specs for an owner except an explicit baseline."""
+
+        to_remove = [
+            spec.instance_id
+            for spec in self._instance_specs.values()
+            if spec.owner == owner
+            and spec.suspended
+            and spec.quarantined_adapter is None
+            and spec.instance_id not in preserve_instance_ids
+        ]
+        for instance_id in to_remove:
+            self._instance_specs.pop(instance_id, None)
+        return len(to_remove)
 
     def get_instance(self, instance_id: str) -> BaseAdapter | None:
         """Retrieve an adapter instance by its unique ID.
@@ -311,6 +610,8 @@ class AdapterManager:
             The removed adapter, or None if not found.
         """
         self._connection_states.pop(instance_id, None)
+        self._running.discard(instance_id)
+        self._instance_specs.pop(instance_id, None)
         return self._instances.pop(instance_id, None)
 
     # ── Lifecycle ────────────────────────────────────────────────────
@@ -373,6 +674,10 @@ class AdapterManager:
 
     async def start_instance(self, instance_id: str) -> None:
         """Start a single adapter instance by ID."""
+        async with self._instance_lock(instance_id):
+            await self._start_instance_locked(instance_id)
+
+    async def _start_instance_locked(self, instance_id: str) -> None:
         adapter = self._instances.get(instance_id)
         if adapter is None:
             raise ValueError(f"No instance registered with id {instance_id!r}")
@@ -396,6 +701,10 @@ class AdapterManager:
 
     async def stop_instance(self, instance_id: str) -> None:
         """Stop a single adapter instance by ID."""
+        async with self._instance_lock(instance_id):
+            await self._stop_instance_locked(instance_id)
+
+    async def _stop_instance_locked(self, instance_id: str) -> None:
         adapter = self._instances.get(instance_id)
         if adapter is None:
             raise ValueError(f"No instance registered with id {instance_id!r}")
@@ -419,10 +728,19 @@ class AdapterManager:
 
     async def delete_instance(self, instance_id: str) -> bool:
         """Stop (if running) and remove an adapter instance."""
-        if instance_id in self._running:
-            await self.stop_instance(instance_id)
-        self._connection_states.pop(instance_id, None)
-        return self._instances.pop(instance_id, None) is not None
+        async with self._instance_lock(instance_id):
+            adapter = self._instances.get(instance_id)
+            spec = self._instance_specs.get(instance_id)
+            if adapter is not None:
+                await self._stop_instance_locked(instance_id)
+            elif spec is not None and spec.quarantined_adapter is not None:
+                await spec.quarantined_adapter.shutdown()
+                spec.quarantined_adapter = None
+            self._connection_states.pop(instance_id, None)
+            self._running.discard(instance_id)
+            removed_adapter = self._instances.pop(instance_id, None)
+            removed_spec = self._instance_specs.pop(instance_id, None)
+            return removed_adapter is not None or removed_spec is not None
 
     async def start_all(self) -> None:
         """Start all registered adapter instances."""
@@ -456,8 +774,57 @@ class AdapterManager:
                     )
                 )
         self._instances.clear()
+        self._instance_specs.clear()
+        self._blocked_instance_owners.clear()
         self._running.clear()
         self._connection_states.clear()
+
+    def _active_factory_registration(
+        self,
+        platform: str,
+    ) -> _AdapterFactoryRegistration | None:
+        registrations = self._factory_registrations.get(platform)
+        if not registrations:
+            return None
+        return registrations[-1]
+
+    def _instance_lock(self, instance_id: str) -> asyncio.Lock:
+        return self._instance_locks.setdefault(instance_id, asyncio.Lock())
+
+    def _instantiate_instance(
+        self,
+        spec: _AdapterInstanceSpec,
+        registration: _AdapterFactoryRegistration,
+    ) -> BaseAdapter:
+        adapter = registration.factory(
+            instance_id=spec.instance_id,
+            platform=spec.platform,
+            **spec.kwargs,
+        )
+        if spec.event_callback is not None:
+            callback = spec.event_callback
+
+            async def handle_event(*args: Any, **kwargs: Any) -> Any:
+                if self._instances.get(spec.instance_id) is not adapter:
+                    return None
+                result = callback(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+            adapter.set_event_callback(handle_event)
+        adapter.set_connection_state_callback(
+            lambda connected, *, _instance_id=spec.instance_id, _adapter=adapter: (
+                self._handle_connection_state_change(
+                    _instance_id,
+                    connected,
+                    expected_adapter=_adapter,
+                )
+            )
+        )
+        self._instances[spec.instance_id] = adapter
+        self._connection_states[spec.instance_id] = AdapterConnectionState()
+        return adapter
 
     def mark_connected(self, instance_id: str, *, at: float | None = None) -> None:
         """Record that an adapter instance reached an explicit connected state.
@@ -493,8 +860,14 @@ class AdapterManager:
             return None
         return await adapter.get_capabilities()
 
-    def _handle_connection_state_change(self, instance_id: str, connected: bool) -> None:
-        if instance_id not in self._instances:
+    def _handle_connection_state_change(
+        self,
+        instance_id: str,
+        connected: bool,
+        *,
+        expected_adapter: BaseAdapter,
+    ) -> None:
+        if self._instances.get(instance_id) is not expected_adapter:
             return
         if connected:
             self.mark_connected(instance_id)

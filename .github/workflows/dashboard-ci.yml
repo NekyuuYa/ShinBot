@@ -1,0 +1,55 @@
+name: Dashboard CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - "dashboard/**"
+      - ".github/workflows/dashboard-ci.yml"
+
+concurrency:
+  group: dashboard-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Typecheck and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.8.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: dashboard
+        run: pnpm install --frozen-lockfile
+
+      # Two existing >600-line components are tracked debt. Fail only if the
+      # number of high-severity findings grows; strict zero remains the target.
+      - name: Enforce design audit high baseline
+        working-directory: dashboard
+        env:
+          DESIGN_AUDIT_MAX_HIGH: "2"
+        run: pnpm design:audit -- --max-high "$DESIGN_AUDIT_MAX_HIGH"
+
+      - name: Typecheck and build
+        working-directory: dashboard
+        run: pnpm build

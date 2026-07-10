@@ -27,7 +27,7 @@ from shinbot.schema.elements import Message
 from shinbot.schema.events import UnifiedEvent
 
 if TYPE_CHECKING:
-    from shinbot.core.dispatch.ingress import RouteDispatchContext
+    from shinbot.core.dispatch.ingress import RouteDispatchContext, RouteTargetRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,13 @@ class CommandMatch:
     regex_match: re.Match[str] | None = None  # For P2 matches
 
 
+@dataclass(slots=True, frozen=True)
+class _CommandRegistration:
+    command: CommandDef
+    default_permission: str
+    sequence: int
+
+
 class CommandRegistry:
     """Registry and resolver for commands.
 
@@ -96,53 +103,86 @@ class CommandRegistry:
         self._enabled_overrides: dict[str, bool] = {}
         self._permission_overrides: dict[str, str] = {}
         self._default_permissions: dict[str, str] = {}
+        self._registration_stacks: dict[str, list[_CommandRegistration]] = {}
+        self._next_registration_sequence = 0
 
     def register(self, cmd: CommandDef) -> None:
         """Register a command definition."""
+        if cmd.priority == CommandPriority.P2_REGEX and cmd.pattern is None:
+            raise ValueError(f"P2 regex command {cmd.name!r} requires a pattern")
         if cmd.name in self._commands:
             logger.warning("Overriding command: %s", cmd.name)
 
-        self._default_permissions[cmd.name] = cmd.permission
-        if cmd.name in self._enabled_overrides:
-            cmd.enabled = self._enabled_overrides[cmd.name]
-        if cmd.name in self._permission_overrides:
-            cmd.permission = self._permission_overrides[cmd.name]
-
-        self._commands[cmd.name] = cmd
-
-        if cmd.priority == CommandPriority.P2_REGEX:
-            if cmd.pattern is None:
-                raise ValueError(f"P2 regex command {cmd.name!r} requires a pattern")
-            self._regex_commands.append(cmd)
-        elif cmd.priority == CommandPriority.P1_EXACT:
-            for trigger in cmd.all_triggers:
-                self._exact_commands[trigger] = cmd
-        else:
-            for alias in cmd.aliases:
-                self._alias_map[alias] = cmd.name
+        registration = _CommandRegistration(
+            command=cmd,
+            default_permission=cmd.permission,
+            sequence=self._next_registration_sequence,
+        )
+        self._next_registration_sequence += 1
+        self._registration_stacks.setdefault(cmd.name, []).append(registration)
+        self._rebuild_active_commands()
 
     def unregister(self, name: str) -> CommandDef | None:
         """Remove a command by name, cleaning up all indexes."""
-        cmd = self._commands.pop(name, None)
+        cmd = self._commands.get(name)
         if cmd is None:
             return None
-        self._default_permissions.pop(name, None)
-
-        for alias in cmd.aliases:
-            self._alias_map.pop(alias, None)
-
-        for trigger in cmd.all_triggers:
-            self._exact_commands.pop(trigger, None)
-
-        self._regex_commands = [c for c in self._regex_commands if c.name != name]
+        self._registration_stacks.pop(name, None)
+        self._rebuild_active_commands()
         return cmd
 
     def unregister_by_owner(self, owner: str) -> int:
         """Remove all commands registered by a specific owner."""
-        to_remove = [name for name, cmd in self._commands.items() if cmd.owner == owner]
-        for name in to_remove:
-            self.unregister(name)
-        return len(to_remove)
+        removed = 0
+        for name, registrations in list(self._registration_stacks.items()):
+            remaining = [
+                registration
+                for registration in registrations
+                if registration.command.owner != owner
+            ]
+            removed += len(registrations) - len(remaining)
+            if remaining:
+                self._registration_stacks[name] = remaining
+            else:
+                self._registration_stacks.pop(name, None)
+        if removed:
+            self._rebuild_active_commands()
+        return removed
+
+    def _rebuild_active_commands(self) -> None:
+        active_registrations = [
+            registrations[-1]
+            for registrations in self._registration_stacks.values()
+            if registrations
+        ]
+        self._commands = {
+            registration.command.name: registration.command
+            for registration in active_registrations
+        }
+        self._default_permissions = {
+            registration.command.name: registration.default_permission
+            for registration in active_registrations
+        }
+        self._alias_map.clear()
+        self._regex_commands.clear()
+        self._exact_commands.clear()
+
+        for registration in sorted(active_registrations, key=lambda item: item.sequence):
+            cmd = registration.command
+            if cmd.name in self._enabled_overrides:
+                cmd.enabled = self._enabled_overrides[cmd.name]
+            cmd.permission = self._permission_overrides.get(
+                cmd.name,
+                registration.default_permission,
+            )
+            if cmd.priority == CommandPriority.P2_REGEX:
+                self._regex_commands.append(cmd)
+            elif cmd.priority == CommandPriority.P1_EXACT:
+                for trigger in cmd.all_triggers:
+                    self._exact_commands[trigger] = cmd
+            else:
+                for alias in cmd.aliases:
+                    self._alias_map[alias] = cmd.name
 
     def get(self, name: str) -> CommandDef | None:
         """Look up a command by name or alias."""
@@ -285,6 +325,7 @@ class TextCommandDispatcher:
         *,
         audit_logger: AuditLogger | None = None,
         session_manager: SessionManager | None = None,
+        task_supervisor: RouteTargetRegistry | None = None,
     ) -> None:
         """Initialize the dispatcher with backing registries and services.
 
@@ -292,10 +333,12 @@ class TextCommandDispatcher:
             command_registry: Registry to resolve incoming text commands.
             audit_logger: Optional audit logger for command execution tracking.
             session_manager: Optional session manager for persisting session state.
+            task_supervisor: Optional owner-aware handler task supervisor.
         """
         self._command_registry = command_registry
         self._audit_logger = audit_logger
         self._session_manager = session_manager
+        self._task_supervisor = task_supervisor
 
     def matches(
         self,
@@ -378,7 +421,19 @@ class TextCommandDispatcher:
         error = ""
 
         try:
-            handler_result = await match.command.handler(bot, match.raw_args)
+            if self._task_supervisor is not None and not self._task_supervisor.accepts_tasks(
+                match.command.owner
+            ):
+                return
+            handler_call = match.command.handler(bot, match.raw_args)
+            if self._task_supervisor is not None:
+                handler_result = await self._task_supervisor.run_owned_awaitable(
+                    handler_call,
+                    owner=match.command.owner,
+                    name=f"command.{match.command.owner or 'core'}.{match.command.name}",
+                )
+            else:
+                handler_result = await handler_call
             if handler_result is not None:
                 logger.warning(
                     "Command handler %s returned a value that was ignored; use bot.send()",

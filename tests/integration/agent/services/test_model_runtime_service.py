@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
+import threading
 
 import pytest
 
@@ -95,6 +97,49 @@ class FailingNormalizerBackend(RecordingBackend):
         usage: dict[str, object],
     ) -> dict[str, object]:
         raise ValueError("normalization failed")
+
+
+class FirstPlanningFailureBackend(RecordingBackend):
+    """Backend that fails while planning the first route member."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.planning_model_ids: list[str] = []
+
+    def plan_request(
+        self,
+        *,
+        provider: dict[str, object],
+        model: dict[str, object],
+        call: ModelRuntimeCall,
+        timeout_override: float | None,
+        operation: str,
+    ) -> BackendRequestPlan:
+        model_id = str(model["id"])
+        self.planning_model_ids.append(model_id)
+        if model_id == "openai-main/gpt-fast":
+            raise ValueError("request planning failed")
+        return super().plan_request(
+            provider=provider,
+            model=model,
+            call=call,
+            timeout_override=timeout_override,
+            operation=operation,
+        )
+
+
+class BlockingInvokeBackend(RecordingBackend):
+    """Backend whose invocation remains in its worker thread until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def invoke(self, plan: BackendRequestPlan) -> dict[str, object]:
+        self.started.set()
+        self.release.wait(timeout=5.0)
+        return super().invoke(plan)
 
 
 def _seed_runtime(db: DatabaseManager) -> None:
@@ -562,6 +607,106 @@ async def test_normalizer_failure_does_not_double_count_success_usage(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_generate_cancellation_is_audited_and_propagated(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    backend = BlockingInvokeBackend()
+    runtime = ModelRuntime(db, backend=backend)
+    observer_events: list[dict[str, object]] = []
+    runtime.register_observer(observer_events.append)
+    call_task = asyncio.create_task(
+        runtime.generate(
+            ModelRuntimeCall(
+                model_id="openai-main/gpt-fast",
+                caller="agent.runtime",
+                messages=[{"role": "user", "content": "cancel me"}],
+            )
+        )
+    )
+    for _ in range(100):
+        if backend.started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert backend.started.is_set()
+
+    call_task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await call_task
+    finally:
+        backend.release.set()
+
+    records = db.model_executions.list_recent(limit=5)
+    assert len(records) == 1
+    assert records[0]["success"] is False
+    assert records[0]["error_code"] == "CancelledError"
+    assert records[0]["model_id"] == "openai-main/gpt-fast"
+
+    audit_path = tmp_path / "model-audit" / f"{records[0]['id']}.json"
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "CancelledError"
+    assert payload["request"]["model_id"] == "openai-main/gpt-fast"
+
+    error_events = [event for event in observer_events if event.get("status") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["error"]["code"] == "CancelledError"
+
+
+@pytest.mark.asyncio
+async def test_generate_cancellation_during_response_observer_preserves_success(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    runtime = ModelRuntime(db, backend=RecordingBackend())
+    response_started = asyncio.Event()
+    release_response = asyncio.Event()
+    observer_events: list[dict[str, object]] = []
+
+    async def blocking_response_observer(payload: dict[str, object]) -> None:
+        observer_events.append(payload)
+        if payload["event"] == "model_runtime.response":
+            response_started.set()
+            await release_response.wait()
+
+    runtime.register_observer(blocking_response_observer)
+    call_task = asyncio.create_task(
+        runtime.generate(
+            ModelRuntimeCall(
+                model_id="openai-main/gpt-fast",
+                caller="agent.runtime",
+                messages=[{"role": "user", "content": "cancel after persistence"}],
+            )
+        )
+    )
+    await asyncio.wait_for(response_started.wait(), timeout=1.0)
+
+    call_task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await call_task
+    finally:
+        release_response.set()
+
+    records = db.model_executions.list_recent(limit=5)
+    assert len(records) == 1
+    assert records[0]["success"] is True
+    assert records[0]["error_code"] == ""
+
+    audit_path = tmp_path / "model-audit" / f"{records[0]['id']}.json"
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "success"
+    assert payload["error"] is None
+
+    response_events = [
+        event for event in observer_events if event.get("event") == "model_runtime.response"
+    ]
+    assert len(response_events) == 1
+    assert response_events[0]["status"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_generate_persists_sanitized_image_context(monkeypatch, tmp_path):
     db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
     db.initialize()
@@ -667,6 +812,59 @@ async def test_generate_falls_back_to_second_route_member(monkeypatch, tmp_path)
     assert success_record["success"] is True
     assert failure_record["success"] is False
     assert success_record["fallback_from_model_id"] == "openai-main/gpt-fast"
+
+
+@pytest.mark.asyncio
+async def test_generate_records_planning_failure_and_falls_back(tmp_path):
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    _seed_runtime(db)
+    backend = FirstPlanningFailureBackend()
+    runtime = ModelRuntime(db, backend=backend)
+    observer_events: list[dict[str, object]] = []
+    runtime.register_observer(observer_events.append)
+
+    result = await runtime.generate(
+        ModelRuntimeCall(
+            route_id="agent.default_chat",
+            caller="agent.runtime",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    )
+
+    assert result.model_id == "openai-main/gpt-backup"
+    assert backend.planning_model_ids == [
+        "openai-main/gpt-fast",
+        "openai-main/gpt-backup",
+    ]
+
+    records = db.model_executions.list_recent(limit=5)
+    assert len(records) == 2
+    success_record = records[0]
+    failure_record = records[1]
+    assert success_record["success"] is True
+    assert success_record["fallback_from_model_id"] == "openai-main/gpt-fast"
+    assert failure_record["success"] is False
+    assert failure_record["error_code"] == "ValueError"
+    assert failure_record["error_message"] == "request planning failed"
+
+    audit_path = tmp_path / "model-audit" / f"{failure_record['id']}.json"
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "error"
+    assert payload["error"] == {
+        "code": "ValueError",
+        "message": "request planning failed",
+    }
+    assert payload["request"]["model_id"] == "openai-main/gpt-fast"
+    assert payload["request"]["kwargs"] == {}
+
+    error_events = [event for event in observer_events if event.get("status") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["model_id"] == "openai-main/gpt-fast"
+    assert error_events[0]["error"] == {
+        "code": "ValueError",
+        "message": "request planning failed",
+    }
 
 
 @pytest.mark.asyncio

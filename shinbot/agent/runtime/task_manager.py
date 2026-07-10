@@ -30,6 +30,8 @@ class AgentTaskManager:
 
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task[Any]] = {}
+        self._retired_tasks: dict[asyncio.Task[Any], str] = {}
+        self._failures: dict[str, AgentTaskSnapshot] = {}
 
     def create_task(
         self,
@@ -41,6 +43,7 @@ class AgentTaskManager:
         """Create or replace one named task."""
 
         qualified_key = self._normalize_key(key)
+        self._failures.pop(qualified_key, None)
         self.cancel(qualified_key)
         loop = asyncio.get_running_loop()
         task = loop.create_task(coro, name=name or qualified_key)
@@ -69,11 +72,17 @@ class AgentTaskManager:
         """Return all live tasks, optionally filtered by key prefix."""
 
         prefix = self._normalize_key(prefix) if prefix else None
-        return [
+        active = [
             task
             for key, task in self._tasks.items()
             if (prefix is None or key.startswith(prefix)) and not task.done()
         ]
+        retired = [
+            task
+            for task, key in self._retired_tasks.items()
+            if (prefix is None or key.startswith(prefix)) and not task.done()
+        ]
+        return [*active, *retired]
 
     def snapshots(self, *, prefix: str | None = None) -> list[AgentTaskSnapshot]:
         """Return read-only status for tracked tasks, optionally filtered by prefix."""
@@ -84,14 +93,35 @@ class AgentTaskManager:
             if normalized_prefix is not None and not key.startswith(normalized_prefix):
                 continue
             result.append(self._snapshot_task(key, task))
+        for task, key in sorted(
+            self._retired_tasks.items(),
+            key=lambda item: (item[1], item[0].get_name()),
+        ):
+            if normalized_prefix is not None and not key.startswith(normalized_prefix):
+                continue
+            result.append(self._snapshot_task(key, task))
         return result
+
+    def failures(self, *, prefix: str | None = None) -> list[AgentTaskSnapshot]:
+        """Return the latest completed task failures, optionally filtered by key prefix."""
+
+        normalized_prefix = self._normalize_key(prefix) if prefix else None
+        return [
+            snapshot
+            for key, snapshot in sorted(self._failures.items())
+            if normalized_prefix is None or key.startswith(normalized_prefix)
+        ]
 
     def cancel(self, key: str) -> None:
         """Cancel one named task."""
 
         qualified_key = self._normalize_key(key)
-        task = self._tasks.pop(qualified_key, None)
-        if task is None or task.done() or task is asyncio.current_task():
+        task = self._tasks.get(qualified_key)
+        if task is None or task.done():
+            return
+        self._tasks.pop(qualified_key, None)
+        self._retired_tasks[task] = qualified_key
+        if task is asyncio.current_task():
             return
         task.cancel()
         logger.debug(
@@ -106,19 +136,39 @@ class AgentTaskManager:
         """Cancel all tracked tasks, or all matching a prefix."""
 
         qualified_prefix = self._normalize_key(prefix) if prefix else None
-        tasks = [
-            task
+        current_task = asyncio.current_task()
+        active = [
+            (key, task)
             for key, task in self._tasks.items()
-            if not task.done() and (qualified_prefix is None or key.startswith(qualified_prefix))
+            if task is not current_task
+            and not task.done()
+            and (qualified_prefix is None or key.startswith(qualified_prefix))
         ]
+        retired = [
+            (key, task)
+            for task, key in self._retired_tasks.items()
+            if task is not current_task
+            and not task.done()
+            and (qualified_prefix is None or key.startswith(qualified_prefix))
+        ]
+        tasks = [task for _key, task in [*active, *retired]]
         for task in tasks:
             task.cancel()
-        for key, task in list(self._tasks.items()):
-            if qualified_prefix is None or key.startswith(qualified_prefix):
-                if task is not asyncio.current_task():
-                    self._tasks.pop(key, None)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for key, task in active:
+            if self._tasks.get(key) is task:
+                self._tasks.pop(key, None)
+        for key, task in retired:
+            if self._retired_tasks.get(task) == key:
+                self._retired_tasks.pop(task, None)
+        if qualified_prefix is None:
+            self._failures.clear()
+        else:
+            for key in list(self._failures):
+                if key.startswith(qualified_prefix):
+                    self._failures.pop(key, None)
+        if tasks:
             logger.debug(
                 format_log_event(
                     "agent.task.shutdown",
@@ -135,6 +185,7 @@ class AgentTaskManager:
     def _finish(self, key: str, task: asyncio.Task[Any]) -> None:
         if self._tasks.get(key) is task:
             self._tasks.pop(key, None)
+        self._retired_tasks.pop(task, None)
         if task.cancelled():
             logger.debug(
                 format_log_event(
@@ -147,6 +198,7 @@ class AgentTaskManager:
             return
         error = task.exception()
         if error is not None:
+            self._failures[key] = self._snapshot_task(key, task)
             logger.error(
                 format_log_event(
                     "agent.task.failed",

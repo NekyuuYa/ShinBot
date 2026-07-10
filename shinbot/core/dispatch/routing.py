@@ -160,18 +160,18 @@ class RouteTable:
             rule = entry.rule
             if not rule.enabled:
                 continue
-            if self._matches_condition(rule, event, message, element_types, match_context):
-                if match_context is not None and match_context.rule_filter is not None:
-                    try:
-                        if not match_context.rule_filter(rule):
-                            continue
-                    except Exception:
-                        logger.exception(
-                            "route_rule_filter_error: rule_id=%s target=%s",
-                            rule.id,
-                            rule.target,
-                        )
+            if match_context is not None and match_context.rule_filter is not None:
+                try:
+                    if not match_context.rule_filter(rule):
                         continue
+                except Exception:
+                    logger.exception(
+                        "route_rule_filter_error: rule_id=%s target=%s",
+                        rule.id,
+                        rule.target,
+                    )
+                    continue
+            if self._matches_condition(rule, event, message, element_types, match_context):
                 matched_entries.append(entry)
 
         observers = [

@@ -64,3 +64,60 @@ async def test_task_manager_snapshots_are_filtered_by_prefix() -> None:
     assert snapshots[0].error is None
 
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_replaced_task_remains_tracked_until_cancellation_finishes() -> None:
+    manager = AgentTaskManager()
+    old_started = asyncio.Event()
+    old_cancelled = asyncio.Event()
+    release_old = asyncio.Event()
+
+    async def old_worker() -> None:
+        old_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            old_cancelled.set()
+            await release_old.wait()
+
+    async def new_worker() -> None:
+        await asyncio.Event().wait()
+
+    old_task = manager.create_task("agent:test:review", old_worker())
+    await old_started.wait()
+    new_task = manager.create_task("agent:test:review", new_worker())
+    await old_cancelled.wait()
+
+    assert set(manager.tasks(prefix="agent:test:review")) == {old_task, new_task}
+
+    release_old.set()
+    await old_task
+    assert manager.tasks(prefix="agent:test:review") == [new_task]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_task_manager_retains_failure_snapshot_until_next_attempt() -> None:
+    manager = AgentTaskManager()
+
+    async def fail() -> None:
+        raise RuntimeError("review handoff failed")
+
+    manager.create_task("agent:test:review", fail(), name="review:failed")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    failures = manager.failures(prefix="agent:test:review")
+    assert len(failures) == 1
+    assert failures[0].name == "review:failed"
+    assert failures[0].error == "RuntimeError: review handoff failed"
+
+    replacement = manager.create_task(
+        "agent:test:review",
+        asyncio.Event().wait(),
+        name="review:replacement",
+    )
+    assert manager.failures(prefix="agent:test:review") == []
+    replacement.cancel()
+    await asyncio.gather(replacement, return_exceptions=True)

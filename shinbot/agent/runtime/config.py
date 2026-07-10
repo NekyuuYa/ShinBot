@@ -387,6 +387,10 @@ def _review_workflow_config(
             active_chat.get("half_life_seconds"),
             20.0,
         ),
+        reply_commit_timeout_seconds=_float(
+            review.get("reply_commit_timeout_seconds"),
+            20.0,
+        ),
         active_chat_bootstrap_timeout_seconds=_float(
             review.get("bootstrap_timeout_seconds"),
             20.0,

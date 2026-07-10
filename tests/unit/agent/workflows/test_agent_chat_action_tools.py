@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from shinbot.agent.services.tools import ToolCallRequest, ToolManager, ToolRegistry
@@ -32,6 +34,19 @@ class FakeAdapter:
     async def call_api(self, method: str, params: dict[str, object]) -> dict[str, object]:
         self.api_calls.append((method, dict(params)))
         return {"ok": True, "method": method}
+
+
+class CancellationAfterAcceptAdapter(FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.accepted = asyncio.Event()
+        self.send_attempts = 0
+
+    async def send(self, session_id: str, elements: list[object]) -> FakeSendHandle:
+        self.send_attempts += 1
+        self.accepted.set()
+        await asyncio.Event().wait()
+        return FakeSendHandle(message_id="unreachable")
 
 
 class FakeAdapterManager:
@@ -137,6 +152,33 @@ async def test_send_reply_idempotency_releases_key_after_send_failure() -> None:
     assert retried.success is True
     assert retried.output["sent"] is True
     assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_reply_cancellation_keeps_key_deduplicated() -> None:
+    adapter = CancellationAfterAcceptAdapter()
+    manager = _register_tools(adapter, store=SendReplyIdempotencyStore())
+    call = ToolCallRequest(
+        tool_name="send_reply",
+        arguments={"text": "hello", "idempotency_key": "review:1:0"},
+        caller="test.review",
+        instance_id="bot",
+        session_id="bot:group:room",
+    )
+
+    send_task = asyncio.create_task(manager.execute(call))
+    await adapter.accepted.wait()
+    send_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await send_task
+
+    retried = await manager.execute(call)
+
+    assert retried.success is True
+    assert retried.output["sent"] is False
+    assert retried.output["deduplicated"] is True
+    assert retried.output["deduplicated_reason"] == "completed"
+    assert adapter.send_attempts == 1
 
 
 def test_send_reply_idempotency_store_prunes_by_ttl_and_capacity() -> None:

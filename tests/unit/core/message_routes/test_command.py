@@ -53,6 +53,102 @@ class TestCommandRegistry:
         assert self.reg.get("a") is None
         assert self.reg.get("c") is not None
 
+    def test_unregister_owner_restores_overridden_command_and_indexes(self):
+        original = CommandDef(
+            name="shared",
+            handler=noop_handler,
+            aliases=["original-alias"],
+            permission="cmd.original",
+            owner="plugin-a",
+        )
+        override = CommandDef(
+            name="shared",
+            handler=noop_handler,
+            aliases=["override-alias"],
+            permission="cmd.override",
+            owner="plugin-b",
+        )
+        self.reg.register(original)
+        self.reg.register(override)
+
+        assert self.reg.get("shared") is override
+        assert self.reg.get("original-alias") is None
+        assert self.reg.get("override-alias") is override
+
+        assert self.reg.unregister_by_owner("plugin-b") == 1
+
+        assert self.reg.get("shared") is original
+        assert self.reg.get("original-alias") is original
+        assert self.reg.get("override-alias") is None
+        assert self.reg.default_permission_for("shared") == "cmd.original"
+
+    def test_unregister_hidden_owner_keeps_current_override(self):
+        original = CommandDef(name="shared", handler=noop_handler, owner="plugin-a")
+        override = CommandDef(name="shared", handler=noop_handler, owner="plugin-b")
+        self.reg.register(original)
+        self.reg.register(override)
+
+        assert self.reg.unregister_by_owner("plugin-a") == 1
+        assert self.reg.get("shared") is override
+
+    def test_unregister_owner_restores_exact_command_triggers(self):
+        original = CommandDef(
+            name="shared",
+            handler=noop_handler,
+            aliases=["original-exact"],
+            priority=CommandPriority.P1_EXACT,
+            owner="plugin-a",
+        )
+        override = CommandDef(
+            name="shared",
+            handler=noop_handler,
+            aliases=["override-exact"],
+            priority=CommandPriority.P1_EXACT,
+            owner="plugin-b",
+        )
+        self.reg.register(original)
+        self.reg.register(override)
+
+        assert self.reg.resolve("original-exact", ["/"]) is None
+        assert self.reg.resolve("override-exact", ["/"]).command is override
+
+        self.reg.unregister_by_owner("plugin-b")
+
+        assert self.reg.resolve("original-exact", ["/"]).command is original
+        assert self.reg.resolve("override-exact", ["/"]) is None
+
+    def test_unregister_owner_restores_regex_registration_order(self):
+        original = CommandDef(
+            name="shared",
+            handler=noop_handler,
+            priority=CommandPriority.P2_REGEX,
+            pattern=re.compile("shared"),
+            owner="plugin-a",
+        )
+        competing = CommandDef(
+            name="competing",
+            handler=noop_handler,
+            priority=CommandPriority.P2_REGEX,
+            pattern=re.compile("shared"),
+            owner="plugin-c",
+        )
+        override = CommandDef(
+            name="shared",
+            handler=noop_handler,
+            priority=CommandPriority.P2_REGEX,
+            pattern=re.compile("shared"),
+            owner="plugin-b",
+        )
+        self.reg.register(original)
+        self.reg.register(competing)
+        self.reg.register(override)
+
+        assert self.reg.resolve("shared", ["/"]).command is competing
+
+        self.reg.unregister_by_owner("plugin-b")
+
+        assert self.reg.resolve("shared", ["/"]).command is original
+
     def test_all_commands(self):
         self.reg.register(CommandDef(name="a", handler=noop_handler))
         self.reg.register(CommandDef(name="b", handler=noop_handler))

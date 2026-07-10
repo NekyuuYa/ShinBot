@@ -7,15 +7,19 @@ from review_workflow_support import (
     DatabaseManager,
     DatabaseReviewMessageStore,
     FailingBlockDigestRunner,
+    FakeModelRuntime,
     FakeReviewScheduler,
+    FakeReviewToolManager,
     FakeSummaryService,
     FixedCandidateScanRunner,
     FixedReviewPolicy,
+    LLMReplyDecisionStageRunner,
     RecordingActiveChatBootstrapRunner,
     RecordingBlockDigestRunner,
     RecordingReplyDecisionRunner,
     RecordingReviewContextBuilder,
     ReviewCoordinator,
+    ReviewLLMRunnerConfig,
     ReviewPlan,
     ReviewWorkflowConfig,
     SelectingReviewScanRunner,
@@ -23,14 +27,16 @@ from review_workflow_support import (
     UnreadMessage,
     YieldingReviewScanRunner,
     _insert_message,
+    _make_prompt_registry,
     _strip_run_id_from_calls,
     asyncio,
     make_agent_signal,
     pytest,
 )
 
-from shinbot.agent.runners.review_models import ReviewScanStageOutput
+from shinbot.agent.runners.review_models import ReplyDecisionStageOutput, ReviewScanStageOutput
 from shinbot.agent.runtime.task_manager import AgentTaskManager
+from shinbot.agent.workflows.chat_actions.tool_registration import SendReplyIdempotencyStore
 
 
 class _InterruptingReviewScanRunner:
@@ -49,6 +55,96 @@ class _InterruptingReviewScanRunner:
             candidate_message_ids=[],
             reason=f"scanned_{len(message_ids)}",
         )
+
+
+class _CommitBlockingReplyRunner:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.completed = asyncio.Event()
+
+    async def run(self, stage_input) -> ReplyDecisionStageOutput:
+        self.started.set()
+        await self.release.wait()
+        self.completed.set()
+        return ReplyDecisionStageOutput(
+            replied=True,
+            target_message_ids=list(stage_input.metadata["candidate_message_ids"]),
+            reason="reply_side_effect_committed",
+        )
+
+
+class _CancellationResistantReplyRunner:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.release = asyncio.Event()
+        self.completed = asyncio.Event()
+
+    async def run(self, stage_input) -> ReplyDecisionStageOutput:
+        self.started.set()
+        while not self.release.is_set():
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+        self.completed.set()
+        return ReplyDecisionStageOutput(
+            replied=True,
+            target_message_ids=list(stage_input.metadata["candidate_message_ids"]),
+            reason="late_reply_side_effect",
+        )
+
+
+class _DeferredConsumptionReplyRunner:
+    async def run(self, stage_input) -> ReplyDecisionStageOutput:
+        return ReplyDecisionStageOutput(
+            target_message_ids=list(stage_input.metadata["candidate_message_ids"]),
+            reason="send_reply_tool_pending:in_flight",
+            consumption_deferred=True,
+        )
+
+
+class _CommittedThenFailingReviewToolManager(FakeReviewToolManager):
+    def __init__(self) -> None:
+        super().__init__()
+        self.store = SendReplyIdempotencyStore()
+        self.committed = asyncio.Event()
+        self.release_failure = asyncio.Event()
+        self.send_count = 0
+
+    async def execute(self, call):
+        self.execute_calls.append(call)
+        if call.tool_name != "send_reply":
+            return _review_tool_result(output={"sent": True})
+        key = str(call.arguments["idempotency_key"])
+        claim = self.store.begin(key)
+        if not claim.accepted:
+            return _review_tool_result(
+                output={
+                    "sent": False,
+                    "deduplicated": True,
+                    "deduplicated_reason": claim.deduplicated_reason,
+                }
+            )
+        self.send_count += 1
+        self.store.finish(key)
+        self.committed.set()
+        await self.release_failure.wait()
+        raise RuntimeError("reply task failed after send committed")
+
+
+def _review_tool_result(*, output: dict[str, object]):
+    return type(
+        "FakeToolCallResult",
+        (),
+        {
+            "success": True,
+            "output": output,
+            "error_code": "",
+            "error_message": "",
+        },
+    )()
 
 
 @pytest.mark.asyncio
@@ -199,6 +295,272 @@ async def test_review_workflow_uses_message_store_for_scan_and_tail_history(tmp_
         f"ingress:bot:{message_ids[0]}",
         f"ingress:bot:{message_ids[1]}",
     ]
+
+
+@pytest.mark.asyncio
+async def test_review_cancellation_commits_consumption_after_reply_stage(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "bot:group:room"
+    message_id = _insert_message(db, raw_text="reply once", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id=session_id,
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review(session_id, now=10.0)
+    reply_runner = _CommitBlockingReplyRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(review_scan_batch_size=1),
+        message_store=DatabaseReviewMessageStore(db),
+        scan_runner=FixedCandidateScanRunner([message_id]),
+        reply_runner=reply_runner,
+        now=lambda: 10.0,
+    )
+    review_task = asyncio.create_task(
+        workflow.run(
+            scheduler=scheduler,
+            session_id=session_id,
+            review_plan=review_plan,
+            unread_messages=scheduler.unread_messages(session_id),
+        )
+    )
+    await reply_runner.started.wait()
+
+    review_task.cancel()
+    await asyncio.sleep(0)
+    assert review_task.done() is False
+    reply_runner.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await review_task
+    assert reply_runner.completed.is_set()
+    assert scheduler.unread_messages(session_id) == []
+    assert scheduler.state_for(session_id) == AgentState.REVIEW
+
+
+@pytest.mark.asyncio
+async def test_review_cancellation_detaches_stuck_reply_tail_without_consuming(
+    tmp_path,
+) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "bot:group:room"
+    message_id = _insert_message(db, raw_text="stuck reply", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id=session_id,
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review(session_id, now=10.0)
+    reply_runner = _CancellationResistantReplyRunner()
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(
+            review_scan_batch_size=1,
+            reply_commit_timeout_seconds=0.01,
+        ),
+        message_store=DatabaseReviewMessageStore(db),
+        scan_runner=FixedCandidateScanRunner([message_id]),
+        reply_runner=reply_runner,
+        now=lambda: 10.0,
+    )
+    review_task = asyncio.create_task(
+        workflow.run(
+            scheduler=scheduler,
+            session_id=session_id,
+            review_plan=review_plan,
+            unread_messages=scheduler.unread_messages(session_id),
+        )
+    )
+    await reply_runner.started.wait()
+
+    started_at = asyncio.get_running_loop().time()
+    review_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(review_task, timeout=0.5)
+
+    assert asyncio.get_running_loop().time() - started_at < 0.4
+    assert reply_runner.cancelled.is_set()
+    assert scheduler.unread_messages(session_id) != []
+    assert [task.get_name() for task in workflow.pending_reply_commit_tasks()] == [
+        f"review-reply-commit:{session_id}"
+    ]
+
+    shutdown_started_at = asyncio.get_running_loop().time()
+    await workflow.shutdown()
+    assert asyncio.get_running_loop().time() - shutdown_started_at < 0.4
+    assert workflow.pending_reply_commit_tasks() != []
+
+    reply_runner.release.set()
+    await asyncio.wait_for(reply_runner.completed.wait(), timeout=0.5)
+    await asyncio.sleep(0)
+    assert workflow.pending_reply_commit_tasks() == []
+    assert scheduler.unread_messages(session_id) != []
+
+
+@pytest.mark.asyncio
+async def test_review_defers_candidate_consumption_while_reply_is_in_flight(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "bot:group:room"
+    message_id = _insert_message(db, raw_text="pending reply", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id=session_id,
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review(session_id, now=10.0)
+    workflow = ReviewCoordinator(
+        ReviewWorkflowConfig(review_scan_batch_size=1),
+        message_store=DatabaseReviewMessageStore(db),
+        scan_runner=FixedCandidateScanRunner([message_id]),
+        reply_runner=_DeferredConsumptionReplyRunner(),
+        now=lambda: 10.0,
+    )
+
+    result = await workflow.run(
+        scheduler=scheduler,
+        session_id=session_id,
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages(session_id),
+    )
+
+    assert result.reply.consumption_deferred is True
+    assert result.consumed_ranges == []
+    assert [item.message_log_id for item in scheduler.unread_messages(session_id)] == [
+        message_id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_review_failure_is_resumed_without_duplicate_reply(tmp_path) -> None:
+    db = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    db.initialize()
+    session_id = "bot:group:room"
+    message_id = _insert_message(db, raw_text="reply once", created_at=1000.0)
+    db.agent_scheduler.add_unread(
+        UnreadMessage(
+            session_id=session_id,
+            message_log_id=message_id,
+            sender_id="user-1",
+            created_at=1.0,
+        )
+    )
+    review_plan = FixedReviewPolicy().initial_plan(session_id=session_id, now=10.0)
+    db.agent_scheduler.set_review_plan(review_plan)
+    scheduler = AgentScheduler(
+        response_profile_resolver=lambda _signal: "balanced",
+        review_policy=FixedReviewPolicy(),
+        inbox=db.agent_scheduler,
+        state_store=db.agent_scheduler,
+        now=lambda: 10.0,
+    )
+    scheduler.prepare_due_review(session_id, now=10.0)
+    tool_manager = _CommittedThenFailingReviewToolManager()
+    tool_call = {
+        "id": "reply-1",
+        "function": {
+            "name": "send_reply",
+            "arguments": f'{{"text": "hello", "quote_message_log_id": {message_id}}}',
+        },
+    }
+    reply_runner = LLMReplyDecisionStageRunner(
+        FakeModelRuntime(
+            [
+                {"execution_id": "exec-old", "tool_calls": [tool_call]},
+                {"execution_id": "exec-replacement", "tool_calls": [tool_call]},
+            ]
+        ),
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    def make_workflow() -> ReviewCoordinator:
+        return ReviewCoordinator(
+            ReviewWorkflowConfig(review_scan_batch_size=1),
+            message_store=DatabaseReviewMessageStore(db),
+            scan_runner=FixedCandidateScanRunner([message_id]),
+            reply_runner=reply_runner,
+            now=lambda: 10.0,
+        )
+
+    old_workflow = make_workflow()
+    frozen_unread = scheduler.unread_messages(session_id)
+    old_review_task = asyncio.create_task(
+        old_workflow.run(
+            scheduler=scheduler,
+            session_id=session_id,
+            review_plan=review_plan,
+            unread_messages=frozen_unread,
+        )
+    )
+    await tool_manager.committed.wait()
+
+    old_review_task.cancel()
+    await asyncio.sleep(0)
+    assert old_review_task.done() is False
+    assert scheduler.unread_messages(session_id) == frozen_unread
+
+    replacement_workflow = make_workflow()
+    replacement_result = await replacement_workflow.run(
+        scheduler=scheduler,
+        session_id=session_id,
+        review_plan=review_plan,
+        unread_messages=scheduler.unread_messages(session_id),
+    )
+
+    assert replacement_result.failed is False
+    assert tool_manager.send_count == 1
+    assert [
+        call.arguments["idempotency_key"] for call in tool_manager.execute_calls
+    ] == [
+        f"review:{session_id}:{message_id}:send_reply:0",
+        f"review:{session_id}:{message_id}:send_reply:0",
+    ]
+    assert scheduler.unread_messages(session_id) == []
+
+    tool_manager.release_failure.set()
+    with pytest.raises(asyncio.CancelledError):
+        await old_review_task
+    assert scheduler.unread_messages(session_id) == []
+    await replacement_workflow.wait_pending_bootstraps()
 
 
 @pytest.mark.asyncio

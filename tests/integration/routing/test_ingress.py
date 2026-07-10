@@ -46,7 +46,7 @@ from shinbot.core.platform.adapter_manager import BaseAdapter, MessageHandle
 from shinbot.core.security.permission import PermissionEngine
 from shinbot.core.state.session import SessionManager
 from shinbot.persistence import DatabaseManager
-from shinbot.schema.elements import MessageElement
+from shinbot.schema.elements import Message, MessageElement
 from shinbot.schema.events import MessagePayload, UnifiedEvent
 from shinbot.schema.resources import Channel, Member, User
 from shinbot.schema.routing import MessageRoutingStatus
@@ -176,6 +176,167 @@ async def test_ingress_persists_then_marks_dispatched_and_schedules_target(tmp_p
     assert row["routing_status"] == "dispatched"
     assert row["routed_at"] is not None
     assert row["routing_skip_reason"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["message-created", "guild-member-added"])
+async def test_blocked_owner_is_filtered_before_custom_matcher(
+    tmp_path,
+    event_type: str,
+) -> None:
+    owner = "deactivating-plugin"
+    table = RouteTable()
+    targets = RouteTargetRegistry()
+    matcher_calls: list[str] = []
+    handler_calls: list[str] = []
+
+    def custom_matcher(_event: UnifiedEvent, _message: Message) -> bool:
+        matcher_calls.append(event_type)
+        return True
+
+    rule = RouteRule(
+        id=f"route.blocked.{event_type}",
+        priority=10,
+        condition=RouteCondition(
+            event_types=frozenset({event_type}),
+            custom_matcher=custom_matcher,
+        ),
+        target="blocked-target",
+        owner=owner,
+    )
+    table.register(rule)
+    targets.register(
+        "blocked-target",
+        lambda _context, _rule: handler_calls.append(event_type),
+        owner=owner,
+    )
+    await targets.cancel_owner_tasks(owner)
+    ingress, _db, adapter = build_ingress(
+        tmp_path,
+        route_table=table,
+        route_targets=targets,
+    )
+
+    result = await ingress.process_event(make_event(event_type=event_type), adapter)
+    await asyncio.sleep(0)
+
+    assert result.matched_rules == []
+    assert matcher_calls == []
+    assert handler_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ingress_shutdown_cancels_and_awaits_route_target_tasks(tmp_path) -> None:
+    table = RouteTable()
+    add_message_route(table)
+    targets = RouteTargetRegistry()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def handler(_context: RouteDispatchContext, _rule: RouteRule) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    targets.register("recorder", handler)
+    ingress, _db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+
+    await ingress.process_event(make_event("hello"), adapter)
+    await started.wait()
+
+    assert ingress.pending_target_task_count == 1
+
+    await ingress.shutdown()
+
+    assert cancelled.is_set()
+    assert ingress.pending_target_task_count == 0
+
+
+@pytest.mark.asyncio
+async def test_route_target_registry_cancels_only_selected_owner_tasks(tmp_path) -> None:
+    table = RouteTable()
+    targets = RouteTargetRegistry()
+    started = {owner: asyncio.Event() for owner in ("plugin-a", "plugin-b")}
+    cancelled = {owner: asyncio.Event() for owner in ("plugin-a", "plugin-b")}
+
+    def make_handler(owner: str):
+        async def handler(_context: RouteDispatchContext, _rule: RouteRule) -> None:
+            started[owner].set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled[owner].set()
+                raise
+
+        return handler
+
+    for priority, owner in enumerate(("plugin-a", "plugin-b"), start=10):
+        target = f"target.{owner}"
+        table.register(
+            RouteRule(
+                id=f"route.{owner}",
+                priority=priority,
+                condition=RouteCondition(event_types=frozenset({"message-created"})),
+                target=target,
+                owner=owner,
+            )
+        )
+        targets.register(target, make_handler(owner), owner=owner)
+
+    ingress, _db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+    await ingress.process_event(make_event("hello"), adapter)
+    await asyncio.gather(*(event.wait() for event in started.values()))
+
+    await targets.cancel_owner_tasks("plugin-a")
+
+    assert cancelled["plugin-a"].is_set()
+    assert not cancelled["plugin-b"].is_set()
+    assert targets.pending_task_count_for_owner("plugin-a") == 0
+    assert targets.pending_task_count_for_owner("plugin-b") == 1
+    assert ingress.pending_target_task_count == 1
+
+    await ingress.shutdown()
+    assert cancelled["plugin-b"].is_set()
+
+
+@pytest.mark.asyncio
+async def test_ingress_shutdown_blocks_target_after_pre_route_hook(tmp_path) -> None:
+    table = RouteTable()
+    add_message_route(table)
+    targets = RouteTargetRegistry()
+    hook_started = asyncio.Event()
+    release_hook = asyncio.Event()
+    handler_called = asyncio.Event()
+    handler_started = asyncio.Event()
+
+    async def pre_route_hook(_context: RouteDispatchContext) -> None:
+        hook_started.set()
+        await release_hook.wait()
+
+    async def run_handler() -> None:
+        handler_started.set()
+
+    def handler(_context: RouteDispatchContext, _rule: RouteRule):
+        handler_called.set()
+        return run_handler()
+
+    targets.register("recorder", handler)
+    ingress, _db, adapter = build_ingress(tmp_path, route_table=table, route_targets=targets)
+    ingress.add_pre_route_hook(pre_route_hook)
+
+    process_task = asyncio.create_task(ingress.process_event(make_event("hello"), adapter))
+    await hook_started.wait()
+    await ingress.shutdown()
+    release_hook.set()
+    await process_task
+    await asyncio.sleep(0)
+
+    assert not handler_called.is_set()
+    assert not handler_started.is_set()
+    assert ingress.pending_target_task_count == 0
 
 
 @pytest.mark.asyncio

@@ -95,9 +95,3 @@ def setup(plg: Plugin) -> None:
         return SatoriAdapter(instance_id=instance_id, platform=platform, config=cfg)
 
     plg.register_adapter_factory("satori", _satori_factory)
-
-
-async def on_disable(plg: Plugin) -> None:
-    """Unregister the Satori factory on plugin unload / hot-reload."""
-    if plg._adapter_manager is not None:
-        plg._adapter_manager.unregister_adapter("satori")

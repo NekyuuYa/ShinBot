@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         ReviewWorkflowResult,
     )
     from shinbot.agent.runners.review_idle_planning import IdleReviewPlanningStageRunner
+    from shinbot.agent.runtime.task_manager import AgentTaskScope
     from shinbot.agent.scheduler.scheduler import AgentScheduler
 
 
@@ -66,10 +67,16 @@ class ActiveReplyDispatcher:
         self.last_review_result: ReviewWorkflowResult | None = None
         self.last_review_explanation: ReviewWorkflowExplanation | None = None
         self._review_tasks: dict[str, asyncio.Task[None]] = {}
+        self._review_task_scope: AgentTaskScope | None = None
 
     def bind_agent_scheduler(self, scheduler: AgentScheduler) -> None:
         """Bind the owning scheduler so review workflow can return state decisions."""
         self._agent_scheduler = scheduler
+
+    def bind_review_task_scope(self, scope: AgentTaskScope) -> None:
+        """Bind the task scope used to run interruptible review workflows."""
+
+        self._review_task_scope = scope
 
     async def run_active_reply(
         self,
@@ -215,11 +222,59 @@ class ActiveReplyDispatcher:
         unread_messages: list[UnreadMessage],
     ) -> None:
         """Run the review workflow for a session and hand off to active chat if needed.
+
         Args:
             session_id: The session to review.
             review_plan: The current review plan with timing metadata.
             unread_messages: Messages accumulated since the last review.
         """
+        if await self._await_previous_review_tail(session_id):
+            if self._agent_scheduler is not None:
+                unread_messages = self._agent_scheduler.unread_messages(session_id)
+        if self._review_task_scope is not None:
+            task = self._review_task_scope.create_task(
+                session_id,
+                self._run_review_workflow(
+                    session_id=session_id,
+                    review_plan=review_plan,
+                    unread_messages=unread_messages,
+                ),
+                name=f"agent-review:{session_id}",
+            )
+            self._review_tasks[session_id] = task
+            task.add_done_callback(
+                lambda completed, target_session_id=session_id: self._finish_review_task(
+                    target_session_id,
+                    completed,
+                )
+            )
+            return
+
+        await self._run_review_workflow(
+            session_id=session_id,
+            review_plan=review_plan,
+            unread_messages=unread_messages,
+        )
+
+    async def _await_previous_review_tail(self, session_id: str) -> bool:
+        """Fence a replacement review behind the previous run's cancellation tail."""
+
+        previous = self._review_tasks.get(session_id)
+        if previous is None or previous is asyncio.current_task():
+            return False
+        if not previous.done():
+            previous.cancel()
+            await asyncio.gather(previous, return_exceptions=True)
+        self._finish_review_task(session_id, previous)
+        return True
+
+    async def _run_review_workflow(
+        self,
+        *,
+        session_id: str,
+        review_plan: ReviewPlan,
+        unread_messages: list[UnreadMessage],
+    ) -> None:
         if self._review_coordinator is None or self._agent_scheduler is None:
             return
         current_task = asyncio.current_task()
@@ -282,8 +337,16 @@ class ActiveReplyDispatcher:
                     ),
                 )
         finally:
-            if self._review_tasks.get(session_id) is current_task:
-                self._review_tasks.pop(session_id, None)
+            if current_task is not None:
+                self._finish_review_task(session_id, current_task)
+
+    def _finish_review_task(
+        self,
+        session_id: str,
+        task: asyncio.Task[Any],
+    ) -> None:
+        if self._review_tasks.get(session_id) is task:
+            self._review_tasks.pop(session_id, None)
 
     def cancel_review(self, session_id: str) -> None:
         """Cancel an in-flight review workflow for the given session."""

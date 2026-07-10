@@ -573,11 +573,13 @@ class ActiveChatFastRunner:
 
     def _active_chat_tools(self, batch: ActiveChatBatch) -> list[dict[str, Any]]:
         instance_id = instance_id_from_session(batch.session_id)
+        user_id = _user_id_from_batch(batch)
         builtin_tools = self._tool_manager.build_request_tools(
             ["send_reply", "no_reply", "send_poke", "send_reaction"],
             caller=self._config.caller,
             instance_id=instance_id,
             session_id=batch.session_id,
+            user_id=user_id,
             tags={CHAT_ACTION_TOOL_TAG},
         )
         active_tools = [_active_chat_tool_schema(tool) for tool in builtin_tools]
@@ -588,6 +590,7 @@ class ActiveChatFastRunner:
             caller=self._config.caller,
             instance_id=instance_id,
             session_id=batch.session_id,
+            user_id=user_id,
         )
         return merge_tool_schemas(active_tools, extra_tools)
 
@@ -669,12 +672,15 @@ class ActiveChatFastRunner:
         batch: ActiveChatBatch,
         result: Any,
     ) -> ActiveChatToolLoopResult:
+        user_id = _user_id_from_batch(batch)
         return await self._tool_loop.execute(
             result.tool_calls,
             tool_manager=self._tool_manager,
             instance_id=instance_id_from_session(batch.session_id),
             session_id=batch.session_id,
             run_id=str(result.execution_id or ""),
+            user_id=user_id,
+            trace_id=_tool_trace_id_from_batch(batch, user_id=user_id),
         )
 
     def _resolve_instance_config(self, instance_id: str) -> Any | None:
@@ -941,6 +947,27 @@ def _self_platform_id_from_batch(batch: ActiveChatBatch) -> str:
     for message in reversed(batch.messages):
         if message.self_platform_id:
             return message.self_platform_id
+    return ""
+
+
+def _user_id_from_batch(batch: ActiveChatBatch) -> str:
+    sender_ids = {
+        str(message.sender_id or "").strip()
+        for message in batch.messages
+        if str(message.sender_id or "").strip()
+    }
+    return next(iter(sender_ids)) if len(sender_ids) == 1 else ""
+
+
+def _tool_trace_id_from_batch(batch: ActiveChatBatch, *, user_id: str) -> str:
+    if not user_id:
+        return ""
+    for message in batch.messages:
+        if str(message.sender_id or "").strip() != user_id:
+            continue
+        trace_id = str(message.trace_id or "").strip()
+        if trace_id:
+            return trace_id
     return ""
 
 

@@ -20,6 +20,7 @@ on:
       - "tests/**"
       - "main.py"
       - "pyproject.toml"
+      - "scripts/test_audit.py"
       - "uv.lock"
       - ".python-version"
       - ".github/workflows/python-ci.yml"
@@ -32,6 +33,7 @@ on:
       - "tests/**"
       - "main.py"
       - "pyproject.toml"
+      - "scripts/test_audit.py"
       - "uv.lock"
       - ".python-version"
       - ".github/workflows/python-ci.yml"
@@ -45,7 +47,7 @@ permissions:
 
 jobs:
   lint:
-    name: Ruff Lint
+    name: Ruff and Test Audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -67,6 +69,9 @@ jobs:
 
       - name: Run ruff check
         run: uv run --group dev ruff check .
+
+      - name: Audit test suite governance
+        run: uv run --group dev python scripts/test_audit.py
 
   security:
     name: Dependency Audit
@@ -98,7 +103,6 @@ jobs:
   typecheck:
     name: Mypy Typecheck
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -143,6 +147,38 @@ jobs:
 
       - name: Run pytest fast gate
         run: uv run --group dev python -m pytest -m "not integration and not slow and not e2e"
+
+  test-integration-smoke:
+    name: Pytest Integration Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Run integration smoke suite
+        run: >-
+          uv run --group dev python -m pytest -m "integration and not slow"
+          tests/integration/boot/test_boot_runtime.py
+          tests/integration/routing/test_ingress.py
+          tests/integration/core/test_app.py
+          tests/integration/plugins/test_plugin.py
+          tests/integration/agent/runtime/test_agent_runtime_dispatch.py
+          tests/integration/agent/services/test_model_runtime_service.py
+          tests/integration/agent/workflows/test_agent_active_chat_runner_context.py
 
   test-e2e-platform-sim:
     name: Pytest E2E Platform Simulation

@@ -282,6 +282,29 @@ def test_custom_matcher_can_receive_optional_match_context() -> None:
     ) == []
 
 
+def test_rule_filter_rejects_before_custom_matcher() -> None:
+    matcher_called = False
+
+    def custom_matcher(_event: UnifiedEvent, _message: Message) -> bool:
+        nonlocal matcher_called
+        matcher_called = True
+        return True
+
+    table = RouteTable()
+    rule = make_rule(
+        "filtered",
+        condition=RouteCondition(custom_matcher=custom_matcher),
+    )
+    table.register(rule)
+
+    assert table.match(
+        make_event(),
+        Message.from_text("hello"),
+        RouteMatchContext(rule_filter=lambda _rule: False),
+    ) == []
+    assert matcher_called is False
+
+
 def test_disabled_rules_are_ignored() -> None:
     table = RouteTable()
     disabled = make_rule("disabled", priority=100, enabled=False)

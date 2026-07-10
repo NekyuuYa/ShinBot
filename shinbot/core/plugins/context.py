@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -107,8 +108,10 @@ class Plugin:
         self._registered_keywords: list[str] = []
         self._registered_routes: list[str] = []
         self._registered_tools: list[str] = []
+        self._registered_adapter_factories: list[str] = []
         self._registered_model_observers: list[ModelRuntimeObserver] = []
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._task_creation_frozen = False
         self.logger = get_plugin_logger(plugin_id)
 
     # ── Background task management ────────────────────────────────────
@@ -127,28 +130,123 @@ class Plugin:
 
         Returns:
             The :class:`asyncio.Task` that was created.
+
+        Raises:
+            RuntimeError: If plugin deactivation has started.
         """
+        if self._task_creation_frozen:
+            if inspect.iscoroutine(coro):
+                coro.close()
+            raise RuntimeError(
+                f"Plugin {self.plugin_id!r} cannot create background tasks during deactivation"
+            )
         task = asyncio.create_task(coro, name=f"plugin.{self.plugin_id}.{name or 'bg'}")
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
+
+    def begin_deactivation(self) -> None:
+        """Freeze creation of new plugin-owned background tasks."""
+
+        self._task_creation_frozen = True
+
+    @property
+    def task_creation_frozen(self) -> bool:
+        """Return whether plugin-owned task creation has been frozen."""
+
+        return self._task_creation_frozen
 
     @property
     def background_tasks(self) -> frozenset[asyncio.Task[Any]]:
         """Return the set of currently running background tasks."""
         return frozenset(self._background_tasks)
 
-    async def cancel_background_tasks(self) -> None:
+    async def cancel_background_tasks(
+        self,
+        *,
+        preserve_task: asyncio.Task[Any] | None = None,
+    ) -> None:
         """Cancel and await all background tasks owned by this plugin.
 
-        Safe to call even if no tasks are running.
+        Safe to call even if no tasks are running. ``preserve_task`` lets a
+        plugin-owned task finish a lifecycle operation that it initiated.
         """
-        if not self._background_tasks:
-            return
-        for task in self._background_tasks:
-            task.cancel()
-        await asyncio.gather(*self._background_tasks, return_exceptions=True)
-        self._background_tasks.clear()
+        self.begin_deactivation()
+        current_task = asyncio.current_task()
+        while True:
+            tasks = tuple(
+                task
+                for task in self._background_tasks
+                if task is not current_task
+                and task is not preserve_task
+                and not task.done()
+            )
+            if not tasks:
+                completed = tuple(task for task in self._background_tasks if task.done())
+                self._background_tasks.difference_update(completed)
+                return
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._background_tasks.difference_update(tasks)
+
+    async def _run_owned_callback(
+        self,
+        callback: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        task_name: str,
+        skip_when_inactive: bool = False,
+    ) -> Any:
+        """Invoke a plugin callback inside its owner-aware task scope."""
+
+        supervisor = self._route_targets
+        if supervisor is not None and not supervisor.accepts_tasks(self.plugin_id):
+            if skip_when_inactive:
+                return None
+            raise self._inactive_callback_error(task_name)
+
+        async def invoke() -> Any:
+            result = callback(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        if supervisor is None:
+            return await invoke()
+
+        try:
+            return await supervisor.run_owned_awaitable(
+                invoke(),
+                owner=self.plugin_id,
+                name=f"plugin.callback.{self.plugin_id}.{task_name}",
+            )
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+            if supervisor.accepts_tasks(self.plugin_id):
+                raise
+            if skip_when_inactive:
+                return None
+            raise self._inactive_callback_error(task_name) from None
+
+    def _ensure_owner_accepts_callback(self, callback_name: str) -> None:
+        """Reject synchronous callback entry after the plugin owner is blocked."""
+
+        if self._route_targets is not None and not self._route_targets.accepts_tasks(
+            self.plugin_id
+        ):
+            raise self._inactive_callback_error(callback_name)
+
+    def _inactive_callback_error(self, callback_name: str) -> RuntimeError:
+        """Build the standard error raised for inactive plugin callbacks."""
+
+        return RuntimeError(
+            f"Plugin {self.plugin_id!r} cannot run callback {callback_name!r}: "
+            "the plugin owner is inactive"
+        )
 
     def on_command(
         self,
@@ -432,7 +530,9 @@ class Plugin:
                 f"Plugin {self.plugin_id!r} cannot register an adapter factory: "
                 "no AdapterManager is available in this Plugin object."
             )
-        self._adapter_manager.register_adapter(name, factory)
+        self._adapter_manager.register_adapter(name, factory, owner=self.plugin_id)
+        if name not in self._registered_adapter_factories:
+            self._registered_adapter_factories.append(name)
 
     @property
     def has_model_runtime(self) -> bool:
@@ -459,8 +559,19 @@ class Plugin:
                 f"Plugin {self.plugin_id!r} cannot register a model runtime observer: "
                 "no ModelRuntime is available in this Plugin object."
             )
-        self._model_runtime.register_observer(observer)
-        self._registered_model_observers.append(observer)
+
+        @wraps(observer)
+        async def supervised_observer(*args: Any, **kwargs: Any) -> Any:
+            return await self._run_owned_callback(
+                observer,
+                args,
+                kwargs,
+                task_name=f"model_observer.{getattr(observer, '__name__', 'callback')}",
+                skip_when_inactive=True,
+            )
+
+        self._model_runtime.register_observer(supervised_observer)
+        self._registered_model_observers.append(supervised_observer)
 
     def tool(
         self,
@@ -520,6 +631,16 @@ class Plugin:
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             """Register the wrapped function as an agent tool definition."""
             tool_id = f"{self.plugin_id}.{name}"
+
+            @wraps(func)
+            async def supervised_handler(*args: Any, **kwargs: Any) -> Any:
+                return await self._run_owned_callback(
+                    func,
+                    args,
+                    kwargs,
+                    task_name=f"tool.{name}",
+                )
+
             definition = ToolDefinition(
                 id=tool_id,
                 name=name,
@@ -527,7 +648,7 @@ class Plugin:
                 description=description,
                 input_schema=input_schema,
                 output_schema=output_schema,
-                handler=func,
+                handler=supervised_handler,
                 owner_type=ToolOwnerType.PLUGIN,
                 owner_id=self.plugin_id,
                 owner_module=getattr(func, "__module__", ""),
@@ -758,12 +879,44 @@ class Plugin:
                 "no PluginManager is available."
             )
         if hasattr(self._plugin_manager, "register_plugin_installer"):
+
+            @wraps(install_fn)
+            async def supervised_install(*args: Any, **kwargs: Any) -> Any:
+                return await self._run_owned_callback(
+                    install_fn,
+                    args,
+                    kwargs,
+                    task_name=f"installer.{installer_type}.install",
+                )
+
+            supervised_uninstall: Callable[..., Any] | None = None
+            if uninstall_fn is not None:
+
+                @wraps(uninstall_fn)
+                async def supervised_uninstall(*args: Any, **kwargs: Any) -> Any:
+                    return await self._run_owned_callback(
+                        uninstall_fn,
+                        args,
+                        kwargs,
+                        task_name=f"installer.{installer_type}.uninstall",
+                    )
+
+            supervised_validate: Callable[..., Any] | None = None
+            if validate_fn is not None:
+
+                @wraps(validate_fn)
+                def supervised_validate(*args: Any, **kwargs: Any) -> Any:
+                    self._ensure_owner_accepts_callback(
+                        f"installer.{installer_type}.validate"
+                    )
+                    return validate_fn(*args, **kwargs)
+
             self._plugin_manager.register_plugin_installer(
                 installer_type,
                 owner_plugin_id=self.plugin_id,
-                install_fn=install_fn,
-                uninstall_fn=uninstall_fn,
-                validate_fn=validate_fn,
+                install_fn=supervised_install,
+                uninstall_fn=supervised_uninstall,
+                validate_fn=supervised_validate,
                 target_dir=target_dir,
             )
 
@@ -846,9 +999,19 @@ class Plugin:
             )
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            @wraps(func)
+            async def supervised_cron(*args: Any, **kwargs: Any) -> Any:
+                return await self._run_owned_callback(
+                    func,
+                    args,
+                    kwargs,
+                    task_name=f"cron.{job_id or getattr(func, '__name__', 'callback')}",
+                    skip_when_inactive=True,
+                )
+
             self._cron_manager.add_cron_job(
                 self.plugin_id,
-                func,
+                supervised_cron,
                 cron_expr,
                 timezone=timezone,
                 job_id=job_id,

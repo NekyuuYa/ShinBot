@@ -79,6 +79,10 @@ if False:
 
 logger = get_logger(__name__, source="agent:review", color="green")
 
+_REPLY_COMMIT_CANCELLATION_GRACE_SECONDS = 0.1
+_REPLY_COMMIT_DEFAULT_TIMEOUT_SECONDS = 20.0
+_LATE_REPLY_COMMIT_SHUTDOWN_TIMEOUT_SECONDS = 0.1
+
 
 @dataclass(slots=True)
 class _ReplyDecisionWindow:
@@ -218,6 +222,7 @@ class ReviewCoordinator:
         self._block_digest_task_scope = block_digest_task_scope
         self._now = now or time.time
         self._bootstrap_tasks: set[asyncio.Task[ActiveChatBootstrapResult]] = set()
+        self._late_reply_commit_tasks: set[asyncio.Task[Any]] = set()
         self._last_bootstrap_results: dict[str, ActiveChatBootstrapResult] = {}
 
     async def run(
@@ -261,15 +266,44 @@ class ReviewCoordinator:
                 use_partial_consumption=use_partial_consumption,
                 stage_traces=stage_traces,
             )
-            reply = await self._run_reply_decision(
-                session_id=session_id,
-                scan=scan,
-                block_digests=block_digests,
-                review_run_id=review_run_id,
-                trace_by_message_id=trace_by_message_id,
-                self_platform_id=self_platform_id,
-                stage_traces=stage_traces,
+            reply_task = asyncio.create_task(
+                self._run_reply_decision(
+                    session_id=session_id,
+                    scan=scan,
+                    block_digests=block_digests,
+                    review_run_id=review_run_id,
+                    trace_by_message_id=trace_by_message_id,
+                    self_platform_id=self_platform_id,
+                    stage_traces=stage_traces,
+                ),
+                name=f"review-reply-commit:{session_id}",
             )
+            try:
+                reply = await asyncio.shield(reply_task)
+            except asyncio.CancelledError:
+                reply_completed, reply_detached = await _wait_for_task_after_cancellation(
+                    reply_task,
+                    timeout_seconds=self._config.reply_commit_timeout_seconds,
+                    session_id=session_id,
+                    review_run_id=review_run_id,
+                    trace_id=_first_trace_id(trace_by_message_id),
+                )
+                if reply_detached:
+                    self._track_late_reply_commit_task(
+                        reply_task,
+                        session_id=session_id,
+                        review_run_id=review_run_id,
+                        trace_id=_first_trace_id(trace_by_message_id),
+                    )
+                if reply_completed:
+                    self._consume_review_ranges_safely(
+                        scheduler,
+                        consumed_ranges,
+                        session_id=session_id,
+                        review_run_id=review_run_id,
+                        trace_by_message_id=trace_by_message_id,
+                    )
+                raise
             completion = scheduler.complete_review(
                 session_id,
                 enter_active_chat=True,
@@ -283,22 +317,17 @@ class ReviewCoordinator:
                 if completion.active_chat_state is not None
                 else None
             )
-            try:
-                applied_consumed_ranges = self._consume_review_ranges(
+            applied_consumed_ranges = (
+                []
+                if reply.consumption_deferred
+                else self._consume_review_ranges_safely(
                     scheduler,
                     consumed_ranges,
+                    session_id=session_id,
+                    review_run_id=review_run_id,
+                    trace_by_message_id=trace_by_message_id,
                 )
-            except Exception as exc:
-                logger.exception(
-                    format_log_event(
-                        "agent.review.consume.failed",
-                        session_id=session_id,
-                        review_run_id=review_run_id,
-                        error_code=type(exc).__name__,
-                        trace_id=_first_trace_id(trace_by_message_id),
-                    )
-                )
-                applied_consumed_ranges = []
+            )
             bootstrap = self._schedule_active_chat_bootstrap(
                 scheduler=scheduler,
                 session_id=session_id,
@@ -374,8 +403,55 @@ class ReviewCoordinator:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    def pending_reply_commit_tasks(self) -> list[asyncio.Task[Any]]:
+        """Return cancellation-resistant reply commit tasks still settling."""
+
+        return [task for task in self._late_reply_commit_tasks if not task.done()]
+
+    def _consume_review_ranges_safely(
+        self,
+        scheduler: ReviewSchedulerPort,
+        consumed_ranges: list[ConsumedUnreadRange],
+        *,
+        session_id: str,
+        review_run_id: str,
+        trace_by_message_id: dict[int, str],
+    ) -> list[ConsumedUnreadRange]:
+        try:
+            return self._consume_review_ranges(scheduler, consumed_ranges)
+        except Exception as exc:
+            logger.exception(
+                format_log_event(
+                    "agent.review.consume.failed",
+                    session_id=session_id,
+                    review_run_id=review_run_id,
+                    error_code=type(exc).__name__,
+                    trace_id=_first_trace_id(trace_by_message_id),
+                )
+            )
+            return []
+
     async def shutdown(self) -> None:
-        """Cancel pending background active chat bootstrap tasks."""
+        """Cancel coordinator-owned background tasks with a bounded late-reply wait."""
+        late_reply_tasks = self.pending_reply_commit_tasks()
+        for task in late_reply_tasks:
+            task.cancel()
+        if late_reply_tasks:
+            _done, pending = await asyncio.wait(
+                late_reply_tasks,
+                timeout=_LATE_REPLY_COMMIT_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+            if pending:
+                logger.error(
+                    format_log_event(
+                        "agent.review.reply_commit.shutdown_timeout",
+                        pending_count=len(pending),
+                        pending_tasks=sorted(task.get_name() for task in pending),
+                        timeout_seconds=(
+                            f"{_LATE_REPLY_COMMIT_SHUTDOWN_TIMEOUT_SECONDS:.3f}"
+                        ),
+                    )
+                )
         tasks = list(self._bootstrap_tasks)
         self._bootstrap_tasks.clear()
         for task in tasks:
@@ -383,6 +459,41 @@ class ReviewCoordinator:
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _track_late_reply_commit_task(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        session_id: str,
+        review_run_id: str,
+        trace_id: str,
+    ) -> None:
+        self._late_reply_commit_tasks.add(task)
+        task.add_done_callback(
+            lambda completed: self._finish_late_reply_commit_task(
+                completed,
+                session_id=session_id,
+                review_run_id=review_run_id,
+                trace_id=trace_id,
+            )
+        )
+
+    def _finish_late_reply_commit_task(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        session_id: str,
+        review_run_id: str,
+        trace_id: str,
+    ) -> None:
+        self._late_reply_commit_tasks.discard(task)
+        _consume_reply_commit_task_result(
+            task,
+            session_id=session_id,
+            review_run_id=review_run_id,
+            trace_id=trace_id,
+            late=True,
+        )
 
     def last_bootstrap_result(self, session_id: str) -> ActiveChatBootstrapResult | None:
         """Return the latest completed background bootstrap result for one session."""
@@ -488,6 +599,7 @@ class ReviewCoordinator:
         reply_message_ids: list[int] = []
         target_message_ids: list[int] = []
         reply_reasons: list[str] = []
+        consumption_deferred = False
 
         for window in self._build_reply_decision_windows(
             session_id=session_id,
@@ -539,6 +651,9 @@ class ReviewCoordinator:
                 reply_message_id = stage_output.reply_message_id
             reply_message_ids.extend(stage_output.reply_message_ids)
             target_message_ids.extend(stage_output.target_message_ids)
+            consumption_deferred = (
+                consumption_deferred or stage_output.consumption_deferred
+            )
             if stage_output.reason.strip():
                 reply_reasons.append(stage_output.reason.strip())
 
@@ -551,6 +666,7 @@ class ReviewCoordinator:
             or "noop_reply_decision",
             loaded_message_count=loaded_message_count,
             stage_input_count=stage_input_count,
+            consumption_deferred=consumption_deferred,
         )
 
     def _build_reply_decision_windows(
@@ -964,6 +1080,7 @@ class ReviewCoordinator:
                 if not batch:
                     break
                 loaded_count += len(batch)
+                defer_batch_consumption = False
                 stage_input = self._build_stage_input(
                     session_id=session_id,
                     messages=batch,
@@ -1000,12 +1117,15 @@ class ReviewCoordinator:
                     stage_output = await self._run_scan_stage(stage_input)
                     stage_traces.append(_trace_for_scan(stage_input, stage_output))
                     candidate_message_ids.extend(stage_output.candidate_message_ids)
+                    defer_batch_consumption = bool(stage_output.candidate_message_ids)
                     if stage_output.reason.strip():
                         scan_reasons.append(stage_output.reason.strip())
                 # Persist progress for this batch immediately so a forced
                 # shutdown mid-scan only loses the in-flight batch instead of
-                # the whole review run (which would re-scan from scratch).
-                self._persist_scan_batch_consumption(scheduler, session_id, batch)
+                # the whole review run (which would re-scan from scratch). A
+                # candidate batch stays unread until its reply stage commits.
+                if not defer_batch_consumption:
+                    self._persist_scan_batch_consumption(scheduler, session_id, batch)
                 remaining -= len(batch)
                 offset += len(batch)
             if offset > 0:
@@ -1312,14 +1432,34 @@ class ReviewCoordinator:
             if consumed_range.range_id is None:
                 continue
             applied.append(consumed_range)
-            if consumed_range.full_range:
-                whole_range_ids.append(consumed_range.range_id)
-                continue
-            scheduler.split_review_consumed(
-                range_id=consumed_range.range_id,
-                consumed_start_msg_log_id=consumed_range.start_msg_log_id,
-                consumed_end_msg_log_id=consumed_range.end_msg_log_id,
+            current_ranges = scheduler.unread_ranges(
+                consumed_range.session_id,
+                limit=10_000,
             )
+            for current_range in current_ranges:
+                if current_range.id is None:
+                    continue
+                consume_start = max(
+                    consumed_range.start_msg_log_id,
+                    current_range.start_msg_log_id,
+                )
+                consume_end = min(
+                    consumed_range.end_msg_log_id,
+                    current_range.end_msg_log_id,
+                )
+                if consume_start > consume_end:
+                    continue
+                if (
+                    consume_start == current_range.start_msg_log_id
+                    and consume_end == current_range.end_msg_log_id
+                ):
+                    whole_range_ids.append(current_range.id)
+                    continue
+                scheduler.split_review_consumed(
+                    range_id=current_range.id,
+                    consumed_start_msg_log_id=consume_start,
+                    consumed_end_msg_log_id=consume_end,
+                )
 
         scheduler.mark_ranges_review_consumed(_dedupe_preserve_order(whole_range_ids))
         return applied
@@ -1516,6 +1656,149 @@ class ReviewCoordinator:
             end_at=0.0,
             message_count=consumed_range.message_count,
         )
+
+
+async def _wait_for_task_after_cancellation(
+    task: asyncio.Task[Any],
+    *,
+    timeout_seconds: float,
+    session_id: str,
+    review_run_id: str,
+    trace_id: str,
+) -> tuple[bool, bool]:
+    """Bound the cancellation tail of a shielded reply commit task."""
+
+    timeout = _normalized_reply_commit_timeout(timeout_seconds)
+    settled = await _wait_for_task_until(
+        task,
+        timeout_seconds=timeout,
+    )
+    if settled:
+        return (
+            _reply_commit_task_succeeded(
+                task,
+                session_id=session_id,
+                review_run_id=review_run_id,
+                trace_id=trace_id,
+            ),
+            False,
+        )
+
+    logger.error(
+        format_log_event(
+            "agent.review.reply_commit.timeout",
+            session_id=session_id,
+            review_run_id=review_run_id,
+            timeout_seconds=f"{timeout:.3f}",
+            trace_id=trace_id,
+        )
+    )
+    task.cancel()
+    cancelled = await _wait_for_task_until(
+        task,
+        timeout_seconds=_REPLY_COMMIT_CANCELLATION_GRACE_SECONDS,
+    )
+    if cancelled:
+        _consume_reply_commit_task_result(
+            task,
+            session_id=session_id,
+            review_run_id=review_run_id,
+            trace_id=trace_id,
+            late=True,
+        )
+        return False, False
+
+    logger.error(
+        format_log_event(
+            "agent.review.reply_commit.cancellation_timeout",
+            session_id=session_id,
+            review_run_id=review_run_id,
+            grace_seconds=f"{_REPLY_COMMIT_CANCELLATION_GRACE_SECONDS:.3f}",
+            trace_id=trace_id,
+        )
+    )
+    return False, True
+
+
+def _normalized_reply_commit_timeout(value: float) -> float:
+    if not math.isfinite(value):
+        return _REPLY_COMMIT_DEFAULT_TIMEOUT_SECONDS
+    return max(0.0, value)
+
+
+async def _wait_for_task_until(
+    task: asyncio.Task[Any],
+    *,
+    timeout_seconds: float,
+) -> bool:
+    deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
+    while not task.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return task.done()
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=remaining)
+        except asyncio.CancelledError:
+            continue
+        if done:
+            return True
+        return task.done()
+    return True
+
+
+def _reply_commit_task_succeeded(
+    task: asyncio.Task[Any],
+    *,
+    session_id: str,
+    review_run_id: str,
+    trace_id: str,
+) -> bool:
+    return _consume_reply_commit_task_result(
+        task,
+        session_id=session_id,
+        review_run_id=review_run_id,
+        trace_id=trace_id,
+        late=False,
+    )
+
+
+def _consume_reply_commit_task_result(
+    task: asyncio.Task[Any],
+    *,
+    session_id: str,
+    review_run_id: str,
+    trace_id: str,
+    late: bool,
+) -> bool:
+    try:
+        result = task.result()
+    except asyncio.CancelledError:
+        return False
+    except Exception as exc:
+        logger.error(
+            format_log_event(
+                "agent.review.reply_commit.failed_after_cancel",
+                session_id=session_id,
+                review_run_id=review_run_id,
+                error_code=type(exc).__name__,
+                late=late,
+                trace_id=trace_id,
+            ),
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return False
+    if bool(getattr(result, "consumption_deferred", False)):
+        return False
+    if late:
+        logger.warning(
+            format_log_event(
+                "agent.review.reply_commit.late_success_ignored",
+                session_id=session_id,
+                review_run_id=review_run_id,
+                trace_id=trace_id,
+            )
+        )
+    return True
 
 
 async def _noop_block_digest(

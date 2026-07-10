@@ -77,11 +77,11 @@ class ShinBot:
             session_repo = self.database.sessions
             audit_repo = self.database.audit
 
-        self.event_bus = EventBus()
-        self.command_registry = CommandRegistry()
-        self.keyword_registry = KeywordRegistry()
         self.route_table = RouteTable()
         self.route_targets = RouteTargetRegistry()
+        self.event_bus = EventBus(task_supervisor=self.route_targets)
+        self.command_registry = CommandRegistry()
+        self.keyword_registry = KeywordRegistry()
         self.session_manager = SessionManager(data_dir=data_dir, session_repo=session_repo)
         self.audit_logger = AuditLogger(data_dir=data_dir, audit_repo=audit_repo)
         self.permission_engine = PermissionEngine()
@@ -113,10 +113,12 @@ class ShinBot:
             self.command_registry,
             audit_logger=self.audit_logger,
             session_manager=self.session_manager,
+            task_supervisor=self.route_targets,
         )
         self.keyword_dispatcher = KeywordDispatcher(
             self.keyword_registry,
             session_manager=self.session_manager,
+            task_supervisor=self.route_targets,
         )
         self.notice_dispatcher = NoticeDispatcher(self.event_bus)
         self.agent_entry_dispatcher = AgentEntryDispatcher()
@@ -231,13 +233,19 @@ class ShinBot:
         **kwargs: Any,
     ) -> BaseAdapter:
         """Create and register an adapter instance."""
+
+        def handle_event(event: UnifiedEvent) -> Any:
+            adapter = self.adapter_manager.get_instance(instance_id)
+            if adapter is None:
+                return None
+            return self.on_event(event, adapter)
+
         adapter = self.adapter_manager.create_instance(
             instance_id=instance_id,
             platform=platform,
+            event_callback=handle_event,
             **kwargs,
         )
-        # Wire up the event callback so the adapter feeds events into ingress.
-        adapter.set_event_callback(lambda event: self.on_event(event, adapter))
         return adapter
 
     # ── Plugin management shortcuts ──────────────────────────────────
@@ -281,9 +289,10 @@ class ShinBot:
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems."""
         logger.info("ShinBot shutting down...")
+        await self.adapter_manager.shutdown_all()
+        await self.message_ingress.shutdown()
         if self.agent_runtime is not None:
             shutdown = getattr(self.agent_runtime, "shutdown", None)
             if shutdown is not None:
                 await shutdown()
-        await self.adapter_manager.shutdown_all()
         logger.info("ShinBot shut down complete")

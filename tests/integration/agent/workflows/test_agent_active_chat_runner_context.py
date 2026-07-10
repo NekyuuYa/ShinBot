@@ -5,6 +5,7 @@ from active_chat_runner_support import (
     ActiveChatContextBuilderAdapter,
     ActiveChatFastRunner,
     ActiveChatFastRunnerConfig,
+    ActiveChatMessageSignal,
     FakeContextManager,
     FakeMessageStore,
     FakeModelRuntime,
@@ -80,6 +81,80 @@ async def test_active_chat_fast_runner_uses_prompt_registry_and_tool_loop() -> N
 
 
 @pytest.mark.asyncio
+async def test_active_chat_fast_runner_propagates_tool_execution_context() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [
+            make_result(
+                tool_calls=[make_tool_call("send_reply", {"text": "context"})],
+            )
+        ]
+    )
+    tool_manager = FakeToolManager()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=tool_manager,
+        message_store=FakeMessageStore(),
+    )
+
+    await runner.run(make_batch(trace_id="trace-active-chat-1"))
+
+    assert len(tool_manager.calls) == 1
+    tool_call = tool_manager.calls[0]
+    assert tool_call.user_id == "alice"
+    assert tool_call.trace_id == "trace-active-chat-1"
+    assert tool_manager.build_request_tool_calls[0]["user_id"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_active_chat_fast_runner_disables_principal_context_for_multi_sender_batch() -> None:
+    prompt_registry = PromptRegistry()
+    register_active_chat_prompt_components(prompt_registry)
+    model_runtime = FakeModelRuntime(
+        [make_result(tool_calls=[make_tool_call("send_reply", {"text": "context"})])]
+    )
+    tool_manager = FakeToolManager()
+    runner = ActiveChatFastRunner(
+        model_runtime,
+        prompt_registry=prompt_registry,
+        tool_manager=tool_manager,
+        message_store=FakeMessageStore(),
+        config=ActiveChatFastRunnerConfig(
+            tool_config=StageToolConfig(extra_names=("lookup_profile",))
+        ),
+    )
+    batch = make_batch(
+        messages=[
+            ActiveChatMessageSignal(
+                session_id="bot:group:room",
+                message_log_id=101,
+                sender_id="alice",
+                response_profile="balanced",
+                trace_id="trace-alice",
+            ),
+            ActiveChatMessageSignal(
+                session_id="bot:group:room",
+                message_log_id=102,
+                sender_id="bob",
+                response_profile="balanced",
+                trace_id="trace-bob",
+            ),
+        ]
+    )
+
+    await runner.run(batch)
+
+    tool_names = [tool["function"]["name"] for tool in model_runtime.calls[0].tools]
+    assert "lookup_profile" not in tool_names
+    assert all(call["user_id"] == "" for call in tool_manager.build_request_tool_calls)
+    assert tool_manager.calls[0].user_id == ""
+    assert tool_manager.calls[0].trace_id == ""
+    assert model_runtime.calls[0].metadata["trace_ids"] == ["trace-alice", "trace-bob"]
+
+
+@pytest.mark.asyncio
 async def test_active_chat_fast_runner_adds_configured_extra_tools() -> None:
     prompt_registry = PromptRegistry()
     register_active_chat_prompt_components(prompt_registry)
@@ -111,8 +186,11 @@ async def test_active_chat_fast_runner_adds_configured_extra_tools() -> None:
         "lookup_profile",
     ]
     assert tool_manager.build_request_tool_calls[0]["tags"] == {"chat_action"}
+    assert tool_manager.build_request_tool_calls[0]["user_id"] == "alice"
     assert "tags" not in tool_manager.build_request_tool_calls[1]
+    assert tool_manager.build_request_tool_calls[1]["user_id"] == "alice"
     assert tool_manager.export_model_tool_calls[-1]["tags"] == {"knowledge"}
+    assert tool_manager.export_model_tool_calls[-1]["user_id"] == "alice"
     rendered_prompt_text = json.dumps(
         model_runtime.calls[0].messages,
         ensure_ascii=False,

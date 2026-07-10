@@ -312,6 +312,142 @@ async def test_agent_runtime_serializes_same_session_signals(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_agent_runtime_high_priority_message_interrupts_and_resumes_review(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(bot)
+    profile = runtime.agent_profile_for_bot("")
+    dispatcher = profile._workflow_dispatcher
+    session_id = "test-bot:group:group:1"
+    first_review_started = asyncio.Event()
+    first_review_cancelled = asyncio.Event()
+    release_first_review_tail = asyncio.Event()
+    resumed_review_started = asyncio.Event()
+    unread_batches: list[list[int]] = []
+
+    class BlockingReviewCoordinator:
+        async def run(self, **kwargs: Any) -> Any:
+            unread_batches.append(
+                [message.message_log_id for message in kwargs["unread_messages"]]
+            )
+            started = first_review_started if len(unread_batches) == 1 else resumed_review_started
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if len(unread_batches) == 1:
+                    first_review_cancelled.set()
+                    await release_first_review_tail.wait()
+                    scheduler = kwargs["scheduler"]
+                    unread_range = scheduler.unread_ranges(session_id)[0]
+                    scheduler.split_review_consumed(
+                        range_id=unread_range.id,
+                        consumed_start_msg_log_id=first_message_log_id,
+                        consumed_end_msg_log_id=first_message_log_id,
+                    )
+                raise
+
+    class ImmediateActiveReplyWorkflow:
+        async def start_active_chat(self, **_kwargs: Any) -> None:
+            return None
+
+        async def notify_message(self, **_kwargs: Any) -> None:
+            return None
+
+        def attention_state_for(self, _session_id: str) -> None:
+            return None
+
+        async def flush_now(self, **_kwargs: Any) -> None:
+            return None
+
+        def stop_active_chat(self, _session_id: str) -> None:
+            return None
+
+        def active_session_ids(self) -> list[str]:
+            return []
+
+    dispatcher._review_coordinator = BlockingReviewCoordinator()
+    dispatcher._active_chat_workflow = ImmediateActiveReplyWorkflow()
+
+    try:
+        first_message_log_id = bot.database.message_logs.insert(
+            MessageLogRecord(
+                session_id=session_id,
+                platform_msg_id="platform-review-1",
+                sender_id="user-1",
+                sender_name="User",
+                raw_text="ordinary message",
+                content_json="[]",
+                role="user",
+                created_at=10.0,
+            )
+        )
+        second_message_log_id = bot.database.message_logs.insert(
+            MessageLogRecord(
+                session_id=session_id,
+                platform_msg_id="platform-review-2",
+                sender_id="user-1",
+                sender_name="User",
+                raw_text="@bot interrupt",
+                content_json="[]",
+                role="user",
+                created_at=20.0,
+                is_mentioned=True,
+            )
+        )
+        await runtime.handle_agent_signal(make_signal(message_log_id=first_message_log_id))
+        review_plan = runtime.agent_scheduler.review_plan_for(session_id)
+        assert review_plan is not None
+        runtime.agent_scheduler._state_store.set_review_plan(
+            replace(review_plan, next_review_at=20.0)
+        )
+        review_due = AgentSignal(
+            signal_id="review-due",
+            kind=AgentSignalKind.REVIEW_DUE,
+            source=AgentSignalSource.TIMER,
+            session_id=session_id,
+            occurred_at=20.0,
+            timer=AgentTimerSignal(
+                trigger=AgentSignalKind.REVIEW_DUE.value,
+                due_at=20.0,
+            ),
+        )
+
+        await asyncio.wait_for(runtime.handle_agent_signal(review_due), timeout=1.0)
+        await asyncio.wait_for(first_review_started.wait(), timeout=1.0)
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.REVIEW
+
+        interrupt_task = asyncio.create_task(
+            runtime.handle_agent_signal(
+                make_signal(message_log_id=second_message_log_id, is_mentioned=True)
+            )
+        )
+        await asyncio.wait_for(first_review_cancelled.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+        assert resumed_review_started.is_set() is False
+        assert interrupt_task.done() is False
+
+        release_first_review_tail.set()
+        await asyncio.wait_for(interrupt_task, timeout=1.0)
+        await asyncio.wait_for(resumed_review_started.wait(), timeout=1.0)
+
+        assert runtime.agent_scheduler.state_for(session_id) == AgentState.REVIEW
+        assert runtime.agent_scheduler.high_priority_events(session_id) == []
+        assert unread_batches == [
+            [first_message_log_id],
+            [second_message_log_id],
+        ]
+        assert len(
+            runtime.task_manager.tasks(
+                prefix=f"agent:{profile.bot_id or profile.profile_id}:review_workflow"
+            )
+        ) == 1
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_agent_runtime_wires_active_chat_fast_runner_end_to_end(
     tmp_path: Path,
 ) -> None:

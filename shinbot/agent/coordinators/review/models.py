@@ -22,6 +22,7 @@ class ReviewWorkflowConfig:
     review_block_digest_concurrency: int = 4
     provisional_active_chat_interest: float = 15.0
     provisional_active_chat_half_life_seconds: float = 20.0
+    reply_commit_timeout_seconds: float = 20.0
     active_chat_bootstrap_timeout_seconds: float = 20.0
     idle_review_planning_min_after_seconds: float = 30.0
     idle_review_planning_max_after_seconds: float = 3600.0
@@ -158,6 +159,7 @@ class ReplyDecisionResult:
     reply_reason: str = "review_reply_skeleton_no_llm"
     loaded_message_count: int = 0
     stage_input_count: int = 0
+    consumption_deferred: bool = False
 
 @dataclass(slots=True, frozen=True)
 class ActiveChatBootstrapResult:

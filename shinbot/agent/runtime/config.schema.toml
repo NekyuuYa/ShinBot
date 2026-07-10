@@ -243,6 +243,13 @@ min = 1
 description = "Concurrent block digest runner count."
 
 [[fields]]
+path = "agent.review.reply_commit_timeout_seconds"
+type = "float"
+default = 20.0
+min = 0.0
+description = "Maximum wait for a cancelled review reply stage to settle before detaching it."
+
+[[fields]]
 path = "agent.review.bootstrap_timeout_seconds"
 type = "float"
 default = 20.0

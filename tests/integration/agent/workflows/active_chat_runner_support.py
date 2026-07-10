@@ -80,6 +80,12 @@ class FakeToolManager:
     def export_model_tools(self, **kwargs) -> list[dict[str, Any]]:
         self.export_model_tool_calls.append(dict(kwargs))
         tools = self._all_tools()
+        if not kwargs.get("user_id"):
+            tools = [
+                tool
+                for tool in tools
+                if tool["function"]["name"] != "lookup_profile"
+            ]
         tags = kwargs.get("tags")
         if tags == {"knowledge"}:
             return [
@@ -274,6 +280,7 @@ def make_batch(
     conversation_summary: str = "",
     conversation_messages: list[dict[str, Any]] | None = None,
     trace_id: str = "",
+    messages: list[ActiveChatMessageSignal] | None = None,
 ) -> ActiveChatBatch:
     active_state = ActiveChatState(
         session_id="bot:group:room",
@@ -284,16 +291,20 @@ def make_batch(
     )
     return ActiveChatBatch(
         session_id="bot:group:room",
-        messages=[
-            ActiveChatMessageSignal(
-                session_id="bot:group:room",
-                message_log_id=101,
-                sender_id="alice",
-                response_profile="balanced",
-                self_platform_id=self_platform_id,
-                trace_id=trace_id,
-            )
-        ],
+        messages=(
+            list(messages)
+            if messages is not None
+            else [
+                ActiveChatMessageSignal(
+                    session_id="bot:group:room",
+                    message_log_id=101,
+                    sender_id="alice",
+                    response_profile="balanced",
+                    self_platform_id=self_platform_id,
+                    trace_id=trace_id,
+                )
+            ]
+        ),
         active_chat_state=active_state,
         response_profile="balanced",
         review_result_summary=(

@@ -28,7 +28,9 @@ pnpm design:audit -- --format json --output ../tmp/dashboard-design-audit.json
 pnpm design:audit:strict
 ```
 
-`design:audit:strict` 等价于 `pnpm design:audit -- --max-high 0`。当前只把 high 级别接入门禁；medium/low 仍作为治理 backlog，避免历史样式债务阻塞功能改动。
+`design:audit:strict` 等价于 `pnpm design:audit -- --max-high 0`。PR CI 当前以
+`--max-high 2` 固定现有两项超长组件债务，禁止 high finding 数量继续增长；清理完
+这两项后再切换到 strict zero。medium/low 仍作为治理 backlog，避免历史样式债务阻塞功能改动。
 
 ## 审计维度
 
@@ -146,7 +148,8 @@ batch: P0 | P1 | P2 | P3
 
 ### P5: 自动化门禁
 
-- 使用 `pnpm design:audit:strict` 防止 high finding 回归。
+- 当前使用 `pnpm design:audit -- --max-high 2` 固定现有 high finding 基线，防止数量回归。
+- 现有两项 high finding 清零后切换到 `pnpm design:audit:strict`。
 - 先只 gate high；medium/low 通过报告持续暴露，不在当前阶段阻塞构建。
 - 后续当某类 medium 基线收敛后，再新增对应 `--max-*` 或分类门禁。
 
@@ -156,7 +159,7 @@ batch: P0 | P1 | P2 | P3
 
 ```bash
 pnpm design:audit
-pnpm design:audit:strict
+pnpm design:audit -- --max-high 2
 pnpm build
 ```
 
