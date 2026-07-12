@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 
+from shinbot.core.dispatch.agent_delivery import (
+    AgentRouteDelivery,
+    MissingAgentMessageLogId,
+)
+from shinbot.core.dispatch.agent_identity import SessionKeyFactory
 from shinbot.core.dispatch.agent_signals import (
-    AgentMessageSignal,
     AgentSignal,
-    AgentSignalKind,
-    AgentSignalSource,
 )
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import RouteDispatchContext
@@ -74,56 +75,46 @@ class AgentEntryDispatcher:
         self,
         *,
         handler: AgentSignalHandler | None = None,
+        key_factory: SessionKeyFactory | None = None,
     ) -> None:
         self._handler = handler
+        self._key_factory = key_factory or SessionKeyFactory()
 
     def set_handler(self, handler: AgentSignalHandler | None) -> None:
         """Set or clear the Agent-side signal handler."""
         self._handler = handler
 
-    async def __call__(self, context: RouteDispatchContext, _rule: RouteRule) -> None:
-        bot = context.require_message_context()
-        message_token = (
-            context.message_log_id if context.message_log_id is not None else "missing"
-        )
-        signal = AgentSignal(
-            signal_id=f"message-ingress:{bot.session_id}:{message_token}",
-            kind=AgentSignalKind.MESSAGE,
-            source=AgentSignalSource.MESSAGE_INGRESS,
-            bot_id=bot.bot_id,
-            bot_binding_id=bot.bot_binding_id,
-            bot_session_id=bot.bot_session_id,
-            session_id=bot.session_id,
-            occurred_at=time.time(),
-            message=AgentMessageSignal(
-                message_log_id=context.message_log_id,
-                sender_id=bot.event.sender_id or "",
-                instance_id=bot.adapter.instance_id,
-                platform=bot.event.platform,
-                self_id=bot.event.self_id,
-                is_private=bot.is_private,
-                is_mentioned=bot.is_mentioned,
-                is_mention_to_other=_contains_mention_to_other(
-                    bot.message,
-                    bot.event.self_id,
-                ),
-                is_reply_to_bot=bot.is_reply_to_bot(),
-                is_poke_to_bot=_contains_poke_to(
-                    bot.message,
-                    bot.event.self_id,
-                ),
-                is_poke_to_other=_contains_poke_to_other(
-                    bot.message,
-                    bot.event.self_id,
-                ),
-                already_handled=bool(bot._sent_messages),
-                is_stopped=bot.is_stopped,
-            ),
-            meta={
-                "event_type": bot.event.type,
-                "trace_id": context.trace_id,
-            },
-        )
+    def prepare_delivery(
+        self,
+        context: RouteDispatchContext,
+        rule: RouteRule,
+    ) -> AgentRouteDelivery:
+        """Build one actor-eligible delivery from a matched Agent route.
+
+        Raises:
+            MissingAgentMessageLogId: If ingress did not durably persist the
+                message before reaching the Agent route.
+        """
+
+        return self._build_delivery(context, rule).require_actor_delivery()
+
+    async def __call__(self, context: RouteDispatchContext, rule: RouteRule) -> None:
+        try:
+            delivery = self.prepare_delivery(context, rule)
+        except MissingAgentMessageLogId:
+            delivery = self._build_delivery(context, rule)
+            logger.warning(
+                format_log_event(
+                    "agent.delivery.rejected",
+                    reason="message_log_id_missing",
+                    session_id=delivery.base_session_id,
+                    bot_id=delivery.bot_id,
+                    binding_id=delivery.bot_binding_id,
+                    trace_id=delivery.trace_id,
+                    compatibility_signal=True,
+                )
+            )
+        signal = delivery.to_agent_signal()
 
         logger.debug(
             format_log_event(
@@ -159,6 +150,52 @@ class AgentEntryDispatcher:
         result = self._handler(signal)
         if isawaitable(result):
             await result
+
+    def _build_delivery(
+        self,
+        context: RouteDispatchContext,
+        rule: RouteRule,
+    ) -> AgentRouteDelivery:
+        bot = context.require_message_context()
+        session_key = self._key_factory.create(
+            bot_config_id=bot.bot_id,
+            bot_id=bot.bot_id,
+            bot_session_id=bot.bot_session_id,
+            base_session_id=bot.session_id,
+        )
+        return AgentRouteDelivery(
+            session_key=session_key,
+            bot_id=bot.bot_id,
+            bot_binding_id=bot.bot_binding_id,
+            bot_session_id=bot.bot_session_id,
+            base_session_id=bot.session_id,
+            message_log_id=context.message_log_id,
+            sender_id=bot.event.sender_id or "",
+            instance_id=bot.adapter.instance_id,
+            platform=bot.event.platform,
+            self_id=bot.event.self_id,
+            is_private=bot.is_private,
+            is_mentioned=bot.is_mentioned,
+            is_mention_to_other=_contains_mention_to_other(
+                bot.message,
+                bot.event.self_id,
+            ),
+            is_reply_to_bot=bot.is_reply_to_bot(),
+            is_poke_to_bot=_contains_poke_to(
+                bot.message,
+                bot.event.self_id,
+            ),
+            is_poke_to_other=_contains_poke_to_other(
+                bot.message,
+                bot.event.self_id,
+            ),
+            already_handled=bool(bot._sent_messages),
+            is_stopped=bot.is_stopped,
+            trace_id=context.trace_id,
+            observed_at=context.observed_at,
+            event_type=bot.event.type,
+            route_rule_id=rule.id,
+        )
 
 
 def _contains_mention_to_other(message: Message, self_id: str) -> bool:

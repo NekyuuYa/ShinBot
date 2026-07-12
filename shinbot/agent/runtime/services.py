@@ -77,6 +77,7 @@ from shinbot.agent.workflows.active_chat.prompt_registration import (
     register_active_chat_prompt_components,
 )
 from shinbot.agent.workflows.chat_actions import register_chat_action_tools
+from shinbot.core.dispatch.agent_identity import DEFAULT_SESSION_ACTOR_PROFILE_ID
 from shinbot.core.instance_config import (
     resolve_instance_runtime_config,
     select_response_profile,
@@ -101,7 +102,12 @@ logger = get_logger(__name__, source="agent:runtime", color="magenta")
 
 
 class AgentRuntimeProfile:
-    """Per-agent runtime wiring selected by bot id at Agent entry."""
+    """Per-bot runtime wiring with a stable durable ownership profile id.
+
+    ``profile_id`` is either the selected ``BotServiceConfig.id`` or the
+    reserved default-profile constant. The editable ``config.agent_id`` is
+    behavior metadata and never participates in durable session ownership.
+    """
 
     def __init__(
         self,
@@ -469,7 +475,7 @@ class AgentRuntime:
             )
         self._default_profile = AgentRuntimeProfile(
             self,
-            profile_id=default_config.agent_id or "default",
+            profile_id=DEFAULT_SESSION_ACTOR_PROFILE_ID,
             config=default_config,
         )
         self._profiles_by_bot_id: dict[str, AgentRuntimeProfile] = {}
@@ -483,7 +489,7 @@ class AgentRuntime:
             )
             self._profiles_by_bot_id[normalized_bot_id] = AgentRuntimeProfile(
                 self,
-                profile_id=config.agent_id or normalized_bot_id,
+                profile_id=normalized_bot_id,
                 bot_id=normalized_bot_id,
                 config=config,
             )
@@ -577,7 +583,7 @@ class AgentRuntime:
         self._default_profile.agent_scheduler = value
 
     def agent_profile_for_bot(self, bot_id: str) -> AgentRuntimeProfile:
-        """Return the profile selected for a bot id, falling back to default."""
+        """Select by stable ``BotServiceConfig.id``, falling back to default."""
 
         return self._profiles_by_bot_id.get(str(bot_id or "").strip(), self._default_profile)
 

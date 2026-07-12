@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from shinbot.agent.runtime.session_actor.external_actions import ExternalActionIntent
 from shinbot.agent.scheduler.models import ActiveChatDisposition, MentionSensitivity
 
 
@@ -46,6 +47,7 @@ class ReplyDecisionStageOutput:
     target_message_ids: list[int] = field(default_factory=list)
     reason: str = "noop_reply_decision"
     consumption_deferred: bool = False
+    external_action_intents: tuple[ExternalActionIntent, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

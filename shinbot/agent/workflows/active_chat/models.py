@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from shinbot.agent.runtime.session_actor.external_actions import ExternalActionIntent
 from shinbot.agent.scheduler.models import ActiveChatState
 
 
@@ -93,6 +94,7 @@ class ActiveChatRoundResult:
     consumed_message_log_ids: list[int] = field(default_factory=list)
     restored_messages: list[ActiveChatMessageSignal] = field(default_factory=list)
     conversation_messages_delta: list[dict[str, Any]] = field(default_factory=list)
+    external_action_intents: tuple[ExternalActionIntent, ...] = ()
 
 
 __all__ = [

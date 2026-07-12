@@ -1,5 +1,32 @@
 """Event and message dispatch primitives."""
 
+from shinbot.core.dispatch.agent_delivery import (
+    AGENT_ROUTE_DELIVERY_VERSION,
+    AgentRouteDelivery,
+    AgentRouteDeliveryError,
+    MissingAgentMessageLogId,
+)
+from shinbot.core.dispatch.agent_identity import (
+    DEFAULT_SESSION_ACTOR_PROFILE_ID,
+    SessionKey,
+    SessionKeyFactory,
+    SessionRoutingIdentity,
+)
+from shinbot.core.dispatch.agent_ownership import (
+    AgentRuntimeOwnership,
+    AgentRuntimeOwnershipClaim,
+    AgentRuntimeOwnershipConflict,
+    AgentRuntimeOwnershipError,
+    AgentRuntimeOwnershipEvent,
+    AgentRuntimeOwnershipEventType,
+    AgentRuntimeOwnershipEvidenceConflict,
+    AgentRuntimeOwnershipGenerationConflict,
+    AgentRuntimeOwnershipMigrationConflict,
+    AgentRuntimeOwnershipMode,
+    AgentRuntimeOwnershipNotFound,
+    AgentRuntimeOwnershipRequired,
+    AgentRuntimeOwnershipStatus,
+)
 from shinbot.core.dispatch.agent_signals import (
     AgentActiveChatBootstrapSignal,
     AgentMessageSignal,
@@ -16,6 +43,24 @@ from shinbot.core.dispatch.dispatchers import (
     NoticeDispatcher,
     make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
+)
+from shinbot.core.dispatch.durable_routing import (
+    AGENT_ROUTE_MAILBOX_KIND,
+    AGENT_ROUTE_MAILBOX_SOURCE,
+    AGENT_ROUTE_OUTBOX_VERSION,
+    INGRESS_ROUTING_PAYLOAD_VERSION,
+    MESSAGE_ROUTING_JOB_VERSION,
+    AgentRouteOutboxStatus,
+    IngressRoutingPayload,
+    IngressRoutingPayloadError,
+    MessageRoutingJobEnvelope,
+    MessageRoutingJobStatus,
+)
+from shinbot.core.dispatch.durable_routing_service import (
+    AgentMailboxWakeTarget,
+    DurableRoutingHealthSnapshot,
+    DurableRoutingService,
+    DurableRoutingServiceStatus,
 )
 from shinbot.core.dispatch.event_bus import EventBus, StopPropagation
 from shinbot.core.dispatch.ingress import (
@@ -34,13 +79,39 @@ from shinbot.core.dispatch.routing import (
 )
 
 __all__ = [
+    "AGENT_ROUTE_DELIVERY_VERSION",
+    "AGENT_ROUTE_MAILBOX_KIND",
+    "AGENT_ROUTE_MAILBOX_SOURCE",
+    "AGENT_ROUTE_OUTBOX_VERSION",
+    "INGRESS_ROUTING_PAYLOAD_VERSION",
+    "MESSAGE_ROUTING_JOB_VERSION",
+    "DEFAULT_SESSION_ACTOR_PROFILE_ID",
     "EventBus",
     "MessageIngress",
     "StopPropagation",
     "MessageContext",
+    "MessageRoutingJobEnvelope",
+    "MessageRoutingJobStatus",
     "AGENT_ENTRY_TARGET",
     "NOTICE_DISPATCHER_TARGET",
     "AgentEntryDispatcher",
+    "AgentRuntimeOwnership",
+    "AgentRuntimeOwnershipClaim",
+    "AgentRuntimeOwnershipConflict",
+    "AgentRuntimeOwnershipError",
+    "AgentRuntimeOwnershipEvent",
+    "AgentRuntimeOwnershipEventType",
+    "AgentRuntimeOwnershipEvidenceConflict",
+    "AgentRuntimeOwnershipGenerationConflict",
+    "AgentRuntimeOwnershipMigrationConflict",
+    "AgentRuntimeOwnershipMode",
+    "AgentRuntimeOwnershipNotFound",
+    "AgentRuntimeOwnershipRequired",
+    "AgentRuntimeOwnershipStatus",
+    "AgentRouteDelivery",
+    "AgentRouteDeliveryError",
+    "AgentRouteOutboxStatus",
+    "AgentMailboxWakeTarget",
     "AgentSignalHandler",
     "AgentActiveChatBootstrapSignal",
     "AgentMessageSignal",
@@ -48,6 +119,12 @@ __all__ = [
     "AgentSignalKind",
     "AgentSignalSource",
     "AgentTimerSignal",
+    "DurableRoutingHealthSnapshot",
+    "DurableRoutingService",
+    "DurableRoutingServiceStatus",
+    "IngressRoutingPayload",
+    "IngressRoutingPayloadError",
+    "MissingAgentMessageLogId",
     "NoticeDispatcher",
     "PreRouteHook",
     "RouteDispatchContext",
@@ -57,6 +134,9 @@ __all__ = [
     "RouteRule",
     "RouteTable",
     "RouteTargetRegistry",
+    "SessionKey",
+    "SessionKeyFactory",
+    "SessionRoutingIdentity",
     "make_agent_entry_fallback_route_rule",
     "make_notice_route_rule",
 ]

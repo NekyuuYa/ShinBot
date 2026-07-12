@@ -2,6 +2,7 @@
 id: review.idle_review_planning.task
 stage: instructions
 kind: static_text
+version: 1.2.0
 priority: 100
 enabled: true
 tags:

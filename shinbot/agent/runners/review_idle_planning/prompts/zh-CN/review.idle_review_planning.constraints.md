@@ -2,6 +2,7 @@
 id: review.idle_review_planning.constraints
 stage: constraints
 kind: static_text
+version: 1.2.0
 priority: 100
 enabled: true
 tags:

@@ -1,0 +1,925 @@
+# Agent Session Actor Architecture
+
+Status: target architecture; Actor v2 foundation implemented but deliberately
+inactive for production message ingress
+
+## Current Rollout Boundary
+
+This document is both the target contract and a record of the implemented
+Actor v2 slice.  It must not be read as claiming that production traffic already
+uses the actor.
+
+Today, the legacy scheduler/coordinator runtime remains the only writer for
+real Agent ingress.  The Actor v2 reducer, SQLite stores, message ledger,
+durable effect executor, versioned contracts, workflow adapters, registry, and
+activation harness exist and are covered by focused tests.  They are not yet
+constructed and activated by `AgentRuntime` as the live ingress owner.  In
+particular, a deployment must not flip a session to `actor_v2` ownership or
+route live messages, timers, workflow completions, or management commands to
+the v2 mailbox until the activation gate at the end of this document is met.
+
+Core durable routing has conditional support for an active Actor v2 owner, but
+that is plumbing for the future activation rather than a second live runtime.
+The normal runtime does not currently publish an active actor registry/harness
+as its ingress wake target.  This deliberate boundary prevents legacy and v2
+from becoming concurrent writers while the remaining end-to-end adapters are
+finished.
+
+The invariant and workflow sections below therefore use two meanings:
+
+- **Target contract** describes the required behavior after activation.
+- **Implemented slice** describes reducer/outbox behavior that is already
+  durable and testable in isolation, but is not yet reachable from production
+  ingress.
+
+The current reducer dispatches only its implemented event kinds.
+`ManualReviewRequested` is presently a reserved `AgentSessionEventKind` value
+rather than a reducer branch, and pause/force-idle events described by the
+target contract have not yet been added to that enum.  They are activation
+work, not a production capability.
+
+`SQLiteSessionActorStore` already creates durable `RecoveryRequested` mailbox
+events for orphaned non-idle aggregates.  `RecoveryRequested` is not yet an
+`AgentSessionEventKind` or a reducer branch, so the current reducer records it
+as unsupported instead of rebuilding or settling the aggregate.  Durable
+recovery is therefore an explicit activation blocker, not a completed v2
+feature.
+
+## Problem
+
+The Agent runtime currently distributes mutable session state across the
+scheduler, workflow dispatcher, review coordinator, active-chat coordinator,
+timers, and management API. Some paths are serialized by an in-memory lock,
+while background workflow callbacks mutate the scheduler outside that lock.
+Long-running model calls may also execute while the lock is held.
+
+This produces several invalid states:
+
+- a workflow completion can commit after the state that launched it is stale;
+- the same `ACTIVE_CHAT -> IDLE` transition can use different review planning
+  behavior depending on which caller initiated it;
+- persisted scheduler state can disagree with in-memory coordinator state;
+- a process crash can commit a state transition without its review plan;
+- a completed model call cannot be traced to an accepted, defaulted,
+  superseded, or rejected schedule decision.
+
+The fix is a single-writer, durable per-session runtime. This document defines
+the target contract. Compatibility adapters may exist during migration, but no
+new Actor v2 state-mutation path may bypass this contract.  Until activation,
+the legacy runtime intentionally continues to own its existing mutation paths.
+
+## Invariants
+
+After Actor v2 activation for a session:
+
+1. A session has exactly one logical writer: its `AgentSessionActor`.
+2. The actor key is `(profile_id, session_id)`, not `session_id` alone.
+3. Every external signal, timer, workflow completion, and management command is
+   persisted as a mailbox event before it can affect session state.
+4. Duplicate `event_id` values are idempotent.
+5. Event handling does not await model, network, adapter, or tool I/O.
+6. Event handling produces a transition and zero or more durable effects.
+7. The aggregate, inbox disposition, operation changes, transition journal,
+   review schedule record, and outbox effects commit in one SQLite transaction.
+8. Effects execute only after their creating transaction commits.
+9. Effect completion is another mailbox event. It never calls scheduler
+   mutation methods directly.
+10. Long-running work is identified by `operation_id`; cancellation first
+    supersedes the operation durably and only then requests task cancellation.
+11. A late completion for a superseded operation is recorded as stale and has
+    no state side effects.
+12. Every `ACTIVE_CHAT -> IDLE` transition creates exactly one review schedule
+    outcome, including explicit default, bypass, failure, and superseded cases.
+13. A review delay starts at schedule commit time, not model-call start time.
+14. State and review-plan revisions are monotonic and independently visible.
+15. Runtime prompt content used by a model call is explicit in the prompt
+   snapshot; metadata is not the only carrier of model-visible input.
+16. Persisting a message and making its Agent delivery recoverable has no crash
+    gap; delivery is driven by a routing outbox or a durable log watermark.
+17. A long-running exit planner has a durable deadline. Deadline expiry settles
+    the exit with an explicit fallback outcome rather than leaving the session
+    active forever.
+
+## Stable Session Identity
+
+`profile_id` is a durable runtime ownership id, not the editable Agent
+configuration's `agent_id`. Bot-backed profiles use the stable bot service
+configuration id. The unbound/default runtime uses a reserved constant. Two
+bots may intentionally share the same Agent configuration without sharing an
+actor aggregate.
+
+The session portion is always the bot-scoped session id. At ingress this is
+`signal.bot_session_id` when present; compatibility inputs derive the same
+scope from `(bot_id, signal.session_id)` exactly once at the runtime boundary.
+Timers, management commands, effects, and workflow completions carry the
+resolved `SessionKey` and never reconstruct it independently.
+
+The actor key is not an adapter transport address. Each message ledger entry
+also preserves its ingress `base_session_id`; an accepted external action
+carries that value as `target_session_id` together with the adapter instance.
+The target is part of the request digest and is never derived from the
+bot-scoped actor key. This keeps multi-bot ownership isolation separate from
+the platform session used by `adapter.send()`.
+
+Changing a durable profile id is an explicit state migration. It must not
+silently create a new aggregate and leave live schedules under the old id.
+
+## Durable Session Aggregate
+
+The materialized aggregate is stored per `(profile_id, session_id)`:
+
+```text
+AgentSessionAggregate
+  profile_id
+  session_id
+  state
+  state_revision
+  event_sequence
+  activity_generation
+  active_epoch
+  review_plan
+  active_reply_resume
+  active_chat_state
+  review_operation_id
+  active_reply_operation_id
+  active_chat_round_operation_id
+  idle_planning_operation_id
+  updated_at
+```
+
+`ACTIVE_CHAT_SETTLING` is an authoritative state, not an in-memory coordinator
+flag. It preserves the active-chat snapshot while idle planning is in flight,
+prevents new rounds from starting, and makes the pending exit visible to
+recovery and management APIs. A message received while settling follows one
+explicit policy selected by the reducer: cancel the exit and start a new
+activity generation, or remain settling and supersede/restart planning. It may
+not silently mutate the captured planning input.
+
+`event_sequence` increments for every handled mailbox event, including stale or
+duplicate outcomes that are useful for diagnostics. `state_revision` increments
+only when authoritative aggregate state changes. Long-running completions match
+their operation slot rather than requiring an unchanged state revision, because
+messages may legitimately arrive while work is running.
+
+An idle-planning completion additionally matches `activity_generation`; any
+message or active-chat mutation that invalidates the captured planning snapshot
+increments that generation.
+
+## Reducer Decision Matrix
+
+The Actor v2 reducer preserves the useful policy of the legacy scheduler, not
+its callback structure. Every branch below is a synchronous transition; starts,
+stops, cancellations, model calls, timers, and platform actions are effects.
+
+### MessageReceived
+
+The transition first creates exactly one ledger fact or an explicit suppressed
+fact for a non-actionable/self event. Suppressed input never appears in unread,
+review, chat, or high-priority projections.
+
+- `IDLE`: ordinary input remains idle. High-priority input creates one
+  active-reply operation at a captured watermark and enters `ACTIVE_REPLY`.
+- `REVIEW`: ordinary input remains available after the review watermark. A
+  high-priority message durably supersedes the review operation, records a
+  review-resume snapshot, creates a pending active-reply operation, emits only
+  the review-cancellation control effect, and enters `ACTIVE_REPLY`.  It does
+  **not** enqueue the active-reply workflow in that transition.
+- `ACTIVE_REPLY`: input is appended but cannot start a concurrent one-shot;
+  unconsumed input remains for the completion/resumed review decision.
+- `ACTIVE_CHAT`: mentions and replies update the current active-chat epoch and
+  attention; they do not create a separate active-reply operation. At most one
+  round operation exists, and later input stays beyond its watermark.
+- `ACTIVE_CHAT_SETTLING`: input at or below the exit snapshot watermark is
+  delayed captured input. New actionable input supersedes idle planning,
+  increments `activity_generation`, emits cancellation, and returns to the same
+  active-chat epoch. Suppressed input does not cancel settling.
+
+### Interrupted Review Ordering (Implemented Slice)
+
+Review interruption has an intentionally strict two-stage protocol.  Its
+purpose is to prevent the high-priority reply model call from overlapping the
+review model call that it interrupted.
+
+```text
+high-priority MessageReceived while REVIEW
+  -> persist superseded review + pending active-reply operation
+  -> persist cancel_review_workflow control intent and effect
+  -> wait for fenced ReviewCancellationCompleted
+  -> validate the saved active-reply fence
+  -> enqueue run_active_reply_workflow
+```
+
+The active-reply operation is visible while waiting, but its model effect is
+absent from the outbox.  Only a completion that matches the cancellation
+intent's effect identity, causation, ownership, contract version/signature,
+and completion event id may release it.  A cancellation failure, stale
+completion, or invalid saved reply fence fails closed: the reply is blocked,
+its unread input is retained for a later review, and the reducer records a
+review retry/defer outcome instead of starting another model call into an
+unknown cancellation tail.
+
+### ReviewDue And ManualReviewRequested
+
+The event identifies the exact `plan_id`, `plan_revision`, and ownership
+generation. A mismatched plan is journaled as stale.
+
+- `IDLE` with no pending high-priority input enters `REVIEW`, creates one review
+  operation, and captures the ledger watermark.
+- `IDLE` with pending high-priority input enters `ACTIVE_REPLY` and records that
+  the same due review must resume afterwards.
+- `REVIEW` treats the same operation as already running; it never launches a
+  second review.
+- `ACTIVE_REPLY`, `ACTIVE_CHAT`, and `ACTIVE_CHAT_SETTLING` persist an explicit
+  deferred/retry outcome. Observing a due schedule is not equivalent to
+  consuming it.
+
+`ReviewDue` is implemented in the current reducer slice.  The
+`ManualReviewRequested` behavior remains target work until it gains a reducer
+branch and a durable ingress adapter.
+
+### Workflow Completions
+
+Every completion matches the active operation slot, operation id, effect id,
+idempotency key, source/expected event ids, ownership generation, input
+watermark, input ledger sequence, and the state-specific epoch/generation
+fences. A stale completion
+advances diagnostic event sequence only; it cannot consume messages, schedule
+work, or alter state.
+
+- `ActiveReplyCompleted` consumes only the captured high-priority/chat inputs.
+  It either creates a new review operation from the durable resume decision or
+  returns to `IDLE`; it never calls a scheduler completion method.
+- `ReviewCompleted` applies explicit ledger consumption, finishes the current
+  schedule/operation, and either enters `ACTIVE_CHAT` with a new `active_epoch`
+  or commits `IDLE` plus a typed next-review schedule outcome.
+- `ActiveChatBootstrapCompleted` applies once to its epoch. A correction that
+  exits follows the normal `ACTIVE_CHAT_SETTLING` path.
+- `ActiveChatRoundCompleted` consumes only its captured inputs, commits accepted
+  action intents as external-action effects, and updates attention. An exit
+  request follows the same settling path as a timer-driven exit.
+- `IdleReviewPlanningCompleted` and its deadline event are the only paths from
+  `ACTIVE_CHAT_SETTLING` to `IDLE`; both atomically create the next review
+  schedule before emitting runtime-stop work.
+
+### Control Events
+
+`ActiveChatTick` applies durable decay to one epoch and either remains active or
+requests the normal settling flow. Recovery/reconciliation is represented by
+mailbox events in the implemented slice. `PauseRequested`, `PauseCleared`, and
+`ForceIdleRequested` are target events, not current reducer branches. Once
+implemented, a force or pause may supersede operations and emit cancellations,
+but it may not use a shortcut transition that omits ledger, schedule, or
+journal outcomes.
+
+## Mailbox Events
+
+After activation, public/core signals are converted to Agent-internal events at
+the runtime boundary. Core does not need to know workflow completion types.
+The currently implemented reducer dispatches the following mailbox events:
+
+```text
+ExitRequested
+MessageReceived
+ReviewDue
+ActiveChatTick
+ActiveChatBootstrapCompleted
+ReviewCompleted
+ActiveReplyCompleted
+ReviewCancellationCompleted
+ActiveChatRoundDue
+ActiveChatRoundCompleted
+IdleReviewPlanningCompleted
+IdleReviewPlanningDeadlineReached
+ExternalActionCompleted
+EffectFailed
+ActiveChatRuntimeStopped
+IdleReviewPlanningCancellationCompleted
+ActiveChatRuntimeReconciled
+IdleReviewPlanningCancellationReconciled
+```
+
+`ManualReviewRequested`, `PauseRequested`, `PauseCleared`, and
+`ForceIdleRequested` remain part of the target public-event surface, but are
+not yet live reducer branches.
+
+`RecoveryRequested` is different: the SQLite store already persists it during
+recovery scans, but the reducer does not yet consume it.  It must gain a
+fenced, deterministic recovery branch before this mailbox can be used for
+production recovery.
+
+Every event includes:
+
+```text
+event_id
+profile_id
+session_id
+kind
+source
+occurred_at
+payload
+causation_id
+correlation_id
+trace_id
+status
+attempt_count
+available_at
+created_at
+handled_at
+```
+
+The actor claims pending events for one session in sequence order. SQLite
+leases allow recovery when a process dies after claiming but before completing
+an event.
+
+## Operations And Effects
+
+An operation is the durable intent to run long-lived work. An effect is a
+specific executable action created by a transition.
+
+```text
+AgentOperation
+  operation_id
+  profile_id
+  session_id
+  kind
+  status
+  launched_by_event_id
+  state_revision
+  active_epoch
+  activity_generation
+  input_watermark
+  input_ledger_sequence
+  started_at
+  superseded_at
+  finished_at
+  failure
+```
+
+Operation statuses are `pending`, `running`, `completed`, `failed`,
+`superseded`, and `cancelled`. Effects use an outbox-style table with retry and
+lease metadata. Model calls, adapter sends, workflow runs, and timer scheduling
+are effects.
+
+Every effect claim receives a new `claim_id`, even when the same worker
+reclaims it. Completion, renewal, retry, and failure compare both `claim_id`
+and lease owner so an expired claim cannot complete after an ABA reclaim.
+Handlers run outside actor transactions and must pass the durable
+`idempotency_key` to external I/O. A successful handler settles only through
+`complete_with_event`: effect completion and its deterministic mailbox event
+commit in one transaction. Terminal retry exhaustion uses the same boundary to
+insert `EffectFailed`. The actor registry is woken only after commit; a failed
+wake triggers durable mailbox recovery and never reruns the handler.
+
+Effects may declare an explicit operation-status precondition. The store
+rechecks it inside the settlement transaction to close the claim/commit TOCTOU
+window. A failed precondition completes the effect with a deterministic
+`EffectSkipped` mailbox event containing the intended event identity. Effects
+without that explicit payload, including stop and cancel effects, are never
+implicitly skipped merely because their operation is terminal.
+
+### Effect Execution Lanes And Contracts
+
+Effect kinds are registered with a durable execution contract. The contract,
+not a handler return value, owns the execution lane, allowed completion event
+kind, completion source, handler timeout, retry limit, and bounded backoff.
+Handlers may return only domain payload data. An outcome with a different kind
+or source is rejected before settlement.
+
+Planner/model work runs in the `planner` lane. Deadlines, cancellation, runtime
+stop, and desired-state reconciliation run in a separately supervised
+`control` lane with at least one dedicated worker and higher claim priority.
+The control lane must remain runnable when every planner worker is blocked.
+Planner handlers have a finite execution timeout; lease renewal never turns a
+hung call into an immortal claim. A deadline is therefore independent of the
+work it supervises rather than another item behind that work in the same
+queue.
+
+Every workflow completion carries and validates all of the following as
+required provenance: expected event id, source event/causation id, effect id,
+idempotency key, operation id, plan id, active epoch, and activity generation.
+Workflow operations additionally require their input watermark and input ledger
+sequence. Missing fields fail the fence just like mismatched fields. A
+control-effect terminal failure must have an explicit bounded disposition:
+retry through a new fence, a dedicated reconciliation effect, or a durable
+blocker. Recording an intent without an executable recovery path or blocker is
+insufficient.
+
+### Control Intents And Contract Snapshots
+
+A control effect is not represented only by an outbox row.  The reducer also
+stores a durable control intent under
+`aggregate.data.effect_control_intents[effect_kind]` in the same transition.
+The intent records the desired state, effect/idempotency identity, expected
+completion and failure event ids, causation id, ownership generation, relevant
+state/plan/epoch/watermark fences, and retry cycle.  It is the authoritative
+answer to "what must this timer/cancellation request still be allowed to do?"
+after a restart.
+
+The migrated active-reply, review, bootstrap, and active-chat-round operation
+fences, plus the three control intents below, snapshot both
+`contract_version` and `contract_signature`.  The outbox effect carries the
+same identity.  A completion or `EffectFailed` validates against that persisted
+snapshot, not against whichever contract happens to be registered when the
+event is handled.  This prevents a deploy that changes a contract from turning
+an old completion into a valid completion for a different policy.
+
+The currently versioned control contracts are
+`cancel_review_workflow`, `enqueue_active_chat_exit_request`, and
+`enqueue_active_chat_round_due`.  Their current v2 contracts explicitly
+declare the outcome fields that the executor may project into a mailbox result.
+This declaration is part of the signed policy.  In the normal executor path,
+handlers provide domain output; they do not choose the fence projection or
+reinterpret the contract.  The lower-level store interface retains an optional
+outcome-field argument only as a compatibility assertion: it resolves the
+projection from sealed contract authority and rejects a caller value that
+differs.
+
+Idle-planner/deadline, other control-intent, and reconciliation writers must
+receive the same snapshot audit before Actor v2 can own production traffic.
+
+### Legacy V1 Recovery Policy
+
+Legacy v1 effect records retain their historical signatures and outcome shape.
+For the three control effects above, the executor supplies a compatibility
+projection containing the historical fences that the reducer needs to validate
+their completion or terminal failure.  This preserves recovery of work written
+before v2 outcome-field declarations without changing its persisted v1
+signature.
+
+An aggregate or intent written before contract snapshots existed is always
+validated as v1.  An inbound completion must never select a newer contract on
+its behalf.  Unknown versions, missing/incomplete snapshots, and signature
+drift are stale/fail-closed outcomes.
+
+Some early v1 exit records do not contain enough durable intent identity to
+prove that a terminal exit-request failure belongs to the live aggregate.  The
+reducer must not invent a retry or a receipt for those records.  It leaves them
+fail-closed for explicit reconciliation/operator handling; compatibility exists
+for verifiable v1 completion projections, not for unsafe automatic recovery.
+
+### Ownership Generation Fencing
+
+Actor ownership generation is copied into the aggregate, mailbox event,
+operation, schedule/effect work, and every claim. Enqueue, claim, aggregate
+commit, and effect settlement each re-read the ownership row inside their
+write transaction and require `actor_v2`, `active`, and the expected generation.
+Beginning or completing migration invalidates every earlier claim. Relay-time
+validation alone is not a fence: work already delivered before migration must
+also fail closed when it later attempts to claim or commit.
+
+### Model-Selected External Actions
+
+A workflow effect may ask a model which visible action to take, but it must not
+perform that action while the workflow effect is running. `send_reply`,
+`send_poke`, `send_reaction`, and future externally visible tools are split into
+two contracts:
+
+1. the model-facing tool validates and records a normalized action intent in
+   the workflow result;
+2. the workflow completion enters the mailbox;
+3. the actor validates the completion fences and atomically turns accepted
+   intents into dedicated action effects;
+4. only the action-effect handler calls the platform adapter.
+
+This boundary prevents a workflow from producing a visible side effect before
+the actor accepts the model result. Re-running a failed or stale workflow can
+therefore produce proposals, but cannot send another message by itself. Action
+effect identity is deterministic from the accepted operation, model tool-call
+identity, action ordinal, and action kind. Contract version and normalized
+payload are persisted as a separate request digest: reusing the logical action
+slot with different content is a hard conflict, not a new action. The model
+cannot choose or override its idempotency key.
+
+Every externally visible action also has a durable receipt keyed by the action
+effect's idempotency key. The receipt stores the exact action kind and contract
+version, normalized request digest, profile/session ownership generation,
+effect and operation provenance, claim/lease identity, attempt count, platform
+result, assistant message-log id when applicable, and one of these outcomes:
+
+```text
+prepared
+executing
+succeeded
+rejected_before_dispatch
+abandoned_before_dispatch
+unknown
+```
+
+The action claim and ownership check occur before adapter I/O. After a
+successful reply, the success receipt and assistant message log commit in one
+SQLite transaction; context projection happens only after that commit. A
+reused idempotency key with a different action contract or request digest is a
+hard conflict.
+
+Action effects from the same operation are also serialized by their persisted
+`action_ordinal`, not by a process-local lock or outbox insertion timing. An
+action with ordinal `n > 0` cannot receive an effect claim or begin adapter
+execution until the receipt for ordinal `n - 1` is durably `succeeded`.
+Missing, `prepared`, `executing`, `rejected_before_dispatch`, `unknown`, and
+`abandoned_before_dispatch` predecessors leave the follower pending with an
+inspectable durable blocker; actions from different operations remain eligible
+to run independently. The receipt-side check repeats the gate after a worker
+claim so a caller cannot bypass it by invoking the action handler directly.
+
+Receipt preparation and execution start accept only the live claimed durable
+action effect. In the same write transaction they validate the outbox effect,
+operation, contract, payload, ownership generation, claim id, worker, attempt,
+and unexpired lease. The receipt attempt reuses that outer effect claim id and
+worker, and its lease never extends beyond the effect lease. A crash after
+`prepared` but before `executing` may therefore continue under a fresh effect
+claim. Once `executing` has committed, an expired or newer effect claim may only
+settle the old receipt as `unknown`; it cannot dispatch the action again.
+
+Ownership generation is relational fence metadata, not part of the canonical
+external request JSON or logical idempotency key. A terminal `succeeded`,
+`abandoned_before_dispatch`, or `unknown` receipt with the same exact request
+remains the global deduplication answer after ownership changes and keeps its
+original generation. Recording a late success or unknown outcome is evidence
+settlement rather than execution:
+it requires the exact receipt/attempt ABA claim, but does not require that the
+old ownership generation is still active. This exception prevents a migration
+or recovery race from discarding the result of platform I/O that may already
+have happened; it never authorizes new I/O.
+
+Exactly-once delivery cannot be manufactured locally when a platform provides
+no idempotency token or result lookup. Once adapter invocation may have begun,
+a timeout, cancellation, lost acknowledgement, process crash, or expired
+`executing` lease becomes `unknown`; it is not retried automatically. Operators
+may reconcile it using platform evidence. When an adapter supports a durable
+idempotency token or authoritative result lookup, its capability contract may
+resolve `unknown` and permit a fenced retry with the same token. Exceptions
+known to happen before dispatch may settle as `rejected_before_dispatch` and
+remain retryable under the effect contract.
+
+An exhausted parent action effect is not a receipt outcome. Its deterministic
+`EffectFailed` event carries the exact effect id, action ordinal, canonical
+request digest, contract, causation, and ownership fences. The actor records
+that evidence as an `effect_failed` outbound-gate entry and an inspectable
+blocker, while leaving the receipt itself unchanged. It must not synthesize an
+`abandoned_before_dispatch` receipt: only receipt-side ownership reconciliation
+can prove that no adapter invocation began. No bootstrap, review, active-chat
+round, or queued priority reply may pass that gate automatically.
+
+When an exact parent action effect reaches terminal `failed` after exhausting
+its retry policy, a `prepared` or `rejected_before_dispatch` receipt may be
+atomically reconciled to `abandoned_before_dispatch` during ownership
+transition validation. The reconciliation matches the complete immutable
+effect/receipt identity and never changes `executing` or `unknown`; it is the
+durable proof that the old retry loop cannot block a later ownership migration
+forever without pretending a platform action was safe to retry.
+
+The existing in-memory action guard is only a legacy concurrency optimization.
+It is neither a receipt nor part of the Actor v2 correctness boundary.
+
+## Review Scheduling
+
+`ReviewPlan | None` is not a valid planning result. Planning produces a typed
+outcome:
+
+```text
+Planned
+DefaultRequested
+Failed
+Bypassed
+Superseded
+```
+
+The policy resolves every outcome into a non-null `ReviewScheduleEffect` with:
+
+```text
+effect_id
+plan_id
+profile_id
+session_id
+trigger
+outcome
+source
+requested_delay_seconds
+applied_delay_seconds
+scheduled_from
+next_review_at
+reason
+fallback_reason
+model_execution_id
+prompt_signature
+expected_active_epoch
+expected_activity_generation
+committed_state_revision
+created_at
+```
+
+All active-chat exit causes use the same event flow:
+
+```text
+bootstrap/round/tick requests exit
+  -> persist enqueue_active_chat_exit_request control intent + effect
+  -> fenced ExitRequested
+  -> enter ACTIVE_CHAT_SETTLING
+  -> snapshot planning input and create IdleReviewPlanning operation
+  -> run planner as an effect outside the actor
+  -> IdleReviewPlanningCompleted | IdleReviewPlanningDeadlineReached
+  -> validate operation/epoch/activity generation
+  -> atomically commit IDLE + ReviewPlan + schedule event
+  -> emit StopActiveChatRuntime effect
+```
+
+Callers cannot inject an optional `next_review_plan`. Manual/recovery paths that
+intentionally avoid a model produce an explicit `Bypassed` outcome and still use
+the same commit path.
+
+Exactly one schedule is current per session. The aggregate stores
+`current_plan_id` and `review_plan_revision`; committing revision `N + 1`
+atomically supersedes revision `N`. Due-review delivery checks both values so a
+late timer for an older plan is recorded as superseded and cannot start review.
+
+### Active-Chat Control Intents (Implemented Slice)
+
+The active-chat semantic wait and exit trigger are control effects, rather than
+in-memory timer callbacks.  A buffered message creates an
+`enqueue_active_chat_round_due` effect and a matching intent with its schedule
+id/revision, due event id, input watermark, epoch, contract snapshot, and retry
+cycle.  The `ActiveChatRoundDue` event may start a round only when all of those
+fences still match; otherwise it is diagnostic stale work.
+
+An active-chat bootstrap result, round result, or decay tick requests exit by
+creating `enqueue_active_chat_exit_request` plus an intent.  Its trusted
+`ExitRequested` completion revalidates the active epoch and message watermark
+before entering `ACTIVE_CHAT_SETTLING` and starting idle-review planning.  New
+actionable active-chat input supersedes a pending or failed exit intent rather
+than reviving its old effect, clears the exit blocker, and schedules fresh
+round work from the new watermark.
+
+Terminal failure of either control effect follows a bounded policy governed by
+`control_reconciliation_max_cycles` (currently defaulting to two total
+cycles).  A failed exit request is retried only through a new, fenced exit
+intent; after the budget is exhausted the aggregate records `exit_blocker` and
+does not silently request another automatic exit.  A failed round-due request
+is retried only while buffered input remains; after exhaustion it records
+`round_schedule_blocker` and leaves those inputs unconsumed.  A later message
+may create a fresh intent, while the failed attempt remains durable diagnostic
+evidence.
+
+## Ingress Delivery
+
+The core message log and the Agent mailbox cannot be connected by an in-memory
+task alone. The accepted ingress transaction records an Agent-routing outbox
+entry keyed by `(profile_id, session_id, message_log_id)`. A supervised relay
+converts that entry to the deterministic mailbox event
+`message-received:{message_log_id}` and marks delivery only after the mailbox
+insert is durable. Duplicate relay attempts are idempotent.
+
+The Agent mailbox identity is scoped to the logical message, not to the route
+rule which discovered it. Route outbox rows may remain distinct per rule for
+audit purposes, but every delivery for the same
+`(profile_id, session_id, message_log_id)` converges on one canonical
+`MessageReceived` event and one message-ledger row. The actor payload excludes
+rule-specific delivery ids. Conflicting projections of the same message fail
+closed instead of causing a second state transition.
+
+A routing worker separates decision from dispatch. It reconstructs context,
+runs the routing policy, and commits the route decision plus every Agent outbox
+row before invoking a command, plugin, or observer target. Recovery may repeat
+pure matching and explicitly idempotent hooks, but it never treats an external
+target side effect as a prerequisite for committing the Agent delivery. Normal
+targets remain best-effort until they receive their own durable outbox contract.
+
+If the persistence adapter cannot share that transaction, the runtime keeps a
+durable per-session message-log watermark and performs a recovery scan before
+accepting live traffic. Merely logging an enqueue failure is not recovery.
+
+## Actor-Owned Message Ledger
+
+Actor-owned sessions do not reuse the legacy unread-message or unread-range
+tables. They keep one durable message ledger keyed by
+`(profile_id, session_id, message_log_id)`. Each row records the source mailbox
+event, ownership generation, immutable message/priority facts, and review,
+active-reply, and active-chat consumption provenance.
+
+Unread ranges are projections over ordered ledger rows. They are not another
+mutable table. Consuming a middle interval therefore cannot leave range state
+out of sync with individual messages, and a restart requires no range rebuild.
+
+Every consumption mutation carries an `operation_id` and the operation's
+`input_watermark` plus `input_ledger_sequence`. The sequence is the last ledger
+row visible in the transaction that creates the operation, including a
+`MessageReceived` row created by that same transition. A workflow may consume
+only the explicit message ids it captured at or below both fences. Messages
+committed after the operation started remain unread even if their numeric ids
+fall inside a coarse range.
+
+An `all_through_watermark` mutation applies only to eligible rows already
+present at its captured ledger-sequence boundary. A later append never inherits
+an earlier consumption merely because its `message_log_id` is below the coarse
+watermark. The store stamps the resolved sequence into the operation, aggregate
+pending-operation fence at
+`data.operation_fences[operation_id]`, and effect payload before the creating
+transaction commits; completions validate the same sequence. Replaying the
+same operation and mutation is idempotent; a different operation trying to
+rewrite existing provenance fails closed.
+
+`MessageReceived` inserts the ledger row in the same transaction that advances
+the aggregate, completes the mailbox claim, appends the transition journal,
+and creates any workflow effects. A duplicate event cannot advance attention,
+activity generation, mention thresholds, or workflow state twice.
+
+The active-chat exit snapshot stores its `input_watermark`. A message at or
+below that value is old captured input even when its delivery is delayed; a
+message above it is new activity and follows the reducer's explicit settling
+cancellation policy.
+
+## Durable Review-Due Delivery
+
+The review scanner addresses a schedule by `(plan_id, plan_revision,
+ownership_generation)`. In one write transaction it rechecks active Actor v2
+ownership and the aggregate's current-plan fields, then either inserts the
+deterministic `ReviewDue` mailbox event or records a superseded/retry outcome.
+It never invokes a scheduler method directly.
+
+A due event is not considered consumed merely because a timer observed it.
+The actor transition either starts a fenced review operation, defers the
+schedule with an explicit retry time, or supersedes it with an append-only
+reason. Stable cursor scanning and per-row retry times prevent one unavailable
+session from occupying every scan page.
+
+## Prompt Assets And Projection
+
+Built-in prompt files and editable runtime copies use three-way synchronization:
+
+- source: the incoming package version;
+- base: the last source version accepted into the runtime directory;
+- local: the editable runtime version.
+
+If `local == base`, source updates apply automatically. If both local and source
+changed, non-overlapping edits may merge; conflicts preserve local runtime
+content and stage incoming content separately. Source version and digest changes
+are validated in CI. Legacy runtime files are auto-upgraded only when their hash
+matches a known built-in revision.
+
+Review model input is projected through one `ReviewPromptProjector`:
+
+- context messages become an explicit `CONTEXT` injection;
+- source records and instruction blocks become explicit `INSTRUCTIONS`
+  injections;
+- runtime facts are rendered by a dedicated component;
+- prompt snapshots contain the exact messages sent to the model.
+
+## Timer Supervision
+
+Timers enqueue durable events; they do not invoke scheduler methods directly.
+Polling loops catch failures per iteration, apply bounded backoff, and remain
+alive until shutdown. Health state includes last scan, last success, consecutive
+failures, last error, and current lease owner. Management APIs expose both live
+tasks and completed task failures.
+
+Due-review scanning must not allow unavailable sessions to occupy the first
+page forever. Skipped plans receive an explicit retry time, and scanning uses a
+stable cursor.
+
+## Recovery
+
+The following is the target recovery contract.  The current store can enqueue
+the fenced `RecoveryRequested` event for a non-idle aggregate, but the reducer
+does not yet implement that event.  Do not activate Actor v2 ownership until
+that event deterministically rebuilds or settles every such aggregate.
+
+At startup:
+
+1. release expired inbox, operation, and effect leases;
+2. start profile actors for sessions with pending events or non-idle aggregates;
+3. supersede operations that cannot be resumed safely;
+4. replay pending effects that are idempotent;
+5. convert expired external-action executions without authoritative platform
+   idempotency into `unknown` rather than blindly replaying them;
+6. rebuild active-chat runtime state from the durable aggregate or settle it
+   through the normal exit flow;
+7. enqueue due review events using the persisted `plan_id` and plan revision.
+
+Recovery never calls a separate transition shortcut.
+
+## Migration Sequence
+
+1. Add durable aggregate revision, mailbox, operations, transition journal,
+   schedule events, and effect outbox without changing current behavior.
+2. Add the actor registry and route public signals, timers, and management
+   commands through it.
+3. Convert review and active-reply completions to mailbox events.
+4. Convert active-chat bootstrap, rounds, and exits to mailbox events.
+5. Remove direct coordinator-to-scheduler mutation callbacks and the runtime
+   session lock.
+6. Enable durable recovery and remove legacy reconcile shortcuts.
+7. Remove compatibility repository mutation methods once no caller remains.
+
+Each migration step must preserve a runnable application and include restart,
+duplicate, stale-completion, cancellation-tail, and fault-injection tests.
+
+## Activation Gate
+
+The v2 tables are not a shadow-write or observability mirror. A session is
+owned by either the legacy scheduler or the actor runtime, never both. Runtime
+selection is made before the first event for `(profile_id, session_id)` and is
+persisted with the aggregate. Falling back to legacy mutation after an actor
+event has been accepted is forbidden.
+
+### Durable Ownership Contract
+
+Runtime ownership is persisted independently from both legacy scheduler state
+and the actor aggregate. Its key is the stable `SessionKey` pair
+`(profile_id, session_id)`; editable Agent configuration ids are not ownership
+identities. The ownership mode is one of `legacy` or `actor_v2`, and its status
+is one of `active` or `migrating`.
+
+Because the legacy scheduler is still keyed by the unscoped base session id,
+the ownership row also records `legacy_session_id` as a migration alias. It is
+not part of the actor key. Multiple actor-owned profiles may share that alias
+without sharing state, but any active legacy owner for the alias conflicts with
+actor ownership, and only one legacy owner may use an alias at a time.
+
+The first ownership claim uses a SQLite write transaction. Concurrent claims
+for the same key and mode are idempotent and return the same generation.
+Concurrent claims for different modes fail closed. Before inserting the first
+claim, the repository checks durable evidence:
+
+- an actor aggregate or mailbox row forbids selecting `legacy`;
+- a legacy scheduler, unread-message, or unread-range row forbids selecting
+  `actor_v2`;
+- evidence is checked inside the same `BEGIN IMMEDIATE` transaction as the
+  ownership insert.
+
+Ownership starts at generation 1. It cannot be changed with a direct mode
+update. Migration is an explicit two-phase state transition:
+
+```text
+active(mode=A, generation=N)
+  -> begin migration CAS(N, target=B, reason)
+  -> migrating(mode=A, pending=B, generation=N+1)
+  -> external state migration and source cleanup
+  -> complete migration CAS(N+1, reason)
+  -> active(mode=B, generation=N+2)
+```
+
+Both migration transitions require a non-empty audit reason and append an
+ownership event. A stale generation, wrong status, or different pending target
+fails closed. Completion repeats the target-mode evidence check: legacy state
+must be gone before activating `actor_v2`, and actor aggregate/mailbox state
+must be gone before activating `legacy`. An explicit abort returns to the
+source mode through another generation-checked transition and audit event.
+
+Changing the ownership generation also invalidates durable rows, not only live
+leases. A migration which transfers Actor state therefore requires a durable
+manifest describing the exact routing jobs and outbox deliveries, aggregate,
+mailbox, operation, schedule, ledger, journal, effect, and prepared external
+action revisions being moved. Completion re-fences those rows to the new active
+generation in the same transaction as the ownership change. Aborting a
+migration whose source is `actor_v2` likewise releases stale processing leases
+and re-fences the unchanged source rows to the abort generation atomically.
+
+Re-fencing must update the complete signed representation. If a canonical JSON
+payload or digest embeds `ownership_generation`, changing only its relational
+column corrupts the durable identity and is forbidden. Prefer keeping mutable
+lease/fence metadata outside immutable ingress payloads; compatibility rows
+which embed it require an atomic payload-and-digest rewrite.
+
+Terminal external-action receipts (`succeeded`, `abandoned_before_dispatch`,
+and `unknown`) are execution history, not live owner state. They retain the
+generation under which the platform action may have happened. Migration must
+reject or explicitly settle `prepared`/`executing` actions; it must not rewrite
+terminal evidence to imply that a later owner performed it. Global idempotency
+identity continues to deduplicate that historical action across generations.
+
+Until that manifest and re-fencing transaction exist, stateful legacy-to-Actor
+or Actor-to-legacy migration is unsupported. The repository may activate
+`actor_v2` only for a new empty session; deleting source state and calling the
+result a migration is not a lossless compatibility path.
+
+Repositories which atomically relay an outbox record into the actor mailbox
+must validate `active(actor_v2)` ownership using their existing SQLite
+connection before inserting the mailbox event. This validation never creates
+or changes ownership and may optionally fence on the expected generation.
+
+Actor ownership may be enabled for production traffic only after all of the
+following are true for that ownership mode:
+
+- public signals, timer events, workflow completions, and management commands
+  enter through the durable mailbox;
+- scheduler state, unread/high-priority inbox mutations, operations, schedules,
+  journals, and outbox effects share one commit boundary;
+- no coordinator retains a direct scheduler mutation callback;
+- model/workflow handlers cannot perform externally visible actions before an
+  accepted mailbox completion creates a dedicated action effect;
+- every external effect has a lease token, an idempotency key, a bounded retry
+  policy, and a deterministic completion event id;
+- every send, poke, reaction, and future external action has a durable receipt;
+  ambiguous platform outcomes remain `unknown` until reconciled and are never
+  retried merely because a process restarted;
+- recovery can rebuild or settle every non-idle aggregate without calling a
+  legacy transition shortcut;
+- every durable `RecoveryRequested` emitted by the SQLite store is consumed by
+  a fenced reducer branch that deterministically rebuilds or settles its
+  non-idle aggregate;
+- management reads use the same profile-scoped actor state that runtime writes;
+- migration tests prove that the same external session id can be owned by two
+  profiles without sharing state.
+
+Until the gate is satisfied, v2 code is an inactive persistence and reducer
+foundation. Compatibility code may translate inputs and outputs at the actor
+boundary, but it may not mutate legacy state as an actor effect.

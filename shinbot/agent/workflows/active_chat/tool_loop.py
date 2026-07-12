@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from shinbot.agent.runtime.session_actor.external_actions import ExternalActionIntent
 from shinbot.agent.services.tools.parsing import parse_tool_call
 from shinbot.agent.services.tools.schema import ToolCallRequest
 from shinbot.agent.workflows.active_chat.models import (
@@ -13,6 +14,11 @@ from shinbot.agent.workflows.active_chat.models import (
     ActiveChatNoReplyIntensity,
     ActiveChatReplyIntensity,
     ActiveChatRoundResult,
+)
+from shinbot.agent.workflows.chat_actions import (
+    EXTERNAL_ACTION_TOOL_NAMES,
+    ExternalActionToolMode,
+    collect_external_action_intent,
 )
 
 _VIRTUAL_TOOL_NAMES = {"exit_active", "request_think_mode"}
@@ -43,8 +49,10 @@ class ActiveChatToolLoop:
         run_id: str = "",
         user_id: str = "",
         trace_id: str = "",
+        external_action_mode: ExternalActionToolMode = ExternalActionToolMode.EXECUTE,
     ) -> ActiveChatToolLoopResult:
         """Execute tool calls sequentially and derive the strongest semantic action."""
+        action_mode = ExternalActionToolMode(external_action_mode)
         parsed_calls = [parse_tool_call(tool_call) for tool_call in tool_calls]
         result = ActiveChatToolLoopResult(
             round_result=ActiveChatRoundResult(
@@ -65,6 +73,7 @@ class ActiveChatToolLoop:
         action_state = _ActionState()
         successful_action_count = 0
         failure_reasons: list[str] = []
+        external_action_intents: list[ExternalActionIntent] = []
 
         for tool_call_id, tool_name, tool_args in parsed_calls:
             if tool_name in _VIRTUAL_TOOL_NAMES:
@@ -88,6 +97,47 @@ class ActiveChatToolLoop:
                         tool_name=tool_name,
                         output=output,
                         success=success,
+                    )
+                )
+                continue
+
+            if (
+                action_mode is ExternalActionToolMode.COLLECT_INTENTS
+                and tool_name in EXTERNAL_ACTION_TOOL_NAMES
+            ):
+                try:
+                    intent = collect_external_action_intent(
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        arguments=tool_args,
+                        action_ordinal=len(external_action_intents),
+                    )
+                except (TypeError, ValueError) as exc:
+                    failure_reasons.append(str(exc))
+                    result.tool_messages.append(
+                        _tool_message(
+                            tool_call_id,
+                            tool_name=tool_name,
+                            output={"error": str(exc)},
+                            success=False,
+                        )
+                    )
+                    continue
+                external_action_intents.append(intent)
+                successful_action_count += 1
+                action_state.observe(tool_name, tool_args)
+                result.tool_messages.append(
+                    _tool_message(
+                        tool_call_id,
+                        tool_name=tool_name,
+                        output={
+                            "action": tool_name,
+                            "accepted": True,
+                            "deferred": True,
+                            "sent": False,
+                            "action_ordinal": intent.action_ordinal,
+                        },
+                        success=True,
                     )
                 )
                 continue
@@ -130,7 +180,9 @@ class ActiveChatToolLoop:
             )
             return result
 
-        round_result = action_state.to_round_result()
+        round_result = action_state.to_round_result(
+            external_action_intents=tuple(external_action_intents)
+        )
         if round_result.action == ActiveChatActionKind.EXIT_ACTIVE and not round_result.reason:
             result.invalid_reason = "exit_active_missing_reason"
             result.round_result = ActiveChatRoundResult(
@@ -196,7 +248,11 @@ class _ActionState:
             if not self.reason:
                 self.reason = _reason_from(arguments)
 
-    def to_round_result(self) -> ActiveChatRoundResult:
+    def to_round_result(
+        self,
+        *,
+        external_action_intents: tuple[ExternalActionIntent, ...] = (),
+    ) -> ActiveChatRoundResult:
         """Convert the accumulated action state into a round result.
         Returns:
             An ``ActiveChatRoundResult`` reflecting the strongest observed action,
@@ -208,6 +264,7 @@ class _ActionState:
             action=self.action,
             reply_intensity=self.reply_intensity,
             no_reply_intensity=self.no_reply_intensity,
+            external_action_intents=external_action_intents,
         )
 
     def _promote(self, action: ActiveChatActionKind) -> None:
@@ -269,7 +326,10 @@ def _trace_tool_output(tool_name: str, output: Any, *, success: bool) -> dict[st
         "action": action,
     }
     if action == "send_reply":
+        _copy_if_present(output, result, "accepted")
+        _copy_if_present(output, result, "deferred")
         _copy_if_present(output, result, "sent")
+        _copy_if_present(output, result, "action_ordinal")
         _copy_if_present(output, result, "message_log_id")
         _copy_if_present(output, result, "quote_message_id")
         _copy_if_present(output, result, "terminate_round")
@@ -280,13 +340,19 @@ def _trace_tool_output(tool_name: str, output: Any, *, success: bool) -> dict[st
         _copy_if_present(output, result, "summary_stored")
         return result
     if action == "send_poke":
+        _copy_if_present(output, result, "accepted")
+        _copy_if_present(output, result, "deferred")
         _copy_if_present(output, result, "sent")
+        _copy_if_present(output, result, "action_ordinal")
         _copy_if_present(output, result, "user_id")
         _copy_if_present(output, result, "session_type")
         _copy_if_present(output, result, "terminate_round")
         return result
     if action == "send_reaction":
+        _copy_if_present(output, result, "accepted")
+        _copy_if_present(output, result, "deferred")
         _copy_if_present(output, result, "sent")
+        _copy_if_present(output, result, "action_ordinal")
         _copy_if_present(output, result, "reaction_action")
         _copy_if_present(output, result, "message_id")
         _copy_if_present(output, result, "emoji_id")

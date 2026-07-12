@@ -53,7 +53,10 @@ from shinbot.agent.workflows.active_chat.tool_loop import (
     ActiveChatToolLoop,
     ActiveChatToolLoopResult,
 )
-from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
+from shinbot.agent.workflows.chat_actions import (
+    CHAT_ACTION_TOOL_TAG,
+    ExternalActionToolMode,
+)
 from shinbot.utils.logger import format_log_event, get_logger
 
 logger = get_logger(__name__, source="agent:active-chat", color="green")
@@ -83,6 +86,7 @@ class ActiveChatFastRunnerConfig:
     source_context_before_messages: int = 50
     instance_config_resolver: InstanceRuntimeConfigResolver | None = None
     model_target_resolver: Callable[[str], RuntimeModelTarget | None] | None = None
+    external_action_mode: ExternalActionToolMode = ExternalActionToolMode.EXECUTE
 
 
 class ActiveChatFastRunner:
@@ -681,6 +685,7 @@ class ActiveChatFastRunner:
             run_id=str(result.execution_id or ""),
             user_id=user_id,
             trace_id=_tool_trace_id_from_batch(batch, user_id=user_id),
+            external_action_mode=self._config.external_action_mode,
         )
 
     def _resolve_instance_config(self, instance_id: str) -> Any | None:

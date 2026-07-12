@@ -12,6 +12,7 @@ from shinbot.agent.workflows.active_chat.models import (
     ActiveChatReplyIntensity,
 )
 from shinbot.agent.workflows.active_chat.tool_loop import ActiveChatToolLoop
+from shinbot.agent.workflows.chat_actions import ExternalActionToolMode
 
 
 class FakeToolManager:
@@ -289,3 +290,84 @@ async def test_active_chat_tool_loop_keeps_request_think_mode_harmless() -> None
     assert result.round_result.success is True
     assert result.round_result.action == ActiveChatActionKind.WATCH
     assert result.round_result.reason == "needs careful reply"
+
+
+@pytest.mark.asyncio
+async def test_actor_mode_collects_external_action_intents_without_execution() -> None:
+    manager = FakeToolManager()
+    loop = ActiveChatToolLoop()
+
+    result = await loop.execute(
+        [
+            make_tool_call(
+                "send_reply",
+                {
+                    "text": " first ",
+                    "quote_message_log_id": 10,
+                    "terminate_round": False,
+                },
+                call_id="call-reply",
+            ),
+            make_tool_call(
+                "send_reaction",
+                {
+                    "message_log_id": 10,
+                    "emoji_id": "128077",
+                    "action": "add",
+                },
+                call_id="call-reaction",
+            ),
+        ],
+        tool_manager=manager,
+        instance_id="bot",
+        session_id="bot:group:room",
+        external_action_mode=ExternalActionToolMode.COLLECT_INTENTS,
+    )
+
+    assert manager.calls == []
+    assert result.round_result.action is ActiveChatActionKind.SEND_REPLY
+    intents = result.round_result.external_action_intents
+    assert [intent.tool_call_id for intent in intents] == [
+        "call-reply",
+        "call-reaction",
+    ]
+    assert [intent.action_ordinal for intent in intents] == [0, 1]
+    assert intents[0].payload == {"text": "first", "quote_message_log_id": 10}
+    assert intents[1].payload == {
+        "message_log_id": 10,
+        "emoji_id": "128077",
+        "action": "add",
+    }
+    assert json.loads(result.tool_messages[0]["content"]) == {
+        "success": True,
+        "action": "send_reply",
+        "accepted": True,
+        "deferred": True,
+        "sent": False,
+        "action_ordinal": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_actor_mode_rejects_invalid_intent_without_calling_tool_manager() -> None:
+    manager = FakeToolManager()
+    loop = ActiveChatToolLoop()
+
+    result = await loop.execute(
+        [
+            make_tool_call(
+                "send_reply",
+                {"text": "hello", "idempotency_key": "model-owned"},
+            )
+        ],
+        tool_manager=manager,
+        instance_id="bot",
+        session_id="bot:group:room",
+        external_action_mode=ExternalActionToolMode.COLLECT_INTENTS,
+    )
+
+    assert manager.calls == []
+    assert result.round_result.action is ActiveChatActionKind.RETRY_FAILED
+    assert result.round_result.external_action_intents == ()
+    assert "runtime-reserved" in result.invalid_reason
+    assert json.loads(result.tool_messages[0]["content"])["success"] is False

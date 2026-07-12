@@ -638,6 +638,7 @@ async def test_structured_output_runner_includes_instruction_content() -> None:
     stage = _stage_input(
         purpose="test_stage",
         source_messages=[{"id": 1, "text": "hello"}],
+        instruction_content=[{"type": "text", "text": "rendered input"}],
         metadata={"key": "value"},
     )
     await runner.run(stage)
@@ -645,8 +646,15 @@ async def test_structured_output_runner_includes_instruction_content() -> None:
     assert build_request.component_ids_by_stage == {}
     assert build_request.metadata["review_stage"] == "test_stage"
     assert build_request.metadata["review_stage_metadata"] == {"key": "value"}
-    assert build_request.metadata["review_source_messages"] == [{"id": 1, "text": "hello"}]
-    assert build_request.metadata["review_source_messages_text"] == ""
+    assert "review_source_messages" not in build_request.metadata
+    assert "review_instruction_content" not in build_request.metadata
+    assert build_request.disabled_components == ["review.test_stage.instruction"]
+    assert len(build_request.injections) == 1
+    injection = build_request.injections[0]
+    assert injection.component_id == "review.test_stage.instruction"
+    rendered = "\n".join(str(block.get("text") or "") for block in injection.content_blocks)
+    assert rendered.count("rendered input") == 1
+    assert "Source messages JSON" not in rendered
 
 
 @pytest.mark.asyncio
@@ -672,7 +680,40 @@ async def test_structured_output_runner_uses_message_formatter() -> None:
 
     formatter.format_text.assert_called_once()
     build_request = registry.build_messages.call_args[0][0]
-    assert build_request.metadata["review_source_messages_text"] == "Alice: hello"
-    assert build_request.metadata["review_source_messages"] == [
-        {"id": 1, "sender_id": "alice", "raw_text": "hello"}
+    assert "review_source_messages_text" not in build_request.metadata
+    assert "review_source_messages" not in build_request.metadata
+    assert len(build_request.injections) == 1
+    rendered = "\n".join(
+        str(block.get("text") or "") for block in build_request.injections[0].content_blocks
+    )
+    assert rendered.count("Source messages:\nAlice: hello") == 1
+
+
+@pytest.mark.asyncio
+async def test_structured_output_runner_projects_context_messages_in_order() -> None:
+    registry = _mock_prompt_registry()
+    model_runtime = AsyncMock()
+    model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
+    runner = StructuredOutputRunner(
+        model_runtime,
+        prompt_registry=registry,
+        config=RunnerTemplateConfig(),
+    )
+    tail = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+        {"role": "user", "content": "third"},
     ]
+
+    await runner.run(_stage_input(context_messages=tail))
+
+    build_request = registry.build_messages.call_args[0][0]
+    assert len(build_request.injections) == 2
+    context_injection = build_request.injections[0]
+    assert context_injection.stage.value == "context"
+    assert context_injection.messages == tail
+    assert build_request.metadata["review_input_projection"] == {
+        "context_message_count": 3,
+        "source_message_count": 0,
+        "instruction_block_count": 0,
+    }

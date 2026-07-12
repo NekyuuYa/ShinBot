@@ -13,6 +13,7 @@ from shinbot.core.application.boot_preflight import BootPreflightError, run_boot
 from shinbot.core.application.bots_config import BotServiceConfig
 from shinbot.core.application.data_initializer import DataInitializer
 from shinbot.core.application.runtime_control import RuntimeControl
+from shinbot.core.dispatch.agent_identity import DEFAULT_SESSION_ACTOR_PROFILE_ID
 from shinbot.core.message_routes.command import CommandDef
 from shinbot.core.plugins.types import PluginState
 from tests.conftest import MockAdapter
@@ -586,9 +587,50 @@ async def test_boot_loads_agent_config_for_full_bot(tmp_path: Path):
         assert bot.agent_runtime is not None
         assert bot.agent_runtime.model_runtime is bot.model_runtime
         profile = bot.agent_runtime.agent_profile_for_bot("full-agent")
-        assert profile.profile_id == "full-agent-profile"
+        assert profile.profile_id == "full-agent"
+        assert profile.config.agent_id == "full-agent-profile"
         assert profile.config.review_workflow_config.review_scan_batch_size == 9
         assert profile.config.active_chat_policy_config.initial_interest_value == 42
+    finally:
+        await boot.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_boot_creates_stable_profile_for_simple_bot_without_config(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[admin]",
+                'username = "admin"',
+                'password = "admin"',
+                "jwt_expire_hours = 24",
+                "",
+                "[[bots]]",
+                'id = "simple-bot"',
+                "enabled = true",
+                "",
+                "[bots.agent]",
+                'mode = "simple"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    boot = BootController(config_path=config_path, data_dir=tmp_path / "data")
+
+    try:
+        bot = await boot.boot()
+        assert bot.agent_runtime is not None
+        profile = bot.agent_runtime.agent_profile_for_bot("simple-bot")
+        assert profile.profile_id == "simple-bot"
+        assert profile.bot_id == "simple-bot"
+        assert profile.config.agent_id == ""
+        assert (
+            bot.agent_runtime.agent_profile_for_bot("").profile_id
+            == DEFAULT_SESSION_ACTOR_PROFILE_ID
+        )
     finally:
         await boot.shutdown()
 

@@ -448,7 +448,7 @@ def test_agent_runtime_wires_review_runner_config(tmp_path: Path) -> None:
     assert workflow._scan_runner._config.route_id == "route-a"
     assert workflow._scan_runner._config.model_id == "model-a"
     assert workflow._context_builder._context_manager is None
-    assert workflow._scan_runner._template._message_formatter is runtime.message_formatter
+    assert workflow._scan_runner._message_formatter is runtime.message_formatter
 
 
 def test_agent_runtime_accepts_review_runner_config_mapping(tmp_path: Path) -> None:

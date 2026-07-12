@@ -18,6 +18,7 @@ from review_workflow_support import (
 )
 
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
+from shinbot.agent.workflows.chat_actions import ExternalActionToolMode
 from shinbot.agent.workflows.chat_actions.tool_registration import (
     SendReplyIdempotencyStore,
     register_chat_action_tools,
@@ -168,6 +169,72 @@ async def test_reply_decision_runner_exports_and_executes_terminal_tools() -> No
     assert result.reason == "send_reply_tool"
     assert tool_manager.execute_calls[0].tool_name == "send_reply"
     assert tool_manager.execute_calls[0].caller == "test.review"
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_collects_actor_intents_without_execution() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "execution_id": "actor-review-run",
+                "tool_calls": [
+                    {
+                        "id": "reply-call",
+                        "function": {
+                            "name": "send_reply",
+                            "arguments": (
+                                '{"text": "hello", "quote_message_log_id": 7}'
+                            ),
+                        },
+                    },
+                    {
+                        "id": "poke-call",
+                        "function": {
+                            "name": "send_poke",
+                            "arguments": '{"user_id": "user-1"}',
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+        external_action_mode=ExternalActionToolMode.COLLECT_INTENTS,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert tool_manager.execute_calls == []
+    assert [tool["function"]["name"] for tool in model_runtime.calls[0].tools] == [
+        "no_reply",
+        "send_reply",
+        "send_poke",
+        "send_reaction",
+    ]
+    assert result.replied is True
+    assert result.reason == "send_reply_tool:1;send_poke_tool:1"
+    assert [intent.tool_call_id for intent in result.external_action_intents] == [
+        "reply-call",
+        "poke-call",
+    ]
+    assert [intent.action_ordinal for intent in result.external_action_intents] == [0, 1]
+    assert result.external_action_intents[0].payload == {
+        "text": "hello",
+        "quote_message_log_id": 7,
+    }
+    assert "idempotency_key" not in result.external_action_intents[0].payload
 
 
 @pytest.mark.asyncio

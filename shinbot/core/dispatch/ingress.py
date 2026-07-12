@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -20,10 +21,22 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from shinbot.core.application.bot_routing import (
+    AGENT_ENTRY_TARGET_NAME,
     BotRuntimeRouter,
     bot_route_rule_enabled_for_context,
     bot_session_id_for_selection,
     permission_scope_for_event,
+)
+from shinbot.core.dispatch.agent_identity import SessionKeyFactory
+from shinbot.core.dispatch.agent_ownership import (
+    AgentRuntimeOwnership,
+    AgentRuntimeOwnershipConflict,
+    AgentRuntimeOwnershipMode,
+    AgentRuntimeOwnershipStatus,
+)
+from shinbot.core.dispatch.durable_routing import (
+    IngressRoutingPayload,
+    MessageRoutingJobStatus,
 )
 from shinbot.core.dispatch.message_context import (
     Interceptor,
@@ -45,6 +58,9 @@ from shinbot.utils.resource_ingress import summarize_message_modalities
 
 if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
+    from shinbot.persistence.repositories.durable_routing import (
+        ClaimedMessageRoutingJob,
+    )
 
 logger = get_logger(__name__, source="dispatch", color="cyan")
 
@@ -55,6 +71,16 @@ ROUTING_SKIP_NO_ROUTE_MATCHED = MessageRoutingSkipReason.NO_ROUTE_MATCHED.value
 ROUTING_SKIP_SESSION_MUTED = MessageRoutingSkipReason.SESSION_MUTED.value
 ROUTING_SKIP_INTERCEPTOR_BLOCKED = MessageRoutingSkipReason.INTERCEPTOR_BLOCKED.value
 ROUTING_SKIP_WAIT_FOR_INPUT = MessageRoutingSkipReason.WAIT_FOR_INPUT.value
+
+
+class DurableRoutingReplayDeferred(RuntimeError):
+    """Signal that a durable job remains recoverable but cannot run yet."""
+
+    def __init__(self, code: str, message: str) -> None:
+        """Store a stable retry classification for supervisor health."""
+
+        self.code = str(code or "routing_replay_deferred").strip()
+        super().__init__(message)
 
 
 def runtime_permission_group_ids_for_event(event: UnifiedEvent) -> tuple[str, ...]:
@@ -74,6 +100,7 @@ class RouteDispatchContext:
     message_context: MessageContext | None = None
     message_log_id: int | None = None
     trace_id: str = ""
+    observed_at: float = 0.0
 
     def require_message_context(self) -> MessageContext:
         """Return the message context or raise if it was not attached.
@@ -341,6 +368,8 @@ class MessageIngress:
         waiting_registry: WaitingInputRegistry | None = None,
         max_message_age_seconds: int = MAX_MESSAGE_AGE_SECONDS,
         bot_router: BotRuntimeRouter | None = None,
+        durable_recovery_grace_seconds: float = 2.0,
+        durable_routing_timeout_seconds: float = 20.0,
     ) -> None:
         self._session_manager = session_manager
         self._permission_engine = permission_engine
@@ -351,6 +380,21 @@ class MessageIngress:
         self._waiting_registry = waiting_registry or WaitingInputRegistry()
         self._max_message_age_seconds = max_message_age_seconds
         self._bot_router = bot_router
+        if (
+            not math.isfinite(float(durable_recovery_grace_seconds))
+            or durable_recovery_grace_seconds < 0
+        ):
+            raise ValueError("durable_recovery_grace_seconds must be finite and non-negative")
+        self._durable_recovery_grace_seconds = float(durable_recovery_grace_seconds)
+        if (
+            not math.isfinite(float(durable_routing_timeout_seconds))
+            or durable_routing_timeout_seconds <= 0
+        ):
+            raise ValueError("durable_routing_timeout_seconds must be finite and positive")
+        self._durable_routing_timeout_seconds = float(durable_routing_timeout_seconds)
+        self._session_key_factory = SessionKeyFactory()
+        self._durable_worker_id = f"message-ingress:{uuid.uuid4().hex}"
+        self._durable_wake_callback: Callable[[], None] | None = None
         self._interceptors: list[tuple[int, Interceptor]] = []
         self._pre_route_hooks: list[PreRouteHook] = []
 
@@ -387,6 +431,14 @@ class MessageIngress:
         """Install or clear bot service-unit routing policy."""
 
         self._bot_router = bot_router
+
+    def set_durable_routing_wake_callback(
+        self,
+        callback: Callable[[], None] | None,
+    ) -> None:
+        """Install the supervisor notification used after durable state changes."""
+
+        self._durable_wake_callback = callback
 
     async def process_event(self, event: UnifiedEvent, adapter: BaseAdapter) -> IngressResult:
         """Process one normalized event.
@@ -517,12 +569,35 @@ class MessageIngress:
             )
 
         observed_at = time.time()
-        message_log_id = self._persist_incoming_message(
-            event=event,
-            message=message,
-            session_id=session.id,
-            observed_at=observed_at,
-        )
+        ownership = self._resolve_or_claim_runtime_ownership(message_context)
+        durable_payload: IngressRoutingPayload | None = None
+        durable_job_status: MessageRoutingJobStatus | None = None
+        if self._requires_durable_actor_routing(ownership):
+            assert ownership is not None
+            durable_payload = self._build_durable_routing_payload(
+                event=event,
+                adapter=adapter,
+                message_context=message_context,
+                trace_id=trace_id,
+                observed_at=observed_at,
+            )
+            message_log_id, durable_job_status, durable_payload = (
+                self._persist_or_reuse_durable_message(
+                    event=event,
+                    message=message,
+                    session_id=session.id,
+                    payload=durable_payload,
+                    ownership=ownership,
+                )
+            )
+            self._notify_durable_routing()
+        else:
+            message_log_id = self._persist_incoming_message(
+                event=event,
+                message=message,
+                session_id=session.id,
+                observed_at=observed_at,
+            )
         message_context._msg_log_id = message_log_id
         self._log_message_ingress(
             event=event,
@@ -541,107 +616,159 @@ class MessageIngress:
             message_context=message_context,
             message_log_id=message_log_id,
             trace_id=trace_id,
+            observed_at=observed_at,
         )
 
-        if not is_event_fresh(
-            event,
-            max_age_seconds=self._max_message_age_seconds,
+        if durable_job_status is not None and durable_job_status is not (
+            MessageRoutingJobStatus.PENDING
         ):
-            self._mark_skipped(message_log_id, ROUTING_SKIP_EXPIRED_MESSAGE)
-            self._log_routing_result(
-                event=event,
-                adapter=adapter,
-                session_id=session.id,
-                message_log_id=message_log_id,
-                trace_id=trace_id,
-                bot_selection=bot_selection,
-                skipped_reason=ROUTING_SKIP_EXPIRED_MESSAGE,
-            )
+            self._notify_durable_routing()
             self._session_manager.update(session)
             return IngressResult(
                 dispatch_context=dispatch_context,
                 matched_rules=[],
                 message_log_id=message_log_id,
-                skipped_reason=ROUTING_SKIP_EXPIRED_MESSAGE,
                 trace_id=trace_id,
             )
 
-        if session.is_muted:
-            self._mark_skipped(message_log_id, ROUTING_SKIP_SESSION_MUTED)
-            self._log_routing_result(
-                event=event,
-                adapter=adapter,
-                session_id=session.id,
-                message_log_id=message_log_id,
-                trace_id=trace_id,
+        return await self._route_persisted_message(
+            dispatch_context,
+            bot_selection=bot_selection,
+            durable_payload=durable_payload,
+            durable_claim=None,
+            allow_external_dispatch=True,
+        )
+
+    async def _route_persisted_message(
+        self,
+        dispatch_context: RouteDispatchContext,
+        *,
+        bot_selection: Any | None,
+        durable_payload: IngressRoutingPayload | None,
+        durable_claim: ClaimedMessageRoutingJob | None,
+        allow_external_dispatch: bool,
+    ) -> IngressResult:
+        """Acquire the durable lease before running any replayable route work."""
+
+        if durable_payload is None:
+            return await self._route_persisted_message_after_claim(
+                dispatch_context,
                 bot_selection=bot_selection,
-                skipped_reason=ROUTING_SKIP_SESSION_MUTED,
-            )
-            self._session_manager.update(session)
-            return IngressResult(
-                dispatch_context=dispatch_context,
-                matched_rules=[],
-                message_log_id=message_log_id,
-                skipped_reason=ROUTING_SKIP_SESSION_MUTED,
-                trace_id=trace_id,
+                durable_payload=None,
+                durable_claim=None,
+                allow_external_dispatch=allow_external_dispatch,
             )
 
-        if self._bot_router is not None and bot_selection is None:
-            self._mark_skipped(message_log_id, ROUTING_SKIP_NO_ROUTE_MATCHED)
-            self._log_routing_result(
-                event=event,
-                adapter=adapter,
-                session_id=session.id,
-                message_log_id=message_log_id,
-                trace_id=trace_id,
-                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
-            )
-            self._session_manager.update(session)
+        claim, live_claim = self._claim_durable_job(
+            durable_payload,
+            durable_claim=durable_claim,
+        )
+        if claim is None:
+            self._notify_durable_routing()
+            message_context = dispatch_context.require_message_context()
+            self._session_manager.update(message_context.session)
             return IngressResult(
                 dispatch_context=dispatch_context,
                 matched_rules=[],
-                message_log_id=message_log_id,
-                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
-                trace_id=trace_id,
+                message_log_id=dispatch_context.message_log_id,
+                trace_id=dispatch_context.trace_id,
             )
 
-        blocked_reason = await self._run_interceptors(message_context)
-        if blocked_reason is not None:
-            self._mark_skipped(message_log_id, blocked_reason)
-            self._log_routing_result(
-                event=event,
-                adapter=adapter,
-                session_id=session.id,
-                message_log_id=message_log_id,
-                trace_id=trace_id,
-                bot_selection=bot_selection,
-                skipped_reason=blocked_reason,
+        assert self._database is not None
+        timeout_seconds = min(
+            self._durable_routing_timeout_seconds,
+            self._database.durable_routing.lease_seconds * 0.8,
+        )
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                return await self._route_persisted_message_after_claim(
+                    dispatch_context,
+                    bot_selection=bot_selection,
+                    durable_payload=durable_payload,
+                    durable_claim=claim,
+                    allow_external_dispatch=allow_external_dispatch,
+                )
+        except BaseException as exc:
+            if live_claim:
+                self._release_live_routing_claim(claim, exc)
+            raise
+
+    async def _route_persisted_message_after_claim(
+        self,
+        dispatch_context: RouteDispatchContext,
+        *,
+        bot_selection: Any | None,
+        durable_payload: IngressRoutingPayload | None,
+        durable_claim: ClaimedMessageRoutingJob | None,
+        allow_external_dispatch: bool,
+    ) -> IngressResult:
+        """Evaluate gates, commit the route decision, then invoke targets."""
+
+        message_context = dispatch_context.require_message_context()
+        event = dispatch_context.event
+        adapter = dispatch_context.adapter
+        session = message_context.session
+        message_log_id = dispatch_context.message_log_id
+        trace_id = dispatch_context.trace_id
+
+        fresh = (
+            durable_payload.fresh_at_ingress
+            if durable_payload is not None
+            else is_event_fresh(
+                event,
+                now=dispatch_context.observed_at,
+                max_age_seconds=self._max_message_age_seconds,
             )
-            self._session_manager.update(session)
-            return IngressResult(
-                dispatch_context=dispatch_context,
-                matched_rules=[],
-                message_log_id=message_log_id,
-                skipped_reason=blocked_reason,
-                trace_id=trace_id,
+        )
+        skipped_reason: str | None = None
+        if not fresh:
+            skipped_reason = ROUTING_SKIP_EXPIRED_MESSAGE
+        elif session.is_muted:
+            skipped_reason = ROUTING_SKIP_SESSION_MUTED
+        elif self._bot_router is not None and bot_selection is None:
+            skipped_reason = ROUTING_SKIP_NO_ROUTE_MATCHED
+        else:
+            skipped_reason = await self._run_interceptors(message_context)
+
+        if skipped_reason is not None:
+            return self._complete_skipped_route(
+                dispatch_context,
+                bot_selection=bot_selection,
+                durable_payload=durable_payload,
+                durable_claim=durable_claim,
+                skipped_reason=skipped_reason,
             )
 
         await self._run_pre_route_hooks(dispatch_context)
         self._log_audit(event, message_context)
-
         matched_rules = self._route_table.match(
             event,
-            message,
+            dispatch_context.message,
             RouteMatchContext(
                 adapter=adapter,
                 session=session,
                 message_context=message_context,
-                rule_filter=lambda rule: self._route_targets.accepts_tasks(rule.owner)
-                and bot_route_rule_enabled_for_context(rule, message_context),
+                rule_filter=lambda rule: bot_route_rule_enabled_for_context(
+                    rule,
+                    message_context,
+                )
+                and (
+                    durable_payload is not None
+                    or self._route_targets.accepts_tasks(rule.owner)
+                ),
             ),
         )
         if not matched_rules:
-            self._mark_skipped(message_log_id, ROUTING_SKIP_NO_ROUTE_MATCHED)
+            return self._complete_skipped_route(
+                dispatch_context,
+                bot_selection=bot_selection,
+                durable_payload=durable_payload,
+                durable_claim=durable_claim,
+                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
+            )
+
+        if durable_payload is None:
+            self._mark_dispatched(message_log_id)
             self._log_routing_result(
                 event=event,
                 adapter=adapter,
@@ -649,18 +776,109 @@ class MessageIngress:
                 message_log_id=message_log_id,
                 trace_id=trace_id,
                 bot_selection=bot_selection,
-                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
+                matched_rules=matched_rules,
             )
+            self._schedule_targets(dispatch_context, matched_rules)
             self._session_manager.update(session)
             return IngressResult(
                 dispatch_context=dispatch_context,
-                matched_rules=[],
+                matched_rules=matched_rules,
                 message_log_id=message_log_id,
-                skipped_reason=ROUTING_SKIP_NO_ROUTE_MATCHED,
                 trace_id=trace_id,
             )
 
-        self._mark_dispatched(message_log_id)
+        if self._database is None:
+            raise RuntimeError("durable Agent routing requires a database")
+        if durable_claim is None:
+            raise RuntimeError("durable routing decision requires a live claim")
+        envelope = durable_claim.envelope
+        if (
+            envelope.profile_id != durable_payload.session_key.profile_id
+            or envelope.session_id != durable_payload.session_key.session_id
+            or envelope.ownership_generation < 1
+        ):
+            raise RuntimeError(
+                "durable routing envelope changed the canonical ownership scope"
+            )
+        ownership = self._database.agent_runtime_ownership.get(durable_payload.session_key)
+        if ownership is None:
+            raise DurableRoutingReplayDeferred(
+                "ownership_missing",
+                "durable routing ownership is not available",
+            )
+        if ownership.status is AgentRuntimeOwnershipStatus.MIGRATING:
+            raise DurableRoutingReplayDeferred(
+                "ownership_migrating",
+                "durable routing waits for ownership migration to settle",
+            )
+        if ownership.generation != envelope.ownership_generation:
+            raise DurableRoutingReplayDeferred(
+                "ownership_generation_changed",
+                "durable routing ownership changed after ingress acceptance",
+            )
+
+        agent_deliveries: list[Any] = []
+        external_rules: list[RouteRule] = []
+        if ownership.actor_v2_active:
+            for rule in matched_rules:
+                if rule.target != AGENT_ENTRY_TARGET_NAME:
+                    external_rules.append(rule)
+                    continue
+                handler = self._route_targets.get(rule.target)
+                prepare_delivery = getattr(handler, "prepare_delivery", None)
+                if not callable(prepare_delivery):
+                    raise DurableRoutingReplayDeferred(
+                        "agent_delivery_preparer_missing",
+                        f"Agent target {rule.target!r} cannot prepare a durable delivery",
+                    )
+                delivery = prepare_delivery(dispatch_context, rule)
+                if delivery.session_key != durable_payload.session_key:
+                    raise RuntimeError(
+                        "prepared Agent delivery changed the canonical session key"
+                    )
+                agent_deliveries.append(delivery)
+        else:
+            external_rules.extend(matched_rules)
+
+        if external_rules and not allow_external_dispatch:
+            raise DurableRoutingReplayDeferred(
+                "adapter_not_ready",
+                "external route targets are disabled before adapter readiness",
+            )
+        for rule in external_rules:
+            if not self._route_targets.accepts_tasks(rule.owner):
+                raise DurableRoutingReplayDeferred(
+                    "route_target_owner_inactive",
+                    f"route target owner is inactive for rule {rule.id!r}",
+                )
+            if self._route_targets.get(rule.target) is None:
+                raise DurableRoutingReplayDeferred(
+                    "route_target_missing",
+                    f"route target {rule.target!r} is not registered",
+                )
+
+        metadata = {
+            "rule_ids": [rule.id for rule in matched_rules],
+            "targets": [rule.target for rule in matched_rules],
+            "ownership_mode": ownership.mode.value,
+            "ownership_generation": ownership.generation,
+        }
+        if agent_deliveries:
+            self._database.durable_routing.complete_with_agent_deliveries(
+                durable_claim,
+                agent_deliveries,
+                metadata=metadata,
+                expected_ownership_generations={
+                    durable_payload.session_key: ownership.generation,
+                },
+            )
+        else:
+            self._database.durable_routing.complete_dispatched_without_agent(
+                durable_claim,
+                metadata=metadata,
+            )
+
+        self._notify_durable_routing()
         self._log_routing_result(
             event=event,
             adapter=adapter,
@@ -670,7 +888,7 @@ class MessageIngress:
             bot_selection=bot_selection,
             matched_rules=matched_rules,
         )
-        self._schedule_targets(dispatch_context, matched_rules)
+        self._schedule_targets(dispatch_context, external_rules)
         self._session_manager.update(session)
         return IngressResult(
             dispatch_context=dispatch_context,
@@ -679,10 +897,387 @@ class MessageIngress:
             trace_id=trace_id,
         )
 
+    def _complete_skipped_route(
+        self,
+        dispatch_context: RouteDispatchContext,
+        *,
+        bot_selection: Any | None,
+        durable_payload: IngressRoutingPayload | None,
+        durable_claim: ClaimedMessageRoutingJob | None,
+        skipped_reason: str,
+    ) -> IngressResult:
+        """Commit a skipped decision through the matching persistence mode."""
+
+        message_context = dispatch_context.require_message_context()
+        message_log_id = dispatch_context.message_log_id
+        if durable_payload is None:
+            self._mark_skipped(message_log_id, skipped_reason)
+        else:
+            if self._database is None:
+                raise RuntimeError("durable Agent routing requires a database")
+            if durable_claim is None:
+                raise RuntimeError("durable skipped decision requires a live claim")
+            self._database.durable_routing.complete_without_agent_delivery(
+                durable_claim,
+                skip_reason=skipped_reason,
+                metadata={"skip_reason": skipped_reason},
+            )
+            self._notify_durable_routing()
+
+        self._log_routing_result(
+            event=dispatch_context.event,
+            adapter=dispatch_context.adapter,
+            session_id=message_context.session.id,
+            message_log_id=message_log_id,
+            trace_id=dispatch_context.trace_id,
+            bot_selection=bot_selection,
+            skipped_reason=skipped_reason,
+        )
+        self._session_manager.update(message_context.session)
+        return IngressResult(
+            dispatch_context=dispatch_context,
+            matched_rules=[],
+            message_log_id=message_log_id,
+            skipped_reason=skipped_reason,
+            trace_id=dispatch_context.trace_id,
+        )
+
+    def _claim_durable_job(
+        self,
+        payload: IngressRoutingPayload,
+        *,
+        durable_claim: ClaimedMessageRoutingJob | None,
+    ) -> tuple[ClaimedMessageRoutingJob | None, bool]:
+        """Return a caller claim or acquire the live ingress claim."""
+
+        if self._database is None:
+            raise RuntimeError("durable Agent routing requires a database")
+        if durable_claim is not None:
+            claimed_payload = IngressRoutingPayload.from_payload(
+                durable_claim.envelope.payload
+            )
+            if claimed_payload.to_payload() != payload.to_payload():
+                raise RuntimeError("durable routing claim payload changed during replay")
+            if durable_claim.message_log_id <= 0:
+                raise RuntimeError("durable routing claim has no message log")
+            key = payload.session_key
+            if (
+                durable_claim.envelope.profile_id != key.profile_id
+                or durable_claim.envelope.session_id != key.session_id
+                or durable_claim.envelope.ownership_generation < 1
+            ):
+                raise RuntimeError(
+                    "durable routing claim has no canonical ownership fence"
+                )
+            return durable_claim, False
+        claim = self._database.durable_routing.claim_job(
+            payload.routing_job_id,
+            worker_id=self._durable_worker_id,
+            ignore_available_at=True,
+        )
+        if claim is None:
+            return None, False
+        validated, _caller_owned = self._claim_durable_job(
+            payload,
+            durable_claim=claim,
+        )
+        return validated, True
+
+    def _release_live_routing_claim(
+        self,
+        claim: ClaimedMessageRoutingJob,
+        error: BaseException,
+    ) -> None:
+        """Release a failed live claim so the supervisor can retry it."""
+
+        if self._database is None:
+            return
+        try:
+            self._database.durable_routing.retry_or_fail_job(
+                claim,
+                error_code=type(error).__name__,
+                error_message=str(error),
+                retry_at=time.time() + self._durable_recovery_grace_seconds,
+            )
+            self._notify_durable_routing()
+        except Exception:
+            logger.exception(
+                "failed_to_release_live_routing_claim: job_id=%s",
+                claim.routing_job_id,
+            )
+
+    async def replay_claimed_routing_job(
+        self,
+        claim: ClaimedMessageRoutingJob,
+        adapter: BaseAdapter,
+        *,
+        allow_external_dispatch: bool = True,
+    ) -> IngressResult:
+        """Reconstruct and execute one lease-bound durable routing job."""
+
+        payload = IngressRoutingPayload.from_payload(claim.envelope.payload)
+        if claim.routing_job_id != payload.routing_job_id:
+            raise RuntimeError("routing claim id does not match its canonical payload")
+        if adapter.instance_id != payload.adapter_instance_id:
+            raise DurableRoutingReplayDeferred(
+                "adapter_instance_unavailable",
+                "the persisted adapter instance is not available",
+            )
+        if adapter.platform != payload.adapter_platform:
+            raise RuntimeError("persisted adapter platform changed during replay")
+
+        event = payload.to_event()
+        message = Message.from_xml(payload.message_xml) if payload.message_xml else Message()
+        base_session_id = build_session_id(adapter.instance_id, event)
+        if base_session_id != payload.base_session_id:
+            raise RuntimeError("persisted base session identity is not reproducible")
+
+        async with self._session_manager.session_lock(base_session_id):
+            session = self._session_manager.get_or_create(adapter.instance_id, event)
+            session.touch()
+            bot_selection = self._resolve_bot_selection(event, adapter)
+            if payload.bot_id:
+                if bot_selection is None:
+                    raise DurableRoutingReplayDeferred(
+                        "bot_binding_unavailable",
+                        "the persisted bot binding is not currently available",
+                    )
+                if (
+                    bot_selection.bot.id != payload.bot_id
+                    or bot_selection.binding.id != payload.bot_binding_id
+                    or bot_session_id_for_selection(bot_selection, event=event)
+                    != payload.bot_session_id
+                ):
+                    raise DurableRoutingReplayDeferred(
+                        "bot_binding_changed",
+                        "current bot routing does not match the persisted ingress identity",
+                    )
+            elif bot_selection is not None:
+                raise DurableRoutingReplayDeferred(
+                    "bot_binding_changed",
+                    "an unbound persisted message now resolves to a bot binding",
+                )
+
+            permission_scope = permission_scope_for_event(
+                bot_selection,
+                event=event,
+                fallback_identity_id=adapter.instance_id,
+                fallback_session_id=session.id,
+            )
+            permission_user_id = event.sender_id or ""
+            if bot_selection is not None and permission_user_id and ":" not in permission_user_id:
+                permission_user_id = f"{adapter.instance_id}:{permission_user_id}"
+            permissions = self._permission_engine.resolve(
+                instance_id=permission_scope.identity_id,
+                session_id=permission_scope.session_id,
+                user_id=permission_user_id,
+                session_base_group=session.permission_group,
+                runtime_group_ids=runtime_permission_group_ids_for_event(event),
+            )
+            message_context = MessageContext(
+                event=event,
+                message=message,
+                session=session,
+                adapter=adapter,
+                permissions=permissions,
+                waiting_registry=self._waiting_registry,
+                database=self._database,
+            )
+            if bot_selection is not None:
+                message_context.bot_service_config = bot_selection.bot
+                message_context.bot_binding_config = bot_selection.binding
+                message_context.bot_session_id = payload.bot_session_id
+            message_context._msg_log_id = claim.message_log_id
+            dispatch_context = RouteDispatchContext(
+                event=event,
+                adapter=adapter,
+                message=message,
+                message_context=message_context,
+                message_log_id=claim.message_log_id,
+                trace_id=payload.trace_id,
+                observed_at=payload.observed_at,
+            )
+            return await self._route_persisted_message(
+                dispatch_context,
+                bot_selection=bot_selection,
+                durable_payload=payload,
+                durable_claim=claim,
+                allow_external_dispatch=allow_external_dispatch,
+            )
+
     def _resolve_bot_selection(self, event: UnifiedEvent, adapter: BaseAdapter) -> Any | None:
         if self._bot_router is None:
             return None
         return self._bot_router.resolve(adapter_instance_id=adapter.instance_id, event=event)
+
+    def _resolve_or_claim_runtime_ownership(
+        self,
+        message_context: MessageContext,
+    ) -> AgentRuntimeOwnership | None:
+        """Return the durable runtime owner, defaulting new sessions to legacy."""
+
+        if self._database is None:
+            return None
+        key = self._session_key_factory.create(
+            bot_config_id=message_context.bot_id,
+            bot_id=message_context.bot_id,
+            bot_session_id=message_context.bot_session_id,
+            base_session_id=message_context.session_id,
+        )
+        repository = self._database.agent_runtime_ownership
+        existing = repository.get(key)
+        if existing is not None:
+            return existing
+        try:
+            return repository.claim(
+                key,
+                AgentRuntimeOwnershipMode.LEGACY,
+                reason="default legacy ownership selected at first ingress",
+                legacy_session_id=message_context.session_id,
+                requested_by="core.message_ingress",
+            ).ownership
+        except AgentRuntimeOwnershipConflict:
+            # A concurrent explicit actor claim wins. Evidence conflicts without
+            # an ownership row remain fatal instead of silently selecting legacy.
+            existing = repository.get(key)
+            if existing is not None:
+                return existing
+            raise
+
+    @staticmethod
+    def _requires_durable_actor_routing(
+        ownership: AgentRuntimeOwnership | None,
+    ) -> bool:
+        """Return whether ingress must be buffered behind the ownership fence."""
+
+        if ownership is None:
+            return False
+        return (
+            ownership.status is AgentRuntimeOwnershipStatus.MIGRATING
+            or ownership.mode is AgentRuntimeOwnershipMode.ACTOR_V2
+        )
+
+    def _build_durable_routing_payload(
+        self,
+        *,
+        event: UnifiedEvent,
+        adapter: BaseAdapter,
+        message_context: MessageContext,
+        trace_id: str,
+        observed_at: float,
+    ) -> IngressRoutingPayload:
+        """Capture every input needed to deterministically replay routing."""
+
+        return IngressRoutingPayload(
+            event=event.model_dump(mode="json"),
+            adapter_instance_id=adapter.instance_id,
+            adapter_platform=adapter.platform,
+            message_xml=event.message_content,
+            trace_id=trace_id,
+            observed_at=observed_at,
+            base_session_id=message_context.session_id,
+            bot_id=message_context.bot_id,
+            bot_binding_id=message_context.bot_binding_id,
+            bot_session_id=message_context.bot_session_id,
+            fresh_at_ingress=is_event_fresh(
+                event,
+                now=observed_at,
+                max_age_seconds=self._max_message_age_seconds,
+            ),
+        )
+
+    def _persist_or_reuse_durable_message(
+        self,
+        *,
+        event: UnifiedEvent,
+        message: Message,
+        session_id: str,
+        payload: IngressRoutingPayload,
+        ownership: AgentRuntimeOwnership,
+    ) -> tuple[int, MessageRoutingJobStatus, IngressRoutingPayload]:
+        """Atomically persist a message/job or reuse its canonical duplicate."""
+
+        if self._database is None:
+            raise RuntimeError("durable Agent routing requires a database")
+        repository = self._database.durable_routing
+
+        def reuse_existing() -> tuple[int, MessageRoutingJobStatus, IngressRoutingPayload] | None:
+            existing = repository.get_job(payload.routing_job_id)
+            if existing is None:
+                return None
+            persisted_payload = IngressRoutingPayload.from_payload(existing.envelope.payload)
+            if not persisted_payload.has_same_ingress_identity(payload):
+                from shinbot.persistence.repositories.durable_routing import (
+                    DurableRoutingConflict,
+                )
+
+                raise DurableRoutingConflict(
+                    "duplicate platform event changed its canonical ingress identity"
+                )
+            return existing.message_log_id, existing.status, persisted_payload
+
+        reused = reuse_existing()
+        if reused is not None:
+            return reused
+
+        record = self._incoming_message_record(
+            event=event,
+            message=message,
+            session_id=session_id,
+            observed_at=payload.observed_at,
+        )
+        envelope = payload.to_job_envelope(
+            ownership_generation=ownership.generation,
+            available_at=payload.observed_at + self._durable_recovery_grace_seconds,
+        )
+        try:
+            persisted = repository.persist_message_and_job(record, envelope)
+        except Exception:
+            # Close the first-insert race without weakening conflict checks. A
+            # different durable identity is re-raised by ``reuse_existing``.
+            reused = reuse_existing()
+            if reused is not None:
+                return reused
+            raise
+        return persisted.message_log_id, persisted.status, payload
+
+    def _incoming_message_record(
+        self,
+        *,
+        event: UnifiedEvent,
+        message: Message,
+        session_id: str,
+        observed_at: float,
+    ) -> MessageLogRecord:
+        """Build the canonical user message record shared by both ingress modes."""
+
+        content_json = json.dumps(
+            [element.model_dump(mode="json") for element in message.elements],
+            ensure_ascii=False,
+        )
+        return MessageLogRecord(
+            session_id=session_id,
+            platform_msg_id=event.message.id if event.message is not None else "",
+            sender_id=event.sender_id or "",
+            sender_name=event.sender_name or "",
+            content_json=content_json,
+            raw_text=message.get_text(self_id=event.self_id),
+            role="user",
+            is_read=False,
+            is_mentioned=is_self_mentioned(message, event.self_id),
+            created_at=observed_at * 1000,
+        )
+
+    def _notify_durable_routing(self) -> None:
+        """Best-effort wake the routing supervisor after a durable commit."""
+
+        callback = self._durable_wake_callback
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.exception("durable_routing_wake_failed")
 
     def _log_message_ingress(
         self,
@@ -761,6 +1356,7 @@ class MessageIngress:
             message=message,
             message_log_id=message_log_id,
             trace_id=trace_id,
+            observed_at=observed_at,
         )
         self._log_message_ingress(
             event=event,
@@ -835,21 +1431,11 @@ class MessageIngress:
         if self._database is None:
             return None
         try:
-            content_json = json.dumps(
-                [el.model_dump(mode="json") for el in message.elements],
-                ensure_ascii=False,
-            )
-            record = MessageLogRecord(
+            record = self._incoming_message_record(
+                event=event,
+                message=message,
                 session_id=session_id,
-                platform_msg_id=event.message.id if event.message is not None else "",
-                sender_id=event.sender_id or "",
-                sender_name=event.sender_name or "",
-                content_json=content_json,
-                raw_text=message.get_text(self_id=event.self_id),
-                role="user",
-                is_read=False,
-                is_mentioned=is_self_mentioned(message, event.self_id),
-                created_at=observed_at * 1000,
+                observed_at=observed_at,
             )
             message_log_id = self._database.message_logs.insert(record)
             record.id = message_log_id

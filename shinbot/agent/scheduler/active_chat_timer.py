@@ -6,6 +6,11 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Protocol
 
+from shinbot.agent.runtime.service_health import (
+    RuntimeServiceHealth,
+    RuntimeServiceHealthSnapshot,
+    supervised_backoff_seconds,
+)
 from shinbot.agent.scheduler.models import AgentState
 from shinbot.agent.signals import (
     AgentSignal,
@@ -55,6 +60,7 @@ class ActiveChatTimerService:
         self._bot_id = ""
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._task_scope: AgentTaskScope | None = None
+        self._health: dict[str, RuntimeServiceHealth] = {}
 
     def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
         """Bind the runtime entry point used by timer ticks.
@@ -108,6 +114,11 @@ class ActiveChatTimerService:
                 name=f"active-chat-timer:{session_id}",
             )
         self._tasks[session_id] = task
+        health = self._health.setdefault(
+            session_id,
+            RuntimeServiceHealth(f"active_chat_timer:{session_id}"),
+        )
+        health.start()
         logger.debug(
             format_log_event(
                 "agent.active_chat_timer.started",
@@ -128,6 +139,9 @@ class ActiveChatTimerService:
             session_id: The conversation session whose timer to cancel.
         """
         task = self._tasks.pop(session_id, None)
+        health = self._health.get(session_id)
+        if health is not None:
+            health.stop()
         if task is None or task.done():
             return
         if task is asyncio.current_task():
@@ -150,6 +164,8 @@ class ActiveChatTimerService:
         """
         tasks = list(self._tasks.values())
         self._tasks.clear()
+        for health in self._health.values():
+            health.stop()
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -171,6 +187,17 @@ class ActiveChatTimerService:
             for session_id, task in self._tasks.items()
             if not task.done()
         ]
+
+    def health_snapshot(self, session_id: str) -> RuntimeServiceHealthSnapshot | None:
+        """Return supervision health for one active-chat timer."""
+
+        health = self._health.get(session_id)
+        return health.snapshot() if health is not None else None
+
+    def health_snapshots(self) -> list[RuntimeServiceHealthSnapshot]:
+        """Return all known active-chat timer health snapshots."""
+
+        return [self._health[key].snapshot() for key in sorted(self._health)]
 
     async def run_once(self, session_id: str) -> None:
         """Dispatch one active-chat timer tick for tests and manual maintenance."""
@@ -222,29 +249,61 @@ class ActiveChatTimerService:
         )
 
     async def _run_session_timer(self, session_id: str) -> None:
+        delay = max(0.01, self._tick_interval_seconds)
+        health = self._health.setdefault(
+            session_id,
+            RuntimeServiceHealth(f"active_chat_timer:{session_id}"),
+        )
         try:
             while True:
-                await asyncio.sleep(self._tick_interval_seconds)
-                await self.run_once(session_id)
-                if self._runtime is None:
-                    return
-                scheduler = self._runtime.agent_profile_for_bot(self._bot_id).agent_scheduler
-                if scheduler.state_for(session_id) != AgentState.ACTIVE_CHAT:
+                await asyncio.sleep(delay)
+                health.scan_started()
+                try:
+                    await self.run_once(session_id)
+                    runtime = self._runtime
+                    if runtime is None:
+                        return
+                    scheduler = runtime.agent_profile_for_bot(
+                        self._bot_id
+                    ).agent_scheduler
+                    state = scheduler.state_for(session_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    health.failed(exc)
+                    logger.exception(
+                        format_log_event(
+                            "agent.active_chat_timer.iteration_failed",
+                            bot_id=self._bot_id,
+                            session_id=session_id,
+                            error_code=type(exc).__name__,
+                            consecutive_failures=(
+                                health.snapshot().consecutive_failures
+                            ),
+                        )
+                    )
+                    delay = supervised_backoff_seconds(
+                        base_seconds=self._tick_interval_seconds,
+                        consecutive_failures=health.snapshot().consecutive_failures,
+                    )
+                    continue
+                health.succeeded()
+                delay = max(0.01, self._tick_interval_seconds)
+                if state != AgentState.ACTIVE_CHAT:
                     logger.debug(
                         format_log_event(
                             "agent.active_chat_timer.exit",
                             bot_id=self._bot_id,
                             session_id=session_id,
                             reason="state_changed",
-                            state=scheduler.state_for(session_id).value,
+                            state=state.value,
                         )
                     )
                     return
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("Active chat timer failed for session %s", session_id)
         finally:
+            health.stop()
             task = self._tasks.get(session_id)
             if task is asyncio.current_task():
                 self._tasks.pop(session_id, None)

@@ -21,7 +21,12 @@ from shinbot.agent.utils.parsing import (
     optional_int,
     parse_json_object,
 )
-from shinbot.agent.workflows.chat_actions import CHAT_ACTION_TOOL_TAG
+from shinbot.agent.workflows.chat_actions import (
+    CHAT_ACTION_TOOL_TAG,
+    EXTERNAL_ACTION_TOOL_NAMES,
+    ExternalActionToolMode,
+    collect_external_action_intent,
+)
 
 _REPLY_RESPONSE_FORMAT = json_schema_response_format(
     "agent_review_reply_decision",
@@ -69,9 +74,11 @@ class LLMReplyDecisionStageRunner:
         prompt_registry: PromptRegistry,
         tool_manager: Any | None = None,
         message_formatter: MessageFormatterService | None = None,
+        external_action_mode: ExternalActionToolMode = ExternalActionToolMode.EXECUTE,
     ) -> None:
         routing = config or RunnerTemplateConfig()
         self._tool_manager = tool_manager
+        self._external_action_mode = ExternalActionToolMode(external_action_mode)
         self._prompt_registry = prompt_registry
         self._routing = routing
         repair_component = prompt_registry.get_component(
@@ -111,8 +118,9 @@ class LLMReplyDecisionStageRunner:
     async def run(self, stage_input: ReviewStageInput) -> ReplyDecisionStageOutput:
         """Run the LLM-based reply decision stage.
 
-        Executes tool calls produced by the model (e.g. send_reply, no_reply)
-        and returns a typed decision output.
+        Legacy mode executes visible tool calls immediately. Intent-collection
+        mode validates them without I/O and returns ordered
+        ``external_action_intents`` on the typed decision output.
 
         Args:
             stage_input: Review stage input with conversation context.
@@ -149,7 +157,10 @@ class LLMReplyDecisionStageRunner:
         stage_input: ReviewStageInput,
         plan: Any,
     ) -> ReplyDecisionStageOutput:
-        if self._tool_manager is None:
+        if (
+            self._external_action_mode is ExternalActionToolMode.EXECUTE
+            and self._tool_manager is None
+        ):
             return ReplyDecisionStageOutput(
                 reason="llm_reply_tool_call_skipped_no_tool_manager"
             )
@@ -176,7 +187,13 @@ class LLMReplyDecisionStageRunner:
                 target_message_ids=target_message_ids,
                 reason=quote_validation_error,
             )
+        if self._external_action_mode is ExternalActionToolMode.COLLECT_INTENTS:
+            return _collect_reply_external_action_intents(
+                parsed_calls,
+                target_message_ids=target_message_ids,
+            )
 
+        assert self._tool_manager is not None
         replied = False
         reply_message_id: int | None = None
         reply_message_ids: list[int] = []
@@ -276,6 +293,86 @@ class LLMReplyDecisionStageRunner:
             target_message_ids=target_message_ids,
             reason="llm_reply_decision_no_terminal_tool",
         )
+
+
+def _collect_reply_external_action_intents(
+    parsed_calls: list[Any],
+    *,
+    target_message_ids: list[int],
+) -> ReplyDecisionStageOutput:
+    intents = []
+    reply_count = 0
+    poke_count = 0
+    reaction_count = 0
+    saw_no_reply = False
+    reply_accepted = False
+    for parsed_call in parsed_calls:
+        tool_name = str(parsed_call.name or "").strip()
+        if tool_name == "no_reply":
+            saw_no_reply = True
+            continue
+        if tool_name not in EXTERNAL_ACTION_TOOL_NAMES:
+            return ReplyDecisionStageOutput(
+                target_message_ids=target_message_ids,
+                reason=(
+                    "reply_external_action_invalid:unsupported_tool:"
+                    f"{tool_name or 'missing'}"
+                ),
+            )
+        if tool_name == "send_poke" and not reply_accepted:
+            continue
+        try:
+            intent = collect_external_action_intent(
+                tool_call_id=_parsed_tool_call_id(parsed_call),
+                tool_name=tool_name,
+                arguments=parsed_call.arguments,
+                action_ordinal=len(intents),
+            )
+        except (TypeError, ValueError) as exc:
+            return ReplyDecisionStageOutput(
+                target_message_ids=target_message_ids,
+                reason=(
+                    f"reply_external_action_invalid:{tool_name}:"
+                    f"{type(exc).__name__}"
+                ),
+            )
+        intents.append(intent)
+        if tool_name == "send_reply":
+            reply_accepted = True
+            reply_count += 1
+        elif tool_name == "send_reaction":
+            reaction_count += 1
+        else:
+            poke_count += 1
+
+    if reply_count or reaction_count:
+        return ReplyDecisionStageOutput(
+            replied=True,
+            target_message_ids=target_message_ids,
+            reason=_reply_tool_reason(
+                reply_count=reply_count,
+                poke_count=poke_count,
+                reaction_count=reaction_count,
+            ),
+            external_action_intents=tuple(intents),
+        )
+    if saw_no_reply:
+        return ReplyDecisionStageOutput(
+            replied=False,
+            target_message_ids=target_message_ids,
+            reason="no_reply_tool",
+        )
+    return ReplyDecisionStageOutput(
+        target_message_ids=target_message_ids,
+        reason="llm_reply_decision_no_terminal_tool",
+    )
+
+
+def _parsed_tool_call_id(parsed_call: Any) -> str:
+    raw = parsed_call.raw
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("id") or "").strip()
 
 
 def _candidate_message_ids_from_stage(stage_input: ReviewStageInput) -> list[int]:

@@ -99,6 +99,7 @@ export interface AgentRuntimeSession {
 }
 
 export interface AgentRuntimeProfile {
+  profileId: string
   botId: string
   botName: string
   enabled: boolean

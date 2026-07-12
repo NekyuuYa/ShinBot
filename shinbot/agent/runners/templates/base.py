@@ -7,6 +7,9 @@ import logging
 from typing import Any
 
 from shinbot.agent.runners.templates.config import RunnerTemplateConfig
+from shinbot.agent.runners.templates.review_prompt_projector import (
+    ReviewPromptProjector,
+)
 from shinbot.agent.runtime.instance_config import (
     apply_instance_runtime_config_to_call,
     apply_instance_runtime_config_to_metadata,
@@ -20,9 +23,6 @@ from shinbot.agent.services.prompt_engine import (
     PromptContextPolicy,
     PromptRegistry,
     PromptStage,
-)
-from shinbot.agent.services.prompt_engine.dynamic_components import (
-    review_stage_instruction_component_id,
 )
 from shinbot.agent.utils.parsing import instance_id_from_session
 
@@ -47,20 +47,17 @@ class RunnerTemplateBase:
         self._model_runtime = model_runtime
         self._prompt_registry = prompt_registry
         self._config = config
-        self._message_formatter = message_formatter
+        self._prompt_projector = ReviewPromptProjector(
+            message_formatter=message_formatter,
+            message_format_config=config.message_format_config,
+        )
 
     def _build_model_call_parts(
         self,
         stage_input: ReviewStageInput,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        fallback_metadata = {
-            "review_stage": stage_input.purpose,
-            "review_stage_metadata": dict(stage_input.metadata),
-            "review_instruction_content": list(stage_input.instruction_content),
-            "review_source_messages": list(stage_input.source_messages),
-            "review_source_messages_text": self._format_source_messages(stage_input),
-            **dict(stage_input.metadata),
-        }
+        projection = self._prompt_projector.project(stage_input)
+        fallback_metadata = dict(projection.audit_metadata)
         instance_id = instance_id_from_session(stage_input.session_id)
         instance_config = self._resolve_instance_config(instance_id)
         fallback_metadata = apply_instance_runtime_config_to_metadata(
@@ -87,6 +84,8 @@ class RunnerTemplateBase:
                 model_id=(runtime_target.model_id or "") if runtime_target is not None else "",
                 profile_id=self._config.profile_id,
                 component_ids_by_stage=component_ids_by_stage,
+                disabled_components=list(projection.disabled_component_ids),
+                injections=list(projection.injections),
                 context_policy=PromptContextPolicy.DISABLED,
                 metadata=fallback_metadata,
             )
@@ -96,23 +95,6 @@ class RunnerTemplateBase:
             record.component_id for record in result.ordered_components
         ]
         return result.messages, metadata
-
-    def _format_source_messages(self, stage_input: ReviewStageInput) -> str:
-        if self._message_formatter is None or not stage_input.source_messages:
-            return ""
-        try:
-            return self._message_formatter.format_text(
-                list(stage_input.source_messages),
-                self._config.message_format_config,
-            )
-        except Exception:
-            logger.exception(
-                "%s message formatting failed for stage %s session %s",
-                self._log_name,
-                stage_input.purpose,
-                stage_input.session_id,
-            )
-            return ""
 
     def _resolve_component_ids(
         self,
@@ -133,13 +115,6 @@ class RunnerTemplateBase:
             result[stage].extend(
                 cid for cid in registered if cid not in result[stage]
             )
-        instruction_component_id = review_stage_instruction_component_id(
-            stage_input.purpose
-        )
-        if self._prompt_registry.get_component(instruction_component_id) is not None:
-            result.setdefault(PromptStage.INSTRUCTIONS, [])
-            if instruction_component_id not in result[PromptStage.INSTRUCTIONS]:
-                result[PromptStage.INSTRUCTIONS].append(instruction_component_id)
         return result
 
     async def _generate_model(

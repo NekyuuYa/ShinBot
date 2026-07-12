@@ -30,6 +30,7 @@ from shinbot.agent.signals import (
     AgentSignalSource,
     AgentTimerSignal,
 )
+from shinbot.core.dispatch.agent_identity import DEFAULT_SESSION_ACTOR_PROFILE_ID
 
 
 @pytest.mark.asyncio
@@ -66,7 +67,12 @@ async def test_agent_runtime_selects_profile_by_bot_id(tmp_path: Path) -> None:
     await runtime.handle_agent_signal(make_signal(bot_id="bot-a"))
     await runtime.handle_agent_signal(make_signal(bot_id="bot-b"))
 
-    assert runtime.agent_profile_for_bot("bot-a").profile_id == "agent-a"
+    assert runtime.agent_profile_for_bot("bot-a").profile_id == "bot-a"
+    assert runtime.agent_profile_for_bot("bot-a").config.agent_id == "agent-a"
+    assert (
+        runtime.agent_profile_for_bot("bot-b").profile_id
+        == DEFAULT_SESSION_ACTOR_PROFILE_ID
+    )
     assert (
         runtime.agent_profile_for_bot("bot-a")
         .config.active_chat_policy_config.initial_interest_value
@@ -74,6 +80,43 @@ async def test_agent_runtime_selects_profile_by_bot_id(tmp_path: Path) -> None:
     )
     assert [signal.bot_id for signal in bot_a_scheduler.calls] == ["bot-a"]
     assert [signal.bot_id for signal in default_scheduler.calls] == ["bot-b"]
+
+
+def test_agent_runtime_shared_config_does_not_share_durable_profile(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        agent_configs_by_bot_id={
+            "bot-a": {"agent": {"id": "shared-agent"}},
+            "bot-b": {"agent": {"id": "shared-agent"}},
+        },
+    )
+
+    bot_a = runtime.agent_profile_for_bot("bot-a")
+    bot_b = runtime.agent_profile_for_bot("bot-b")
+
+    assert bot_a is not bot_b
+    assert bot_a.profile_id == "bot-a"
+    assert bot_b.profile_id == "bot-b"
+    assert bot_a.config.agent_id == bot_b.config.agent_id == "shared-agent"
+
+
+def test_agent_runtime_default_profile_uses_reserved_durable_identity(
+    tmp_path: Path,
+) -> None:
+    bot = ShinBot(data_dir=tmp_path)
+    runtime = install_agent_runtime(
+        bot,
+        agent_config={"agent": {"id": "editable-default-agent"}},
+    )
+
+    profile = runtime.agent_profile_for_bot("")
+
+    assert profile.profile_id == DEFAULT_SESSION_ACTOR_PROFILE_ID
+    assert profile.bot_id == ""
+    assert profile.config.agent_id == "editable-default-agent"
 
 
 @pytest.mark.asyncio
@@ -94,7 +137,9 @@ async def test_agent_runtime_starts_background_timers_only_for_bot_profiles(
 
     runtime.start_background_tasks()
 
-    default_tasks = runtime.task_manager.tasks(prefix="agent:default:review_due_timer")
+    default_tasks = runtime.task_manager.tasks(
+        prefix=f"agent:{DEFAULT_SESSION_ACTOR_PROFILE_ID}:review_due_timer"
+    )
     bot_tasks = runtime.task_manager.tasks(prefix="agent:bot-a:review_due_timer")
     assert default_tasks == []
     assert bot_tasks != []

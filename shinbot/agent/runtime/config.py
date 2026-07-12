@@ -91,7 +91,12 @@ class SummaryMarkdownConfig:
 
 @dataclass(slots=True, frozen=True)
 class AgentRuntimeConfig:
-    """Runtime knobs loaded from one ``data/agents/*.toml`` file."""
+    """Runtime knobs loaded from one ``data/agents/*.toml`` file.
+
+    ``agent_id`` identifies editable behavior configuration. Durable session
+    ownership is keyed by the bot service config id (or the reserved default
+    profile id), so changing this field must not redirect actor state.
+    """
 
     agent_id: str = ""
     mode: str = "full"

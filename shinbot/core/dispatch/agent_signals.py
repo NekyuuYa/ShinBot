@@ -64,7 +64,12 @@ class AgentActiveChatBootstrapSignal:
 
 @dataclass(slots=True, frozen=True)
 class AgentSignal:
-    """Unified signal accepted by the Agent runtime."""
+    """Unified signal accepted by the Agent runtime.
+
+    ``bot_id`` is the stable selected ``BotServiceConfig.id``. Platform account
+    identity remains on ``AgentMessageSignal.self_id``. An empty ``bot_id`` is
+    reserved for compatibility inputs handled by the default runtime profile.
+    """
 
     signal_id: str
     kind: AgentSignalKind

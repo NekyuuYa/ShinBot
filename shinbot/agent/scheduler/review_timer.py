@@ -5,6 +5,11 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from shinbot.agent.runtime.service_health import (
+    RuntimeServiceHealth,
+    RuntimeServiceHealthSnapshot,
+    supervised_backoff_seconds,
+)
 from shinbot.agent.signals import (
     AgentSignal,
     AgentSignalKind,
@@ -18,6 +23,15 @@ if TYPE_CHECKING:
     from shinbot.agent.runtime.task_manager import AgentTaskScope
 
 logger = get_logger(__name__, source="agent:timer", color="yellow")
+
+
+class ReviewDueDispatchError(RuntimeError):
+    """Report one polling pass where one or more due sessions failed."""
+
+    def __init__(self, failed_session_ids: tuple[str, ...]) -> None:
+        self.failed_session_ids = failed_session_ids
+        session_list = ", ".join(failed_session_ids)
+        super().__init__(f"review-due dispatch failed for sessions: {session_list}")
 
 
 class ReviewDueTimerService:
@@ -36,6 +50,7 @@ class ReviewDueTimerService:
         self._task: asyncio.Task[None] | None = None
         self._in_flight: set[str] = set()
         self._task_scope: AgentTaskScope | None = None
+        self._health = RuntimeServiceHealth("review_due_timer")
 
     def bind_agent_runtime(self, runtime: AgentRuntime, *, bot_id: str = "") -> None:
         """Bind the agent runtime used to dispatch review-due signals.
@@ -73,6 +88,7 @@ class ReviewDueTimerService:
             )
         else:
             self._task = loop.create_task(self._run_loop(), name="agent-review-due-timer")
+        self._health.start()
         logger.info(
             format_log_event(
                 "agent.review_timer.started",
@@ -88,11 +104,16 @@ class ReviewDueTimerService:
         """
         task = self._task
         self._task = None
-        if task is None or task.done():
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._health.stop()
         logger.debug(format_log_event("agent.review_timer.stopped", bot_id=self._bot_id))
+
+    def health_snapshot(self) -> RuntimeServiceHealthSnapshot:
+        """Return current review timer supervision health."""
+
+        return self._health.snapshot()
 
     async def run_once(self) -> None:
         """Run one polling pass for tests and manual maintenance."""
@@ -112,6 +133,7 @@ class ReviewDueTimerService:
             )
         )
         pause_session = getattr(runtime, "should_pause_session", None)
+        dispatch_failures: list[tuple[str, Exception]] = []
         for plan in due_plans:
             if plan.session_id in self._in_flight:
                 logger.debug(
@@ -160,23 +182,53 @@ class ReviewDueTimerService:
                         meta={"review_plan": plan.reason},
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                dispatch_failures.append((plan.session_id, exc))
                 logger.exception(
                     "Agent review due timer failed for session %s",
                     plan.session_id,
                 )
             finally:
                 self._in_flight.discard(plan.session_id)
+        if dispatch_failures:
+            error = ReviewDueDispatchError(
+                tuple(session_id for session_id, _exc in dispatch_failures)
+            )
+            raise error from dispatch_failures[0][1]
 
     async def _run_loop(self) -> None:
+        delay = max(0.01, self._tick_interval_seconds)
         try:
             while True:
-                await asyncio.sleep(self._tick_interval_seconds)
-                await self.run_once()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Agent review due timer stopped unexpectedly")
+                await asyncio.sleep(delay)
+                self._health.scan_started()
+                try:
+                    await self.run_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._health.failed(exc)
+                    logger.exception(
+                        format_log_event(
+                            "agent.review_timer.iteration_failed",
+                            bot_id=self._bot_id,
+                            error_code=type(exc).__name__,
+                            consecutive_failures=(
+                                self._health.snapshot().consecutive_failures
+                            ),
+                        )
+                    )
+                    delay = supervised_backoff_seconds(
+                        base_seconds=self._tick_interval_seconds,
+                        consecutive_failures=(
+                            self._health.snapshot().consecutive_failures
+                        ),
+                    )
+                    continue
+                self._health.succeeded()
+                delay = max(0.01, self._tick_interval_seconds)
+        finally:
+            self._health.stop()
 
 
-__all__ = ["ReviewDueTimerService"]
+__all__ = ["ReviewDueDispatchError", "ReviewDueTimerService"]

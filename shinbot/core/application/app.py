@@ -21,6 +21,7 @@ from shinbot.core.dispatch.dispatchers import (
     make_agent_entry_fallback_route_rule,
     make_notice_route_rule,
 )
+from shinbot.core.dispatch.durable_routing_service import DurableRoutingService
 from shinbot.core.dispatch.event_bus import EventBus
 from shinbot.core.dispatch.ingress import MessageIngress, RouteTargetRegistry
 from shinbot.core.dispatch.routing import RouteTable
@@ -138,6 +139,16 @@ class ShinBot:
             audit_logger=self.audit_logger,
             database=self.database,
         )
+        self.durable_routing_service: DurableRoutingService | None = None
+        if self.database is not None:
+            self.durable_routing_service = DurableRoutingService(
+                repository=self.database.durable_routing,
+                replay=self.message_ingress.replay_claimed_routing_job,
+                adapter_resolver=self._resolve_running_adapter,
+            )
+            self.message_ingress.set_durable_routing_wake_callback(
+                self.durable_routing_service.wake
+            )
 
     def _register_builtin_config_providers(self) -> None:
         from shinbot.agent.runtime.config_provider import register_builtin_agent_config_provider
@@ -223,8 +234,25 @@ class ShinBot:
         handler = getattr(runtime, "handle_agent_signal", None)
         if handler is not None:
             self.set_agent_signal_handler(handler)
+        actor_wake_target = getattr(runtime, "actor_wake_target", None)
+        if actor_wake_target is None:
+            actor_wake_target = getattr(runtime, "session_actor_registry", None)
+        if (
+            self.durable_routing_service is not None
+            and actor_wake_target is not None
+            and callable(getattr(actor_wake_target, "wake", None))
+            and callable(getattr(actor_wake_target, "recover", None))
+        ):
+            self.durable_routing_service.set_actor_wake_target(actor_wake_target)
 
     # ── Adapter management shortcuts ─────────────────────────────────
+
+    def _resolve_running_adapter(self, instance_id: str) -> BaseAdapter | None:
+        """Return an adapter only after its startup readiness boundary."""
+
+        if not self.adapter_manager.is_running(instance_id):
+            return None
+        return self.adapter_manager.get_instance(instance_id)
 
     def add_adapter(
         self,
@@ -279,17 +307,23 @@ class ShinBot:
     async def start(self) -> None:
         """Start all adapter instances."""
         logger.info("ShinBot starting...")
+        if self.durable_routing_service is not None:
+            await self.durable_routing_service.prepare()
+        await self.adapter_manager.start_all()
         if self.agent_runtime is not None:
             start_background_tasks = getattr(self.agent_runtime, "start_background_tasks", None)
             if start_background_tasks is not None:
                 start_background_tasks()
-        await self.adapter_manager.start_all()
+        if self.durable_routing_service is not None:
+            await self.durable_routing_service.start()
         logger.info("ShinBot started with %d adapters", len(self.adapter_manager.all_instances))
 
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems."""
         logger.info("ShinBot shutting down...")
         await self.adapter_manager.shutdown_all()
+        if self.durable_routing_service is not None:
+            await self.durable_routing_service.shutdown()
         await self.message_ingress.shutdown()
         if self.agent_runtime is not None:
             shutdown = getattr(self.agent_runtime, "shutdown", None)

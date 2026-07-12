@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from shinbot.agent.coordinators.active_chat import ActiveChatCoordinator
@@ -10,6 +12,7 @@ from shinbot.agent.coordinators.active_chat.models import (
     ActiveChatMessageSignal,
 )
 from shinbot.agent.coordinators.dispatcher import ActiveReplyDispatcher
+from shinbot.agent.runners.review_models import IdleReviewPlanningStageOutput
 from shinbot.agent.scheduler import ActiveChatState
 
 
@@ -576,3 +579,33 @@ class TestShutdownFlushIntegration:
 
         assert len(summary_service.saved) == 1
         assert summary_service.saved[0]["content"] == "shutdown save test"
+
+
+@pytest.mark.asyncio
+async def test_idle_review_delay_starts_after_planner_completion() -> None:
+    class Scheduler:
+        def review_plan_for(self, _session_id: str):
+            return None
+
+        def active_chat_state_for(self, _session_id: str):
+            return None
+
+    class Runner:
+        async def run(self, _stage_input):
+            return IdleReviewPlanningStageOutput(
+                next_review_after_seconds=120.0,
+                reason="model_delay",
+            )
+
+    dispatcher = ActiveReplyDispatcher(idle_review_planning_runner=Runner())  # type: ignore[arg-type]
+    dispatcher.bind_agent_scheduler(Scheduler())  # type: ignore[arg-type]
+
+    with patch(
+        "shinbot.agent.coordinators.dispatcher.time.time",
+        side_effect=[100.0, 130.0],
+    ):
+        plan = await dispatcher.plan_idle_review_after_active_chat("bot:group:room")
+
+    assert plan is not None
+    assert plan.updated_at == 130.0
+    assert plan.next_review_at == 250.0

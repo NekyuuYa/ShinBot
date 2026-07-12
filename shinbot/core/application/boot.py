@@ -107,27 +107,31 @@ class BootController:
         # 1) Stop adapters first to stop incoming traffic.
         await self.bot.adapter_manager.shutdown_all()
 
-        # 2) Cancel route targets before tearing down the services they call.
+        # 2) Stop durable recovery and release live claims for the next boot.
+        if self.bot.durable_routing_service is not None:
+            await self.bot.durable_routing_service.shutdown()
+
+        # 3) Cancel route targets before tearing down the services they call.
         await self.bot.message_ingress.shutdown()
 
-        # 3) Shut down Agent-owned timers and background tasks.
+        # 4) Shut down Agent-owned timers and background tasks.
         if self.bot.agent_runtime is not None:
             shutdown = getattr(self.bot.agent_runtime, "shutdown", None)
             if shutdown is not None:
                 await shutdown()
 
-        # 4) Notify plugins and free plugin resources.
+        # 5) Notify plugins and free plugin resources.
         await self.bot.plugin_manager.unload_all_plugins_async()
 
-        # 4b) Shut down the plugin cron scheduler.
+        # 5b) Shut down the plugin cron scheduler.
         if self.bot.cron_manager is not None:
             self.bot.cron_manager.shutdown()
 
-        # 5) Persist session state.
+        # 6) Persist session state.
         for session in self.bot.session_manager.all_sessions:
             self.bot.session_manager.update(session)
 
-        # 6) Infrastructure teardown placeholder (DB pool not present yet).
+        # 7) Infrastructure teardown placeholder (DB pool not present yet).
         self.state = BootState.UNINITIALIZED
 
     def _phase1_environment(self) -> None:
@@ -251,7 +255,10 @@ class BootController:
         for bot_config in self.bot_service_configs:
             if not bot_config.enabled:
                 continue
-            if bot_config.agent.mode == "none" or not bot_config.agent.config:
+            if bot_config.agent.mode == "none":
+                continue
+            if not bot_config.agent.config:
+                configs[bot_config.id] = {}
                 continue
 
             config_path = self.data_dir / bot_config.agent.config

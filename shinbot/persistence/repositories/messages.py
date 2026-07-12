@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from sqlite3 import Connection
 from typing import Any
 
 from shinbot.persistence.records import MessageLogRecord
@@ -22,31 +23,40 @@ class MessageLogRepository(Repository, ContextProvider):
     def insert(self, record: MessageLogRecord) -> int:
         """Insert a message log entry and return the auto-incremented id."""
         with self.connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO message_logs (
-                    session_id, platform_msg_id, sender_id, sender_name,
-                    content_json, raw_text, role, is_read, is_mentioned, created_at,
-                    routing_status, routed_at, routing_skip_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.session_id,
-                    record.platform_msg_id,
-                    record.sender_id,
-                    record.sender_name,
-                    record.content_json,
-                    record.raw_text,
-                    record.role,
-                    1 if record.is_read else 0,
-                    1 if record.is_mentioned else 0,
-                    record.created_at,
-                    routing_status_value(record.routing_status),
-                    record.routed_at,
-                    record.routing_skip_reason,
-                ),
-            )
-            return int(cursor.lastrowid)
+            return self.insert_with_connection(conn, record)
+
+    def insert_with_connection(self, conn: Connection, record: MessageLogRecord) -> int:
+        """Insert a message using an existing caller-owned transaction.
+
+        Compound persistence workflows use this method when the message log
+        and its recoverability record must share one commit boundary.
+        """
+
+        cursor = conn.execute(
+            """
+            INSERT INTO message_logs (
+                session_id, platform_msg_id, sender_id, sender_name,
+                content_json, raw_text, role, is_read, is_mentioned, created_at,
+                routing_status, routed_at, routing_skip_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.session_id,
+                record.platform_msg_id,
+                record.sender_id,
+                record.sender_name,
+                record.content_json,
+                record.raw_text,
+                record.role,
+                1 if record.is_read else 0,
+                1 if record.is_mentioned else 0,
+                record.created_at,
+                routing_status_value(record.routing_status),
+                record.routed_at,
+                record.routing_skip_reason,
+            ),
+        )
+        return int(cursor.lastrowid)
 
     def mark_read(self, msg_id: int) -> None:
         """Mark a message log entry as read.

@@ -11,8 +11,11 @@ from shinbot.persistence.config import DatabaseConfig
 from shinbot.persistence.schema import apply_schema
 
 from .repositories import (
+    AgentRuntimeDiagnosticsRepository,
+    AgentRuntimeOwnershipRepository,
     AIInteractionRepository,
     AuditRepository,
+    DurableMessageRoutingRepository,
     InstanceConfigRepository,
     MediaAssetRepository,
     MediaSemanticRepository,
@@ -42,7 +45,10 @@ class DatabaseManager:
         self.model_registry = ModelRegistryRepository.from_data_dir(config.data_dir)
         self.model_executions = ModelExecutionRepository(self, model_registry=self.model_registry)
         self.message_logs = MessageLogRepository(self)
+        self.durable_routing = DurableMessageRoutingRepository(self)
         self.ai_interactions = AIInteractionRepository(self)
+        self.agent_runtime_diagnostics = AgentRuntimeDiagnosticsRepository(self)
+        self.agent_runtime_ownership = AgentRuntimeOwnershipRepository(self)
         self.prompt_snapshots = PromptSnapshotRepository(self, snapshot_ttl=config.snapshot_ttl)
         self.media_assets = MediaAssetRepository(self)
         self.message_media_links = MessageMediaLinkRepository(self)

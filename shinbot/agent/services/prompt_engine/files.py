@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import asdict, dataclass, replace
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from shinbot.agent.services.prompt_engine.prompt_assets import (
+    PromptAssetSynchronizer,
+    PromptAssetSyncResult,
+    PromptSyncStatus,
+)
 from shinbot.agent.services.prompt_engine.schema import (
     PromptComponent,
     PromptComponentKind,
@@ -35,6 +39,14 @@ class PromptFileManifest:
     source_exists: bool
     runtime_exists: bool
     loaded_from: str
+    sync_status: PromptSyncStatus = PromptSyncStatus.SOURCE_ONLY
+    source_version: str = ""
+    source_sha256: str = ""
+    runtime_version: str = ""
+    runtime_sha256: str = ""
+    base_version: str = ""
+    base_sha256: str = ""
+    pending_path: Path | None = None
 
     def refresh(self) -> PromptFileManifest:
         """Return a copy with file existence fields refreshed from disk."""
@@ -66,6 +78,10 @@ class PromptFileManifest:
         payload["source_path"] = str(manifest.source_path)
         payload["runtime_path"] = str(manifest.runtime_path)
         payload["loaded_path"] = str(manifest.loaded_path)
+        payload["sync_status"] = manifest.sync_status.value
+        payload["pending_path"] = (
+            str(manifest.pending_path) if manifest.pending_path is not None else ""
+        )
         return payload
 
 
@@ -157,6 +173,7 @@ def register_prompt_files(
 
     module_dir = _module_dir(package)
     data_root_path = Path(data_root)
+    synchronizer = PromptAssetSynchronizer(data_root_path) if sync_to_data else None
     registered: list[PromptComponent] = []
     for prompt_id in prompt_ids:
         source_path, selected_locale = _resolve_source_prompt(
@@ -166,9 +183,17 @@ def register_prompt_files(
             fallback_locales=fallback_locales,
         )
         runtime_path = data_root_path / selected_locale / f"{prompt_id}.md"
-        if sync_to_data:
-            _ensure_runtime_prompt(source_path, runtime_path)
-        load_path = runtime_path if sync_to_data and runtime_path.exists() else source_path
+        sync_result = (
+            synchronizer.sync(
+                prompt_id=prompt_id,
+                locale=selected_locale,
+                source_path=source_path,
+                runtime_path=runtime_path,
+            )
+            if synchronizer is not None
+            else None
+        )
+        load_path = sync_result.active_path if sync_result is not None else source_path
         loaded_from = "runtime" if load_path == runtime_path else "source"
         component = load_prompt_component(
             load_path,
@@ -177,6 +202,8 @@ def register_prompt_files(
             runtime_path=runtime_path,
             expected_id=prompt_id,
         )
+        if sync_result is not None:
+            component.metadata.update(_sync_metadata(sync_result))
         registry.upsert_component(component)
         catalog = getattr(registry, "prompt_file_catalog", None)
         if isinstance(catalog, PromptFileCatalogService):
@@ -190,6 +217,7 @@ def register_prompt_files(
                     source_exists=source_path.exists(),
                     runtime_exists=runtime_path.exists(),
                     loaded_from=loaded_from,
+                    **_manifest_sync_kwargs(sync_result),
                 )
             )
         registered.append(component)
@@ -290,11 +318,38 @@ def _resolve_source_prompt(
     )
 
 
-def _ensure_runtime_prompt(source_path: Path, runtime_path: Path) -> None:
-    if runtime_path.exists():
-        return
-    runtime_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_path, runtime_path)
+def _sync_metadata(result: PromptAssetSyncResult) -> dict[str, Any]:
+    return {
+        "prompt_sync_status": result.status.value,
+        "source_prompt_version": result.source_revision.version,
+        "source_prompt_sha256": result.source_revision.sha256,
+        "runtime_prompt_version": (
+            result.runtime_revision.version if result.runtime_revision is not None else ""
+        ),
+        "runtime_prompt_sha256": (
+            result.runtime_revision.sha256 if result.runtime_revision is not None else ""
+        ),
+        "prompt_update_pending": result.pending_path is not None,
+    }
+
+
+def _manifest_sync_kwargs(result: PromptAssetSyncResult | None) -> dict[str, Any]:
+    if result is None:
+        return {}
+    return {
+        "sync_status": result.status,
+        "source_version": result.source_revision.version,
+        "source_sha256": result.source_revision.sha256,
+        "runtime_version": (
+            result.runtime_revision.version if result.runtime_revision is not None else ""
+        ),
+        "runtime_sha256": (
+            result.runtime_revision.sha256 if result.runtime_revision is not None else ""
+        ),
+        "base_version": result.base_revision.version if result.base_revision is not None else "",
+        "base_sha256": result.base_revision.sha256 if result.base_revision is not None else "",
+        "pending_path": result.pending_path,
+    }
 
 
 def _parse_front_matter(raw: str, *, path: Path | None) -> dict[str, Any]:

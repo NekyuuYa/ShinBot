@@ -11,6 +11,7 @@ class MessageRoutingStatus(StrEnum):
     PENDING = "pending"
     DISPATCHED = "dispatched"
     SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 class MessageRoutingSkipReason(StrEnum):

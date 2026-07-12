@@ -49,7 +49,7 @@ from shinbot.agent.scheduler.review_policy import (
     ReviewPolicy,
     ReviewPolicyConfig,
 )
-from shinbot.agent.scheduler.review_timer import ReviewDueTimerService
+from shinbot.agent.scheduler.review_timer import ReviewDueDispatchError, ReviewDueTimerService
 from shinbot.agent.scheduler.scheduler import (
     AgentScheduler,
     AgentSchedulerConfig,
@@ -99,6 +99,7 @@ __all__ = [
     "PriorityPolicyConfig",
     "PriorityPolicyDecision",
     "ReviewDueDecision",
+    "ReviewDueDispatchError",
     "ReviewCompletionDecision",
     "ReviewPlan",
     "SchedulerEvent",

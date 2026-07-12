@@ -5,9 +5,12 @@ persistence domain.  This module remains for older imports.
 """
 
 from .repositories import (
+    AgentRuntimeDiagnosticsRepository,
+    AgentRuntimeOwnershipRepository,
     AIInteractionRepository,
     AuditRepository,
     ContextProvider,
+    DurableMessageRoutingRepository,
     InstanceConfigRepository,
     MediaAssetRepository,
     MediaSemanticRepository,
@@ -22,8 +25,11 @@ from .repositories import (
 
 __all__ = [
     "AIInteractionRepository",
+    "AgentRuntimeDiagnosticsRepository",
+    "AgentRuntimeOwnershipRepository",
     "AuditRepository",
     "ContextProvider",
+    "DurableMessageRoutingRepository",
     "InstanceConfigRepository",
     "MediaAssetRepository",
     "MediaSemanticRepository",

@@ -566,9 +566,10 @@ class ActiveReplyDispatcher:
         previous_threshold = (
             previous_plan.active_reply_threshold if previous_plan is not None else None
         )
+        scheduled_from = time.time()
         plan = ReviewPlan(
             session_id=session_id,
-            next_review_at=checked_at + seconds,
+            next_review_at=scheduled_from + seconds,
             reason=output.reason or "idle_review_planning",
             mention_sensitivity=(
                 output.mention_sensitivity
@@ -588,12 +589,13 @@ class ActiveReplyDispatcher:
                     else 60.0
                 ),
             ),
-            updated_at=checked_at,
+            updated_at=scheduled_from,
         )
         logger.debug(
             format_log_event(
                 "agent.idle_review_planning.finish",
                 session_id=session_id,
+                planning_latency_seconds=f"{max(0.0, scheduled_from - checked_at):.2f}",
                 next_review_after_seconds=f"{seconds:.2f}",
                 next_review_at=f"{plan.next_review_at:.2f}",
                 reason=plan.reason,

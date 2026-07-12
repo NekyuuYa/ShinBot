@@ -337,3 +337,65 @@ async def test_idle_review_planning_runner_parses_review_plan_parameters() -> No
     assert result.mention_sensitivity.value == "high"
     assert result.mention_wake_count == 2
     assert result.mention_wake_window_seconds == 90.0
+
+
+@pytest.mark.asyncio
+async def test_idle_review_planning_runner_projects_real_tail_once_in_order() -> None:
+    prompt_registry = _make_prompt_registry()
+    model_runtime = FakeModelRuntime(
+        ['{"next_review_after_seconds": 600, "reason": "tail_observed"}']
+    )
+    runner = LLMIdleReviewPlanningStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=prompt_registry,
+    )
+    tail = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "TAIL-FIRST"}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "TAIL-SECOND"}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "TAIL-THIRD"}],
+        },
+    ]
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="idle_review_planning",
+            source_messages=[],
+            context_messages=tail,
+            metadata={"transition": "ACTIVE_CHAT->IDLE"},
+        )
+    )
+
+    assert result.next_review_after_seconds == 600.0
+    call = model_runtime.calls[0]
+    assert call.messages[1:4] == tail
+    assert [message["role"] for message in call.messages[1:4]] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    serialized_messages = str(call.messages)
+    assert serialized_messages.count("TAIL-FIRST") == 1
+    assert serialized_messages.count("TAIL-SECOND") == 1
+    assert serialized_messages.count("TAIL-THIRD") == 1
+    assert call.metadata["review_input_projection"] == {
+        "context_message_count": 3,
+        "source_message_count": 0,
+        "instruction_block_count": 0,
+    }
+    assert (
+        call.metadata["prompt_component_ids"].count("review.idle_review_planning.instruction") == 1
+    )
+    assert (
+        call.metadata["prompt_component_ids"].count("review.runtime.idle_review_planning.context")
+        == 1
+    )
