@@ -16,6 +16,7 @@ from shinbot.agent.runtime.session_actor.recovery import (
     MAX_RECOVERY_TEXT_BYTES,
     RECOVERY_DELIVERY_EVENT_KIND,
     RECOVERY_DELIVERY_EVENT_SOURCE,
+    RECOVERY_V1_POLICY_AUTHORITY,
     RecoveryAggregateFence,
     RecoveryCertificate,
     RecoveryContractDecodeError,
@@ -28,6 +29,8 @@ from shinbot.agent.runtime.session_actor.recovery import (
     RecoveryInvariant,
     RecoveryInvariantSeverity,
     RecoverySubject,
+    RecoveryV1Policy,
+    RecoveryWorkClassification,
     UnsupportedRecoveryCertificateVersion,
     UnsupportedRecoveryDeliveryVersion,
     build_recovery_certificate,
@@ -586,6 +589,57 @@ def test_graph_and_decision_collections_are_bounded() -> None:
                 for index in range(MAX_RECOVERY_DECISION_TARGETS + 1)
             ),
         )
+
+
+def test_recovery_v1_policy_uses_block_wait_orphaned_precedence() -> None:
+    policy = RecoveryV1Policy()
+
+    blocked = policy.decide(
+        RecoveryWorkClassification(
+            blocking_reason_codes=("external_action_unknown",),
+            blocking_node_identities=("receipt:send-1",),
+            waiting_reason_codes=("live_effect",),
+            waiting_node_identities=("effect:review-1",),
+            orphaned_node_identities=("operation:review-1",),
+        )
+    )
+    assert blocked.kind is RecoveryDecisionKind.RECORD_BLOCKER
+    assert blocked.reason_codes == ("external_action_unknown",)
+    assert blocked.target_node_identities == ("receipt:send-1",)
+    assert blocked.details == {
+        "automatic_action": "none",
+        "classification": "blocking",
+        "policy_authority": RECOVERY_V1_POLICY_AUTHORITY,
+    }
+
+    waiting = policy.decide(
+        RecoveryWorkClassification(
+            waiting_reason_codes=("pending_mailbox",),
+            waiting_node_identities=("mailbox:completion-1",),
+            orphaned_node_identities=("operation:review-1",),
+        )
+    )
+    assert waiting.kind is RecoveryDecisionKind.WAIT_FOR_PROGRESS
+    assert waiting.reason_codes == ("pending_mailbox",)
+
+    orphaned = policy.decide(
+        RecoveryWorkClassification(
+            orphaned_node_identities=("operation:review-1",),
+        )
+    )
+    assert orphaned.kind is RecoveryDecisionKind.RECOVER_ORPHANED_WORK
+    assert orphaned.reason_codes == ("orphaned_work_without_live_completion",)
+    assert orphaned.details["automatic_action"] == (
+        "commit_time_materializer_required"
+    )
+
+    clear = policy.decide(RecoveryWorkClassification())
+    assert clear.kind is RecoveryDecisionKind.NO_RECOVERY
+
+
+def test_recovery_v1_policy_rejects_untyped_classification() -> None:
+    with pytest.raises(TypeError, match="RecoveryWorkClassification"):
+        RecoveryV1Policy().decide(object())  # type: ignore[arg-type]
 
 
 def test_graph_rejects_duplicate_and_dangling_identity() -> None:

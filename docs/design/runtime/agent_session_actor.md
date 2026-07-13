@@ -895,6 +895,31 @@ be marked `superseded`, `delivery_exhausted`, or retain a blocker for audit, but
 it cannot consume another delivery, rewrite its certificate, reopen from
 `scanner_blocked`, or become `applied`.
 
+### V1 Decision Matrix
+
+The first scanner maps durable rows into one bounded
+`RecoveryWorkClassification` before producing a certificate. The pure v1 policy
+is shared by discovery and commit-time revalidation and has fixed precedence:
+
+1. Blocking findings win and produce `record_blocker`. Examples include an
+   unknown external action, a malformed authority record, or an aggregate that
+   references work that cannot be located.
+2. Existing recoverable work produces `wait_for_progress`. Pending mailbox or
+   route deliveries and live idempotent effects must settle through their normal
+   paths instead of being replaced by recovery work.
+3. Only a confirmed orphaned work node can produce
+   `recover_orphaned_work`. That decision is not a state mutation by itself; a
+   state-specific commit-time materializer must still prove the replacement
+   transition before the case can become `applied`.
+4. A clear graph produces `no_recovery` and does not manufacture mailbox work.
+
+The graph contract is bounded before it is serialized or persisted: canonical
+authority records are limited to 1 MiB, 128 nesting levels, 65,536 JSON values,
+128 graph nodes, 256 edges, 128 invariants, and 4 KiB UTF-8 text fields. The
+scanner must record malformed raw authority separately from a valid
+certificate-backed policy blocker; it must never invent a certificate from an
+unparseable row.
+
 The scanner performs discovery and delivery under one `BEGIN IMMEDIATE`
 transaction. It reads the aggregate and every operation, effect, control
 intent, external-action receipt, and pending outbound authority needed by the

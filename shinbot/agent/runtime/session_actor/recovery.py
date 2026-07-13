@@ -23,6 +23,7 @@ RECOVERY_DELIVERY_SCHEMA = "shinbot.agent.session.recovery-delivery"
 RECOVERY_DELIVERY_VERSION = 1
 RECOVERY_DELIVERY_EVENT_KIND = "RecoveryRequested"
 RECOVERY_DELIVERY_EVENT_SOURCE = "durable_session_recovery_scanner"
+RECOVERY_V1_POLICY_AUTHORITY = "recovery-policy:v1"
 
 MAX_RECOVERY_CERTIFICATE_BYTES = MAX_CANONICAL_JSON_BYTES
 MAX_RECOVERY_GRAPH_NODES = 128
@@ -343,6 +344,130 @@ class RecoveryDecision:
             "reason_codes": list(self.reason_codes),
             "target_node_identities": list(self.target_node_identities),
         }
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RecoveryWorkClassification:
+    """Bounded scanner findings consumed by the conservative v1 policy.
+
+    The scanner owns mapping durable rows into these stable reason/node sets.
+    The policy only selects a decision; it never reads persistence or chooses a
+    recovery state transition. This keeps discovery and commit-time
+    revalidation on one deterministic decision matrix.
+    """
+
+    blocking_reason_codes: tuple[str, ...] = ()
+    blocking_node_identities: tuple[str, ...] = ()
+    waiting_reason_codes: tuple[str, ...] = ()
+    waiting_node_identities: tuple[str, ...] = ()
+    orphaned_node_identities: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize each set-like classification channel."""
+
+        object.__setattr__(
+            self,
+            "blocking_reason_codes",
+            _normalized_text_set(
+                self.blocking_reason_codes,
+                field_name="blocking_reason_codes",
+                maximum_size=MAX_RECOVERY_DECISION_REASON_CODES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "blocking_node_identities",
+            _normalized_text_set(
+                self.blocking_node_identities,
+                field_name="blocking_node_identities",
+                maximum_size=MAX_RECOVERY_DECISION_TARGETS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "waiting_reason_codes",
+            _normalized_text_set(
+                self.waiting_reason_codes,
+                field_name="waiting_reason_codes",
+                maximum_size=MAX_RECOVERY_DECISION_REASON_CODES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "waiting_node_identities",
+            _normalized_text_set(
+                self.waiting_node_identities,
+                field_name="waiting_node_identities",
+                maximum_size=MAX_RECOVERY_DECISION_TARGETS,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "orphaned_node_identities",
+            _normalized_text_set(
+                self.orphaned_node_identities,
+                field_name="orphaned_node_identities",
+                maximum_size=MAX_RECOVERY_DECISION_TARGETS,
+            ),
+        )
+
+
+class RecoveryV1Policy:
+    """Pure, conservative precedence rules for the first recovery scanner.
+
+    ``RECOVER_ORPHANED_WORK`` deliberately remains only an authorization
+    candidate. A commit-time materializer must still prove a state-specific
+    transition before a typed delivery can change an aggregate.
+    """
+
+    policy_version = 1
+
+    def decide(self, classification: RecoveryWorkClassification) -> RecoveryDecision:
+        """Select the one exhaustive recovery outcome for scanner findings."""
+
+        if not isinstance(classification, RecoveryWorkClassification):
+            raise TypeError("classification must be a RecoveryWorkClassification")
+        if classification.blocking_reason_codes:
+            return RecoveryDecision(
+                kind=RecoveryDecisionKind.RECORD_BLOCKER,
+                reason_codes=classification.blocking_reason_codes,
+                target_node_identities=classification.blocking_node_identities,
+                details={
+                    "automatic_action": "none",
+                    "classification": "blocking",
+                    "policy_authority": RECOVERY_V1_POLICY_AUTHORITY,
+                },
+            )
+        if classification.waiting_reason_codes:
+            return RecoveryDecision(
+                kind=RecoveryDecisionKind.WAIT_FOR_PROGRESS,
+                reason_codes=classification.waiting_reason_codes,
+                target_node_identities=classification.waiting_node_identities,
+                details={
+                    "automatic_action": "none",
+                    "classification": "waiting",
+                    "policy_authority": RECOVERY_V1_POLICY_AUTHORITY,
+                },
+            )
+        if classification.orphaned_node_identities:
+            return RecoveryDecision(
+                kind=RecoveryDecisionKind.RECOVER_ORPHANED_WORK,
+                reason_codes=("orphaned_work_without_live_completion",),
+                target_node_identities=classification.orphaned_node_identities,
+                details={
+                    "automatic_action": "commit_time_materializer_required",
+                    "classification": "orphaned",
+                    "policy_authority": RECOVERY_V1_POLICY_AUTHORITY,
+                },
+            )
+        return RecoveryDecision(
+            kind=RecoveryDecisionKind.NO_RECOVERY,
+            details={
+                "automatic_action": "none",
+                "classification": "clear",
+                "policy_authority": RECOVERY_V1_POLICY_AUTHORITY,
+            },
+        )
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1463,6 +1588,7 @@ __all__ = [
     "RECOVERY_DELIVERY_EVENT_SOURCE",
     "RECOVERY_DELIVERY_SCHEMA",
     "RECOVERY_DELIVERY_VERSION",
+    "RECOVERY_V1_POLICY_AUTHORITY",
     "RecoveryAggregateFence",
     "RecoveryCaseIdentity",
     "RecoveryCertificate",
@@ -1476,6 +1602,8 @@ __all__ = [
     "RecoveryInvariant",
     "RecoveryInvariantSeverity",
     "RecoverySubject",
+    "RecoveryV1Policy",
+    "RecoveryWorkClassification",
     "UnsupportedRecoveryCertificateVersion",
     "UnsupportedRecoveryDeliveryVersion",
     "build_recovery_certificate",
