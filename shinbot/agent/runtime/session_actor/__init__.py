@@ -123,6 +123,15 @@ from shinbot.agent.runtime.session_actor.message_ledger_persistence import (
     load_captured_unread_message_ledger_entries,
 )
 from shinbot.agent.runtime.session_actor.recovery import (
+    MAX_RECOVERY_CERTIFICATE_BYTES,
+    MAX_RECOVERY_DECISION_REASON_CODES,
+    MAX_RECOVERY_DECISION_TARGETS,
+    MAX_RECOVERY_GRAPH_EDGES,
+    MAX_RECOVERY_GRAPH_NODES,
+    MAX_RECOVERY_INVARIANTS,
+    MAX_RECOVERY_JSON_DEPTH,
+    MAX_RECOVERY_JSON_NODES,
+    MAX_RECOVERY_TEXT_BYTES,
     RECOVERY_CERTIFICATE_SCHEMA,
     RECOVERY_CERTIFICATE_VERSION,
     RECOVERY_DELIVERY_EVENT_KIND,
@@ -210,6 +219,15 @@ from shinbot.agent.runtime.session_actor.workflow_completion import (
 )
 
 __all__ = [
+    "MAX_RECOVERY_CERTIFICATE_BYTES",
+    "MAX_RECOVERY_DECISION_REASON_CODES",
+    "MAX_RECOVERY_DECISION_TARGETS",
+    "MAX_RECOVERY_GRAPH_EDGES",
+    "MAX_RECOVERY_GRAPH_NODES",
+    "MAX_RECOVERY_INVARIANTS",
+    "MAX_RECOVERY_JSON_DEPTH",
+    "MAX_RECOVERY_JSON_NODES",
+    "MAX_RECOVERY_TEXT_BYTES",
     "DEFAULT_SESSION_ACTOR_PROFILE_ID",
     "AgentSessionActor",
     "AgentSessionActorRegistry",

@@ -11,6 +11,12 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, ClassVar
 
+from shinbot.persistence.canonical_json import (
+    MAX_CANONICAL_JSON_BYTES,
+    MAX_CANONICAL_JSON_DEPTH,
+    MAX_CANONICAL_JSON_NODES,
+)
+
 RECOVERY_CERTIFICATE_SCHEMA = "shinbot.agent.session.recovery-certificate"
 RECOVERY_CERTIFICATE_VERSION = 1
 RECOVERY_DELIVERY_SCHEMA = "shinbot.agent.session.recovery-delivery"
@@ -18,7 +24,18 @@ RECOVERY_DELIVERY_VERSION = 1
 RECOVERY_DELIVERY_EVENT_KIND = "RecoveryRequested"
 RECOVERY_DELIVERY_EVENT_SOURCE = "durable_session_recovery_scanner"
 
-_MAX_RECOVERY_JSON_DEPTH = 128
+MAX_RECOVERY_CERTIFICATE_BYTES = MAX_CANONICAL_JSON_BYTES
+MAX_RECOVERY_GRAPH_NODES = 128
+MAX_RECOVERY_GRAPH_EDGES = 256
+MAX_RECOVERY_INVARIANTS = 128
+MAX_RECOVERY_DECISION_REASON_CODES = 64
+MAX_RECOVERY_DECISION_TARGETS = 128
+MAX_RECOVERY_TEXT_BYTES = 4_096
+MAX_RECOVERY_JSON_DEPTH = MAX_CANONICAL_JSON_DEPTH
+MAX_RECOVERY_JSON_NODES = MAX_CANONICAL_JSON_NODES
+
+_MAX_RECOVERY_JSON_DEPTH = MAX_RECOVERY_JSON_DEPTH
+_MAX_RECOVERY_JSON_NODES = MAX_RECOVERY_JSON_NODES
 
 
 class RecoveryContractDecodeError(ValueError):
@@ -31,6 +48,23 @@ class UnsupportedRecoveryCertificateVersion(RecoveryContractDecodeError):
 
 class UnsupportedRecoveryDeliveryVersion(RecoveryContractDecodeError):
     """Raised when no delivery decoder is registered for a stored version."""
+
+
+@dataclass(slots=True)
+class _RecoveryJSONBudget:
+    """Bound one in-memory recovery JSON traversal before canonical encoding."""
+
+    nodes_seen: int = 0
+
+    def consume(self, *, path: str) -> None:
+        """Record one authority value or reject an unbounded object graph."""
+
+        self.nodes_seen += 1
+        if self.nodes_seen > _MAX_RECOVERY_JSON_NODES:
+            raise TypeError(
+                f"{path} exceeds the maximum recovery JSON node count "
+                f"of {_MAX_RECOVERY_JSON_NODES}"
+            )
 
 
 class RecoveryInvariantSeverity(StrEnum):
@@ -279,7 +313,11 @@ class RecoveryDecision:
         object.__setattr__(
             self,
             "reason_codes",
-            _normalized_text_set(self.reason_codes, field_name="reason_codes"),
+            _normalized_text_set(
+                self.reason_codes,
+                field_name="reason_codes",
+                maximum_size=MAX_RECOVERY_DECISION_REASON_CODES,
+            ),
         )
         object.__setattr__(
             self,
@@ -287,6 +325,7 @@ class RecoveryDecision:
             _normalized_text_set(
                 self.target_node_identities,
                 field_name="target_node_identities",
+                maximum_size=MAX_RECOVERY_DECISION_TARGETS,
             ),
         )
         object.__setattr__(
@@ -398,6 +437,21 @@ class RecoveryCertificate:
             self.invariants,
             item_type=RecoveryInvariant,
             field_name="invariants",
+        )
+        _validate_collection_limit(
+            nodes,
+            field_name="nodes",
+            maximum_size=MAX_RECOVERY_GRAPH_NODES,
+        )
+        _validate_collection_limit(
+            edges,
+            field_name="edges",
+            maximum_size=MAX_RECOVERY_GRAPH_EDGES,
+        )
+        _validate_collection_limit(
+            invariants,
+            field_name="invariants",
+            maximum_size=MAX_RECOVERY_INVARIANTS,
         )
         _validate_graph_identity(nodes, edges, invariants, self.decision)
         object.__setattr__(self, "nodes", nodes)
@@ -696,13 +750,23 @@ def canonical_recovery_json(value: object) -> str:
     """Serialize bounded UTF-8 JSON authority data, rejecting all floats."""
 
     normalized = _thaw_json(_freeze_json(value, path="recovery", depth=0))
-    return json.dumps(
+    canonical = json.dumps(
         normalized,
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
         sort_keys=True,
     )
+    try:
+        encoded = canonical.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise TypeError("recovery authority must contain valid UTF-8 text") from exc
+    if len(encoded) > MAX_RECOVERY_CERTIFICATE_BYTES:
+        raise TypeError(
+            "recovery authority exceeds the maximum canonical JSON byte size "
+            f"of {MAX_RECOVERY_CERTIFICATE_BYTES}"
+        )
+    return canonical
 
 
 def canonical_recovery_digest(value: object) -> str:
@@ -1144,15 +1208,35 @@ def _normalized_contract_items(
     return tuple(sorted(normalized, key=lambda value: value.identity))
 
 
-def _normalized_text_set(values: Sequence[str], *, field_name: str) -> tuple[str, ...]:
+def _normalized_text_set(
+    values: Sequence[str],
+    *,
+    field_name: str,
+    maximum_size: int,
+) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise TypeError(f"{field_name} must be a sequence of strings")
     normalized = tuple(
         _required_text(value, field_name=f"{field_name} item") for value in values
     )
+    _validate_collection_limit(
+        normalized,
+        field_name=field_name,
+        maximum_size=maximum_size,
+    )
     if len(normalized) != len(set(normalized)):
         raise ValueError(f"{field_name} contains duplicate values")
     return tuple(sorted(normalized))
+
+
+def _validate_collection_limit(
+    values: Sequence[object],
+    *,
+    field_name: str,
+    maximum_size: int,
+) -> None:
+    if len(values) > maximum_size:
+        raise ValueError(f"{field_name} exceeds the maximum size of {maximum_size}")
 
 
 def _freeze_json_object(value: object, *, field_name: str) -> Mapping[str, Any]:
@@ -1162,7 +1246,15 @@ def _freeze_json_object(value: object, *, field_name: str) -> Mapping[str, Any]:
     return frozen
 
 
-def _freeze_json(value: object, *, path: str, depth: int) -> Any:
+def _freeze_json(
+    value: object,
+    *,
+    path: str,
+    depth: int,
+    budget: _RecoveryJSONBudget | None = None,
+) -> Any:
+    budget = budget or _RecoveryJSONBudget()
+    budget.consume(path=path)
     if depth > _MAX_RECOVERY_JSON_DEPTH:
         raise TypeError(
             f"{path} exceeds the maximum recovery JSON nesting depth "
@@ -1175,10 +1267,16 @@ def _freeze_json(value: object, *, path: str, depth: int) -> Any:
                 raise TypeError(f"{path} keys must be strings")
             if not _is_valid_utf8(key):
                 raise TypeError(f"{path} keys must contain valid UTF-8 text")
+            if len(key.encode("utf-8")) > MAX_RECOVERY_TEXT_BYTES:
+                raise TypeError(
+                    f"{path} keys exceed the maximum recovery text byte size "
+                    f"of {MAX_RECOVERY_TEXT_BYTES}"
+                )
             items[key] = _freeze_json(
                 item,
                 path=f"{path}.{key}",
                 depth=depth + 1,
+                budget=budget,
             )
         return MappingProxyType(items)
     if isinstance(value, (list, tuple)):
@@ -1187,6 +1285,7 @@ def _freeze_json(value: object, *, path: str, depth: int) -> Any:
                 item,
                 path=f"{path}[{index}]",
                 depth=depth + 1,
+                budget=budget,
             )
             for index, item in enumerate(value)
         )
@@ -1195,6 +1294,11 @@ def _freeze_json(value: object, *, path: str, depth: int) -> Any:
     if isinstance(value, str):
         if not _is_valid_utf8(value):
             raise TypeError(f"{path} must contain valid UTF-8 text")
+        if len(value.encode("utf-8")) > MAX_RECOVERY_TEXT_BYTES:
+            raise TypeError(
+                f"{path} exceeds the maximum recovery text byte size "
+                f"of {MAX_RECOVERY_TEXT_BYTES}"
+            )
         return value
     if value is None or isinstance(value, (int, bool)):
         return value
@@ -1252,6 +1356,11 @@ def _strict_string(value: object, *, field_name: str) -> str:
         raise RecoveryContractDecodeError(
             f"{field_name} must contain valid UTF-8 text"
         )
+    if len(value.encode("utf-8")) > MAX_RECOVERY_TEXT_BYTES:
+        raise RecoveryContractDecodeError(
+            f"{field_name} exceeds the maximum recovery text byte size "
+            f"of {MAX_RECOVERY_TEXT_BYTES}"
+        )
     return value
 
 
@@ -1291,6 +1400,11 @@ def _required_text(value: object, *, field_name: str) -> str:
         raise ValueError(f"{field_name} must not be empty")
     if not _is_valid_utf8(normalized):
         raise ValueError(f"{field_name} must contain valid UTF-8 text")
+    if len(normalized.encode("utf-8")) > MAX_RECOVERY_TEXT_BYTES:
+        raise ValueError(
+            f"{field_name} exceeds the maximum recovery text byte size "
+            f"of {MAX_RECOVERY_TEXT_BYTES}"
+        )
     return normalized
 
 
@@ -1300,6 +1414,11 @@ def _optional_text(value: object, *, field_name: str) -> str:
     normalized = value.strip()
     if not _is_valid_utf8(normalized):
         raise ValueError(f"{field_name} must contain valid UTF-8 text")
+    if len(normalized.encode("utf-8")) > MAX_RECOVERY_TEXT_BYTES:
+        raise ValueError(
+            f"{field_name} exceeds the maximum recovery text byte size "
+            f"of {MAX_RECOVERY_TEXT_BYTES}"
+        )
     return normalized
 
 
@@ -1329,6 +1448,15 @@ def _require_sha256_digest(value: object, *, field_name: str) -> None:
 
 
 __all__ = [
+    "MAX_RECOVERY_CERTIFICATE_BYTES",
+    "MAX_RECOVERY_DECISION_REASON_CODES",
+    "MAX_RECOVERY_DECISION_TARGETS",
+    "MAX_RECOVERY_GRAPH_EDGES",
+    "MAX_RECOVERY_GRAPH_NODES",
+    "MAX_RECOVERY_INVARIANTS",
+    "MAX_RECOVERY_JSON_DEPTH",
+    "MAX_RECOVERY_JSON_NODES",
+    "MAX_RECOVERY_TEXT_BYTES",
     "RECOVERY_CERTIFICATE_SCHEMA",
     "RECOVERY_CERTIFICATE_VERSION",
     "RECOVERY_DELIVERY_EVENT_KIND",

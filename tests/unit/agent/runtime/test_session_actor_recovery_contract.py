@@ -7,6 +7,13 @@ from typing import Any
 import pytest
 
 from shinbot.agent.runtime.session_actor.recovery import (
+    MAX_RECOVERY_DECISION_REASON_CODES,
+    MAX_RECOVERY_DECISION_TARGETS,
+    MAX_RECOVERY_GRAPH_EDGES,
+    MAX_RECOVERY_GRAPH_NODES,
+    MAX_RECOVERY_INVARIANTS,
+    MAX_RECOVERY_JSON_NODES,
+    MAX_RECOVERY_TEXT_BYTES,
     RECOVERY_DELIVERY_EVENT_KIND,
     RECOVERY_DELIVERY_EVENT_SOURCE,
     RecoveryAggregateFence,
@@ -472,6 +479,113 @@ def test_certificate_decoder_rejects_excessive_json_depth() -> None:
         match="maximum recovery JSON nesting depth",
     ):
         decode_recovery_certificate(record)
+
+
+def test_canonical_contract_rejects_excessive_json_nodes_and_bytes() -> None:
+    excessive_nodes = {"items": [0] * MAX_RECOVERY_JSON_NODES}
+    with pytest.raises(TypeError, match="maximum recovery JSON node count"):
+        canonical_recovery_json(excessive_nodes)
+
+    excessive_bytes = {"items": ["x" * MAX_RECOVERY_TEXT_BYTES] * 256}
+    with pytest.raises(TypeError, match="maximum canonical JSON byte size"):
+        canonical_recovery_json(excessive_bytes)
+
+
+def test_contract_rejects_oversized_text_before_certificate_construction() -> None:
+    with pytest.raises(TypeError, match="maximum recovery text byte size"):
+        RecoveryGraphNode(
+            identity="effect:oversized",
+            kind="effect",
+            authority="agent_effect_outbox",
+            status="pending",
+            facts={"payload": "x" * (MAX_RECOVERY_TEXT_BYTES + 1)},
+        )
+
+    record = deepcopy(_certificate().to_record())
+    record["nodes"][0]["facts"] = {
+        "payload": "x" * (MAX_RECOVERY_TEXT_BYTES + 1)
+    }
+    with pytest.raises(RecoveryContractDecodeError, match="maximum recovery text"):
+        decode_recovery_certificate(record)
+
+
+def test_graph_and_decision_collections_are_bounded() -> None:
+    nodes = tuple(
+        RecoveryGraphNode(
+            identity=f"node:{index}",
+            kind="authority",
+            authority="test",
+            status="known",
+        )
+        for index in range(MAX_RECOVERY_GRAPH_NODES + 1)
+    )
+    with pytest.raises(ValueError, match="nodes exceeds"):
+        build_recovery_certificate(
+            subject=_subject(),
+            aggregate_fence=_fence(),
+            nodes=nodes,
+            edges=(),
+            invariants=(),
+            decision=RecoveryDecision(kind=RecoveryDecisionKind.NO_RECOVERY),
+        )
+
+    operation = _operation_node()
+    effect = _effect_node()
+    edges = tuple(
+        RecoveryGraphEdge(
+            identity=f"edge:{index}",
+            source=operation.identity,
+            target=effect.identity,
+            relation="produced",
+        )
+        for index in range(MAX_RECOVERY_GRAPH_EDGES + 1)
+    )
+    with pytest.raises(ValueError, match="edges exceeds"):
+        build_recovery_certificate(
+            subject=_subject(),
+            aggregate_fence=_fence(),
+            nodes=(operation, effect),
+            edges=edges,
+            invariants=(),
+            decision=RecoveryDecision(kind=RecoveryDecisionKind.NO_RECOVERY),
+        )
+
+    invariants = tuple(
+        RecoveryInvariant(
+            identity=f"invariant:{index}",
+            code="known",
+            severity=RecoveryInvariantSeverity.INFO,
+            authority="test",
+            node_identity=operation.identity,
+        )
+        for index in range(MAX_RECOVERY_INVARIANTS + 1)
+    )
+    with pytest.raises(ValueError, match="invariants exceeds"):
+        build_recovery_certificate(
+            subject=_subject(),
+            aggregate_fence=_fence(),
+            nodes=(operation,),
+            edges=(),
+            invariants=invariants,
+            decision=RecoveryDecision(kind=RecoveryDecisionKind.NO_RECOVERY),
+        )
+
+    with pytest.raises(ValueError, match="reason_codes exceeds"):
+        RecoveryDecision(
+            kind=RecoveryDecisionKind.NO_RECOVERY,
+            reason_codes=tuple(
+                f"reason-{index}"
+                for index in range(MAX_RECOVERY_DECISION_REASON_CODES + 1)
+            ),
+        )
+    with pytest.raises(ValueError, match="target_node_identities exceeds"):
+        RecoveryDecision(
+            kind=RecoveryDecisionKind.NO_RECOVERY,
+            target_node_identities=tuple(
+                f"node-{index}"
+                for index in range(MAX_RECOVERY_DECISION_TARGETS + 1)
+            ),
+        )
 
 
 def test_graph_rejects_duplicate_and_dangling_identity() -> None:
