@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from shinbot.agent.runtime.session_actor.delayed_control_handler import (
+    DELAYED_CONTROL_EFFECT_KINDS,
+    register_delayed_control_effect_handlers,
+)
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     builtin_session_actor_effect_contracts,
 )
@@ -78,17 +82,22 @@ async def test_partial_composition_reports_exact_handler_progress_without_activa
     """One completed adapter reduces diagnostics but cannot start Actor v2."""
 
     workflow = _PlannerWorkflow()
+    def configure_handlers(registry) -> None:
+        register_idle_review_planning_effect_handler(registry, workflow=workflow)
+        register_delayed_control_effect_handlers(registry)
+
     assembly = ActorV2RuntimeAssembly.compose_inactive(
         _database(tmp_path),
-        configure_handlers=lambda registry: register_idle_review_planning_effect_handler(
-            registry,
-            workflow=workflow,
-        ),
+        configure_handlers=configure_handlers,
     )
 
     missing = assembly.readiness.missing_handler_contracts
     assert all(
         contract.effect_kind != "run_idle_review_planning" for contract in missing
+    )
+    assert all(
+        contract.effect_kind not in DELAYED_CONTROL_EFFECT_KINDS
+        for contract in missing
     )
     assert missing
     assert assembly.actor_wake_target is None

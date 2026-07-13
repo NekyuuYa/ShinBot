@@ -18,6 +18,12 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
+from shinbot.agent.runtime.session_actor.delayed_control_handler import (
+    DELAYED_CONTROL_EFFECT_KINDS,
+    DelayedControlEffectHandler,
+    DelayedControlEffectHandlerError,
+    register_delayed_control_effect_handlers,
+)
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     EffectContractAuthority,
     EffectContractAuthorityError,
@@ -269,6 +275,9 @@ __all__ = [
     "ActorV2RuntimeActivationBlocked",
     "ActorV2RuntimeAssembly",
     "ActorV2RuntimeReadiness",
+    "DELAYED_CONTROL_EFFECT_KINDS",
+    "DelayedControlEffectHandler",
+    "DelayedControlEffectHandlerError",
     "ActorIdleReviewPlanningContextProjector",
     "ActorPlanningLedgerPort",
     "ActorPlanningMessageStore",
@@ -444,6 +453,7 @@ __all__ = [
     "external_action_request_from_effect",
     "operation_global_review_proposal_id",
     "register_actor_workflow_effect_handlers",
+    "register_delayed_control_effect_handlers",
     "register_idle_review_planning_effect_handler",
     "recovery_delivery_event_id",
     "review_due_event_id",

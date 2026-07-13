@@ -37,6 +37,15 @@ _SCHEDULE_OUTCOME_FIELDS = frozenset(
         "source",
     }
 )
+_FAILED_SCHEDULE_OUTCOME_DIAGNOSTIC_FIELDS = frozenset(
+    {
+        "failure_code",
+        "failure_message",
+    }
+)
+_FAILED_SCHEDULE_OUTCOME_FIELDS = (
+    _SCHEDULE_OUTCOME_FIELDS | _FAILED_SCHEDULE_OUTCOME_DIAGNOSTIC_FIELDS
+)
 
 
 class ReviewPlanTransitionValidationError(ValueError):
@@ -235,6 +244,11 @@ def validate_review_plan_transition(
             "new review schedule journal does not match schedule semantics: "
             + ", ".join(mismatched)
         )
+    if journal_semantics["outcome"] == "failed":
+        _validate_failed_schedule_outcome_diagnostics(
+            target.review_plan,
+            journal,
+        )
 
 
 def review_plan_semantics(
@@ -406,31 +420,7 @@ def review_schedule_event_semantics(
             field_name="review_schedule_event.committed_state_revision",
         ),
     }
-    metadata = _json_object(
-        event.metadata,
-        field_name="review_schedule_event.metadata",
-    )
-    if "schedule_outcome" not in metadata:
-        raise ReviewPlanTransitionValidationError(
-            "new review plan journal metadata is missing schedule_outcome"
-        )
-    outcome = _json_object(
-        metadata["schedule_outcome"],
-        field_name="review_schedule_event.metadata.schedule_outcome",
-    )
-    outcome_fields = frozenset(outcome)
-    if outcome_fields != _SCHEDULE_OUTCOME_FIELDS:
-        missing = sorted(_SCHEDULE_OUTCOME_FIELDS - outcome_fields)
-        unexpected = sorted(outcome_fields - _SCHEDULE_OUTCOME_FIELDS)
-        details: list[str] = []
-        if missing:
-            details.append("missing=" + ", ".join(missing))
-        if unexpected:
-            details.append("unexpected=" + ", ".join(unexpected))
-        raise ReviewPlanTransitionValidationError(
-            "review schedule outcome metadata has an invalid field set: "
-            + "; ".join(details)
-        )
+    outcome = _schedule_outcome_metadata(event)
     outcome_semantics: dict[str, object] = {
         "active_reply_threshold": _json_object(
             outcome["active_reply_threshold"],
@@ -509,6 +499,123 @@ def review_schedule_event_semantics(
         }
     )
     return semantics
+
+
+def _schedule_outcome_metadata(
+    event: SessionReviewScheduleEvent,
+) -> dict[str, Any]:
+    """Return one exact schedule-outcome record from an append-only journal.
+
+    Failure diagnostics were added after the original common schedule outcome
+    projection.  A failed record may therefore carry the diagnostic pair, but
+    the base-only failed shape remains readable for pre-diagnostic durable
+    history.  Every other outcome retains the original exact field set.
+    """
+
+    metadata = _json_object(
+        event.metadata,
+        field_name="review_schedule_event.metadata",
+    )
+    if "schedule_outcome" not in metadata:
+        raise ReviewPlanTransitionValidationError(
+            "new review plan journal metadata is missing schedule_outcome"
+        )
+    outcome = _json_object(
+        metadata["schedule_outcome"],
+        field_name="review_schedule_event.metadata.schedule_outcome",
+    )
+    kind = _exact_text(
+        outcome.get("kind", _MISSING),
+        field_name="review_schedule_event.metadata.schedule_outcome.kind",
+    )
+    outcome_fields = frozenset(outcome)
+    expected_field_sets = (
+        (_SCHEDULE_OUTCOME_FIELDS, _FAILED_SCHEDULE_OUTCOME_FIELDS)
+        if kind == "failed"
+        else (_SCHEDULE_OUTCOME_FIELDS,)
+    )
+    if outcome_fields not in expected_field_sets:
+        expected_fields = (
+            _FAILED_SCHEDULE_OUTCOME_FIELDS
+            if kind == "failed"
+            else _SCHEDULE_OUTCOME_FIELDS
+        )
+        missing = sorted(expected_fields - outcome_fields)
+        unexpected = sorted(outcome_fields - expected_fields)
+        details: list[str] = []
+        if missing:
+            details.append("missing=" + ", ".join(missing))
+        if unexpected:
+            details.append("unexpected=" + ", ".join(unexpected))
+        raise ReviewPlanTransitionValidationError(
+            "review schedule outcome metadata has an invalid field set: "
+            + "; ".join(details)
+        )
+    return outcome
+
+
+def _validate_failed_schedule_outcome_diagnostics(
+    review_plan: Mapping[str, object],
+    event: SessionReviewScheduleEvent,
+) -> None:
+    """Require new failed schedule diagnostics to agree across durable records."""
+
+    outcome_details = _failure_diagnostics(
+        _schedule_outcome_metadata(event),
+        field_prefix="review_schedule_event.metadata.schedule_outcome",
+    )
+    plan_details = _failure_diagnostics(
+        review_plan,
+        field_prefix="review_plan",
+    )
+    if outcome_details is None and plan_details is None:
+        return
+    if outcome_details is None:
+        raise ReviewPlanTransitionValidationError(
+            "failed review plan diagnostics are absent from the schedule journal"
+        )
+    if plan_details is None:
+        raise ReviewPlanTransitionValidationError(
+            "failed schedule journal diagnostics are absent from the review plan"
+        )
+    if plan_details != outcome_details:
+        raise ReviewPlanTransitionValidationError(
+            "failed schedule diagnostics do not match the review plan"
+        )
+
+
+def _failure_diagnostics(
+    values: Mapping[str, object],
+    *,
+    field_prefix: str,
+) -> tuple[str, str] | None:
+    """Return an optional complete failure diagnostic pair from durable JSON."""
+
+    present = {
+        field_name
+        for field_name in _FAILED_SCHEDULE_OUTCOME_DIAGNOSTIC_FIELDS
+        if field_name in values
+    }
+    if not present:
+        return None
+    if present != _FAILED_SCHEDULE_OUTCOME_DIAGNOSTIC_FIELDS:
+        raise ReviewPlanTransitionValidationError(
+            f"{field_prefix} failure diagnostics must include both "
+            "failure_code and failure_message"
+        )
+    failure_code = _exact_text(
+        values["failure_code"],
+        field_name=f"{field_prefix}.failure_code",
+    )
+    if not failure_code.strip():
+        raise ReviewPlanTransitionValidationError(
+            f"{field_prefix}.failure_code must not be empty"
+        )
+    failure_message = _exact_text(
+        values["failure_message"],
+        field_name=f"{field_prefix}.failure_message",
+    )
+    return failure_code, failure_message
 
 
 def _validate_new_schedule_identity(

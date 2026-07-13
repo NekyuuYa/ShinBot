@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
+from shinbot.agent.runtime.session_actor.delayed_control_handler import (
+    register_delayed_control_effect_handlers,
+)
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     builtin_effect_contract,
 )
@@ -466,18 +469,8 @@ async def test_v2_round_due_completion_flows_from_executor_to_actor(
     round_due_contract = builtin_effect_contract(
         AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE
     )
-    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
-
-    async def enqueue_round_due(
-        _context: EffectExecutionContext,
-    ) -> EffectHandlerResult:
-        return EffectHandlerResult()
-
-    handlers.register(
-        round_due_contract.effect_kind,
-        enqueue_round_due,
-        contract=round_due_contract,
-    )
+    handlers = EffectHandlerRegistry()
+    register_delayed_control_effect_handlers(handlers)
     executor = DurableEffectExecutor(
         store=SQLiteDurableEffectStore(database, clock=lambda: now[0]),
         handlers=handlers,
@@ -545,6 +538,114 @@ async def test_v2_round_due_completion_flows_from_executor_to_actor(
         "completed",
         AgentSessionEventKind.ACTIVE_CHAT_ROUND_DUE,
     )
+
+
+@pytest.mark.asyncio
+async def test_v2_exit_request_completion_flows_from_executor_to_settling_actor(
+    tmp_path: Path,
+) -> None:
+    """A pure exit-control completion enters actor-owned idle planning once."""
+
+    now = [100.0]
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    store = SQLiteSessionActorStore(
+        database,
+        retry_delay_seconds=0.0,
+        clock=lambda: now[0],
+    )
+    reducer = AgentSessionReducer()
+    key = SessionKey("profile-a", "session-a")
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="active chat exit completion test",
+        legacy_session_id="legacy:session-a",
+    ).ownership
+    await _seed_active_chat(
+        store,
+        key=key,
+        generation=ownership.generation,
+        interest_value=1.0,
+    )
+    registry = AgentSessionActorRegistry(
+        store=store,
+        handler=reducer.reduce,
+        retry_delay_seconds=0.0,
+    )
+    exit_contract = builtin_effect_contract(
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
+    )
+    handlers = EffectHandlerRegistry()
+    register_delayed_control_effect_handlers(handlers)
+    executor = DurableEffectExecutor(
+        store=SQLiteDurableEffectStore(database, clock=lambda: now[0]),
+        handlers=handlers,
+        session_registry=registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+    tick = SessionEventEnvelope(
+        event_id="active-chat-tick:exit-success",
+        key=key,
+        kind=AgentSessionEventKind.ACTIVE_CHAT_TICK,
+        ownership_generation=ownership.generation,
+        source="active_chat_timer",
+        occurred_at=now[0],
+        payload={
+            "active_epoch": 1,
+            "expected_message_watermark": 0,
+            "ownership_generation": ownership.generation,
+        },
+    )
+    try:
+        await registry.submit(tick)
+        await registry.wait_idle(key)
+        requested = await store.load(key)
+        intent = requested.data["effect_control_intents"][
+            AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
+        ]
+
+        result = await executor.run_once(lane=EffectLane.CONTROL)
+        await registry.wait_idle(key)
+    finally:
+        await registry.shutdown()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert result.event_id == intent["completion_event_id"]
+    settling = await store.load(key)
+    settling_intent = settling.data["effect_control_intents"][
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
+    ]
+    assert settling.state == AgentSessionState.ACTIVE_CHAT_SETTLING
+    assert settling.idle_planning_operation_id
+    assert settling_intent["status"] == "completed"
+    assert settling.data["idle_exit"]["operation_id"] == (
+        settling.idle_planning_operation_id
+    )
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT status, contract_version
+            FROM agent_effect_outbox
+            WHERE effect_id = ?
+            """,
+            (intent["effect_id"],),
+        ).fetchone()
+        completion = conn.execute(
+            """
+            SELECT status, kind
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, result.event_id),
+        ).fetchone()
+
+    assert effect is not None
+    assert tuple(effect) == ("completed", exit_contract.version)
+    assert completion is not None
+    assert tuple(completion) == ("completed", AgentSessionEventKind.EXIT_REQUESTED)
 
 
 @pytest.mark.asyncio

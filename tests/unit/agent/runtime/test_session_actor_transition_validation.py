@@ -102,6 +102,180 @@ def test_valid_plan_schedule_and_journal_form_one_declaration() -> None:
     validate_review_plan_transition(current, transition)
 
 
+def _failed_transition(
+    *,
+    include_diagnostics: bool = True,
+) -> tuple[AgentSessionAggregate, SessionTransition]:
+    """Build a coherent failed fallback schedule with optional legacy shape."""
+
+    current, transition = _valid_transition()
+    plan = dict(transition.aggregate.review_plan)
+    plan.update(
+        {
+            "kind": "failed",
+            "reason": "planner unavailable",
+            "fallback_reason": "planner_deadline_reached",
+        }
+    )
+    journal = transition.review_schedule_events[0]
+    metadata = dict(journal.metadata)
+    schedule_outcome = dict(metadata["schedule_outcome"])
+    schedule_outcome.update(
+        {
+            "kind": "failed",
+            "reason": "planner unavailable",
+            "fallback_reason": "planner_deadline_reached",
+        }
+    )
+    if include_diagnostics:
+        plan.update(
+            {
+                "failure_code": "planner_deadline_reached",
+                "failure_message": "",
+            }
+        )
+        schedule_outcome.update(
+            {
+                "failure_code": "planner_deadline_reached",
+                "failure_message": "",
+            }
+        )
+    metadata["schedule_outcome"] = schedule_outcome
+    schedule = replace(
+        transition.review_schedules[0],
+        outcome="failed",
+        reason="planner unavailable",
+        fallback_reason="planner_deadline_reached",
+    )
+    return current, replace(
+        transition,
+        aggregate=replace(transition.aggregate, review_plan=plan),
+        review_schedules=(schedule,),
+        review_schedule_events=(
+            replace(
+                journal,
+                outcome="failed",
+                reason="planner unavailable",
+                fallback_reason="planner_deadline_reached",
+                metadata=metadata,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("include_diagnostics", (True, False))
+def test_failed_schedule_outcome_accepts_current_and_legacy_exact_shapes(
+    include_diagnostics: bool,
+) -> None:
+    """Failed outcomes retain diagnostics without rejecting legacy base records."""
+
+    current, transition = _failed_transition(
+        include_diagnostics=include_diagnostics
+    )
+
+    validate_review_plan_transition(current, transition)
+
+
+def test_failed_schedule_diagnostics_must_match_the_aggregate_review_plan() -> None:
+    """Failure evidence cannot diverge between current state and its journal."""
+
+    current, transition = _failed_transition()
+    plan = dict(transition.aggregate.review_plan)
+    plan["failure_code"] = "different_failure"
+
+    with pytest.raises(
+        ReviewPlanTransitionValidationError,
+        match="failed schedule diagnostics do not match",
+    ):
+        validate_review_plan_transition(
+            current,
+            replace(
+                transition,
+                aggregate=replace(transition.aggregate, review_plan=plan),
+            ),
+        )
+
+
+def test_failed_schedule_diagnostics_must_be_a_complete_pair() -> None:
+    """A partial failure record cannot become append-only schedule evidence."""
+
+    current, transition = _failed_transition()
+    journal = transition.review_schedule_events[0]
+    metadata = dict(journal.metadata)
+    schedule_outcome = dict(metadata["schedule_outcome"])
+    schedule_outcome.pop("failure_message")
+    metadata["schedule_outcome"] = schedule_outcome
+
+    with pytest.raises(
+        ReviewPlanTransitionValidationError,
+        match="invalid field set",
+    ):
+        validate_review_plan_transition(
+            current,
+            replace(
+                transition,
+                review_schedule_events=(replace(journal, metadata=metadata),),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "expected_message"),
+    (
+        ("failure_code", "", "failure_code must not be empty"),
+        ("failure_code", 1, "failure_code must be a JSON string"),
+        ("failure_message", 1, "failure_message must be a JSON string"),
+    ),
+)
+def test_failed_schedule_diagnostics_must_be_well_typed(
+    field_name: str,
+    value: object,
+    expected_message: str,
+) -> None:
+    """Typed diagnostics prevent opaque failure metadata from entering history."""
+
+    current, transition = _failed_transition()
+    journal = transition.review_schedule_events[0]
+    metadata = dict(journal.metadata)
+    schedule_outcome = dict(metadata["schedule_outcome"])
+    schedule_outcome[field_name] = value
+    metadata["schedule_outcome"] = schedule_outcome
+
+    with pytest.raises(ReviewPlanTransitionValidationError, match=expected_message):
+        validate_review_plan_transition(
+            current,
+            replace(
+                transition,
+                review_schedule_events=(replace(journal, metadata=metadata),),
+            ),
+        )
+
+
+def test_nonfailed_schedule_rejects_failure_diagnostics() -> None:
+    """Diagnostics remain exclusive to an explicit failed scheduling outcome."""
+
+    current, transition = _valid_transition()
+    journal = transition.review_schedule_events[0]
+    metadata = dict(journal.metadata)
+    schedule_outcome = dict(metadata["schedule_outcome"])
+    schedule_outcome.update(
+        {
+            "failure_code": "should_not_be_here",
+            "failure_message": "",
+        }
+    )
+    metadata["schedule_outcome"] = schedule_outcome
+
+    with pytest.raises(ReviewPlanTransitionValidationError, match="invalid field set"):
+        validate_review_plan_transition(
+            current,
+            replace(
+                transition,
+                review_schedule_events=(replace(journal, metadata=metadata),),
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     (
