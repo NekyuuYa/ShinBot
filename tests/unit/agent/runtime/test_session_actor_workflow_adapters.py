@@ -240,6 +240,8 @@ async def test_active_reply_handler_uses_captured_ledger_and_encodes_nested_resu
         ActiveReplyWorkflowOutput(
             consumed_message_log_ids=(10,),
             external_action_intents=(_reply_intent("model-call-a"),),
+            model_execution_id="model-execution-active-reply-a",
+            prompt_signature="prompt-signature-active-reply-a",
         )
     )
 
@@ -263,7 +265,13 @@ async def test_active_reply_handler_uses_captured_ledger_and_encodes_nested_resu
     assert [intent.tool_call_id for intent in completion.external_action_intents] == [
         "model-call-a"
     ]
-    assert set(result.payload) == {"workflow_result"}
+    assert result.payload["model_execution_id"] == "model-execution-active-reply-a"
+    assert result.payload["prompt_signature"] == "prompt-signature-active-reply-a"
+    assert set(result.payload) == {
+        "workflow_result",
+        "model_execution_id",
+        "prompt_signature",
+    }
 
 
 @pytest.mark.asyncio

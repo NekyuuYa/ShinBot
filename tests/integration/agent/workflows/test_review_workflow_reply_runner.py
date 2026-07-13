@@ -17,6 +17,9 @@ from review_workflow_support import (
     pytest,
 )
 
+from shinbot.agent.runtime.session_actor.active_reply_workflow import (
+    build_actor_active_reply_decision_runner,
+)
 from shinbot.agent.runtime.session_actor.review_workflow import (
     build_actor_review_reply_decision_runner,
 )
@@ -243,6 +246,38 @@ async def test_reply_decision_runner_collects_actor_intents_without_execution() 
 
 
 @pytest.mark.asyncio
+async def test_reply_decision_runner_collect_mode_rejects_bare_json_fallback() -> None:
+    """Actor intent collection requires a terminal tool decision, not bare JSON."""
+
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        ['{"replied": false, "target_message_ids": [7], "reason": "no_reply"}']
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.actor.reply"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+        external_action_mode=ExternalActionToolMode.COLLECT_INTENTS,
+        max_repair_attempts=0,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert result.replied is False
+    assert result.external_action_intents == ()
+    assert result.reason == "tool_call_plan_toolless"
+    assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
 async def test_reply_decision_runner_collect_mode_excludes_configured_extra_tools() -> None:
     tool_manager = FakeReviewToolManager()
     model_runtime = FakeModelRuntime(
@@ -375,12 +410,22 @@ async def test_reply_decision_runner_can_disable_repair_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_actor_review_reply_builder_uses_one_model_call_and_real_instance() -> None:
+@pytest.mark.parametrize(
+    ("builder", "workflow_id"),
+    (
+        (build_actor_review_reply_decision_runner, "review"),
+        (build_actor_active_reply_decision_runner, "active_reply"),
+    ),
+)
+async def test_actor_reply_builders_use_one_model_call_and_real_instance(
+    builder,
+    workflow_id,
+) -> None:
     """Actor-safe construction disables retries, repairs, extras, and execution."""
 
     tool_manager = FakeReviewToolManager()
     model_runtime = FakeModelRuntime(["I should reply to this message."])
-    runner = build_actor_review_reply_decision_runner(
+    runner = builder(
         model_runtime,
         config=ReviewLLMRunnerConfig(
             caller="test.actor.review",
@@ -402,6 +447,7 @@ async def test_actor_review_reply_builder_uses_one_model_call_and_real_instance(
     )
 
     assert len(model_runtime.calls) == 1
+    assert runner._template._config.workflow_id == workflow_id
     assert model_runtime.calls[0].instance_id == "instance-a"
     assert [tool["function"]["name"] for tool in model_runtime.calls[0].tools] == [
         "no_reply",

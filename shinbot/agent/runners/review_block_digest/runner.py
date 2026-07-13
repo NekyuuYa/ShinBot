@@ -65,6 +65,7 @@ class LLMReviewBlockDigestStageRunner:
             prompt_registry=prompt_registry,
             config=RunnerTemplateConfig(
                 caller=routing.caller,
+                workflow_id=routing.workflow_id,
                 llm=routing.llm,
                 default_llm=routing.default_llm,
                 route_id=routing.route_id,

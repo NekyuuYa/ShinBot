@@ -76,7 +76,7 @@ class RunnerTemplateBase:
         result = self._prompt_registry.build_messages(
             PromptBuildRequest(
                 caller=self._config.caller,
-                workflow_id="review",
+                workflow_id=self._config.workflow_id,
                 stage_id=stage_input.purpose,
                 session_id=stage_input.session_id,
                 instance_id=instance_id,

@@ -20,6 +20,7 @@ class ReviewLLMRunnerConfig:
     """Model routing and prompt configuration shared by review LLM runners."""
 
     caller: str = "agent.review"
+    workflow_id: str = "review"
     llm: str = ""
     default_llm: str = ""
     route_id: str | None = None

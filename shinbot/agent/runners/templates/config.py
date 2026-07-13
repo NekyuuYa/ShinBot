@@ -25,6 +25,7 @@ class RunnerTemplateConfig:
     """
 
     caller: str = "agent.review"
+    workflow_id: str = "review"
     llm: str = ""
     default_llm: str = ""
     route_id: str | None = None

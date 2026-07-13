@@ -687,7 +687,10 @@ def test_active_reply_completion_consumes_snapshot_and_materializes_intent() -> 
                 "kind": "send_reply",
                 "tool_call_id": "tool-call-a",
                 "action_ordinal": 0,
-                "payload": {"text": "accepted reply"},
+                "payload": {
+                    "text": "accepted reply",
+                    "quote_message_log_id": 10,
+                },
             }
         ],
     )
@@ -717,11 +720,98 @@ def test_active_reply_completion_consumes_snapshot_and_materializes_intent() -> 
     assert action.kind == "send_reply"
     assert action.payload["instance_id"] == "instance-a"
     assert action.payload["target_session_id"] == "instance-a:group:room-a"
-    assert action.payload["payload"] == {"text": "accepted reply"}
+    assert action.payload["payload"] == {
+        "text": "accepted reply",
+        "quote_message_log_id": 10,
+    }
     assert "ownership_generation" not in action.payload
     assert transition.aggregate.data["pending_outbound_actions"][action.effect_id][
         "status"
     ] == "pending"
+
+
+def test_active_reply_completion_rejects_consumption_outside_its_selection() -> None:
+    """A matching completion cannot consume another message below its watermark."""
+
+    reducer, started = _started_active_reply()
+    completion = _active_reply_completion(
+        started,
+        consumed_ids=[9],
+        sequence=1,
+    )
+
+    transition = reducer.reduce(started, completion)
+
+    assert transition.disposition == "active_reply_completion_rejected"
+    assert transition.aggregate.state == AgentSessionState.IDLE
+    assert transition.message_ledger_mutations == ()
+    assert transition.operations[0].status is SessionOperationStatus.FAILED
+    assert transition.operations[0].failure_code == "invalid_active_reply_completion"
+
+
+def test_active_reply_completion_rejects_raw_platform_action_target() -> None:
+    """The reducer repeats the durable target fence before materializing I/O."""
+
+    reducer, started = _started_active_reply()
+    completion = _active_reply_completion(
+        started,
+        consumed_ids=[10],
+        sequence=1,
+        intents=[
+            {
+                "kind": "send_reply",
+                "tool_call_id": "raw-platform-target",
+                "action_ordinal": 0,
+                "payload": {
+                    "text": "must not send",
+                    "quote_message_id": "platform-elsewhere",
+                },
+            }
+        ],
+    )
+
+    transition = reducer.reduce(started, completion)
+
+    assert transition.disposition == "active_reply_completion_rejected"
+    assert transition.effects == ()
+    assert transition.message_ledger_mutations == ()
+
+
+def test_active_reply_completion_rejects_a_second_bound_reply() -> None:
+    """The reducer repeats the active-reply slice's single-reply action cap."""
+
+    reducer, started = _started_active_reply()
+    completion = _active_reply_completion(
+        started,
+        consumed_ids=[10],
+        sequence=1,
+        intents=[
+            {
+                "kind": "send_reply",
+                "tool_call_id": "first-reply",
+                "action_ordinal": 0,
+                "payload": {
+                    "text": "first",
+                    "quote_message_log_id": 10,
+                },
+            },
+            {
+                "kind": "send_reply",
+                "tool_call_id": "second-reply",
+                "action_ordinal": 1,
+                "payload": {
+                    "text": "second",
+                    "quote_message_log_id": 10,
+                },
+            },
+        ],
+    )
+
+    transition = reducer.reduce(started, completion)
+
+    assert transition.disposition == "active_reply_completion_rejected"
+    assert transition.effects == ()
+    assert transition.message_ledger_mutations == ()
 
 
 def test_pending_outbound_message_waits_then_starts_queued_active_reply() -> None:
@@ -737,7 +827,10 @@ def test_pending_outbound_message_waits_then_starts_queued_active_reply() -> Non
                     "kind": "send_reply",
                     "tool_call_id": "tool-call-a",
                     "action_ordinal": 0,
-                    "payload": {"text": "accepted reply"},
+                    "payload": {
+                        "text": "accepted reply",
+                        "quote_message_log_id": 10,
+                    },
                 }
             ],
         ),
@@ -771,6 +864,21 @@ def test_pending_outbound_message_waits_then_starts_queued_active_reply() -> Non
     assert [effect.kind for effect in released.effects] == [
         "run_active_reply_workflow"
     ]
+    queued_operation_id = released.aggregate.active_reply_operation_id
+    queued_fence = released.aggregate.data["operation_fences"][queued_operation_id]
+    assert queued_fence["message_log_ids"] == [11]
+
+    queued = _stamp_operation_sequence(released.aggregate, queued_operation_id, 2)
+    malformed_completion = _active_reply_completion(
+        queued,
+        consumed_ids=[10],
+        sequence=2,
+    )
+    rejected = reducer.reduce(queued, malformed_completion)
+
+    assert rejected.disposition == "active_reply_completion_rejected"
+    assert rejected.message_ledger_mutations == ()
+    assert rejected.aggregate.data["pending_high_priority_message_log_ids"] == [11]
 
 
 def test_active_reply_review_resume_waits_for_its_visible_action() -> None:
@@ -795,7 +903,10 @@ def test_active_reply_review_resume_waits_for_its_visible_action() -> None:
                     "kind": "send_reply",
                     "tool_call_id": "due-tool-a",
                     "action_ordinal": 0,
-                    "payload": {"text": "priority reply"},
+                    "payload": {
+                        "text": "priority reply",
+                        "quote_message_log_id": 10,
+                    },
                 }
             ],
         ),

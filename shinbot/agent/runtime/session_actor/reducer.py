@@ -1675,6 +1675,7 @@ class AgentSessionReducer:
             "target_session_id": _text(
                 delivery_context.get("target_session_id")
             ),
+            "message_log_ids": list(pending_message_log_ids),
         }
         next_data = _with_operation_fence(
             data,
@@ -3825,9 +3826,21 @@ class AgentSessionReducer:
             result = _active_reply_workflow_result(event.payload)
             consumed_ids = result.consumed_message_log_ids
             input_watermark, _ = _captured_input_boundary(fence)
+            selected_message_log_ids = _active_reply_selected_message_log_ids(
+                fence,
+                input_watermark=input_watermark,
+            )
             _validate_consumed_ids(
                 consumed_ids,
                 input_watermark=input_watermark,
+            )
+            if set(consumed_ids) != set(selected_message_log_ids):
+                raise ValueError(
+                    "active reply completion must consume exactly its selected messages"
+                )
+            _validate_active_reply_external_action_intents(
+                result.external_action_intents,
+                selected_message_log_ids=selected_message_log_ids,
             )
             action_effects = self._materialize_completion_actions(
                 aggregate,
@@ -4579,6 +4592,8 @@ class AgentSessionReducer:
             "external_action_effect_ids": [
                 effect.effect_id for effect in action_effects
             ],
+            "model_execution_id": _text(event.payload.get("model_execution_id")),
+            "prompt_signature": _text(event.payload.get("prompt_signature")),
         }
         if terminal_event_metadata is not None:
             operation_metadata.pop("completion_event_id", None)
@@ -7512,6 +7527,111 @@ def _validate_consumed_ids(
     outside = [item for item in message_log_ids if item > input_watermark]
     if outside:
         raise ValueError("consumed message ids exceed the operation watermark")
+
+
+def _active_reply_selected_message_log_ids(
+    fence: Mapping[str, Any],
+    *,
+    input_watermark: int,
+) -> tuple[int, ...]:
+    """Return the exact durable selection authorized for one active reply."""
+
+    selected = _positive_int_tuple(
+        fence.get("message_log_ids"),
+        field_name="active_reply.operation_fence.message_log_ids",
+        allow_empty=False,
+    )
+    if any(message_log_id > input_watermark for message_log_id in selected):
+        raise ValueError(
+            "active reply operation selection exceeds its captured watermark"
+        )
+    return selected
+
+
+def _validate_active_reply_external_action_intents(
+    intents: tuple[ExternalActionIntent, ...],
+    *,
+    selected_message_log_ids: tuple[int, ...],
+) -> None:
+    """Require active-reply actions to bind every target to captured input."""
+
+    selected = set(selected_message_log_ids)
+    reply_count = 0
+    for intent in intents:
+        payload = intent.payload
+        if intent.kind is ExternalActionKind.SEND_REPLY:
+            reply_count += 1
+            if reply_count > 1:
+                raise ValueError(
+                    "active reply v1 permits at most one send_reply intent"
+                )
+            _validate_active_reply_payload_fields(
+                payload,
+                allowed={"text", "quote_message_log_id"},
+                action_name="send_reply",
+            )
+            if not isinstance(payload.get("text"), str) or not payload["text"].strip():
+                raise ValueError("active reply send_reply intent has invalid text")
+            _validate_active_reply_target_message_log_id(
+                payload.get("quote_message_log_id"),
+                selected=selected,
+                field_name="quote_message_log_id",
+            )
+            continue
+        if intent.kind is ExternalActionKind.SEND_REACTION:
+            _validate_active_reply_payload_fields(
+                payload,
+                allowed={"action", "emoji_id", "message_log_id"},
+                action_name="send_reaction",
+            )
+            if payload.get("action") not in {"add", "remove"}:
+                raise ValueError("active reply send_reaction intent has invalid action")
+            if not isinstance(payload.get("emoji_id"), str) or not payload["emoji_id"].strip():
+                raise ValueError("active reply send_reaction intent has invalid emoji_id")
+            _validate_active_reply_target_message_log_id(
+                payload.get("message_log_id"),
+                selected=selected,
+                field_name="message_log_id",
+            )
+            continue
+        if intent.kind is ExternalActionKind.SEND_POKE:
+            raise ValueError("active reply v1 does not permit send_poke intents")
+        raise ValueError("active reply completion contains an unsupported action")
+
+
+def _validate_active_reply_payload_fields(
+    payload: Mapping[str, Any],
+    *,
+    allowed: set[str],
+    action_name: str,
+) -> None:
+    """Reject raw platform IDs and unrecognized active-reply action fields."""
+
+    unknown = sorted(set(payload).difference(allowed))
+    if unknown:
+        raise ValueError(
+            f"active reply {action_name} intent has unsupported fields: "
+            + ", ".join(unknown)
+        )
+
+
+def _validate_active_reply_target_message_log_id(
+    value: object,
+    *,
+    selected: set[int],
+    field_name: str,
+) -> None:
+    """Require an action target to be one exact selected durable message."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value not in selected
+    ):
+        raise ValueError(
+            "active reply action targets a message outside its selected input: "
+            + field_name
+        )
 
 
 def _without_pending_high_priority_ids(

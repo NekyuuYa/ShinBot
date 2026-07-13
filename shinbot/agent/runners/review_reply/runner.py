@@ -93,6 +93,7 @@ class LLMReplyDecisionStageRunner:
             prompt_registry=prompt_registry,
             config=RunnerTemplateConfig(
                 caller=routing.caller,
+                workflow_id=routing.workflow_id,
                 llm=routing.llm,
                 default_llm=routing.default_llm,
                 route_id=routing.route_id,
@@ -148,8 +149,13 @@ class LLMReplyDecisionStageRunner:
                 await self._run_tool_decision(stage_input, plan),
                 plan,
             )
-        # No tool calls — try JSON fallback for the text.
-        if plan.text:
+        # Actor intent collection has no executable fallback path. A bare JSON
+        # response is not a terminal tool decision and must leave its captured
+        # input unconsumed for the Actor workflow to fail closed.
+        if (
+            plan.text
+            and self._external_action_mode is ExternalActionToolMode.EXECUTE
+        ):
             payload = parse_json_object(plan.text)
             if payload is not None:
                 return _with_plan_provenance(

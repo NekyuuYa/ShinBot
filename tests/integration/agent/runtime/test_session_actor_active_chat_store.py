@@ -878,7 +878,10 @@ async def test_external_action_v2_authority_overrides_handler_identity_and_relea
                                 "proposal_id": "reply-proposal-a",
                                 "action_ordinal": 0,
                                 "kind": ExternalActionKind.SEND_REPLY.value,
-                                "payload": {"text": "acknowledged"},
+                                "payload": {
+                                    "text": "acknowledged",
+                                    "quote_message_log_id": message_log_id,
+                                },
                             }
                         ],
                     },

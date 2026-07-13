@@ -1161,7 +1161,10 @@ async def test_active_reply_completion_atomically_consumes_and_enqueues_action(
                             "kind": "send_reply",
                             "proposal_id": "tool-call-a",
                             "action_ordinal": 0,
-                            "payload": {"text": "durable reply"},
+                            "payload": {
+                                "text": "durable reply",
+                                "quote_message_log_id": message_log_id,
+                            },
                         }
                     ],
                 },
@@ -1208,7 +1211,10 @@ async def test_active_reply_completion_atomically_consumes_and_enqueues_action(
     payload = json.loads(str(action["payload_json"]))
     assert payload["instance_id"] == "instance-a"
     assert payload["target_session_id"] == "instance-a:base-session"
-    assert payload["payload"] == {"text": "durable reply"}
+    assert payload["payload"] == {
+        "text": "durable reply",
+        "quote_message_log_id": message_log_id,
+    }
 
 
 @pytest.mark.asyncio

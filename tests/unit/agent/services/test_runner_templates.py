@@ -67,6 +67,7 @@ def _mock_prompt_registry() -> MagicMock:
 def test_runner_template_config_defaults() -> None:
     cfg = RunnerTemplateConfig()
     assert cfg.caller == "agent.review"
+    assert cfg.workflow_id == "review"
     assert cfg.route_id is None
     assert cfg.model_id is None
     assert cfg.profile_id == ""
@@ -78,10 +79,12 @@ def test_runner_template_config_defaults() -> None:
 def test_runner_template_config_custom() -> None:
     cfg = RunnerTemplateConfig(
         caller="test.caller",
+        workflow_id="test.workflow",
         response_format={"type": "object"},
         params={"temperature": 0.5},
     )
     assert cfg.caller == "test.caller"
+    assert cfg.workflow_id == "test.workflow"
     assert cfg.response_format == {"type": "object"}
     assert cfg.params == {"temperature": 0.5}
 
@@ -97,6 +100,7 @@ async def test_structured_output_runner_returns_payload() -> None:
         text='{"candidate_message_ids": [1, 2], "reason": "test"}'
     )
     config = RunnerTemplateConfig(
+        workflow_id="test.workflow",
         response_format={"type": "object"},
     )
     runner = StructuredOutputRunner(
@@ -106,6 +110,8 @@ async def test_structured_output_runner_returns_payload() -> None:
     assert result is not None
     assert result["candidate_message_ids"] == [1, 2]
     assert result["reason"] == "test"
+    request = registry.build_messages.call_args.args[0]
+    assert request.workflow_id == "test.workflow"
 
 
 @pytest.mark.asyncio

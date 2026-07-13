@@ -260,6 +260,23 @@ decision failure does not consume input. Registering these handlers improves
 inactive assembly readiness only; it does not expose an actor wake target or
 start an Actor v2 worker.
 
+The first Actor v2 active-reply vertical is also implemented and remains
+diagnostic-only. `RunnerActiveReplyWorkflow` never calls the legacy
+`ActiveReplyDispatcher` or active-chat coordinator. Its context projector
+accepts only the effect-captured selection, treats request IDs as an
+authorization set rather than an ordering source, and rebuilds model-visible
+input in durable ledger order. The shared Actor reply-decision builder disables
+configured extension tools and repair calls, and collects rather than executes
+visible actions. A valid completion carries model execution provenance into the
+terminal operation record; a projection or decision error leaves the selected
+input unread. The first slice accepts at most one reply plus bound reactions;
+every action targets captured message-log IDs, while raw platform IDs and
+unbound pokes are rejected. After the actor accepts the completion, its intent
+becomes a receipt-fenced outbound effect; only that effect may call an adapter.
+SQLite integration coverage proves
+the full high-priority-message -> workflow -> accepted intent -> receipt ->
+adapter-send -> assistant-log chain while the runtime remains inactive.
+
 ### Workflow Completions
 
 Every completion matches the active operation slot, operation id, effect id,

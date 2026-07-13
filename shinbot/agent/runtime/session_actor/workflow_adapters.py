@@ -269,9 +269,11 @@ class ActiveReplyWorkflowOutput:
 
     consumed_message_log_ids: tuple[int, ...] = ()
     external_action_intents: tuple[ExternalActionIntent, ...] = ()
+    model_execution_id: str = ""
+    prompt_signature: str = ""
 
     def __post_init__(self) -> None:
-        """Detach caller-owned sequences without assigning actor provenance."""
+        """Detach caller-owned sequences and retain model-call provenance."""
 
         object.__setattr__(
             self,
@@ -285,6 +287,22 @@ class ActiveReplyWorkflowOutput:
             self,
             "external_action_intents",
             tuple(self.external_action_intents),
+        )
+        object.__setattr__(
+            self,
+            "model_execution_id",
+            _optional_text(
+                self.model_execution_id,
+                field_name="model_execution_id",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "prompt_signature",
+            _optional_text(
+                self.prompt_signature,
+                field_name="prompt_signature",
+            ),
         )
 
 
@@ -459,7 +477,13 @@ class ActiveReplyWorkflowEffectHandler:
             consumed_message_log_ids=output.consumed_message_log_ids,
             external_action_intents=output.external_action_intents,
         )
-        return EffectHandlerResult(payload={"workflow_result": completion.to_payload()})
+        return EffectHandlerResult(
+            payload={
+                "workflow_result": completion.to_payload(),
+                "model_execution_id": output.model_execution_id,
+                "prompt_signature": output.prompt_signature,
+            }
+        )
 
 
 class ReviewWorkflowEffectHandler:
