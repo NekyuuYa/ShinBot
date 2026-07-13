@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from shinbot.agent.coordinators.review.models import UnreadRangeSummaryRecord
@@ -109,6 +110,50 @@ class DatabaseReviewMessageStore:
         if center_row is not None:
             rows.append(center_row)
         rows.extend(after_rows)
+        return [_row_to_payload(row) for row in rows]
+
+    def list_by_ids(self, message_log_ids: Sequence[int]) -> list[MessageLogPayload]:
+        """Load an exact bounded set of durable message-log rows.
+
+        Callers are responsible for authorizing the identifiers before this
+        read. The method preserves no caller ordering because actor projections
+        must reapply their own durable ledger order.
+
+        Args:
+            message_log_ids: Positive, duplicate-free message-log identifiers.
+
+        Returns:
+            Existing message-log payloads ordered deterministically by id.
+
+        Raises:
+            ValueError: If an identifier is malformed or repeated.
+        """
+
+        normalized: list[int] = []
+        seen: set[int] = set()
+        for message_log_id in message_log_ids:
+            if (
+                isinstance(message_log_id, bool)
+                or not isinstance(message_log_id, int)
+                or message_log_id < 1
+            ):
+                raise ValueError("message_log_ids must contain positive integers")
+            if message_log_id in seen:
+                raise ValueError("message_log_ids must not contain duplicates")
+            seen.add(message_log_id)
+            normalized.append(message_log_id)
+        if not normalized:
+            return []
+        placeholders = ", ".join("?" for _ in normalized)
+        with self._database.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM message_logs
+                WHERE id IN ({placeholders})
+                ORDER BY id ASC
+                """,
+                tuple(normalized),
+            ).fetchall()
         return [_row_to_payload(row) for row in rows]
 
     def list_by_time(

@@ -20,6 +20,9 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionOperationStatus,
     SessionTransition,
 )
+from shinbot.agent.runtime.session_actor.idle_review_planning import (
+    IdleReviewPlanningInput,
+)
 from shinbot.agent.runtime.session_actor.reducer import (
     AgentSessionEffectKind,
     AgentSessionEventKind,
@@ -144,6 +147,7 @@ def _exit_event() -> SessionEventEnvelope:
             "deadline_at": 999.0,
             "deadline_after_seconds": 777.0,
             "trigger": "attention_decay",
+            # Reducer-owned descriptors must not preserve arbitrary prompt input.
             "planning_input": {"messages": [101, 102]},
             "input_watermark": 102,
         },
@@ -488,7 +492,14 @@ def test_exit_request_creates_fenced_operation_and_durable_effects() -> None:
     assert planner.available_after_seconds == 0.0
     assert planner.payload["active_epoch"] == 3
     assert planner.payload["activity_generation"] == 7
-    assert planner.payload["planning_input"] == {"messages": [101, 102]}
+    assert planner.payload["planning_input"] == IdleReviewPlanningInput.from_active_chat_exit(
+        input_watermark=102,
+        active_epoch=3,
+        activity_generation=7,
+        trigger="attention_decay",
+        active_chat_state=aggregate.active_chat_state,
+    ).to_payload()
+    assert "messages" not in planner.payload["planning_input"]
     deadline = effects[
         AgentSessionEffectKind.ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE
     ]

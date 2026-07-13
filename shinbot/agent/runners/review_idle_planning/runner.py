@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Protocol
 
 from shinbot.agent.runners.review_idle_planning.prompt_registration import (
@@ -103,48 +104,97 @@ class LLMIdleReviewPlanningStageRunner:
             An output with the next review interval and mention sensitivity
             settings, or a failed output on error.
         """
-        payload = await self._template.run(stage_input)
+        run = await self._template.run_with_provenance(stage_input)
+        payload = run.payload
         if payload is None:
             return IdleReviewPlanningStageOutput(
                 reason="llm_idle_review_planning_failed",
+                failure_code="model_output_unavailable",
+                failure_message=(
+                    "model runtime returned no structured idle review planning output"
+                ),
+                model_execution_id=run.model_execution_id,
+                prompt_signature=run.prompt_signature,
+            )
+        next_review_after_seconds, valid_delay = _parse_optional_positive_float(
+            payload.get("next_review_after_seconds")
+        )
+        mention_sensitivity, valid_sensitivity = _parse_mention_sensitivity(
+            payload.get("mention_sensitivity")
+        )
+        mention_wake_count, valid_wake_count = _parse_optional_positive_int(
+            payload.get("mention_wake_count")
+        )
+        mention_wake_window_seconds, valid_wake_window = (
+            _parse_optional_positive_float(
+                payload.get("mention_wake_window_seconds")
+            )
+        )
+        invalid_fields = [
+            field_name
+            for field_name, valid in (
+                ("next_review_after_seconds", valid_delay),
+                ("mention_sensitivity", valid_sensitivity),
+                ("mention_wake_count", valid_wake_count),
+                ("mention_wake_window_seconds", valid_wake_window),
+            )
+            if not valid
+        ]
+        if (mention_wake_count is None) != (mention_wake_window_seconds is None):
+            invalid_fields.append("mention_wake_threshold")
+        if invalid_fields:
+            return IdleReviewPlanningStageOutput(
+                reason="llm_idle_review_planning_invalid_output",
+                failure_code="invalid_model_output",
+                failure_message=(
+                    "invalid idle review planning fields: "
+                    + ", ".join(invalid_fields)
+                ),
+                model_execution_id=run.model_execution_id,
+                prompt_signature=run.prompt_signature,
             )
         return IdleReviewPlanningStageOutput(
-            next_review_after_seconds=_optional_positive_float(
-                payload.get("next_review_after_seconds")
-            ),
+            next_review_after_seconds=next_review_after_seconds,
             reason=str(payload.get("reason") or "llm_idle_review_planning"),
-            mention_sensitivity=_mention_sensitivity(payload.get("mention_sensitivity")),
-            mention_wake_count=_optional_positive_int(payload.get("mention_wake_count")),
-            mention_wake_window_seconds=_optional_positive_float(
-                payload.get("mention_wake_window_seconds")
-            ),
+            mention_sensitivity=mention_sensitivity,
+            mention_wake_count=mention_wake_count,
+            mention_wake_window_seconds=mention_wake_window_seconds,
+            model_execution_id=run.model_execution_id,
+            prompt_signature=run.prompt_signature,
         )
 
 
-def _optional_positive_float(value: Any) -> float | None:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if result <= 0.0:
-        return None
-    return result
+def _parse_optional_positive_float(value: Any) -> tuple[float | None, bool]:
+    """Decode a nullable positive finite float without silent coercion."""
 
-
-def _optional_positive_int(value: Any) -> int | None:
-    try:
-        result = int(value)
-    except (TypeError, ValueError):
-        return None
-    if result <= 0:
-        return None
-    return result
-
-
-def _mention_sensitivity(value: Any) -> MentionSensitivity | None:
     if value is None:
-        return None
+        return None, True
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, False
+    result = float(value)
+    if not math.isfinite(result) or result <= 0.0:
+        return None, False
+    return result, True
+
+
+def _parse_optional_positive_int(value: Any) -> tuple[int | None, bool]:
+    """Decode a nullable positive integer without truncating model output."""
+
+    if value is None:
+        return None, True
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None, False
+    return value, True
+
+
+def _parse_mention_sensitivity(
+    value: Any,
+) -> tuple[MentionSensitivity | None, bool]:
+    """Decode a nullable mention sensitivity and surface malformed values."""
+
+    if value is None:
+        return None, True
     try:
-        return MentionSensitivity(str(value))
-    except ValueError:
-        return None
+        return MentionSensitivity(str(value)), True
+    except (TypeError, ValueError):
+        return None, False

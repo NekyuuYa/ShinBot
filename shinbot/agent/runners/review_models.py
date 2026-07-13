@@ -67,6 +67,10 @@ class IdleReviewPlanningStageOutput:
     mention_sensitivity: MentionSensitivity | None = None
     mention_wake_count: int | None = None
     mention_wake_window_seconds: float | None = None
+    failure_code: str = ""
+    failure_message: str = ""
+    model_execution_id: str = ""
+    prompt_signature: str = ""
 
 
 __all__ = [

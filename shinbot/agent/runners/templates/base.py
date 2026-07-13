@@ -91,6 +91,8 @@ class RunnerTemplateBase:
             )
         )
         metadata = dict(result.metadata)
+        if isinstance(result.prompt_signature, str) and result.prompt_signature:
+            metadata["prompt_signature"] = result.prompt_signature
         metadata["prompt_component_ids"] = [
             record.component_id for record in result.ordered_components
         ]

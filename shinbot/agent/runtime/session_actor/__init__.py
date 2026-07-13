@@ -101,6 +101,29 @@ from shinbot.agent.runtime.session_actor.harness import (
     ActorRuntimeHarnessActivationError,
     RequiredEffectContractFailure,
 )
+from shinbot.agent.runtime.session_actor.idle_review_planning import (
+    IDLE_REVIEW_PLANNING_INPUT_VERSION,
+    IdleReviewPlanningInput,
+    IdleReviewPlanningInputError,
+)
+from shinbot.agent.runtime.session_actor.idle_review_planning_adapter import (
+    IdleReviewPlanningAdapterError,
+    IdleReviewPlanningEffectHandler,
+    IdleReviewPlanningEffectInput,
+    IdleReviewPlanningStageInputProjector,
+    IdleReviewPlanningWorkflowOutput,
+    IdleReviewPlanningWorkflowPort,
+    IdleReviewPlanningWorkflowRequest,
+    RunnerIdleReviewPlanningWorkflow,
+    register_idle_review_planning_effect_handler,
+)
+from shinbot.agent.runtime.session_actor.idle_review_planning_context import (
+    ActorIdleReviewPlanningContextProjector,
+    ActorPlanningLedgerPort,
+    ActorPlanningMessageStore,
+    IdleReviewPlanningContextConfig,
+    IdleReviewPlanningContextError,
+)
 from shinbot.agent.runtime.session_actor.key_factory import (
     DEFAULT_SESSION_ACTOR_PROFILE_ID,
     SessionKeyFactory,
@@ -179,6 +202,12 @@ from shinbot.agent.runtime.session_actor.review_due_scanner import (
     ReviewDueWakeTarget,
     review_due_event_id,
 )
+from shinbot.agent.runtime.session_actor.runtime_assembly import (
+    ActorV2RuntimeActivationBlocked,
+    ActorV2RuntimeAssembly,
+    ActorV2RuntimeReadiness,
+    HandlerConfigurator,
+)
 from shinbot.agent.runtime.session_actor.store import (
     AggregateVersionConflict,
     DurableRecordConflict,
@@ -237,6 +266,12 @@ __all__ = [
     "AgentSessionAggregate",
     "ActorRuntimeHarness",
     "ActorRuntimeHarnessActivationError",
+    "ActorV2RuntimeActivationBlocked",
+    "ActorV2RuntimeAssembly",
+    "ActorV2RuntimeReadiness",
+    "ActorIdleReviewPlanningContextProjector",
+    "ActorPlanningLedgerPort",
+    "ActorPlanningMessageStore",
     "AggregateVersionConflict",
     "ActiveChatBootstrapCompletionResult",
     "ActiveChatBootstrapDisposition",
@@ -285,6 +320,19 @@ __all__ = [
     "EffectStoreConflict",
     "EXTERNAL_ACTION_INTENT_BATCH_SCHEMA_VERSION",
     "GLOBAL_REVIEW_DUE_HEALTH_PROFILE_ID",
+    "HandlerConfigurator",
+    "IDLE_REVIEW_PLANNING_INPUT_VERSION",
+    "IdleReviewPlanningAdapterError",
+    "IdleReviewPlanningEffectHandler",
+    "IdleReviewPlanningEffectInput",
+    "IdleReviewPlanningInput",
+    "IdleReviewPlanningInputError",
+    "IdleReviewPlanningContextConfig",
+    "IdleReviewPlanningContextError",
+    "IdleReviewPlanningStageInputProjector",
+    "IdleReviewPlanningWorkflowOutput",
+    "IdleReviewPlanningWorkflowPort",
+    "IdleReviewPlanningWorkflowRequest",
     "MessageConsumptionProvenance",
     "MessageLedgerConflict",
     "load_captured_unread_message_ledger_entries",
@@ -378,6 +426,7 @@ __all__ = [
     "SessionRoutingIdentity",
     "SessionStoreError",
     "SessionTransition",
+    "RunnerIdleReviewPlanningWorkflow",
     "UnsupportedRecoveryCertificateVersion",
     "UnsupportedRecoveryDeliveryVersion",
     "WORKFLOW_COMPLETION_SCHEMA_VERSION",
@@ -395,6 +444,7 @@ __all__ = [
     "external_action_request_from_effect",
     "operation_global_review_proposal_id",
     "register_actor_workflow_effect_handlers",
+    "register_idle_review_planning_effect_handler",
     "recovery_delivery_event_id",
     "review_due_event_id",
     "register_external_action_effect_handlers",

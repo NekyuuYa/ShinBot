@@ -109,6 +109,29 @@ async def test_structured_output_runner_returns_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_structured_output_runner_returns_model_provenance() -> None:
+    """The richer API preserves exact model and prompt identifiers per call."""
+
+    registry = _mock_prompt_registry()
+    registry.build_messages.return_value.prompt_signature = "prompt-signature-a"
+    model_runtime = AsyncMock()
+    model_runtime.generate.return_value = _generate_result(text='{"ok": true}')
+    runner = StructuredOutputRunner(
+        model_runtime,
+        prompt_registry=registry,
+        config=RunnerTemplateConfig(),
+    )
+
+    result = await runner.run_with_provenance(_stage_input())
+
+    assert result.payload == {"ok": True}
+    assert result.model_execution_id == "exec-1"
+    assert result.prompt_signature == "prompt-signature-a"
+    call = model_runtime.generate.call_args[0][0]
+    assert call.metadata["prompt_signature"] == "prompt-signature-a"
+
+
+@pytest.mark.asyncio
 async def test_structured_output_runner_returns_none_on_build_failure() -> None:
     registry = _mock_prompt_registry()
     registry.build_messages.side_effect = RuntimeError("build failed")

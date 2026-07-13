@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from shinbot.agent.runners.templates.base import RunnerTemplateBase
@@ -13,6 +14,15 @@ from shinbot.agent.services.prompt_engine import PromptRegistry
 from shinbot.agent.utils.parsing import parse_json_object
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True, frozen=True)
+class StructuredOutputRun:
+    """Parsed structured output with immutable model-call provenance."""
+
+    payload: dict[str, Any] | None
+    model_execution_id: str = ""
+    prompt_signature: str = ""
 
 
 class StructuredOutputRunner(RunnerTemplateBase):
@@ -40,11 +50,21 @@ class StructuredOutputRunner(RunnerTemplateBase):
 
     async def run(self, stage_input: ReviewStageInput) -> dict[str, Any] | None:
         """Run one stage and return the parsed JSON payload, or ``None`` on failure."""
+
+        return (await self.run_with_provenance(stage_input)).payload
+
+    async def run_with_provenance(
+        self,
+        stage_input: ReviewStageInput,
+    ) -> StructuredOutputRun:
+        """Run one stage and retain the execution and prompt identifiers."""
+
         try:
             messages, metadata = self._build_model_call_parts(stage_input)
         except Exception:
             self._log_prompt_build_failure(stage_input)
-            return None
+            return StructuredOutputRun(payload=None)
+        prompt_signature = _optional_text(metadata.get("prompt_signature"))
         result = await self._generate_model(
             stage_input,
             messages=messages,
@@ -53,8 +73,15 @@ class StructuredOutputRunner(RunnerTemplateBase):
             metadata=metadata,
         )
         if result is None:
-            return None
-        return parse_json_object(result.text or "")
+            return StructuredOutputRun(
+                payload=None,
+                prompt_signature=prompt_signature,
+            )
+        return StructuredOutputRun(
+            payload=parse_json_object(result.text or ""),
+            model_execution_id=_optional_text(getattr(result, "execution_id", "")),
+            prompt_signature=prompt_signature,
+        )
 
     def _log_prompt_build_failure(self, stage_input: ReviewStageInput) -> None:
         logger.exception(
@@ -62,3 +89,14 @@ class StructuredOutputRunner(RunnerTemplateBase):
             stage_input.purpose,
             stage_input.session_id,
         )
+
+
+def _optional_text(value: object) -> str:
+    """Return a bounded provenance identifier without coercing arbitrary values."""
+
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+__all__ = ["StructuredOutputRun", "StructuredOutputRunner"]

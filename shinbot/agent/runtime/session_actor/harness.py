@@ -228,6 +228,18 @@ class ActorRuntimeHarness:
                 self._active = False
 
     def _validate_required_handlers(self) -> None:
+        failures = self.required_handler_failures()
+        if failures:
+            raise ActorRuntimeHarnessActivationError(failures)
+
+    def required_handler_failures(self) -> tuple[RequiredEffectContractFailure, ...]:
+        """Return every handler-graph failure without changing runtime state.
+
+        This is the same preflight used by :meth:`activate`, exposed for
+        inactive composition diagnostics. Calling it never seals handlers,
+        starts workers, recovers mailboxes, or changes ownership.
+        """
+
         failures: list[RequiredEffectContractFailure] = []
         required_by_ref = {
             contract.ref: contract for contract in self._required_effect_contracts
@@ -289,8 +301,7 @@ class ActorRuntimeHarness:
                         reason="registered contract is outside the activation graph",
                     )
                 )
-        if failures:
-            raise ActorRuntimeHarnessActivationError(tuple(failures))
+        return tuple(failures)
 
     def _validate_shared_effect_authority(self) -> None:
         """Fail closed unless every runtime half shares one exact authority."""

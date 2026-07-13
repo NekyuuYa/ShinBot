@@ -43,6 +43,9 @@ from shinbot.agent.runtime.session_actor.external_actions import (
     builtin_external_action_effect_contract,
     materialize_external_action_effects,
 )
+from shinbot.agent.runtime.session_actor.idle_review_planning import (
+    IdleReviewPlanningInput,
+)
 from shinbot.agent.runtime.session_actor.message_ledger import (
     AppendMessageLedgerEntry,
     ConsumeMessageLedgerEntries,
@@ -717,6 +720,13 @@ class AgentSessionReducer:
         input_watermark = _message_watermark(aggregate.data)
         trigger = _text(event.payload.get("trigger")) or "active_chat_exit"
         source = _text(event.payload.get("source")) or event.source or "session_actor"
+        planning_input = IdleReviewPlanningInput.from_active_chat_exit(
+            input_watermark=input_watermark,
+            active_epoch=aggregate.active_epoch,
+            activity_generation=aggregate.activity_generation,
+            trigger=trigger,
+            active_chat_state=aggregate.active_chat_state,
+        )
         fence = {
             "operation_id": operation_id,
             "plan_id": plan_id,
@@ -802,7 +812,7 @@ class AgentSessionReducer:
                 **operation_fence,
                 "completion_event_id": completion_event_id,
                 "failure_event_id": planner_failure_event_id,
-                "planning_input": _mapping(event.payload.get("planning_input")),
+                "planning_input": planning_input.to_payload(),
                 "trigger": trigger,
                 "source": source,
             },

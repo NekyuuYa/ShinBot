@@ -337,6 +337,59 @@ async def test_idle_review_planning_runner_parses_review_plan_parameters() -> No
     assert result.mention_sensitivity.value == "high"
     assert result.mention_wake_count == 2
     assert result.mention_wake_window_seconds == 90.0
+    assert result.model_execution_id == "exec-1"
+    assert result.prompt_signature == model_runtime.calls[0].metadata["prompt_signature"]
+    assert result.prompt_signature
+
+
+@pytest.mark.asyncio
+async def test_idle_review_planning_runner_marks_missing_model_output_as_failed() -> None:
+    """A malformed model response cannot look like a default planner decision."""
+
+    runner = LLMIdleReviewPlanningStageRunner(
+        FakeModelRuntime(["not structured json"]),
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="idle_review_planning",
+            source_messages=[],
+        )
+    )
+
+    assert result.next_review_after_seconds is None
+    assert result.reason == "llm_idle_review_planning_failed"
+    assert result.failure_code == "model_output_unavailable"
+    assert result.failure_message
+
+
+@pytest.mark.asyncio
+async def test_idle_review_planning_runner_marks_invalid_delay_as_failed() -> None:
+    """A non-positive model delay cannot silently become a default policy."""
+
+    runner = LLMIdleReviewPlanningStageRunner(
+        FakeModelRuntime(
+            ['{"next_review_after_seconds": -10, "reason": "invalid"}']
+        ),
+        config=ReviewLLMRunnerConfig(),
+        prompt_registry=_make_prompt_registry(),
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="idle_review_planning",
+            source_messages=[],
+        )
+    )
+
+    assert result.next_review_after_seconds is None
+    assert result.reason == "llm_idle_review_planning_invalid_output"
+    assert result.failure_code == "invalid_model_output"
+    assert "next_review_after_seconds" in result.failure_message
 
 
 @pytest.mark.asyncio
