@@ -75,6 +75,7 @@ class ToolCallPlanRunner(RunnerTemplateBase):
         max_repair_attempts: int = 1,
         tool_transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         tool_tags: set[str] | None = None,
+        allow_configured_extra_tools: bool = True,
         message_formatter: MessageFormatterService | None = None,
     ) -> None:
         super().__init__(
@@ -91,6 +92,7 @@ class ToolCallPlanRunner(RunnerTemplateBase):
         self._max_repair_attempts = max_repair_attempts
         self._tool_transform = tool_transform
         self._tool_tags = set(tool_tags) if tool_tags is not None else None
+        self._allow_configured_extra_tools = allow_configured_extra_tools
 
     async def run(self, stage_input: ReviewStageInput) -> ToolCallPlanResult:
         """Run one stage and return the tool-call plan result."""
@@ -161,7 +163,7 @@ class ToolCallPlanRunner(RunnerTemplateBase):
     def _build_tools(self, stage_input: ReviewStageInput) -> list[dict[str, Any]]:
         if self._tool_manager is None:
             return []
-        instance_id = instance_id_from_session(stage_input.session_id)
+        instance_id = _stage_instance_id(stage_input)
         builtin_tools = self._tool_manager.build_request_tools(
             self._tool_names,
             caller=self._config.caller,
@@ -169,13 +171,15 @@ class ToolCallPlanRunner(RunnerTemplateBase):
             session_id=stage_input.session_id,
             tags=self._tool_tags,
         )
-        extra_tools = build_configured_extra_tools(
-            self._tool_manager,
-            config=self._config.tool_config,
-            caller=self._config.caller,
-            instance_id=instance_id,
-            session_id=stage_input.session_id,
-        )
+        extra_tools: list[dict[str, Any]] = []
+        if self._allow_configured_extra_tools:
+            extra_tools = build_configured_extra_tools(
+                self._tool_manager,
+                config=self._config.tool_config,
+                caller=self._config.caller,
+                instance_id=instance_id,
+                session_id=stage_input.session_id,
+            )
         tools = merge_tool_schemas(builtin_tools, extra_tools)
         if self._tool_transform is not None:
             tools = [self._tool_transform(t) for t in tools]
@@ -251,6 +255,15 @@ def parse_tool_call_payload(tool_call: dict[str, Any]) -> ParsedToolCall:
         arguments=parsed_arguments,
         raw=dict(tool_call),
     )
+
+
+def _stage_instance_id(stage_input: ReviewStageInput) -> str:
+    """Prefer an explicitly projected instance over a legacy session prefix."""
+
+    explicit = stage_input.instance_id
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    return instance_id_from_session(stage_input.session_id)
 
 
 __all__ = [

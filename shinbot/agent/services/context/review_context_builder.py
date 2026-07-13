@@ -12,6 +12,7 @@ from shinbot.agent.coordinators.review.stores import MessageLogPayload
 class ReviewContextBuildOptions:
     """Optional controls for building one review stage input."""
 
+    instance_id: str = ""
     self_platform_id: str = ""
     previous_summary: str = ""
     now_ms: int | None = None
@@ -25,6 +26,7 @@ class ReviewStageInput:
     session_id: str
     purpose: str
     source_messages: list[MessageLogPayload]
+    instance_id: str = ""
     instruction_content: list[dict[str, Any]] = field(default_factory=list)
     context_messages: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -75,6 +77,7 @@ class ReviewContextBuilderAdapter:
             session_id=session_id,
             purpose=purpose,
             source_messages=list(messages),
+            instance_id=resolved_options.instance_id,
             metadata=metadata,
         )
 

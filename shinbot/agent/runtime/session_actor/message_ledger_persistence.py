@@ -166,17 +166,24 @@ def load_captured_unread_message_ledger_entries(
     conn: sqlite3.Connection,
     key: SessionKey,
     *,
+    ownership_generation: int,
     input_watermark: int,
     input_ledger_sequence: int,
 ) -> tuple[MessageLedgerEntry, ...]:
     """Load exactly the unread ledger projection visible to one operation.
 
-    Both boundaries are required. Message-log ids and ledger sequence are
-    intentionally independent: a late durable delivery can carry an older
-    message-log id, so filtering only one boundary would let a workflow read
-    input that did not belong to its accepted operation snapshot.
+    The ownership generation and both boundaries are required. Message-log ids
+    and ledger sequence are intentionally independent: a late durable delivery
+    can carry an older message-log id, so filtering only one boundary would
+    let a workflow read input that did not belong to its accepted operation
+    snapshot.  Ownership is checked after snapshot selection rather than used
+    as a SQL filter, so a corrupt or stale row cannot be silently omitted.
     """
 
+    normalized_ownership_generation = _positive_int(
+        ownership_generation,
+        field_name="ownership_generation",
+    )
     _nonnegative_int(input_watermark, field_name="input_watermark")
     _nonnegative_int(
         input_ledger_sequence,
@@ -187,7 +194,7 @@ def load_captured_unread_message_ledger_entries(
         key,
         projection=MessageLedgerProjectionKind.UNREAD,
     )
-    return tuple(
+    captured = tuple(
         entry
         for entry in entries
         if (
@@ -195,6 +202,19 @@ def load_captured_unread_message_ledger_entries(
             and entry.ledger_sequence <= input_ledger_sequence
         )
     )
+    for entry in captured:
+        if entry.message.ownership_generation != normalized_ownership_generation:
+            raise MessageLedgerConflict(
+                "captured unread ledger entry ownership_generation does not match "
+                "operation fence: "
+                f"message_log_id={entry.message_log_id}, "
+                f"ledger_sequence={entry.ledger_sequence}, "
+                "entry_ownership_generation="
+                f"{entry.message.ownership_generation}, "
+                "expected_ownership_generation="
+                f"{normalized_ownership_generation}"
+            )
+    return captured
 
 
 def count_message_ledger_entries(
@@ -789,6 +809,14 @@ def _nonnegative_int(value: object, *, field_name: str) -> int:
 
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{field_name} must be a nonnegative integer")
+    return value
+
+
+def _positive_int(value: object, *, field_name: str) -> int:
+    """Require a non-boolean integer boundary above zero."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{field_name} must be a positive integer")
     return value
 
 

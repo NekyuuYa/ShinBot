@@ -48,6 +48,8 @@ class ReplyDecisionStageOutput:
     reason: str = "noop_reply_decision"
     consumption_deferred: bool = False
     external_action_intents: tuple[ExternalActionIntent, ...] = ()
+    model_execution_id: str = ""
+    prompt_signature: str = ""
 
 
 @dataclass(slots=True, frozen=True)

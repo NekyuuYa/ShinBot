@@ -245,6 +245,21 @@ generation. A mismatched plan is journaled as stale.
 `ManualReviewRequested` behavior remains target work until it gains a reducer
 branch and a durable ingress adapter.
 
+The first concrete Actor v2 review vertical is implemented and remains
+diagnostic-only: `ReviewWorkflowEffectHandler` reads only the operation's
+captured unread ledger snapshot, and `RunnerReviewWorkflow` projects exactly
+those message-log rows in ledger order before one reply-decision call. The
+Actor composition uses intent collection rather than tool execution, disables
+configured extra tools and model repair/retry calls, carries model execution
+provenance, and rejects unbound `send_poke` actions. It always returns to
+`IDLE` with a defaulted next-review outcome; active-chat bootstrap, round work,
+summaries, compression, and production runtime mounting remain later slices.
+The context projector rechecks ownership generation, transport session, ledger
+fences, and message-log identity before model work. A projection or model
+decision failure does not consume input. Registering these handlers improves
+inactive assembly readiness only; it does not expose an actor wake target or
+start an Actor v2 worker.
+
 ### Workflow Completions
 
 Every completion matches the active operation slot, operation id, effect id,

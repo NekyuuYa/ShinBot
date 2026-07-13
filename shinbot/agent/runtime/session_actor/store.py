@@ -250,6 +250,7 @@ class SQLiteSessionActorStore:
         self,
         *,
         key: SessionKey,
+        ownership_generation: int,
         input_watermark: int,
         input_ledger_sequence: int,
     ) -> tuple[MessageLedgerEntry, ...]:
@@ -264,6 +265,7 @@ class SQLiteSessionActorStore:
             return load_captured_unread_message_ledger_entries(
                 conn,
                 key,
+                ownership_generation=ownership_generation,
                 input_watermark=input_watermark,
                 input_ledger_sequence=input_ledger_sequence,
             )

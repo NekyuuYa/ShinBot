@@ -63,18 +63,26 @@ class _Ledger:
     """Recorded captured-ledger fake for workflow handler tests."""
 
     entries: tuple[MessageLedgerEntry, ...]
-    calls: list[tuple[SessionKey, int, int]] = field(default_factory=list)
+    calls: list[tuple[SessionKey, int, int, int]] = field(default_factory=list)
 
     async def list_captured_unread(
         self,
         *,
         key: SessionKey,
+        ownership_generation: int,
         input_watermark: int,
         input_ledger_sequence: int,
     ) -> tuple[MessageLedgerEntry, ...]:
         """Record the trusted actor boundary and return the configured rows."""
 
-        self.calls.append((key, input_watermark, input_ledger_sequence))
+        self.calls.append(
+            (
+                key,
+                ownership_generation,
+                input_watermark,
+                input_ledger_sequence,
+            )
+        )
         return self.entries
 
 
@@ -113,6 +121,7 @@ def _entry(
     message_log_id: int,
     *,
     ledger_sequence: int,
+    ownership_generation: int = 1,
     is_mentioned: bool = False,
 ) -> MessageLedgerEntry:
     """Build one unread actor-ledger row for a deterministic workflow snapshot."""
@@ -120,7 +129,7 @@ def _entry(
     message = AppendMessageLedgerEntry(
         key=_KEY,
         message_log_id=message_log_id,
-        ownership_generation=1,
+        ownership_generation=ownership_generation,
         source_event_id=f"message:{message_log_id}",
         actor_event_id=f"message:{message_log_id}",
         delivery_version=1,
@@ -239,7 +248,7 @@ async def test_active_reply_handler_uses_captured_ledger_and_encodes_nested_resu
         workflow=workflow,
     )(_context(effect))
 
-    assert ledger.calls == [(_KEY, 20, 2)]
+    assert ledger.calls == [(_KEY, 1, 20, 2)]
     assert len(workflow.requests) == 1
     request = workflow.requests[0]
     assert request.external_action_mode is ExternalActionToolMode.COLLECT_INTENTS
@@ -310,6 +319,40 @@ async def test_active_reply_handler_rejects_late_ledger_rows_before_model_work()
 
 
 @pytest.mark.asyncio
+async def test_active_reply_handler_rejects_cross_generation_ledger_rows() -> None:
+    """A captured row from another owner generation cannot reach the model."""
+
+    effect = _effect(
+        kind="run_active_reply_workflow",
+        operation_id="active-reply-a",
+        payload={"message_log_ids": [10]},
+    )
+    ledger = _Ledger(
+        (
+            _entry(
+                10,
+                ledger_sequence=1,
+                ownership_generation=2,
+                is_mentioned=True,
+            ),
+        )
+    )
+    workflow = _ActiveReplyWorkflow(ActiveReplyWorkflowOutput())
+
+    with pytest.raises(
+        WorkflowEffectAdapterError,
+        match="entry_ownership_generation=2.*effect_ownership_generation=1",
+    ):
+        await ActiveReplyWorkflowEffectHandler(
+            ledger=ledger,
+            workflow=workflow,
+        )(_context(effect))
+
+    assert ledger.calls == [(_KEY, 1, 20, 2)]
+    assert workflow.requests == []
+
+
+@pytest.mark.asyncio
 async def test_review_handler_makes_window_proposals_operation_global() -> None:
     """Repeated local model ids from windows become unique global action slots."""
 
@@ -359,7 +402,7 @@ async def test_review_handler_makes_window_proposals_operation_global() -> None:
         workflow=workflow,
     )(_context(effect))
 
-    assert ledger.calls == [(_KEY, 20, 2)]
+    assert ledger.calls == [(_KEY, 1, 20, 2)]
     assert len(workflow.requests) == 1
     request = workflow.requests[0]
     assert request.external_action_mode is ExternalActionToolMode.COLLECT_INTENTS

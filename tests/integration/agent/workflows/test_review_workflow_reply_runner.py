@@ -17,6 +17,9 @@ from review_workflow_support import (
     pytest,
 )
 
+from shinbot.agent.runtime.session_actor.review_workflow import (
+    build_actor_review_reply_decision_runner,
+)
 from shinbot.agent.services.tools import ToolManager, ToolRegistry
 from shinbot.agent.workflows.chat_actions import ExternalActionToolMode
 from shinbot.agent.workflows.chat_actions.tool_registration import (
@@ -235,6 +238,62 @@ async def test_reply_decision_runner_collects_actor_intents_without_execution() 
         "quote_message_log_id": 7,
     }
     assert "idempotency_key" not in result.external_action_intents[0].payload
+    assert result.model_execution_id == "actor-review-run"
+    assert result.prompt_signature == model_runtime.calls[0].metadata["prompt_signature"]
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_collect_mode_excludes_configured_extra_tools() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "no-reply-call",
+                        "function": {"name": "no_reply", "arguments": "{}"},
+                    }
+                ]
+            }
+        ]
+    )
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(
+            caller="test.review",
+            tool_config=StageToolConfig(
+                extra_names=("attention.inspect_state",),
+                extra_tags=("knowledge",),
+            ),
+        ),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+        external_action_mode=ExternalActionToolMode.COLLECT_INTENTS,
+        allow_configured_extra_tools=False,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert [tool["function"]["name"] for tool in model_runtime.calls[0].tools] == [
+        "no_reply",
+        "send_reply",
+        "send_poke",
+        "send_reaction",
+    ]
+    assert len(tool_manager.build_request_tool_calls) == 1
+    assert tool_manager.build_request_tool_calls[0]["tags"] == {"chat_action"}
+    assert len(tool_manager.export_model_tool_calls) == 1
+    assert tool_manager.export_model_tool_calls[0]["tags"] == {"chat_action"}
+    assert tool_manager.execute_calls == []
+    assert result.reason == "no_reply_tool"
+    assert result.external_action_intents == ()
 
 
 @pytest.mark.asyncio
@@ -287,6 +346,71 @@ async def test_reply_decision_runner_adds_configured_extra_tools() -> None:
     assert "tags" not in tool_manager.build_request_tool_calls[1]
     assert tool_manager.export_model_tool_calls[-1]["tags"] == {"knowledge"}
     assert tool_manager.execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reply_decision_runner_can_disable_repair_call() -> None:
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(["I should reply to this message."])
+    runner = LLMReplyDecisionStageRunner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(caller="test.review"),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+        max_repair_attempts=0,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot:group:room",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert len(model_runtime.calls) == 1
+    assert tool_manager.execute_calls == []
+    assert result.reason == "tool_call_plan_toolless"
+
+
+@pytest.mark.asyncio
+async def test_actor_review_reply_builder_uses_one_model_call_and_real_instance() -> None:
+    """Actor-safe construction disables retries, repairs, extras, and execution."""
+
+    tool_manager = FakeReviewToolManager()
+    model_runtime = FakeModelRuntime(["I should reply to this message."])
+    runner = build_actor_review_reply_decision_runner(
+        model_runtime,
+        config=ReviewLLMRunnerConfig(
+            caller="test.actor.review",
+            max_model_retries=3,
+            tool_config=StageToolConfig(extra_names=("attention.inspect_state",)),
+        ),
+        prompt_registry=_make_prompt_registry(),
+        tool_manager=tool_manager,
+    )
+
+    result = await runner.run(
+        ReviewStageInput(
+            session_id="bot-scoped:instance-a:group:room",
+            instance_id="instance-a",
+            purpose="reply_decision",
+            source_messages=[{"id": 7, "raw_text": "hello"}],
+            metadata={"candidate_message_ids": [7]},
+        )
+    )
+
+    assert len(model_runtime.calls) == 1
+    assert model_runtime.calls[0].instance_id == "instance-a"
+    assert [tool["function"]["name"] for tool in model_runtime.calls[0].tools] == [
+        "no_reply",
+        "send_reply",
+        "send_poke",
+        "send_reaction",
+    ]
+    assert tool_manager.execute_calls == []
+    assert result.reason == "tool_call_plan_toolless"
 
 
 @pytest.mark.asyncio

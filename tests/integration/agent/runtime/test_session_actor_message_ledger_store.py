@@ -439,16 +439,19 @@ async def test_captured_unread_projection_respects_both_operation_boundaries(
 
     captured = await store.list_captured_unread(
         key=key,
+        ownership_generation=generation,
         input_watermark=second_id,
         input_ledger_sequence=2,
     )
     by_sequence = await store.list_captured_unread(
         key=key,
+        ownership_generation=generation,
         input_watermark=third_id,
         input_ledger_sequence=1,
     )
     by_watermark = await store.list_captured_unread(
         key=key,
+        ownership_generation=generation,
         input_watermark=first_id,
         input_ledger_sequence=2,
     )
@@ -456,6 +459,55 @@ async def test_captured_unread_projection_respects_both_operation_boundaries(
     assert [item.message_log_id for item in captured] == [second_id, first_id]
     assert [item.message_log_id for item in by_sequence] == [second_id]
     assert [item.message_log_id for item in by_watermark] == [first_id]
+
+
+@pytest.mark.asyncio
+async def test_captured_unread_projection_rejects_cross_generation_rows(
+    tmp_path: Path,
+) -> None:
+    """A snapshot cannot silently omit a row from another owner generation."""
+
+    database, store = _make_store(tmp_path)
+    reducer = AgentSessionReducer()
+    key = SessionKey("profile-a", "session-a")
+    generation = await _activate(database, store, key)
+    message_log_id = _insert_message(database, token="foreign-owner", created_at=10.0)
+    await _commit_message(
+        store,
+        reducer,
+        _message_event(
+            event_id="message-foreign-owner",
+            key=key,
+            generation=generation,
+            message_log_id=message_log_id,
+            observed_at=10.0,
+        ),
+    )
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE agent_message_ledger
+            SET ownership_generation = ?
+            WHERE profile_id = ? AND session_id = ? AND message_log_id = ?
+            """,
+            (
+                generation + 1,
+                key.profile_id,
+                key.session_id,
+                message_log_id,
+            ),
+        )
+
+    with pytest.raises(
+        MessageLedgerConflict,
+        match="entry_ownership_generation=.*expected_ownership_generation",
+    ):
+        await store.list_captured_unread(
+            key=key,
+            ownership_generation=generation,
+            input_watermark=message_log_id,
+            input_ledger_sequence=1,
+        )
 
 
 @pytest.mark.asyncio

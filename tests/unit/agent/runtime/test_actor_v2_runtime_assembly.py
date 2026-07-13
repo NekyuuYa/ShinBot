@@ -24,6 +24,13 @@ from shinbot.agent.runtime.session_actor.runtime_assembly import (
     ActorV2RuntimeActivationBlocked,
     ActorV2RuntimeAssembly,
 )
+from shinbot.agent.runtime.session_actor.workflow_adapters import (
+    ActiveReplyWorkflowOutput,
+    ActiveReplyWorkflowRequest,
+    ReviewWorkflowOutput,
+    ReviewWorkflowRequest,
+    register_actor_workflow_effect_handlers,
+)
 from shinbot.persistence import DatabaseManager
 
 
@@ -39,6 +46,44 @@ class _PlannerWorkflow:
 
         del request
         return IdleReviewPlanningWorkflowOutput()
+
+
+@dataclass(slots=True)
+class _WorkflowLedger:
+    """Empty read-only ledger used only to compose workflow handlers."""
+
+    async def list_captured_unread(
+        self,
+        **_kwargs: object,
+    ) -> tuple[object, ...]:
+        """Return no rows because readiness never invokes a model workflow."""
+
+        return ()
+
+
+@dataclass(slots=True)
+class _ActiveReplyWorkflow:
+    """Pure active-reply implementation used only for handler graph wiring."""
+
+    async def run_active_reply(
+        self,
+        request: ActiveReplyWorkflowRequest,
+    ) -> ActiveReplyWorkflowOutput:
+        """Return an empty result without touching external runtime state."""
+
+        del request
+        return ActiveReplyWorkflowOutput()
+
+
+@dataclass(slots=True)
+class _ReviewWorkflow:
+    """Pure review implementation used only for handler graph wiring."""
+
+    async def run_review(self, request: ReviewWorkflowRequest) -> ReviewWorkflowOutput:
+        """Return an active-chat placeholder that is never invoked in this test."""
+
+        del request
+        return ReviewWorkflowOutput(enter_active_chat=True, next_review_outcome=None)
 
 
 def _database(tmp_path: Path) -> DatabaseManager:
@@ -101,6 +146,45 @@ async def test_partial_composition_reports_exact_handler_progress_without_activa
     )
     assert missing
     assert assembly.actor_wake_target is None
+    assert assembly.effects_running is False
+
+    await assembly.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_workflow_handler_registration_keeps_assembly_inactive(
+    tmp_path: Path,
+) -> None:
+    """Review handler readiness is diagnostic-only until the activation contract exists."""
+
+    ledger = _WorkflowLedger()
+    active_reply_workflow = _ActiveReplyWorkflow()
+    review_workflow = _ReviewWorkflow()
+
+    def configure_handlers(registry) -> None:
+        register_actor_workflow_effect_handlers(
+            registry,
+            ledger=ledger,
+            active_reply_workflow=active_reply_workflow,
+            review_workflow=review_workflow,
+        )
+
+    assembly = ActorV2RuntimeAssembly.compose_inactive(
+        _database(tmp_path),
+        configure_handlers=configure_handlers,
+    )
+
+    missing = assembly.readiness.missing_handler_contracts
+    assert all(
+        contract.effect_kind
+        not in {"run_active_reply_workflow", "run_review_workflow"}
+        for contract in missing
+    )
+    assert missing
+    assert assembly.actor_wake_target is None
+    assert assembly.effects_running is False
+    with pytest.raises(ActorV2RuntimeActivationBlocked):
+        await assembly.activate()
     assert assembly.effects_running is False
 
     await assembly.shutdown()

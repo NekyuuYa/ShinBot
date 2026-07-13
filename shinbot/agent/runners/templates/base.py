@@ -58,7 +58,7 @@ class RunnerTemplateBase:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         projection = self._prompt_projector.project(stage_input)
         fallback_metadata = dict(projection.audit_metadata)
-        instance_id = instance_id_from_session(stage_input.session_id)
+        instance_id = _stage_instance_id(stage_input)
         instance_config = self._resolve_instance_config(instance_id)
         fallback_metadata = apply_instance_runtime_config_to_metadata(
             fallback_metadata,
@@ -129,7 +129,7 @@ class RunnerTemplateBase:
         metadata: dict[str, Any],
     ) -> Any | None:
         attempts = max(1, int(self._config.max_model_retries) + 1)
-        instance_id = instance_id_from_session(stage_input.session_id)
+        instance_id = _stage_instance_id(stage_input)
         instance_config = self._resolve_instance_config(instance_id)
         for attempt in range(attempts):
             try:
@@ -187,6 +187,15 @@ class RunnerTemplateBase:
 def _is_retryable_model_error(exc: ModelCallError) -> bool:
     text = str(exc).lower()
     return "429" in text or "rate limit" in text or "rate_limit" in text
+
+
+def _stage_instance_id(stage_input: ReviewStageInput) -> str:
+    """Prefer the trusted stage instance over a legacy session-id prefix."""
+
+    explicit = stage_input.instance_id
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    return instance_id_from_session(stage_input.session_id)
 
 
 __all__ = ["RunnerTemplateBase"]

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Protocol
 
 from shinbot.agent.runners.review_models import ReplyDecisionStageOutput
 from shinbot.agent.runners.review_reply.prompt_registration import REVIEW_REPLY_COMPONENT_IDS
 from shinbot.agent.runners.templates import (
     RunnerTemplateConfig,
+    ToolCallPlanResult,
     ToolCallPlanRunner,
 )
 from shinbot.agent.services.context.review_context_builder import ReviewStageInput
@@ -75,6 +77,8 @@ class LLMReplyDecisionStageRunner:
         tool_manager: Any | None = None,
         message_formatter: MessageFormatterService | None = None,
         external_action_mode: ExternalActionToolMode = ExternalActionToolMode.EXECUTE,
+        allow_configured_extra_tools: bool = True,
+        max_repair_attempts: int | None = None,
     ) -> None:
         routing = config or RunnerTemplateConfig()
         self._tool_manager = tool_manager
@@ -112,6 +116,10 @@ class LLMReplyDecisionStageRunner:
             repair_reason="reply_decision_toolless_output",
             tool_transform=_review_reply_tool_schema,
             tool_tags={CHAT_ACTION_TOOL_TAG},
+            allow_configured_extra_tools=allow_configured_extra_tools,
+            max_repair_attempts=(
+                1 if max_repair_attempts is None else max_repair_attempts
+            ),
             message_formatter=message_formatter,
         )
 
@@ -131,25 +139,41 @@ class LLMReplyDecisionStageRunner:
         """
         plan = await self._template.run(stage_input)
         if plan.reason in ("tool_call_plan_build_failed", "tool_call_plan_llm_failed"):
-            return ReplyDecisionStageOutput(reason="llm_reply_decision_failed")
+            return _with_plan_provenance(
+                ReplyDecisionStageOutput(reason="llm_reply_decision_failed"),
+                plan,
+            )
         if plan.has_tool_calls:
-            return await self._run_tool_decision(stage_input, plan)
+            return _with_plan_provenance(
+                await self._run_tool_decision(stage_input, plan),
+                plan,
+            )
         # No tool calls — try JSON fallback for the text.
         if plan.text:
             payload = parse_json_object(plan.text)
             if payload is not None:
-                return ReplyDecisionStageOutput(
-                    replied=bool(payload.get("replied")),
-                    reply_message_id=optional_int(payload.get("reply_message_id")),
-                    reply_message_ids=_reply_message_ids_from_payload(payload),
-                    target_message_ids=int_list(payload.get("target_message_ids")),
-                    reason=str(payload.get("reason") or "llm_reply_decision"),
+                return _with_plan_provenance(
+                    ReplyDecisionStageOutput(
+                        replied=bool(payload.get("replied")),
+                        reply_message_id=optional_int(payload.get("reply_message_id")),
+                        reply_message_ids=_reply_message_ids_from_payload(payload),
+                        target_message_ids=int_list(payload.get("target_message_ids")),
+                        reason=str(payload.get("reason") or "llm_reply_decision"),
+                    ),
+                    plan,
                 )
         candidate_ids = _candidate_message_ids_from_stage(stage_input)
-        reason = "llm_reply_decision_toolless_after_repair" if plan.reason == "tool_call_plan_toolless_after_repair" else (plan.reason or "llm_reply_decision_failed")
-        return ReplyDecisionStageOutput(
-            target_message_ids=candidate_ids,
-            reason=reason,
+        reason = (
+            "llm_reply_decision_toolless_after_repair"
+            if plan.reason == "tool_call_plan_toolless_after_repair"
+            else (plan.reason or "llm_reply_decision_failed")
+        )
+        return _with_plan_provenance(
+            ReplyDecisionStageOutput(
+                target_message_ids=candidate_ids,
+                reason=reason,
+            ),
+            plan,
         )
 
     async def _run_tool_decision(
@@ -227,7 +251,7 @@ class LLMReplyDecisionStageRunner:
                     tool_name=tool_name,
                     arguments=call_arguments,
                     caller=self._routing.caller,
-                    instance_id=instance_id_from_session(stage_input.session_id),
+                    instance_id=_stage_instance_id(stage_input),
                     session_id=stage_input.session_id,
                     run_id=run_id,
                     metadata={
@@ -366,6 +390,40 @@ def _collect_reply_external_action_intents(
         target_message_ids=target_message_ids,
         reason="llm_reply_decision_no_terminal_tool",
     )
+
+
+def _with_plan_provenance(
+    output: ReplyDecisionStageOutput,
+    plan: ToolCallPlanResult,
+) -> ReplyDecisionStageOutput:
+    """Attach immutable model-call provenance to a reply-decision output."""
+
+    metadata = plan.metadata
+    prompt_signature = ""
+    if isinstance(metadata, dict):
+        prompt_signature = _provenance_text(metadata.get("prompt_signature"))
+    return replace(
+        output,
+        model_execution_id=_provenance_text(plan.execution_id),
+        prompt_signature=prompt_signature,
+    )
+
+
+def _provenance_text(value: object) -> str:
+    """Normalize a model provenance identifier without coercing arbitrary values."""
+
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _stage_instance_id(stage_input: ReviewStageInput) -> str:
+    """Prefer the actor-projected adapter instance when one is present."""
+
+    explicit = stage_input.instance_id
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    return instance_id_from_session(stage_input.session_id)
 
 
 def _parsed_tool_call_id(parsed_call: Any) -> str:

@@ -50,16 +50,18 @@ class WorkflowEffectAdapterError(ValueError):
 class ActorWorkflowLedgerPort(Protocol):
     """Read the immutable unread snapshot captured by one actor operation.
 
-    Implementations must not return rows outside either supplied boundary.  The
-    adapter repeats that check so a faulty implementation fails before a model
-    can use unowned input.  This is deliberately a read-only protocol: ledger
-    consumption remains an actor transition after completion acceptance.
+    Implementations must not return rows outside the supplied ownership
+    generation or either supplied boundary.  The adapter repeats those checks
+    so a faulty implementation fails before a model can use unowned input.
+    This is deliberately a read-only protocol: ledger consumption remains an
+    actor transition after completion acceptance.
     """
 
     async def list_captured_unread(
         self,
         *,
         key: SessionKey,
+        ownership_generation: int,
         input_watermark: int,
         input_ledger_sequence: int,
     ) -> Sequence[MessageLedgerEntry]:
@@ -130,6 +132,17 @@ class ActorWorkflowEffectInput:
             if entry.key != self.key:
                 raise WorkflowEffectAdapterError(
                     "ledger entry belongs to a different actor session"
+                )
+            if entry.message.ownership_generation != self.ownership_generation:
+                raise WorkflowEffectAdapterError(
+                    "captured ledger entry ownership_generation does not match "
+                    "effect ownership_generation: "
+                    f"message_log_id={entry.message_log_id}, "
+                    f"ledger_sequence={entry.ledger_sequence}, "
+                    "entry_ownership_generation="
+                    f"{entry.message.ownership_generation}, "
+                    "effect_ownership_generation="
+                    f"{self.ownership_generation}"
                 )
             if entry.ledger_sequence <= previous_sequence:
                 raise WorkflowEffectAdapterError(
@@ -692,6 +705,7 @@ async def _load_captured_unread(
 
     entries = await ledger.list_captured_unread(
         key=metadata.key,
+        ownership_generation=metadata.ownership_generation,
         input_watermark=metadata.input_watermark,
         input_ledger_sequence=metadata.input_ledger_sequence,
     )
