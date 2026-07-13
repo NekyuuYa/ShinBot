@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 import pytest
 
-from shinbot.agent.runtime.session_actor.actor import SessionActorStore
+from shinbot.agent.runtime.session_actor.actor import AgentSessionActor, SessionActorStore
 from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
@@ -35,6 +35,14 @@ from shinbot.agent.runtime.session_actor.key_factory import (
     DEFAULT_SESSION_ACTOR_PROFILE_ID,
     SessionKeyFactory,
 )
+from shinbot.agent.runtime.session_actor.recovery import (
+    RECOVERY_DELIVERY_EVENT_KIND,
+    RECOVERY_DELIVERY_EVENT_SOURCE,
+)
+from shinbot.agent.runtime.session_actor.recovery_commit import (
+    RecoveryDeliveryClaimLost,
+)
+from shinbot.agent.runtime.session_actor.reducer import AgentSessionReducer
 from shinbot.agent.runtime.session_actor.registry import AgentSessionActorRegistry
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
@@ -260,6 +268,19 @@ def _event(
         key=SessionKey(profile_id=profile_id, session_id=session_id),
         kind="test",
         payload={"event_id": event_id},
+    )
+
+
+def _typed_recovery_event(event_id: str) -> SessionEventEnvelope:
+    """Build a scanner-owned delivery for actor failure-boundary tests."""
+
+    return SessionEventEnvelope(
+        event_id=event_id,
+        key=SessionKey(profile_id="profile-a", session_id="bot:group:room"),
+        kind=RECOVERY_DELIVERY_EVENT_KIND,
+        source=RECOVERY_DELIVERY_EVENT_SOURCE,
+        payload={"event_id": event_id},
+        ownership_generation=1,
     )
 
 
@@ -842,6 +863,111 @@ async def test_session_actor_releases_and_retries_infrastructure_failure() -> No
         assert store.release_errors == ["ConnectionError: database unavailable"]
     finally:
         await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_session_actor_leaves_a_lost_recovery_claim_untouched() -> None:
+    """A stale typed recovery claim must never enter release or dead-letter logic."""
+
+    class _ClaimLostCommitStore(_MemorySessionActorStore):
+        async def commit(
+            self,
+            claim: ClaimedSessionEvent,
+            transition: SessionTransition,
+            *,
+            expected_revision: int,
+        ) -> AgentSessionAggregate:
+            del claim, transition, expected_revision
+            raise RecoveryDeliveryClaimLost(
+                "recovery_delivery_claim_attempt_count_changed"
+            )
+
+    store = _ClaimLostCommitStore()
+    envelope = _event("lost-recovery-claim")
+    await store.enqueue(envelope)
+
+    def handler(
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        return SessionTransition(
+            aggregate=aggregate.advance(state_changed=False),
+            disposition="recovery_claim_test",
+            reason=event.kind,
+        )
+
+    actor = AgentSessionActor(
+        key=envelope.key,
+        store=store,
+        handler=handler,
+        worker_id="lost-recovery-claim-worker",
+        max_attempts=1,
+    )
+
+    assert await actor._drain_mailbox() is False
+
+    record = store.records[(envelope.key, envelope.event_id)]
+    assert record.status is MailboxEventStatus.PROCESSING
+    assert store.release_errors == []
+    assert store.failed_errors == []
+    assert store.aggregates[envelope.key].event_sequence == 0
+
+
+@pytest.mark.parametrize("phase", ["reduce", "commit"])
+@pytest.mark.asyncio
+async def test_session_actor_preserves_unproven_typed_recovery_delivery(
+    phase: str,
+) -> None:
+    """Typed decoder and proof failures must not enter generic dead-lettering."""
+
+    class _CommitRejectedStore(_MemorySessionActorStore):
+        async def commit(
+            self,
+            claim: ClaimedSessionEvent,
+            transition: SessionTransition,
+            *,
+            expected_revision: int,
+        ) -> AgentSessionAggregate:
+            if phase == "commit":
+                del claim, transition, expected_revision
+                raise RuntimeError("recovery authority proof rejected")
+            return await super().commit(
+                claim,
+                transition,
+                expected_revision=expected_revision,
+            )
+
+    store = _CommitRejectedStore()
+    envelope = _typed_recovery_event(f"unproven-recovery-{phase}")
+    await store.enqueue(envelope)
+
+    def handler(
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        if phase == "reduce":
+            return AgentSessionReducer().reduce(aggregate, event)
+        return SessionTransition(
+            aggregate=aggregate.advance(state_changed=False),
+            disposition="recovery_claim_test",
+            reason=event.kind,
+        )
+
+    actor = AgentSessionActor(
+        key=envelope.key,
+        store=store,
+        handler=handler,
+        worker_id=f"unproven-recovery-{phase}-worker",
+        max_attempts=1,
+    )
+
+    assert await actor._drain_mailbox() is False
+
+    record = store.records[(envelope.key, envelope.event_id)]
+    assert record.status is MailboxEventStatus.PROCESSING
+    assert store.release_errors == []
+    assert store.failed_errors == []
+    assert store.aggregates[envelope.key].event_sequence == 0
 
 
 @pytest.mark.parametrize("failure_mode", ["handler", "transition"])

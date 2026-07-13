@@ -1793,6 +1793,61 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     END
     """,
     """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_terminal_delivery_state
+    BEFORE UPDATE OF status ON agent_session_recovery_cases
+    WHEN NEW.status IN (
+            'applied', 'superseded', 'delivery_exhausted', 'scanner_blocked'
+         )
+      AND NEW.delivery_count > 0
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM agent_session_mailbox AS mailbox
+              WHERE mailbox.profile_id = NEW.profile_id
+                AND mailbox.session_id = NEW.session_id
+                AND mailbox.ownership_generation = NEW.ownership_generation
+                AND mailbox.kind = 'RecoveryRequested'
+                AND mailbox.source = 'durable_session_recovery_scanner'
+                AND mailbox.causation_id = NEW.case_id
+                AND mailbox.status IN ('pending', 'processing')
+          )
+          OR (
+              NEW.status IN ('applied', 'superseded', 'scanner_blocked')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_session_mailbox AS mailbox
+                  WHERE mailbox.profile_id = NEW.profile_id
+                    AND mailbox.session_id = NEW.session_id
+                    AND mailbox.ownership_generation = NEW.ownership_generation
+                    AND mailbox.event_id = NEW.last_event_id
+                    AND mailbox.kind = 'RecoveryRequested'
+                    AND mailbox.source = 'durable_session_recovery_scanner'
+                    AND mailbox.status = 'completed'
+              )
+          )
+          OR (
+              NEW.status = 'delivery_exhausted'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM agent_session_mailbox AS mailbox
+                  WHERE mailbox.profile_id = NEW.profile_id
+                    AND mailbox.session_id = NEW.session_id
+                    AND mailbox.ownership_generation = NEW.ownership_generation
+                    AND mailbox.event_id = NEW.last_event_id
+                    AND mailbox.kind = 'RecoveryRequested'
+                    AND mailbox.source = 'durable_session_recovery_scanner'
+                    AND mailbox.status = 'failed'
+              )
+          )
+      )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'terminal recovery case requires settled typed delivery evidence'
+        );
+    END
+    """,
+    """
     CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_status_transition
     BEFORE UPDATE OF status ON agent_session_recovery_cases
     WHEN NOT (
@@ -1834,6 +1889,72 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_agent_session_recovery_cases_session
     ON agent_session_recovery_cases(
         profile_id, session_id, ownership_generation, status
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_session_recovery_findings (
+        finding_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        finding_id TEXT NOT NULL UNIQUE,
+        profile_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        ownership_generation INTEGER NOT NULL,
+        code TEXT NOT NULL,
+        evidence_digest TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        occurrence_count INTEGER NOT NULL DEFAULT 1,
+        first_seen_at REAL NOT NULL,
+        last_seen_at REAL NOT NULL,
+        resolved_at REAL,
+        FOREIGN KEY(profile_id, session_id)
+            REFERENCES agent_session_aggregates(profile_id, session_id)
+            ON DELETE CASCADE,
+        UNIQUE(
+            profile_id, session_id, ownership_generation, code, evidence_digest
+        ),
+        CHECK(typeof(finding_id) = 'text'),
+        CHECK(length(finding_id) = 84),
+        CHECK(substr(finding_id, 1, 20) = 'recovery-finding:v1:'),
+        CHECK(substr(finding_id, 21) NOT GLOB '*[^0-9a-f]*'),
+        CHECK(typeof(profile_id) = 'text'),
+        CHECK(length(trim(profile_id)) > 0),
+        CHECK(profile_id = trim(profile_id)),
+        CHECK(typeof(session_id) = 'text'),
+        CHECK(length(trim(session_id)) > 0),
+        CHECK(session_id = trim(session_id)),
+        CHECK(typeof(ownership_generation) = 'integer'),
+        CHECK(ownership_generation >= 1),
+        CHECK(typeof(code) = 'text'),
+        CHECK(length(trim(code)) > 0),
+        CHECK(code = trim(code)),
+        CHECK(typeof(evidence_digest) = 'text'),
+        CHECK(length(evidence_digest) = 64),
+        CHECK(evidence_digest NOT GLOB '*[^0-9a-f]*'),
+        CHECK(typeof(evidence_json) = 'text'),
+        CHECK(json_valid(evidence_json)),
+        CHECK(typeof(status) = 'text'),
+        CHECK(status IN ('open', 'resolved')),
+        CHECK(typeof(occurrence_count) = 'integer'),
+        CHECK(occurrence_count >= 1),
+        CHECK(typeof(first_seen_at) IN ('integer', 'real')),
+        CHECK(typeof(last_seen_at) IN ('integer', 'real')),
+        CHECK(first_seen_at >= 0),
+        CHECK(last_seen_at >= first_seen_at),
+        CHECK(
+            (status = 'open' AND resolved_at IS NULL)
+            OR (
+                status = 'resolved'
+                AND typeof(resolved_at) IN ('integer', 'real')
+                AND resolved_at >= first_seen_at
+                AND resolved_at <= last_seen_at
+            )
+        )
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_session_recovery_findings_open
+    ON agent_session_recovery_findings(
+        profile_id, session_id, ownership_generation, status, last_seen_at
     )
     """,
     # -- Durable external-action receipts -------------------------------
@@ -3499,6 +3620,7 @@ _RECOVERY_CASE_TRIGGER_NAMES = (
     "trg_agent_recovery_case_time_monotonic",
     "trg_agent_recovery_case_progress_monotonic",
     "trg_agent_recovery_case_progress_evidence",
+    "trg_agent_recovery_case_terminal_delivery_state",
     "trg_agent_recovery_case_status_transition",
     "trg_agent_recovery_case_terminal_immutable",
 )

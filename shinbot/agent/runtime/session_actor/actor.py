@@ -15,7 +15,6 @@ from shinbot.agent.runtime.session_actor.aggregate import (
 )
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     EffectContractAuthority,
-    validate_effect_declaration,
 )
 from shinbot.agent.runtime.session_actor.events import (
     ClaimedSessionEvent,
@@ -23,8 +22,15 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionEventEnvelope,
     SessionTransition,
 )
+from shinbot.agent.runtime.session_actor.recovery import (
+    RECOVERY_DELIVERY_EVENT_KIND,
+    RECOVERY_DELIVERY_EVENT_SOURCE,
+)
+from shinbot.agent.runtime.session_actor.recovery_commit import (
+    RecoveryDeliveryClaimLost,
+)
 from shinbot.agent.runtime.session_actor.transition_validation import (
-    validate_review_plan_transition,
+    validate_session_transition,
 )
 
 logger = logging.getLogger(__name__)
@@ -326,6 +332,10 @@ class AgentSessionActor:
                 await self._release_after_cancellation(claim)
                 self._current_claim = None
                 raise
+            except RecoveryDeliveryClaimLost as exc:
+                self._record_claim_lost(claim, exc)
+                self._current_claim = None
+                return False
             except Exception as exc:
                 terminal = await self._retry_or_fail_claim(
                     claim,
@@ -345,52 +355,11 @@ class AgentSessionActor:
         current: AgentSessionAggregate,
         transition: SessionTransition,
     ) -> None:
-        if not isinstance(transition, SessionTransition):
-            raise TypeError("session event handler must return SessionTransition")
-        next_aggregate = transition.aggregate
-        if next_aggregate.key != self.key:
-            raise ValueError("a session transition cannot change actor ownership")
-        if next_aggregate.event_sequence != current.event_sequence + 1:
-            raise ValueError("a session transition must advance event_sequence exactly once")
-        if next_aggregate.state_revision not in {
-            current.state_revision,
-            current.state_revision + 1,
-        }:
-            raise ValueError("a session transition may advance state_revision at most once")
-        effect_ids = [effect.effect_id for effect in transition.effects]
-        if len(effect_ids) != len(set(effect_ids)):
-            raise ValueError("a session transition contains duplicate effect ids")
-        for effect in transition.effects:
-            validate_effect_declaration(
-                effect,
-                authority=self._effect_contract_authority,
-            )
-        operation_ids = [operation.operation_id for operation in transition.operations]
-        if len(operation_ids) != len(set(operation_ids)):
-            raise ValueError("a session transition contains duplicate operation ids")
-        plan_ids = [schedule.plan_id for schedule in transition.review_schedules]
-        if len(plan_ids) != len(set(plan_ids)):
-            raise ValueError("a session transition contains duplicate review plan ids")
-        validate_review_plan_transition(current, transition)
-        if transition.review_schedules:
-            if len(transition.review_schedules) != 1:
-                raise ValueError("a session transition may replace at most one review plan")
-            schedule = transition.review_schedules[0]
-            if not transition.caused_plan_id:
-                raise ValueError("a review schedule transition must identify caused_plan_id")
-            if schedule.plan_id != transition.caused_plan_id:
-                raise ValueError("review schedule does not match caused_plan_id")
-            if schedule.plan_id != next_aggregate.current_plan_id:
-                raise ValueError("review schedule does not match aggregate current_plan_id")
-            if schedule.plan_revision != next_aggregate.review_plan_revision:
-                raise ValueError(
-                    "review schedule revision does not match aggregate plan revision"
-                )
-        schedule_event_ids = [
-            event.schedule_event_id for event in transition.review_schedule_events
-        ]
-        if len(schedule_event_ids) != len(set(schedule_event_ids)):
-            raise ValueError("a session transition contains duplicate schedule event ids")
+        validate_session_transition(
+            current,
+            transition,
+            effect_contract_authority=self._effect_contract_authority,
+        )
 
     async def _release_failed_claim(
         self,
@@ -399,6 +368,8 @@ class AgentSessionActor:
         *,
         phase: str,
     ) -> None:
+        if self._preserve_unproven_typed_recovery(claim, exc, phase=phase):
+            return
         self._record_error(exc, event_id=claim.envelope.event_id, phase=phase)
         try:
             await self._store.release(claim, error=self._last_error or type(exc).__name__)
@@ -416,6 +387,8 @@ class AgentSessionActor:
         *,
         phase: str,
     ) -> bool:
+        if self._preserve_unproven_typed_recovery(claim, exc, phase=phase):
+            return False
         if claim.attempt_count >= self._max_attempts:
             return await self._fail_claim(claim, exc, phase=f"{phase}_exhausted")
         await self._release_failed_claim(claim, exc, phase=phase)
@@ -428,6 +401,8 @@ class AgentSessionActor:
         *,
         phase: str,
     ) -> bool:
+        if self._preserve_unproven_typed_recovery(claim, exc, phase=phase):
+            return False
         self._record_error(exc, event_id=claim.envelope.event_id, phase=phase)
         try:
             await self._store.fail(
@@ -482,6 +457,61 @@ class AgentSessionActor:
             },
             exc_info=(type(exc), exc, exc.__traceback__),
         )
+
+    def _record_claim_lost(
+        self,
+        claim: ClaimedSessionEvent,
+        exc: RecoveryDeliveryClaimLost,
+    ) -> None:
+        """Record a lost recovery claim without mutating another owner's work."""
+
+        self._last_error = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            "Agent session actor lost a typed recovery claim",
+            extra={
+                "profile_id": self.key.profile_id,
+                "session_id": self.key.session_id,
+                "event_id": claim.envelope.event_id,
+                "phase": "commit_claim_lost",
+                "recovery_claim_code": exc.code,
+            },
+        )
+
+    def _preserve_unproven_typed_recovery(
+        self,
+        claim: ClaimedSessionEvent,
+        exc: BaseException,
+        *,
+        phase: str,
+    ) -> bool:
+        """Keep a typed delivery out of generic retry and dead-letter handling.
+
+        A scanner-owned recovery event may only change durable state through the
+        coordinator's raw-proof transaction. Before that proof completes, an
+        actor cannot safely release, fail, or advance it using ordinary mailbox
+        semantics. A future scanner pass can record the raw finding or issue a
+        proven blocker; this actor leaves the held claim unchanged.
+        """
+
+        envelope = claim.envelope
+        if (
+            envelope.kind != RECOVERY_DELIVERY_EVENT_KIND
+            or envelope.source != RECOVERY_DELIVERY_EVENT_SOURCE
+        ):
+            return False
+        self._last_error = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            "Agent session actor preserved an unproven typed recovery delivery",
+            extra={
+                "profile_id": self.key.profile_id,
+                "session_id": self.key.session_id,
+                "event_id": envelope.event_id,
+                "phase": f"typed_recovery_{phase}",
+                "recovery_error_type": type(exc).__name__,
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return True
 
     def _schedule_retry(self) -> None:
         if self._closing or self._retry_handle is not None:

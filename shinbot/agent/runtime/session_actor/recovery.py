@@ -599,12 +599,45 @@ class RecoveryCertificate:
         )
 
     def _work_graph_record(self) -> dict[str, object]:
+        transient_node_identities = {
+            node.identity
+            for node in self.nodes
+            if node.kind == "state_transition"
+        }
+        transient_target = "state_transition_tail"
+        decision_record = self.decision.to_record()
+        decision_record["target_node_identities"] = sorted(
+            {
+                (
+                    transient_target
+                    if identity in transient_node_identities
+                    else identity
+                )
+                for identity in self.decision.target_node_identities
+            }
+        )
         return {
             "aggregate_fence": self.aggregate_fence.to_work_graph_record(),
-            "decision": self.decision.to_record(),
-            "edges": [edge.to_record() for edge in self.edges],
-            "invariants": [invariant.to_record() for invariant in self.invariants],
-            "nodes": [node.to_record() for node in self.nodes],
+            "decision": decision_record,
+            "edges": [
+                edge.to_record()
+                for edge in self.edges
+                if edge.source not in transient_node_identities
+                and edge.target not in transient_node_identities
+            ],
+            "invariants": [
+                _semantic_invariant_record(
+                    invariant,
+                    transient_node_identities=transient_node_identities,
+                    transient_target=transient_target,
+                )
+                for invariant in self.invariants
+            ],
+            "nodes": [
+                _semantic_node_record(node)
+                for node in self.nodes
+                if node.identity not in transient_node_identities
+            ],
             "schema": self.schema,
             "version": self.version,
         }
@@ -1333,6 +1366,31 @@ def _normalized_contract_items(
     return tuple(sorted(normalized, key=lambda value: value.identity))
 
 
+def _semantic_invariant_record(
+    invariant: RecoveryInvariant,
+    *,
+    transient_node_identities: set[str],
+    transient_target: str,
+) -> dict[str, object]:
+    """Normalize ephemeral journal-tail references out of case identity."""
+
+    record = invariant.to_record()
+    if invariant.node_identity in transient_node_identities:
+        record["identity"] = f"invariant:{invariant.code}:{transient_target}"
+        record["node_identity"] = transient_target
+    return record
+
+
+def _semantic_node_record(node: RecoveryGraphNode) -> dict[str, object]:
+    """Return one node record with aggregate commit-clock noise normalized."""
+
+    record = node.to_record()
+    semantic_digest = node.facts.get("semantic_digest")
+    if node.kind == "aggregate" and isinstance(semantic_digest, str):
+        record["facts"] = {"semantic_digest": semantic_digest}
+    return record
+
+
 def _normalized_text_set(
     values: Sequence[str],
     *,
@@ -1369,6 +1427,20 @@ def _freeze_json_object(value: object, *, field_name: str) -> Mapping[str, Any]:
     if not isinstance(frozen, Mapping):
         raise TypeError(f"{field_name} must be a mapping")
     return frozen
+
+
+def freeze_recovery_json_object(
+    value: object,
+    *,
+    field_name: str,
+) -> Mapping[str, Any]:
+    """Return one bounded, deeply immutable recovery JSON object.
+
+    This narrow public helper keeps auxiliary recovery protocols subject to the
+    same UTF-8, depth, node-count, and float-free rules as certificates.
+    """
+
+    return _freeze_json_object(value, field_name=field_name)
 
 
 def _freeze_json(
@@ -1436,6 +1508,12 @@ def _thaw_json(value: object) -> Any:
     if isinstance(value, (list, tuple)):
         return [_thaw_json(item) for item in value]
     return value
+
+
+def thaw_recovery_json(value: object) -> Any:
+    """Return a fresh mutable JSON-compatible copy of frozen recovery data."""
+
+    return _thaw_json(value)
 
 
 def _strict_record(
@@ -1611,5 +1689,7 @@ __all__ = [
     "canonical_recovery_json",
     "decode_recovery_certificate",
     "decode_recovery_delivery_payload",
+    "freeze_recovery_json_object",
     "recovery_delivery_event_id",
+    "thaw_recovery_json",
 ]

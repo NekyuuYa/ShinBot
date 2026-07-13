@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
@@ -14,6 +14,9 @@ from shinbot.agent.runtime.session_actor.aggregate import (
 from shinbot.agent.runtime.session_actor.message_ledger import (
     MessageLedgerMutation,
 )
+
+if TYPE_CHECKING:
+    from shinbot.agent.runtime.session_actor.recovery_commit import RecoveryCommitIntent
 
 
 class MailboxEventStatus(StrEnum):
@@ -406,6 +409,7 @@ class SessionTransition:
     message_ledger_mutations: tuple[MessageLedgerMutation, ...] = ()
     review_schedules: tuple[SessionReviewSchedule, ...] = ()
     review_schedule_events: tuple[SessionReviewScheduleEvent, ...] = ()
+    recovery_commit_intent: RecoveryCommitIntent | None = None
     result: dict[str, Any] = field(default_factory=dict)
     reason: str = ""
 

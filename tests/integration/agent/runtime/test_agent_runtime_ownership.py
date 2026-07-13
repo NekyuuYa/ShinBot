@@ -10,6 +10,18 @@ from pathlib import Path
 
 import pytest
 
+from shinbot.agent.runtime.session_actor.recovery import (
+    RECOVERY_DELIVERY_EVENT_KIND,
+    RECOVERY_DELIVERY_EVENT_SOURCE,
+    RecoveryAggregateFence,
+    RecoveryDecision,
+    RecoveryDecisionKind,
+    RecoveryDeliveryPayload,
+    RecoveryGraphNode,
+    RecoverySubject,
+    build_recovery_certificate,
+    canonical_recovery_json,
+)
 from shinbot.core.dispatch.agent_identity import SessionKey
 from shinbot.core.dispatch.agent_ownership import (
     AgentRuntimeOwnershipConflict,
@@ -38,15 +50,16 @@ def _insert_actor_aggregate(
     key: SessionKey,
     *,
     mailbox: bool = False,
+    ownership_generation: int = 0,
 ) -> None:
     with database.connect() as conn:
         conn.execute(
             """
             INSERT INTO agent_session_aggregates (
-                profile_id, session_id, created_at, updated_at
-            ) VALUES (?, ?, 1.0, 1.0)
+                profile_id, session_id, ownership_generation, created_at, updated_at
+            ) VALUES (?, ?, ?, 1.0, 1.0)
             """,
-            (key.profile_id, key.session_id),
+            (key.profile_id, key.session_id, ownership_generation),
         )
         if mailbox:
             conn.execute(
@@ -58,6 +71,117 @@ def _insert_actor_aggregate(
                 """,
                 (key.profile_id, key.session_id),
             )
+
+
+def _insert_typed_recovery_delivery(
+    database: DatabaseManager,
+    key: SessionKey,
+    *,
+    ownership_generation: int,
+    case_status: str,
+    mailbox_status: str,
+) -> tuple[str, str]:
+    """Insert one schema-valid typed recovery delivery for migration fencing."""
+
+    certificate = build_recovery_certificate(
+        subject=RecoverySubject(
+            profile_id=key.profile_id,
+            session_id=key.session_id,
+            ownership_generation=ownership_generation,
+        ),
+        aggregate_fence=RecoveryAggregateFence(
+            state="review",
+            state_revision=1,
+            event_sequence=1,
+            activity_generation=0,
+            active_epoch=0,
+        ),
+        nodes=(
+            RecoveryGraphNode(
+                identity="operation:recovery-test",
+                kind="operation",
+                authority="agent_session_operations",
+                status="pending",
+            ),
+        ),
+        edges=(),
+        invariants=(),
+        decision=RecoveryDecision(
+            kind=RecoveryDecisionKind.RECOVER_ORPHANED_WORK,
+            reason_codes=("orphaned_work_without_live_completion",),
+            target_node_identities=("operation:recovery-test",),
+        ),
+    )
+    delivery = RecoveryDeliveryPayload(certificate=certificate, delivery_cycle=0)
+    payload_json = canonical_recovery_json(delivery.to_record())
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_session_recovery_cases (
+                case_id, profile_id, session_id, ownership_generation,
+                certificate_version, policy_version, work_graph_digest,
+                latest_certificate_digest, status, next_delivery_cycle,
+                delivery_count, last_event_id, last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, 0, '', '', 1, 1)
+            """,
+            (
+                delivery.case_id,
+                key.profile_id,
+                key.session_id,
+                ownership_generation,
+                certificate.version,
+                certificate.policy_version,
+                certificate.work_graph_digest,
+                certificate.certificate_digest,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation,
+                kind, source, occurred_at, payload_json,
+                causation_id, correlation_id, trace_id,
+                status, attempt_count, available_at,
+                claim_id, lease_owner, lease_until,
+                created_at, handled_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, 1,
+                      '', '', NULL, 1, 1, '')
+            """,
+            (
+                delivery.event_id,
+                key.profile_id,
+                key.session_id,
+                ownership_generation,
+                RECOVERY_DELIVERY_EVENT_KIND,
+                RECOVERY_DELIVERY_EVENT_SOURCE,
+                payload_json,
+                delivery.case_id,
+                delivery.case_id,
+                delivery.event_id,
+                mailbox_status,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE agent_session_recovery_cases
+            SET next_delivery_cycle = 1,
+                delivery_count = 1,
+                last_event_id = ?,
+                updated_at = 2
+            WHERE case_id = ?
+            """,
+            (delivery.event_id, delivery.case_id),
+        )
+        if case_status != "open":
+            conn.execute(
+                """
+                UPDATE agent_session_recovery_cases
+                SET status = ?, updated_at = 3
+                WHERE case_id = ?
+                """,
+                (case_status, delivery.case_id),
+            )
+    return delivery.case_id, delivery.event_id
 
 
 def _insert_all_legacy_evidence(
@@ -465,6 +589,115 @@ def test_actor_to_legacy_migration_requires_actor_state_cleanup(
         reason="actor state removed",
     )
     assert completed.mode is AgentRuntimeOwnershipMode.LEGACY
+
+
+def test_open_typed_recovery_case_blocks_actor_owner_migration(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = database.agent_runtime_ownership
+    key = SessionKey("profile-a", "profile-a:group:room")
+    claimed = repository.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="actor recovery migration boundary",
+    ).ownership
+    _insert_actor_aggregate(
+        database,
+        key,
+        ownership_generation=claimed.generation,
+    )
+    _insert_typed_recovery_delivery(
+        database,
+        key,
+        ownership_generation=claimed.generation,
+        case_status="open",
+        mailbox_status="pending",
+    )
+
+    with pytest.raises(
+        AgentRuntimeOwnershipMigrationConflict,
+        match="open typed recovery case",
+    ):
+        repository.begin_migration(
+            key,
+            AgentRuntimeOwnershipMode.LEGACY,
+            expected_generation=claimed.generation,
+            reason="attempt migration with open recovery",
+        )
+
+
+def test_terminal_typed_recovery_history_is_not_refenced_during_abort(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = database.agent_runtime_ownership
+    key = SessionKey("profile-a", "profile-a:group:room")
+    claimed = repository.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="actor recovery history migration boundary",
+    ).ownership
+    _insert_actor_aggregate(
+        database,
+        key,
+        ownership_generation=claimed.generation,
+    )
+    case_id, event_id = _insert_typed_recovery_delivery(
+        database,
+        key,
+        ownership_generation=claimed.generation,
+        case_status="superseded",
+        mailbox_status="completed",
+    )
+
+    migrating = repository.begin_migration(
+        key,
+        AgentRuntimeOwnershipMode.LEGACY,
+        expected_generation=claimed.generation,
+        reason="begin migration with settled recovery history",
+    )
+    aborted = repository.abort_migration(
+        key,
+        expected_generation=migrating.generation,
+        reason="retain actor state after migration abort",
+    )
+
+    assert aborted.generation == claimed.generation + 2
+    with database.connect() as conn:
+        aggregate = conn.execute(
+            """
+            SELECT ownership_generation
+            FROM agent_session_aggregates
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+        mailbox = conn.execute(
+            """
+            SELECT ownership_generation, status
+            FROM agent_session_mailbox
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+        case = conn.execute(
+            """
+            SELECT ownership_generation, status
+            FROM agent_session_recovery_cases
+            WHERE case_id = ?
+            """,
+            (case_id,),
+        ).fetchone()
+    assert aggregate is not None
+    assert mailbox is not None
+    assert case is not None
+    assert tuple(aggregate) == (aborted.generation,)
+    assert tuple(mailbox) == (claimed.generation, "completed")
+    assert tuple(case) == (claimed.generation, "superseded")
+
+    restarted = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    restarted.initialize()
 
 
 def test_abort_migration_is_generation_checked_and_audited(tmp_path: Path) -> None:

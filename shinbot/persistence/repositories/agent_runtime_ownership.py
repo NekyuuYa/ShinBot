@@ -29,6 +29,8 @@ from shinbot.persistence.repositories.agent_external_action_reconciliation impor
 from shinbot.persistence.repositories.base import Repository
 
 _OWNERSHIP_EVENT_NAMESPACE = uuid.UUID("2355e792-d140-59f5-b882-81c24854a27f")
+_TYPED_RECOVERY_EVENT_KIND = "RecoveryRequested"
+_TYPED_RECOVERY_EVENT_SOURCE = "durable_session_recovery_scanner"
 
 
 class AgentRuntimeOwnershipRepository(Repository):
@@ -163,6 +165,12 @@ class AgentRuntimeOwnershipRepository(Repository):
                     "migration target must differ from the active ownership mode"
                 )
             self._validate_external_action_receipts_for_transition(conn, key, now=now)
+            if current.mode is AgentRuntimeOwnershipMode.ACTOR_V2:
+                self._validate_recovery_migration_boundary(
+                    conn,
+                    key,
+                    expected_generation=current.generation,
+                )
             next_generation = current.generation + 1
             updated = conn.execute(
                 """
@@ -514,6 +522,20 @@ class AgentRuntimeOwnershipRepository(Repository):
         )
         mismatched: list[str] = []
         for table_name in generation_tables:
+            extra_predicate = ""
+            parameters: tuple[object, ...] = (
+                key.profile_id,
+                key.session_id,
+                expected_generation,
+            )
+            if table_name == "agent_session_mailbox":
+                extra_predicate = (
+                    " AND NOT (kind = ? AND source = ?)"
+                )
+                parameters += (
+                    _TYPED_RECOVERY_EVENT_KIND,
+                    _TYPED_RECOVERY_EVENT_SOURCE,
+                )
             row = conn.execute(
                 f"""
                 SELECT ownership_generation
@@ -521,9 +543,10 @@ class AgentRuntimeOwnershipRepository(Repository):
                 WHERE profile_id = ?
                   AND session_id = ?
                   AND ownership_generation != ?
+                  {extra_predicate}
                 LIMIT 1
                 """,
-                (key.profile_id, key.session_id, expected_generation),
+                parameters,
             ).fetchone()
             if row is not None:
                 mismatched.append(
@@ -554,8 +577,10 @@ class AgentRuntimeOwnershipRepository(Repository):
         live_lease_queries = (
             (
                 "agent_session_mailbox",
-                "status = 'processing' OR claim_id != '' OR lease_owner != '' "
-                "OR lease_until IS NOT NULL",
+                "(status = 'processing' OR claim_id != '' OR lease_owner != '' "
+                "OR lease_until IS NOT NULL) "
+                "AND NOT (kind = 'RecoveryRequested' "
+                "AND source = 'durable_session_recovery_scanner')",
             ),
             (
                 "agent_effect_outbox",
@@ -609,6 +634,11 @@ class AgentRuntimeOwnershipRepository(Repository):
         now: float,
         release_leases: bool,
     ) -> None:
+        AgentRuntimeOwnershipRepository._validate_recovery_migration_boundary(
+            conn,
+            key,
+            expected_generation=expected_generation,
+        )
         AgentRuntimeOwnershipRepository._validate_actor_state_generations(
             conn,
             key,
@@ -634,8 +664,16 @@ class AgentRuntimeOwnershipRepository(Repository):
                     END
                 WHERE profile_id = ? AND session_id = ?
                   AND ownership_generation = ?
+                  AND NOT (kind = ? AND source = ?)
                 """,
-                (now, key.profile_id, key.session_id, expected_generation),
+                (
+                    now,
+                    key.profile_id,
+                    key.session_id,
+                    expected_generation,
+                    _TYPED_RECOVERY_EVENT_KIND,
+                    _TYPED_RECOVERY_EVENT_SOURCE,
+                ),
             )
             conn.execute(
                 """
@@ -699,19 +737,28 @@ class AgentRuntimeOwnershipRepository(Repository):
             "agent_review_schedule_events",
             "agent_effect_outbox",
         ):
+            extra_predicate = ""
+            parameters: tuple[object, ...] = (
+                target_generation,
+                key.profile_id,
+                key.session_id,
+                expected_generation,
+            )
+            if table_name == "agent_session_mailbox":
+                extra_predicate = " AND NOT (kind = ? AND source = ?)"
+                parameters += (
+                    _TYPED_RECOVERY_EVENT_KIND,
+                    _TYPED_RECOVERY_EVENT_SOURCE,
+                )
             conn.execute(
                 f"""
                 UPDATE {table_name}
                 SET ownership_generation = ?
                 WHERE profile_id = ? AND session_id = ?
                   AND ownership_generation = ?
+                  {extra_predicate}
                 """,
-                (
-                    target_generation,
-                    key.profile_id,
-                    key.session_id,
-                    expected_generation,
-                ),
+                parameters,
             )
 
     @staticmethod
@@ -835,20 +882,87 @@ class AgentRuntimeOwnershipRepository(Repository):
             "agent_review_schedule_events",
             "agent_effect_outbox",
         ):
+            extra_predicate = ""
+            parameters: tuple[object, ...] = (
+                key.profile_id,
+                key.session_id,
+                expected_generation,
+            )
+            if table_name == "agent_session_mailbox":
+                extra_predicate = " AND NOT (kind = ? AND source = ?)"
+                parameters += (
+                    _TYPED_RECOVERY_EVENT_KIND,
+                    _TYPED_RECOVERY_EVENT_SOURCE,
+                )
             row = conn.execute(
                 f"""
                 SELECT ownership_generation FROM {table_name}
                 WHERE profile_id = ? AND session_id = ?
                   AND ownership_generation != ?
+                  {extra_predicate}
                 LIMIT 1
                 """,
-                (key.profile_id, key.session_id, expected_generation),
+                parameters,
             ).fetchone()
             if row is not None:
                 raise AgentRuntimeOwnershipGenerationConflict(
                     "actor state contains a stale ownership generation in "
                     f"{table_name}: {int(row['ownership_generation'])}"
                 )
+
+    @staticmethod
+    def _validate_recovery_migration_boundary(
+        conn: Connection,
+        key: SessionKey,
+        *,
+        expected_generation: int,
+    ) -> None:
+        """Keep typed recovery certificates immutable across owner changes."""
+
+        open_case = conn.execute(
+            """
+            SELECT case_id
+            FROM agent_session_recovery_cases
+            WHERE profile_id = ?
+              AND session_id = ?
+              AND ownership_generation = ?
+              AND status = 'open'
+            ORDER BY case_id
+            LIMIT 1
+            """,
+            (key.profile_id, key.session_id, expected_generation),
+        ).fetchone()
+        if open_case is not None:
+            raise AgentRuntimeOwnershipMigrationConflict(
+                "open typed recovery case blocks ownership migration: "
+                f"{open_case['case_id']}"
+            )
+        active_delivery = conn.execute(
+            """
+            SELECT event_id, status
+            FROM agent_session_mailbox
+            WHERE profile_id = ?
+              AND session_id = ?
+              AND ownership_generation = ?
+              AND kind = ?
+              AND source = ?
+              AND status IN ('pending', 'processing')
+            ORDER BY mailbox_id
+            LIMIT 1
+            """,
+            (
+                key.profile_id,
+                key.session_id,
+                expected_generation,
+                _TYPED_RECOVERY_EVENT_KIND,
+                _TYPED_RECOVERY_EVENT_SOURCE,
+            ),
+        ).fetchone()
+        if active_delivery is not None:
+            raise AgentRuntimeOwnershipMigrationConflict(
+                "active typed recovery delivery blocks ownership migration: "
+                f"{active_delivery['event_id']}:{active_delivery['status']}"
+            )
     @staticmethod
     def _validate_routing_state_generations(
         conn: Connection,

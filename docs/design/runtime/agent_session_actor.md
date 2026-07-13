@@ -41,11 +41,17 @@ work, not a production capability.
 `SQLiteSessionActorStore` already creates legacy heuristic `RecoveryRequested`
 mailbox events for orphaned non-idle aggregates. Those rows use source
 `session_actor_recovery`; they do not contain a recovery certificate and cannot
-authorize the target protocol. `RecoveryRequested` is not yet an
-`AgentSessionEventKind` or a reducer branch, so the current reducer records the
-legacy event as unsupported instead of rebuilding or settling the aggregate.
-Durable recovery is therefore an explicit activation blocker, not a completed
-v2 feature.
+authorize the target protocol. An inactive `SQLiteRecoveryGraphScanner` now
+exists for bounded certificate discovery, typed case/delivery insertion, and
+raw-corruption findings. Its `SQLiteRecoveryGraphReader` is a separate,
+transaction-bound authority port used by `SQLiteRecoveryCommitCoordinator`.
+`RecoveryRequested` is an `AgentSessionEventKind`: the legacy source produces
+only an explicit ignored no-op, while the typed scanner source produces a
+compact `RecoveryCommitIntent` that the coordinator re-proves inside the store
+transaction. None of the scanner, coordinator, or state-specific materializer
+registry is constructed by the production registry, scheduled at startup, or
+exposed through `AgentRuntime`. Durable recovery is therefore still an explicit
+activation blocker, not a live v2 feature.
 
 ## Problem
 
@@ -805,13 +811,69 @@ stable cursor.
 
 ## Recovery
 
-The following is the target recovery contract. The current store only enqueues
-the legacy `session_actor_recovery` heuristic described above. The certificate
-authority uses source `durable_session_recovery_scanner`; its graph scanner,
-emitter, commit-time revalidation, and reducer branch are not implemented yet.
-Do not activate Actor v2 ownership until the legacy rows have a fenced terminal
-disposition and the typed event deterministically rebuilds or settles every
-non-idle aggregate.
+The following is the target recovery contract. The current store still enqueues
+the legacy `session_actor_recovery` heuristic described above, while the
+inactive certificate authority uses source
+`durable_session_recovery_scanner`. Typed discovery, reducer intent creation,
+commit-time proof, and generic state-keyed materializer dispatch are implemented
+and integration-tested, but no production runtime constructs or activates them.
+Do not activate Actor v2 ownership until legacy rows have a fenced terminal
+policy and typed materializers deterministically rebuild or settle every
+non-idle aggregate reachable from production ingress.
+
+### Implemented Inactive Discovery Boundary
+
+`SQLiteRecoveryGraphScanner` is a diagnostic and protocol-building component,
+not a recovery executor. Each candidate uses one `BEGIN IMMEDIATE` transaction
+and a bounded raw SQLite projection. Its graph currently includes the aggregate
+and ownership fence, reachable state operations, live/referenced effects,
+mailbox work, schedules and schedule journal, message consumption and linked
+ledger rows, external-action receipts and attempts, route outbox debt, and the
+aggregate transition-journal tail. Text keys are queried through raw BLOB
+expressions so a SQLite TEXT/BLOB alias is surfaced as a finding instead of
+being silently omitted by affinity matching.
+
+Discovery uses a conservative state shape. Review, active reply, and
+active-chat-settling require the matching live operation and aggregate fence;
+active chat is `no_recovery` only after a completed bootstrap with no remaining
+round/control work. Missing, terminal, wrong-kind, malformed, oversized, or
+ambiguous authority records create a typed blocker or an operator-visible
+finding. Executing or unknown external actions are blockers and are never
+replayed. A delivery is preflighted by its raw `(profile_id, session_id,
+event_id)` logical key both before and after insertion; its complete typed
+envelope and payload are decoded again before a case cycle can advance.
+
+`SQLiteRecoveryGraphReader` is deliberately a separate read-only module and
+the only authority dependency a commit coordinator receives. Its
+`rebuild_certificate(conn, ...)` method requires the caller's already-open
+transaction, revalidates Actor v2 ownership in that transaction, and never
+opens a connection or writes a case, finding, mailbox, aggregate, effect, or
+transition. The reader also owns raw typed recovery-delivery decoding and
+immutable-envelope validation, so a coordinator cannot fall back to the normal
+mailbox decoder and lose TEXT/BLOB alias evidence. The scanner composes one
+reader using the exact same database and policy instance; its compatibility
+`rebuild_certificate()` method only delegates. An `idle` aggregate or moved
+ownership produces `RecoveryGraphNotEligible`, which the coordinator settles as
+`superseded`, while malformed authority remains a
+`RecoveryGraphReadError` and must become a blocker/finding.
+
+The coordinator receives only a compact immutable intent from the reducer. In
+the store's existing `BEGIN IMMEDIATE` transaction it re-reads the claimed raw
+mailbox row, raw case snapshot, ownership, graph certificate, physical mailbox
+id, and aggregate fence before invoking a pure materializer. A changed lease or
+claim is a `RecoveryDeliveryClaimLost` outcome: the actor makes no aggregate,
+case, or mailbox write on that path. The scanner remains unwired until the
+runtime supplies materializers and full route-to-mailbox-to-ledger convergence
+proof; the presence of these components is not an authorization to activate
+recovery in production.
+
+The actor must never send a scanner-owned delivery through ordinary
+`release()` or `fail()` after reducer decoding or commit-time proof rejects it.
+Before the raw claim/case can be proven, it leaves that claim untouched so a
+scanner pass can record a finding without advancing aggregate sequence. After
+the coordinator has proven the raw delivery and case, an unsafe provisional
+carrier or materializer result settles as a completed no-op plus
+`scanner_blocked`; it does not become a generic mailbox-failed transition.
 
 ### Recovery Certificates And Cases
 
@@ -825,12 +887,13 @@ unknown versions, extra or missing fields, non-canonical ordering, and any
 work-graph, case, certificate, or mailbox identity mismatch fail closed.
 
 The v1 work-graph digest includes the semantic aggregate fence, graph, and
-decision, but excludes `event_sequence`. The complete certificate digest does
-include `event_sequence`. A mailbox failure may therefore produce a new
-certificate for the same semantic case, while a state revision, epoch,
-activity generation, plan fence, graph fact, invariant, or decision change
-produces a new case. The case id binds certificate version, profile-scoped
-subject, policy version, and work-graph digest. Its v1 form is:
+decision, but excludes transient aggregate `event_sequence` and
+state-transition journal-tail nodes. The complete certificate digest retains
+that raw audit evidence. A no-op journal or mailbox failure may therefore
+produce a new certificate for the same semantic case, while a state revision,
+epoch, activity generation, plan fence, graph fact, invariant, or decision
+change produces a new case. The case id binds certificate version,
+profile-scoped subject, policy version, and work-graph digest. Its v1 form is:
 
 ```text
 recovery-case:v1:<64 lowercase SHA-256 hex characters>
@@ -856,8 +919,8 @@ Case status has the following bounded meaning:
 - `applied`: the fenced recovery decision committed successfully;
 - `superseded`: ownership or graph authority changed before application;
 - `delivery_exhausted`: bounded delivery policy reached its terminal limit;
-- `scanner_blocked`: discovery found malformed or conflicting durable
-  authority and recorded a durable operator-visible blocker.
+- `scanner_blocked`: discovery or a verified commit-time materializer recorded
+  a durable operator-visible blocker without applying business state.
 
 The status matrix is explicit. `open` may remain open or move to any other
 status. `scanner_blocked` may remain blocked, return to `open` after a successful
@@ -889,6 +952,15 @@ the last consumed delivery. A legacy event cannot satisfy this evidence check:
 typed deliveries use source `durable_session_recovery_scanner`, while the
 pre-certificate startup heuristic retains `session_actor_recovery` until it is
 retired at the activation gate.
+
+When a completed typed delivery finds the same semantic case but a different
+complete certificate, the coordinator records a `refreshed` no-op journal and
+leaves the case open. A later scan may emit exactly one next cycle only when the
+last completed delivery still matches the case's previous certificate digest.
+An unchanged completed delivery is a finding, not a retry. If that refreshed
+path reaches the delivery limit, the case becomes `scanner_blocked` rather than
+`delivery_exhausted`, because the final mailbox evidence is completed rather
+than failed.
 
 Once aggregate ownership advances, an older-generation case is history. It may
 be marked `superseded`, `delivery_exhausted`, or retain a blocker for audit, but
@@ -933,13 +1005,22 @@ The mailbox payload contains the complete certificate, case id, and delivery
 cycle. Its typed decoder also receives the mailbox envelope projection and
 verifies profile id, session id, ownership generation, event kind, event
 source, and the deterministic event id. Before applying `RecoveryRequested`,
-the reducer/store commit transaction must re-read the aggregate and all graph
-authority, reconstruct the current certificate under the persisted policy
-version, and verify the case is still `open` with the delivered certificate and
-cycle. It then commits either the normal fenced recovery transition plus
-`applied`, or no state transition plus `superseded`/a durable blocker. Comparing
-only aggregate state or trusting a previously decoded in-memory certificate is
-not commit-time revalidation.
+the pure reducer may only validate its typed envelope and emit a
+`RecoveryCommitIntent`; it must not construct a target aggregate or read
+persistence. A `RecoveryCommitCoordinator`, running inside the store's single
+commit transaction, must re-read the claimed raw mailbox row, case, ownership,
+and all graph authority through `SQLiteRecoveryGraphReader`; reconstruct the
+current certificate under the persisted policy version; and verify the case is
+still `open` with the delivered certificate and cycle. Only then may a
+state-specific pure materializer produce a normal fenced transition. The same
+transaction commits either that transition plus `applied`, or no business state
+change plus a no-op transition journal, completed mailbox, and
+`superseded`/durable-blocker case settlement. Materializer journal metadata and
+every persistence-facing materializer field are bounded to values the raw
+reader can reload; a complete certificate or delivery record is forbidden from
+all of them, including aggregate, effect, operation, and journal data.
+Comparing only aggregate state or trusting a previously decoded in-memory
+certificate is not commit-time revalidation.
 
 Schema initialization verifies the canonical recovery table and replaces all
 same-name recovery triggers. A weak legacy table is rebuilt under a savepoint:
@@ -1089,9 +1170,10 @@ following are true for that ownership mode:
   retried merely because a process restarted;
 - recovery can rebuild or settle every non-idle aggregate without calling a
   legacy transition shortcut;
-- every durable `RecoveryRequested` emitted by the SQLite store is consumed by
-  a fenced reducer branch that deterministically rebuilds or settles its
-  non-idle aggregate;
+- every typed `RecoveryRequested` emitted by the scanner is consumed through a
+  fenced reducer intent and commit coordinator that deterministically rebuilds
+  or settles its non-idle aggregate, while legacy
+  `session_actor_recovery` rows have an explicit terminal policy;
 - management reads use the same profile-scoped actor state that runtime writes;
 - migration tests prove that the same external session id can be owned by two
   profiles without sharing state.

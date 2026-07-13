@@ -11,6 +11,8 @@ from shinbot.persistence import DatabaseManager
 
 _CASE_DIGEST = "c" * 64
 _CASE_ID = f"recovery-case:v1:{_CASE_DIGEST}"
+_FINDING_DIGEST = "d" * 64
+_FINDING_ID = f"recovery-finding:v1:{_FINDING_DIGEST}"
 _RECOVERY_CASE_COLUMNS = {
     "case_id",
     "profile_id",
@@ -37,8 +39,24 @@ _CANONICAL_RECOVERY_TRIGGER_NAMES = {
     "trg_agent_recovery_case_progress_evidence",
     "trg_agent_recovery_case_progress_monotonic",
     "trg_agent_recovery_case_status_transition",
+    "trg_agent_recovery_case_terminal_delivery_state",
     "trg_agent_recovery_case_terminal_immutable",
     "trg_agent_recovery_case_time_monotonic",
+}
+_RECOVERY_FINDING_COLUMNS = {
+    "finding_seq",
+    "finding_id",
+    "profile_id",
+    "session_id",
+    "ownership_generation",
+    "code",
+    "evidence_digest",
+    "evidence_json",
+    "status",
+    "occurrence_count",
+    "first_seen_at",
+    "last_seen_at",
+    "resolved_at",
 }
 
 
@@ -329,6 +347,51 @@ def test_recovery_case_schema_is_created_idempotently(tmp_path: Path) -> None:
         "idx_agent_session_recovery_cases_session",
     } <= indexes
     assert triggers == _CANONICAL_RECOVERY_TRIGGER_NAMES
+
+
+def test_recovery_finding_schema_is_created_idempotently(tmp_path: Path) -> None:
+    database = _make_database(tmp_path)
+    database.initialize()
+    _insert_aggregate(database)
+
+    with database.connect() as conn:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(agent_session_recovery_findings)")
+        }
+        indexes = {
+            str(row["name"])
+            for row in conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'index'
+                  AND tbl_name = 'agent_session_recovery_findings'
+                """
+            )
+        }
+        conn.execute(
+            """
+            INSERT INTO agent_session_recovery_findings (
+                finding_id, profile_id, session_id, ownership_generation,
+                code, evidence_digest, evidence_json, status,
+                occurrence_count, first_seen_at, last_seen_at, resolved_at
+            ) VALUES (?, 'profile-a', 'bot:group:room', 3, ?, ?, '{}', 'open',
+                      1, 100, 100, NULL)
+            """,
+            (_FINDING_ID, "aggregate_payload_invalid", _FINDING_DIGEST),
+        )
+        row = conn.execute(
+            """
+            SELECT status, occurrence_count, resolved_at
+            FROM agent_session_recovery_findings WHERE finding_id = ?
+            """,
+            (_FINDING_ID,),
+        ).fetchone()
+
+    assert columns == _RECOVERY_FINDING_COLUMNS
+    assert "idx_agent_session_recovery_findings_open" in indexes
+    assert row is not None
+    assert tuple(row) == ("open", 1, None)
 
 
 def test_recovery_case_schema_is_added_to_preexisting_actor_database(
@@ -1097,10 +1160,21 @@ def test_terminal_recovery_case_cannot_reopen_or_mutate(
 
     with database.connect() as conn:
         if needs_delivery:
-            _advance_case_delivery(
+            event_id = _advance_case_delivery(
                 conn,
                 delivery_cycle=0,
                 updated_at=100.5,
+            )
+            delivery_status = (
+                "completed" if terminal_status == "applied" else "failed"
+            )
+            conn.execute(
+                """
+                UPDATE agent_session_mailbox
+                SET status = ?, handled_at = 100.75
+                WHERE event_id = ?
+                """,
+                (delivery_status, event_id),
             )
         conn.execute(
             """
@@ -1129,6 +1203,109 @@ def test_terminal_recovery_case_cannot_reopen_or_mutate(
                 WHERE case_id = ?
                 """,
                 ("d" * 64, _CASE_ID),
+            )
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "active_mailbox_status", "settled_mailbox_status"),
+    [
+        ("applied", "pending", "completed"),
+        ("delivery_exhausted", "processing", "failed"),
+        ("superseded", "processing", "completed"),
+        ("scanner_blocked", "pending", "completed"),
+    ],
+)
+def test_terminal_recovery_case_requires_settled_delivery_evidence(
+    tmp_path: Path,
+    terminal_status: str,
+    active_mailbox_status: str,
+    settled_mailbox_status: str,
+) -> None:
+    database = _make_database(tmp_path)
+    _insert_aggregate(database)
+    _insert_case(database)
+
+    with database.connect() as conn:
+        event_id = _advance_case_delivery(
+            conn,
+            delivery_cycle=0,
+            updated_at=100.5,
+        )
+        if active_mailbox_status != "pending":
+            conn.execute(
+                """
+                UPDATE agent_session_mailbox
+                SET status = ?
+                WHERE event_id = ?
+                """,
+                (active_mailbox_status, event_id),
+            )
+        last_error = (
+            "materializer_blocked" if terminal_status == "scanner_blocked" else ""
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="settled typed delivery"):
+            conn.execute(
+                """
+                UPDATE agent_session_recovery_cases
+                SET status = ?, last_error = ?, updated_at = 101
+                WHERE case_id = ?
+                """,
+                (terminal_status, last_error, _CASE_ID),
+            )
+        conn.execute(
+            """
+            UPDATE agent_session_mailbox
+            SET status = ?, handled_at = 100.75
+            WHERE event_id = ?
+            """,
+            (settled_mailbox_status, event_id),
+        )
+        conn.execute(
+            """
+            UPDATE agent_session_recovery_cases
+            SET status = ?, last_error = ?, updated_at = 101
+            WHERE case_id = ?
+            """,
+            (terminal_status, last_error, _CASE_ID),
+        )
+
+
+@pytest.mark.parametrize("terminal_status", ["superseded", "scanner_blocked"])
+def test_terminal_recovery_case_requires_completed_last_delivery(
+    tmp_path: Path,
+    terminal_status: str,
+) -> None:
+    """A failed delivery cannot masquerade as a settled blocker or supersession."""
+
+    database = _make_database(tmp_path)
+    _insert_aggregate(database)
+    _insert_case(database)
+
+    with database.connect() as conn:
+        event_id = _advance_case_delivery(
+            conn,
+            delivery_cycle=0,
+            updated_at=100.5,
+        )
+        conn.execute(
+            """
+            UPDATE agent_session_mailbox
+            SET status = 'failed', handled_at = 100.75
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        )
+        last_error = (
+            "materializer_blocked" if terminal_status == "scanner_blocked" else ""
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="settled typed delivery"):
+            conn.execute(
+                """
+                UPDATE agent_session_recovery_cases
+                SET status = ?, last_error = ?, updated_at = 101
+                WHERE case_id = ?
+                """,
+                (terminal_status, last_error, _CASE_ID),
             )
 
 
@@ -1415,11 +1592,23 @@ def test_prior_generation_recovery_case_only_allows_terminal_disposition(
     _insert_case(database)
     with database.connect() as conn:
         if operation in {"rewrite_digest", "apply", "exhaust_delivery"}:
-            _advance_case_delivery(
+            event_id = _advance_case_delivery(
                 conn,
                 delivery_cycle=0,
                 updated_at=101,
             )
+            if operation in {"apply", "exhaust_delivery"}:
+                delivery_status = (
+                    "completed" if operation == "apply" else "failed"
+                )
+                conn.execute(
+                    """
+                    UPDATE agent_session_mailbox
+                    SET status = ?, handled_at = 101.5
+                    WHERE event_id = ?
+                    """,
+                    (delivery_status, event_id),
+                )
         elif operation == "reopen_scanner_blocked":
             conn.execute(
                 """

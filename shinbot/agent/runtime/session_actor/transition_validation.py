@@ -7,6 +7,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from shinbot.agent.runtime.session_actor.aggregate import AgentSessionAggregate
+from shinbot.agent.runtime.session_actor.effect_contracts import (
+    EffectContractAuthority,
+    validate_effect_declaration,
+)
 from shinbot.agent.runtime.session_actor.events import (
     ReviewScheduleStatus,
     SessionReviewSchedule,
@@ -37,6 +41,69 @@ _SCHEDULE_OUTCOME_FIELDS = frozenset(
 
 class ReviewPlanTransitionValidationError(ValueError):
     """Raised when a new review plan lacks one coherent durable declaration."""
+
+
+def validate_session_transition(
+    current: AgentSessionAggregate,
+    transition: SessionTransition,
+    *,
+    effect_contract_authority: EffectContractAuthority,
+) -> None:
+    """Validate the pure, cross-store shape of one actor transition.
+
+    Durable stores additionally validate aggregate diffs, leases, database
+    uniqueness, and existing records. This function intentionally preserves the
+    actor-level rules that can be checked before a persistence transaction, so
+    actors and commit-time recovery materializers share one invariant boundary.
+    """
+
+    if not isinstance(current, AgentSessionAggregate):
+        raise TypeError("current must be an AgentSessionAggregate")
+    if not isinstance(transition, SessionTransition):
+        raise TypeError("session event handler must return SessionTransition")
+    if not isinstance(effect_contract_authority, EffectContractAuthority):
+        raise TypeError("effect_contract_authority must be an EffectContractAuthority")
+    next_aggregate = transition.aggregate
+    if next_aggregate.key != current.key:
+        raise ValueError("a session transition cannot change actor ownership")
+    if next_aggregate.event_sequence != current.event_sequence + 1:
+        raise ValueError("a session transition must advance event_sequence exactly once")
+    if next_aggregate.state_revision not in {
+        current.state_revision,
+        current.state_revision + 1,
+    }:
+        raise ValueError("a session transition may advance state_revision at most once")
+    effect_ids = [effect.effect_id for effect in transition.effects]
+    if len(effect_ids) != len(set(effect_ids)):
+        raise ValueError("a session transition contains duplicate effect ids")
+    for effect in transition.effects:
+        validate_effect_declaration(effect, authority=effect_contract_authority)
+    operation_ids = [operation.operation_id for operation in transition.operations]
+    if len(operation_ids) != len(set(operation_ids)):
+        raise ValueError("a session transition contains duplicate operation ids")
+    plan_ids = [schedule.plan_id for schedule in transition.review_schedules]
+    if len(plan_ids) != len(set(plan_ids)):
+        raise ValueError("a session transition contains duplicate review plan ids")
+    validate_review_plan_transition(current, transition)
+    if transition.review_schedules:
+        if len(transition.review_schedules) != 1:
+            raise ValueError("a session transition may replace at most one review plan")
+        schedule = transition.review_schedules[0]
+        if not transition.caused_plan_id:
+            raise ValueError("a review schedule transition must identify caused_plan_id")
+        if schedule.plan_id != transition.caused_plan_id:
+            raise ValueError("review schedule does not match caused_plan_id")
+        if schedule.plan_id != next_aggregate.current_plan_id:
+            raise ValueError("review schedule does not match aggregate current_plan_id")
+        if schedule.plan_revision != next_aggregate.review_plan_revision:
+            raise ValueError(
+                "review schedule revision does not match aggregate plan revision"
+            )
+    schedule_event_ids = [
+        event.schedule_event_id for event in transition.review_schedule_events
+    ]
+    if len(schedule_event_ids) != len(set(schedule_event_ids)):
+        raise ValueError("a session transition contains duplicate schedule event ids")
 
 
 def validate_review_plan_transition(
@@ -730,6 +797,7 @@ def _defaulted_integer(
 
 __all__ = [
     "ReviewPlanTransitionValidationError",
+    "validate_session_transition",
     "review_plan_semantics",
     "review_schedule_event_semantics",
     "review_schedule_semantics",

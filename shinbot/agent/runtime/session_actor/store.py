@@ -48,9 +48,19 @@ from shinbot.agent.runtime.session_actor.message_ledger_persistence import (
     load_message_ledger_entries,
     load_message_ledger_ranges,
 )
+from shinbot.agent.runtime.session_actor.recovery import (
+    RECOVERY_DELIVERY_EVENT_KIND,
+    RECOVERY_DELIVERY_EVENT_SOURCE,
+)
+from shinbot.agent.runtime.session_actor.recovery_commit import RecoveryCommitIntent
+from shinbot.agent.runtime.session_actor.recovery_commit_coordinator import (
+    RecoveryCommitResolution,
+    SQLiteRecoveryCommitCoordinator,
+)
 from shinbot.agent.runtime.session_actor.transition_validation import (
     ReviewPlanTransitionValidationError,
     validate_review_plan_transition,
+    validate_session_transition,
 )
 
 if TYPE_CHECKING:
@@ -114,6 +124,7 @@ class SQLiteSessionActorStore:
         retry_delay_seconds: float = 1.0,
         clock: Callable[[], float] | None = None,
         effect_contract_authority: EffectContractAuthority | None = None,
+        recovery_commit_coordinator: SQLiteRecoveryCommitCoordinator | None = None,
     ) -> None:
         """Initialize the store.
 
@@ -124,6 +135,8 @@ class SQLiteSessionActorStore:
             clock: Injectable wall clock used by tests and persistence records.
             effect_contract_authority: Sealed contract graph shared with the
                 actor and durable effect executor.
+            recovery_commit_coordinator: Optional raw-authority coordinator for
+                typed recovery deliveries in this same database domain.
         """
 
         normalized_lease_seconds = float(lease_seconds)
@@ -147,6 +160,14 @@ class SQLiteSessionActorStore:
         if not authority.sealed:
             raise TypeError("effect_contract_authority must be sealed")
         self._effect_contract_authority = authority
+        if (
+            recovery_commit_coordinator is not None
+            and recovery_commit_coordinator.persistence_domain is not database
+        ):
+            raise ValueError(
+                "recovery_commit_coordinator must share the store persistence domain"
+            )
+        self._recovery_commit_coordinator = recovery_commit_coordinator
 
     @property
     def effect_contract_authority(self) -> EffectContractAuthority:
@@ -404,17 +425,37 @@ class SQLiteSessionActorStore:
         by the transition are part of the same transaction.
         """
 
+        recovery_intent = transition.recovery_commit_intent
+        if recovery_intent is not None and not isinstance(
+            recovery_intent,
+            RecoveryCommitIntent,
+        ):
+            raise TypeError("recovery_commit_intent must be a RecoveryCommitIntent")
+        typed_recovery = (
+            claim.envelope.kind == RECOVERY_DELIVERY_EVENT_KIND
+            and claim.envelope.source == RECOVERY_DELIVERY_EVENT_SOURCE
+        )
+        if typed_recovery and recovery_intent is None:
+            raise DurableRecordConflict(
+                "typed recovery delivery requires a recovery commit intent"
+            )
+        if not typed_recovery and recovery_intent is not None:
+            raise DurableRecordConflict(
+                "recovery commit intent requires a typed recovery delivery"
+            )
         target = transition.aggregate
-        if target.key != claim.key:
-            raise ValueError("transition aggregate key does not match mailbox claim")
         if expected_revision < 0:
             raise ValueError("expected_revision must not be negative")
-        self._validate_message_ledger_transition(claim, transition)
-        self._validate_effect_declarations(transition)
+        if not typed_recovery:
+            if target.key != claim.key:
+                raise ValueError("transition aggregate key does not match mailbox claim")
+            self._validate_message_ledger_transition(claim, transition)
+            self._validate_effect_declarations(transition)
 
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             now = self._now()
+            recovery_resolution: RecoveryCommitResolution | None = None
             ownership_generation = _persistable_ownership_generation(
                 claim.envelope.ownership_generation
             )
@@ -436,18 +477,70 @@ class SQLiteSessionActorStore:
             ).fetchone()
             if mailbox_row is None:
                 raise MailboxLeaseConflict("mailbox event no longer exists")
-            self._validate_mailbox_identity(mailbox_row, claim)
-            if str(mailbox_row["status"]) == MailboxEventStatus.COMPLETED.value:
-                current = self._load_row(conn, claim.key)
-                if current is None:
-                    raise SessionAggregateNotFound(claim.key.session_id)
-                return _aggregate_from_row(current)
-            self._validate_claim_lease(mailbox_row, claim, now=now)
+            if not typed_recovery:
+                self._validate_mailbox_identity(mailbox_row, claim)
+                if str(mailbox_row["status"]) == MailboxEventStatus.COMPLETED.value:
+                    current = self._load_row(conn, claim.key)
+                    if current is None:
+                        raise SessionAggregateNotFound(claim.key.session_id)
+                    return _aggregate_from_row(current)
+                self._validate_claim_lease(mailbox_row, claim, now=now)
+            elif self._recovery_commit_coordinator is None:
+                raise DurableRecordConflict(
+                    "typed recovery delivery requires a recovery commit coordinator"
+                )
+            else:
+                assert recovery_intent is not None
+                prepared_recovery = self._recovery_commit_coordinator.prepare(
+                    conn,
+                    claim=claim,
+                    intent=recovery_intent,
+                    provisional_transition=transition,
+                    commit_now=now,
+                )
+                if prepared_recovery.delivery.mailbox_id != int(
+                    mailbox_row["mailbox_id"]
+                ):
+                    raise DurableRecordConflict(
+                        "recovery delivery physical mailbox identity changed"
+                    )
 
             current_row = self._load_row(conn, claim.key)
             if current_row is None:
                 raise SessionAggregateNotFound(claim.key.session_id)
             current = _aggregate_from_row(current_row)
+            commit_expected_revision = expected_revision
+            if typed_recovery:
+                assert self._recovery_commit_coordinator is not None
+                recovery_resolution = self._recovery_commit_coordinator.resolve(
+                    prepared_recovery,
+                    aggregate=current,
+                    transition_validator=(
+                        lambda materialized: self._validate_recovery_materialized_transition(
+                            current=current,
+                            claim=claim,
+                            ownership_generation=ownership_generation,
+                            transition=materialized,
+                        )
+                    ),
+                )
+                transition = recovery_resolution.transition
+                target = transition.aggregate
+                if recovery_resolution.mailbox_id != prepared_recovery.delivery.mailbox_id:
+                    raise DurableRecordConflict(
+                        "recovery resolution mailbox identity changed"
+                    )
+                validate_session_transition(
+                    current,
+                    transition,
+                    effect_contract_authority=self._effect_contract_authority,
+                )
+                self._validate_message_ledger_transition(claim, transition)
+                self._validate_effect_declarations(transition)
+                # The coordinator re-proves the current aggregate in this write
+                # transaction; its resolved transition is not authorized by the
+                # actor's pre-claim aggregate snapshot.
+                commit_expected_revision = current.state_revision
             if (
                 current.ownership_generation != ownership_generation
                 or target.ownership_generation != ownership_generation
@@ -502,7 +595,7 @@ class SQLiteSessionActorStore:
             self._validate_aggregate_transition(
                 current,
                 target,
-                expected_revision=expected_revision,
+                expected_revision=commit_expected_revision,
             )
             updated = conn.execute(
                 """
@@ -549,13 +642,13 @@ class SQLiteSessionActorStore:
                     claim.key.profile_id,
                     claim.key.session_id,
                     ownership_generation,
-                    expected_revision,
+                    commit_expected_revision,
                     current.event_sequence,
                 ),
             )
             if updated.rowcount != 1:
                 raise AggregateVersionConflict(
-                    f"stale aggregate revision {expected_revision} for {claim.key}"
+                    f"stale aggregate revision {commit_expected_revision} for {claim.key}"
                 )
 
             for operation in transition.operations:
@@ -633,6 +726,7 @@ class SQLiteSessionActorStore:
                 WHERE event_id = ?
                   AND profile_id = ?
                   AND session_id = ?
+                  AND mailbox_id = ?
                   AND ownership_generation = ?
                   AND status = 'processing'
                   AND claim_id = ?
@@ -643,6 +737,7 @@ class SQLiteSessionActorStore:
                     claim.envelope.event_id,
                     claim.key.profile_id,
                     claim.key.session_id,
+                    int(mailbox_row["mailbox_id"]),
                     ownership_generation,
                     claim.claim_id,
                     claim.worker_id,
@@ -650,6 +745,13 @@ class SQLiteSessionActorStore:
             )
             if completed.rowcount != 1:
                 raise MailboxLeaseConflict("mailbox lease changed during commit")
+            if recovery_resolution is not None:
+                assert self._recovery_commit_coordinator is not None
+                self._recovery_commit_coordinator.finalize_case(
+                    conn,
+                    recovery_resolution,
+                    commit_now=now,
+                )
         return target
 
     @staticmethod
@@ -685,6 +787,47 @@ class SQLiteSessionActorStore:
                 )
             except EffectDeclarationValidationError as exc:
                 raise DurableRecordConflict(str(exc)) from exc
+
+    def _validate_recovery_materialized_transition(
+        self,
+        *,
+        current: AgentSessionAggregate,
+        claim: ClaimedSessionEvent,
+        ownership_generation: int,
+        transition: SessionTransition,
+    ) -> None:
+        """Preflight a proven materializer result before it can mutate storage.
+
+        Recovery coordinators own the fallback to a durable blocker. This store
+        callback supplies the actor/effect/review-plan contracts that require
+        the composed persistence authority but perform no writes themselves.
+        """
+
+        validate_session_transition(
+            current,
+            transition,
+            effect_contract_authority=self._effect_contract_authority,
+        )
+        self._validate_message_ledger_transition(claim, transition)
+        self._validate_effect_declarations(transition)
+        target = transition.aggregate
+        if (
+            current.ownership_generation != ownership_generation
+            or target.ownership_generation != ownership_generation
+        ):
+            raise AggregateVersionConflict(
+                "aggregate ownership generation does not match mailbox claim"
+            )
+        self._validate_review_plan_forward_transition(
+            current,
+            target,
+            transition,
+        )
+        self._validate_aggregate_transition(
+            current,
+            target,
+            expected_revision=current.state_revision,
+        )
 
     async def release(self, claim: ClaimedSessionEvent, *, error: str) -> None:
         """Release a claimed event for retry after a bounded delay."""

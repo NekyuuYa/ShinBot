@@ -195,6 +195,50 @@ def test_event_sequence_changes_certificate_but_not_work_graph_or_case() -> None
     assert original.certificate_digest != redelivery.certificate_digest
 
 
+def test_transition_journal_tail_changes_certificate_but_not_work_graph_or_case() -> None:
+    decision = RecoveryDecision(
+        kind=RecoveryDecisionKind.RECOVER_ORPHANED_WORK,
+        reason_codes=("orphaned_work_without_live_completion",),
+        target_node_identities=("operation:review-1",),
+    )
+
+    def certificate_with_tail(
+        *,
+        event_sequence: int,
+        transition_id: str,
+    ) -> RecoveryCertificate:
+        return build_recovery_certificate(
+            subject=_subject(),
+            aggregate_fence=_fence(event_sequence=event_sequence),
+            nodes=(
+                _operation_node(),
+                RecoveryGraphNode(
+                    identity=f"state_transition:{transition_id}",
+                    kind="state_transition",
+                    authority="agent_state_transitions",
+                    status="committed",
+                    facts={"event_id": transition_id},
+                ),
+            ),
+            edges=(),
+            invariants=(),
+            decision=decision,
+        )
+
+    original = certificate_with_tail(
+        event_sequence=11,
+        transition_id="recovery-delivery-0",
+    )
+    redelivery = certificate_with_tail(
+        event_sequence=12,
+        transition_id="recovery-delivery-1",
+    )
+
+    assert original.work_graph_digest == redelivery.work_graph_digest
+    assert original.case_identity.case_id == redelivery.case_identity.case_id
+    assert original.certificate_digest != redelivery.certificate_digest
+
+
 def test_semantic_graph_changes_all_derived_identity() -> None:
     running = _certificate()
     completed = _certificate(

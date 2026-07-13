@@ -52,6 +52,12 @@ from shinbot.agent.runtime.session_actor.message_ledger import (
     append_message_ledger_entry_from_payload,
     classify_message_watermark,
 )
+from shinbot.agent.runtime.session_actor.recovery import (
+    RECOVERY_DELIVERY_EVENT_SOURCE,
+    RecoveryDeliveryEnvelopeIdentity,
+    RecoveryDeliveryPayload,
+)
+from shinbot.agent.runtime.session_actor.recovery_commit import RecoveryCommitIntent
 from shinbot.agent.runtime.session_actor.review_due_identity import (
     REVIEW_DUE_EVENT_SOURCE,
     review_due_event_id,
@@ -88,6 +94,7 @@ class AgentSessionEventKind(StrEnum):
         "IdleReviewPlanningDeadlineReached"
     )
     MESSAGE_RECEIVED = "MessageReceived"
+    RECOVERY_REQUESTED = "RecoveryRequested"
     REVIEW_DUE = "ReviewDue"
     MANUAL_REVIEW_REQUESTED = "ManualReviewRequested"
     ACTIVE_REPLY_COMPLETED = "ActiveReplyCompleted"
@@ -423,6 +430,8 @@ class AgentSessionReducer:
 
         if aggregate.key != event.key:
             raise ValueError("session event key does not match aggregate ownership")
+        if event.kind == AgentSessionEventKind.RECOVERY_REQUESTED:
+            return self._recovery_requested(aggregate, event)
         if event.kind == AgentSessionEventKind.EXIT_REQUESTED:
             return self._request_exit(aggregate, event)
         if event.kind == AgentSessionEventKind.MESSAGE_RECEIVED:
@@ -467,6 +476,46 @@ class AgentSessionReducer:
             event,
             disposition="ignored_unsupported_event",
             reason=f"unsupported_event:{event.kind}",
+        )
+
+    def _recovery_requested(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> SessionTransition:
+        """Produce only a typed commit intent for scanner-authorized recovery."""
+
+        if event.source != RECOVERY_DELIVERY_EVENT_SOURCE:
+            return self._ignored(
+                aggregate,
+                event,
+                disposition="ignored_legacy_recovery_event",
+                reason="recovery_requested_untrusted_source",
+            )
+        envelope = RecoveryDeliveryEnvelopeIdentity(
+            event_id=event.event_id,
+            profile_id=event.key.profile_id,
+            session_id=event.key.session_id,
+            ownership_generation=event.ownership_generation,
+            kind=event.kind,
+            source=event.source,
+        )
+        payload = RecoveryDeliveryPayload.from_record(
+            event.payload,
+            envelope=envelope,
+        )
+        intent = RecoveryCommitIntent.from_delivery(
+            envelope=envelope,
+            payload=payload,
+        )
+        return SessionTransition(
+            aggregate=aggregate.advance(
+                state_changed=False,
+                updated_at=_event_time(aggregate, event),
+            ),
+            disposition="recovery_commit_pending",
+            recovery_commit_intent=intent,
+            reason="recovery_requested",
         )
 
     def resolve_schedule_outcome(
