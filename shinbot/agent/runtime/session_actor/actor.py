@@ -13,11 +13,18 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
+from shinbot.agent.runtime.session_actor.effect_contracts import (
+    EffectContractAuthority,
+    validate_effect_declaration,
+)
 from shinbot.agent.runtime.session_actor.events import (
     ClaimedSessionEvent,
     EventEnqueueResult,
     SessionEventEnvelope,
     SessionTransition,
+)
+from shinbot.agent.runtime.session_actor.transition_validation import (
+    validate_review_plan_transition,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,6 +37,14 @@ SessionEventHandler = Callable[
 
 class SessionActorStore(Protocol):
     """Durable mailbox and aggregate operations required by a session actor."""
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the stable identity of the backing transaction domain."""
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the sealed effect authority shared with durable execution."""
 
     async def enqueue(self, envelope: SessionEventEnvelope) -> EventEnqueueResult:
         """Idempotently persist an event before its actor is awakened."""
@@ -109,6 +124,13 @@ class AgentSessionActor:
         self.key = key
         self._store = store
         self._handler = handler
+        self._effect_contract_authority = store.effect_contract_authority
+        if not isinstance(self._effect_contract_authority, EffectContractAuthority):
+            raise TypeError(
+                "session actor store must expose an EffectContractAuthority"
+            )
+        if not self._effect_contract_authority.sealed:
+            raise TypeError("session actor effect contract authority must be sealed")
         self.worker_id = str(worker_id or f"session-actor:{uuid.uuid4().hex}")
         self._retry_delay_seconds = max(0.0, float(retry_delay_seconds))
         self._max_attempts = max_attempts
@@ -338,12 +360,18 @@ class AgentSessionActor:
         effect_ids = [effect.effect_id for effect in transition.effects]
         if len(effect_ids) != len(set(effect_ids)):
             raise ValueError("a session transition contains duplicate effect ids")
+        for effect in transition.effects:
+            validate_effect_declaration(
+                effect,
+                authority=self._effect_contract_authority,
+            )
         operation_ids = [operation.operation_id for operation in transition.operations]
         if len(operation_ids) != len(set(operation_ids)):
             raise ValueError("a session transition contains duplicate operation ids")
         plan_ids = [schedule.plan_id for schedule in transition.review_schedules]
         if len(plan_ids) != len(set(plan_ids)):
             raise ValueError("a session transition contains duplicate review plan ids")
+        validate_review_plan_transition(current, transition)
         if transition.review_schedules:
             if len(transition.review_schedules) != 1:
                 raise ValueError("a session transition may replace at most one review plan")

@@ -18,6 +18,7 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionOperation,
     SessionOperationStatus,
     SessionReviewSchedule,
+    SessionReviewScheduleEvent,
     SessionTransition,
 )
 from shinbot.agent.runtime.session_actor.message_ledger import (
@@ -32,6 +33,11 @@ from shinbot.agent.runtime.session_actor.reducer import (
     AgentSessionEventKind,
     AgentSessionReducer,
     AgentSessionState,
+    IdleExitReducerConfig,
+)
+from shinbot.agent.runtime.session_actor.review_due_identity import (
+    REVIEW_DUE_EVENT_SOURCE,
+    review_due_event_id,
 )
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
@@ -281,6 +287,109 @@ async def test_ledger_sequence_restart_and_profile_isolation(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_first_actionable_message_atomically_commits_initial_review_schedule(
+    tmp_path: Path,
+) -> None:
+    database, store = _make_store(tmp_path)
+    key = SessionKey("profile-a", "session-a")
+    generation = await _activate(database, store, key)
+    message_log_id = _insert_message(database, token="initial", created_at=10.0)
+    event = _message_event(
+        event_id="message:initial",
+        key=key,
+        generation=generation,
+        message_log_id=message_log_id,
+        observed_at=10.0,
+    )
+    reducer = AgentSessionReducer(
+        config=IdleExitReducerConfig(
+            default_review_delay_seconds=30.0,
+            default_review_reason="initial integration review",
+        )
+    )
+
+    await _commit_message(store, reducer, event)
+
+    aggregate = await store.load(key)
+    assert aggregate.review_plan_revision == 1
+    assert aggregate.review_plan["scheduled_from"] == 100.0
+    assert aggregate.review_plan["next_review_at"] == 130.0
+    assert aggregate.review_plan["applied_delay_seconds"] == 30.0
+    with database.connect() as conn:
+        ledger = conn.execute(
+            """
+            SELECT source_event_id, eligible_for_work
+            FROM agent_message_ledger
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+        schedule = conn.execute(
+            """
+            SELECT status, plan_revision, outcome, reason, scheduled_from,
+                   next_review_at, available_at, delivery_cycle
+            FROM agent_review_schedules
+            WHERE plan_id = ?
+            """,
+            (aggregate.current_plan_id,),
+        ).fetchone()
+        journal = conn.execute(
+            """
+            SELECT event_id, event_type, plan_id, outcome,
+                   scheduled_from, next_review_at
+            FROM agent_review_schedule_events
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+        mailbox = conn.execute(
+            """
+            SELECT status FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, event.event_id),
+        ).fetchone()
+        state_transition = conn.execute(
+            """
+            SELECT event_id, disposition, plan_id
+            FROM agent_state_transitions
+            WHERE profile_id = ? AND session_id = ?
+            """,
+            (key.profile_id, key.session_id),
+        ).fetchone()
+    assert ledger is not None
+    assert tuple(ledger) == (event.event_id, 1)
+    assert schedule is not None
+    assert tuple(schedule) == (
+        "scheduled",
+        1,
+        "defaulted",
+        "initial integration review",
+        100.0,
+        130.0,
+        130.0,
+        0,
+    )
+    assert journal is not None
+    assert tuple(journal) == (
+        event.event_id,
+        "scheduled",
+        aggregate.current_plan_id,
+        "defaulted",
+        100.0,
+        130.0,
+    )
+    assert mailbox is not None
+    assert str(mailbox["status"]) == "completed"
+    assert state_transition is not None
+    assert tuple(state_transition) == (
+        event.event_id,
+        "message_recorded",
+        aggregate.current_plan_id,
+    )
+
+
+@pytest.mark.asyncio
 async def test_captured_unread_projection_respects_both_operation_boundaries(
     tmp_path: Path,
 ) -> None:
@@ -397,7 +506,17 @@ async def test_operation_snapshot_includes_same_transition_append_and_stamps_all
         contract_version=contract.version,
         contract_signature=contract.signature,
         operation_id=operation_id,
-        payload={"input_watermark": message_log_id},
+        payload={
+            "plan_id": target.current_plan_id,
+            "active_epoch": target.active_epoch,
+            "activity_generation": target.activity_generation,
+            "input_watermark": message_log_id,
+            "input_ledger_sequence": None,
+            "completion_event_id": "workflow-completed-a",
+            "failure_event_id": "workflow-failed-a",
+            "source": "operation-snapshot-test",
+            "trigger": "same-transition-append",
+        },
     )
 
     committed = await store.commit(
@@ -1041,8 +1160,10 @@ async def test_active_reply_completion_atomically_consumes_and_enqueues_action(
 
 
 @pytest.mark.asyncio
-async def test_review_completion_atomically_consumes_and_enters_active_chat(
+@pytest.mark.parametrize("enter_active_chat", (True, False))
+async def test_review_completion_atomically_consumes_and_settles_next_state(
     tmp_path: Path,
+    enter_active_chat: bool,
 ) -> None:
     database, store = _make_store(tmp_path)
     reducer = AgentSessionReducer()
@@ -1075,9 +1196,11 @@ async def test_review_completion_atomically_consumes_and_enters_active_chat(
     assert plan_claim is not None
     before_plan = await store.load(key)
     plan_id = "review-plan-a"
+    plan_revision = before_plan.review_plan_revision + 1
     plan = {
         "plan_id": plan_id,
-        "plan_revision": 1,
+        "plan_revision": plan_revision,
+        "trigger": "integration",
         "kind": "planned",
         "applied_delay_seconds": 60.0,
         "reason": "integration review",
@@ -1088,7 +1211,7 @@ async def test_review_completion_atomically_consumes_and_enters_active_chat(
         SessionTransition(
             aggregate=before_plan.advance(
                 current_plan_id=plan_id,
-                review_plan_revision=1,
+                review_plan_revision=plan_revision,
                 review_plan=plan,
             ),
             disposition="review_plan_created",
@@ -1096,23 +1219,58 @@ async def test_review_completion_atomically_consumes_and_enters_active_chat(
             review_schedules=(
                 SessionReviewSchedule(
                     plan_id=plan_id,
-                    plan_revision=1,
+                    plan_revision=plan_revision,
                     applied_delay_seconds=60.0,
                     trigger="integration",
                     outcome="planned",
                     source="integration-test",
+                    reason="integration review",
+                ),
+            ),
+            review_schedule_events=(
+                SessionReviewScheduleEvent(
+                    schedule_event_id="review-plan-a-scheduled",
+                    event_type="scheduled",
+                    plan_id=plan_id,
+                    previous_plan_id=before_plan.current_plan_id,
+                    trigger="integration",
+                    outcome="planned",
+                    source="integration-test",
+                    applied_delay_seconds=60.0,
+                    reason="integration review",
+                    metadata={
+                        "plan_revision": plan_revision,
+                        "schedule_outcome": {
+                            "active_reply_threshold": {},
+                            "applied_delay_seconds": 60.0,
+                            "fallback_reason": "",
+                            "kind": "planned",
+                            "mention_sensitivity": "normal",
+                            "model_execution_id": "",
+                            "prompt_signature": "",
+                            "reason": "integration review",
+                            "requested_delay_seconds": None,
+                            "source": "integration-test",
+                        },
+                    },
                 ),
             ),
         ),
         expected_revision=before_plan.state_revision,
     )
-    due_event_id = "review-due-a"
+    due_event_id = review_due_event_id(
+        key=key,
+        plan_id=plan_id,
+        plan_revision=plan_revision,
+        ownership_generation=generation,
+        delivery_cycle=0,
+    )
     due = SessionEventEnvelope(
         event_id=due_event_id,
         key=key,
         kind=AgentSessionEventKind.REVIEW_DUE,
         ownership_generation=generation,
-        source="review_due_scanner",
+        source=REVIEW_DUE_EVENT_SOURCE,
         occurred_at=100.0,
         payload={
             "version": 1,
@@ -1122,7 +1280,7 @@ async def test_review_completion_atomically_consumes_and_enters_active_chat(
                 "session_id": key.session_id,
             },
             "plan_id": plan_id,
-            "plan_revision": 1,
+            "plan_revision": plan_revision,
             "ownership_generation": generation,
             "attempt_count": 0,
         },
@@ -1169,23 +1327,44 @@ async def test_review_completion_atomically_consumes_and_enters_active_chat(
                     "schema_version": 1,
                     "intents": [],
                 },
-                "enter_active_chat": True,
-                "next_review_outcome": None,
+                "enter_active_chat": enter_active_chat,
+                "next_review_outcome": (
+                    None
+                    if enter_active_chat
+                    else {
+                        "kind": "planned",
+                        "applied_delay_seconds": 42.0,
+                        "requested_delay_seconds": 42.0,
+                        "reason": "review complete",
+                        "fallback_reason": "",
+                    }
+                ),
             },
         },
     )
     await store.enqueue(completion)
     completion_claim = await store.claim_next(key, worker_id="review-worker")
     assert completion_claim is not None
-    active_chat = await store.commit(
+    settled = await store.commit(
         completion_claim,
         reducer.reduce(reviewing, completion),
         expected_revision=reviewing.state_revision,
     )
 
-    assert active_chat.state == "active_chat"
-    assert active_chat.active_epoch == 1
-    assert active_chat.review_operation_id == ""
+    if enter_active_chat:
+        assert settled.state == "active_chat"
+        assert settled.active_epoch == 1
+        assert settled.current_plan_id == plan_id
+    else:
+        assert settled.state == "idle"
+        assert settled.active_epoch == 0
+        assert settled.current_plan_id != plan_id
+        assert settled.review_plan_revision == plan_revision + 1
+        assert settled.review_plan["kind"] == "planned"
+        assert settled.review_plan["applied_delay_seconds"] == 42.0
+        assert settled.review_plan["scheduled_from"] == 100.0
+        assert settled.review_plan["next_review_at"] == 142.0
+    assert settled.review_operation_id == ""
     entries = await store.list_message_ledger(key)
     assert all(item.review_consumption is not None for item in entries)
     assert all(
@@ -1203,16 +1382,29 @@ async def test_review_completion_atomically_consumes_and_enters_active_chat(
             """,
             (operation_id,),
         ).fetchone()
-        schedule = conn.execute(
+        previous_schedule = conn.execute(
             """
             SELECT status FROM agent_review_schedules WHERE plan_id = ?
             """,
             (plan_id,),
         ).fetchone()
+        current_schedule = conn.execute(
+            """
+            SELECT status, applied_delay_seconds
+            FROM agent_review_schedules WHERE plan_id = ?
+            """,
+            (settled.current_plan_id,),
+        ).fetchone()
     assert operation is not None
     assert tuple(operation) == ("completed", max(message_ids), 2)
-    assert schedule is not None
-    assert str(schedule["status"]) == "completed"
+    assert previous_schedule is not None
+    assert str(previous_schedule["status"]) == (
+        "completed" if enter_active_chat else "superseded"
+    )
+    assert current_schedule is not None
+    assert tuple(current_schedule) == (
+        ("completed", 60.0) if enter_active_chat else ("scheduled", 42.0)
+    )
 
 
 @pytest.mark.asyncio
@@ -1254,6 +1446,8 @@ async def test_review_cancellation_completion_releases_stamped_active_reply_effe
     review_operation_id = "review-operation:cancel-test"
     review_effect_id = "review-effect:cancel-test"
     review_contract = builtin_effect_contract("run_review_workflow")
+    plan_id = idle.current_plan_id
+    plan_revision = idle.review_plan_revision
     review_fence = {
         "operation_id": review_operation_id,
         "operation_kind": "review",
@@ -1264,8 +1458,8 @@ async def test_review_cancellation_completion_releases_stamped_active_reply_effe
         "completion_event_id": "review-completed:cancel-test",
         "failure_event_id": "review-failed:cancel-test",
         "ownership_generation": generation,
-        "plan_id": "review-plan:cancel-test",
-        "plan_revision": 1,
+        "plan_id": plan_id,
+        "plan_revision": plan_revision,
         "active_epoch": 0,
         "activity_generation": 0,
         "input_watermark": baseline_message_id,
@@ -1277,14 +1471,6 @@ async def test_review_cancellation_completion_releases_stamped_active_reply_effe
     setup_data["operation_fences"] = {review_operation_id: review_fence}
     reviewing_target = idle.advance(
         state=AgentSessionState.REVIEW.value,
-        current_plan_id="review-plan:cancel-test",
-        review_plan_revision=1,
-        review_plan={
-            "plan_id": "review-plan:cancel-test",
-            "plan_revision": 1,
-            "kind": "planned",
-            "applied_delay_seconds": 60.0,
-        },
         review_operation_id=review_operation_id,
         data=setup_data,
         updated_at=idle.updated_at,

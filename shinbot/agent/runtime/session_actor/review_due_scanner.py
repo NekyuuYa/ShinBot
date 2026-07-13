@@ -25,6 +25,11 @@ from shinbot.agent.runtime.service_health import (
     supervised_backoff_seconds,
 )
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
+from shinbot.agent.runtime.session_actor.review_due_identity import (
+    REVIEW_DUE_EVENT_KIND,
+    REVIEW_DUE_EVENT_SOURCE,
+    review_due_event_id,
+)
 from shinbot.core.dispatch.agent_ownership import (
     AgentRuntimeOwnershipMode,
     AgentRuntimeOwnershipStatus,
@@ -36,13 +41,11 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__, source="agent:review-due", color="yellow")
 
-REVIEW_DUE_EVENT_KIND = "ReviewDue"
-REVIEW_DUE_EVENT_SOURCE = "durable_review_due_scanner"
 GLOBAL_REVIEW_DUE_HEALTH_PROFILE_ID = "__actor_v2_global__"
-_REVIEW_DUE_NAMESPACE = uuid.UUID("b6498305-e43b-5fba-84d6-c0aee625eb7e")
 _SCHEDULE_EVENT_NAMESPACE = uuid.UUID("b022e214-5043-59f4-abcb-a55d654dd7f0")
 
 type _DueScanCursor = tuple[float, float, str, str, int, str]
+type _TypedSQLiteRecord = tuple[tuple[str, str, object], ...]
 
 
 class ReviewDueRepositoryError(RuntimeError):
@@ -79,6 +82,7 @@ class ReviewDueDispatchResult:
     plan_id: str
     plan_revision: int
     ownership_generation: int
+    delivery_cycle: int
     disposition: ReviewDueDisposition
     event_id: str = ""
     mailbox_inserted: bool = False
@@ -419,29 +423,51 @@ class DurableReviewDueRepository:
         profile_clause = ""
         params: list[object] = [now, now]
         if self._profile_id is not None:
-            profile_clause = " AND profile_id = ?"
+            profile_clause = " AND schedule.profile_id = ?"
             params.append(self._profile_id)
         cursor_clause = ""
         if after is not None:
             cursor_clause = """
               AND (
-                    available_at, next_review_at, profile_id,
-                    session_id, plan_revision, plan_id
+                    schedule.available_at, schedule.next_review_at,
+                    schedule.profile_id, schedule.session_id,
+                    schedule.plan_revision, schedule.plan_id
                   ) > (?, ?, ?, ?, ?, ?)
             """
             params.extend(after)
         return conn.execute(
             f"""
-            SELECT *
-            FROM agent_review_schedules
-            WHERE status = 'scheduled'
-              AND available_at <= ?
-              AND next_review_at <= ?
+            SELECT schedule.*
+            FROM agent_review_schedules AS schedule
+            WHERE schedule.status = 'scheduled'
+              AND schedule.available_at <= ?
+              AND schedule.next_review_at <= ?
               {profile_clause}
               {cursor_clause}
-            ORDER BY available_at ASC, next_review_at ASC,
-                     profile_id ASC, session_id ASC,
-                     plan_revision ASC, plan_id ASC
+            ORDER BY CASE
+                         WHEN EXISTS (
+                             SELECT 1
+                             FROM agent_session_runtime_ownership AS ownership
+                             JOIN agent_session_aggregates AS aggregate
+                               ON aggregate.profile_id = ownership.profile_id
+                              AND aggregate.session_id = ownership.session_id
+                              AND aggregate.ownership_generation =
+                                  schedule.ownership_generation
+                             WHERE ownership.profile_id = schedule.profile_id
+                               AND ownership.session_id = schedule.session_id
+                               AND ownership.mode = 'actor_v2'
+                               AND ownership.status = 'active'
+                               AND ownership.generation =
+                                   schedule.ownership_generation
+                         ) THEN 0
+                         ELSE 1
+                     END ASC,
+                     schedule.available_at ASC,
+                     schedule.next_review_at ASC,
+                     schedule.profile_id ASC,
+                     schedule.session_id ASC,
+                     schedule.plan_revision ASC,
+                     schedule.plan_id ASC
             LIMIT 1
             """,
             tuple(params),
@@ -619,62 +645,84 @@ class DurableReviewDueRepository:
     ) -> ReviewDueDispatchResult:
         event_id = _review_due_event_id(schedule)
         payload_json = _canonical_json(_review_due_payload(schedule, event_id=event_id))
+        mailbox_record = _review_due_mailbox_record(
+            schedule,
+            event_id=event_id,
+            payload_json=payload_json,
+            now=now,
+        )
+        try:
+            mailbox_exists = self._validate_mailbox_logical_key(
+                conn,
+                mailbox_record,
+                allow_missing=True,
+            )
+        except ReviewDueConflict:
+            return self._defer_schedule(
+                conn,
+                schedule,
+                aggregate,
+                now=now,
+                reason="mailbox_identity_conflict",
+            )
         self._fail_superseded_due_events(
             conn,
             schedule,
             current_event_id=event_id,
             now=now,
         )
-        inserted = conn.execute(
-            """
-            INSERT INTO agent_session_mailbox (
-                event_id, profile_id, session_id, ownership_generation,
-                kind, source, occurred_at, payload_json, causation_id,
-                correlation_id, trace_id, status, attempt_count, available_at,
-                claim_id, lease_owner, lease_until, created_at, handled_at,
-                last_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, NULL, '')
-            ON CONFLICT(profile_id, session_id, event_id) DO NOTHING
-            """,
-            (
-                event_id,
-                schedule["profile_id"],
-                schedule["session_id"],
-                schedule["ownership_generation"],
-                REVIEW_DUE_EVENT_KIND,
-                REVIEW_DUE_EVENT_SOURCE,
-                schedule["next_review_at"],
-                payload_json,
-                schedule["plan_id"],
-                schedule["plan_id"],
-                event_id,
-                schedule["next_review_at"],
-                now,
-            ),
+        mailbox_inserted = False
+        if not mailbox_exists:
+            inserted = conn.execute(
+                """
+                INSERT INTO agent_session_mailbox (
+                    event_id, profile_id, session_id, ownership_generation,
+                    kind, source, occurred_at, payload_json, causation_id,
+                    correlation_id, trace_id, status, attempt_count,
+                    available_at, claim_id, lease_owner, lease_until,
+                    created_at, handled_at, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, NULL, '')
+                """,
+                (
+                    _sqlite_record_value(mailbox_record, "event_id"),
+                    _sqlite_record_value(mailbox_record, "profile_id"),
+                    _sqlite_record_value(mailbox_record, "session_id"),
+                    _sqlite_record_value(
+                        mailbox_record,
+                        "ownership_generation",
+                    ),
+                    _sqlite_record_value(mailbox_record, "kind"),
+                    _sqlite_record_value(mailbox_record, "source"),
+                    _sqlite_record_value(mailbox_record, "occurred_at"),
+                    _sqlite_record_value(mailbox_record, "payload_json"),
+                    _sqlite_record_value(mailbox_record, "causation_id"),
+                    _sqlite_record_value(mailbox_record, "correlation_id"),
+                    _sqlite_record_value(mailbox_record, "trace_id"),
+                    _sqlite_record_value(mailbox_record, "occurred_at"),
+                    _sqlite_record_value(mailbox_record, "created_at"),
+                ),
+            )
+            if inserted.rowcount != 1:
+                raise ReviewDueConflict(
+                    "ReviewDue mailbox insert did not create exactly one row"
+                )
+            mailbox_inserted = True
+        self._validate_mailbox_logical_key(
+            conn,
+            mailbox_record,
+            allow_missing=False,
         )
-        if inserted.rowcount != 1:
-            try:
-                self._validate_existing_mailbox(
-                    conn,
-                    schedule,
-                    event_id=event_id,
-                    payload_json=payload_json,
-                )
-            except ReviewDueConflict:
-                return self._defer_schedule(
-                    conn,
-                    schedule,
-                    aggregate,
-                    now=now,
-                    reason="mailbox_identity_conflict",
-                )
+        # The row stores the next cycle. This transaction emits the old cycle
+        # and advances it only if the exact schedule fence is claimed.
+        delivery_cycle = _schedule_delivery_cycle(schedule)
         updated = conn.execute(
             """
             UPDATE agent_review_schedules
             SET status = 'claimed', claim_owner = '', claim_until = NULL,
-                last_error = '', updated_at = ?
+                delivery_cycle = ?, last_error = '', updated_at = ?
             WHERE plan_id = ? AND profile_id = ? AND session_id = ?
               AND plan_revision = ? AND ownership_generation = ?
+              AND delivery_cycle = ?
               AND status = 'scheduled'
               AND EXISTS (
                     SELECT 1
@@ -703,12 +751,14 @@ class DurableReviewDueRepository:
               )
             """,
             (
+                delivery_cycle + 1,
                 now,
                 schedule["plan_id"],
                 schedule["profile_id"],
                 schedule["session_id"],
                 schedule["plan_revision"],
                 schedule["ownership_generation"],
+                delivery_cycle,
                 aggregate["state_revision"],
                 aggregate["current_plan_id"],
                 aggregate["review_plan_revision"],
@@ -730,7 +780,7 @@ class DurableReviewDueRepository:
             schedule,
             disposition=ReviewDueDisposition.DISPATCHED,
             event_id=event_id,
-            mailbox_inserted=inserted.rowcount == 1,
+            mailbox_inserted=mailbox_inserted,
             reason="review_schedule_due",
         )
 
@@ -766,50 +816,70 @@ class DurableReviewDueRepository:
         )
 
     @staticmethod
-    def _validate_existing_mailbox(
+    def _validate_mailbox_logical_key(
         conn: Connection,
-        schedule: Row,
+        expected: _TypedSQLiteRecord,
         *,
-        event_id: str,
-        payload_json: str,
-    ) -> None:
-        row = conn.execute(
+        allow_missing: bool,
+    ) -> bool:
+        rows = conn.execute(
             """
-            SELECT profile_id, session_id, ownership_generation, kind, source,
-                   payload_json, causation_id, correlation_id, trace_id
+            SELECT mailbox_id,
+                   CAST(event_id AS BLOB) AS event_id,
+                   typeof(event_id) AS event_id_storage_class,
+                   CAST(profile_id AS BLOB) AS profile_id,
+                   typeof(profile_id) AS profile_id_storage_class,
+                   CAST(session_id AS BLOB) AS session_id,
+                   typeof(session_id) AS session_id_storage_class,
+                   ownership_generation,
+                   typeof(ownership_generation)
+                       AS ownership_generation_storage_class,
+                   CAST(kind AS BLOB) AS kind,
+                   typeof(kind) AS kind_storage_class,
+                   CAST(source AS BLOB) AS source,
+                   typeof(source) AS source_storage_class,
+                   occurred_at,
+                   typeof(occurred_at) AS occurred_at_storage_class,
+                   CAST(payload_json AS BLOB) AS payload_json,
+                   typeof(payload_json) AS payload_json_storage_class,
+                   CAST(causation_id AS BLOB) AS causation_id,
+                   typeof(causation_id) AS causation_id_storage_class,
+                   CAST(correlation_id AS BLOB) AS correlation_id,
+                   typeof(correlation_id) AS correlation_id_storage_class,
+                   CAST(trace_id AS BLOB) AS trace_id,
+                   typeof(trace_id) AS trace_id_storage_class,
+                   created_at, typeof(created_at) AS created_at_storage_class
             FROM agent_session_mailbox
-            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            WHERE CAST(profile_id AS BLOB) = ?
+              AND CAST(session_id AS BLOB) = ?
+              AND CAST(event_id AS BLOB) = ?
+            ORDER BY mailbox_id
             """,
-            (schedule["profile_id"], schedule["session_id"], event_id),
-        ).fetchone()
-        if row is None:
+            (
+                _sqlite_text_key_bytes(expected, "profile_id"),
+                _sqlite_text_key_bytes(expected, "session_id"),
+                _sqlite_text_key_bytes(expected, "event_id"),
+            ),
+        ).fetchall()
+        if not rows and allow_missing:
+            return False
+        if not rows:
             raise ReviewDueConflict("deterministic ReviewDue mailbox row disappeared")
-        persisted = (
-            str(row["profile_id"]),
-            str(row["session_id"]),
-            int(row["ownership_generation"]),
-            str(row["kind"]),
-            str(row["source"]),
-            str(row["payload_json"]),
-            str(row["causation_id"]),
-            str(row["correlation_id"]),
-            str(row["trace_id"]),
-        )
-        expected = (
-            str(schedule["profile_id"]),
-            str(schedule["session_id"]),
-            int(schedule["ownership_generation"]),
-            REVIEW_DUE_EVENT_KIND,
-            REVIEW_DUE_EVENT_SOURCE,
-            payload_json,
-            str(schedule["plan_id"]),
-            str(schedule["plan_id"]),
-            event_id,
-        )
-        if persisted != expected:
+        if len(rows) != 1:
             raise ReviewDueConflict(
-                "deterministic ReviewDue event id contains conflicting payload"
+                "deterministic ReviewDue logical key contains multiple rows"
             )
+        # Delivery status, attempts, claims, leases, handled/error fields, and
+        # available_at are mutable after enqueue. Everything selected here is
+        # the immutable event envelope and must retain its SQLite representation.
+        _validate_exact_sqlite_record(
+            rows[0],
+            expected,
+            conflict_message=(
+                "deterministic ReviewDue event id contains conflicting payload"
+            ),
+        )
+        return True
 
     @staticmethod
     def _append_schedule_event(
@@ -823,75 +893,120 @@ class DurableReviewDueRepository:
         reason: str,
         now: float,
     ) -> None:
+        profile_id = _canonical_text(
+            schedule["profile_id"],
+            field_name="schedule.profile_id",
+        )
+        session_id = _canonical_text(
+            schedule["session_id"],
+            field_name="schedule.session_id",
+        )
+        ownership_generation = _canonical_integer(
+            schedule["ownership_generation"],
+            field_name="schedule.ownership_generation",
+        )
+        plan_id = _canonical_text(
+            schedule["plan_id"],
+            field_name="schedule.plan_id",
+        )
+        plan_revision = _canonical_integer(
+            schedule["plan_revision"],
+            field_name="schedule.plan_revision",
+        )
+        trigger = _canonical_text(
+            schedule["trigger"],
+            field_name="schedule.trigger",
+        )
+        current_plan_id = _canonical_text(
+            aggregate["current_plan_id"],
+            field_name="aggregate.current_plan_id",
+        )
+        current_plan_revision = _canonical_integer(
+            aggregate["review_plan_revision"],
+            field_name="aggregate.review_plan_revision",
+        )
+        committed_state_revision = _canonical_integer(
+            aggregate["state_revision"],
+            field_name="aggregate.state_revision",
+        )
+        event_id = _canonical_text(event_id, field_name="event_id")
+        event_type = _canonical_text(event_type, field_name="event_type")
+        outcome = _canonical_text(outcome, field_name="outcome")
+        reason = _canonical_text(reason, field_name="reason")
+        created_at = _canonical_real(now, field_name="now")
         schedule_event_id = _schedule_event_id(schedule, event_type=event_type)
         metadata_json = _canonical_json(
             {
-                "current_plan_id": str(aggregate["current_plan_id"]),
-                "current_plan_revision": int(aggregate["review_plan_revision"]),
-                "schedule_plan_id": str(schedule["plan_id"]),
-                "schedule_plan_revision": int(schedule["plan_revision"]),
-                "ownership_generation": int(schedule["ownership_generation"]),
+                "current_plan_id": current_plan_id,
+                "current_plan_revision": current_plan_revision,
+                "schedule_plan_id": plan_id,
+                "schedule_plan_revision": plan_revision,
+                "ownership_generation": ownership_generation,
+                "delivery_cycle": _schedule_delivery_cycle(schedule),
             }
         )
+        expected: _TypedSQLiteRecord = (
+            ("schedule_event_id", "text", schedule_event_id),
+            ("profile_id", "text", profile_id),
+            ("session_id", "text", session_id),
+            ("ownership_generation", "integer", ownership_generation),
+            ("event_id", "text", event_id),
+            ("plan_id", "text", plan_id),
+            ("previous_plan_id", "text", plan_id),
+            ("event_type", "text", event_type),
+            ("trigger", "text", trigger),
+            ("outcome", "text", outcome),
+            ("source", "text", REVIEW_DUE_EVENT_SOURCE),
+            ("requested_delay_seconds", "null", None),
+            ("applied_delay_seconds", "null", None),
+            ("scheduled_from", "null", None),
+            ("next_review_at", "null", None),
+            ("reason", "text", reason),
+            ("fallback_reason", "text", ""),
+            ("model_execution_id", "text", ""),
+            ("prompt_signature", "text", ""),
+            ("expected_active_epoch", "null", None),
+            ("expected_activity_generation", "null", None),
+            (
+                "committed_state_revision",
+                "integer",
+                committed_state_revision,
+            ),
+            ("operation_id", "text", ""),
+            ("trace_id", "text", event_id),
+            ("metadata_json", "text", metadata_json),
+            ("created_at", "real", created_at),
+        )
+        if _validate_schedule_event_logical_key(
+            conn,
+            expected,
+            allow_missing=True,
+        ):
+            return
         inserted = conn.execute(
             """
             INSERT INTO agent_review_schedule_events (
                 schedule_event_id, profile_id, session_id,
                 ownership_generation, event_id, plan_id, previous_plan_id,
-                event_type, trigger, outcome, source, reason,
-                committed_state_revision, trace_id, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(schedule_event_id) DO NOTHING
+                event_type, trigger, outcome, source,
+                requested_delay_seconds, applied_delay_seconds, scheduled_from,
+                next_review_at, reason, fallback_reason, model_execution_id,
+                prompt_signature, expected_active_epoch,
+                expected_activity_generation, committed_state_revision,
+                operation_id, trace_id, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                schedule_event_id,
-                schedule["profile_id"],
-                schedule["session_id"],
-                schedule["ownership_generation"],
-                event_id,
-                schedule["plan_id"],
-                schedule["plan_id"],
-                event_type,
-                schedule["trigger"],
-                outcome,
-                REVIEW_DUE_EVENT_SOURCE,
-                reason,
-                aggregate["state_revision"],
-                event_id,
-                metadata_json,
-                now,
-            ),
+            _sqlite_record_values(expected),
         )
-        if inserted.rowcount == 1:
-            return
-        row = conn.execute(
-            """
-            SELECT profile_id, session_id, ownership_generation, event_id,
-                   plan_id, event_type, outcome, source, reason, metadata_json
-            FROM agent_review_schedule_events
-            WHERE schedule_event_id = ?
-            """,
-            (schedule_event_id,),
-        ).fetchone()
-        if row is None:
-            raise ReviewDueConflict("deterministic schedule event disappeared")
-        persisted = tuple(row)
-        expected = (
-            str(schedule["profile_id"]),
-            str(schedule["session_id"]),
-            int(schedule["ownership_generation"]),
-            event_id,
-            str(schedule["plan_id"]),
-            event_type,
-            outcome,
-            REVIEW_DUE_EVENT_SOURCE,
-            reason,
-            metadata_json,
-        )
-        if persisted != expected:
+        if inserted.rowcount != 1:
             raise ReviewDueConflict(
-                "deterministic review schedule event contains conflicting payload"
+                "review schedule event insert did not create exactly one row"
             )
+        _validate_schedule_event_logical_key(
+            conn,
+            expected,
+            allow_missing=False,
+        )
 
     def _retry_delay(self, attempt_count: int) -> float:
         exponent = min(30, max(0, attempt_count - 1))
@@ -1077,9 +1192,70 @@ def _ownership_unavailable_reason(owner: Row | None) -> str:
     return ""
 
 
+def _review_due_mailbox_record(
+    schedule: Row,
+    *,
+    event_id: str,
+    payload_json: str,
+    now: float,
+) -> _TypedSQLiteRecord:
+    canonical_event_id = _canonical_text(event_id, field_name="event_id")
+    plan_id = _canonical_text(
+        schedule["plan_id"],
+        field_name="schedule.plan_id",
+    )
+    return (
+        ("event_id", "text", canonical_event_id),
+        (
+            "profile_id",
+            "text",
+            _canonical_text(
+                schedule["profile_id"],
+                field_name="schedule.profile_id",
+            ),
+        ),
+        (
+            "session_id",
+            "text",
+            _canonical_text(
+                schedule["session_id"],
+                field_name="schedule.session_id",
+            ),
+        ),
+        (
+            "ownership_generation",
+            "integer",
+            _canonical_integer(
+                schedule["ownership_generation"],
+                field_name="schedule.ownership_generation",
+            ),
+        ),
+        ("kind", "text", REVIEW_DUE_EVENT_KIND),
+        ("source", "text", REVIEW_DUE_EVENT_SOURCE),
+        (
+            "occurred_at",
+            "real",
+            _canonical_real(
+                schedule["next_review_at"],
+                field_name="schedule.next_review_at",
+            ),
+        ),
+        (
+            "payload_json",
+            "text",
+            _canonical_text(payload_json, field_name="payload_json"),
+        ),
+        ("causation_id", "text", plan_id),
+        ("correlation_id", "text", plan_id),
+        ("trace_id", "text", canonical_event_id),
+        ("created_at", "real", _canonical_real(now, field_name="now")),
+    )
+
+
 def _review_due_payload(schedule: Row, *, event_id: str) -> dict[str, object]:
-    return {
-        "version": 1,
+    delivery_cycle = _schedule_delivery_cycle(schedule)
+    payload: dict[str, object] = {
+        "version": 1 if delivery_cycle == 0 else 2,
         "event_id": event_id,
         "session_key": {
             "profile_id": str(schedule["profile_id"]),
@@ -1100,6 +1276,9 @@ def _review_due_payload(schedule: Row, *, event_id: str) -> dict[str, object]:
             schedule["expected_activity_generation"]
         ),
     }
+    if delivery_cycle > 0:
+        payload["delivery_cycle"] = delivery_cycle
+    return payload
 
 
 def _review_due_event_id(schedule: Mapping[str, object]) -> str:
@@ -1111,39 +1290,8 @@ def _review_due_event_id(schedule: Mapping[str, object]) -> str:
         plan_id=str(schedule["plan_id"]),
         plan_revision=int(schedule["plan_revision"]),
         ownership_generation=int(schedule["ownership_generation"]),
+        delivery_cycle=_schedule_delivery_cycle(schedule),
     )
-
-
-def review_due_event_id(
-    *,
-    key: SessionKey,
-    plan_id: str,
-    plan_revision: int,
-    ownership_generation: int,
-) -> str:
-    """Return deterministic mailbox identity for one exact review plan fence."""
-
-    normalized_plan_id = str(plan_id or "").strip()
-    if not normalized_plan_id:
-        raise ValueError("plan_id must not be empty")
-    normalized_revision = _positive_int(
-        plan_revision,
-        field_name="plan_revision",
-    )
-    normalized_generation = _positive_int(
-        ownership_generation,
-        field_name="ownership_generation",
-    )
-    identity = _canonical_json(
-        [
-            key.profile_id,
-            key.session_id,
-            normalized_plan_id,
-            normalized_revision,
-            normalized_generation,
-        ]
-    )
-    return f"review-due:v1:{uuid.uuid5(_REVIEW_DUE_NAMESPACE, identity).hex}"
 
 
 def _schedule_event_id(
@@ -1151,16 +1299,18 @@ def _schedule_event_id(
     *,
     event_type: str,
 ) -> str:
-    identity = _canonical_json(
-        [
-            str(schedule["profile_id"]),
-            str(schedule["session_id"]),
-            str(schedule["plan_id"]),
-            int(schedule["plan_revision"]),
-            int(schedule["ownership_generation"]),
-            event_type,
-        ]
-    )
+    identity_parts: list[object] = [
+        str(schedule["profile_id"]),
+        str(schedule["session_id"]),
+        str(schedule["plan_id"]),
+        int(schedule["plan_revision"]),
+        int(schedule["ownership_generation"]),
+        event_type,
+    ]
+    delivery_cycle = _schedule_delivery_cycle(schedule)
+    if delivery_cycle > 0:
+        identity_parts.append(delivery_cycle)
+    identity = _canonical_json(identity_parts)
     digest = uuid.uuid5(_SCHEDULE_EVENT_NAMESPACE, identity).hex
     return f"schedule-event:{event_type}:{digest}"
 
@@ -1182,6 +1332,7 @@ def _result(
         plan_id=str(schedule["plan_id"]),
         plan_revision=int(schedule["plan_revision"]),
         ownership_generation=int(schedule["ownership_generation"]),
+        delivery_cycle=_schedule_delivery_cycle(schedule),
         disposition=disposition,
         event_id=event_id,
         mailbox_inserted=mailbox_inserted,
@@ -1224,11 +1375,177 @@ def _canonical_json(value: object) -> str:
     )
 
 
+def _canonical_text(value: object, *, field_name: str) -> str:
+    if type(value) is not str:
+        raise ReviewDueConflict(f"{field_name} must use SQLite TEXT storage")
+    return value
+
+
+def _canonical_integer(value: object, *, field_name: str) -> int:
+    if type(value) is not int:
+        raise ReviewDueConflict(f"{field_name} must use SQLite INTEGER storage")
+    return value
+
+
+def _canonical_real(value: object, *, field_name: str) -> float:
+    if type(value) is not float or not math.isfinite(value):
+        raise ReviewDueConflict(f"{field_name} must use finite SQLite REAL storage")
+    return value
+
+
+def _sqlite_record_values(record: _TypedSQLiteRecord) -> tuple[object, ...]:
+    return tuple(value for _field, _storage_class, value in record)
+
+
+def _sqlite_record_value(record: _TypedSQLiteRecord, field_name: str) -> object:
+    for field, _storage_class, value in record:
+        if field == field_name:
+            return value
+    raise ReviewDueConflict(f"expected SQLite record is missing {field_name}")
+
+
+def _sqlite_text_key_bytes(
+    record: _TypedSQLiteRecord,
+    field_name: str,
+) -> bytes:
+    value = _canonical_text(
+        _sqlite_record_value(record, field_name),
+        field_name=field_name,
+    )
+    return value.encode("utf-8", errors="strict")
+
+
+def _validate_schedule_event_logical_key(
+    conn: Connection,
+    expected: _TypedSQLiteRecord,
+    *,
+    allow_missing: bool,
+) -> bool:
+    rows = conn.execute(
+        """
+        SELECT schedule_event_seq,
+               CAST(schedule_event_id AS BLOB) AS schedule_event_id,
+               typeof(schedule_event_id)
+                   AS schedule_event_id_storage_class,
+               CAST(profile_id AS BLOB) AS profile_id,
+               typeof(profile_id) AS profile_id_storage_class,
+               CAST(session_id AS BLOB) AS session_id,
+               typeof(session_id) AS session_id_storage_class,
+               ownership_generation,
+               typeof(ownership_generation)
+                   AS ownership_generation_storage_class,
+               CAST(event_id AS BLOB) AS event_id,
+               typeof(event_id) AS event_id_storage_class,
+               CAST(plan_id AS BLOB) AS plan_id,
+               typeof(plan_id) AS plan_id_storage_class,
+               CAST(previous_plan_id AS BLOB) AS previous_plan_id,
+               typeof(previous_plan_id)
+                   AS previous_plan_id_storage_class,
+               CAST(event_type AS BLOB) AS event_type,
+               typeof(event_type) AS event_type_storage_class,
+               CAST(trigger AS BLOB) AS trigger,
+               typeof(trigger) AS trigger_storage_class,
+               CAST(outcome AS BLOB) AS outcome,
+               typeof(outcome) AS outcome_storage_class,
+               CAST(source AS BLOB) AS source,
+               typeof(source) AS source_storage_class,
+               requested_delay_seconds,
+               typeof(requested_delay_seconds)
+                   AS requested_delay_seconds_storage_class,
+               applied_delay_seconds,
+               typeof(applied_delay_seconds)
+                   AS applied_delay_seconds_storage_class,
+               scheduled_from,
+               typeof(scheduled_from) AS scheduled_from_storage_class,
+               next_review_at,
+               typeof(next_review_at) AS next_review_at_storage_class,
+               CAST(reason AS BLOB) AS reason,
+               typeof(reason) AS reason_storage_class,
+               CAST(fallback_reason AS BLOB) AS fallback_reason,
+               typeof(fallback_reason) AS fallback_reason_storage_class,
+               CAST(model_execution_id AS BLOB) AS model_execution_id,
+               typeof(model_execution_id)
+                   AS model_execution_id_storage_class,
+               CAST(prompt_signature AS BLOB) AS prompt_signature,
+               typeof(prompt_signature)
+                   AS prompt_signature_storage_class,
+               expected_active_epoch,
+               typeof(expected_active_epoch)
+                   AS expected_active_epoch_storage_class,
+               expected_activity_generation,
+               typeof(expected_activity_generation)
+                   AS expected_activity_generation_storage_class,
+               committed_state_revision,
+               typeof(committed_state_revision)
+                   AS committed_state_revision_storage_class,
+               CAST(operation_id AS BLOB) AS operation_id,
+               typeof(operation_id) AS operation_id_storage_class,
+               CAST(trace_id AS BLOB) AS trace_id,
+               typeof(trace_id) AS trace_id_storage_class,
+               CAST(metadata_json AS BLOB) AS metadata_json,
+               typeof(metadata_json) AS metadata_json_storage_class,
+               created_at, typeof(created_at) AS created_at_storage_class
+        FROM agent_review_schedule_events
+        WHERE CAST(schedule_event_id AS BLOB) = ?
+        ORDER BY schedule_event_seq
+        """,
+        (_sqlite_text_key_bytes(expected, "schedule_event_id"),),
+    ).fetchall()
+    if not rows and allow_missing:
+        return False
+    if not rows:
+        raise ReviewDueConflict("deterministic schedule event disappeared")
+    if len(rows) != 1:
+        raise ReviewDueConflict(
+            "deterministic schedule event logical key contains multiple rows"
+        )
+    # A committed row can only be an exact replay when every value,
+    # including created_at, came from the same deterministic attempt. A prior
+    # failed transaction cannot leave this row behind in SQLite.
+    _validate_exact_sqlite_record(
+        rows[0],
+        expected,
+        conflict_message=(
+            "deterministic review schedule event contains conflicting payload"
+        ),
+    )
+    return True
+
+
+def _validate_exact_sqlite_record(
+    row: Row,
+    expected: _TypedSQLiteRecord,
+    *,
+    conflict_message: str,
+) -> None:
+    for field, storage_class, expected_value in expected:
+        actual_storage_class = row[f"{field}_storage_class"]
+        if actual_storage_class != storage_class:
+            raise ReviewDueConflict(f"{conflict_message}: {field}")
+        actual_value = row[field]
+        if storage_class == "text":
+            if type(actual_value) is not bytes:
+                raise ReviewDueConflict(f"{conflict_message}: {field}")
+            try:
+                actual_value = actual_value.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise ReviewDueConflict(f"{conflict_message}: {field}") from exc
+        if actual_value != expected_value:
+            raise ReviewDueConflict(f"{conflict_message}: {field}")
+
+
 def _optional_int(value: object) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ReviewDueConflict("schedule integer fence is invalid")
+    return value
+
+
+def _schedule_delivery_cycle(schedule: Mapping[str, object]) -> int:
+    value = schedule["delivery_cycle"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ReviewDueConflict("schedule delivery_cycle fence is invalid")
     return value
 
 

@@ -11,6 +11,13 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
+from shinbot.agent.runtime.session_actor.effect_contracts import (
+    EffectContractAuthority,
+    EffectExecutionContract,
+    EffectLane,
+    builtin_effect_contract,
+    builtin_session_actor_effect_contracts,
+)
 from shinbot.agent.runtime.session_actor.events import (
     ClaimedSessionEvent,
     EventEnqueueResult,
@@ -38,6 +45,41 @@ from shinbot.core.dispatch.agent_signals import (
 )
 from shinbot.persistence import DatabaseManager
 
+_TEST_EFFECT_CONTRACTS = {
+    kind: EffectExecutionContract(
+        effect_kind=kind,
+        version=1,
+        lane=EffectLane.DEFAULT,
+        completion_event_kind="TestEffectCompleted",
+    )
+    for kind in ("record", "run_review")
+}
+_TEST_EFFECT_AUTHORITY = EffectContractAuthority(
+    (*builtin_session_actor_effect_contracts(), *_TEST_EFFECT_CONTRACTS.values())
+)
+
+
+def _schedule_outcome_metadata(
+    *,
+    plan_revision: int,
+    applied_delay_seconds: float,
+) -> dict[str, object]:
+    return {
+        "plan_revision": plan_revision,
+        "schedule_outcome": {
+            "active_reply_threshold": {},
+            "applied_delay_seconds": applied_delay_seconds,
+            "fallback_reason": "",
+            "kind": "",
+            "mention_sensitivity": "normal",
+            "model_execution_id": "",
+            "prompt_signature": "",
+            "reason": "",
+            "requested_delay_seconds": None,
+            "source": "",
+        },
+    }
+
 
 @dataclass(slots=True)
 class _EventRecord:
@@ -60,6 +102,14 @@ class _MemorySessionActorStore(SessionActorStore):
         self.review_schedule_events: list[SessionReviewScheduleEvent] = []
         self.release_errors: list[str] = []
         self.failed_errors: list[str] = []
+
+    @property
+    def persistence_domain(self) -> object:
+        return self
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        return _TEST_EFFECT_AUTHORITY
 
     async def enqueue(self, envelope: SessionEventEnvelope) -> EventEnqueueResult:
         async with self._lock:
@@ -401,7 +451,7 @@ async def test_session_actor_keeps_concurrent_submissions_without_lost_updates()
                 SessionEffect(
                     effect_id=f"effect:{envelope.event_id}",
                     kind="record",
-                    contract_signature="test-record-v1",
+                    contract_signature=_TEST_EFFECT_CONTRACTS["record"].signature,
                 ),
             ),
         )
@@ -423,6 +473,48 @@ async def test_session_actor_keeps_concurrent_submissions_without_lost_updates()
 
 
 @pytest.mark.asyncio
+async def test_session_actor_rejects_malformed_v2_effect_before_store_commit() -> None:
+    store = _MemorySessionActorStore()
+    contract = builtin_effect_contract("run_idle_review_planning")
+
+    def handler(
+        aggregate: AgentSessionAggregate,
+        envelope: SessionEventEnvelope,
+    ) -> SessionTransition:
+        return SessionTransition(
+            aggregate=aggregate.advance(data={"handled": envelope.event_id}),
+            disposition="invalid_effect",
+            effects=(
+                SessionEffect(
+                    effect_id="invalid-effect",
+                    kind=contract.effect_kind,
+                    contract_version=contract.version,
+                    contract_signature=contract.signature,
+                    payload={"input_watermark": 10},
+                ),
+            ),
+        )
+
+    registry = AgentSessionActorRegistry(
+        store=store,
+        handler=handler,
+        max_attempts=1,
+    )
+    envelope = _event("invalid-effect-event")
+    try:
+        await registry.submit(envelope)
+        await asyncio.wait_for(registry.wait_idle(), timeout=1.0)
+
+        record = store.records[(envelope.key, envelope.event_id)]
+        assert record.status is MailboxEventStatus.FAILED
+        assert store.effects == []
+        assert "missing declared outcome fence fields" in store.failed_errors[0]
+        assert "handled" not in store.aggregates[envelope.key].data
+    finally:
+        await registry.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_session_transition_carries_only_declarative_durable_work() -> None:
     store = _MemorySessionActorStore()
 
@@ -434,6 +526,11 @@ async def test_session_transition_carries_only_declarative_durable_work() -> Non
             review_operation_id="operation-1",
             current_plan_id="plan-1",
             review_plan_revision=1,
+            review_plan={
+                "plan_id": "plan-1",
+                "plan_revision": 1,
+                "applied_delay_seconds": 30.0,
+            },
         )
         return SessionTransition(
             aggregate=next_aggregate,
@@ -445,7 +542,7 @@ async def test_session_transition_carries_only_declarative_durable_work() -> Non
                     effect_id="effect-1",
                     idempotency_key="send:operation-1:0",
                     kind="run_review",
-                    contract_signature="test-run-review-v1",
+                    contract_signature=_TEST_EFFECT_CONTRACTS["run_review"].signature,
                     operation_id="operation-1",
                 ),
             ),
@@ -469,9 +566,14 @@ async def test_session_transition_carries_only_declarative_durable_work() -> Non
             review_schedule_events=(
                 SessionReviewScheduleEvent(
                     schedule_event_id="schedule-event-1",
-                    event_type="planned",
+                    event_type="scheduled",
                     plan_id="plan-1",
+                    applied_delay_seconds=30.0,
                     committed_state_revision=next_aggregate.state_revision,
+                    metadata=_schedule_outcome_metadata(
+                        plan_revision=1,
+                        applied_delay_seconds=30.0,
+                    ),
                 ),
             ),
         )
@@ -489,6 +591,167 @@ async def test_session_transition_carries_only_declarative_durable_work() -> Non
         assert [
             event.schedule_event_id for event in store.review_schedule_events
         ] == ["schedule-event-1"]
+    finally:
+        await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_session_actor_rejects_plan_advance_without_schedule() -> None:
+    store = _MemorySessionActorStore()
+
+    def handler(
+        aggregate: AgentSessionAggregate,
+        envelope: SessionEventEnvelope,
+    ) -> SessionTransition:
+        del envelope
+        return SessionTransition(
+            aggregate=aggregate.advance(
+                current_plan_id="orphan-plan",
+                review_plan_revision=1,
+                review_plan={"plan_id": "orphan-plan", "plan_revision": 1},
+            ),
+            disposition="invalid_plan_advance",
+            caused_plan_id="orphan-plan",
+        )
+
+    registry = AgentSessionActorRegistry(
+        store=store,
+        handler=handler,
+        max_attempts=1,
+    )
+    envelope = _event("orphan-plan-event")
+    try:
+        await registry.submit(envelope)
+        await asyncio.wait_for(registry.wait_idle(), timeout=1.0)
+
+        record = store.records[(envelope.key, envelope.event_id)]
+        assert record.status is MailboxEventStatus.FAILED
+        assert len(store.failed_errors) == 1
+        assert "requires exactly one schedule" in store.failed_errors[0]
+        assert store.review_schedules == []
+    finally:
+        await registry.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_session_actor_rejects_plan_revision_jump_with_matching_schedule() -> None:
+    store = _MemorySessionActorStore()
+
+    def handler(
+        aggregate: AgentSessionAggregate,
+        envelope: SessionEventEnvelope,
+    ) -> SessionTransition:
+        del envelope
+        return SessionTransition(
+            aggregate=replace(
+                aggregate,
+                current_plan_id="jumped-plan",
+                review_plan_revision=99,
+                review_plan={
+                    "plan_id": "jumped-plan",
+                    "plan_revision": 99,
+                    "applied_delay_seconds": 30.0,
+                },
+                state_revision=aggregate.state_revision + 1,
+                event_sequence=aggregate.event_sequence + 1,
+            ),
+            disposition="invalid_plan_jump",
+            caused_plan_id="jumped-plan",
+            review_schedules=(
+                SessionReviewSchedule(
+                    plan_id="jumped-plan",
+                    plan_revision=99,
+                    applied_delay_seconds=30.0,
+                ),
+            ),
+        )
+
+    registry = AgentSessionActorRegistry(
+        store=store,
+        handler=handler,
+        max_attempts=1,
+    )
+    envelope = _event("jumped-plan-event")
+    try:
+        await registry.submit(envelope)
+        await asyncio.wait_for(registry.wait_idle(), timeout=1.0)
+
+        record = store.records[(envelope.key, envelope.event_id)]
+        assert record.status is MailboxEventStatus.FAILED
+        assert len(store.failed_errors) == 1
+        assert "revision must advance by exactly one" in store.failed_errors[0]
+        assert store.review_schedules == []
+    finally:
+        await registry.shutdown()
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        ReviewScheduleStatus.COMPLETED,
+        ReviewScheduleStatus.FAILED,
+        ReviewScheduleStatus.SUPERSEDED,
+    ),
+)
+@pytest.mark.asyncio
+async def test_session_actor_rejects_terminal_schedule_for_new_plan(
+    status: ReviewScheduleStatus,
+) -> None:
+    store = _MemorySessionActorStore()
+
+    def handler(
+        aggregate: AgentSessionAggregate,
+        envelope: SessionEventEnvelope,
+    ) -> SessionTransition:
+        del envelope
+        schedule = SessionReviewSchedule(
+            plan_id="terminal-plan",
+            plan_revision=1,
+            applied_delay_seconds=30.0,
+            status=status,
+        )
+        return SessionTransition(
+            aggregate=aggregate.advance(
+                current_plan_id="terminal-plan",
+                review_plan_revision=1,
+                review_plan={
+                    "plan_id": "terminal-plan",
+                    "plan_revision": 1,
+                    "applied_delay_seconds": 30.0,
+                },
+            ),
+            disposition="invalid_terminal_plan",
+            caused_plan_id="terminal-plan",
+            review_schedules=(schedule,),
+            review_schedule_events=(
+                SessionReviewScheduleEvent(
+                    schedule_event_id=f"terminal-plan:{status.value}:scheduled",
+                    event_type="scheduled",
+                    plan_id="terminal-plan",
+                    applied_delay_seconds=30.0,
+                    metadata=_schedule_outcome_metadata(
+                        plan_revision=1,
+                        applied_delay_seconds=30.0,
+                    ),
+                ),
+            ),
+        )
+
+    registry = AgentSessionActorRegistry(
+        store=store,
+        handler=handler,
+        max_attempts=1,
+    )
+    envelope = _event(f"terminal-plan:{status.value}")
+    try:
+        await registry.submit(envelope)
+        await asyncio.wait_for(registry.wait_idle(), timeout=1.0)
+
+        record = store.records[(envelope.key, envelope.event_id)]
+        assert record.status is MailboxEventStatus.FAILED
+        assert len(store.failed_errors) == 1
+        assert "must start scheduled" in store.failed_errors[0]
+        assert store.review_schedules == []
     finally:
         await registry.shutdown()
 
@@ -872,6 +1135,7 @@ async def test_sqlite_actor_commit_persists_transition_contract_atomically(tmp_p
         database,
         retry_delay_seconds=0.0,
         clock=lambda: 100.0,
+        effect_contract_authority=_TEST_EFFECT_AUTHORITY,
     )
 
     def handler(
@@ -883,7 +1147,11 @@ async def test_sqlite_actor_commit_persists_transition_contract_atomically(tmp_p
             review_operation_id="operation-sqlite",
             current_plan_id="plan-sqlite",
             review_plan_revision=1,
-            review_plan={"plan_id": "plan-sqlite"},
+            review_plan={
+                "plan_id": "plan-sqlite",
+                "plan_revision": 1,
+                "applied_delay_seconds": 30.0,
+            },
         )
         return SessionTransition(
             aggregate=next_aggregate,
@@ -895,7 +1163,7 @@ async def test_sqlite_actor_commit_persists_transition_contract_atomically(tmp_p
                     effect_id="effect-sqlite",
                     idempotency_key="effect-key-sqlite",
                     kind="run_review",
-                    contract_signature="test-run-review-v1",
+                    contract_signature=_TEST_EFFECT_CONTRACTS["run_review"].signature,
                     operation_id="operation-sqlite",
                 ),
             ),
@@ -916,8 +1184,13 @@ async def test_sqlite_actor_commit_persists_transition_contract_atomically(tmp_p
             review_schedule_events=(
                 SessionReviewScheduleEvent(
                     schedule_event_id="schedule-event-sqlite",
-                    event_type="planned",
+                    event_type="scheduled",
                     plan_id="plan-sqlite",
+                    applied_delay_seconds=30.0,
+                    metadata=_schedule_outcome_metadata(
+                        plan_revision=1,
+                        applied_delay_seconds=30.0,
+                    ),
                 ),
             ),
             result={"accepted": True},
@@ -992,7 +1265,7 @@ async def test_sqlite_actor_commit_persists_transition_contract_atomically(tmp_p
         "scheduled_from": 100.0,
         "next_review_at": 130.0,
     }
-    assert schedule_event is not None and schedule_event["event_type"] == "planned"
+    assert schedule_event is not None and schedule_event["event_type"] == "scheduled"
     assert effect is not None and dict(effect) == {
         "status": "pending",
         "idempotency_key": "effect-key-sqlite",

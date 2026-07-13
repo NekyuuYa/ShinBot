@@ -23,7 +23,7 @@ from typing import Any, Protocol
 
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
 from shinbot.agent.runtime.session_actor.effect_contracts import (
-    builtin_effect_contract,
+    builtin_session_actor_effect_contracts,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
     EffectExecutionContext,
@@ -319,6 +319,8 @@ class ReviewWorkflowOutput:
     next_review_outcome: ReviewNextReviewOutcome | None
     consumed_message_log_ids: tuple[int, ...] = ()
     reply_windows: tuple[ReviewWorkflowWindowOutput, ...] = ()
+    model_execution_id: str = ""
+    prompt_signature: str = ""
 
     def __post_init__(self) -> None:
         """Normalize caller-owned output sequences without choosing a schedule."""
@@ -342,6 +344,22 @@ class ReviewWorkflowOutput:
         if any(not isinstance(window, ReviewWorkflowWindowOutput) for window in windows):
             raise TypeError("reply_windows must contain ReviewWorkflowWindowOutput values")
         object.__setattr__(self, "reply_windows", windows)
+        object.__setattr__(
+            self,
+            "model_execution_id",
+            _optional_text(
+                self.model_execution_id,
+                field_name="model_execution_id",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "prompt_signature",
+            _optional_text(
+                self.prompt_signature,
+                field_name="prompt_signature",
+            ),
+        )
 
 
 class ActiveReplyWorkflowPort(Protocol):
@@ -480,7 +498,13 @@ class ReviewWorkflowEffectHandler:
                 windows=output.reply_windows,
             ),
         )
-        return EffectHandlerResult(payload={"workflow_result": completion.to_payload()})
+        return EffectHandlerResult(
+            payload={
+                "workflow_result": completion.to_payload(),
+                "model_execution_id": output.model_execution_id,
+                "prompt_signature": output.prompt_signature,
+            }
+        )
 
 
 def register_actor_workflow_effect_handlers(
@@ -506,16 +530,28 @@ def register_actor_workflow_effect_handlers(
         ledger=ledger,
         workflow=review_workflow,
     )
-    registry.register(
-        _ACTIVE_REPLY_EFFECT_KIND,
-        active_reply_handler,
-        contract=builtin_effect_contract(_ACTIVE_REPLY_EFFECT_KIND),
+    active_reply_contracts = tuple(
+        contract
+        for contract in builtin_session_actor_effect_contracts()
+        if contract.effect_kind == _ACTIVE_REPLY_EFFECT_KIND
     )
-    registry.register(
-        _REVIEW_EFFECT_KIND,
-        review_handler,
-        contract=builtin_effect_contract(_REVIEW_EFFECT_KIND),
+    review_contracts = tuple(
+        contract
+        for contract in builtin_session_actor_effect_contracts()
+        if contract.effect_kind == _REVIEW_EFFECT_KIND
     )
+    for contract in active_reply_contracts:
+        registry.register(
+            _ACTIVE_REPLY_EFFECT_KIND,
+            active_reply_handler,
+            contract=contract,
+        )
+    for contract in review_contracts:
+        registry.register(
+            _REVIEW_EFFECT_KIND,
+            review_handler,
+            contract=contract,
+        )
     return active_reply_handler, review_handler
 
 

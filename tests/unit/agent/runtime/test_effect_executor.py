@@ -8,10 +8,13 @@ from dataclasses import dataclass, replace
 
 import pytest
 
+import shinbot.agent.runtime.session_actor.reducer as session_actor_reducer
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     DEFAULT_OUTCOME_FENCE_FIELDS,
+    EffectContractAuthority,
     builtin_effect_contract,
+    builtin_effect_contract_authority,
     resolved_outcome_fence_fields,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
@@ -19,17 +22,19 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     DurableEffectEnvelope,
     DurableEffectExecutor,
     DurableEffectStatus,
+    EffectAuthorityChanged,
     EffectClaimLost,
-    EffectContractSignatureMismatch,
     EffectExecutionContext,
     EffectExecutionContract,
     EffectHandlerRegistry,
     EffectHandlerResult,
     EffectLane,
+    EffectQuarantineReason,
     EffectRunStatus,
     EffectSettlementResult,
     EffectSettlementStatus,
     completion_event_id,
+    quarantined_event_id,
 )
 from shinbot.agent.runtime.session_actor.events import SessionEventEnvelope
 
@@ -54,6 +59,7 @@ class _MemoryEffectStore:
     def __init__(self, now: list[float], *, lease_seconds: float = 5.0) -> None:
         self._clock = lambda: now[0]
         self._lease_seconds = lease_seconds
+        self._effect_contract_authority = builtin_effect_contract_authority()
         self._lock = asyncio.Lock()
         self.records: dict[str, _EffectRecord] = {}
         self.order: list[str] = []
@@ -61,6 +67,27 @@ class _MemoryEffectStore:
         self.actions: list[str] = []
         self.completion_fence_fields: list[tuple[str, ...]] = []
         self.failure_fence_fields: list[tuple[str, ...]] = []
+        self.quarantine_notifications: list[EffectSettlementResult] = []
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the transaction domain used by this executor test store."""
+
+        return self
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the stable authority exposed by this executor test store."""
+
+        return self._effect_contract_authority
+
+    def bind_effect_contract_authority(
+        self,
+        authority: EffectContractAuthority,
+    ) -> None:
+        """Replace the authority for explicit composition-drift tests."""
+
+        self._effect_contract_authority = authority
 
     async def seed(
         self,
@@ -127,6 +154,13 @@ class _MemoryEffectStore:
                     lease_expires_at=record.lease_until,
                 )
         return None
+
+    async def drain_quarantine_notifications(
+        self,
+    ) -> tuple[EffectSettlementResult, ...]:
+        notifications = tuple(self.quarantine_notifications)
+        self.quarantine_notifications.clear()
+        return notifications
 
     async def renew_lease(self, claim: ClaimedEffect) -> ClaimedEffect:
         async with self._lock:
@@ -208,6 +242,57 @@ class _MemoryEffectStore:
                 status=EffectSettlementStatus.COMMITTED,
                 effect_id=claim.effect.effect_id,
                 event_id=failure_envelope.event_id,
+                key=claim.key,
+            )
+
+    async def quarantine(
+        self,
+        claim: ClaimedEffect,
+        *,
+        reason: EffectQuarantineReason,
+        message: str,
+    ) -> EffectSettlementResult:
+        async with self._lock:
+            record = self.records[claim.effect.effect_id]
+            self._owned_record(claim)
+            effect = claim.effect
+            envelope = SessionEventEnvelope(
+                event_id=quarantined_event_id(effect),
+                key=claim.key,
+                kind="EffectQuarantined",
+                ownership_generation=effect.ownership_generation,
+                payload={
+                    "attempt_count": claim.attempt_count,
+                    "contract_signature": effect.contract_signature,
+                    "contract_version": effect.contract_version,
+                    "effect_id": effect.effect_id,
+                    "effect_kind": effect.kind,
+                    "failure_code": reason.value,
+                    "failure_message": message,
+                    "idempotency_key": effect.idempotency_key,
+                    "operation_id": effect.operation_id,
+                    "reason_code": reason.value,
+                    "reason_message": message,
+                },
+                source="effect_store",
+                occurred_at=self._clock(),
+                causation_id=effect.source_event_id,
+                correlation_id=effect.operation_id or effect.effect_id,
+                trace_id=effect.trace_id,
+                available_at=self._clock(),
+                created_at=self._clock(),
+            )
+            self._insert_mailbox(envelope)
+            record.status = DurableEffectStatus.FAILED
+            record.last_error = f"{reason.value}: {message}"
+            record.settled_claim = claim
+            record.settled_event = envelope
+            self._clear_claim(record)
+            self.actions.append(f"quarantine:{envelope.event_id}")
+            return EffectSettlementResult(
+                status=EffectSettlementStatus.COMMITTED,
+                effect_id=effect.effect_id,
+                event_id=envelope.event_id,
                 key=claim.key,
             )
 
@@ -307,6 +392,28 @@ class _MemoryEffectStore:
         record.lease_until = None
 
 
+class _ClaimSwitchingAuthorityEffectStore(_MemoryEffectStore):
+    """Effect store that swaps to an equal authority while returning a claim."""
+
+    async def claim_next(
+        self,
+        *,
+        worker_id: str,
+        effect_contracts: tuple[tuple[str, int], ...] | None = None,
+        excluded_effect_contracts: tuple[tuple[str, int], ...] = (),
+    ) -> ClaimedEffect | None:
+        claim = await super().claim_next(
+            worker_id=worker_id,
+            effect_contracts=effect_contracts,
+            excluded_effect_contracts=excluded_effect_contracts,
+        )
+        if claim is not None:
+            self.bind_effect_contract_authority(
+                EffectContractAuthority(self.effect_contract_authority.contracts())
+            )
+        return claim
+
+
 class _WakeRegistry:
     def __init__(self, actions: list[str]) -> None:
         self.actions = actions
@@ -319,6 +426,24 @@ class _WakeRegistry:
     async def recover(self) -> int:
         self.actions.append("recover")
         return 0
+
+
+class _BlockingWakeRegistry:
+    def __init__(self) -> None:
+        self.block = True
+        self.started = asyncio.Event()
+        self.keys: list[SessionKey] = []
+        self.recoveries = 0
+
+    async def wake(self, key: SessionKey) -> None:
+        self.keys.append(key)
+        if self.block:
+            self.started.set()
+            await asyncio.Event().wait()
+
+    async def recover(self) -> int:
+        self.recoveries += 1
+        return 2
 
 
 def _contract(
@@ -465,6 +590,71 @@ def test_handler_registration_without_contract_uses_the_only_known_version() -> 
 
 
 @pytest.mark.asyncio
+async def test_claim_time_authority_switch_never_invokes_handler() -> None:
+    now = [100.0]
+    store = _ClaimSwitchingAuthorityEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    contract = _contract()
+    await store.seed(_effect(contract=contract))
+    handler_calls: list[str] = []
+
+    async def handler(context: EffectExecutionContext) -> EffectHandlerResult:
+        handler_calls.append(context.effect.effect_id)
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    with pytest.raises(EffectAuthorityChanged, match="changed authority"):
+        await executor.run_once()
+
+    assert handler_calls == []
+    assert store.records["effect-1"].status is DurableEffectStatus.PROCESSING
+    assert store.records["effect-1"].settled_event is None
+
+
+@pytest.mark.asyncio
+async def test_handler_time_authority_switch_cannot_settle_or_retry() -> None:
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    registry = _WakeRegistry(store.actions)
+    contract = _contract()
+    await store.seed(_effect(contract=contract))
+    handler_calls: list[str] = []
+
+    async def handler(context: EffectExecutionContext) -> EffectHandlerResult:
+        handler_calls.append(context.effect.effect_id)
+        store.bind_effect_contract_authority(
+            EffectContractAuthority(store.effect_contract_authority.contracts())
+        )
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    with pytest.raises(EffectAuthorityChanged, match="changed authority"):
+        await executor.run_once()
+
+    assert handler_calls == ["effect-1"]
+    assert store.records["effect-1"].status is DurableEffectStatus.PROCESSING
+    assert store.records["effect-1"].settled_event is None
+
+
+@pytest.mark.asyncio
 async def test_handler_lanes_do_not_claim_known_contracts_without_handlers() -> None:
     """Keep incompletely wired known work recoverable for a later activation."""
 
@@ -534,8 +724,9 @@ async def test_orphan_lane_skips_known_unwired_contracts_but_fails_unknown_work(
     assert store.records["known-unwired"].status is DurableEffectStatus.PENDING
     assert store.records["known-unwired"].attempt_count == 0
     event = next(iter(store.mailbox.values()))
+    assert event.kind == "EffectQuarantined"
     assert event.payload["effect_kind"] == unknown.effect_kind
-    assert event.payload["failure_code"] == "EffectHandlerNotFound"
+    assert event.payload["reason_code"] == "unsupported_contract"
 
 
 @pytest.mark.asyncio
@@ -760,6 +951,67 @@ async def test_shutdown_releases_claim_for_recovery_by_new_executor() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wake_cancellation_preserves_notifications_and_releases_unstarted_claim(
+) -> None:
+    now = [100.0]
+    store = _MemoryEffectStore(now)
+    effect = _effect()
+    await store.seed(effect)
+    notification_keys = {
+        SessionKey("profile-a", "bot:group:bad-a"),
+        SessionKey("profile-a", "bot:group:bad-b"),
+    }
+    store.quarantine_notifications.extend(
+        EffectSettlementResult(
+            status=EffectSettlementStatus.COMMITTED,
+            effect_id=f"bad-{index}",
+            event_id=f"quarantine-{index}",
+            key=key,
+        )
+        for index, key in enumerate(notification_keys)
+    )
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        return EffectHandlerResult()
+
+    contract = _contract()
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    wake_registry = _BlockingWakeRegistry()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+    task = asyncio.create_task(executor.run_once())
+    await asyncio.wait_for(wake_registry.started.wait(), timeout=0.5)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    record = store.records[effect.effect_id]
+    assert record.status is DurableEffectStatus.PENDING
+    assert record.last_error == "effect_executor_shutdown"
+    assert calls == 0
+    assert not executor._active_claims
+    assert executor._pending_wakes == notification_keys
+
+    wake_registry.block = False
+    result = await executor.run_once()
+
+    assert wake_registry.recoveries == 1
+    assert not executor._pending_wakes
+    assert result.status is EffectRunStatus.COMPLETED
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_handler_can_explicitly_renew_long_running_claim() -> None:
     now = [100.0]
     store = _MemoryEffectStore(now)
@@ -820,6 +1072,282 @@ async def test_durable_fences_override_handler_completion_payload() -> None:
     assert event.payload["outcome"] == "planned"
 
 
+_ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
+    tuple[str, str, str, set[str]],
+    ...,
+] = (
+    (
+        "enqueue_idle_review_planning_deadline",
+        "3ef2697bcae60f3ad1b269917daf640ad8fc3601a8d2a141484a30d28c76a97a",
+        "a2dd7e9359ea9a61c99509c3d5fbd90064dc7e3b80b50aea721ab342a12fea8f",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "deadline_event_id",
+            "failure_event_id",
+            "source",
+            "trigger",
+        },
+    ),
+    (
+        "active_chat_runtime_reconciliation",
+        "a64a88da7387a3ca1cc305172f5b7e46bf333058ad655d0170dd0b0125887ab1",
+        "effb2bc168531ce2ff402f567c813e6cecbde64f156d6735d065e00f74ba3845",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "desired_state",
+            "control_effect_kind",
+            "control_effect_id",
+            "reconciliation_cycle",
+        },
+    ),
+    (
+        "idle_review_planning_cancellation_reconciliation",
+        "6850fb9f10fdb5d0b139e39bcb1e394b9f6c69a591a63ab5ed63458272fc331d",
+        "30ce30bf2da1fb2610df3bf08860b0e2cb0e99ad4bcebbc69742583fa33e49af",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "desired_state",
+            "control_effect_kind",
+            "control_effect_id",
+            "reconciliation_cycle",
+        },
+    ),
+    (
+        "cancel_idle_review_planning",
+        "b33dee9304b03b6ba87ace4dcb82f640a76215503a6ef8a04e8aca3115eeb2df",
+        "854182201f0f1a0a2513a013edc439c18165513cda63eb449166afde63f1ddae",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "superseded_by_event_id",
+        },
+    ),
+    (
+        "stop_active_chat_runtime",
+        "e972918e09cf20bc6ab80194636dd2392e44a270e8cdade9ca1f1776dccc2400",
+        "931c7b0614c2c833f25a21bca0938ccd5fd26fa1e546381e8af3851096f5f286",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+        },
+    ),
+    (
+        "cancel_review_workflow",
+        "ee222172ee0f101d8ee8585f380685f1445f29b5c44f82ec0326277fd2da4370",
+        "bfa750297968f3f079d2e6070dccb3d5c40dd4916bee27e299144ee6752a68a9",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "superseded_by_event_id",
+        },
+    ),
+    (
+        "enqueue_active_chat_exit_request",
+        "793ade014d0032b31aa0177420e41997a02a3a66fb4e4b7cad44828fa9789cff",
+        "10b120c016023a6c99c997c0bbcc41d7cbfd2cb15c2cc4ba3ebe4f7b9f2f86df",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "superseded_by_event_id",
+            "trigger",
+            "expected_active_epoch",
+            "expected_message_watermark",
+        },
+    ),
+    (
+        "enqueue_active_chat_round_due",
+        "0eeed00a50957415526ab0c2d6caf4157c38aee6307aff095b89ebf0dfdd3230",
+        "cc4ab0a043d88d9f926847fb02ad91532672adf1ab3ac077c0a4215b055bfa61",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "superseded_by_event_id",
+            "schedule_id",
+            "schedule_revision",
+        },
+    ),
+    (
+        "run_active_reply_workflow",
+        "8f0a8991b6202f0a277d1d16c35de09cf8f02951f54e04f886b00c93d7f80f80",
+        "a7b5461c1882b7bbd947e12fd9ba39e7dfaf8e35ef1d267cd8fa5d3c1e654c80",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+        },
+    ),
+    (
+        "run_active_chat_bootstrap",
+        "1f4b0372633f7ca9f794618409fad81a92721cc108ede35c457092a3f43c0f94",
+        "7a9e87fa306a389432fa886a7b42b5d12ad75b3fd84a95f7467e85382bad20b7",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+        },
+    ),
+    (
+        "run_active_chat_round",
+        "883d69bc054c750c2fb7ba92b4b9e5164faacd89895e32cabdc66d6a7f0c6eb5",
+        "5647695cf181283d51aa57b58989b62ffd39682f843272618939abb3610c663d",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+        },
+    ),
+    (
+        "run_review_workflow",
+        "9edc415f442b9136e24864705f0df9711b125d9375d32befc47776a01011013e",
+        "e1bbaa80c643890b441264013887dbfc202abaa03c8cc47f8ab2547b14d7b250",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+        },
+    ),
+    (
+        "run_idle_review_planning",
+        "bbca6267e9a16a690312269aa770263a99180ee753e1abcb75aeeb79fbc8562d",
+        "13f2272fb25d1e4cb5f6cc5135026e3588cd597cae2911ad25460d599f8477ee",
+        {
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "source",
+            "trigger",
+        },
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("effect_kind", "v1_signature", "v2_signature", "expected_fields"),
+    _ACTOR_EFFECT_CONTRACT_MATRIX,
+)
+def test_builtin_actor_effect_contract_matrix_is_exact(
+    effect_kind: str,
+    v1_signature: str,
+    v2_signature: str,
+    expected_fields: set[str],
+) -> None:
+    current = builtin_effect_contract(effect_kind)
+    legacy = builtin_effect_contract(effect_kind, version=1)
+
+    assert current.version == 2
+    assert current.signature == v2_signature
+    assert legacy.version == 1
+    assert legacy.signature == v1_signature
+    assert legacy.outcome_fence_fields is None
+    assert legacy.signature == _historical_contract_signature(legacy)
+    legacy_expected = set(DEFAULT_OUTCOME_FENCE_FIELDS)
+    if effect_kind in {
+        "cancel_review_workflow",
+        "enqueue_active_chat_exit_request",
+        "enqueue_active_chat_round_due",
+    }:
+        legacy_expected.update(expected_fields)
+    assert set(resolved_outcome_fence_fields(legacy)) == legacy_expected
+    assert current.outcome_fence_fields is not None
+    assert set(current.outcome_fence_fields) == expected_fields
+    assert current.signature != legacy.signature
+
+
+@pytest.mark.parametrize(
+    ("effect_kind", "_v1_signature", "_v2_signature", "expected_fields"),
+    _ACTOR_EFFECT_CONTRACT_MATRIX,
+)
+def test_durable_effect_requires_every_current_contract_fence_field(
+    effect_kind: str,
+    _v1_signature: str,
+    _v2_signature: str,
+    expected_fields: set[str],
+) -> None:
+    payload = dict.fromkeys(expected_fields)
+    effect = session_actor_reducer._durable_effect(
+        effect_id="effect-1",
+        kind=effect_kind,
+        idempotency_key="effect-1",
+        operation_id="operation-1",
+        payload=payload,
+    )
+
+    assert effect.contract_version == 2
+    assert effect.contract_signature == builtin_effect_contract(effect_kind).signature
+
+    missing_field = min(expected_fields)
+    payload.pop(missing_field)
+    with pytest.raises(ValueError, match=missing_field):
+        session_actor_reducer._durable_effect(
+            effect_id="effect-2",
+            kind=effect_kind,
+            idempotency_key="effect-2",
+            operation_id="operation-2",
+            payload=payload,
+        )
+
+
 @pytest.mark.parametrize(
     ("effect_kind", "expected_fields"),
     [
@@ -869,24 +1397,13 @@ async def test_durable_fences_override_handler_completion_payload() -> None:
         ),
     ],
 )
-def test_builtin_effect_contract_resolves_current_v2_and_legacy_v1(
+def test_existing_v2_control_contract_fields_remain_unchanged(
     effect_kind: str,
     expected_fields: set[str],
 ) -> None:
     current = builtin_effect_contract(effect_kind)
-    legacy = builtin_effect_contract(effect_kind, version=1)
 
-    assert current.version == 2
-    assert legacy.version == 1
-    assert legacy.outcome_fence_fields is None
-    assert set(resolved_outcome_fence_fields(legacy)) == {
-        *DEFAULT_OUTCOME_FENCE_FIELDS,
-        *expected_fields,
-    }
-    assert legacy.signature == _historical_contract_signature(legacy)
-    assert current.outcome_fence_fields is not None
-    assert set(current.outcome_fence_fields) == expected_fields
-    assert current.signature != legacy.signature
+    assert set(current.outcome_fence_fields or ()) == expected_fields
 
 
 def test_outcome_fence_declaration_changes_contract_signature() -> None:
@@ -1351,9 +1868,9 @@ async def test_persisted_v1_is_orphaned_when_restart_has_only_v2_contract() -> N
     assert result.status is EffectRunStatus.FAILED
     assert calls == 0
     event = next(iter(store.mailbox.values()))
-    assert event.kind == "EffectFailed"
+    assert event.kind == "EffectQuarantined"
     assert event.payload["contract_version"] == 1
-    assert event.payload["failure_code"] == "EffectHandlerNotFound"
+    assert event.payload["reason_code"] == "unsupported_contract"
 
 
 @pytest.mark.asyncio
@@ -1392,4 +1909,5 @@ async def test_contract_signature_drift_fails_without_running_handler() -> None:
     assert result.status is EffectRunStatus.FAILED
     assert calls == 0
     event = next(iter(store.mailbox.values()))
-    assert event.payload["failure_code"] == EffectContractSignatureMismatch.__name__
+    assert event.kind == "EffectQuarantined"
+    assert event.payload["reason_code"] == "contract_signature_mismatch"

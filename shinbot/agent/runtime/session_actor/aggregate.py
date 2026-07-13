@@ -6,6 +6,10 @@ import math
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from shinbot.agent.runtime.session_actor.json_validation import (
+    DurableJSONValidationError,
+    validate_durable_json,
+)
 from shinbot.core.dispatch.agent_identity import SessionKey
 
 
@@ -47,16 +51,44 @@ class _FrozenList(list[Any]):
     sort = _immutable
 
 
-def _freeze_json(value: Any) -> Any:
+def _freeze_json(value: Any, *, require_string_keys: bool = False) -> Any:
     if isinstance(value, dict):
-        return _FrozenDict((str(key), _freeze_json(item)) for key, item in value.items())
+        frozen_items: list[tuple[str, Any]] = []
+        for key, item in value.items():
+            if require_string_keys and not isinstance(key, str):
+                raise TypeError("review_plan keys must be JSON strings")
+            normalized_key = key if isinstance(key, str) else str(key)
+            frozen_items.append(
+                (
+                    normalized_key,
+                    _freeze_json(item, require_string_keys=require_string_keys),
+                )
+            )
+        return _FrozenDict(frozen_items)
     if isinstance(value, (list, tuple)):
-        return _FrozenList(_freeze_json(item) for item in value)
+        return _FrozenList(
+            _freeze_json(item, require_string_keys=require_string_keys)
+            for item in value
+        )
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("durable aggregate numbers must be finite")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError(f"durable aggregate values must be JSON-compatible, got {type(value)!r}")
+
+
+def _nonnegative_integer(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must not be negative")
+    return value
+
+
+def _plan_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError("current_plan_id must be a string")
+    return value.strip()
 
 
 @dataclass(slots=True, frozen=True)
@@ -94,24 +126,29 @@ class AgentSessionAggregate:
             "review_plan_revision": self.review_plan_revision,
         }
         for name, value in counters.items():
-            if value < 0:
-                raise ValueError(f"{name} must not be negative")
+            _nonnegative_integer(value, field_name=name)
         updated_at = float(self.updated_at)
         if not math.isfinite(updated_at) or updated_at < 0:
             raise ValueError("updated_at must be finite and non-negative")
         object.__setattr__(self, "updated_at", updated_at)
-        current_plan_id = str(self.current_plan_id or "").strip()
+        current_plan_id = _plan_id(self.current_plan_id)
         if bool(current_plan_id) != (self.review_plan_revision > 0):
             raise ValueError(
                 "current_plan_id must be present exactly when review_plan_revision is positive"
             )
         object.__setattr__(self, "current_plan_id", current_plan_id)
-        for field_name in (
+        if not isinstance(self.review_plan, dict):
+            raise TypeError("review_plan must be a JSON object")
+        try:
+            validate_durable_json(self.review_plan, path="review_plan")
+        except DurableJSONValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        object.__setattr__(
+            self,
             "review_plan",
-            "active_reply_resume",
-            "active_chat_state",
-            "data",
-        ):
+            _freeze_json(self.review_plan, require_string_keys=True),
+        )
+        for field_name in ("active_reply_resume", "active_chat_state", "data"):
             object.__setattr__(self, field_name, _freeze_json(getattr(self, field_name)))
 
     @property
@@ -169,11 +206,18 @@ class AgentSessionAggregate:
         for counter_name in ("activity_generation", "active_epoch"):
             if counter_name not in changes:
                 continue
-            if int(changes[counter_name]) < getattr(self, counter_name):
+            next_counter = _nonnegative_integer(
+                changes[counter_name],
+                field_name=counter_name,
+            )
+            if next_counter < getattr(self, counter_name):
                 raise ValueError(f"{counter_name} cannot move backwards")
-        next_plan_id = str(changes.get("current_plan_id", self.current_plan_id) or "").strip()
-        next_plan_revision = int(
-            changes.get("review_plan_revision", self.review_plan_revision)
+        next_plan_id = _plan_id(
+            changes.get("current_plan_id", self.current_plan_id)
+        )
+        next_plan_revision = _nonnegative_integer(
+            changes.get("review_plan_revision", self.review_plan_revision),
+            field_name="review_plan_revision",
         )
         plan_changed = next_plan_id != self.current_plan_id
         plan_revision_changed = next_plan_revision != self.review_plan_revision

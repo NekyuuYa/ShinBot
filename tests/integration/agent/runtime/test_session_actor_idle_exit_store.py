@@ -18,6 +18,7 @@ from shinbot.agent.runtime.session_actor.effect_store import (
 from shinbot.agent.runtime.session_actor.events import (
     SessionEventEnvelope,
     SessionReviewSchedule,
+    SessionReviewScheduleEvent,
     SessionTransition,
 )
 from shinbot.agent.runtime.session_actor.reducer import (
@@ -75,6 +76,10 @@ async def test_exit_completion_commits_fences_metadata_and_schedule_clock(
                 review_plan={
                     "plan_id": "previous-review-plan",
                     "plan_revision": 1,
+                    "applied_delay_seconds": 60.0,
+                    "trigger": "previous_idle_review",
+                    "kind": "planned",
+                    "source": "integration-test",
                 },
                 active_chat_state={"attention": 0.5, "trace": [98, 99]},
                 data={"message_watermark": 99},
@@ -90,6 +95,32 @@ async def test_exit_completion_commits_fences_metadata_and_schedule_clock(
                     trigger="previous_idle_review",
                     outcome="planned",
                     source="integration-test",
+                ),
+            ),
+            review_schedule_events=(
+                SessionReviewScheduleEvent(
+                    schedule_event_id="previous-review-plan-scheduled",
+                    event_type="scheduled",
+                    plan_id="previous-review-plan",
+                    trigger="previous_idle_review",
+                    outcome="planned",
+                    source="integration-test",
+                    applied_delay_seconds=60.0,
+                    metadata={
+                        "plan_revision": 1,
+                        "schedule_outcome": {
+                            "active_reply_threshold": {},
+                            "applied_delay_seconds": 60.0,
+                            "fallback_reason": "",
+                            "kind": "planned",
+                            "mention_sensitivity": "normal",
+                            "model_execution_id": "",
+                            "prompt_signature": "",
+                            "reason": "",
+                            "requested_delay_seconds": None,
+                            "source": "integration-test",
+                        },
+                    },
                 ),
             ),
             reason="test_bootstrap",
@@ -426,6 +457,11 @@ async def test_exit_completion_commits_fences_metadata_and_schedule_clock(
         source=reconciliation_contract.completion_source,
         occurred_at=now[0],
         causation_id=reconciliation_claim.effect.source_event_id,
+        correlation_id=(
+            reconciliation_claim.effect.operation_id
+            or reconciliation_claim.effect.effect_id
+        ),
+        trace_id=reconciliation_claim.effect.trace_id,
         payload={
             **reconciliation_claim.effect.outcome_fence_payload(
                 resolved_outcome_fence_fields(reconciliation_contract)

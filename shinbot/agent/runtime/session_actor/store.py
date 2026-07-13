@@ -15,6 +15,12 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
+from shinbot.agent.runtime.session_actor.effect_contracts import (
+    EffectContractAuthority,
+    EffectDeclarationValidationError,
+    builtin_effect_contract_authority,
+    validate_effect_declaration,
+)
 from shinbot.agent.runtime.session_actor.events import (
     ClaimedSessionEvent,
     EventEnqueueResult,
@@ -42,6 +48,10 @@ from shinbot.agent.runtime.session_actor.message_ledger_persistence import (
     load_message_ledger_entries,
     load_message_ledger_ranges,
 )
+from shinbot.agent.runtime.session_actor.transition_validation import (
+    ReviewPlanTransitionValidationError,
+    validate_review_plan_transition,
+)
 
 if TYPE_CHECKING:
     from shinbot.persistence.engine import DatabaseManager
@@ -50,6 +60,8 @@ if TYPE_CHECKING:
 _EXTERNAL_ACTION_EFFECT_KINDS = frozenset(
     action_kind.value for action_kind in ExternalActionKind
 )
+_LEGACY_RECOVERY_EVENT_KIND = "RecoveryRequested"
+_LEGACY_RECOVERY_EVENT_SOURCE = "session_actor_recovery"
 
 
 class SessionStoreError(RuntimeError):
@@ -101,6 +113,7 @@ class SQLiteSessionActorStore:
         lease_seconds: float = 30.0,
         retry_delay_seconds: float = 1.0,
         clock: Callable[[], float] | None = None,
+        effect_contract_authority: EffectContractAuthority | None = None,
     ) -> None:
         """Initialize the store.
 
@@ -109,6 +122,8 @@ class SQLiteSessionActorStore:
             lease_seconds: Mailbox claim duration before recovery is allowed.
             retry_delay_seconds: Delay applied when a claimed event is released.
             clock: Injectable wall clock used by tests and persistence records.
+            effect_contract_authority: Sealed contract graph shared with the
+                actor and durable effect executor.
         """
 
         normalized_lease_seconds = float(lease_seconds)
@@ -124,6 +139,26 @@ class SQLiteSessionActorStore:
         self._lease_seconds = normalized_lease_seconds
         self._retry_delay_seconds = normalized_retry_delay_seconds
         self._clock = clock or time.time
+        authority = effect_contract_authority or builtin_effect_contract_authority()
+        if not isinstance(authority, EffectContractAuthority):
+            raise TypeError(
+                "effect_contract_authority must be an EffectContractAuthority"
+            )
+        if not authority.sealed:
+            raise TypeError("effect_contract_authority must be sealed")
+        self._effect_contract_authority = authority
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the exact sealed effect authority used by durable commits."""
+
+        return self._effect_contract_authority
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the DatabaseManager that owns this transaction domain."""
+
+        return self._database
 
     async def ensure(
         self,
@@ -375,6 +410,7 @@ class SQLiteSessionActorStore:
         if expected_revision < 0:
             raise ValueError("expected_revision must not be negative")
         self._validate_message_ledger_transition(claim, transition)
+        self._validate_effect_declarations(transition)
 
         with self._database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -419,13 +455,23 @@ class SQLiteSessionActorStore:
                 raise AggregateVersionConflict(
                     "aggregate ownership generation does not match mailbox claim"
                 )
+            self._validate_review_plan_forward_transition(
+                current,
+                target,
+                transition,
+            )
             schedule_timings = self._resolve_schedule_timings(
                 conn,
                 transition,
                 now=now,
             )
             effect_timings = _resolve_effect_timings(transition, now=now)
-            target = _apply_review_schedule_clock(target, schedule_timings)
+            plan_advanced = (
+                target.current_plan_id != current.current_plan_id
+                or target.review_plan_revision != current.review_plan_revision
+            )
+            if plan_advanced:
+                target = _apply_review_schedule_clock(target, schedule_timings)
             target = _apply_effect_commit_clock(target, effect_timings)
             input_ledger_sequence = apply_message_ledger_appends(
                 conn,
@@ -448,6 +494,9 @@ class SQLiteSessionActorStore:
             effects = _stamp_effect_input_fences(
                 transition.effects,
                 operation_fences,
+            )
+            self._validate_effect_declarations(
+                replace(transition, effects=effects)
             )
             target = replace(target, updated_at=max(target.updated_at, now))
             self._validate_aggregate_transition(
@@ -624,6 +673,18 @@ class SQLiteSessionActorStore:
             raise MessageLedgerConflict(
                 "only MessageReceived may append a message ledger entry"
             )
+
+    def _validate_effect_declarations(self, transition: SessionTransition) -> None:
+        """Reject malformed effects at each durable declaration boundary."""
+
+        for effect in transition.effects:
+            try:
+                validate_effect_declaration(
+                    effect,
+                    authority=self._effect_contract_authority,
+                )
+            except EffectDeclarationValidationError as exc:
+                raise DurableRecordConflict(str(exc)) from exc
 
     async def release(self, claim: ClaimedSessionEvent, *, error: str) -> None:
         """Release a claimed event for retry after a bounded delay."""
@@ -1165,6 +1226,33 @@ class SQLiteSessionActorStore:
             raise ValueError("active_epoch cannot move backwards")
         if target.updated_at < current.updated_at:
             raise ValueError("updated_at cannot move backwards")
+
+    @staticmethod
+    def _validate_review_plan_forward_transition(
+        current: AgentSessionAggregate,
+        target: AgentSessionAggregate,
+        transition: SessionTransition,
+    ) -> None:
+        """Require aggregate plan payload, fence, and schedule to stay aligned."""
+
+        try:
+            validate_review_plan_transition(current, transition)
+        except ReviewPlanTransitionValidationError as exc:
+            raise DurableRecordConflict(str(exc)) from exc
+
+        plan_id_changed = target.current_plan_id != current.current_plan_id
+        plan_revision_changed = (
+            target.review_plan_revision != current.review_plan_revision
+        )
+        plan_advanced = plan_id_changed or plan_revision_changed
+        plan_payload_changed = _json_dumps(target.review_plan) != _json_dumps(
+            current.review_plan
+        )
+        if not plan_advanced:
+            if plan_payload_changed:
+                raise DurableRecordConflict(
+                    "an existing review plan payload is immutable"
+                )
 
     @staticmethod
     def _append_transition(
@@ -2070,6 +2158,7 @@ def _apply_review_schedule_clock(
             "next_review_at": next_review_at,
             "applied_delay_seconds": applied_delay,
             "plan_id": plan_id,
+            "plan_revision": aggregate.review_plan_revision,
         }
     )
     return replace(aggregate, review_plan=review_plan)
@@ -2310,7 +2399,7 @@ def _recovery_event(
     return SessionEventEnvelope(
         event_id=event_id,
         key=aggregate.key,
-        kind="RecoveryRequested",
+        kind=_LEGACY_RECOVERY_EVENT_KIND,
         ownership_generation=aggregate.ownership_generation,
         payload={
             "reason": "non_idle_without_live_completion",
@@ -2322,7 +2411,7 @@ def _recovery_event(
             "operation_id": operation_id,
             **operation_ids,
         },
-        source="session_actor_recovery",
+        source=_LEGACY_RECOVERY_EVENT_SOURCE,
         occurred_at=now,
         correlation_id=operation_id,
         trace_id=event_id,

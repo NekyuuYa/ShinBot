@@ -115,6 +115,14 @@ class ActorRuntimeHarness:
             raise ValueError(
                 "actor runtime harness requires the executor's handler registry"
             )
+        if effect_executor.session_registry is not registry:
+            raise ValueError(
+                "actor runtime harness requires the executor's actor registry"
+            )
+        if effect_executor.persistence_domain is not registry.persistence_domain:
+            raise ValueError(
+                "actor runtime harness requires one shared persistence domain"
+            )
 
         self._registry = registry
         self._effect_executor = effect_executor
@@ -127,6 +135,8 @@ class ActorRuntimeHarness:
         self._allow_partial_contracts = allow_partial_contracts
         if not self._allow_partial_contracts:
             _require_exact_actor_contracts(self._required_effect_contracts)
+        self._effect_contract_authority = registry.effect_contract_authority
+        self._validate_shared_effect_authority()
         self._lifecycle_lock = asyncio.Lock()
         self._active = False
         self._closed = False
@@ -135,7 +145,11 @@ class ActorRuntimeHarness:
     def active(self) -> bool:
         """Return whether this harness has completed its activation sequence."""
 
-        return self._active
+        return (
+            self._active
+            and self._effect_executor.healthy
+            and self._effect_executor.started
+        )
 
     @property
     def closed(self) -> bool:
@@ -173,11 +187,14 @@ class ActorRuntimeHarness:
                 raise RuntimeError(
                     "partial actor runtime harnesses are deliberately non-activatable"
                 )
+            self._validate_shared_effect_authority()
             self._validate_required_handlers()
             self._handlers.seal()
             try:
                 await self._registry.recover()
+                self._validate_shared_effect_authority()
                 await self._effect_executor.start()
+                self._validate_shared_effect_authority()
                 if not self._effect_executor.started:
                     raise RuntimeError(
                         "actor runtime effect executor did not start "
@@ -274,6 +291,44 @@ class ActorRuntimeHarness:
                 )
         if failures:
             raise ActorRuntimeHarnessActivationError(tuple(failures))
+
+    def _validate_shared_effect_authority(self) -> None:
+        """Fail closed unless every runtime half shares one exact authority."""
+
+        if self._effect_executor.session_registry is not self._registry:
+            raise ValueError(
+                "actor runtime executor wake target changed after composition"
+            )
+        if (
+            self._effect_executor.persistence_domain
+            is not self._registry.persistence_domain
+        ):
+            raise ValueError(
+                "actor runtime persistence domain changed after composition"
+            )
+        authorities = (
+            ("actor registry", self._registry.effect_contract_authority),
+            ("effect executor", self._effect_executor.effect_contract_authority),
+            ("handler registry", self._handlers.effect_contract_authority),
+        )
+        for component, authority in authorities:
+            if authority is not self._effect_contract_authority:
+                raise ValueError(
+                    "actor runtime authority graph is split: "
+                    f"{component} does not share the composition authority"
+                )
+        authoritative_by_ref = {
+            contract.ref: contract
+            for contract in self._effect_contract_authority.contracts()
+        }
+        required_by_ref = {
+            contract.ref: contract for contract in self._required_effect_contracts
+        }
+        if authoritative_by_ref != required_by_ref:
+            raise ValueError(
+                "actor runtime composition authority does not exactly match "
+                "the required effect contract graph"
+            )
 
     async def _shutdown_components(self, *, drain: bool) -> None:
         """Close both runtime halves despite repeated caller cancellation."""

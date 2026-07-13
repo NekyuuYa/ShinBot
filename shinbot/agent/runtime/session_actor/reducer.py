@@ -20,6 +20,7 @@ from shinbot.agent.runtime.session_actor.aggregate import (
     SessionKey,
 )
 from shinbot.agent.runtime.session_actor.effect_contracts import (
+    EffectExecutionContract,
     builtin_effect_contract,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
@@ -50,6 +51,10 @@ from shinbot.agent.runtime.session_actor.message_ledger import (
     MessageWatermarkDisposition,
     append_message_ledger_entry_from_payload,
     classify_message_watermark,
+)
+from shinbot.agent.runtime.session_actor.review_due_identity import (
+    REVIEW_DUE_EVENT_SOURCE,
+    review_due_event_id,
 )
 from shinbot.agent.runtime.session_actor.workflow_completion import (
     ActiveChatBootstrapCompletionResult,
@@ -293,6 +298,7 @@ class IdleExitReducerConfig:
     """Pure policy inputs for active-chat exit settlement."""
 
     default_review_delay_seconds: float = 900.0
+    default_review_reason: str = "default_idle_review_interval"
     minimum_review_delay_seconds: float = 0.0
     maximum_review_delay_seconds: float = 604_800.0
     planning_deadline_seconds: float = 30.0
@@ -308,6 +314,12 @@ class IdleExitReducerConfig:
     def __post_init__(self) -> None:
         """Validate delay bounds once at reducer construction."""
 
+        if not isinstance(self.default_review_reason, str):
+            raise TypeError("default_review_reason must be a string")
+        normalized_reason = self.default_review_reason.strip()
+        if not normalized_reason:
+            raise ValueError("default_review_reason must not be empty")
+        object.__setattr__(self, "default_review_reason", normalized_reason)
         values = {
             "default_review_delay_seconds": self.default_review_delay_seconds,
             "minimum_review_delay_seconds": self.minimum_review_delay_seconds,
@@ -670,6 +682,12 @@ class AgentSessionReducer:
             "ownership_generation": aggregate.ownership_generation,
             "input_ledger_sequence": None,
         }
+        planner_contract = _effect_contract_snapshot(
+            AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING
+        )
+        deadline_contract = _effect_contract_snapshot(
+            AgentSessionEffectKind.ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE
+        )
         pending_exit = {
             **fence,
             "ownership_generation": aggregate.ownership_generation,
@@ -686,6 +704,10 @@ class AgentSessionReducer:
             "deadline_failure_event_id": deadline_failure_event_id,
             "completion_event_id": completion_event_id,
             "deadline_event_id": deadline_event_id,
+            "planner_contract_version": planner_contract["contract_version"],
+            "planner_contract_signature": planner_contract["contract_signature"],
+            "deadline_contract_version": deadline_contract["contract_version"],
+            "deadline_contract_signature": deadline_contract["contract_signature"],
         }
         data = _with_completed_control_intent(
             aggregate.data,
@@ -790,20 +812,33 @@ class AgentSessionReducer:
                 expected_event_field=expected_event_field,
             )
         )
-        expected_watermark = _optional_nonnegative_int(
+        watermark_valid, expected_watermark = _strict_optional_nonnegative_int(
             intent.get("expected_message_watermark")
         )
         if (
-            expected_watermark is None
+            not watermark_valid
+            or expected_watermark is None
             or expected_watermark != _message_watermark(aggregate.data)
         ):
             mismatch.append("message_watermark_changed")
-        if _optional_nonnegative_int(event.payload.get("expected_message_watermark")) != (
-            expected_watermark
-        ):
+        supplied_watermark_valid, supplied_watermark = (
+            _strict_optional_nonnegative_int(
+                event.payload.get("expected_message_watermark")
+            )
+        )
+        if not supplied_watermark_valid or supplied_watermark != expected_watermark:
             mismatch.append("expected_message_watermark_changed")
-        if _optional_nonnegative_int(event.payload.get("expected_active_epoch")) != (
-            _optional_nonnegative_int(intent.get("expected_active_epoch"))
+        epoch_valid, expected_epoch = _strict_optional_nonnegative_int(
+            intent.get("expected_active_epoch")
+        )
+        supplied_epoch_valid, supplied_epoch = _strict_optional_nonnegative_int(
+            event.payload.get("expected_active_epoch")
+        )
+        if (
+            not epoch_valid
+            or expected_epoch is None
+            or not supplied_epoch_valid
+            or supplied_epoch != expected_epoch
         ):
             mismatch.append("expected_active_epoch_changed")
         if expected_event_field == "failure_event_id":
@@ -844,49 +879,76 @@ class AgentSessionReducer:
                 disposition="message_recorded_suppressed",
                 reason=append.suppression_reason,
             )
+        aggregate, initial_outcome = self._seed_initial_review_plan(
+            aggregate,
+            event,
+        )
         if aggregate.state in {
             AgentSessionState.IDLE,
             AgentSessionState.REVIEW,
         } and append.priority.should_wake_active_reply:
             if _review_cancellation_blocks_active_reply(data):
-                return self._message_recorded(
-                    aggregate,
+                return self._attach_initial_review_plan(
+                    self._message_recorded(
+                        aggregate,
+                        event,
+                        append=append,
+                        data=data,
+                        disposition="message_recorded_active_reply_blocked",
+                        reason="review_cancellation_blocked",
+                        force_state_changed=initial_outcome is not None,
+                    ),
                     event,
-                    append=append,
-                    data=data,
-                    disposition="message_recorded_active_reply_blocked",
-                    reason="review_cancellation_blocked",
+                    outcome=initial_outcome,
                 )
             if _has_unsettled_pending_outbound(data):
-                return self._message_recorded(
+                return self._attach_initial_review_plan(
+                    self._message_recorded(
+                        aggregate,
+                        event,
+                        append=append,
+                        data=data,
+                        disposition="message_recorded_waiting_outbound",
+                        reason="high_priority_message_waiting_for_external_actions",
+                        force_state_changed=initial_outcome is not None,
+                    ),
+                    event,
+                    outcome=initial_outcome,
+                )
+            return self._attach_initial_review_plan(
+                self._start_active_reply(
                     aggregate,
                     event,
                     append=append,
                     data=data,
-                    disposition="message_recorded_waiting_outbound",
-                    reason="high_priority_message_waiting_for_external_actions",
-                )
-            return self._start_active_reply(
-                aggregate,
+                ),
                 event,
-                append=append,
-                data=data,
+                outcome=initial_outcome,
             )
         if aggregate.state == AgentSessionState.ACTIVE_CHAT:
-            return self._record_active_chat_message(
-                aggregate,
+            return self._attach_initial_review_plan(
+                self._record_active_chat_message(
+                    aggregate,
+                    event,
+                    append=append,
+                    data=data,
+                ),
                 event,
-                append=append,
-                data=data,
+                outcome=initial_outcome,
             )
         if aggregate.state != AgentSessionState.ACTIVE_CHAT_SETTLING:
-            return self._message_recorded(
-                aggregate,
+            return self._attach_initial_review_plan(
+                self._message_recorded(
+                    aggregate,
+                    event,
+                    append=append,
+                    data=data,
+                    disposition="message_recorded",
+                    reason=f"message_received_in:{aggregate.state}",
+                    force_state_changed=initial_outcome is not None,
+                ),
                 event,
-                append=append,
-                data=data,
-                disposition="message_recorded",
-                reason=f"message_received_in:{aggregate.state}",
+                outcome=initial_outcome,
             )
 
         operation_id = aggregate.idle_planning_operation_id
@@ -906,13 +968,18 @@ class AgentSessionReducer:
             )
             is MessageWatermarkDisposition.CAPTURED_OR_LATE
         ):
-            return self._message_recorded(
-                aggregate,
+            return self._attach_initial_review_plan(
+                self._message_recorded(
+                    aggregate,
+                    event,
+                    append=append,
+                    data=data,
+                    disposition="late_snapshot_message_recorded",
+                    reason="message_within_idle_planning_input_watermark",
+                    force_state_changed=initial_outcome is not None,
+                ),
                 event,
-                append=append,
-                data=data,
-                disposition="late_snapshot_message_recorded",
-                reason="message_within_idle_planning_input_watermark",
+                outcome=initial_outcome,
             )
         data = _without_operation_fence(
             _without_idle_exit(data),
@@ -956,6 +1023,9 @@ class AgentSessionReducer:
                         AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
                     ),
                     "idempotency_key": cancel_idempotency_key,
+                    **_effect_contract_snapshot(
+                        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
+                    ),
                     "completion_event_id": cancel_completion_event_id,
                     "failure_event_id": cancel_failure_event_id,
                     "operation_id": operation_id,
@@ -1036,23 +1106,148 @@ class AgentSessionReducer:
                     ),
                 ),
             )
-        return SessionTransition(
-            aggregate=target,
-            disposition="active_chat_exit_cancelled",
-            caused_operation_id=operation_id,
-            caused_plan_id=plan_id,
-            effects=effects,
-            operations=operations,
-            message_ledger_mutations=(append,),
-            review_schedule_events=schedule_events,
-            result={
-                "operation_id": operation_id,
-                "plan_id": plan_id,
-                "activity_generation": target.activity_generation,
-                "outcome": IdleReviewScheduleOutcomeKind.SUPERSEDED.value,
-                "deadline_effect_contract": "skip_when_operation_terminal",
+        return self._attach_initial_review_plan(
+            SessionTransition(
+                aggregate=target,
+                disposition="active_chat_exit_cancelled",
+                caused_operation_id=operation_id,
+                caused_plan_id=plan_id,
+                effects=effects,
+                operations=operations,
+                message_ledger_mutations=(append,),
+                review_schedule_events=schedule_events,
+                result={
+                    "operation_id": operation_id,
+                    "plan_id": plan_id,
+                    "activity_generation": target.activity_generation,
+                    "outcome": IdleReviewScheduleOutcomeKind.SUPERSEDED.value,
+                    "deadline_effect_contract": "skip_when_operation_terminal",
+                },
+                reason="message_received_while_settling",
+            ),
+            event,
+            outcome=initial_outcome,
+        )
+
+    def _seed_initial_review_plan(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+    ) -> tuple[AgentSessionAggregate, Defaulted | None]:
+        """Bind a defaulted plan before the first idle message chooses work."""
+
+        if (
+            aggregate.state != AgentSessionState.IDLE
+            or aggregate.current_plan_id
+            or aggregate.review_plan_revision != 0
+        ):
+            return aggregate, None
+        plan_id = self._ids.create(
+            key=event.key,
+            seed=event.event_id,
+            purpose="initial-review-plan",
+        )
+        outcome = Defaulted(
+            applied_delay_seconds=self._config.default_review_delay_seconds,
+            reason=self._config.default_review_reason,
+            source="initial_review_policy",
+        )
+        plan_revision = 1
+        return (
+            replace(
+                aggregate,
+                current_plan_id=plan_id,
+                review_plan_revision=plan_revision,
+                review_plan={
+                    "plan_id": plan_id,
+                    "plan_revision": plan_revision,
+                    "trigger": "initial_message",
+                    **outcome.to_payload(),
+                    "expected_active_epoch": aggregate.active_epoch,
+                    "expected_activity_generation": aggregate.activity_generation,
+                },
+            ),
+            outcome,
+        )
+
+    def _attach_initial_review_plan(
+        self,
+        transition: SessionTransition,
+        event: SessionEventEnvelope,
+        *,
+        outcome: Defaulted | None,
+    ) -> SessionTransition:
+        """Attach the initial plan schedule after the message target is known."""
+
+        if outcome is None:
+            return transition
+        if transition.review_schedules or transition.review_schedule_events:
+            raise ValueError("initial review plan cannot replace another schedule")
+        target = transition.aggregate
+        plan_id = target.current_plan_id
+        plan_revision = target.review_plan_revision
+        review_plan = dict(target.review_plan)
+        review_plan.update(
+            {
+                "expected_active_epoch": target.active_epoch,
+                "expected_activity_generation": target.activity_generation,
+                "committed_state_revision": target.state_revision,
+            }
+        )
+        target = replace(target, review_plan=review_plan)
+        outcome_payload = outcome.to_payload()
+        schedule = SessionReviewSchedule(
+            plan_id=plan_id,
+            plan_revision=plan_revision,
+            applied_delay_seconds=outcome.applied_delay_seconds,
+            status=ReviewScheduleStatus.SCHEDULED,
+            trigger="initial_message",
+            outcome=outcome.kind.value,
+            source=outcome.source,
+            requested_delay_seconds=outcome.requested_delay_seconds,
+            reason=outcome.reason,
+            fallback_reason=outcome.fallback_reason,
+            mention_sensitivity=outcome.mention_sensitivity,
+            active_reply_threshold=outcome.active_reply_threshold,
+            expected_active_epoch=target.active_epoch,
+            expected_activity_generation=target.activity_generation,
+            committed_state_revision=target.state_revision,
+        )
+        schedule_event = SessionReviewScheduleEvent(
+            schedule_event_id=self._ids.create(
+                key=event.key,
+                seed=event.event_id,
+                purpose="initial-review-schedule-event",
+            ),
+            event_type="scheduled",
+            plan_id=plan_id,
+            trigger="initial_message",
+            outcome=outcome.kind.value,
+            source=outcome.source,
+            requested_delay_seconds=outcome.requested_delay_seconds,
+            applied_delay_seconds=outcome.applied_delay_seconds,
+            reason=outcome.reason,
+            fallback_reason=outcome.fallback_reason,
+            expected_active_epoch=target.active_epoch,
+            expected_activity_generation=target.activity_generation,
+            committed_state_revision=target.state_revision,
+            trace_id=event.trace_id,
+            metadata={
+                "plan_revision": plan_revision,
+                "schedule_outcome": outcome_payload,
             },
-            reason="message_received_while_settling",
+        )
+        return replace(
+            transition,
+            aggregate=target,
+            caused_plan_id=plan_id,
+            review_schedules=(schedule,),
+            review_schedule_events=(schedule_event,),
+            result={
+                **transition.result,
+                "initial_review_plan": outcome_payload,
+                "plan_id": plan_id,
+            },
         )
 
     def _message_recorded(
@@ -1064,9 +1259,10 @@ class AgentSessionReducer:
         data: Mapping[str, Any],
         disposition: str,
         reason: str,
+        force_state_changed: bool = False,
     ) -> SessionTransition:
         normalized_data = dict(data)
-        state_changed = normalized_data != dict(aggregate.data)
+        state_changed = force_state_changed or normalized_data != dict(aggregate.data)
         target = aggregate.advance(
             state_changed=state_changed,
             data=normalized_data,
@@ -1645,6 +1841,7 @@ class AgentSessionReducer:
                 "completion_event_id": due_event_id,
                 "due_event_id": due_event_id,
                 "failure_event_id": failure_event_id,
+                "superseded_by_event_id": None,
             },
         )
         intent = {
@@ -1852,6 +2049,7 @@ class AgentSessionReducer:
                 "exit_event_id": exit_event_id,
                 "completion_event_id": exit_event_id,
                 "failure_event_id": failure_event_id,
+                "superseded_by_event_id": None,
                 "trigger": trigger,
                 "expected_active_epoch": aggregate.active_epoch,
                 "expected_message_watermark": input_watermark,
@@ -1991,14 +2189,10 @@ class AgentSessionReducer:
             "round_schedule_id": schedule_id,
             "message_log_ids": list(pending_ids),
         }
-        round_contract = builtin_effect_contract(
-            AgentSessionEffectKind.RUN_ACTIVE_CHAT_ROUND
-        )
         operation_fence.update(
-            {
-                "contract_version": round_contract.version,
-                "contract_signature": round_contract.signature,
-            }
+            _effect_contract_snapshot(
+                AgentSessionEffectKind.RUN_ACTIVE_CHAT_ROUND
+            )
         )
         data = _with_completed_control_intent(
             aggregate.data,
@@ -2088,57 +2282,80 @@ class AgentSessionReducer:
         )
         if aggregate.state != AgentSessionState.ACTIVE_CHAT:
             mismatch.append("state_changed")
-        if _text(active_state.get("bootstrap_status")) != "completed":
+        if _exact_json_text(active_state.get("bootstrap_status")) != "completed":
             mismatch.append("bootstrap_not_completed")
         if aggregate.active_chat_round_operation_id:
             mismatch.append("round_already_running")
         if _has_unsettled_pending_outbound(aggregate.data):
             mismatch.append("outbound_actions_pending")
 
-        expected_text = {
-            "round_schedule_id": _text(intent.get("schedule_id")),
-            "round_schedule_effect_id": _text(intent.get("effect_id")),
-            "round_due_event_id": _text(intent.get("completion_event_id")),
-            "round_schedule_source_event_id": _text(intent.get("causation_id")),
-            "round_schedule_contract_signature": _text(
-                intent.get("contract_signature")
-            ),
+        expected_text: dict[str, object] = {
+            "round_schedule_id": intent.get("schedule_id"),
+            "round_schedule_effect_id": intent.get("effect_id"),
+            "round_due_event_id": intent.get("completion_event_id"),
+            "round_schedule_source_event_id": intent.get("causation_id"),
+            "round_schedule_contract_signature": intent.get("contract_signature"),
         }
-        for field_name, expected in expected_text.items():
-            if not expected or _text(active_state.get(field_name)) != expected:
+        for field_name, raw_expected in expected_text.items():
+            expected = _exact_json_text(raw_expected)
+            if (
+                not expected
+                or _exact_json_text(active_state.get(field_name)) != expected
+            ):
                 mismatch.append(f"{field_name}_changed")
 
-        expected_revision = _optional_nonnegative_int(
+        revision_valid, expected_revision = _strict_optional_nonnegative_int(
             intent.get("schedule_revision")
         )
-        if expected_revision is None or _optional_nonnegative_int(
+        state_revision_valid, state_revision = _strict_optional_nonnegative_int(
             active_state.get("round_schedule_revision")
-        ) != expected_revision:
-            mismatch.append("round_schedule_revision_changed")
-        if _optional_nonnegative_int(
-            active_state.get("round_schedule_contract_version")
-        ) != _optional_nonnegative_int(intent.get("contract_version")):
-            mismatch.append("round_schedule_contract_version_changed")
-
-        expected_watermark = _optional_nonnegative_int(
-            intent.get("expected_message_watermark")
         )
         if (
-            expected_watermark is None
-            or _optional_nonnegative_int(
-                active_state.get("round_schedule_input_watermark")
+            not revision_valid
+            or expected_revision is None
+            or not state_revision_valid
+            or state_revision != expected_revision
+        ):
+            mismatch.append("round_schedule_revision_changed")
+        state_contract_valid, state_contract_version = (
+            _strict_optional_nonnegative_int(
+            active_state.get("round_schedule_contract_version")
             )
-            != expected_watermark
+        )
+        intent_contract_valid, intent_contract_version = (
+            _strict_optional_nonnegative_int(intent.get("contract_version"))
+        )
+        if (
+            not state_contract_valid
+            or state_contract_version is None
+            or not intent_contract_valid
+            or intent_contract_version is None
+            or state_contract_version != intent_contract_version
+        ):
+            mismatch.append("round_schedule_contract_version_changed")
+
+        watermark_valid, expected_watermark = _strict_optional_nonnegative_int(
+            intent.get("expected_message_watermark")
+        )
+        state_watermark_valid, state_watermark = _strict_optional_nonnegative_int(
+            active_state.get("round_schedule_input_watermark")
+        )
+        if (
+            not watermark_valid
+            or expected_watermark is None
+            or not state_watermark_valid
+            or state_watermark != expected_watermark
             or _message_watermark(aggregate.data) != expected_watermark
         ):
             mismatch.append("message_watermark_changed")
-        if _text(event.payload.get("schedule_id")) != _text(
+        if _exact_json_text(event.payload.get("schedule_id")) != _exact_json_text(
             intent.get("schedule_id")
         ):
             mismatch.append("schedule_id_changed")
-        if _optional_nonnegative_int(
-            event.payload.get("schedule_revision")
-        ) != expected_revision:
+        supplied_revision_valid, supplied_revision = (
+            _strict_optional_nonnegative_int(event.payload.get("schedule_revision"))
+        )
+        if not supplied_revision_valid or supplied_revision != expected_revision:
             mismatch.append("schedule_revision_changed")
 
         try:
@@ -2459,8 +2676,19 @@ class AgentSessionReducer:
         aggregate: AgentSessionAggregate,
         event: SessionEventEnvelope,
     ) -> SessionTransition:
-        pending = _pending_outbound_actions(aggregate.data)
-        effect_id = _text(event.payload.get("effect_id"))
+        try:
+            pending = _pending_outbound_actions(aggregate.data)
+        except (TypeError, ValueError):
+            return self._stale_workflow_completion(
+                aggregate,
+                event,
+                operation_id=(
+                    _exact_json_text(event.payload.get("operation_id")) or ""
+                ),
+                disposition="external_action_completion_stale",
+                mismatch=("pending_external_actions_invalid",),
+            )
+        effect_id = _exact_json_text(event.payload.get("effect_id")) or ""
         expected = _mapping(pending.get(effect_id))
         mismatch = _external_action_completion_mismatch(
             aggregate,
@@ -2471,19 +2699,19 @@ class AgentSessionReducer:
             return self._stale_workflow_completion(
                 aggregate,
                 event,
-                operation_id=_text(event.payload.get("operation_id")),
+                operation_id=_exact_json_text(event.payload.get("operation_id")) or "",
                 disposition="external_action_completion_stale",
                 mismatch=mismatch,
             )
         try:
             receipt_status = ExternalActionReceiptStatus(
-                _text(event.payload.get("receipt_status"))
+                _exact_json_text(event.payload.get("receipt_status")) or ""
             )
         except ValueError:
             return self._stale_workflow_completion(
                 aggregate,
                 event,
-                operation_id=_text(expected.get("operation_id")),
+                operation_id=_exact_json_text(expected.get("operation_id")) or "",
                 disposition="external_action_completion_stale",
                 mismatch=("receipt_status_invalid",),
             )
@@ -2852,7 +3080,7 @@ class AgentSessionReducer:
                 state_changed=False,
                 updated_at=_event_time(aggregate, event),
             )
-            plan_id = _text(event.payload.get("plan_id"))
+            plan_id = _exact_json_text(event.payload.get("plan_id")) or ""
             return SessionTransition(
                 aggregate=target,
                 disposition="review_due_superseded",
@@ -2869,7 +3097,7 @@ class AgentSessionReducer:
                         previous_plan_id=aggregate.current_plan_id,
                         trigger="review_due",
                         outcome="superseded",
-                        source=event.source,
+                        source=_exact_json_text(event.source) or "",
                         reason=",".join(mismatch),
                         committed_state_revision=aggregate.state_revision,
                         trace_id=event.trace_id,
@@ -3185,20 +3413,31 @@ class AgentSessionReducer:
                 "review_cancellation_completion_event_id": event.event_id,
             },
         )
-        target = aggregate.advance(
-            data=_with_control_intent(
-                aggregate.data,
-                effect_kind=effect_kind,
-                intent={
-                    **intent,
-                    "status": "completed",
-                    "completion": completion,
-                    "pending_active_reply": {
-                        **_mapping(intent.get("pending_active_reply")),
-                        "status": "released",
-                    },
+        data = _with_control_intent(
+            aggregate.data,
+            effect_kind=effect_kind,
+            intent={
+                **intent,
+                "status": "completed",
+                "completion": completion,
+                "pending_active_reply": {
+                    **_mapping(intent.get("pending_active_reply")),
+                    "status": "released",
                 },
-            ),
+            },
+        )
+        released_fence = {
+            **_operation_fence(data, effect.operation_id),
+            "contract_version": effect.contract_version,
+            "contract_signature": effect.contract_signature,
+        }
+        data = _with_operation_fence(
+            _without_operation_fence(data, effect.operation_id),
+            effect.operation_id,
+            released_fence,
+        )
+        target = aggregate.advance(
+            data=data,
             updated_at=_event_time(aggregate, event),
         )
         return SessionTransition(
@@ -3225,7 +3464,7 @@ class AgentSessionReducer:
         """Rebuild one saved active-reply effect from its stamped operation fence."""
 
         pending = _mapping(intent.get("pending_active_reply"))
-        operation_id = _text(pending.get("operation_id"))
+        operation_id = _exact_json_text(pending.get("operation_id")) or ""
         mismatch: list[str] = []
         if not operation_id:
             mismatch.append("pending_active_reply_operation_id_missing")
@@ -3240,21 +3479,25 @@ class AgentSessionReducer:
         if not fence:
             mismatch.append("pending_active_reply_fence_missing")
 
-        expected_text = {
+        expected_text: dict[str, object] = {
             "operation_id": operation_id,
             "operation_kind": "active_reply",
-            "effect_id": _text(pending.get("effect_id")),
+            "effect_id": pending.get("effect_id"),
             "effect_kind": AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW,
-            "idempotency_key": _text(pending.get("idempotency_key")),
-            "source_event_id": _text(pending.get("source_event_id")),
-            "completion_event_id": _text(pending.get("completion_event_id")),
-            "failure_event_id": _text(pending.get("failure_event_id")),
+            "idempotency_key": pending.get("idempotency_key"),
+            "source_event_id": pending.get("source_event_id"),
+            "completion_event_id": pending.get("completion_event_id"),
+            "failure_event_id": pending.get("failure_event_id"),
         }
-        for field_name, expected in expected_text.items():
+        normalized_expected_text: dict[str, str] = {}
+        for field_name, raw_expected in expected_text.items():
+            expected = _exact_json_text(raw_expected)
             if not expected:
                 mismatch.append(f"pending_active_reply_{field_name}_missing")
-            elif _text(fence.get(field_name)) != expected:
+                expected = ""
+            elif _exact_json_text(fence.get(field_name)) != expected:
                 mismatch.append(f"pending_active_reply_{field_name}_changed")
+            normalized_expected_text[field_name] = expected
 
         expected_ints = {
             "ownership_generation": aggregate.ownership_generation,
@@ -3262,9 +3505,10 @@ class AgentSessionReducer:
             "activity_generation": aggregate.activity_generation,
         }
         for field_name, expected in expected_ints.items():
-            if _optional_nonnegative_int(fence.get(field_name)) != expected:
+            valid, actual = _strict_optional_nonnegative_int(fence.get(field_name))
+            if not valid or actual != expected:
                 mismatch.append(f"pending_active_reply_{field_name}_changed")
-        if _text(fence.get("plan_id")) != aggregate.current_plan_id:
+        if _exact_json_text(fence.get("plan_id")) != aggregate.current_plan_id:
             mismatch.append("pending_active_reply_plan_id_changed")
 
         try:
@@ -3303,8 +3547,8 @@ class AgentSessionReducer:
                 mismatch.append(f"pending_active_reply_{field_name}_invalid")
             elif fence.get(field_name) != pending_value:
                 mismatch.append(f"pending_active_reply_{field_name}_changed")
-        instance_id = _text(fence.get("instance_id"))
-        target_session_id = _text(fence.get("target_session_id"))
+        instance_id = _exact_json_text(fence.get("instance_id")) or ""
+        target_session_id = _exact_json_text(fence.get("target_session_id")) or ""
         if not instance_id:
             mismatch.append("pending_active_reply_instance_id_missing")
         if not target_session_id:
@@ -3312,21 +3556,58 @@ class AgentSessionReducer:
         elif instance_id and not target_session_id.startswith(f"{instance_id}:"):
             mismatch.append("pending_active_reply_target_session_id_changed")
 
+        contract: EffectExecutionContract | None = None
+        has_contract_version = "contract_version" in fence
+        has_contract_signature = "contract_signature" in fence
+        if has_contract_version != has_contract_signature:
+            mismatch.append("pending_active_reply_contract_snapshot_incomplete")
+        elif has_contract_version:
+            contract_version = _strict_nonnegative_int(
+                fence.get("contract_version")
+            )
+            contract_signature = _exact_json_text(fence.get("contract_signature"))
+            if contract_version is None or contract_version < 1 or not contract_signature:
+                mismatch.append("pending_active_reply_contract_snapshot_invalid")
+            else:
+                try:
+                    contract = builtin_effect_contract(
+                        AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW,
+                        version=contract_version,
+                    )
+                except KeyError:
+                    mismatch.append("pending_active_reply_contract_version_unknown")
+                else:
+                    if contract_signature != contract.signature:
+                        mismatch.append(
+                            "pending_active_reply_contract_signature_changed"
+                        )
+        else:
+            contract = builtin_effect_contract(
+                AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW
+            )
+
         if mismatch:
             return None, tuple(dict.fromkeys(mismatch))
+        assert contract is not None
+        effect_fence = {
+            **fence,
+            "contract_version": contract.version,
+            "contract_signature": contract.signature,
+        }
         effect = _durable_effect(
-            effect_id=_text(pending.get("effect_id")),
+            effect_id=normalized_expected_text["effect_id"],
             kind=AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW,
-            idempotency_key=_text(pending.get("idempotency_key")),
+            idempotency_key=normalized_expected_text["idempotency_key"],
             operation_id=operation_id,
             payload={
-                **fence,
+                **effect_fence,
                 "input_watermark": input_watermark,
                 "input_ledger_sequence": input_ledger_sequence,
                 "message_log_ids": list(message_log_ids),
                 "response_profile": pending["response_profile"],
                 "sender_id": pending["sender_id"],
             },
+            contract_version=contract.version,
         )
         return effect, ()
 
@@ -3991,7 +4272,10 @@ class AgentSessionReducer:
             committed_state_revision=target.state_revision,
             operation_id=operation.operation_id,
             trace_id=event.trace_id,
-            metadata={"schedule_outcome": outcome_payload},
+            metadata={
+                "plan_revision": plan_revision,
+                "schedule_outcome": outcome_payload,
+            },
         )
         return SessionTransition(
             aggregate=target,
@@ -4052,6 +4336,8 @@ class AgentSessionReducer:
                 ),
                 reason=wire_outcome.reason,
                 fallback_reason=wire_outcome.fallback_reason,
+                model_execution_id=_text(event.payload.get("model_execution_id")),
+                prompt_signature=_text(event.payload.get("prompt_signature")),
                 source="review_workflow",
             )
         return outcome
@@ -4339,39 +4625,30 @@ class AgentSessionReducer:
             _effect_event_provenance_mismatch(
                 aggregate,
                 event,
-                expected_event_id=_text(fence.get("completion_event_id")),
+                expected_event_id=fence.get("completion_event_id"),
                 expected_effect_kind=expected_effect_kind,
-                expected_effect_id=_text(fence.get("effect_id")),
-                expected_idempotency_key=_text(fence.get("idempotency_key")),
+                expected_effect_id=fence.get("effect_id"),
+                expected_idempotency_key=fence.get("idempotency_key"),
                 expected_operation_id=operation_id,
-                expected_plan_id=_text(fence.get("plan_id")),
-                expected_active_epoch=_optional_nonnegative_int(
-                    fence.get("active_epoch")
-                ),
-                expected_activity_generation=_optional_nonnegative_int(
-                    fence.get("activity_generation")
-                ),
-                expected_input_watermark=_optional_nonnegative_int(
-                    fence.get("input_watermark")
-                ),
-                expected_input_ledger_sequence=_optional_nonnegative_int(
-                    fence.get("input_ledger_sequence")
-                ),
-                expected_causation_id=_text(fence.get("source_event_id")),
-                expected_ownership_generation=_optional_nonnegative_int(
-                    fence.get("ownership_generation")
-                ),
-                expected_contract_version=_optional_nonnegative_int(
-                    fence.get("contract_version")
-                ),
-                expected_contract_signature=_text(fence.get("contract_signature")),
+                expected_plan_id=fence.get("plan_id"),
+                expected_active_epoch=fence.get("active_epoch"),
+                expected_activity_generation=fence.get("activity_generation"),
+                expected_input_watermark=fence.get("input_watermark"),
+                expected_input_ledger_sequence=fence.get("input_ledger_sequence"),
+                expected_causation_id=fence.get("source_event_id"),
+                expected_ownership_generation=fence.get("ownership_generation"),
+                expected_contract_version=fence.get("contract_version"),
+                expected_contract_signature=fence.get("contract_signature"),
             )
         )
         if aggregate.state != expected_state:
             mismatch.append("state_changed")
-        if _text(fence.get("operation_kind")) != expected_operation_kind:
+        if _exact_json_text(fence.get("operation_kind")) != expected_operation_kind:
             mismatch.append("operation_kind_changed")
-        if _optional_nonnegative_int(fence.get("input_ledger_sequence")) is None:
+        ledger_sequence_valid, ledger_sequence = _strict_optional_nonnegative_int(
+            fence.get("input_ledger_sequence")
+        )
+        if not ledger_sequence_valid or ledger_sequence is None:
             mismatch.append("input_ledger_sequence_uncaptured")
         return tuple(dict.fromkeys(mismatch))
 
@@ -4395,39 +4672,30 @@ class AgentSessionReducer:
             _effect_event_provenance_mismatch(
                 aggregate,
                 event,
-                expected_event_id=_text(fence.get("failure_event_id")),
+                expected_event_id=fence.get("failure_event_id"),
                 expected_effect_kind=expected_effect_kind,
-                expected_effect_id=_text(fence.get("effect_id")),
-                expected_idempotency_key=_text(fence.get("idempotency_key")),
+                expected_effect_id=fence.get("effect_id"),
+                expected_idempotency_key=fence.get("idempotency_key"),
                 expected_operation_id=operation_id,
-                expected_plan_id=_text(fence.get("plan_id")),
-                expected_active_epoch=_optional_nonnegative_int(
-                    fence.get("active_epoch")
-                ),
-                expected_activity_generation=_optional_nonnegative_int(
-                    fence.get("activity_generation")
-                ),
-                expected_input_watermark=_optional_nonnegative_int(
-                    fence.get("input_watermark")
-                ),
-                expected_input_ledger_sequence=_optional_nonnegative_int(
-                    fence.get("input_ledger_sequence")
-                ),
-                expected_causation_id=_text(fence.get("source_event_id")),
-                expected_ownership_generation=_optional_nonnegative_int(
-                    fence.get("ownership_generation")
-                ),
-                expected_contract_version=_optional_nonnegative_int(
-                    fence.get("contract_version")
-                ),
-                expected_contract_signature=_text(fence.get("contract_signature")),
+                expected_plan_id=fence.get("plan_id"),
+                expected_active_epoch=fence.get("active_epoch"),
+                expected_activity_generation=fence.get("activity_generation"),
+                expected_input_watermark=fence.get("input_watermark"),
+                expected_input_ledger_sequence=fence.get("input_ledger_sequence"),
+                expected_causation_id=fence.get("source_event_id"),
+                expected_ownership_generation=fence.get("ownership_generation"),
+                expected_contract_version=fence.get("contract_version"),
+                expected_contract_signature=fence.get("contract_signature"),
             )
         )
         if aggregate.state != expected_state:
             mismatch.append("state_changed")
-        if _text(fence.get("operation_kind")) != expected_operation_kind:
+        if _exact_json_text(fence.get("operation_kind")) != expected_operation_kind:
             mismatch.append("operation_kind_changed")
-        if _optional_nonnegative_int(fence.get("input_ledger_sequence")) is None:
+        ledger_sequence_valid, ledger_sequence = _strict_optional_nonnegative_int(
+            fence.get("input_ledger_sequence")
+        )
+        if not ledger_sequence_valid or ledger_sequence is None:
             mismatch.append("input_ledger_sequence_uncaptured")
         if not _text(event.payload.get("failure_code")):
             mismatch.append("failure_code_missing")
@@ -4451,9 +4719,9 @@ class AgentSessionReducer:
             ),
             disposition=disposition,
             caused_operation_id=(
-                _text(event.payload.get("operation_id")) or operation_id
+                _exact_json_text(event.payload.get("operation_id")) or operation_id
             ),
-            caused_plan_id=_text(event.payload.get("plan_id")),
+            caused_plan_id=_exact_json_text(event.payload.get("plan_id")) or "",
             result={"mismatch": list(mismatch)},
             reason=",".join(mismatch),
         )
@@ -4539,7 +4807,7 @@ class AgentSessionReducer:
         aggregate: AgentSessionAggregate,
         event: SessionEventEnvelope,
     ) -> SessionTransition:
-        effect_kind = _text(event.payload.get("effect_kind"))
+        effect_kind = _exact_json_text(event.payload.get("effect_kind")) or ""
         try:
             action_kind = ExternalActionKind(effect_kind)
         except ValueError:
@@ -5191,8 +5459,19 @@ class AgentSessionReducer:
         gate.
         """
 
-        pending = _pending_outbound_actions(aggregate.data)
-        effect_id = _text(event.payload.get("effect_id"))
+        try:
+            pending = _pending_outbound_actions(aggregate.data)
+        except (TypeError, ValueError):
+            return self._stale_workflow_completion(
+                aggregate,
+                event,
+                operation_id=(
+                    _exact_json_text(event.payload.get("operation_id")) or ""
+                ),
+                disposition="external_action_effect_failure_stale",
+                mismatch=("pending_external_actions_invalid",),
+            )
+        effect_id = _exact_json_text(event.payload.get("effect_id")) or ""
         expected = _mapping(pending.get(effect_id))
         mismatch = _external_action_effect_failure_mismatch(
             aggregate,
@@ -5204,7 +5483,7 @@ class AgentSessionReducer:
             return self._stale_workflow_completion(
                 aggregate,
                 event,
-                operation_id=_text(event.payload.get("operation_id")),
+                operation_id=_exact_json_text(event.payload.get("operation_id")) or "",
                 disposition="external_action_effect_failure_stale",
                 mismatch=mismatch,
             )
@@ -5311,48 +5590,44 @@ class AgentSessionReducer:
             effect_kind == AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING
         )
         effect_prefix = "planner" if planner_failed else "deadline"
-        expected_effect_id = _text(pending.get(f"{effect_prefix}_effect_id"))
-        expected_idempotency_key = _text(
-            pending.get(f"{effect_prefix}_idempotency_key")
-        )
-        expected_operation_id = _text(pending.get("operation_id"))
+        expected_effect_id = pending.get(f"{effect_prefix}_effect_id")
+        expected_idempotency_key = pending.get(f"{effect_prefix}_idempotency_key")
+        expected_operation_id = _exact_json_text(pending.get("operation_id")) or ""
         operation_fence = _mapping(
             _mapping(aggregate.data.get("operation_fences")).get(
                 expected_operation_id
             )
         )
-        expected_plan_id = _text(pending.get("plan_id"))
-        expected_active_epoch = _optional_nonnegative_int(
-            pending.get("active_epoch")
+        expected_plan_id = pending.get("plan_id")
+        active_epoch_valid, expected_active_epoch = (
+            _strict_optional_nonnegative_int(pending.get("active_epoch"))
         )
-        expected_activity_generation = _optional_nonnegative_int(
-            pending.get("activity_generation")
+        activity_generation_valid, expected_activity_generation = (
+            _strict_optional_nonnegative_int(pending.get("activity_generation"))
         )
         mismatch = list(
             _effect_event_provenance_mismatch(
                 aggregate,
                 event,
-                expected_event_id=_text(
-                    pending.get(f"{effect_prefix}_failure_event_id")
-                ),
+                expected_event_id=pending.get(f"{effect_prefix}_failure_event_id"),
                 expected_effect_kind=effect_kind,
                 expected_effect_id=expected_effect_id,
                 expected_idempotency_key=expected_idempotency_key,
                 expected_operation_id=expected_operation_id,
                 expected_plan_id=expected_plan_id,
-                expected_active_epoch=expected_active_epoch,
-                expected_activity_generation=expected_activity_generation,
-                expected_input_watermark=_optional_nonnegative_int(
-                    operation_fence.get("input_watermark")
+                expected_active_epoch=pending.get("active_epoch"),
+                expected_activity_generation=pending.get("activity_generation"),
+                expected_input_watermark=operation_fence.get("input_watermark"),
+                expected_input_ledger_sequence=operation_fence.get(
+                    "input_ledger_sequence"
                 ),
-                expected_input_ledger_sequence=_optional_nonnegative_int(
-                    operation_fence.get("input_ledger_sequence")
+                expected_causation_id=pending.get("requested_by_event_id"),
+                expected_ownership_generation=pending.get("ownership_generation"),
+                expected_contract_version=pending.get(
+                    f"{effect_prefix}_contract_version"
                 ),
-                expected_causation_id=_text(
-                    pending.get("requested_by_event_id")
-                ),
-                expected_ownership_generation=_optional_nonnegative_int(
-                    pending.get("ownership_generation")
+                expected_contract_signature=pending.get(
+                    f"{effect_prefix}_contract_signature"
                 ),
             )
         )
@@ -5360,7 +5635,11 @@ class AgentSessionReducer:
             mismatch.append("state_changed")
         if not operation_fence:
             mismatch.append("operation_fence_changed")
-        operation_id = _text(event.payload.get("operation_id"))
+        if not active_epoch_valid:
+            mismatch.append("expected_active_epoch_invalid")
+        if not activity_generation_valid:
+            mismatch.append("expected_activity_generation_invalid")
+        operation_id = _exact_json_text(event.payload.get("operation_id")) or ""
         if operation_id != aggregate.idle_planning_operation_id:
             mismatch.append("operation_id_changed")
         if expected_active_epoch != aggregate.active_epoch:
@@ -5480,9 +5759,10 @@ class AgentSessionReducer:
                 reason=",".join(mismatch),
             )
         completion = _effect_completion_record(event)
+        operation_id = _text(intent.get("reconciliation_operation_id"))
         target = aggregate.advance(
             data=_with_control_intent(
-                aggregate.data,
+                _without_operation_fence(aggregate.data, operation_id),
                 effect_kind=control_effect_kind,
                 intent={
                     **intent,
@@ -5492,7 +5772,6 @@ class AgentSessionReducer:
             ),
             updated_at=_event_time(aggregate, event),
         )
-        operation_id = _text(intent.get("reconciliation_operation_id"))
         operation = SessionOperation(
             operation_id=operation_id,
             kind=reconciliation_kind,
@@ -5569,9 +5848,10 @@ class AgentSessionReducer:
             )
 
         updated_intent["status"] = "reconciliation_failed"
+        operation_id = _text(intent.get("reconciliation_operation_id"))
         target = aggregate.advance(
             data=_with_control_intent(
-                aggregate.data,
+                _without_operation_fence(aggregate.data, operation_id),
                 effect_kind=control_effect_kind,
                 intent=updated_intent,
             ),
@@ -5625,6 +5905,11 @@ class AgentSessionReducer:
             purpose=f"{reconciliation_kind}-failure-event",
         )
         desired_state = _text(intent.get("desired_state"))
+        input_watermark = _optional_nonnegative_int(intent.get("input_watermark"))
+        input_ledger_sequence = _optional_nonnegative_int(
+            intent.get("input_ledger_sequence")
+        )
+        contract_snapshot = _effect_contract_snapshot(reconciliation_kind)
         updated_intent = {
             **intent,
             "status": "reconciliation_requested",
@@ -5636,13 +5921,44 @@ class AgentSessionReducer:
             "reconciliation_completion_event_id": completion_event_id,
             "reconciliation_failure_event_id": failure_event_id,
             "reconciliation_causation_id": event.event_id,
+            **{
+                f"reconciliation_{field_name}": value
+                for field_name, value in contract_snapshot.items()
+            },
         }
+        operation_fence = {
+            "operation_id": operation_id,
+            "operation_kind": reconciliation_kind,
+            "source_event_id": event.event_id,
+            "effect_id": effect_id,
+            "effect_kind": reconciliation_kind,
+            "idempotency_key": effect_id,
+            **contract_snapshot,
+            "completion_event_id": completion_event_id,
+            "failure_event_id": failure_event_id,
+            "ownership_generation": aggregate.ownership_generation,
+            "plan_id": _text(intent.get("plan_id")),
+            "active_epoch": aggregate.active_epoch,
+            "activity_generation": aggregate.activity_generation,
+            "input_watermark": input_watermark,
+            "input_ledger_sequence": input_ledger_sequence,
+            "desired_state": desired_state,
+            "control_effect_kind": _text(control_effect_kind),
+            "control_effect_id": _text(intent.get("effect_id")),
+            "reconciliation_cycle": cycle,
+        }
+        data = _without_operation_fence(
+            aggregate.data,
+            _text(intent.get("reconciliation_operation_id")),
+        )
+        data = _with_control_intent(
+            data,
+            effect_kind=control_effect_kind,
+            intent=updated_intent,
+        )
+        data = _with_operation_fence(data, operation_id, operation_fence)
         target = aggregate.advance(
-            data=_with_control_intent(
-                aggregate.data,
-                effect_kind=control_effect_kind,
-                intent=updated_intent,
-            ),
+            data=data,
             updated_at=_event_time(aggregate, event),
         )
         operation = SessionOperation(
@@ -5653,6 +5969,8 @@ class AgentSessionReducer:
             state_revision=target.state_revision,
             active_epoch=aggregate.active_epoch,
             activity_generation=aggregate.activity_generation,
+            input_watermark=input_watermark,
+            input_ledger_sequence=input_ledger_sequence,
             started_at=event.occurred_at,
             metadata={
                 "desired_state": desired_state,
@@ -5676,10 +5994,8 @@ class AgentSessionReducer:
                 "activity_generation": _optional_nonnegative_int(
                     intent.get("activity_generation")
                 ),
-                "input_watermark": _optional_nonnegative_int(
-                    intent.get("input_watermark")
-                ),
-                "input_ledger_sequence": None,
+                "input_watermark": input_watermark,
+                "input_ledger_sequence": input_ledger_sequence,
                 "desired_state": desired_state,
                 "control_effect_kind": _text(control_effect_kind),
                 "control_effect_id": _text(intent.get("effect_id")),
@@ -5735,38 +6051,26 @@ class AgentSessionReducer:
     ) -> tuple[str, ...]:
         if not intent:
             return ("control_intent_changed",)
-        if _text(intent.get("status")) != "requested":
+        if _exact_json_text(intent.get("status")) != "requested":
             return ("control_intent_status_changed",)
         mismatch = list(
             _effect_event_provenance_mismatch(
                 aggregate,
                 event,
-                expected_event_id=_text(intent.get(expected_event_field)),
+                expected_event_id=intent.get(expected_event_field),
                 expected_effect_kind=effect_kind,
-                expected_effect_id=_text(intent.get("effect_id")),
-                expected_idempotency_key=_text(intent.get("idempotency_key")),
-                expected_operation_id=_text(intent.get("operation_id")),
-                expected_plan_id=_text(intent.get("plan_id")),
-                expected_active_epoch=_optional_nonnegative_int(
-                    intent.get("active_epoch")
-                ),
-                expected_activity_generation=_optional_nonnegative_int(
-                    intent.get("activity_generation")
-                ),
-                expected_input_watermark=_optional_nonnegative_int(
-                    intent.get("input_watermark")
-                ),
-                expected_input_ledger_sequence=_optional_nonnegative_int(
-                    intent.get("input_ledger_sequence")
-                ),
-                expected_causation_id=_text(intent.get("causation_id")),
-                expected_ownership_generation=_optional_nonnegative_int(
-                    intent.get("ownership_generation")
-                ),
-                expected_contract_version=_optional_nonnegative_int(
-                    intent.get("contract_version")
-                ),
-                expected_contract_signature=_text(intent.get("contract_signature")),
+                expected_effect_id=intent.get("effect_id"),
+                expected_idempotency_key=intent.get("idempotency_key"),
+                expected_operation_id=intent.get("operation_id"),
+                expected_plan_id=intent.get("plan_id"),
+                expected_active_epoch=intent.get("active_epoch"),
+                expected_activity_generation=intent.get("activity_generation"),
+                expected_input_watermark=intent.get("input_watermark"),
+                expected_input_ledger_sequence=intent.get("input_ledger_sequence"),
+                expected_causation_id=intent.get("causation_id"),
+                expected_ownership_generation=intent.get("ownership_generation"),
+                expected_contract_version=intent.get("contract_version"),
+                expected_contract_signature=intent.get("contract_signature"),
             )
         )
         mismatch.extend(_control_runtime_fence_mismatch(aggregate, intent))
@@ -5783,37 +6087,31 @@ class AgentSessionReducer:
     ) -> tuple[str, ...]:
         if not intent:
             return ("control_intent_changed",)
-        if _text(intent.get("status")) != "reconciliation_requested":
+        if _exact_json_text(intent.get("status")) != "reconciliation_requested":
             return ("control_intent_status_changed",)
         mismatch = list(
             _effect_event_provenance_mismatch(
                 aggregate,
                 event,
-                expected_event_id=_text(intent.get(expected_event_field)),
+                expected_event_id=intent.get(expected_event_field),
                 expected_effect_kind=reconciliation_kind,
-                expected_effect_id=_text(intent.get("reconciliation_effect_id")),
-                expected_idempotency_key=_text(
-                    intent.get("reconciliation_idempotency_key")
+                expected_effect_id=intent.get("reconciliation_effect_id"),
+                expected_idempotency_key=intent.get(
+                    "reconciliation_idempotency_key"
                 ),
-                expected_operation_id=_text(
-                    intent.get("reconciliation_operation_id")
+                expected_operation_id=intent.get("reconciliation_operation_id"),
+                expected_plan_id=intent.get("plan_id"),
+                expected_active_epoch=intent.get("active_epoch"),
+                expected_activity_generation=intent.get("activity_generation"),
+                expected_input_watermark=intent.get("input_watermark"),
+                expected_input_ledger_sequence=intent.get("input_ledger_sequence"),
+                expected_causation_id=intent.get("reconciliation_causation_id"),
+                expected_ownership_generation=intent.get("ownership_generation"),
+                expected_contract_version=intent.get(
+                    "reconciliation_contract_version"
                 ),
-                expected_plan_id=_text(intent.get("plan_id")),
-                expected_active_epoch=_optional_nonnegative_int(
-                    intent.get("active_epoch")
-                ),
-                expected_activity_generation=_optional_nonnegative_int(
-                    intent.get("activity_generation")
-                ),
-                expected_input_watermark=_optional_nonnegative_int(
-                    intent.get("input_watermark")
-                ),
-                expected_input_ledger_sequence=None,
-                expected_causation_id=_text(
-                    intent.get("reconciliation_causation_id")
-                ),
-                expected_ownership_generation=_optional_nonnegative_int(
-                    intent.get("ownership_generation")
+                expected_contract_signature=intent.get(
+                    "reconciliation_contract_signature"
                 ),
             )
         )
@@ -5880,6 +6178,9 @@ class AgentSessionReducer:
                 "effect_id": stop_effect_id,
                 "effect_kind": AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME,
                 "idempotency_key": stop_idempotency_key,
+                **_effect_contract_snapshot(
+                    AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
+                ),
                 "completion_event_id": stop_completion_event_id,
                 "failure_event_id": stop_failure_event_id,
                 "operation_id": operation_id,
@@ -5974,7 +6275,10 @@ class AgentSessionReducer:
             committed_state_revision=target.state_revision,
             operation_id=operation_id,
             trace_id=event.trace_id,
-            metadata={"schedule_outcome": outcome_payload},
+            metadata={
+                "plan_revision": plan_revision,
+                "schedule_outcome": outcome_payload,
+            },
         )
         stop_effect = _durable_effect(
             effect_id=stop_effect_id,
@@ -6018,8 +6322,8 @@ class AgentSessionReducer:
         event: SessionEventEnvelope,
         mismatch: tuple[str, ...],
     ) -> SessionTransition:
-        operation_id = _text(event.payload.get("operation_id"))
-        plan_id = _text(event.payload.get("plan_id"))
+        operation_id = _exact_json_text(event.payload.get("operation_id")) or ""
+        plan_id = _exact_json_text(event.payload.get("plan_id")) or ""
         if not plan_id:
             seed = operation_id or event.event_id
             plan_id = self._ids.create(
@@ -6027,15 +6331,23 @@ class AgentSessionReducer:
                 seed=seed,
                 purpose="idle-review-plan",
             )
+        active_epoch_valid, expected_active_epoch = _strict_optional_nonnegative_int(
+            event.payload.get("active_epoch")
+        )
+        activity_generation_valid, expected_activity_generation = (
+            _strict_optional_nonnegative_int(
+                event.payload.get("activity_generation")
+            )
+        )
         outcome = Superseded(
             reason=",".join(mismatch),
             operation_id=operation_id,
             plan_id=plan_id,
-            expected_active_epoch=_optional_nonnegative_int(
-                event.payload.get("active_epoch")
+            expected_active_epoch=(
+                expected_active_epoch if active_epoch_valid else None
             ),
-            expected_activity_generation=_optional_nonnegative_int(
-                event.payload.get("activity_generation")
+            expected_activity_generation=(
+                expected_activity_generation if activity_generation_valid else None
             ),
             actual_active_epoch=aggregate.active_epoch,
             actual_activity_generation=aggregate.activity_generation,
@@ -6076,7 +6388,7 @@ class AgentSessionReducer:
             previous_plan_id=aggregate.current_plan_id,
             trigger="active_chat_exit",
             outcome=outcome.kind.value,
-            source=event.source or "session_actor",
+            source=_exact_json_text(event.source) or "session_actor",
             reason=outcome.reason,
             expected_active_epoch=outcome.expected_active_epoch,
             expected_activity_generation=outcome.expected_activity_generation,
@@ -6096,26 +6408,24 @@ class AgentSessionReducer:
             event.kind == AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED
         )
         effect_prefix = "planner" if completion else "deadline"
-        expected_event_id = _text(
-            pending.get("completion_event_id" if completion else "deadline_event_id")
+        expected_event_id = pending.get(
+            "completion_event_id" if completion else "deadline_event_id"
         )
-        expected_operation_id = _text(pending.get("operation_id"))
+        expected_operation_id = _exact_json_text(pending.get("operation_id")) or ""
         operation_fence = _mapping(
             _mapping(aggregate.data.get("operation_fences")).get(
                 expected_operation_id
             )
         )
-        expected_plan_id = _text(pending.get("plan_id"))
-        expected_active_epoch = _optional_nonnegative_int(
-            pending.get("active_epoch")
+        expected_plan_id = pending.get("plan_id")
+        active_epoch_valid, expected_active_epoch = (
+            _strict_optional_nonnegative_int(pending.get("active_epoch"))
         )
-        expected_activity_generation = _optional_nonnegative_int(
-            pending.get("activity_generation")
+        activity_generation_valid, expected_activity_generation = (
+            _strict_optional_nonnegative_int(pending.get("activity_generation"))
         )
-        expected_effect_id = _text(pending.get(f"{effect_prefix}_effect_id"))
-        expected_idempotency_key = _text(
-            pending.get(f"{effect_prefix}_idempotency_key")
-        )
+        expected_effect_id = pending.get(f"{effect_prefix}_effect_id")
+        expected_idempotency_key = pending.get(f"{effect_prefix}_idempotency_key")
         expected_effect_kind = (
             AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING
             if completion
@@ -6131,19 +6441,19 @@ class AgentSessionReducer:
                 expected_idempotency_key=expected_idempotency_key,
                 expected_operation_id=expected_operation_id,
                 expected_plan_id=expected_plan_id,
-                expected_active_epoch=expected_active_epoch,
-                expected_activity_generation=expected_activity_generation,
-                expected_input_watermark=_optional_nonnegative_int(
-                    operation_fence.get("input_watermark")
+                expected_active_epoch=pending.get("active_epoch"),
+                expected_activity_generation=pending.get("activity_generation"),
+                expected_input_watermark=operation_fence.get("input_watermark"),
+                expected_input_ledger_sequence=operation_fence.get(
+                    "input_ledger_sequence"
                 ),
-                expected_input_ledger_sequence=_optional_nonnegative_int(
-                    operation_fence.get("input_ledger_sequence")
+                expected_causation_id=pending.get("requested_by_event_id"),
+                expected_ownership_generation=pending.get("ownership_generation"),
+                expected_contract_version=pending.get(
+                    f"{effect_prefix}_contract_version"
                 ),
-                expected_causation_id=_text(
-                    pending.get("requested_by_event_id")
-                ),
-                expected_ownership_generation=_optional_nonnegative_int(
-                    pending.get("ownership_generation")
+                expected_contract_signature=pending.get(
+                    f"{effect_prefix}_contract_signature"
                 ),
             )
         )
@@ -6151,6 +6461,10 @@ class AgentSessionReducer:
             mismatch.append("state_changed")
         if not operation_fence:
             mismatch.append("operation_fence_changed")
+        if not active_epoch_valid:
+            mismatch.append("expected_active_epoch_invalid")
+        if not activity_generation_valid:
+            mismatch.append("expected_activity_generation_invalid")
         if expected_operation_id != aggregate.idle_planning_operation_id:
             mismatch.append("operation_id_changed")
         if expected_active_epoch != aggregate.active_epoch:
@@ -6165,8 +6479,8 @@ class AgentSessionReducer:
         operation_id: str,
     ) -> str:
         pending = _mapping(aggregate.data.get("idle_exit"))
-        plan_id = _text(pending.get("plan_id"))
-        pending_operation_id = _text(pending.get("operation_id"))
+        plan_id = _exact_json_text(pending.get("plan_id")) or ""
+        pending_operation_id = _exact_json_text(pending.get("operation_id")) or ""
         if plan_id and (
             not pending_operation_id or pending_operation_id == operation_id
         ):
@@ -6220,10 +6534,10 @@ class AgentSessionReducer:
         reason: str,
     ) -> SessionTransition:
         operation_id = (
-            _text(event.payload.get("operation_id"))
+            _exact_json_text(event.payload.get("operation_id"))
             or aggregate.idle_planning_operation_id
         )
-        plan_id = _text(event.payload.get("plan_id"))
+        plan_id = _exact_json_text(event.payload.get("plan_id")) or ""
         if not plan_id and operation_id:
             plan_id = self._pending_plan_id(aggregate, operation_id)
         return SessionTransition(
@@ -6275,19 +6589,19 @@ def _active_chat_exit_request_mismatch(
         "contract_signature": contract.signature,
     }
     for field_name, expected in required_text.items():
-        if _text(event.payload.get(field_name)) != expected:
+        if _exact_json_text(event.payload.get(field_name)) != expected:
             mismatch.append(f"{field_name}_changed")
-    if _optional_nonnegative_int(event.payload.get("contract_version")) != contract.version:
+    if _strict_nonnegative_int(event.payload.get("contract_version")) != contract.version:
         mismatch.append("contract_version_changed")
-    attempt_count = _optional_nonnegative_int(event.payload.get("attempt_count"))
+    attempt_count = _strict_nonnegative_int(event.payload.get("attempt_count"))
     if attempt_count is None or attempt_count < 1:
         mismatch.append("attempt_count_invalid")
-    expected_epoch = _optional_nonnegative_int(
+    expected_epoch = _strict_nonnegative_int(
         event.payload.get("expected_active_epoch")
     )
     if expected_epoch is None or expected_epoch != aggregate.active_epoch:
         mismatch.append("active_epoch_changed")
-    expected_watermark = _optional_nonnegative_int(
+    expected_watermark = _strict_nonnegative_int(
         event.payload.get("expected_message_watermark")
     )
     if expected_watermark is None or expected_watermark != _message_watermark(
@@ -6307,13 +6621,13 @@ def _active_chat_round_due_mismatch(
     mismatch: list[str] = []
     if aggregate.state != AgentSessionState.ACTIVE_CHAT:
         mismatch.append("state_changed")
-    if _text(active_state.get("bootstrap_status")) != "completed":
+    if _exact_json_text(active_state.get("bootstrap_status")) != "completed":
         mismatch.append("bootstrap_not_completed")
     if aggregate.active_chat_round_operation_id:
         mismatch.append("round_already_running")
     if _has_unsettled_pending_outbound(aggregate.data):
         mismatch.append("outbound_actions_pending")
-    expected_event_id = _text(active_state.get("round_due_event_id"))
+    expected_event_id = _exact_json_text(active_state.get("round_due_event_id"))
     if not expected_event_id or event.event_id != expected_event_id:
         mismatch.append("event_id_changed")
     contract = builtin_effect_contract(
@@ -6322,34 +6636,47 @@ def _active_chat_round_due_mismatch(
     )
     if event.source != contract.completion_source:
         mismatch.append("source_changed")
-    expected_fields = {
-        "effect_id": _text(active_state.get("round_schedule_effect_id")),
+    expected_fields: dict[str, object] = {
+        "effect_id": active_state.get("round_schedule_effect_id"),
         "effect_kind": contract.effect_kind,
-        "idempotency_key": _text(active_state.get("round_schedule_effect_id")),
+        "idempotency_key": active_state.get("round_schedule_effect_id"),
         "contract_signature": contract.signature,
-        "schedule_id": _text(active_state.get("round_schedule_id")),
+        "schedule_id": active_state.get("round_schedule_id"),
     }
-    for field_name, expected in expected_fields.items():
-        if not expected or _text(event.payload.get(field_name)) != expected:
+    for field_name, raw_expected in expected_fields.items():
+        expected = _exact_json_text(raw_expected)
+        if not expected or _exact_json_text(event.payload.get(field_name)) != expected:
             mismatch.append(f"{field_name}_changed")
-    expected_revision = _optional_nonnegative_int(
+    revision_valid, expected_revision = _strict_optional_nonnegative_int(
         active_state.get("round_schedule_revision")
     )
-    if _optional_nonnegative_int(event.payload.get("schedule_revision")) != expected_revision:
+    if (
+        not revision_valid
+        or expected_revision is None
+        or _strict_nonnegative_int(event.payload.get("schedule_revision"))
+        != expected_revision
+    ):
         mismatch.append("schedule_revision_changed")
-    if _optional_nonnegative_int(event.payload.get("active_epoch")) != aggregate.active_epoch:
+    if _strict_nonnegative_int(event.payload.get("active_epoch")) != aggregate.active_epoch:
         mismatch.append("active_epoch_changed")
-    expected_watermark = _optional_nonnegative_int(
+    watermark_valid, expected_watermark = _strict_optional_nonnegative_int(
         active_state.get("round_schedule_input_watermark")
     )
-    if _optional_nonnegative_int(event.payload.get("input_watermark")) != expected_watermark:
+    if (
+        not watermark_valid
+        or expected_watermark is None
+        or _strict_nonnegative_int(event.payload.get("input_watermark"))
+        != expected_watermark
+    ):
         mismatch.append("input_watermark_changed")
-    if _optional_nonnegative_int(event.payload.get("contract_version")) != contract.version:
+    if _strict_nonnegative_int(event.payload.get("contract_version")) != contract.version:
         mismatch.append("contract_version_changed")
-    attempt_count = _optional_nonnegative_int(event.payload.get("attempt_count"))
+    attempt_count = _strict_nonnegative_int(event.payload.get("attempt_count"))
     if attempt_count is None or attempt_count < 1:
         mismatch.append("attempt_count_invalid")
-    expected_causation = _text(active_state.get("round_schedule_source_event_id"))
+    expected_causation = _exact_json_text(
+        active_state.get("round_schedule_source_event_id")
+    )
     if not expected_causation or event.causation_id != expected_causation:
         mismatch.append("causation_id_changed")
     if event.ownership_generation != aggregate.ownership_generation:
@@ -6367,21 +6694,32 @@ def _active_chat_tick_mismatch(
     mismatch: list[str] = []
     if aggregate.state != AgentSessionState.ACTIVE_CHAT:
         mismatch.append("state_changed")
-    if _optional_nonnegative_int(event.payload.get("active_epoch")) != aggregate.active_epoch:
+    active_epoch_valid, active_epoch = _strict_optional_nonnegative_int(
+        event.payload.get("active_epoch")
+    )
+    if not active_epoch_valid or active_epoch != aggregate.active_epoch:
         mismatch.append("active_epoch_changed")
-    expected_watermark = _optional_nonnegative_int(
+    watermark_valid, expected_watermark = _strict_optional_nonnegative_int(
         event.payload.get("expected_message_watermark")
     )
-    if expected_watermark is None or expected_watermark != _message_watermark(
-        aggregate.data
+    if (
+        not watermark_valid
+        or expected_watermark is None
+        or expected_watermark != _message_watermark(aggregate.data)
     ):
         mismatch.append("message_watermark_changed")
-    if _optional_nonnegative_int(event.payload.get("ownership_generation")) not in {
+    ownership_valid, ownership_generation = _strict_optional_nonnegative_int(
+        event.payload.get("ownership_generation")
+    )
+    if not ownership_valid or ownership_generation not in {
         None,
         aggregate.ownership_generation,
     }:
         mismatch.append("ownership_generation_changed")
-    if _optional_nonnegative_int(active_state.get("active_epoch")) != aggregate.active_epoch:
+    state_epoch_valid, state_epoch = _strict_optional_nonnegative_int(
+        active_state.get("active_epoch")
+    )
+    if not state_epoch_valid or state_epoch != aggregate.active_epoch:
         mismatch.append("active_state_epoch_changed")
     return tuple(dict.fromkeys(mismatch))
 
@@ -6573,19 +6911,20 @@ def _review_due_mismatch(
     """Validate the complete durable identity of a due-review delivery."""
 
     mismatch: list[str] = []
-    if event.payload.get("version") != 1:
+    delivery_version = _strict_nonnegative_int(event.payload.get("version"))
+    if delivery_version not in {1, 2}:
         mismatch.append("version_changed")
-    if _text(event.payload.get("event_id")) != event.event_id:
+    if _exact_json_text(event.payload.get("event_id")) != event.event_id:
         mismatch.append("event_id_changed")
     session_key = event.payload.get("session_key")
     if not isinstance(session_key, Mapping):
         mismatch.append("session_key_missing")
     else:
-        if _text(session_key.get("profile_id")) != aggregate.key.profile_id:
+        if _exact_json_text(session_key.get("profile_id")) != aggregate.key.profile_id:
             mismatch.append("profile_id_changed")
-        if _text(session_key.get("session_id")) != aggregate.key.session_id:
+        if _exact_json_text(session_key.get("session_id")) != aggregate.key.session_id:
             mismatch.append("session_id_changed")
-    payload_generation = _optional_nonnegative_int(
+    payload_generation = _strict_nonnegative_int(
         event.payload.get("ownership_generation")
     )
     if (
@@ -6594,16 +6933,50 @@ def _review_due_mismatch(
         or payload_generation != aggregate.ownership_generation
     ):
         mismatch.append("ownership_generation_changed")
-    plan_id = _text(event.payload.get("plan_id"))
+    plan_id = _exact_json_text(event.payload.get("plan_id"))
     if not plan_id:
         mismatch.append("plan_id_missing")
     elif plan_id != aggregate.current_plan_id:
         mismatch.append("plan_id_changed")
-    plan_revision = _optional_nonnegative_int(event.payload.get("plan_revision"))
+    plan_revision = _strict_nonnegative_int(event.payload.get("plan_revision"))
     if plan_revision is None or plan_revision < 1:
         mismatch.append("plan_revision_missing")
     elif plan_revision != aggregate.review_plan_revision:
         mismatch.append("plan_revision_changed")
+    delivery_cycle: int | None = None
+    if delivery_version == 1:
+        legacy_cycle = event.payload.get("delivery_cycle")
+        if legacy_cycle is None:
+            delivery_cycle = 0
+        else:
+            delivery_cycle = _strict_nonnegative_int(legacy_cycle)
+            if delivery_cycle != 0:
+                mismatch.append("delivery_cycle_changed")
+    elif delivery_version == 2:
+        delivery_cycle = _strict_nonnegative_int(event.payload.get("delivery_cycle"))
+        if delivery_cycle is None or delivery_cycle < 1:
+            mismatch.append("delivery_cycle_missing")
+    if (
+        delivery_version in {1, 2}
+        and delivery_cycle is not None
+        and plan_id
+        and plan_revision is not None
+        and plan_revision >= 1
+        and payload_generation is not None
+        and payload_generation >= 1
+    ):
+        expected_event_id = review_due_event_id(
+            key=aggregate.key,
+            plan_id=plan_id,
+            plan_revision=plan_revision,
+            ownership_generation=payload_generation,
+            delivery_cycle=delivery_cycle,
+        )
+        if event.event_id != expected_event_id:
+            mismatch.append("delivery_identity_changed")
+    if delivery_version in {1, 2}:
+        if event.source != REVIEW_DUE_EVENT_SOURCE:
+            mismatch.append("delivery_source_changed")
     return tuple(dict.fromkeys(mismatch))
 
 
@@ -6612,26 +6985,29 @@ def _control_runtime_fence_mismatch(
     intent: Mapping[str, Any],
 ) -> tuple[str, ...]:
     mismatch: list[str] = []
-    expected_state = _text(intent.get("expected_state"))
+    expected_state = _exact_json_text(intent.get("expected_state"))
     if not expected_state:
         mismatch.append("expected_state_missing")
     elif aggregate.state != expected_state:
         mismatch.append("state_changed")
     if "expected_current_plan_id" in intent and (
-        aggregate.current_plan_id != _text(intent.get("expected_current_plan_id"))
+        aggregate.current_plan_id
+        != _exact_json_text(intent.get("expected_current_plan_id"))
     ):
         mismatch.append("current_plan_id_changed")
-    expected_active_epoch = _optional_nonnegative_int(
+    active_epoch_valid, expected_active_epoch = _strict_optional_nonnegative_int(
         intent.get("expected_active_epoch")
     )
-    if expected_active_epoch is None:
+    if not active_epoch_valid or expected_active_epoch is None:
         mismatch.append("expected_active_epoch_missing")
     elif aggregate.active_epoch != expected_active_epoch:
         mismatch.append("active_epoch_changed")
-    expected_activity_generation = _optional_nonnegative_int(
+    activity_generation_valid, expected_activity_generation = (
+        _strict_optional_nonnegative_int(
         intent.get("expected_activity_generation")
+        )
     )
-    if expected_activity_generation is None:
+    if not activity_generation_valid or expected_activity_generation is None:
         mismatch.append("expected_activity_generation_missing")
     elif aggregate.activity_generation != expected_activity_generation:
         mismatch.append("activity_generation_changed")
@@ -6641,11 +7017,13 @@ def _control_runtime_fence_mismatch(
 def _effect_completion_record(event: SessionEventEnvelope) -> dict[str, Any]:
     return {
         "event_id": event.event_id,
-        "effect_id": _text(event.payload.get("effect_id")),
-        "effect_kind": _text(event.payload.get("effect_kind")),
-        "idempotency_key": _text(event.payload.get("idempotency_key")),
-        "operation_id": _text(event.payload.get("operation_id")),
-        "attempt_count": _optional_nonnegative_int(event.payload.get("attempt_count")),
+        "effect_id": _exact_json_text(event.payload.get("effect_id")) or "",
+        "effect_kind": _exact_json_text(event.payload.get("effect_kind")) or "",
+        "idempotency_key": (
+            _exact_json_text(event.payload.get("idempotency_key")) or ""
+        ),
+        "operation_id": _exact_json_text(event.payload.get("operation_id")) or "",
+        "attempt_count": _strict_nonnegative_int(event.payload.get("attempt_count")),
         "causation_id": event.causation_id,
         "source": event.source,
         "occurred_at": event.occurred_at,
@@ -6667,22 +7045,24 @@ def _workflow_effect_failure_record(
 
     return {
         **_effect_failure_record(event),
-        "contract_signature": _text(event.payload.get("contract_signature")),
+        "contract_signature": (
+            _exact_json_text(event.payload.get("contract_signature")) or ""
+        ),
         "contract_version": _strict_nonnegative_int(
             event.payload.get("contract_version")
         ),
         "ownership_generation": event.ownership_generation,
-        "plan_id": _text(event.payload.get("plan_id")),
-        "active_epoch": _optional_nonnegative_int(
+        "plan_id": _exact_json_text(event.payload.get("plan_id")) or "",
+        "active_epoch": _strict_nonnegative_int(
             event.payload.get("active_epoch")
         ),
-        "activity_generation": _optional_nonnegative_int(
+        "activity_generation": _strict_nonnegative_int(
             event.payload.get("activity_generation")
         ),
-        "input_watermark": _optional_nonnegative_int(
+        "input_watermark": _strict_nonnegative_int(
             event.payload.get("input_watermark")
         ),
-        "input_ledger_sequence": _optional_nonnegative_int(
+        "input_ledger_sequence": _strict_nonnegative_int(
             event.payload.get("input_ledger_sequence")
         ),
     }
@@ -6698,12 +7078,14 @@ def _external_action_effect_failure_record(
         "action_ordinal": _strict_nonnegative_int(
             event.payload.get("action_ordinal")
         ),
-        "contract_signature": _text(event.payload.get("contract_signature")),
+        "contract_signature": (
+            _exact_json_text(event.payload.get("contract_signature")) or ""
+        ),
         "contract_version": _strict_nonnegative_int(
             event.payload.get("contract_version")
         ),
         "ownership_generation": event.ownership_generation,
-        "request_digest": _text(event.payload.get("request_digest")),
+        "request_digest": _exact_json_text(event.payload.get("request_digest")) or "",
     }
 
 
@@ -6711,46 +7093,66 @@ def _effect_event_provenance_mismatch(
     aggregate: AgentSessionAggregate,
     event: SessionEventEnvelope,
     *,
-    expected_event_id: str,
-    expected_effect_kind: str,
-    expected_effect_id: str,
-    expected_idempotency_key: str,
-    expected_operation_id: str,
-    expected_plan_id: str,
-    expected_active_epoch: int | None,
-    expected_activity_generation: int | None,
-    expected_input_watermark: int | None,
-    expected_input_ledger_sequence: int | None,
-    expected_causation_id: str,
-    expected_ownership_generation: int | None,
-    expected_contract_version: int | None = None,
-    expected_contract_signature: str = "",
+    expected_event_id: object,
+    expected_effect_kind: object,
+    expected_effect_id: object,
+    expected_idempotency_key: object,
+    expected_operation_id: object,
+    expected_plan_id: object,
+    expected_active_epoch: object,
+    expected_activity_generation: object,
+    expected_input_watermark: object,
+    expected_input_ledger_sequence: object,
+    expected_causation_id: object,
+    expected_ownership_generation: object,
+    expected_contract_version: object = None,
+    expected_contract_signature: object = None,
 ) -> tuple[str, ...]:
     """Validate complete executor provenance, treating omissions as stale."""
 
-    effect_kind = _text(expected_effect_kind)
     mismatch: list[str] = []
-    declared_contract_signature = _text(expected_contract_signature)
-    if expected_contract_version is None:
+    effect_kind = _exact_json_text(expected_effect_kind)
+    if not effect_kind:
+        return ("expected_effect_kind_invalid",)
+
+    contract_version_valid, declared_contract_version = (
+        _strict_optional_nonnegative_int(expected_contract_version)
+    )
+    if not contract_version_valid:
+        mismatch.append("expected_contract_version_invalid")
+        declared_contract_version = None
+
+    if expected_contract_signature is None:
+        declared_contract_signature = ""
+    else:
+        declared_contract_signature = _exact_json_text(expected_contract_signature)
+        if declared_contract_signature is None:
+            mismatch.append("expected_contract_signature_invalid")
+            declared_contract_signature = ""
+
+    if declared_contract_version is None:
         if declared_contract_signature:
-            return ("expected_contract_snapshot_incomplete",)
+            mismatch.append("expected_contract_snapshot_incomplete")
         # Aggregates written before contract snapshots existed can only have
         # created v1 effects. Never let an inbound completion choose a newer
         # registered contract on their behalf.
         resolved_contract_version = 1
     else:
-        if expected_contract_version < 1:
-            return ("expected_contract_version_invalid",)
+        if declared_contract_version < 1:
+            mismatch.append("expected_contract_version_invalid")
+            resolved_contract_version = 1
+        else:
+            resolved_contract_version = declared_contract_version
         if not declared_contract_signature:
-            return ("expected_contract_snapshot_incomplete",)
-        resolved_contract_version = expected_contract_version
+            mismatch.append("expected_contract_snapshot_incomplete")
     try:
         contract = builtin_effect_contract(
             effect_kind,
             version=resolved_contract_version,
         )
     except KeyError:
-        return ("contract_version_unknown",)
+        mismatch.append("contract_version_unknown")
+        return tuple(dict.fromkeys(mismatch))
     if (
         declared_contract_signature
         and declared_contract_signature != contract.signature
@@ -6758,81 +7160,128 @@ def _effect_event_provenance_mismatch(
         mismatch.append("expected_contract_signature_changed")
     expected_signature = declared_contract_signature or contract.signature
 
-    if not expected_event_id:
+    expected_text: dict[str, str] = {}
+    for field_name, raw_expected in {
+        "event_id": expected_event_id,
+        "effect_id": expected_effect_id,
+        "idempotency_key": expected_idempotency_key,
+        "operation_id": expected_operation_id,
+        "plan_id": expected_plan_id,
+        "causation_id": expected_causation_id,
+    }.items():
+        exact_expected = _exact_json_text(raw_expected)
+        if exact_expected is None:
+            mismatch.append(f"expected_{field_name}_invalid")
+            exact_expected = ""
+        expected_text[field_name] = exact_expected
+
+    exact_event_id = expected_text["event_id"]
+    if not exact_event_id:
         mismatch.append("expected_event_id_missing")
-    elif event.event_id != expected_event_id:
+    elif event.event_id != exact_event_id:
         mismatch.append("event_id_changed")
-    if not event.source:
+    event_source = _exact_json_text(event.source)
+    if not event_source:
         mismatch.append("source_missing")
-    elif event.source != contract.completion_source:
+    elif event_source != contract.completion_source:
         mismatch.append("source_changed")
-    if not expected_causation_id:
+    exact_causation_id = expected_text["causation_id"]
+    if not exact_causation_id:
         mismatch.append("expected_causation_id_missing")
-    elif not event.causation_id:
+    elif not _exact_json_text(event.causation_id):
         mismatch.append("causation_id_missing")
-    elif event.causation_id != expected_causation_id:
+    elif event.causation_id != exact_causation_id:
         mismatch.append("causation_id_changed")
 
-    if expected_ownership_generation is None:
+    ownership_valid, ownership_generation = _strict_optional_nonnegative_int(
+        expected_ownership_generation
+    )
+    if not ownership_valid:
+        mismatch.append("expected_ownership_generation_invalid")
+    if ownership_generation is None:
         mismatch.append("expected_ownership_generation_missing")
     elif (
-        event.ownership_generation != expected_ownership_generation
-        or aggregate.ownership_generation != expected_ownership_generation
+        event.ownership_generation != ownership_generation
+        or aggregate.ownership_generation != ownership_generation
     ):
         mismatch.append("ownership_generation_changed")
 
     text_fields = {
-        "effect_id": expected_effect_id,
+        "effect_id": expected_text["effect_id"],
         "effect_kind": effect_kind,
-        "idempotency_key": expected_idempotency_key,
-        "operation_id": expected_operation_id,
-        "plan_id": expected_plan_id,
+        "idempotency_key": expected_text["idempotency_key"],
+        "operation_id": expected_text["operation_id"],
+        "plan_id": expected_text["plan_id"],
         "contract_signature": expected_signature,
     }
     for field_name, expected in text_fields.items():
         if field_name not in event.payload:
             mismatch.append(f"{field_name}_missing")
-        elif _text(event.payload.get(field_name)) != expected:
+        elif _exact_json_text(event.payload.get(field_name)) != expected:
             mismatch.append(f"{field_name}_changed")
 
+    active_epoch_valid, active_epoch = _strict_optional_nonnegative_int(
+        expected_active_epoch
+    )
+    if not active_epoch_valid:
+        mismatch.append("expected_active_epoch_invalid")
+    if active_epoch is None:
+        mismatch.append("expected_active_epoch_missing")
+    activity_generation_valid, activity_generation = (
+        _strict_optional_nonnegative_int(expected_activity_generation)
+    )
+    if not activity_generation_valid:
+        mismatch.append("expected_activity_generation_invalid")
+    if activity_generation is None:
+        mismatch.append("expected_activity_generation_missing")
     integer_fields = {
-        "active_epoch": expected_active_epoch,
-        "activity_generation": expected_activity_generation,
+        "active_epoch": active_epoch,
+        "activity_generation": activity_generation,
         "contract_version": resolved_contract_version,
     }
     for field_name, expected in integer_fields.items():
         if field_name not in event.payload:
             mismatch.append(f"{field_name}_missing")
-        elif _optional_nonnegative_int(event.payload.get(field_name)) != expected:
+        elif _strict_nonnegative_int(event.payload.get(field_name)) != expected:
             mismatch.append(f"{field_name}_changed")
 
+    watermark_valid, input_watermark = _strict_optional_nonnegative_int(
+        expected_input_watermark
+    )
+    if not watermark_valid:
+        mismatch.append("expected_input_watermark_invalid")
     if "input_watermark" not in event.payload:
         mismatch.append("input_watermark_missing")
     else:
         supplied_watermark = event.payload.get("input_watermark")
-        if expected_input_watermark is None:
+        if input_watermark is None:
             if supplied_watermark is not None:
                 mismatch.append("input_watermark_changed")
-        elif _optional_nonnegative_int(supplied_watermark) != expected_input_watermark:
+        elif _strict_nonnegative_int(supplied_watermark) != input_watermark:
             mismatch.append("input_watermark_changed")
 
+    ledger_sequence_valid, input_ledger_sequence = (
+        _strict_optional_nonnegative_int(expected_input_ledger_sequence)
+    )
+    if not ledger_sequence_valid:
+        mismatch.append("expected_input_ledger_sequence_invalid")
     if "input_ledger_sequence" not in event.payload:
         mismatch.append("input_ledger_sequence_missing")
     else:
         supplied_sequence = event.payload.get("input_ledger_sequence")
-        if expected_input_ledger_sequence is None:
+        if input_ledger_sequence is None:
             if supplied_sequence is not None:
                 mismatch.append("input_ledger_sequence_changed")
         elif (
-            _optional_nonnegative_int(supplied_sequence)
-            != expected_input_ledger_sequence
+            _strict_nonnegative_int(supplied_sequence)
+            != input_ledger_sequence
         ):
             mismatch.append("input_ledger_sequence_changed")
 
     if "attempt_count" not in event.payload:
         mismatch.append("attempt_count_missing")
     else:
-        attempt_count = _optional_nonnegative_int(event.payload.get("attempt_count"))
+        attempt_count = _strict_nonnegative_int(event.payload.get("attempt_count"))
         if attempt_count is None or attempt_count < 1:
             mismatch.append("attempt_count_invalid")
     return tuple(dict.fromkeys(mismatch))
@@ -6867,10 +7316,26 @@ def _durable_effect(
     payload: dict[str, Any],
     available_at: float = 0.0,
     available_after_seconds: float | None = None,
+    contract_version: int | None = None,
 ) -> SessionEffect:
-    """Build an effect pinned to the current built-in durable contract."""
+    """Build an effect pinned to a current or explicitly historical contract."""
 
-    contract = builtin_effect_contract(kind)
+    contract = builtin_effect_contract(kind, version=contract_version)
+    declared_fields = contract.outcome_fence_fields
+    if declared_fields is None and contract_version is None:
+        raise ValueError(
+            f"current effect contract has no outcome fence declaration: {kind}"
+        )
+    if declared_fields is not None:
+        missing_fields = tuple(
+            field_name for field_name in declared_fields if field_name not in payload
+        )
+        if missing_fields:
+            missing = ", ".join(missing_fields)
+            raise ValueError(
+                f"effect payload is missing declared outcome fence fields for {kind}: "
+                f"{missing}"
+            )
     return SessionEffect(
         effect_id=effect_id,
         kind=kind,
@@ -6964,11 +7429,18 @@ def _workflow_result_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _captured_input_boundary(fence: Mapping[str, Any]) -> tuple[int, int]:
-    input_watermark = _optional_nonnegative_int(fence.get("input_watermark"))
-    input_ledger_sequence = _optional_nonnegative_int(
+    watermark_valid, input_watermark = _strict_optional_nonnegative_int(
+        fence.get("input_watermark")
+    )
+    sequence_valid, input_ledger_sequence = _strict_optional_nonnegative_int(
         fence.get("input_ledger_sequence")
     )
-    if input_watermark is None or input_ledger_sequence is None:
+    if (
+        not watermark_valid
+        or input_watermark is None
+        or not sequence_valid
+        or input_ledger_sequence is None
+    ):
         raise ValueError("workflow operation has no committed input boundary")
     return input_watermark, input_ledger_sequence
 
@@ -7023,28 +7495,37 @@ def _pending_outbound_actions(data: Mapping[str, Any]) -> dict[str, dict[str, An
         *(status.value for status in ExternalActionReceiptStatus),
     }
     for raw_effect_id, raw_entry in raw.items():
-        effect_id = _text(raw_effect_id)
+        effect_id = _exact_json_text(raw_effect_id)
         if not effect_id:
-            raise ValueError("pending_outbound_actions contains an empty effect id")
+            raise ValueError(
+                "pending_outbound_actions contains an invalid effect id"
+            )
         if not isinstance(raw_entry, Mapping):
             raise ValueError(f"pending outbound action {effect_id!r} must be an object")
-        entry = {str(key): value for key, value in raw_entry.items()}
-        if _text(entry.get("effect_id")) != effect_id:
+        if any(not isinstance(key, str) for key in raw_entry):
+            raise ValueError(
+                f"pending outbound action {effect_id!r} has a non-text field name"
+            )
+        entry = dict(raw_entry)
+        if _exact_json_text(entry.get("effect_id")) != effect_id:
             raise ValueError(
                 f"pending outbound action {effect_id!r} changed its effect id"
             )
         try:
-            action_kind = ExternalActionKind(_text(entry.get("effect_kind")))
+            action_kind = ExternalActionKind(
+                _exact_json_text(entry.get("effect_kind")) or ""
+            )
         except ValueError as exc:
             raise ValueError(
                 f"pending outbound action {effect_id!r} has an invalid effect kind"
             ) from exc
-        operation_id = _text(entry.get("operation_id"))
-        idempotency_key = _text(entry.get("idempotency_key"))
-        source_event_id = _text(entry.get("source_event_id"))
-        request_digest = _text(entry.get("request_digest"))
+        _pending_external_action_contract(entry, action_kind=action_kind)
+        operation_id = _exact_json_text(entry.get("operation_id"))
+        idempotency_key = _exact_json_text(entry.get("idempotency_key"))
+        source_event_id = _exact_json_text(entry.get("source_event_id"))
+        request_digest = _exact_json_text(entry.get("request_digest"))
         action_ordinal = _strict_nonnegative_int(entry.get("action_ordinal"))
-        status = _text(entry.get("status"))
+        status = _exact_json_text(entry.get("status"))
         if not operation_id:
             raise ValueError(f"pending outbound action {effect_id!r} has no operation")
         if not idempotency_key:
@@ -7055,7 +7536,7 @@ def _pending_outbound_actions(data: Mapping[str, Any]) -> dict[str, dict[str, An
             raise ValueError(
                 f"pending outbound action {effect_id!r} has no source event"
             )
-        if not _is_sha256_digest(request_digest):
+        if request_digest is None or not _is_sha256_digest(request_digest):
             raise ValueError(
                 f"pending outbound action {effect_id!r} has an invalid request digest"
             )
@@ -7105,25 +7586,30 @@ def _validated_pending_action_effect_failure(
         raise ValueError(
             f"pending outbound action {effect_id!r} has no effect failure evidence"
         )
-    failure = {str(key): value for key, value in raw.items()}
-    contract = builtin_external_action_effect_contract(action_kind)
-    expected_text = {
+    if any(not isinstance(key, str) for key in raw):
+        raise ValueError(
+            f"pending outbound action {effect_id!r} failure has a non-text field name"
+        )
+    failure = dict(raw)
+    contract = _pending_external_action_contract(entry, action_kind=action_kind)
+    expected_text: dict[str, object] = {
         "effect_id": effect_id,
         "effect_kind": action_kind.value,
-        "idempotency_key": _text(entry.get("idempotency_key")),
-        "operation_id": _text(entry.get("operation_id")),
-        "request_digest": _text(entry.get("request_digest")),
+        "idempotency_key": entry.get("idempotency_key"),
+        "operation_id": entry.get("operation_id"),
+        "request_digest": entry.get("request_digest"),
         "contract_signature": contract.signature,
-        "causation_id": _text(entry.get("source_event_id")),
+        "causation_id": entry.get("source_event_id"),
         "source": contract.completion_source,
     }
-    for field_name, expected in expected_text.items():
-        if _text(failure.get(field_name)) != expected:
+    for field_name, raw_expected in expected_text.items():
+        expected = _exact_json_text(raw_expected)
+        if not expected or _exact_json_text(failure.get(field_name)) != expected:
             raise ValueError(
                 f"pending outbound action {effect_id!r} failure changed "
                 f"{field_name}"
             )
-    if not _text(failure.get("event_id")):
+    if not _exact_json_text(failure.get("event_id")):
         raise ValueError(
             f"pending outbound action {effect_id!r} failure has no event id"
         )
@@ -7149,7 +7635,7 @@ def _validated_pending_action_effect_failure(
         raise ValueError(
             f"pending outbound action {effect_id!r} failure has an invalid ownership"
         )
-    if not _text(failure.get("failure_code")):
+    if not _exact_json_text(failure.get("failure_code")):
         raise ValueError(
             f"pending outbound action {effect_id!r} failure has no failure code"
         )
@@ -7221,7 +7707,10 @@ def _with_pending_outbound_actions(
             raise ValueError(
                 f"pending outbound effect {effect_id!r} has no idempotency key"
             )
-        contract = builtin_external_action_effect_contract(action_kind)
+        contract = builtin_external_action_effect_contract(
+            action_kind,
+            version=effect.contract_version,
+        )
         if (
             effect.contract_version != contract.version
             or effect.contract_signature != contract.signature
@@ -7231,6 +7720,8 @@ def _with_pending_outbound_actions(
             )
         pending[effect_id] = {
             "action_ordinal": action_ordinal,
+            "contract_signature": contract.signature,
+            "contract_version": contract.version,
             "effect_id": effect_id,
             "effect_kind": action_kind.value,
             "idempotency_key": idempotency_key,
@@ -7266,7 +7757,7 @@ def _external_action_completion_mismatch(
     if _mapping(expected.get("effect_failure")):
         mismatch.append("effect_failure_recorded")
 
-    receipt_status = _text(event.payload.get("receipt_status"))
+    receipt_status = _exact_json_text(event.payload.get("receipt_status")) or ""
     completion_statuses = {
         ExternalActionReceiptStatus.SUCCEEDED.value,
         ExternalActionReceiptStatus.REJECTED_BEFORE_DISPATCH.value,
@@ -7275,7 +7766,7 @@ def _external_action_completion_mismatch(
     }
     if receipt_status not in completion_statuses:
         mismatch.append("receipt_status_invalid")
-    expected_status = _text(expected.get("status"))
+    expected_status = _exact_json_text(expected.get("status"))
     if expected_status != "pending" and receipt_status != expected_status:
         mismatch.append("receipt_status_changed")
     return tuple(dict.fromkeys(mismatch))
@@ -7298,13 +7789,13 @@ def _external_action_effect_failure_mismatch(
             outcome="failed",
         )
     )
-    if _text(expected.get("effect_kind")) != effect_kind:
+    if _exact_json_text(expected.get("effect_kind")) != effect_kind:
         mismatch.append("effect_kind_changed")
-    if _text(expected.get("status")) != "pending":
+    if _exact_json_text(expected.get("status")) != "pending":
         mismatch.append("receipt_status_changed")
     if _mapping(expected.get("effect_failure")):
         mismatch.append("effect_failure_recorded")
-    if not _text(event.payload.get("failure_code")):
+    if not _exact_json_text(event.payload.get("failure_code")):
         mismatch.append("failure_code_missing")
     if "failure_message" not in event.payload:
         mismatch.append("failure_message_missing")
@@ -7323,11 +7814,18 @@ def _external_action_effect_provenance_mismatch(
     if not expected:
         return ("pending_external_action_missing",)
     mismatch: list[str] = []
-    effect_id = _text(expected.get("effect_id"))
+    effect_id = _exact_json_text(expected.get("effect_id"))
+    if not effect_id:
+        return ("pending_external_action_effect_id_invalid",)
     try:
-        action_kind = ExternalActionKind(_text(expected.get("effect_kind")))
-        contract = builtin_external_action_effect_contract(action_kind)
-    except (KeyError, ValueError):
+        action_kind = ExternalActionKind(
+            _exact_json_text(expected.get("effect_kind")) or ""
+        )
+        contract = _pending_external_action_contract(
+            expected,
+            action_kind=action_kind,
+        )
+    except (KeyError, TypeError, ValueError):
         return ("pending_external_action_contract_invalid",)
 
     expected_event_id = derived_effect_event_id(
@@ -7339,14 +7837,16 @@ def _external_action_effect_provenance_mismatch(
         mismatch.append("event_id_changed")
     if event.source != contract.completion_source:
         mismatch.append("source_changed")
-    expected_causation_id = _text(expected.get("source_event_id"))
+    expected_causation_id = _exact_json_text(expected.get("source_event_id"))
     if not event.causation_id:
         mismatch.append("causation_id_missing")
     elif event.causation_id != expected_causation_id:
         mismatch.append("causation_id_changed")
-    expected_correlation_id = (
-        _text(expected.get("operation_id")) or effect_id
-    )
+    expected_correlation_id = _exact_json_text(expected.get("operation_id"))
+    if expected_correlation_id is None:
+        mismatch.append("operation_id_expected_invalid")
+        expected_correlation_id = ""
+    expected_correlation_id = expected_correlation_id or effect_id
     if event.correlation_id != expected_correlation_id:
         mismatch.append("correlation_id_changed")
     if (
@@ -7355,18 +7855,22 @@ def _external_action_effect_provenance_mismatch(
     ):
         mismatch.append("ownership_generation_changed")
 
-    expected_text = {
+    expected_text: dict[str, object] = {
         "effect_id": effect_id,
         "effect_kind": action_kind.value,
-        "idempotency_key": _text(expected.get("idempotency_key")),
-        "operation_id": _text(expected.get("operation_id")),
-        "request_digest": _text(expected.get("request_digest")),
+        "idempotency_key": expected.get("idempotency_key"),
+        "operation_id": expected.get("operation_id"),
+        "request_digest": expected.get("request_digest"),
         "contract_signature": contract.signature,
     }
-    for field_name, expected_value in expected_text.items():
+    for field_name, raw_expected in expected_text.items():
+        expected_value = _exact_json_text(raw_expected)
+        if expected_value is None:
+            mismatch.append(f"{field_name}_expected_invalid")
+            expected_value = ""
         if field_name not in event.payload:
             mismatch.append(f"{field_name}_missing")
-        elif _text(event.payload.get(field_name)) != expected_value:
+        elif _exact_json_text(event.payload.get(field_name)) != expected_value:
             mismatch.append(f"{field_name}_changed")
 
     expected_ordinal = _strict_nonnegative_int(expected.get("action_ordinal"))
@@ -7380,6 +7884,32 @@ def _external_action_effect_provenance_mismatch(
     if attempt_count is None or attempt_count < 1:
         mismatch.append("attempt_count_invalid")
     return tuple(dict.fromkeys(mismatch))
+
+
+def _pending_external_action_contract(
+    entry: Mapping[str, Any],
+    *,
+    action_kind: ExternalActionKind,
+) -> EffectExecutionContract:
+    """Resolve an exact pending-action contract, pinning old records to v1."""
+
+    has_version = "contract_version" in entry
+    has_signature = "contract_signature" in entry
+    if has_version != has_signature:
+        raise ValueError("pending external action contract snapshot is incomplete")
+    if not has_version:
+        return builtin_external_action_effect_contract(action_kind, version=1)
+    version = _strict_nonnegative_int(entry.get("contract_version"))
+    signature = _exact_json_text(entry.get("contract_signature"))
+    if version is None or version < 1 or not signature:
+        raise ValueError("pending external action contract snapshot is invalid")
+    contract = builtin_external_action_effect_contract(
+        action_kind,
+        version=version,
+    )
+    if signature != contract.signature:
+        raise ValueError("pending external action contract signature changed")
+    return contract
 
 
 def _all_pending_outbound_succeeded(
@@ -7576,6 +8106,18 @@ def _text(value: object) -> str:
     return str(value or "").strip()
 
 
+def _exact_json_text(value: object) -> str | None:
+    """Return JSON text exactly, without coercion or whitespace normalization."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return None
+    return value
+
+
 def _is_nonnegative_finite(value: object) -> bool:
     if isinstance(value, bool):
         return False
@@ -7643,6 +8185,15 @@ def _strict_nonnegative_int(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _strict_optional_nonnegative_int(value: object) -> tuple[bool, int | None]:
+    """Read an optional JSON integer while distinguishing null from corruption."""
+
+    if value is None:
+        return True, None
+    parsed = _strict_nonnegative_int(value)
+    return parsed is not None, parsed
 
 
 def _is_sha256_digest(value: str) -> bool:

@@ -9,6 +9,7 @@ import pytest
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     builtin_effect_contract,
+    builtin_session_actor_effect_contracts,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
     ClaimedEffect,
@@ -336,6 +337,8 @@ async def test_review_handler_makes_window_proposals_operation_global() -> None:
                 reason="review_finished",
                 fallback_reason="default_policy",
             ),
+            model_execution_id="model-execution-review-a",
+            prompt_signature="prompt-signature-review-a",
             reply_windows=(
                 ReviewWorkflowWindowOutput(
                     window_id="candidate:7",
@@ -364,6 +367,8 @@ async def test_review_handler_makes_window_proposals_operation_global() -> None:
     assert request.effect.target_session_id == "instance-a:group:room-a"
     assert request.effect.message_log_ids == (7, 8)
     completion = ReviewCompletionResult.from_payload(result.payload["workflow_result"])
+    assert result.payload["model_execution_id"] == "model-execution-review-a"
+    assert result.payload["prompt_signature"] == "prompt-signature-review-a"
     assert completion.enter_active_chat is False
     assert completion.consumed_message_log_ids == (7, 8)
     assert [intent.action_ordinal for intent in completion.external_action_intents] == [0, 1]
@@ -435,11 +440,38 @@ def test_explicit_registration_uses_builtin_actor_workflow_contracts() -> None:
         review_workflow=review_workflow,
     )
 
-    active_contract, registered_active_handler = registry.resolve(
-        "run_active_reply_workflow"
+    active_contracts = tuple(
+        contract
+        for contract in builtin_session_actor_effect_contracts()
+        if contract.effect_kind == "run_active_reply_workflow"
     )
-    review_contract, registered_review_handler = registry.resolve("run_review_workflow")
-    assert active_contract == builtin_effect_contract("run_active_reply_workflow")
-    assert review_contract == builtin_effect_contract("run_review_workflow")
-    assert registered_active_handler is active_handler
-    assert registered_review_handler is review_handler
+    review_contracts = tuple(
+        contract
+        for contract in builtin_session_actor_effect_contracts()
+        if contract.effect_kind == "run_review_workflow"
+    )
+    assert len({contract.ref for contract in active_contracts}) == len(active_contracts)
+    assert len({contract.ref for contract in review_contracts}) == len(review_contracts)
+    versions = {contract.version for contract in active_contracts}
+    assert versions == {
+        contract.version for contract in review_contracts
+    }
+    for version in versions:
+        active_contract, registered_active_handler = registry.resolve(
+            "run_active_reply_workflow",
+            version,
+        )
+        review_contract, registered_review_handler = registry.resolve(
+            "run_review_workflow",
+            version,
+        )
+        assert active_contract == builtin_effect_contract(
+            "run_active_reply_workflow",
+            version=version,
+        )
+        assert review_contract == builtin_effect_contract(
+            "run_review_workflow",
+            version=version,
+        )
+        assert registered_active_handler is active_handler
+        assert registered_review_handler is review_handler

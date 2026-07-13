@@ -6,7 +6,11 @@ from dataclasses import replace
 
 import pytest
 
-from shinbot.agent.runtime.session_actor.effect_contracts import EffectLane
+from shinbot.agent.runtime.session_actor.effect_contracts import (
+    DEFAULT_OUTCOME_FENCE_FIELDS,
+    EffectLane,
+    resolved_outcome_fence_fields,
+)
 from shinbot.agent.runtime.session_actor.external_actions import (
     EXTERNAL_ACTION_COMPLETION_EVENT_KIND,
     ExternalActionIntent,
@@ -96,7 +100,7 @@ def test_request_digest_excludes_actor_provenance_but_not_external_target() -> N
 
 def test_logical_identity_is_version_and_payload_independent_but_digest_is_exact() -> None:
     baseline = _request()
-    changed_contract = replace(baseline, contract_version=2)
+    changed_contract = replace(baseline, contract_version=1)
     changed_payload = replace(
         baseline,
         intent=_intent(payload={"text": "different"}),
@@ -196,13 +200,27 @@ def test_terminal_receipts_are_never_automatically_retried() -> None:
 
 def test_builtin_action_contracts_are_stable_and_independent() -> None:
     contracts = builtin_external_action_effect_contracts()
+    legacy_signatures = {
+        ExternalActionKind.SEND_REPLY.value: (
+            "04a17d9cca6bc5c6a10f19f8c54d2b6cf9ede3a3b9f8488831d5475c5b06ede4"
+        ),
+        ExternalActionKind.SEND_POKE.value: (
+            "cfa6bf53733e77a3dba8fcd3e2d1d0813439d89f6004499ebefed27d8750c03b"
+        ),
+        ExternalActionKind.SEND_REACTION.value: (
+            "306283285204ccd0b5605163be18930d89dfee73d644bd3f64b4b16efa7f5059"
+        ),
+    }
 
     assert {contract.effect_kind for contract in contracts} == {
         kind.value for kind in ExternalActionKind
     }
-    assert len({contract.signature for contract in contracts}) == len(
-        ExternalActionKind
-    )
+    assert {contract.ref for contract in contracts} == {
+        (kind.value, version)
+        for kind in ExternalActionKind
+        for version in (1, 2)
+    }
+    assert len({contract.signature for contract in contracts}) == len(contracts)
     for contract in contracts:
         assert contract.lane is EffectLane.DEFAULT
         assert contract.completion_event_kind == (
@@ -212,6 +230,20 @@ def test_builtin_action_contracts_are_stable_and_independent() -> None:
             contract.effect_kind,
             version=contract.version,
         ) is contract
+        if contract.version == 1:
+            assert contract.signature == legacy_signatures[contract.effect_kind]
+            assert contract.outcome_fence_fields is None
+            assert set(resolved_outcome_fence_fields(contract)) == {
+                *DEFAULT_OUTCOME_FENCE_FIELDS,
+                "action_ordinal",
+                "request_digest",
+            }
+        else:
+            assert contract.outcome_fence_fields == (
+                "action_ordinal",
+                "request_digest",
+            )
+            assert builtin_external_action_effect_contract(contract.effect_kind) is contract
 
 
 def test_materializer_binds_actor_provenance_without_payload_fence_leakage() -> None:

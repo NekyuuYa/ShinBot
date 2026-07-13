@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,13 @@ from shinbot.agent.runtime.session_actor.effect_store import (
 )
 from shinbot.agent.runtime.session_actor.events import (
     SessionEventEnvelope,
+    SessionReviewSchedule,
+    SessionReviewScheduleEvent,
     SessionTransition,
+)
+from shinbot.agent.runtime.session_actor.external_actions import (
+    ExternalActionKind,
+    builtin_external_action_effect_contract,
 )
 from shinbot.agent.runtime.session_actor.reducer import (
     AgentSessionEffectKind,
@@ -44,6 +51,7 @@ def _message_event(
     key: SessionKey,
     generation: int,
     message_log_id: int,
+    is_mentioned: bool = False,
 ) -> SessionEventEnvelope:
     event_id = f"message:{message_log_id}"
     return SessionEventEnvelope(
@@ -72,7 +80,7 @@ def _message_event(
             "platform": "test",
             "self_id": "bot-a",
             "is_private": False,
-            "is_mentioned": False,
+            "is_mentioned": is_mentioned,
             "is_mention_to_other": False,
             "is_reply_to_bot": False,
             "is_poke_to_bot": False,
@@ -116,7 +124,14 @@ async def _seed_active_chat(
                 active_epoch=1,
                 current_plan_id="plan-a",
                 review_plan_revision=1,
-                review_plan={"plan_id": "plan-a", "plan_revision": 1},
+                review_plan={
+                    "plan_id": "plan-a",
+                    "plan_revision": 1,
+                    "applied_delay_seconds": 900.0,
+                    "trigger": "test_active_chat_bootstrap",
+                    "kind": "defaulted",
+                    "source": "integration-test",
+                },
                 active_chat_state={
                     "active_epoch": 1,
                     "interest_value": interest_value,
@@ -141,6 +156,43 @@ async def _seed_active_chat(
                 updated_at=initial.updated_at,
             ),
             disposition="active_chat_bootstrapped",
+            caused_plan_id="plan-a",
+            review_schedules=(
+                SessionReviewSchedule(
+                    plan_id="plan-a",
+                    plan_revision=1,
+                    applied_delay_seconds=900.0,
+                    trigger="test_active_chat_bootstrap",
+                    outcome="defaulted",
+                    source="integration-test",
+                ),
+            ),
+            review_schedule_events=(
+                SessionReviewScheduleEvent(
+                    schedule_event_id="seed-active-chat-plan-scheduled",
+                    event_type="scheduled",
+                    plan_id="plan-a",
+                    trigger="test_active_chat_bootstrap",
+                    outcome="defaulted",
+                    source="integration-test",
+                    applied_delay_seconds=900.0,
+                    metadata={
+                        "plan_revision": 1,
+                        "schedule_outcome": {
+                            "active_reply_threshold": {},
+                            "applied_delay_seconds": 900.0,
+                            "fallback_reason": "",
+                            "kind": "defaulted",
+                            "mention_sensitivity": "normal",
+                            "model_execution_id": "",
+                            "prompt_signature": "",
+                            "reason": "",
+                            "requested_delay_seconds": None,
+                            "source": "integration-test",
+                        },
+                    },
+                ),
+            ),
         ),
         expected_revision=initial.state_revision,
     )
@@ -182,7 +234,14 @@ async def test_active_chat_round_snapshot_commits_without_consuming_later_work(
                 active_epoch=1,
                 current_plan_id="plan-a",
                 review_plan_revision=1,
-                review_plan={"plan_id": "plan-a", "plan_revision": 1},
+                review_plan={
+                    "plan_id": "plan-a",
+                    "plan_revision": 1,
+                    "applied_delay_seconds": 900.0,
+                    "trigger": "test_active_chat_bootstrap",
+                    "kind": "defaulted",
+                    "source": "integration-test",
+                },
                 active_chat_state={
                     "active_epoch": 1,
                     "interest_value": 20.0,
@@ -206,6 +265,43 @@ async def test_active_chat_round_snapshot_commits_without_consuming_later_work(
                 },
             ),
             disposition="active_chat_bootstrapped",
+            caused_plan_id="plan-a",
+            review_schedules=(
+                SessionReviewSchedule(
+                    plan_id="plan-a",
+                    plan_revision=1,
+                    applied_delay_seconds=900.0,
+                    trigger="test_active_chat_bootstrap",
+                    outcome="defaulted",
+                    source="integration-test",
+                ),
+            ),
+            review_schedule_events=(
+                SessionReviewScheduleEvent(
+                    schedule_event_id="active-chat-plan-scheduled",
+                    event_type="scheduled",
+                    plan_id="plan-a",
+                    trigger="test_active_chat_bootstrap",
+                    outcome="defaulted",
+                    source="integration-test",
+                    applied_delay_seconds=900.0,
+                    metadata={
+                        "plan_revision": 1,
+                        "schedule_outcome": {
+                            "active_reply_threshold": {},
+                            "applied_delay_seconds": 900.0,
+                            "fallback_reason": "",
+                            "kind": "defaulted",
+                            "mention_sensitivity": "normal",
+                            "model_execution_id": "",
+                            "prompt_signature": "",
+                            "reason": "",
+                            "requested_delay_seconds": None,
+                            "source": "integration-test",
+                        },
+                    },
+                ),
+            ),
         ),
         expected_revision=initial.state_revision,
     )
@@ -588,3 +684,178 @@ async def test_v2_exit_failure_flows_from_executor_to_actor_blocker(
     assert tuple(effect) == ("failed", exit_contract.version)
     assert failure is not None
     assert tuple(failure) == ("completed", AgentSessionEventKind.EFFECT_FAILED)
+
+
+@pytest.mark.asyncio
+async def test_external_action_v2_authority_overrides_handler_identity_and_releases_pending(
+    tmp_path: Path,
+) -> None:
+    """A forged handler projection cannot strand an accepted external action."""
+
+    now = [100.0]
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    store = SQLiteSessionActorStore(
+        database,
+        retry_delay_seconds=0.0,
+        clock=lambda: now[0],
+    )
+    reducer = AgentSessionReducer()
+    key = SessionKey("profile-a", "session-a")
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="external action authority integration test",
+        legacy_session_id="legacy:session-a",
+    ).ownership
+    await store.ensure(key, ownership_generation=ownership.generation)
+    message_log_id = database.message_logs.insert(
+        MessageLogRecord(
+            session_id="base-a",
+            platform_msg_id="platform:external-authority-1",
+            sender_id="user-a",
+            sender_name="User A",
+            raw_text="please reply",
+            content_json="[]",
+            role="user",
+            created_at=10.0,
+        )
+    )
+    registry = AgentSessionActorRegistry(
+        store=store,
+        handler=reducer.reduce,
+        retry_delay_seconds=0.0,
+    )
+    try:
+        await registry.submit(
+            _message_event(
+                key=key,
+                generation=ownership.generation,
+                message_log_id=message_log_id,
+                is_mentioned=True,
+            )
+        )
+        await registry.wait_idle(key)
+        replying = await store.load(key)
+        assert replying.state == AgentSessionState.ACTIVE_REPLY
+        operation_id = replying.active_reply_operation_id
+        fence = replying.data["operation_fences"][operation_id]
+        workflow_contract = builtin_effect_contract(
+            AgentSessionEffectKind.RUN_ACTIVE_REPLY_WORKFLOW
+        )
+        workflow_completion = SessionEventEnvelope(
+            event_id=str(fence["completion_event_id"]),
+            key=key,
+            kind=AgentSessionEventKind.ACTIVE_REPLY_COMPLETED,
+            ownership_generation=ownership.generation,
+            source=workflow_contract.completion_source,
+            occurred_at=110.0,
+            causation_id=str(fence["source_event_id"]),
+            correlation_id=operation_id,
+            trace_id="trace:external-authority-workflow",
+            payload={
+                "effect_id": fence["effect_id"],
+                "effect_kind": workflow_contract.effect_kind,
+                "idempotency_key": fence["idempotency_key"],
+                "operation_id": operation_id,
+                "plan_id": fence["plan_id"],
+                "active_epoch": fence["active_epoch"],
+                "activity_generation": fence["activity_generation"],
+                "input_watermark": fence["input_watermark"],
+                "input_ledger_sequence": fence["input_ledger_sequence"],
+                "attempt_count": 1,
+                "contract_version": workflow_contract.version,
+                "contract_signature": workflow_contract.signature,
+                "workflow_result": {
+                    "schema_version": 1,
+                    "completion_type": "active_reply",
+                    "consumed_message_log_ids": [message_log_id],
+                    "external_actions": {
+                        "schema_version": 1,
+                        "intents": [
+                            {
+                                "proposal_id": "reply-proposal-a",
+                                "action_ordinal": 0,
+                                "kind": ExternalActionKind.SEND_REPLY.value,
+                                "payload": {"text": "acknowledged"},
+                            }
+                        ],
+                    },
+                },
+            },
+        )
+        await registry.submit(workflow_completion)
+        await registry.wait_idle(key)
+        waiting = await store.load(key)
+        pending = waiting.data["pending_outbound_actions"]
+        assert len(pending) == 1
+        effect_id, pending_action = next(iter(pending.items()))
+        action_contract = builtin_external_action_effect_contract(
+            ExternalActionKind.SEND_REPLY
+        )
+        assert pending_action["contract_version"] == 2
+        assert pending_action["contract_signature"] == action_contract.signature
+
+        calls = 0
+
+        async def forged_handler(
+            _context: EffectExecutionContext,
+        ) -> EffectHandlerResult:
+            nonlocal calls
+            calls += 1
+            return EffectHandlerResult(
+                payload={
+                    "action_ordinal": 999,
+                    "request_digest": "0" * 64,
+                    "receipt_status": "succeeded",
+                }
+            )
+
+        handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+        handlers.register(
+            action_contract.effect_kind,
+            forged_handler,
+            contract=action_contract,
+        )
+        executor = DurableEffectExecutor(
+            store=SQLiteDurableEffectStore(database, clock=lambda: now[0]),
+            handlers=handlers,
+            session_registry=registry,
+            renew_interval_seconds=None,
+            clock=lambda: now[0],
+        )
+        result = await executor.run_once(lane=EffectLane.DEFAULT)
+        await registry.wait_idle(key)
+    finally:
+        await registry.shutdown()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert calls == 1
+    settled = await store.load(key)
+    assert "pending_outbound_actions" not in settled.data
+    with database.connect() as conn:
+        mailbox = conn.execute(
+            """
+            SELECT kind, status, payload_json
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, result.event_id),
+        ).fetchone()
+        effect = conn.execute(
+            """
+            SELECT status, contract_version
+            FROM agent_effect_outbox WHERE effect_id = ?
+            """,
+            (effect_id,),
+        ).fetchone()
+    assert mailbox is not None
+    payload = json.loads(str(mailbox["payload_json"]))
+    assert tuple(mailbox)[:2] == (
+        AgentSessionEventKind.EXTERNAL_ACTION_COMPLETED,
+        "completed",
+    )
+    assert payload["action_ordinal"] == pending_action["action_ordinal"]
+    assert payload["request_digest"] == pending_action["request_digest"]
+    assert effect is not None
+    assert tuple(effect) == ("completed", 2)

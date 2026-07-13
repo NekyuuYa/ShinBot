@@ -24,8 +24,10 @@ from typing import Any, Protocol
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     DEFAULT_OUTCOME_FENCE_FIELDS,
+    EffectContractAuthority,
     EffectExecutionContract,
     EffectLane,
+    builtin_effect_contract_authority,
     builtin_session_actor_effect_contracts,
     resolved_outcome_fence_fields,
 )
@@ -116,8 +118,27 @@ class EffectRunStatus(StrEnum):
     CLAIM_LOST = "claim_lost"
 
 
+class EffectQuarantineReason(StrEnum):
+    """Store-owned terminal reasons that must not impersonate domain outcomes."""
+
+    MALFORMED_EFFECT_ROW = "malformed_effect_row"
+    UNSUPPORTED_CONTRACT = "unsupported_contract"
+    CONTRACT_SIGNATURE_MISMATCH = "contract_signature_mismatch"
+    OUTCOME_FENCE_MISSING = "outcome_fence_missing"
+    CONTRACT_RESOLUTION_INCONSISTENT = "contract_resolution_inconsistent"
+    LANE_MISMATCH = "lane_mismatch"
+
+
 class EffectExecutorError(RuntimeError):
     """Base error raised by durable effect execution."""
+
+
+class EffectStoreBindingChanged(EffectExecutorError):
+    """Raised when a durable store changes a composed runtime identity."""
+
+
+class EffectAuthorityChanged(EffectStoreBindingChanged):
+    """Raised when a composed durable store swaps its authority snapshot."""
 
 
 class EffectClaimLost(EffectExecutorError):
@@ -262,6 +283,14 @@ class EffectRunResult:
 class DurableEffectStore(Protocol):
     """Atomic persistence operations required by the effect executor."""
 
+    @property
+    def persistence_domain(self) -> object:
+        """Return the stable identity of the backing transaction domain."""
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the sealed authority used for claims and settlement."""
+
     async def claim_next(
         self,
         *,
@@ -270,6 +299,11 @@ class DurableEffectStore(Protocol):
         excluded_effect_contracts: tuple[tuple[str, int], ...] = (),
     ) -> ClaimedEffect | None:
         """Claim the next available effect with a newly generated claim id."""
+
+    async def drain_quarantine_notifications(
+        self,
+    ) -> tuple[EffectSettlementResult, ...]:
+        """Return raw-row quarantines committed while scanning for a claim."""
 
     async def renew_lease(self, claim: ClaimedEffect) -> ClaimedEffect:
         """Extend a lease only if ``claim_id`` is still authoritative."""
@@ -301,6 +335,15 @@ class DurableEffectStore(Protocol):
         outcome_fence_fields: tuple[str, ...] = DEFAULT_OUTCOME_FENCE_FIELDS,
     ) -> EffectSettlementResult:
         """Atomically fail an effect and insert an ``EffectFailed`` event."""
+
+    async def quarantine(
+        self,
+        claim: ClaimedEffect,
+        *,
+        reason: EffectQuarantineReason,
+        message: str,
+    ) -> EffectSettlementResult:
+        """Terminalize unsupported work with a store-owned diagnostic event."""
 
     async def release(self, claim: ClaimedEffect, *, error: str) -> None:
         """Immediately release a live claim during executor shutdown."""
@@ -342,10 +385,50 @@ class EffectHandlerRegistry:
         *,
         contracts: Iterable[EffectExecutionContract] | None = None,
         include_builtin_contracts: bool = True,
+        contract_authority: EffectContractAuthority | None = None,
     ) -> None:
+        """Initialize a mutable handler binding over one contract authority.
+
+        Args:
+            contracts: Initial contracts when constructing a local authority.
+            include_builtin_contracts: Whether construction without independent
+                contracts binds the complete built-in Actor v2 authority. When
+                ``contracts`` is supplied, those contracts extend the built-in
+                session-actor policies through a local authority.
+            contract_authority: Exact immutable graph to bind. When supplied,
+                contracts cannot be added, removed, or replaced; only handlers
+                may be attached to policies in this authority.
+
+        Raises:
+            TypeError: If ``contract_authority`` has the wrong type.
+            ValueError: If both an authority and independent contracts are given.
+        """
+
         self._handlers: dict[tuple[str, int], EffectHandler] = {}
         self._contracts: dict[tuple[str, int], EffectExecutionContract] = {}
         self._sealed = False
+        if (
+            contract_authority is None
+            and include_builtin_contracts
+            and contracts is None
+        ):
+            contract_authority = builtin_effect_contract_authority()
+        if contract_authority is not None and not isinstance(
+            contract_authority,
+            EffectContractAuthority,
+        ):
+            raise TypeError("contract_authority must be an EffectContractAuthority")
+        if contract_authority is not None and contracts is not None:
+            raise ValueError(
+                "contracts cannot be supplied with an immutable contract_authority"
+            )
+        self._authority_locked = contract_authority is not None
+        self._effect_contract_authority = contract_authority or EffectContractAuthority(())
+        if contract_authority is not None:
+            self._contracts = {
+                contract.ref: contract for contract in contract_authority.contracts()
+            }
+            return
         initial = list(contracts or ())
         if include_builtin_contracts:
             initial = [*builtin_session_actor_effect_contracts(), *initial]
@@ -357,6 +440,12 @@ class EffectHandlerRegistry:
         """Return whether contract and handler registration is frozen."""
 
         return self._sealed
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the immutable snapshot governing registered handlers."""
+
+        return self._effect_contract_authority
 
     def seal(self) -> None:
         """Irreversibly freeze handler and contract registration.
@@ -402,7 +491,22 @@ class EffectHandlerRegistry:
         """Register the immutable policy for one durable effect kind."""
 
         self._require_mutable()
+        if not isinstance(contract, EffectExecutionContract):
+            raise TypeError("contract must be an EffectExecutionContract")
         key = (contract.effect_kind, contract.version)
+        if self._authority_locked:
+            authoritative = self._contracts.get(key)
+            if authoritative is None:
+                raise ValueError(
+                    "effect contract is outside the immutable authority: "
+                    f"{contract.effect_kind}:v{contract.version}"
+                )
+            if authoritative != contract:
+                raise ValueError(
+                    "effect contract does not match the immutable authority: "
+                    f"{contract.effect_kind}:v{contract.version}"
+                )
+            return
         if key in self._contracts and not replace_existing:
             if self._contracts[key] == contract:
                 return
@@ -411,6 +515,9 @@ class EffectHandlerRegistry:
                 f"{contract.effect_kind}:v{contract.version}"
             )
         self._contracts[key] = contract
+        self._effect_contract_authority = EffectContractAuthority(
+            self._contracts.values()
+        )
 
     def register(
         self,
@@ -670,6 +777,8 @@ class DurableEffectExecutor:
             raise ValueError("renew_interval_seconds must be finite or None")
         self._store = store
         self._handlers = handlers
+        self._effect_contract_authority: EffectContractAuthority | None = None
+        self._persistence_domain: object | None = None
         self._session_registry = session_registry
         self.worker_id = str(worker_id or f"effect-executor:{uuid.uuid4().hex}")
         self._worker_count = worker_count
@@ -688,6 +797,7 @@ class DurableEffectExecutor:
         self._cancellation_tails: set[asyncio.Task[Any]] = set()
         self._active_claims: dict[str, ClaimedEffect] = {}
         self._pending_wakes: set[SessionKey] = set()
+        self._binding_failure: EffectStoreBindingChanged | None = None
         self._closing = False
         self._drain_on_shutdown = False
 
@@ -700,13 +810,27 @@ class DurableEffectExecutor:
         known effect contract and therefore do not make it ``started``.
         """
 
-        return any(not task.done() for task in self._handler_tasks)
+        return self.healthy and any(
+            not task.done() for task in self._handler_tasks
+        )
 
     @property
     def running(self) -> bool:
         """Return whether any worker, including an orphan worker, is live."""
 
-        return any(not task.done() for task in self._tasks)
+        return self.healthy and any(not task.done() for task in self._tasks)
+
+    @property
+    def healthy(self) -> bool:
+        """Return whether no fatal composition drift has been observed."""
+
+        return self._binding_failure is None
+
+    @property
+    def binding_failure(self) -> EffectStoreBindingChanged | None:
+        """Return the fatal store-binding failure, if one was observed."""
+
+        return self._binding_failure
 
     @property
     def has_runnable_handlers(self) -> bool:
@@ -721,6 +845,59 @@ class DurableEffectExecutor:
         """Return the handler registry whose contracts this executor runs."""
 
         return self._handlers
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the exact authority used by the durable effect store.
+
+        Resolution is intentionally lazy so isolated executor test doubles can
+        be assembled without starting runtime work. The Actor runtime harness
+        always resolves and validates this property before recovery or workers.
+        """
+
+        authority = self._store.effect_contract_authority
+        if not isinstance(authority, EffectContractAuthority):
+            raise TypeError(
+                "durable effect store must expose an EffectContractAuthority"
+            )
+        if not authority.sealed:
+            raise TypeError("durable effect store authority must be sealed")
+        composed_authority = self._effect_contract_authority
+        if composed_authority is None:
+            self._effect_contract_authority = authority
+        elif authority is not composed_authority:
+            raise EffectAuthorityChanged(
+                "durable effect store changed authority after executor composition"
+            )
+        return authority
+
+    @property
+    def session_registry(self) -> SessionActorWakeTarget:
+        """Return the exact actor wake target used after durable settlement."""
+
+        return self._session_registry
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the exact transaction domain used by the effect store."""
+
+        domain = self._store.persistence_domain
+        if domain is None:
+            raise TypeError("durable effect store persistence_domain must not be None")
+        composed_domain = self._persistence_domain
+        if composed_domain is None:
+            self._persistence_domain = domain
+        elif domain is not composed_domain:
+            raise EffectStoreBindingChanged(
+                "durable effect store changed persistence domain after composition"
+            )
+        return domain
+
+    def _validate_store_binding(self) -> None:
+        """Verify authority and persistence identities remain immutable."""
+
+        _ = self.effect_contract_authority
+        _ = self.persistence_domain
 
     @property
     def closed(self) -> bool:
@@ -740,11 +917,13 @@ class DurableEffectExecutor:
         """Recover expired claims and start supervised effect workers."""
 
         async with self._start_lock:
+            self._validate_store_binding()
             if self._tasks:
                 return 0
             if self._closing:
                 raise RuntimeError("a closed durable effect executor cannot be restarted")
             recovered = await self._store.recover_expired(worker_id=self.worker_id)
+            self._validate_store_binding()
             tasks: list[asyncio.Task[None]] = []
             handler_tasks: list[asyncio.Task[None]] = []
             for lane in self._handlers.handled_lanes():
@@ -790,18 +969,54 @@ class DurableEffectExecutor:
     ) -> EffectRunResult:
         """Claim and execute at most one currently available effect."""
 
+        self._validate_store_binding()
+        await self._recover_pending_wakes()
         effect_contracts, excluded_effect_contracts = self._claim_filter(lane)
         claim = await self._store.claim_next(
             worker_id=worker_id or self.worker_id,
             effect_contracts=effect_contracts,
             excluded_effect_contracts=excluded_effect_contracts,
         )
+        if claim is not None:
+            self._idle_event.clear()
+            self._active_claims[claim.claim_id] = claim
+        try:
+            self._validate_store_binding()
+            quarantine_notifications = (
+                await self._store.drain_quarantine_notifications()
+            )
+            self._validate_store_binding()
+            notified_keys: set[SessionKey] = set()
+            for notification in quarantine_notifications:
+                if notification.status not in {
+                    EffectSettlementStatus.COMMITTED,
+                    EffectSettlementStatus.ALREADY_COMMITTED,
+                }:
+                    raise RuntimeError(
+                        "effect store returned an uncommitted quarantine notification"
+                    )
+                notified_keys.add(notification.key)
+            self._pending_wakes.update(notified_keys)
+            for key in notified_keys:
+                await self._wake_after_commit(key)
+        except asyncio.CancelledError:
+            if claim is not None:
+                await self._release_after_cancellation(claim)
+                self._active_claims.pop(claim.claim_id, None)
+            raise
+        except EffectStoreBindingChanged:
+            if claim is not None:
+                self._active_claims.pop(claim.claim_id, None)
+            raise
+        except Exception:
+            if claim is not None:
+                await self._release_unstarted_claim(claim)
+                self._active_claims.pop(claim.claim_id, None)
+            raise
         if claim is None:
             if not self._active_claims:
                 self._idle_event.set()
             return EffectRunResult(status=EffectRunStatus.EMPTY)
-        self._idle_event.clear()
-        self._active_claims[claim.claim_id] = claim
         try:
             return await self._execute_claim(claim, lane=lane)
         finally:
@@ -845,12 +1060,21 @@ class DurableEffectExecutor:
     async def _worker_loop(self, lane: EffectLane, index: int) -> None:
         worker_id = f"{self.worker_id}:{lane.value}:{index}"
         while True:
+            if not self.healthy:
+                return
             if self._closing and not self._drain_on_shutdown:
                 return
             try:
                 result = await self.run_once(worker_id=worker_id, lane=lane)
             except asyncio.CancelledError:
                 raise
+            except EffectStoreBindingChanged as exc:
+                self._mark_binding_failure(exc)
+                logger.critical(
+                    "durable effect executor stopped after store binding drift",
+                    extra={"worker_id": worker_id, "error": _error_text(exc)},
+                )
+                return
             except Exception:
                 logger.exception("durable effect worker iteration failed")
                 result = EffectRunResult(status=EffectRunStatus.EMPTY)
@@ -858,8 +1082,16 @@ class DurableEffectExecutor:
                 continue
             if self._closing:
                 return
-            await self._recover_pending_wakes()
-            await self._wait_for_work(lane)
+            try:
+                await self._recover_pending_wakes()
+                await self._wait_for_work(lane)
+            except EffectStoreBindingChanged as exc:
+                self._mark_binding_failure(exc)
+                logger.critical(
+                    "durable effect executor stopped after store binding drift",
+                    extra={"worker_id": worker_id, "error": _error_text(exc)},
+                )
+                return
 
     async def _wait_for_work(self, lane: EffectLane) -> None:
         wake_event = self._lane_wake_events[lane]
@@ -871,6 +1103,9 @@ class DurableEffectExecutor:
                 effect_contracts=effect_contracts,
                 excluded_effect_contracts=excluded_effect_contracts,
             )
+            self._validate_store_binding()
+        except EffectStoreBindingChanged:
+            raise
         except Exception:
             logger.exception("failed to inspect durable effect availability")
         else:
@@ -889,47 +1124,69 @@ class DurableEffectExecutor:
         *,
         lane: EffectLane | None,
     ) -> EffectRunResult:
+        self._validate_store_binding()
         context = EffectExecutionContext(self._store, initial_claim)
         try:
             contract = self._handlers.contract_for(
                 initial_claim.effect.kind,
                 initial_claim.effect.contract_version,
             )
-            if initial_claim.effect.contract_signature != contract.signature:
-                raise EffectContractSignatureMismatch(
-                    "persisted effect contract signature does not match "
-                    f"{contract.effect_kind}:v{contract.version}"
-                )
+        except EffectHandlerNotFound as exc:
+            return await self._quarantine_claim(
+                initial_claim,
+                reason=EffectQuarantineReason.UNSUPPORTED_CONTRACT,
+                message=_error_text(exc),
+            )
+        if initial_claim.effect.contract_signature != contract.signature:
+            exc = EffectContractSignatureMismatch(
+                "persisted effect contract signature does not match "
+                f"{contract.effect_kind}:v{contract.version}"
+            )
+            return await self._quarantine_claim(
+                initial_claim,
+                reason=EffectQuarantineReason.CONTRACT_SIGNATURE_MISMATCH,
+                message=_error_text(exc),
+            )
+        missing_fences = _missing_explicit_outcome_fences(
+            initial_claim.effect,
+            contract,
+        )
+        if missing_fences:
+            return await self._quarantine_claim(
+                initial_claim,
+                reason=EffectQuarantineReason.OUTCOME_FENCE_MISSING,
+                message=(
+                    "explicit effect contract payload is missing outcome fences: "
+                    + ", ".join(missing_fences)
+                ),
+            )
+        try:
             resolved_contract, handler = self._handlers.resolve(
                 initial_claim.effect.kind,
                 initial_claim.effect.contract_version,
             )
-        except (EffectHandlerNotFound, EffectContractSignatureMismatch) as exc:
-            orphan_contract = _unknown_effect_contract(
-                initial_claim.effect.kind,
-                version=initial_claim.effect.contract_version,
-            )
-            return await self._retry_or_fail(initial_claim, exc, orphan_contract)
-        if resolved_contract != contract:
-            return await self._retry_or_fail(
+        except EffectHandlerNotFound as exc:
+            return await self._quarantine_claim(
                 initial_claim,
-                RuntimeError("effect handler resolved a different durable contract"),
-                _unknown_effect_contract(
-                    initial_claim.effect.kind,
-                    version=initial_claim.effect.contract_version,
-                ),
+                reason=EffectQuarantineReason.UNSUPPORTED_CONTRACT,
+                message=_error_text(exc),
+            )
+        if resolved_contract != contract:
+            return await self._quarantine_claim(
+                initial_claim,
+                reason=EffectQuarantineReason.CONTRACT_RESOLUTION_INCONSISTENT,
+                message="effect handler resolved a different durable contract",
             )
         if lane is not None and lane is not contract.lane:
-            return await self._retry_or_fail(
+            return await self._quarantine_claim(
                 initial_claim,
-                RuntimeError("effect store returned work owned by a different lane"),
-                _unknown_effect_contract(
-                    initial_claim.effect.kind,
-                    version=initial_claim.effect.contract_version,
-                ),
+                reason=EffectQuarantineReason.LANE_MISMATCH,
+                message="effect store returned work owned by a different lane",
             )
         try:
+            self._validate_store_binding()
             handler_result = await self._run_handler(handler, context, contract)
+            self._validate_store_binding()
             completion = self._completion_envelope(
                 context.claim,
                 handler_result,
@@ -940,8 +1197,12 @@ class DurableEffectExecutor:
                 completion,
                 outcome_fence_fields=resolved_outcome_fence_fields(contract),
             )
+            self._validate_store_binding()
         except asyncio.CancelledError:
             await self._release_after_cancellation(context.claim)
+            raise
+        except EffectStoreBindingChanged:
+            context.revoke()
             raise
         except EffectClaimLost as exc:
             return self._claim_lost_result(context.claim, exc)
@@ -1031,7 +1292,9 @@ class DurableEffectExecutor:
             await asyncio.sleep(self._renew_interval_seconds)
             if handler_task.done():
                 return
+            self._validate_store_binding()
             await context.renew_lease()
+            self._validate_store_binding()
 
     async def _retry_or_fail(
         self,
@@ -1039,6 +1302,7 @@ class DurableEffectExecutor:
         exc: BaseException,
         contract: EffectExecutionContract,
     ) -> EffectRunResult:
+        self._validate_store_binding()
         error = _error_text(exc)
         if claim.attempt_count < contract.max_attempts:
             retry_at = self._clock() + self._retry_delay(
@@ -1051,6 +1315,7 @@ class DurableEffectExecutor:
                     error=error,
                     available_at=retry_at,
                 )
+                self._validate_store_binding()
             except EffectClaimLost as claim_exc:
                 return self._claim_lost_result(claim, claim_exc)
             self.wake()
@@ -1070,6 +1335,7 @@ class DurableEffectExecutor:
                 error=error,
                 outcome_fence_fields=resolved_outcome_fence_fields(contract),
             )
+            self._validate_store_binding()
         except EffectClaimLost as claim_exc:
             return self._claim_lost_result(claim, claim_exc)
         self._validate_settlement(claim, failure, settlement)
@@ -1080,6 +1346,40 @@ class DurableEffectExecutor:
             event_id=failure.event_id,
             attempt_count=claim.attempt_count,
             error=error,
+        )
+
+    async def _quarantine_claim(
+        self,
+        claim: ClaimedEffect,
+        *,
+        reason: EffectQuarantineReason,
+        message: str,
+    ) -> EffectRunResult:
+        """Commit one non-domain diagnostic without invoking an effect handler."""
+
+        self._validate_store_binding()
+        try:
+            settlement = await self._store.quarantine(
+                claim,
+                reason=reason,
+                message=message,
+            )
+            self._validate_store_binding()
+        except EffectClaimLost as exc:
+            return self._claim_lost_result(claim, exc)
+        if settlement.effect_id != claim.effect.effect_id:
+            raise RuntimeError("effect quarantine returned a different effect id")
+        if settlement.key != claim.key:
+            raise RuntimeError("effect quarantine returned a different actor key")
+        if settlement.event_id != quarantined_event_id(claim.effect):
+            raise RuntimeError("effect quarantine returned a different mailbox event id")
+        await self._wake_after_commit(claim.key)
+        return EffectRunResult(
+            status=EffectRunStatus.FAILED,
+            effect_id=claim.effect.effect_id,
+            event_id=settlement.event_id,
+            attempt_count=claim.attempt_count,
+            error=f"{reason.value}: {message}",
         )
 
     async def _release_after_cancellation(self, claim: ClaimedEffect) -> None:
@@ -1099,11 +1399,36 @@ class DurableEffectExecutor:
                 extra={"effect_id": claim.effect.effect_id},
             )
 
+    async def _release_unstarted_claim(self, claim: ClaimedEffect) -> None:
+        try:
+            await self._store.release(
+                claim,
+                error="effect_executor_pre_execution_failure",
+            )
+        except EffectClaimLost:
+            return
+
+    def _mark_binding_failure(self, exc: EffectStoreBindingChanged) -> None:
+        """Make composition drift fatal and stop every sibling worker."""
+
+        if self._binding_failure is None:
+            self._binding_failure = exc
+        self._idle_event.set()
+        for wake_event in self._lane_wake_events.values():
+            wake_event.set()
+        current = asyncio.current_task()
+        for task in self._tasks:
+            if task is not current and not task.done():
+                task.cancel()
+
     async def _wake_after_commit(self, key: SessionKey) -> None:
+        self._pending_wakes.add(key)
         try:
             outcome = self._session_registry.wake(key)
             if isawaitable(outcome):
                 await outcome
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception(
                 "failed to wake session actor after effect settlement",
@@ -1113,6 +1438,8 @@ class DurableEffectExecutor:
             # mailbox discovery; never rerun the effect handler for wake errors.
             self._pending_wakes.add(key)
             await self._recover_pending_wakes()
+        else:
+            self._pending_wakes.discard(key)
 
     async def _recover_pending_wakes(self) -> None:
         if not self._pending_wakes:
@@ -1324,6 +1651,16 @@ def skipped_event_id(effect: DurableEffectEnvelope) -> str:
     )
 
 
+def quarantined_event_id(effect: DurableEffectEnvelope) -> str:
+    """Return the stable mailbox id for a store-owned quarantine diagnostic."""
+
+    return derived_effect_event_id(
+        key=effect.key,
+        effect_id=effect.effect_id,
+        outcome="quarantined",
+    )
+
+
 def derived_effect_event_id(
     *,
     key: SessionKey,
@@ -1366,22 +1703,16 @@ def _error_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
-def _unknown_effect_contract(
-    effect_kind: str,
-    *,
-    version: int,
-) -> EffectExecutionContract:
-    return EffectExecutionContract(
-        effect_kind=effect_kind,
-        version=version,
-        lane=EffectLane.ORPHAN,
-        completion_event_kind="EffectCompleted",
-        timeout_seconds=1.0,
-        max_attempts=1,
-        retry_base_seconds=0.0,
-        retry_max_seconds=0.0,
-        priority=0,
-    )
+def _missing_explicit_outcome_fences(
+    effect: DurableEffectEnvelope,
+    contract: EffectExecutionContract,
+) -> tuple[str, ...]:
+    """Return fields absent from an explicitly declared outcome projection."""
+
+    declared = contract.outcome_fence_fields
+    if declared is None:
+        return ()
+    return tuple(field_name for field_name in declared if field_name not in effect.payload)
 
 
 def _consume_task_result(task: asyncio.Task[Any]) -> None:
@@ -1399,10 +1730,12 @@ __all__ = [
     "DurableEffectExecutor",
     "DurableEffectStatus",
     "DurableEffectStore",
+    "EffectAuthorityChanged",
     "EffectExecutionContract",
     "EffectContractSignatureMismatch",
     "EffectClaimLost",
     "EffectExecutionContext",
+    "EffectQuarantineReason",
     "EffectExecutorError",
     "EffectHandler",
     "EffectHandlerNotFound",
@@ -1413,10 +1746,12 @@ __all__ = [
     "EffectRunStatus",
     "EffectSettlementResult",
     "EffectSettlementStatus",
+    "EffectStoreBindingChanged",
     "SessionActorWakeTarget",
     "builtin_session_actor_effect_contracts",
     "completion_event_id",
     "derived_effect_event_id",
     "failure_event_id",
+    "quarantined_event_id",
     "skipped_event_id",
 ]

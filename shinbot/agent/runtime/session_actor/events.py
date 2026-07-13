@@ -72,8 +72,10 @@ class SessionEventEnvelope:
             raise ValueError("event_id must not be empty")
         if not kind:
             raise ValueError("event kind must not be empty")
-        if self.ownership_generation < 0:
-            raise ValueError("ownership_generation must not be negative")
+        _nonnegative_integer(
+            self.ownership_generation,
+            field_name="ownership_generation",
+        )
         object.__setattr__(self, "event_id", event_id)
         object.__setattr__(self, "kind", kind)
         for field_name in ("occurred_at", "available_at", "created_at"):
@@ -118,8 +120,7 @@ class ClaimedSessionEvent:
             raise ValueError("claim_id must not be empty")
         if not str(self.worker_id or "").strip():
             raise ValueError("worker_id must not be empty")
-        if self.attempt_count < 1:
-            raise ValueError("attempt_count must be at least one")
+        _positive_integer(self.attempt_count, field_name="attempt_count")
         object.__setattr__(
             self,
             "claimed_at",
@@ -162,8 +163,10 @@ class SessionEffect:
             raise ValueError("effect_id must not be empty")
         if not str(self.kind or "").strip():
             raise ValueError("effect kind must not be empty")
-        if self.contract_version < 1:
-            raise ValueError("effect contract_version must be at least one")
+        _positive_integer(
+            self.contract_version,
+            field_name="effect contract_version",
+        )
         contract_signature = str(self.contract_signature or "").strip()
         if not contract_signature:
             raise ValueError("effect contract_signature must not be empty")
@@ -224,13 +227,7 @@ class SessionOperation:
             "input_ledger_sequence",
         ):
             value = getattr(self, name)
-            if name in {"input_watermark", "input_ledger_sequence"} and (
-                isinstance(value, bool)
-                or (value is not None and not isinstance(value, int))
-            ):
-                raise TypeError(f"{name} must be an integer")
-            if value is not None and value < 0:
-                raise ValueError(f"{name} must not be negative")
+            _optional_nonnegative_integer(value, field_name=name)
         if self.input_watermark is None and self.input_ledger_sequence is not None:
             raise ValueError(
                 "input_ledger_sequence requires a captured input_watermark"
@@ -296,8 +293,7 @@ class SessionReviewSchedule:
 
         if not str(self.plan_id or "").strip():
             raise ValueError("plan_id must not be empty")
-        if self.plan_revision < 1:
-            raise ValueError("plan_revision must be at least one")
+        _positive_integer(self.plan_revision, field_name="plan_revision")
         object.__setattr__(
             self,
             "applied_delay_seconds",
@@ -306,8 +302,7 @@ class SessionReviewSchedule:
                 field_name="applied_delay_seconds",
             ),
         )
-        if self.attempt_count < 0:
-            raise ValueError("attempt_count must not be negative")
+        _nonnegative_integer(self.attempt_count, field_name="attempt_count")
         for field_name in (
             "requested_delay_seconds",
             "available_at",
@@ -328,8 +323,7 @@ class SessionReviewSchedule:
             "committed_state_revision",
         ):
             value = getattr(self, field_name)
-            if value is not None and value < 0:
-                raise ValueError(f"{field_name} must not be negative")
+            _optional_nonnegative_integer(value, field_name=field_name)
 
     def to_record(self) -> dict[str, object]:
         """Return a persistence mapping consumed by session actor stores."""
@@ -391,8 +385,7 @@ class SessionReviewScheduleEvent:
             "committed_state_revision",
         ):
             value = getattr(self, field_name)
-            if value is not None and value < 0:
-                raise ValueError(f"{field_name} must not be negative")
+            _optional_nonnegative_integer(value, field_name=field_name)
 
     def to_record(self) -> dict[str, object]:
         """Return a persistence mapping consumed by session actor stores."""
@@ -419,31 +412,79 @@ class SessionTransition:
     def __post_init__(self) -> None:
         """Normalize the explicit transition journal identity."""
 
-        disposition = str(self.disposition or "").strip()
-        if not disposition:
-            raise ValueError("transition disposition must not be empty")
+        disposition = _normalized_text(
+            self.disposition,
+            field_name="transition disposition",
+            required=True,
+        )
         object.__setattr__(self, "disposition", disposition)
         object.__setattr__(
             self,
             "caused_operation_id",
-            str(self.caused_operation_id or "").strip(),
+            _normalized_text(
+                self.caused_operation_id,
+                field_name="caused_operation_id",
+            ),
         )
         object.__setattr__(
             self,
             "caused_plan_id",
-            str(self.caused_plan_id or "").strip(),
+            _normalized_text(
+                self.caused_plan_id,
+                field_name="caused_plan_id",
+            ),
         )
 
 
 def _nonnegative_finite(value: object, *, field_name: str) -> float:
     """Return one normalized durable timing value or reject it."""
 
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field_name} must be finite and non-negative") from exc
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field_name} must be a JSON number")
+    normalized = float(value)
     if not math.isfinite(normalized) or normalized < 0:
         raise ValueError(f"{field_name} must be finite and non-negative")
+    return normalized
+
+
+def _nonnegative_integer(value: object, *, field_name: str) -> int:
+    """Return one exact non-negative JSON integer without coercion."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must not be negative")
+    return value
+
+
+def _positive_integer(value: object, *, field_name: str) -> int:
+    result = _nonnegative_integer(value, field_name=field_name)
+    if result < 1:
+        raise ValueError(f"{field_name} must be at least one")
+    return result
+
+
+def _optional_nonnegative_integer(
+    value: object,
+    *,
+    field_name: str,
+) -> int | None:
+    if value is None:
+        return None
+    return _nonnegative_integer(value, field_name=field_name)
+
+
+def _normalized_text(
+    value: object,
+    *,
+    field_name: str,
+    required: bool = False,
+) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if required and not normalized:
+        raise ValueError(f"{field_name} must not be empty")
     return normalized
 
 

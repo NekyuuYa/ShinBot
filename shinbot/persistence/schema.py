@@ -2,7 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import sqlite3
+import time
+
+from shinbot.persistence.canonical_json import (
+    MAX_CANONICAL_JSON_BYTES,
+    validate_canonical_json_object,
+)
+from shinbot.persistence.sqlite_raw import (
+    RawSQLiteValue,
+    bounded_raw_sqlite_projection,
+    complete_truncated_raw_sqlite_value,
+    decode_raw_sqlite_values,
+    raw_sqlite_values,
+)
+
+_SQLITE_INT64_MAX = (1 << 63) - 1
+
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -1000,6 +1019,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         claim_owner TEXT NOT NULL DEFAULT '',
         claim_until REAL,
         attempt_count INTEGER NOT NULL DEFAULT 0,
+        delivery_cycle INTEGER NOT NULL DEFAULT 0,
         last_error TEXT NOT NULL DEFAULT '',
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL,
@@ -1012,7 +1032,8 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         CHECK(plan_revision >= 0),
         CHECK(applied_delay_seconds >= 0),
         CHECK(committed_state_revision >= 0),
-        CHECK(attempt_count >= 0)
+        CHECK(attempt_count >= 0),
+        CHECK(delivery_cycle >= 0)
     )
     """,
     """
@@ -1129,11 +1150,159 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
             ON DELETE CASCADE,
         UNIQUE(profile_id, session_id, effect_id),
         UNIQUE(profile_id, session_id, idempotency_key),
+        CHECK(
+            typeof(effect_id) = 'text'
+            AND length(
+                trim(effect_id, char(9) || char(10) || char(11) ||
+                     char(12) || char(13) || ' ')
+            ) > 0
+            AND effect_id = trim(
+                effect_id,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(idempotency_key) = 'text'
+            AND length(
+                trim(idempotency_key, char(9) || char(10) || char(11) ||
+                     char(12) || char(13) || ' ')
+            ) > 0
+            AND idempotency_key = trim(
+                idempotency_key,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(profile_id) = 'text'
+            AND length(
+                trim(profile_id, char(9) || char(10) || char(11) ||
+                     char(12) || char(13) || ' ')
+            ) > 0
+            AND profile_id = trim(
+                profile_id,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(session_id) = 'text'
+            AND length(
+                trim(session_id, char(9) || char(10) || char(11) ||
+                     char(12) || char(13) || ' ')
+            ) > 0
+            AND session_id = trim(
+                session_id,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(event_id) = 'text'
+            AND length(
+                trim(event_id, char(9) || char(10) || char(11) ||
+                     char(12) || char(13) || ' ')
+            ) > 0
+            AND event_id = trim(
+                event_id,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(operation_id) = 'text'
+            AND operation_id = trim(
+                operation_id,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(kind) = 'text'
+            AND length(
+                trim(kind, char(9) || char(10) || char(11) ||
+                     char(12) || char(13) || ' ')
+            ) > 0
+            AND kind = trim(
+                kind,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(contract_signature) = 'text'
+            AND length(
+                trim(contract_signature, char(9) || char(10) || char(11) ||
+                     char(12) || char(13) || ' ')
+            ) > 0
+            AND contract_signature = trim(
+                contract_signature,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            CASE
+                WHEN typeof(payload_json) = 'text' AND json_valid(payload_json)
+                THEN json_type(payload_json) = 'object'
+                ELSE 0
+            END
+        ),
+        CHECK(
+            CASE
+                WHEN typeof(payload_json) = 'text' AND json_valid(payload_json)
+                THEN payload_json = json(payload_json)
+                ELSE 0
+            END
+        ),
+        CHECK(typeof(status) = 'text'),
         CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+        CHECK(typeof(ownership_generation) = 'integer'),
         CHECK(ownership_generation >= 0),
+        CHECK(typeof(contract_version) = 'integer'),
         CHECK(contract_version >= 1),
-        CHECK(length(contract_signature) > 0),
-        CHECK(attempt_count >= 0)
+        CHECK(typeof(attempt_count) = 'integer'),
+        CHECK(attempt_count >= 0),
+        CHECK(attempt_count <= 9223372036854775807),
+        CHECK(
+            typeof(claim_id) = 'text'
+            AND claim_id = trim(
+                claim_id,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(
+            typeof(lease_owner) = 'text'
+            AND lease_owner = trim(
+                lease_owner,
+                char(9) || char(10) || char(11) || char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(typeof(last_error) = 'text'),
+        CHECK(
+            typeof(available_at) IN ('integer', 'real')
+            AND available_at >= 0
+            AND available_at <= 1.7976931348623157e308
+        ),
+        CHECK(
+            typeof(created_at) IN ('integer', 'real')
+            AND created_at >= 0
+            AND created_at <= 1.7976931348623157e308
+        ),
+        CHECK(
+            typeof(updated_at) IN ('integer', 'real')
+            AND updated_at >= 0
+            AND updated_at <= 1.7976931348623157e308
+        ),
+        CHECK(
+            lease_until IS NULL
+            OR (
+                typeof(lease_until) IN ('integer', 'real')
+                AND lease_until >= 0
+                AND lease_until <= 1.7976931348623157e308
+            )
+        ),
+        CHECK(
+            completed_at IS NULL
+            OR (
+                typeof(completed_at) IN ('integer', 'real')
+                AND completed_at >= 0
+                AND completed_at <= 1.7976931348623157e308
+            )
+        )
     )
     """,
     """
@@ -1143,6 +1312,501 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS idx_agent_effect_outbox_session
     ON agent_effect_outbox(profile_id, session_id, status, effect_seq)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS agent_effect_scrub_state (
+        cursor_name TEXT PRIMARY KEY,
+        last_effect_seq INTEGER NOT NULL DEFAULT 0,
+        updated_at REAL NOT NULL DEFAULT 0,
+        CHECK(typeof(cursor_name) = 'text'),
+        CHECK(cursor_name = 'claimable'),
+        CHECK(typeof(last_effect_seq) = 'integer'),
+        CHECK(last_effect_seq >= 0),
+        CHECK(typeof(updated_at) IN ('integer', 'real')),
+        CHECK(updated_at >= 0),
+        CHECK(updated_at <= 1.7976931348623157e308)
+    )
+    """,
+    """
+    INSERT OR IGNORE INTO agent_effect_scrub_state (
+        cursor_name, last_effect_seq, updated_at
+    ) VALUES ('claimable', 0, 0)
+    """,
+    # -- Durable session-actor recovery cases ----------------------------
+    """
+    CREATE TABLE IF NOT EXISTS agent_session_recovery_cases (
+        case_id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        ownership_generation INTEGER NOT NULL,
+        certificate_version INTEGER NOT NULL,
+        policy_version INTEGER NOT NULL,
+        work_graph_digest TEXT NOT NULL,
+        latest_certificate_digest TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        next_delivery_cycle INTEGER NOT NULL DEFAULT 0,
+        delivery_count INTEGER NOT NULL DEFAULT 0,
+        last_event_id TEXT NOT NULL DEFAULT '',
+        last_error TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        FOREIGN KEY(profile_id, session_id)
+            REFERENCES agent_session_aggregates(profile_id, session_id)
+            ON DELETE CASCADE,
+        UNIQUE(
+            profile_id, session_id, ownership_generation,
+            policy_version, work_graph_digest
+        ),
+        CHECK(typeof(case_id) = 'text'),
+        CHECK(length(case_id) = 81),
+        CHECK(substr(case_id, 1, 17) = 'recovery-case:v1:'),
+        CHECK(substr(case_id, 18) NOT GLOB '*[^0-9a-f]*'),
+        CHECK(typeof(profile_id) = 'text'),
+        CHECK(
+            length(
+                trim(
+                    profile_id,
+                    char(9) || char(10) || char(11) ||
+                    char(12) || char(13) || ' '
+                )
+            ) > 0
+        ),
+        CHECK(
+            profile_id = trim(
+                profile_id,
+                char(9) || char(10) || char(11) ||
+                char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(typeof(session_id) = 'text'),
+        CHECK(
+            length(
+                trim(
+                    session_id,
+                    char(9) || char(10) || char(11) ||
+                    char(12) || char(13) || ' '
+                )
+            ) > 0
+        ),
+        CHECK(
+            session_id = trim(
+                session_id,
+                char(9) || char(10) || char(11) ||
+                char(12) || char(13) || ' '
+            )
+        ),
+        CHECK(typeof(ownership_generation) = 'integer'),
+        CHECK(ownership_generation >= 1),
+        CHECK(typeof(certificate_version) = 'integer'),
+        CHECK(certificate_version = 1),
+        CHECK(typeof(policy_version) = 'integer'),
+        CHECK(policy_version >= 1),
+        CHECK(typeof(work_graph_digest) = 'text'),
+        CHECK(length(work_graph_digest) = 64),
+        CHECK(work_graph_digest NOT GLOB '*[^0-9a-f]*'),
+        CHECK(typeof(latest_certificate_digest) = 'text'),
+        CHECK(length(latest_certificate_digest) = 64),
+        CHECK(latest_certificate_digest NOT GLOB '*[^0-9a-f]*'),
+        CHECK(typeof(status) = 'text'),
+        CHECK(
+            status IN (
+                'open', 'applied', 'superseded',
+                'delivery_exhausted', 'scanner_blocked'
+            )
+        ),
+        CHECK(
+            status != 'scanner_blocked'
+            OR length(
+                trim(
+                    last_error,
+                    char(9) || char(10) || char(11) ||
+                    char(12) || char(13) || ' '
+                )
+            ) > 0
+        ),
+        CHECK(typeof(next_delivery_cycle) = 'integer'),
+        CHECK(typeof(delivery_count) = 'integer'),
+        CHECK(next_delivery_cycle >= 0),
+        CHECK(delivery_count >= 0),
+        CHECK(next_delivery_cycle = delivery_count),
+        CHECK(typeof(last_event_id) = 'text'),
+        CHECK(typeof(last_error) = 'text'),
+        CHECK(
+            (delivery_count = 0 AND last_event_id = '')
+            OR (
+                delivery_count >= 1
+                AND last_event_id =
+                    'recovery-requested:v1:'
+                    || substr(case_id, 18)
+                    || ':'
+                    || CAST(delivery_count - 1 AS TEXT)
+            )
+        ),
+        CHECK(typeof(created_at) IN ('integer', 'real')),
+        CHECK(typeof(updated_at) IN ('integer', 'real')),
+        CHECK(created_at >= 0),
+        CHECK(created_at <= 1.7976931348623157e308),
+        CHECK(updated_at >= created_at),
+        CHECK(updated_at <= 1.7976931348623157e308),
+        CHECK(
+            status NOT IN ('applied', 'delivery_exhausted')
+            OR delivery_count >= 1
+        )
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_insert_guard
+    BEFORE INSERT ON agent_session_recovery_cases
+    BEGIN
+        SELECT CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM agent_session_recovery_cases AS existing
+                WHERE existing.case_id = NEW.case_id
+                   OR (
+                       existing.profile_id = NEW.profile_id
+                       AND existing.session_id = NEW.session_id
+                       AND existing.ownership_generation =
+                           NEW.ownership_generation
+                       AND existing.policy_version = NEW.policy_version
+                       AND existing.work_graph_digest = NEW.work_graph_digest
+                   )
+            )
+            THEN RAISE(
+                ABORT,
+                'recovery case identity already exists; select and validate it'
+            )
+        END;
+        SELECT CASE
+            WHEN NOT (
+                NEW.status IN ('open', 'scanner_blocked')
+                AND NEW.next_delivery_cycle = 0
+                AND NEW.delivery_count = 0
+                AND NEW.last_event_id = ''
+                AND NEW.created_at = NEW.updated_at
+                AND (
+                    (NEW.status = 'open' AND NEW.last_error = '')
+                    OR (
+                        NEW.status = 'scanner_blocked'
+                        AND typeof(NEW.last_error) = 'text'
+                        AND length(
+                            trim(
+                                NEW.last_error,
+                                char(9) || char(10) || char(11) ||
+                                char(12) || char(13) || ' '
+                            )
+                        ) > 0
+                    )
+                )
+            )
+            THEN RAISE(
+                ABORT,
+                'recovery case initial state must start without delivery progress'
+            )
+        END;
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_generation_insert
+    BEFORE INSERT ON agent_session_recovery_cases
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM agent_session_aggregates AS aggregate
+        WHERE aggregate.profile_id = NEW.profile_id
+          AND aggregate.session_id = NEW.session_id
+          AND aggregate.ownership_generation = NEW.ownership_generation
+    )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'recovery case ownership generation does not match aggregate'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_generation_update
+    BEFORE UPDATE OF profile_id, session_id, ownership_generation
+    ON agent_session_recovery_cases
+    WHEN (
+        NEW.profile_id != OLD.profile_id
+        OR NEW.session_id != OLD.session_id
+        OR NEW.ownership_generation != OLD.ownership_generation
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM agent_session_aggregates AS aggregate
+        WHERE aggregate.profile_id = NEW.profile_id
+          AND aggregate.session_id = NEW.session_id
+          AND aggregate.ownership_generation = NEW.ownership_generation
+    )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'recovery case ownership generation does not match aggregate'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_current_authority_update
+    BEFORE UPDATE OF
+        next_delivery_cycle, delivery_count,
+        latest_certificate_digest, status
+    ON agent_session_recovery_cases
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM agent_session_aggregates AS aggregate
+        WHERE aggregate.profile_id = NEW.profile_id
+          AND aggregate.session_id = NEW.session_id
+          AND aggregate.ownership_generation = NEW.ownership_generation
+    )
+    AND (
+        NEW.delivery_count > OLD.delivery_count
+        OR NEW.latest_certificate_digest != OLD.latest_certificate_digest
+        OR (
+            OLD.status = 'scanner_blocked'
+            AND NEW.status = 'open'
+        )
+        OR (OLD.status != 'applied' AND NEW.status = 'applied')
+    )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'recovery case no longer has current aggregate authority'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_identity_immutable
+    BEFORE UPDATE OF
+        case_id, profile_id, session_id, ownership_generation,
+        certificate_version, policy_version, work_graph_digest, created_at
+    ON agent_session_recovery_cases
+    WHEN NEW.case_id != OLD.case_id
+      OR NEW.profile_id != OLD.profile_id
+      OR NEW.session_id != OLD.session_id
+      OR NEW.ownership_generation != OLD.ownership_generation
+      OR NEW.certificate_version != OLD.certificate_version
+      OR NEW.policy_version != OLD.policy_version
+      OR NEW.work_graph_digest != OLD.work_graph_digest
+      OR NEW.created_at != OLD.created_at
+    BEGIN
+        SELECT RAISE(ABORT, 'recovery case identity is immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_time_monotonic
+    BEFORE UPDATE ON agent_session_recovery_cases
+    WHEN NEW.updated_at < OLD.updated_at
+      OR (
+          NEW.updated_at <= OLD.updated_at
+          AND (
+              NEW.latest_certificate_digest != OLD.latest_certificate_digest
+              OR NEW.status != OLD.status
+              OR NEW.next_delivery_cycle != OLD.next_delivery_cycle
+              OR NEW.delivery_count != OLD.delivery_count
+              OR NEW.last_event_id != OLD.last_event_id
+              OR NEW.last_error != OLD.last_error
+          )
+      )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'recovery case semantic updates must advance updated_at'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_progress_monotonic
+    BEFORE UPDATE OF next_delivery_cycle, delivery_count
+    ON agent_session_recovery_cases
+    WHEN NEW.next_delivery_cycle < OLD.next_delivery_cycle
+      OR NEW.delivery_count < OLD.delivery_count
+      OR NEW.next_delivery_cycle > OLD.next_delivery_cycle + 1
+      OR NEW.delivery_count > OLD.delivery_count + 1
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'recovery case delivery progress must advance by at most one cycle'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_progress_evidence
+    BEFORE UPDATE OF
+        next_delivery_cycle, delivery_count, last_event_id,
+        latest_certificate_digest, status
+    ON agent_session_recovery_cases
+    WHEN NEW.delivery_count > 0
+      AND NEW.delivery_count != (
+          SELECT COUNT(*)
+          FROM agent_session_mailbox AS mailbox
+          WHERE mailbox.profile_id = NEW.profile_id
+            AND mailbox.session_id = NEW.session_id
+            AND mailbox.ownership_generation = NEW.ownership_generation
+            AND mailbox.kind = 'RecoveryRequested'
+            AND mailbox.source = 'durable_session_recovery_scanner'
+            AND CASE
+                WHEN typeof(mailbox.payload_json) = 'text'
+                 AND json_valid(mailbox.payload_json)
+                 AND json_type(mailbox.payload_json) = 'object'
+                THEN
+                    json_extract(
+                        mailbox.payload_json,
+                        '$.schema'
+                    ) = 'shinbot.agent.session.recovery-delivery'
+                    AND json_type(
+                        mailbox.payload_json,
+                        '$.version'
+                    ) = 'integer'
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.version'
+                    ) = 1
+                    AND json_type(
+                        mailbox.payload_json,
+                        '$.delivery_cycle'
+                    ) = 'integer'
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.delivery_cycle'
+                    ) >= 0
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.delivery_cycle'
+                    ) < NEW.delivery_count
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.case_id'
+                    ) = NEW.case_id
+                    AND json_type(
+                        mailbox.payload_json,
+                        '$.certificate'
+                    ) = 'object'
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.schema'
+                    ) = 'shinbot.agent.session.recovery-certificate'
+                    AND json_type(
+                        mailbox.payload_json,
+                        '$.certificate.version'
+                    ) = 'integer'
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.version'
+                    ) = NEW.certificate_version
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.case_id'
+                    ) = NEW.case_id
+                    AND typeof(
+                        json_extract(
+                            mailbox.payload_json,
+                            '$.certificate.certificate_digest'
+                        )
+                    ) = 'text'
+                    AND length(
+                        json_extract(
+                            mailbox.payload_json,
+                            '$.certificate.certificate_digest'
+                        )
+                    ) = 64
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.certificate_digest'
+                    ) NOT GLOB '*[^0-9a-f]*'
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.work_graph_digest'
+                    ) = NEW.work_graph_digest
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.policy_version'
+                    ) = NEW.policy_version
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.subject.profile_id'
+                    ) = NEW.profile_id
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.subject.session_id'
+                    ) = NEW.session_id
+                    AND json_extract(
+                        mailbox.payload_json,
+                        '$.certificate.subject.ownership_generation'
+                    ) = NEW.ownership_generation
+                    AND (
+                        json_extract(
+                            mailbox.payload_json,
+                            '$.delivery_cycle'
+                        ) != NEW.delivery_count - 1
+                        OR json_extract(
+                            mailbox.payload_json,
+                            '$.certificate.certificate_digest'
+                        ) = NEW.latest_certificate_digest
+                    )
+                    AND mailbox.event_id =
+                        'recovery-requested:v1:'
+                        || substr(NEW.case_id, 18)
+                        || ':'
+                        || CAST(
+                            json_extract(
+                                mailbox.payload_json,
+                                '$.delivery_cycle'
+                            ) AS TEXT
+                        )
+                ELSE 0
+            END
+      )
+    BEGIN
+        SELECT RAISE(
+            ABORT,
+            'recovery case delivery progress requires matching RecoveryRequested mailbox'
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_status_transition
+    BEFORE UPDATE OF status ON agent_session_recovery_cases
+    WHEN NOT (
+        NEW.status = OLD.status
+        OR OLD.status = 'open'
+        OR (
+            OLD.status = 'scanner_blocked'
+            AND NEW.status IN (
+                'open', 'applied', 'superseded', 'delivery_exhausted'
+            )
+        )
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid recovery case status transition');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_terminal_immutable
+    BEFORE UPDATE ON agent_session_recovery_cases
+    WHEN OLD.status IN ('applied', 'superseded', 'delivery_exhausted')
+      AND (
+          NEW.latest_certificate_digest != OLD.latest_certificate_digest
+          OR NEW.status != OLD.status
+          OR NEW.next_delivery_cycle != OLD.next_delivery_cycle
+          OR NEW.delivery_count != OLD.delivery_count
+          OR NEW.last_event_id != OLD.last_event_id
+          OR NEW.last_error != OLD.last_error
+          OR NEW.updated_at != OLD.updated_at
+      )
+    BEGIN
+        SELECT RAISE(ABORT, 'terminal recovery case is immutable');
+    END
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_session_recovery_cases_status
+    ON agent_session_recovery_cases(status, updated_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_agent_session_recovery_cases_session
+    ON agent_session_recovery_cases(
+        profile_id, session_id, ownership_generation, status
+    )
     """,
     # -- Durable external-action receipts -------------------------------
     """
@@ -1993,6 +2657,36 @@ def _create_external_action_receipt_indexes(conn: sqlite3.Connection) -> None:
 def _migrate_session_actor_schema(conn: sqlite3.Connection) -> None:
     """Add durable contract and ownership fences to actor foundation tables."""
 
+    review_schedule_columns = _table_columns(conn, "agent_review_schedules")
+    if review_schedule_columns and "delivery_cycle" not in review_schedule_columns:
+        conn.execute(
+            """
+            ALTER TABLE agent_review_schedules
+            ADD COLUMN delivery_cycle INTEGER NOT NULL DEFAULT 0
+                CHECK (delivery_cycle >= 0)
+            """
+        )
+        conn.execute(
+            """
+            UPDATE agent_review_schedules AS schedule
+            SET delivery_cycle = CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM agent_session_mailbox AS mailbox
+                    WHERE mailbox.profile_id = schedule.profile_id
+                      AND mailbox.session_id = schedule.session_id
+                      AND mailbox.ownership_generation =
+                          schedule.ownership_generation
+                      AND mailbox.kind = 'ReviewDue'
+                      AND mailbox.source = 'durable_review_due_scanner'
+                      AND mailbox.causation_id = schedule.plan_id
+                )
+                THEN 1
+                ELSE 0
+            END
+            """
+        )
+
     _add_column_if_missing(
         conn,
         "agent_session_operations",
@@ -2133,6 +2827,11 @@ def _ensure_agent_operation_input_fence_triggers(
 def _rebuild_agent_effect_outbox_constraints(conn: sqlite3.Connection) -> None:
     """Rebuild legacy effect outboxes so ALTER-added columns gain constraints."""
 
+    table_statement = next(
+        statement
+        for statement in SCHEMA_STATEMENTS
+        if "CREATE TABLE IF NOT EXISTS agent_effect_outbox" in statement
+    )
     row = conn.execute(
         """
         SELECT sql
@@ -2142,57 +2841,397 @@ def _rebuild_agent_effect_outbox_constraints(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if row is None:
         return
-    table_sql = str(row["sql"] or "").lower()
-    required_constraints = (
-        "check(status in ('pending', 'processing', 'completed', 'failed'))",
-        "check(ownership_generation >= 0)",
-        "check(contract_version >= 1)",
-        "check(length(contract_signature) > 0)",
-    )
-    normalized_sql = " ".join(table_sql.split())
-    if all(constraint in normalized_sql for constraint in required_constraints):
+    if _normalized_create_table_sql(row["sql"]) == _normalized_create_table_sql(
+        table_statement
+    ):
         return
 
-    conn.execute(
-        "ALTER TABLE agent_effect_outbox RENAME TO agent_effect_outbox_legacy"
-    )
-    conn.execute(
-        """
-        CREATE TABLE agent_effect_outbox (
-            effect_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            effect_id TEXT NOT NULL,
-            idempotency_key TEXT NOT NULL,
-            profile_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            ownership_generation INTEGER NOT NULL DEFAULT 0,
-            event_id TEXT NOT NULL,
-            operation_id TEXT NOT NULL DEFAULT '',
-            kind TEXT NOT NULL,
-            contract_version INTEGER NOT NULL,
-            contract_signature TEXT NOT NULL,
-            payload_json TEXT NOT NULL DEFAULT '{}',
-            status TEXT NOT NULL DEFAULT 'pending',
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            available_at REAL NOT NULL,
-            claim_id TEXT NOT NULL DEFAULT '',
-            lease_owner TEXT NOT NULL DEFAULT '',
-            lease_until REAL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            completed_at REAL,
-            last_error TEXT NOT NULL DEFAULT '',
-            FOREIGN KEY(profile_id, session_id)
-                REFERENCES agent_session_aggregates(profile_id, session_id)
-                ON DELETE CASCADE,
-            UNIQUE(profile_id, session_id, effect_id),
-            UNIQUE(profile_id, session_id, idempotency_key),
-            CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
-            CHECK(ownership_generation >= 0),
-            CHECK(contract_version >= 1),
-            CHECK(length(contract_signature) > 0),
-            CHECK(attempt_count >= 0)
+    conn.execute("SAVEPOINT rebuild_agent_effect_outbox")
+    try:
+        conn.execute(
+            "ALTER TABLE agent_effect_outbox RENAME TO agent_effect_outbox_legacy"
         )
+        conn.execute(table_statement)
+        migration_now = time.time()
+        effect_projection = bounded_raw_sqlite_projection(
+            "effect",
+            _EFFECT_OUTBOX_COLUMNS,
+            byte_limits=_EFFECT_OUTBOX_RAW_BYTE_LIMITS,
+        )
+        trace_projection = bounded_raw_sqlite_projection(
+            "source",
+            ("trace_id",),
+            byte_limits={"trace_id": _EFFECT_OUTBOX_METADATA_FIELD_BYTE_LIMIT},
+            output_prefix="source_",
+        )
+        last_legacy_rowid = 0
+        while True:
+            legacy_row = conn.execute(
+                f"""
+                SELECT effect.rowid AS legacy_rowid,
+                       {effect_projection}, {trace_projection}
+                FROM agent_effect_outbox_legacy AS effect
+                LEFT JOIN agent_session_mailbox AS source
+                  ON source.profile_id = effect.profile_id
+                 AND source.session_id = effect.session_id
+                 AND source.event_id = effect.event_id
+                WHERE effect.rowid > ?
+                ORDER BY effect.rowid
+                LIMIT 1
+                """,
+                (last_legacy_rowid,),
+            ).fetchone()
+            if legacy_row is None:
+                break
+            last_legacy_rowid = int(legacy_row["legacy_rowid"])
+            raw_values = raw_sqlite_values(
+                legacy_row,
+                _EFFECT_OUTBOX_COLUMNS,
+            )
+            raw_values["source_trace_id"] = raw_sqlite_values(
+                legacy_row,
+                ("trace_id",),
+                output_prefix="source_",
+            )["trace_id"]
+            _complete_legacy_effect_raw_values(
+                conn,
+                raw_values,
+                legacy_rowid=last_legacy_rowid,
+            )
+            decoded, decoding_violations = decode_raw_sqlite_values(raw_values)
+            violations = (
+                *decoding_violations,
+                *_effect_outbox_row_violations(decoded),
+            )
+            if violations:
+                _migrate_malformed_effect_outbox_row(
+                    conn,
+                    raw_values,
+                    decoded,
+                    violations=violations,
+                    now=migration_now,
+                )
+            else:
+                _insert_effect_outbox_row(conn, decoded)
+        conn.execute("DROP TABLE agent_effect_outbox_legacy")
+        conn.execute(
+            """
+            CREATE INDEX idx_agent_effect_outbox_pending
+            ON agent_effect_outbox(status, available_at, effect_seq)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX idx_agent_effect_outbox_session
+            ON agent_effect_outbox(profile_id, session_id, status, effect_seq)
+            """
+        )
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT rebuild_agent_effect_outbox")
+        conn.execute("RELEASE SAVEPOINT rebuild_agent_effect_outbox")
+        raise
+    conn.execute("RELEASE SAVEPOINT rebuild_agent_effect_outbox")
+
+
+_EFFECT_OUTBOX_COLUMNS = (
+    "effect_seq",
+    "effect_id",
+    "idempotency_key",
+    "profile_id",
+    "session_id",
+    "ownership_generation",
+    "event_id",
+    "operation_id",
+    "kind",
+    "contract_version",
+    "contract_signature",
+    "payload_json",
+    "status",
+    "attempt_count",
+    "available_at",
+    "claim_id",
+    "lease_owner",
+    "lease_until",
+    "created_at",
+    "updated_at",
+    "completed_at",
+    "last_error",
+)
+_EFFECT_OUTBOX_METADATA_FIELD_BYTE_LIMIT = 65_536
+_EFFECT_OUTBOX_RAW_BYTE_LIMITS = {
+    field_name: (
+        MAX_CANONICAL_JSON_BYTES
+        if field_name == "payload_json"
+        else _EFFECT_OUTBOX_METADATA_FIELD_BYTE_LIMIT
+    )
+    for field_name in _EFFECT_OUTBOX_COLUMNS
+}
+
+
+def _complete_legacy_effect_raw_values(
+    conn: sqlite3.Connection,
+    raw_values: dict[str, RawSQLiteValue],
+    *,
+    legacy_rowid: int,
+) -> None:
+    """Finish oversized legacy evidence with a fixed-memory chunked digest."""
+
+    for field_name, raw_value in tuple(raw_values.items()):
+        if not raw_value.projection_truncated:
+            continue
+        expression = (
+            "source.trace_id"
+            if field_name == "source_trace_id"
+            else f"effect.{field_name}"
+        )
+        raw_values[field_name] = complete_truncated_raw_sqlite_value(
+            raw_value,
+            chunk_reader=lambda offset, length, expression=expression: (
+                _read_legacy_effect_raw_chunk(
+                    conn,
+                    legacy_rowid=legacy_rowid,
+                    expression=expression,
+                    offset=offset,
+                    length=length,
+                )
+            ),
+        )
+
+
+def _read_legacy_effect_raw_chunk(
+    conn: sqlite3.Connection,
+    *,
+    legacy_rowid: int,
+    expression: str,
+    offset: int,
+    length: int,
+) -> object:
+    row = conn.execute(
+        f"""
+        SELECT substr(CAST({expression} AS BLOB), ?, ?) AS raw_chunk
+        FROM agent_effect_outbox_legacy AS effect
+        LEFT JOIN agent_session_mailbox AS source
+          ON source.profile_id = effect.profile_id
+         AND source.session_id = effect.session_id
+         AND source.event_id = effect.event_id
+        WHERE effect.rowid = ?
+        """,
+        (offset, length, legacy_rowid),
+    ).fetchone()
+    return None if row is None else row["raw_chunk"]
+
+
+def _effect_outbox_row_violations(row: dict[str, object]) -> tuple[str, ...]:
+    """Return every strict outbox contract violated by one legacy row."""
+
+    violations: list[str] = []
+    for field_name in (
+        "effect_id",
+        "idempotency_key",
+        "profile_id",
+        "session_id",
+        "event_id",
+        "kind",
+        "contract_signature",
+    ):
+        if not _is_canonical_nonempty_text(row[field_name]):
+            violations.append(f"{field_name}_invalid")
+    for field_name in ("operation_id", "claim_id", "lease_owner"):
+        if not _is_canonical_text(row[field_name]):
+            violations.append(f"{field_name}_invalid")
+    if not isinstance(row["last_error"], str):
+        violations.append("last_error_not_text")
+    if str(row["status"]) not in {
+        "pending",
+        "processing",
+        "completed",
+        "failed",
+    } or not isinstance(row["status"], str):
+        violations.append("status_invalid")
+    for field_name, minimum in (
+        ("effect_seq", 1),
+        ("ownership_generation", 0),
+        ("contract_version", 1),
+        ("attempt_count", 0),
+    ):
+        if not _is_integer_at_least(row[field_name], minimum):
+            violations.append(f"{field_name}_not_integer")
+    if (
+        row["status"] in {"pending", "processing"}
+        and _is_integer_at_least(row["attempt_count"], _SQLITE_INT64_MAX)
+    ):
+        violations.append("attempt_count_not_claimable")
+    for field_name in ("available_at", "created_at", "updated_at"):
+        if not _is_nonnegative_finite_number(row[field_name]):
+            violations.append(f"{field_name}_invalid")
+    for field_name in ("lease_until", "completed_at"):
+        value = row[field_name]
+        if value is not None and not _is_nonnegative_finite_number(value):
+            violations.append(f"{field_name}_invalid")
+    trace_id = row["source_trace_id"]
+    if trace_id is not None and not isinstance(trace_id, str):
+        violations.append("source_trace_id_invalid")
+
+    payload_json = row["payload_json"]
+    if not isinstance(payload_json, str):
+        violations.append("payload_json_not_text")
+    else:
+        violations.extend(validate_canonical_json_object(payload_json).violations)
+    return tuple(violations)
+
+
+def _insert_effect_outbox_row(
+    conn: sqlite3.Connection,
+    row: dict[str, object],
+) -> None:
+    placeholders = ", ".join("?" for _column in _EFFECT_OUTBOX_COLUMNS)
+    columns = ", ".join(_EFFECT_OUTBOX_COLUMNS)
+    conn.execute(
+        f"INSERT INTO agent_effect_outbox ({columns}) VALUES ({placeholders})",
+        tuple(row[column] for column in _EFFECT_OUTBOX_COLUMNS),
+    )
+
+
+def _normalized_create_table_sql(value: object) -> str:
+    normalized = _collapse_sql_whitespace(str(value or "").strip().rstrip(";"))
+    optional_prefix = "CREATE TABLE IF NOT EXISTS "
+    required_prefix = "CREATE TABLE "
+    if normalized[: len(optional_prefix)].upper() == optional_prefix:
+        return required_prefix + normalized[len(optional_prefix) :]
+    if normalized[: len(required_prefix)].upper() == required_prefix:
+        return required_prefix + normalized[len(required_prefix) :]
+    return normalized
+
+
+def _collapse_sql_whitespace(value: str) -> str:
+    collapsed: list[str] = []
+    quote_end = ""
+    pending_space = False
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if quote_end:
+            collapsed.append(character)
+            if character == quote_end:
+                if index + 1 < len(value) and value[index + 1] == quote_end:
+                    index += 1
+                    collapsed.append(value[index])
+                else:
+                    quote_end = ""
+            index += 1
+            continue
+        if character.isspace():
+            pending_space = True
+            index += 1
+            continue
+        if pending_space and collapsed:
+            collapsed.append(" ")
+        pending_space = False
+        collapsed.append(character)
+        if character in {"'", '"', "`"}:
+            quote_end = character
+        elif character == "[":
+            quote_end = "]"
+        index += 1
+    return "".join(collapsed)
+
+
+def _migrate_malformed_effect_outbox_row(
+    conn: sqlite3.Connection,
+    raw_values: dict[str, RawSQLiteValue],
+    row: dict[str, object],
+    *,
+    violations: tuple[str, ...],
+    now: float,
+) -> None:
+    profile_id = row["profile_id"]
+    session_id = row["session_id"]
+    if not _is_canonical_nonempty_text(profile_id) or not (
+        _is_canonical_nonempty_text(session_id)
+    ):
+        raise sqlite3.IntegrityError(
+            "malformed effect row cannot be assigned to a canonical session"
+        )
+    ownership = conn.execute(
         """
+        SELECT ownership.generation
+        FROM agent_session_runtime_ownership AS ownership
+        JOIN agent_session_aggregates AS aggregate
+          ON aggregate.profile_id = ownership.profile_id
+         AND aggregate.session_id = ownership.session_id
+         AND aggregate.ownership_generation = ownership.generation
+        WHERE ownership.profile_id = ?
+          AND ownership.session_id = ?
+          AND ownership.mode = 'actor_v2'
+          AND ownership.status = 'active'
+        """,
+        (profile_id, session_id),
+    ).fetchone()
+    if ownership is None or not _is_integer_at_least(ownership["generation"], 1):
+        raise sqlite3.IntegrityError(
+            "malformed effect row has no active actor ownership"
+        )
+
+    evidence = {
+        column: raw_values[column].evidence()
+        for column in (*_EFFECT_OUTBOX_COLUMNS, "source_trace_id")
+    }
+    evidence_json = json.dumps(
+        evidence,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    evidence_digest = hashlib.sha256(evidence_json.encode("ascii")).hexdigest()
+    effect_seq = int(row["effect_seq"])
+    normalized_effect_id = (
+        str(row["effect_id"])
+        if _is_canonical_nonempty_text(row["effect_id"])
+        else f"malformed-effect:{effect_seq}:{evidence_digest[:16]}"
+    )
+    normalized_idempotency_key = (
+        str(row["idempotency_key"])
+        if _is_canonical_nonempty_text(row["idempotency_key"])
+        else f"malformed-idempotency:{effect_seq}:{evidence_digest[:16]}"
+    )
+    normalized_source_event_id = (
+        str(row["event_id"])
+        if _is_canonical_nonempty_text(row["event_id"])
+        else f"malformed-source:{effect_seq}:{evidence_digest[:16]}"
+    )
+    normalized_operation_id = (
+        str(row["operation_id"])
+        if _is_canonical_text(row["operation_id"])
+        else ""
+    )
+    identity = "\x1f".join(
+        (profile_id, session_id, normalized_effect_id, "quarantined")
+    )
+    quarantine_event_id = (
+        "effect-quarantined:"
+        + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    )
+    failure_message = "durable effect row failed validation: " + ", ".join(
+        violations
+    )
+    sentinel_payload_json = json.dumps(
+        {
+            "quarantine_event_id": quarantine_event_id,
+            "quarantined": True,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    normalized_attempt_count = (
+        int(row["attempt_count"])
+        if _is_integer_at_least(row["attempt_count"], 0)
+        else 0
+    )
+    normalized_created_at = (
+        float(row["created_at"])
+        if _is_nonnegative_finite_number(row["created_at"])
+        else now
     )
     conn.execute(
         """
@@ -2202,33 +3241,502 @@ def _rebuild_agent_effect_outbox_constraints(conn: sqlite3.Connection) -> None:
             contract_version, contract_signature, payload_json, status,
             attempt_count, available_at, claim_id, lease_owner, lease_until,
             created_at, updated_at, completed_at, last_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '__malformed_persisted_effect__',
+                  1, 'schema-quarantine-v1', ?, 'failed', ?, ?, '', '', NULL,
+                  ?, ?, ?, ?)
+        """,
+        (
+            effect_seq,
+            normalized_effect_id,
+            normalized_idempotency_key,
+            profile_id,
+            session_id,
+            int(ownership["generation"]),
+            normalized_source_event_id,
+            normalized_operation_id,
+            sentinel_payload_json,
+            normalized_attempt_count,
+            now,
+            normalized_created_at,
+            now,
+            now,
+            f"malformed_effect_row: {failure_message}",
+        ),
+    )
+    trace_id = (
+        str(row["source_trace_id"])
+        if isinstance(row["source_trace_id"], str)
+        else ""
+    )
+    diagnostic_payload_json = json.dumps(
+        {
+            "attempt_count": normalized_attempt_count,
+            "contract_signature": "schema-quarantine-v1",
+            "contract_version": 1,
+            "effect_id": normalized_effect_id,
+            "effect_kind": "__malformed_persisted_effect__",
+            "failure_code": "malformed_effect_row",
+            "failure_message": failure_message,
+            "idempotency_key": normalized_idempotency_key,
+            "operation_id": normalized_operation_id,
+            "raw_row": evidence,
+            "reason_code": "malformed_effect_row",
+            "reason_message": failure_message,
+            "violations": list(violations),
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    inserted = conn.execute(
+        """
+        INSERT OR IGNORE INTO agent_session_mailbox (
+            event_id, profile_id, session_id, ownership_generation,
+            kind, source, occurred_at, payload_json,
+            causation_id, correlation_id, trace_id,
+            status, attempt_count, available_at,
+            claim_id, lease_owner, lease_until,
+            created_at, handled_at, last_error
+        ) VALUES (?, ?, ?, ?, 'EffectQuarantined', 'effect_store', ?, ?,
+                  ?, ?, ?, 'pending', 0, ?, '', '', NULL, ?, NULL, '')
+        """,
+        (
+            quarantine_event_id,
+            profile_id,
+            session_id,
+            int(ownership["generation"]),
+            now,
+            diagnostic_payload_json,
+            normalized_source_event_id,
+            normalized_operation_id or normalized_effect_id,
+            trace_id,
+            now,
+            now,
+        ),
+    )
+    if inserted.rowcount == 1:
+        return
+    existing = conn.execute(
+        """
+        SELECT kind, source, ownership_generation, payload_json,
+               causation_id, correlation_id, trace_id
+        FROM agent_session_mailbox
+        WHERE profile_id = ? AND session_id = ? AND event_id = ?
+        """,
+        (profile_id, session_id, quarantine_event_id),
+    ).fetchone()
+    expected = (
+        "EffectQuarantined",
+        "effect_store",
+        int(ownership["generation"]),
+        diagnostic_payload_json,
+        normalized_source_event_id,
+        normalized_operation_id or normalized_effect_id,
+        trace_id,
+    )
+    if existing is None or tuple(existing) != expected:
+        raise sqlite3.IntegrityError(
+            "malformed effect quarantine event changed diagnostic identity"
         )
-        SELECT effect_seq, effect_id, idempotency_key, profile_id, session_id,
-               ownership_generation, event_id, operation_id, kind,
-               CASE WHEN contract_version >= 1 THEN contract_version ELSE 1 END,
-               CASE
-                   WHEN TRIM(COALESCE(contract_signature, '')) = ''
-                   THEN 'legacy-unsigned-v1'
-                   ELSE contract_signature
-               END,
-               payload_json, status, attempt_count, available_at,
-               claim_id, lease_owner, lease_until, created_at, updated_at,
-               completed_at, last_error
-        FROM agent_effect_outbox_legacy
-        """
+
+
+def _is_canonical_nonempty_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip()
+
+
+def _is_canonical_text(value: object) -> bool:
+    return isinstance(value, str) and value == value.strip()
+
+
+def _is_integer_at_least(value: object, minimum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _is_nonnegative_finite_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= 0
     )
-    conn.execute("DROP TABLE agent_effect_outbox_legacy")
-    conn.execute(
-        """
-        CREATE INDEX idx_agent_effect_outbox_pending
-        ON agent_effect_outbox(status, available_at, effect_seq)
-        """
+
+
+def _sqlite_value_evidence(value: object) -> dict[str, str | None]:
+    if value is None:
+        return {"encoding": "null", "storage_class": "null", "value": None}
+    if isinstance(value, bytes):
+        return {"encoding": "hex", "storage_class": "blob", "value": value.hex()}
+    if isinstance(value, str):
+        return {"encoding": "text", "storage_class": "text", "value": value}
+    if isinstance(value, int):
+        return {
+            "encoding": "decimal",
+            "storage_class": "integer",
+            "value": str(value),
+        }
+    if isinstance(value, float):
+        return {
+            "encoding": "float.hex",
+            "storage_class": "real",
+            "value": value.hex(),
+        }
+    raise TypeError(f"unsupported SQLite value type: {type(value)!r}")
+
+
+_RECOVERY_CASE_COLUMNS = (
+    "case_id",
+    "profile_id",
+    "session_id",
+    "ownership_generation",
+    "certificate_version",
+    "policy_version",
+    "work_graph_digest",
+    "latest_certificate_digest",
+    "status",
+    "next_delivery_cycle",
+    "delivery_count",
+    "last_event_id",
+    "last_error",
+    "created_at",
+    "updated_at",
+)
+
+_RECOVERY_CASE_TRIGGER_NAMES = (
+    "trg_agent_recovery_case_insert_guard",
+    "trg_agent_recovery_case_generation_insert",
+    "trg_agent_recovery_case_generation_update",
+    "trg_agent_recovery_case_current_authority_update",
+    "trg_agent_recovery_case_identity_immutable",
+    "trg_agent_recovery_case_time_monotonic",
+    "trg_agent_recovery_case_progress_monotonic",
+    "trg_agent_recovery_case_progress_evidence",
+    "trg_agent_recovery_case_status_transition",
+    "trg_agent_recovery_case_terminal_immutable",
+)
+
+
+def _ensure_agent_recovery_case_schema(conn: sqlite3.Connection) -> None:
+    """Rebuild weak recovery ledgers and reinstall their authority triggers."""
+
+    conn.execute("SAVEPOINT ensure_agent_session_recovery_cases")
+    try:
+        row = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'agent_session_recovery_cases'
+            """
+        ).fetchone()
+        if row is None:
+            conn.execute("RELEASE SAVEPOINT ensure_agent_session_recovery_cases")
+            return
+        table_statement = next(
+            statement
+            for statement in SCHEMA_STATEMENTS
+            if "CREATE TABLE IF NOT EXISTS agent_session_recovery_cases" in statement
+        )
+        actual_sql = _normalize_recovery_table_sql(str(row["sql"] or ""))
+        canonical_sql = _normalize_recovery_table_sql(table_statement)
+        if actual_sql != canonical_sql:
+            _rebuild_agent_recovery_case_schema(
+                conn,
+                table_statement=table_statement,
+            )
+        _replace_agent_recovery_case_triggers(conn)
+        _validate_agent_recovery_case_authority(conn)
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT ensure_agent_session_recovery_cases")
+        conn.execute("RELEASE SAVEPOINT ensure_agent_session_recovery_cases")
+        raise
+    conn.execute("RELEASE SAVEPOINT ensure_agent_session_recovery_cases")
+
+
+def _rebuild_agent_recovery_case_schema(
+    conn: sqlite3.Connection,
+    *,
+    table_statement: str,
+) -> None:
+    """Copy valid recovery authority exactly or retain the weak table on error."""
+
+    columns = tuple(
+        str(row["name"])
+        for row in conn.execute(
+            "PRAGMA table_info(agent_session_recovery_cases)"
+        ).fetchall()
     )
-    conn.execute(
+    column_mismatch = set(columns) != set(_RECOVERY_CASE_COLUMNS)
+    row_count = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM agent_session_recovery_cases"
+        ).fetchone()[0]
+    )
+    if column_mismatch and row_count > 0:
+        raise sqlite3.IntegrityError(
+            "invalid recovery case authority: legacy columns do not match "
+            "the canonical recovery ledger"
+        )
+
+    conn.execute("SAVEPOINT rebuild_agent_session_recovery_cases")
+    try:
+        conn.execute(
+            "ALTER TABLE agent_session_recovery_cases "
+            "RENAME TO agent_session_recovery_cases_legacy"
+        )
+        conn.execute(table_statement)
+        placeholders = ", ".join("?" for _column in _RECOVERY_CASE_COLUMNS)
+        column_list = ", ".join(_RECOVERY_CASE_COLUMNS)
+        legacy_rows = (
+            ()
+            if column_mismatch
+            else conn.execute(
+                "SELECT * FROM agent_session_recovery_cases_legacy ORDER BY case_id"
+            ).fetchall()
+        )
+        for legacy_row in legacy_rows:
+            try:
+                inserted = conn.execute(
+                    "INSERT INTO agent_session_recovery_cases "
+                    f"({column_list}) VALUES ({placeholders})",
+                    tuple(legacy_row[column] for column in _RECOVERY_CASE_COLUMNS),
+                )
+                migrated_row = conn.execute(
+                    "SELECT * FROM agent_session_recovery_cases WHERE rowid = ?",
+                    (inserted.lastrowid,),
+                ).fetchone()
+                if migrated_row is None or any(
+                    _sqlite_value_evidence(migrated_row[column])
+                    != _sqlite_value_evidence(legacy_row[column])
+                    for column in _RECOVERY_CASE_COLUMNS
+                ):
+                    raise sqlite3.IntegrityError(
+                        "canonical storage would coerce one or more fields"
+                    )
+            except sqlite3.IntegrityError as exc:
+                raise sqlite3.IntegrityError(
+                    "invalid recovery case authority: canonical constraints "
+                    f"rejected {legacy_row['case_id']!r}"
+                ) from exc
+
+        invalid_generation = conn.execute(
+            """
+            SELECT recovery.case_id
+            FROM agent_session_recovery_cases AS recovery
+            LEFT JOIN agent_session_aggregates AS aggregate
+              ON aggregate.profile_id = recovery.profile_id
+             AND aggregate.session_id = recovery.session_id
+            WHERE aggregate.profile_id IS NULL
+               OR recovery.ownership_generation > aggregate.ownership_generation
+            LIMIT 1
+            """
+        ).fetchone()
+        if invalid_generation is not None:
+            raise sqlite3.IntegrityError(
+                "invalid recovery case authority: ownership generation does not "
+                f"match aggregate for {invalid_generation['case_id']!r}"
+            )
+
+        invalid_delivery = conn.execute(
+            """
+            SELECT recovery.case_id
+            FROM agent_session_recovery_cases AS recovery
+            WHERE recovery.delivery_count != (
+                SELECT COUNT(*)
+                FROM agent_session_mailbox AS mailbox
+                WHERE mailbox.profile_id = recovery.profile_id
+                  AND mailbox.session_id = recovery.session_id
+                  AND mailbox.ownership_generation = recovery.ownership_generation
+                  AND mailbox.kind = 'RecoveryRequested'
+                  AND mailbox.source = 'durable_session_recovery_scanner'
+                  AND CASE
+                      WHEN typeof(mailbox.payload_json) = 'text'
+                       AND json_valid(mailbox.payload_json)
+                       AND json_type(mailbox.payload_json) = 'object'
+                      THEN
+                          json_extract(
+                              mailbox.payload_json,
+                              '$.schema'
+                          ) = 'shinbot.agent.session.recovery-delivery'
+                          AND json_type(
+                              mailbox.payload_json,
+                              '$.version'
+                          ) = 'integer'
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.version'
+                          ) = 1
+                          AND json_type(
+                              mailbox.payload_json,
+                              '$.delivery_cycle'
+                          ) = 'integer'
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.delivery_cycle'
+                          ) >= 0
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.delivery_cycle'
+                          ) < recovery.delivery_count
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.case_id'
+                          ) = recovery.case_id
+                          AND json_type(
+                              mailbox.payload_json,
+                              '$.certificate'
+                          ) = 'object'
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.schema'
+                          ) = 'shinbot.agent.session.recovery-certificate'
+                          AND json_type(
+                              mailbox.payload_json,
+                              '$.certificate.version'
+                          ) = 'integer'
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.version'
+                          ) = recovery.certificate_version
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.case_id'
+                          ) = recovery.case_id
+                          AND typeof(
+                              json_extract(
+                                  mailbox.payload_json,
+                                  '$.certificate.certificate_digest'
+                              )
+                          ) = 'text'
+                          AND length(
+                              json_extract(
+                                  mailbox.payload_json,
+                                  '$.certificate.certificate_digest'
+                              )
+                          ) = 64
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.certificate_digest'
+                          ) NOT GLOB '*[^0-9a-f]*'
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.work_graph_digest'
+                          ) = recovery.work_graph_digest
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.policy_version'
+                          ) = recovery.policy_version
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.subject.profile_id'
+                          ) = recovery.profile_id
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.subject.session_id'
+                          ) = recovery.session_id
+                          AND json_extract(
+                              mailbox.payload_json,
+                              '$.certificate.subject.ownership_generation'
+                          ) = recovery.ownership_generation
+                          AND (
+                              json_extract(
+                                  mailbox.payload_json,
+                                  '$.delivery_cycle'
+                              ) != recovery.delivery_count - 1
+                              OR json_extract(
+                                  mailbox.payload_json,
+                                  '$.certificate.certificate_digest'
+                              ) = recovery.latest_certificate_digest
+                          )
+                          AND mailbox.event_id =
+                              'recovery-requested:v1:'
+                              || substr(recovery.case_id, 18)
+                              || ':'
+                              || CAST(
+                                  json_extract(
+                                      mailbox.payload_json,
+                                      '$.delivery_cycle'
+                                  ) AS TEXT
+                              )
+                      ELSE 0
+                  END
+            )
+            LIMIT 1
+            """
+        ).fetchone()
+        if invalid_delivery is not None:
+            raise sqlite3.IntegrityError(
+                "invalid recovery case authority: delivery progress has no "
+                "matching RecoveryRequested mailbox for "
+                f"{invalid_delivery['case_id']!r}"
+            )
+
+        conn.execute("DROP TABLE agent_session_recovery_cases_legacy")
+        for statement in SCHEMA_STATEMENTS:
+            if (
+                "CREATE INDEX IF NOT EXISTS idx_agent_session_recovery_cases_"
+                in statement
+            ):
+                conn.execute(statement)
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT rebuild_agent_session_recovery_cases")
+        conn.execute("RELEASE SAVEPOINT rebuild_agent_session_recovery_cases")
+        raise
+    conn.execute("RELEASE SAVEPOINT rebuild_agent_session_recovery_cases")
+
+
+def _validate_agent_recovery_case_authority(conn: sqlite3.Connection) -> None:
+    """Fail closed when persisted cases cannot be justified by current authority."""
+
+    invalid_generation = conn.execute(
         """
-        CREATE INDEX idx_agent_effect_outbox_session
-        ON agent_effect_outbox(profile_id, session_id, status, effect_seq)
+        SELECT recovery.case_id
+        FROM agent_session_recovery_cases AS recovery
+        LEFT JOIN agent_session_aggregates AS aggregate
+          ON aggregate.profile_id = recovery.profile_id
+         AND aggregate.session_id = recovery.session_id
+        WHERE aggregate.profile_id IS NULL
+           OR recovery.ownership_generation > aggregate.ownership_generation
+        LIMIT 1
         """
+    ).fetchone()
+    if invalid_generation is not None:
+        raise sqlite3.IntegrityError(
+            "invalid recovery case authority: ownership generation does not "
+            f"match aggregate for {invalid_generation['case_id']!r}"
+        )
+    try:
+        conn.execute(
+            """
+            UPDATE agent_session_recovery_cases
+            SET next_delivery_cycle = next_delivery_cycle,
+                delivery_count = delivery_count,
+                last_event_id = last_event_id,
+                latest_certificate_digest = latest_certificate_digest,
+                status = status
+            """
+        )
+    except sqlite3.IntegrityError as exc:
+        raise sqlite3.IntegrityError(
+            "invalid recovery case authority: persisted delivery or status "
+            "has no matching RecoveryRequested mailbox"
+        ) from exc
+
+
+def _replace_agent_recovery_case_triggers(conn: sqlite3.Connection) -> None:
+    """Replace same-name weak triggers with the canonical recovery protocol."""
+
+    for trigger_name in _RECOVERY_CASE_TRIGGER_NAMES:
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+    for statement in SCHEMA_STATEMENTS:
+        if "CREATE TRIGGER IF NOT EXISTS trg_agent_recovery_case_" in statement:
+            conn.execute(statement)
+
+
+def _normalize_recovery_table_sql(value: str) -> str:
+    normalized = " ".join(value.strip().rstrip(";").split())
+    return normalized.replace(
+        "CREATE TABLE IF NOT EXISTS agent_session_recovery_cases",
+        "CREATE TABLE agent_session_recovery_cases",
+        1,
     )
 
 
@@ -2249,6 +3757,8 @@ def apply_schema(conn: sqlite3.Connection) -> None:
         if "idx_media_semantics_strict_dhash" in statement:
             _migrate_media_semantics_schema(conn)
         conn.execute(statement)
+        if "CREATE TABLE IF NOT EXISTS agent_session_recovery_cases" in statement:
+            _ensure_agent_recovery_case_schema(conn)
     _drop_legacy_model_registry_tables(conn)
     _drop_legacy_agents_table(conn)
     _drop_legacy_context_strategies_table(conn)

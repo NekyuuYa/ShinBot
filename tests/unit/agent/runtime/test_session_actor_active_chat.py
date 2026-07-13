@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
 from shinbot.agent.runtime.session_actor.effect_contracts import (
+    EffectExecutionContract,
     builtin_effect_contract,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
@@ -35,6 +38,21 @@ from shinbot.agent.runtime.session_actor.reducer import (
 )
 
 _KEY = SessionKey("profile-a", "profile-a:group:room-a")
+
+
+def _persisted_effect_contract(
+    effect_kind: str,
+    snapshot: dict[str, object],
+) -> EffectExecutionContract:
+    version = snapshot.get("contract_version")
+    return builtin_effect_contract(
+        effect_kind,
+        version=(
+            int(version)
+            if isinstance(version, int) and not isinstance(version, bool)
+            else 1
+        ),
+    )
 
 
 def _active_chat(*, bootstrap_status: str = "completed") -> AgentSessionAggregate:
@@ -232,6 +250,20 @@ def _stamp_operation_sequence(
     return replace(aggregate, data=data)
 
 
+def _without_operation_contract_snapshot(
+    aggregate: AgentSessionAggregate,
+    operation_id: str,
+) -> AgentSessionAggregate:
+    data = dict(aggregate.data)
+    registry = dict(data["operation_fences"])
+    fence = dict(registry[operation_id])
+    fence.pop("contract_version", None)
+    fence.pop("contract_signature", None)
+    registry[operation_id] = fence
+    data["operation_fences"] = registry
+    return replace(aggregate, data=data)
+
+
 def _round_completion(
     aggregate: AgentSessionAggregate,
     *,
@@ -242,7 +274,7 @@ def _round_completion(
 ) -> SessionEventEnvelope:
     operation_id = aggregate.active_chat_round_operation_id
     fence = aggregate.data["operation_fences"][operation_id]
-    contract = builtin_effect_contract("run_active_chat_round")
+    contract = _persisted_effect_contract("run_active_chat_round", fence)
     wire_intents = [
         {
             "action_ordinal": item["action_ordinal"],
@@ -359,7 +391,7 @@ def _bootstrap_completion(
 ) -> SessionEventEnvelope:
     operation_id = str(aggregate.active_chat_state["bootstrap_operation_id"])
     fence = aggregate.data["operation_fences"][operation_id]
-    contract = builtin_effect_contract("run_active_chat_bootstrap")
+    contract = _persisted_effect_contract("run_active_chat_bootstrap", fence)
     return SessionEventEnvelope(
         event_id=str(fence["completion_event_id"]),
         key=_KEY,
@@ -398,7 +430,7 @@ def _workflow_effect_failure(
     event_id: str | None = None,
 ) -> SessionEventEnvelope:
     fence = aggregate.data["operation_fences"][operation_id]
-    contract = builtin_effect_contract(str(fence["effect_kind"]))
+    contract = _persisted_effect_contract(str(fence["effect_kind"]), fence)
     return SessionEventEnvelope(
         event_id=event_id or str(fence["failure_event_id"]),
         key=_KEY,
@@ -428,6 +460,80 @@ def _workflow_effect_failure(
     )
 
 
+def _running_round() -> tuple[AgentSessionReducer, AgentSessionAggregate]:
+    reducer = AgentSessionReducer()
+    buffered = reducer.reduce(
+        _active_chat(),
+        _message_event(event_id="message:21", message_log_id=21),
+    )
+    running = reducer.reduce(
+        buffered.aggregate,
+        _round_due_event(buffered.aggregate),
+    ).aggregate
+    operation_id = running.active_chat_round_operation_id
+    return reducer, _stamp_operation_sequence(running, operation_id, 1)
+
+
+@pytest.mark.parametrize(
+    "effect_kind",
+    ["run_active_chat_bootstrap", "run_active_chat_round"],
+)
+@pytest.mark.parametrize("failed", [False, True])
+def test_legacy_active_chat_workflow_fence_without_snapshot_accepts_only_v1(
+    effect_kind: str,
+    failed: bool,
+) -> None:
+    if effect_kind == "run_active_chat_bootstrap":
+        reducer = AgentSessionReducer()
+        aggregate = _pending_bootstrap()
+        operation_id = str(aggregate.active_chat_state["bootstrap_operation_id"])
+        completion = _bootstrap_completion(aggregate, disposition="watch")
+        stale_disposition = (
+            "active_chat_bootstrap_effect_failure_stale"
+            if failed
+            else "active_chat_bootstrap_completion_stale"
+        )
+    else:
+        reducer, aggregate = _running_round()
+        operation_id = aggregate.active_chat_round_operation_id
+        aggregate = _without_operation_contract_snapshot(aggregate, operation_id)
+        completion = _round_completion(
+            aggregate,
+            outcome="continue",
+            consumed_ids=[21],
+        )
+        stale_disposition = (
+            "active_chat_round_effect_failure_stale"
+            if failed
+            else "active_chat_round_completion_stale"
+        )
+    legacy_event = (
+        _workflow_effect_failure(aggregate, operation_id=operation_id)
+        if failed
+        else completion
+    )
+    legacy_contract = builtin_effect_contract(effect_kind, version=1)
+    assert legacy_event.payload["contract_version"] == legacy_contract.version
+    assert legacy_event.payload["contract_signature"] == legacy_contract.signature
+    current_contract = builtin_effect_contract(effect_kind)
+    current_event = replace(
+        legacy_event,
+        payload={
+            **legacy_event.payload,
+            "contract_version": current_contract.version,
+            "contract_signature": current_contract.signature,
+        },
+    )
+
+    accepted = reducer.reduce(aggregate, legacy_event)
+    rejected = reducer.reduce(aggregate, current_event)
+
+    assert accepted.disposition != stale_disposition
+    assert rejected.disposition == stale_disposition
+    assert "contract_version_changed" in rejected.reason
+    assert "contract_signature_changed" in rejected.reason
+
+
 def test_message_debounces_then_round_due_freezes_one_input_snapshot() -> None:
     reducer = AgentSessionReducer()
     buffered = reducer.reduce(
@@ -445,6 +551,35 @@ def test_message_debounces_then_round_due_freezes_one_input_snapshot() -> None:
     assert due.aggregate.active_chat_round_operation_id
     assert due.aggregate.active_chat_state["round_input_message_log_ids"] == [21]
     assert due.effects[0].kind == "run_active_chat_round"
+
+
+@pytest.mark.parametrize("malformed_revision", ["1", 1.0, True])
+def test_round_due_revision_rejects_matching_json_type_aliases(
+    malformed_revision: object,
+) -> None:
+    reducer = AgentSessionReducer()
+    buffered = reducer.reduce(
+        _active_chat(),
+        _message_event(event_id="message:round-type-alias", message_log_id=21),
+    ).aggregate
+    state = dict(buffered.active_chat_state)
+    state["round_schedule_revision"] = malformed_revision
+    data = dict(buffered.data)
+    intents = dict(data["effect_control_intents"])
+    intent = dict(intents["enqueue_active_chat_round_due"])
+    intent["schedule_revision"] = malformed_revision
+    intents["enqueue_active_chat_round_due"] = intent
+    data["effect_control_intents"] = intents
+    malformed = replace(buffered, active_chat_state=state, data=data)
+    due = _round_due_event(malformed)
+
+    transition = reducer.reduce(malformed, due)
+
+    assert transition.disposition == "active_chat_round_due_stale"
+    assert "round_schedule_revision_changed" in transition.reason
+    assert "schedule_revision_changed" in transition.reason
+    assert transition.aggregate.active_chat_round_operation_id == ""
+    assert transition.effects == ()
 
 
 def test_later_message_stays_beyond_running_round_snapshot() -> None:
@@ -689,6 +824,53 @@ def test_tick_uses_message_watermark_fence_before_requesting_exit() -> None:
     assert "message_watermark_changed" in stale.reason
 
 
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value", "expected_mismatch"),
+    (
+        ("active_epoch", "3", "active_epoch_changed"),
+        ("active_epoch", 3.0, "active_epoch_changed"),
+        ("active_epoch", True, "active_epoch_changed"),
+        (
+            "expected_message_watermark",
+            "20",
+            "message_watermark_changed",
+        ),
+        ("expected_message_watermark", 20.0, "message_watermark_changed"),
+        ("expected_message_watermark", True, "message_watermark_changed"),
+        ("ownership_generation", "1", "ownership_generation_changed"),
+        ("ownership_generation", 1.0, "ownership_generation_changed"),
+        ("ownership_generation", True, "ownership_generation_changed"),
+    ),
+)
+def test_tick_integer_fences_reject_json_type_aliases(
+    field_name: str,
+    malformed_value: object,
+    expected_mismatch: str,
+) -> None:
+    aggregate = _active_chat()
+    tick = SessionEventEnvelope(
+        event_id="tick:type-alias",
+        key=_KEY,
+        kind=AgentSessionEventKind.ACTIVE_CHAT_TICK,
+        ownership_generation=1,
+        source="active_chat_timer",
+        occurred_at=20.0,
+        payload={
+            "active_epoch": 3,
+            "expected_message_watermark": 20,
+            "ownership_generation": 1,
+            field_name: malformed_value,
+        },
+    )
+
+    transition = AgentSessionReducer().reduce(aggregate, tick)
+
+    assert transition.disposition == "active_chat_tick_stale"
+    assert expected_mismatch in transition.reason
+    assert transition.aggregate.state == AgentSessionState.ACTIVE_CHAT
+    assert transition.effects == ()
+
+
 def test_exit_control_completion_enters_the_single_settling_path() -> None:
     reducer = AgentSessionReducer()
     aggregate = _active_chat()
@@ -725,6 +907,75 @@ def test_exit_control_completion_enters_the_single_settling_path() -> None:
     assert settled.aggregate.state == AgentSessionState.ACTIVE_CHAT_SETTLING
     assert intent["status"] == "completed"
     assert intent["completion"]["effect_id"] == requested.effects[0].effect_id
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value", "expected_mismatch"),
+    (
+        ("expected_active_epoch", "3", "expected_active_epoch_changed"),
+        ("expected_active_epoch", 3.0, "expected_active_epoch_changed"),
+        ("expected_active_epoch", True, "expected_active_epoch_changed"),
+        (
+            "expected_message_watermark",
+            "20",
+            "expected_message_watermark_changed",
+        ),
+        (
+            "expected_message_watermark",
+            20.0,
+            "expected_message_watermark_changed",
+        ),
+        (
+            "expected_message_watermark",
+            True,
+            "expected_message_watermark_changed",
+        ),
+    ),
+)
+def test_exit_control_supplemental_fences_reject_json_type_aliases(
+    field_name: str,
+    malformed_value: object,
+    expected_mismatch: str,
+) -> None:
+    reducer = AgentSessionReducer()
+    aggregate = _active_chat()
+    state = dict(aggregate.active_chat_state)
+    state.update({"interest_value": 1.0, "updated_at": 10.0})
+    requested = reducer.reduce(
+        replace(aggregate, active_chat_state=state),
+        SessionEventEnvelope(
+            event_id="tick:exit-type-alias",
+            key=_KEY,
+            kind=AgentSessionEventKind.ACTIVE_CHAT_TICK,
+            ownership_generation=1,
+            source="active_chat_timer",
+            occurred_at=20.0,
+            payload={
+                "active_epoch": 3,
+                "expected_message_watermark": 20,
+                "ownership_generation": 1,
+            },
+        ),
+    )
+    completion = _control_effect_event(
+        requested.aggregate,
+        effect_kind="enqueue_active_chat_exit_request",
+    )
+    completion = replace(
+        completion,
+        payload={**completion.payload, field_name: malformed_value},
+    )
+
+    transition = reducer.reduce(requested.aggregate, completion)
+
+    assert transition.disposition == "ignored_stale_active_chat_exit_request"
+    assert expected_mismatch in transition.reason
+    assert transition.aggregate.state == AgentSessionState.ACTIVE_CHAT
+    intent = transition.aggregate.data["effect_control_intents"][
+        "enqueue_active_chat_exit_request"
+    ]
+    assert intent["status"] == "requested"
+    assert transition.effects == ()
 
 
 def test_exit_control_failure_is_bounded_then_requires_new_activity() -> None:

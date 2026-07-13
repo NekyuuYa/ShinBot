@@ -13,6 +13,7 @@ from shinbot.agent.runtime.session_actor.actor import (
     SessionEventHandler,
 )
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
+from shinbot.agent.runtime.session_actor.effect_contracts import EffectContractAuthority
 from shinbot.agent.runtime.session_actor.events import (
     EventEnqueueResult,
     SessionEventEnvelope,
@@ -59,6 +60,16 @@ class AgentSessionActorRegistry:
             raise ValueError("retry_delay_seconds must be finite and non-negative")
         self._store = store
         self._handler = handler
+        self._persistence_domain = store.persistence_domain
+        if self._persistence_domain is None:
+            raise TypeError("session actor store persistence_domain must not be None")
+        self._effect_contract_authority = store.effect_contract_authority
+        if not isinstance(self._effect_contract_authority, EffectContractAuthority):
+            raise TypeError(
+                "session actor registry store must expose an EffectContractAuthority"
+            )
+        if not self._effect_contract_authority.sealed:
+            raise TypeError("session actor registry effect authority must be sealed")
         self._worker_id = str(worker_id or f"session-actor-registry:{uuid.uuid4().hex}")
         self._retry_delay_seconds = normalized_retry_delay_seconds
         self._max_attempts = max_attempts
@@ -74,6 +85,28 @@ class AgentSessionActorRegistry:
 
         return self._accepting
 
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the exact authority shared by every supervised actor."""
+
+        current = self._store.effect_contract_authority
+        if current is not self._effect_contract_authority:
+            raise RuntimeError(
+                "session actor store changed effect authority after registry composition"
+            )
+        return self._effect_contract_authority
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the exact transaction domain shared by supervised actors."""
+
+        current = self._store.persistence_domain
+        if current is not self._persistence_domain:
+            raise RuntimeError(
+                "session actor store changed persistence domain after composition"
+            )
+        return self._persistence_domain
+
     def actor_for(self, key: SessionKey) -> AgentSessionActor | None:
         """Return the currently supervised actor for a key, if started."""
 
@@ -85,7 +118,9 @@ class AgentSessionActorRegistry:
         await self._begin_submission()
         try:
             result = await self._store.enqueue(envelope)
+            self._validate_store_binding()
             actor = await self._ensure_actor(envelope.key)
+            self._validate_store_binding()
             actor.wake()
             return result
         finally:
@@ -98,10 +133,14 @@ class AgentSessionActorRegistry:
         try:
             if isinstance(self._store, _RecoveryDiscoveryStore):
                 await self._store.enqueue_recovery_requests()
+                self._validate_store_binding()
             keys = await self._store.pending_keys()
+            self._validate_store_binding()
             for key in keys:
                 actor = await self._ensure_actor(key)
+                self._validate_store_binding()
                 actor.wake()
+            self._validate_store_binding()
             return len(keys)
         finally:
             await self._finish_submission()
@@ -117,6 +156,7 @@ class AgentSessionActorRegistry:
         await self._begin_submission()
         try:
             actor = await self._ensure_actor(key)
+            self._validate_store_binding()
             actor.wake()
         finally:
             await self._finish_submission()
@@ -167,6 +207,7 @@ class AgentSessionActorRegistry:
             return actor
 
     async def _begin_submission(self) -> None:
+        self._validate_store_binding()
         async with self._lifecycle:
             if not self._accepting:
                 raise RuntimeError("actor registry is shutting down")
@@ -177,6 +218,12 @@ class AgentSessionActorRegistry:
             self._submissions_in_flight -= 1
             if self._submissions_in_flight == 0:
                 self._lifecycle.notify_all()
+
+    def _validate_store_binding(self) -> None:
+        """Verify authority and persistence identities remain immutable."""
+
+        _ = self.effect_contract_authority
+        _ = self.persistence_domain
 
 
 __all__ = ["AgentSessionActorRegistry"]

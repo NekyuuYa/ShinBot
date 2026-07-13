@@ -25,7 +25,8 @@ from shinbot.core.dispatch.agent_identity import SessionKey
 
 _ACTION_ID_NAMESPACE = uuid.UUID("cf8135f0-9ef3-57c5-9c7d-1bf27afe2231")
 EXTERNAL_ACTION_COMPLETION_EVENT_KIND = "ExternalActionCompleted"
-EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION = 1
+LEGACY_EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION = 1
+EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION = 2
 _RESERVED_MODEL_FIELDS = frozenset(
     {
         "claim_id",
@@ -117,10 +118,10 @@ class ExternalActionReceiptStatus(StrEnum):
         }
 
 
-_EXTERNAL_ACTION_EFFECT_CONTRACTS = tuple(
+_LEGACY_EXTERNAL_ACTION_EFFECT_CONTRACTS = tuple(
     EffectExecutionContract(
         effect_kind=kind.value,
-        version=EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION,
+        version=LEGACY_EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION,
         lane=EffectLane.DEFAULT,
         completion_event_kind=EXTERNAL_ACTION_COMPLETION_EVENT_KIND,
         timeout_seconds=30.0,
@@ -133,6 +134,25 @@ _EXTERNAL_ACTION_EFFECT_CONTRACTS = tuple(
         outcome_fence_fields=None,
     )
     for kind in ExternalActionKind
+)
+_CURRENT_EXTERNAL_ACTION_EFFECT_CONTRACTS = tuple(
+    EffectExecutionContract(
+        effect_kind=kind.value,
+        version=EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION,
+        lane=EffectLane.DEFAULT,
+        completion_event_kind=EXTERNAL_ACTION_COMPLETION_EVENT_KIND,
+        timeout_seconds=30.0,
+        max_attempts=5,
+        retry_base_seconds=1.0,
+        retry_max_seconds=30.0,
+        priority=20,
+        outcome_fence_fields=("action_ordinal", "request_digest"),
+    )
+    for kind in ExternalActionKind
+)
+_EXTERNAL_ACTION_EFFECT_CONTRACTS = (
+    *_LEGACY_EXTERNAL_ACTION_EFFECT_CONTRACTS,
+    *_CURRENT_EXTERNAL_ACTION_EFFECT_CONTRACTS,
 )
 
 
@@ -195,7 +215,7 @@ class ExternalActionRequest:
     instance_id: str
     target_session_id: str
     intent: ExternalActionIntent
-    contract_version: int = 1
+    contract_version: int = EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
         """Validate runtime-controlled provenance and action contract version."""
@@ -290,20 +310,26 @@ def builtin_external_action_effect_contracts(
 def builtin_external_action_effect_contract(
     kind: ExternalActionKind | str,
     *,
-    version: int = EXTERNAL_ACTION_EFFECT_CONTRACT_VERSION,
+    version: int | None = None,
 ) -> EffectExecutionContract:
-    """Resolve one visible-action contract by exact durable identity."""
+    """Resolve one visible-action contract by exact or current identity."""
 
     try:
         normalized_kind = ExternalActionKind(kind)
     except (TypeError, ValueError) as exc:
         raise KeyError(f"unknown external action effect kind: {kind!r}") from exc
-    for contract in _EXTERNAL_ACTION_EFFECT_CONTRACTS:
-        if contract.ref == (normalized_kind.value, version):
-            return contract
+    matching = tuple(
+        contract
+        for contract in _EXTERNAL_ACTION_EFFECT_CONTRACTS
+        if contract.effect_kind == normalized_kind.value
+        and (version is None or contract.version == version)
+    )
+    if matching:
+        return max(matching, key=lambda contract: contract.version)
+    requested = "current" if version is None else f"v{version}"
     raise KeyError(
         "unknown external action effect contract: "
-        f"{normalized_kind.value!r} v{version}"
+        f"{normalized_kind.value!r} {requested}"
     )
 
 

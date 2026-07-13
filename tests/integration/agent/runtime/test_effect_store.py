@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import sqlite3
 from dataclasses import replace
@@ -7,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import shinbot.agent.runtime.session_actor.effect_store as effect_store_module
 from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
@@ -31,6 +34,7 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     EffectRunStatus,
     EffectSettlementStatus,
     completion_event_id,
+    derived_effect_event_id,
     failure_event_id,
     skipped_event_id,
 )
@@ -42,10 +46,21 @@ from shinbot.agent.runtime.session_actor.events import (
     SessionEventEnvelope,
     SessionTransition,
 )
+from shinbot.agent.runtime.session_actor.external_actions import (
+    ExternalActionIntent,
+    ExternalActionKind,
+    ExternalActionRequest,
+    builtin_external_action_effect_contracts,
+    materialize_external_action_effect,
+)
 from shinbot.agent.runtime.session_actor.registry import AgentSessionActorRegistry
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 from shinbot.persistence import DatabaseManager
+from shinbot.persistence.canonical_json import (
+    MAX_CANONICAL_JSON_BYTES,
+    MAX_CANONICAL_JSON_NODES,
+)
 
 
 class _WakeRegistry:
@@ -57,6 +72,14 @@ class _WakeRegistry:
 
     async def recover(self) -> int:
         return 0
+
+
+def _evidence_prefix_text(evidence: dict[str, object]) -> str:
+    return base64.b64decode(str(evidence["prefix_base64"])).decode("utf-8")
+
+
+def _evidence_prefix_bytes(evidence: dict[str, object]) -> bytes:
+    return base64.b64decode(str(evidence["prefix_base64"]))
 
 
 class _TransientWakeRegistry:
@@ -160,6 +183,110 @@ def _seed_effect(
         )
 
 
+def _replace_with_weak_effect_outbox(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE agent_effect_outbox RENAME TO effect_outbox_current")
+    conn.execute(
+        """
+        CREATE TABLE agent_effect_outbox (
+            effect_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            effect_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            ownership_generation INTEGER NOT NULL DEFAULT 0,
+            event_id TEXT NOT NULL,
+            operation_id TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL,
+            contract_version INTEGER NOT NULL,
+            contract_signature TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            available_at REAL NOT NULL,
+            claim_id TEXT NOT NULL DEFAULT '',
+            lease_owner TEXT NOT NULL DEFAULT '',
+            lease_until REAL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            completed_at REAL,
+            last_error TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute("DROP TABLE effect_outbox_current")
+
+
+def _seed_blocked_external_action_effects(
+    database: DatabaseManager,
+    key: SessionKey,
+    *,
+    count: int,
+    now: float,
+) -> None:
+    rows: list[tuple[object, ...]] = []
+    for index in range(count):
+        request = ExternalActionRequest(
+            key=key,
+            ownership_generation=1,
+            operation_id="blocked-operation",
+            source_event_id="blocked-operation-completed",
+            instance_id="adapter-a",
+            target_session_id="adapter-a:group:room",
+            intent=ExternalActionIntent(
+                kind=ExternalActionKind.SEND_POKE,
+                tool_call_id=f"blocked-tool-{index}",
+                action_ordinal=index + 1,
+                payload={"ordinal": index + 1},
+            ),
+        )
+        effect = materialize_external_action_effect(
+            key=request.key,
+            ownership_generation=request.ownership_generation,
+            operation_id=request.operation_id,
+            source_event_id=request.source_event_id,
+            instance_id=request.instance_id,
+            target_session_id=request.target_session_id,
+            intent=request.intent,
+        )
+        rows.append(
+            (
+                effect.effect_id,
+                effect.idempotency_key,
+                key.profile_id,
+                key.session_id,
+                request.source_event_id,
+                request.ownership_generation,
+                effect.operation_id,
+                effect.kind,
+                effect.contract_version,
+                effect.contract_signature,
+                json.dumps(
+                    effect.payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                now,
+                now,
+                now,
+            )
+        )
+    with database.connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id, event_id,
+                ownership_generation, operation_id, kind, contract_version,
+                contract_signature, payload_json, status, attempt_count,
+                available_at, claim_id, lease_owner, lease_until, created_at,
+                updated_at, completed_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, '', '',
+                      NULL, ?, ?, NULL, '')
+            """,
+            rows,
+        )
+
+
 def _seed_operation(
     database: DatabaseManager,
     key: SessionKey,
@@ -184,20 +311,33 @@ def _seed_operation(
         )
 
 
-def _completion(claim, *, event_id: str | None = None) -> SessionEventEnvelope:
+def _completion(
+    claim,
+    *,
+    event_id: str | None = None,
+    contract: EffectExecutionContract | None = None,
+) -> SessionEventEnvelope:
+    resolved_contract = contract or _external_contract()
+    fence_fields = resolved_outcome_fence_fields(resolved_contract)
     return SessionEventEnvelope(
         event_id=event_id or completion_event_id(claim.effect),
         key=claim.key,
-        kind="EffectCompleted",
+        kind=resolved_contract.completion_event_kind,
         ownership_generation=claim.effect.ownership_generation,
         payload={
+            **claim.effect.outcome_fence_payload(fence_fields),
             "effect_id": claim.effect.effect_id,
+            "effect_kind": claim.effect.kind,
+            "idempotency_key": claim.effect.idempotency_key,
+            "operation_id": claim.effect.operation_id,
+            "attempt_count": claim.attempt_count,
             "contract_version": claim.effect.contract_version,
             "contract_signature": claim.effect.contract_signature,
         },
-        source="effect_executor",
+        source=resolved_contract.completion_source,
         causation_id=claim.effect.source_event_id,
-        correlation_id=claim.effect.operation_id,
+        correlation_id=claim.effect.operation_id or claim.effect.effect_id,
+        trace_id=claim.effect.trace_id,
     )
 
 
@@ -254,6 +394,245 @@ def _external_contract(
         priority=priority,
         outcome_fence_fields=outcome_fence_fields,
     )
+
+
+def test_sqlite_actor_stores_expose_exact_composition_identities(tmp_path: Path) -> None:
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    authority = builtin_effect_contract_authority()
+
+    effect_store = SQLiteDurableEffectStore(database, contract_authority=authority)
+    actor_store = SQLiteSessionActorStore(
+        database,
+        effect_contract_authority=authority,
+    )
+
+    assert effect_store.effect_contract_authority is authority
+    assert actor_store.effect_contract_authority is authority
+    assert effect_store.persistence_domain is database
+    assert actor_store.persistence_domain is database
+
+
+def test_scrub_query_plan_uses_primary_key_keyset_scan(tmp_path: Path) -> None:
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    with database.connect() as conn:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN " + effect_store_module._EFFECT_SCRUB_PAGE_SQL,
+            (0, 64),
+        ).fetchall()
+
+    details = tuple(str(row["detail"]) for row in plan)
+    assert any(
+        "SEARCH effect USING INTEGER PRIMARY KEY (rowid>?)" in detail
+        for detail in details
+    ), details
+    assert all("MULTI-INDEX OR" not in detail for detail in details), details
+    assert all("USE TEMP B-TREE" not in detail for detail in details), details
+
+
+@pytest.mark.asyncio
+async def test_scrub_cursor_pages_over_terminal_and_future_rows(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    rows = tuple(
+        (
+            f"inactive-{index}",
+            f"inactive-key-{index}",
+            key.profile_id,
+            key.session_id,
+            f"inactive-source-{index}",
+            "completed" if index % 2 == 0 else "pending",
+            100.0 if index % 2 == 0 else 10_000.0,
+            100.0,
+            100.0,
+        )
+        for index in range(512)
+    )
+    with database.connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, updated_at, completed_at, last_error
+            ) VALUES (?, ?, ?, ?, 1, ?, '', 'external_write', 1,
+                      'test-signature', '{}', ?, 0, ?, '', '', NULL, ?, ?,
+                      NULL, '')
+            """,
+            rows,
+        )
+
+    for expected_cursor in (64, 128, 192):
+        assert (
+            await store.claim_next(
+                worker_id=f"inactive-scrubber-{expected_cursor}",
+                effect_contracts=(),
+            )
+            is None
+        )
+        with database.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT last_effect_seq FROM agent_effect_scrub_state
+                WHERE cursor_name = 'claimable'
+                """
+            ).fetchone()["last_effect_seq"]
+            changed = conn.execute(
+                """
+                SELECT COUNT(*) FROM agent_effect_outbox
+                WHERE status NOT IN ('completed', 'pending')
+                """
+            ).fetchone()[0]
+        assert cursor == expected_cursor
+        assert changed == 0
+
+
+@pytest.mark.asyncio
+async def test_external_action_gate_defers_page_out_oversized_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    terminal_rows = tuple(
+        (
+            f"terminal-{index}",
+            f"terminal-key-{index}",
+            key.profile_id,
+            key.session_id,
+            f"terminal-source-{index}",
+        )
+        for index in range(64)
+    )
+    request = ExternalActionRequest(
+        key=key,
+        ownership_generation=1,
+        operation_id="oversized-action-operation",
+        source_event_id="oversized-action-source",
+        instance_id="adapter-a",
+        target_session_id="adapter-a:group:room",
+        intent=ExternalActionIntent(
+            kind=ExternalActionKind.SEND_POKE,
+            tool_call_id="oversized-action-tool",
+            action_ordinal=0,
+            payload={"poke": True},
+        ),
+    )
+    effect = materialize_external_action_effect(
+        key=request.key,
+        ownership_generation=request.ownership_generation,
+        operation_id=request.operation_id,
+        source_event_id=request.source_event_id,
+        instance_id=request.instance_id,
+        target_session_id=request.target_session_id,
+        intent=request.intent,
+    )
+    oversized_payload = {
+        **effect.payload,
+        "padding": "x" * MAX_CANONICAL_JSON_BYTES,
+    }
+    with database.connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, updated_at, completed_at, last_error
+            ) VALUES (?, ?, ?, ?, 1, ?, '', 'external_write', 1,
+                      'test-signature', '{}', 'completed', 0, 100.0, '', '',
+                      NULL, 100.0, 100.0, 100.0, '')
+            """,
+            terminal_rows,
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, updated_at, completed_at, last_error
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'pending', 0, 100.0,
+                      '', '', NULL, 100.0, 100.0, NULL, '')
+            """,
+            (
+                effect.effect_id,
+                effect.idempotency_key,
+                key.profile_id,
+                key.session_id,
+                request.source_event_id,
+                request.operation_id,
+                effect.kind,
+                effect.contract_version,
+                effect.contract_signature,
+                json.dumps(
+                    oversized_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ),
+        )
+
+    streamed_effect_seqs: list[int] = []
+    original_chunk_reader = effect_store_module._read_effect_raw_chunk
+
+    def counted_chunk_reader(*args: object, **kwargs: object) -> object:
+        streamed_effect_seqs.append(int(kwargs["effect_seq"]))
+        return original_chunk_reader(*args, **kwargs)
+
+    monkeypatch.setattr(
+        effect_store_module,
+        "_read_effect_raw_chunk",
+        counted_chunk_reader,
+    )
+    external_contracts = tuple(
+        contract.ref for contract in builtin_external_action_effect_contracts()
+    )
+
+    assert (
+        await store.claim_next(
+            worker_id="page-before-oversized",
+            effect_contracts=external_contracts,
+        )
+        is None
+    )
+    with database.connect() as conn:
+        status = conn.execute(
+            """
+            SELECT status FROM agent_effect_outbox WHERE effect_seq = 65
+            """
+        ).fetchone()["status"]
+        cursor = conn.execute(
+            """
+            SELECT last_effect_seq FROM agent_effect_scrub_state
+            WHERE cursor_name = 'claimable'
+            """
+        ).fetchone()["last_effect_seq"]
+    assert status == "pending"
+    assert cursor == 64
+    assert streamed_effect_seqs == []
+
+    assert (
+        await store.claim_next(
+            worker_id="oversized-scrubber",
+            effect_contracts=external_contracts,
+        )
+        is None
+    )
+    with database.connect() as conn:
+        status = conn.execute(
+            "SELECT status FROM agent_effect_outbox WHERE effect_seq = 65"
+        ).fetchone()["status"]
+    assert status == "failed"
+    assert set(streamed_effect_seqs) == {65}
 
 
 @pytest.mark.asyncio
@@ -418,6 +797,138 @@ async def test_sqlite_effect_store_rejects_forged_terminal_failure_evidence(
     with database.connect() as conn:
         effect = conn.execute(
             "SELECT status, claim_id FROM agent_effect_outbox WHERE effect_id = 'effect-1'"
+        ).fetchone()
+        mailbox_count = conn.execute(
+            "SELECT COUNT(*) FROM agent_session_mailbox"
+        ).fetchone()[0]
+    assert tuple(effect) == (DurableEffectStatus.PROCESSING.value, claim.claim_id)
+    assert mailbox_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sqlite_effect_store_accepts_exact_success_completion_evidence(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    contract = _external_contract(
+        kind="verified_completion",
+        version=2,
+        completion_event_kind="VerifiedCompletion",
+        outcome_fence_fields=("plan_id",),
+    )
+    database, store, key = await _make_store(
+        tmp_path,
+        now,
+        contracts=(contract,),
+    )
+    _seed_effect(
+        database,
+        key,
+        kind=contract.effect_kind,
+        contract=contract,
+        payload={"plan_id": "plan-a"},
+    )
+    claim = await store.claim_next(worker_id="worker-a")
+    assert claim is not None
+    completion = _completion(claim, contract=contract)
+
+    settled = await store.complete_with_event(claim, completion)
+
+    assert settled.status is EffectSettlementStatus.COMMITTED
+    with database.connect() as conn:
+        effect = conn.execute(
+            "SELECT status, claim_id FROM agent_effect_outbox WHERE effect_id = ?",
+            (claim.effect.effect_id,),
+        ).fetchone()
+        mailbox = conn.execute(
+            """
+            SELECT kind, source, payload_json
+            FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (
+                claim.key.profile_id,
+                claim.key.session_id,
+                completion.event_id,
+            ),
+        ).fetchone()
+    assert tuple(effect) == (DurableEffectStatus.COMPLETED.value, claim.claim_id)
+    assert mailbox is not None
+    assert tuple(mailbox)[:2] == (
+        contract.completion_event_kind,
+        contract.completion_source,
+    )
+    assert json.loads(str(mailbox["payload_json"])) == dict(completion.payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("envelope_changes", "payload_changes", "payload_delete", "match"),
+    [
+        ({"event_id": "forged-completion"}, {}, "", "event id"),
+        ({"kind": "ForgedCompletion"}, {}, "", "event kind"),
+        ({"source": "forged"}, {}, "", "source"),
+        ({"causation_id": "forged"}, {}, "", "causation"),
+        ({"correlation_id": "forged"}, {}, "", "correlation"),
+        ({"trace_id": "forged"}, {}, "", "trace"),
+        ({"ownership_generation": 2}, {}, "", "ownership generation"),
+        ({}, {"effect_id": "forged"}, "", "effect_id"),
+        ({}, {"effect_kind": "forged"}, "", "effect_kind"),
+        ({}, {"idempotency_key": "forged"}, "", "idempotency_key"),
+        ({}, {"operation_id": "forged"}, "", "operation_id"),
+        ({}, {"contract_version": 1}, "", "contract_version"),
+        ({}, {"contract_signature": "forged"}, "", "contract_signature"),
+        ({}, {"attempt_count": 2}, "", "attempt count"),
+        ({}, {}, "attempt_count", "attempt count"),
+        ({}, {"plan_id": "forged"}, "", "fence plan_id"),
+        ({}, {}, "plan_id", "fence plan_id"),
+    ],
+)
+async def test_sqlite_effect_store_rejects_forged_success_completion_evidence(
+    tmp_path: Path,
+    envelope_changes: dict[str, object],
+    payload_changes: dict[str, object],
+    payload_delete: str,
+    match: str,
+) -> None:
+    now = [100.0]
+    contract = _external_contract(
+        kind="verified_completion",
+        version=2,
+        completion_event_kind="VerifiedCompletion",
+        outcome_fence_fields=("plan_id",),
+    )
+    database, store, key = await _make_store(
+        tmp_path,
+        now,
+        contracts=(contract,),
+    )
+    _seed_effect(
+        database,
+        key,
+        kind=contract.effect_kind,
+        contract=contract,
+        payload={"plan_id": "plan-a"},
+    )
+    claim = await store.claim_next(worker_id="worker-a")
+    assert claim is not None
+    completion = _completion(claim, contract=contract)
+    forged_payload = {**completion.payload, **payload_changes}
+    if payload_delete:
+        forged_payload.pop(payload_delete)
+    forged = replace(
+        completion,
+        payload=forged_payload,
+        **envelope_changes,
+    )
+
+    with pytest.raises(EffectStoreConflict, match=match):
+        await store.complete_with_event(claim, forged)
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            "SELECT status, claim_id FROM agent_effect_outbox WHERE effect_id = ?",
+            (claim.effect.effect_id,),
         ).fetchone()
         mailbox_count = conn.execute(
             "SELECT COUNT(*) FROM agent_session_mailbox"
@@ -635,6 +1146,825 @@ async def test_sqlite_effect_store_rejects_persisted_v2_signature_outside_author
         ).fetchone()[0]
     assert tuple(row) == (DurableEffectStatus.PROCESSING.value, claim.claim_id)
     assert mailbox_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sqlite_executor_quarantines_unknown_contract_without_retry(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    unknown = _external_contract(kind="unknown_effect", version=7)
+    _seed_effect(
+        database,
+        key,
+        kind=unknown.effect_kind,
+        contract=unknown,
+    )
+    wake_registry = _WakeRegistry()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=EffectHandlerRegistry(include_builtin_contracts=False),
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once(lane=EffectLane.ORPHAN)
+    replay = await executor.run_once(lane=EffectLane.ORPHAN)
+
+    assert result.status is EffectRunStatus.FAILED
+    assert replay.status is EffectRunStatus.EMPTY
+    assert wake_registry.keys == [key]
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT status, attempt_count, lease_owner, lease_until, last_error
+            FROM agent_effect_outbox WHERE effect_id = 'effect-1'
+            """
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT kind, source, ownership_generation, causation_id,
+                   correlation_id, payload_json
+            FROM agent_session_mailbox
+            WHERE event_id = ?
+            """,
+            (result.event_id,),
+        ).fetchone()
+    assert tuple(effect)[:4] == ("failed", 1, "", None)
+    assert "unsupported_contract" in str(effect["last_error"])
+    assert event is not None
+    payload = json.loads(str(event["payload_json"]))
+    assert tuple(event)[:5] == (
+        "EffectQuarantined",
+        "effect_store",
+        1,
+        "source:effect-1",
+        "operation-1",
+    )
+    assert payload["reason_code"] == "unsupported_contract"
+    assert payload["failure_code"] == "unsupported_contract"
+    assert payload["contract_version"] == 7
+
+
+@pytest.mark.asyncio
+async def test_sqlite_executor_quarantines_signature_drift_without_handler(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    contract = _external_contract(kind="signed_effect", version=2)
+    database, store, key = await _make_store(tmp_path, now, contracts=(contract,))
+    _seed_effect(
+        database,
+        key,
+        kind=contract.effect_kind,
+        contract=contract,
+    )
+    with database.connect() as conn:
+        conn.execute(
+            "UPDATE agent_effect_outbox SET contract_signature = 'drifted-signature'"
+        )
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=_WakeRegistry(),
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.FAILED
+    assert calls == 0
+    with database.connect() as conn:
+        effect = conn.execute(
+            "SELECT status, attempt_count FROM agent_effect_outbox"
+        ).fetchone()
+        event = conn.execute(
+            "SELECT kind, payload_json FROM agent_session_mailbox"
+        ).fetchone()
+    assert tuple(effect) == ("failed", 1)
+    assert event["kind"] == "EffectQuarantined"
+    payload = json.loads(str(event["payload_json"]))
+    assert payload["reason_code"] == "contract_signature_mismatch"
+    assert payload["contract_signature"] == "drifted-signature"
+
+
+@pytest.mark.asyncio
+async def test_sqlite_executor_quarantines_incomplete_explicit_v2_before_handler(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    contract = _external_contract(
+        kind="fenced_effect",
+        version=2,
+        outcome_fence_fields=("plan_id", "input_watermark"),
+    )
+    database, store, key = await _make_store(tmp_path, now, contracts=(contract,))
+    _seed_effect(
+        database,
+        key,
+        kind=contract.effect_kind,
+        contract=contract,
+        payload={"plan_id": "plan-a"},
+    )
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=_WakeRegistry(),
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.FAILED
+    assert calls == 0
+    with database.connect() as conn:
+        effect = conn.execute(
+            "SELECT status, attempt_count FROM agent_effect_outbox"
+        ).fetchone()
+        event = conn.execute(
+            "SELECT kind, payload_json FROM agent_session_mailbox"
+        ).fetchone()
+    assert tuple(effect) == ("failed", 1)
+    payload = json.loads(str(event["payload_json"]))
+    assert event["kind"] == "EffectQuarantined"
+    assert payload["reason_code"] == "outcome_fence_missing"
+    assert "input_watermark" in payload["reason_message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column_name", "malformed_value", "expected_violation"),
+    (
+        ("contract_version", "abc", "contract_version_not_integer"),
+        ("payload_json", "not-json", "payload_json_invalid"),
+        ("payload_json", "[]", "payload_json_not_object"),
+        ("payload_json", '{"x": 1}', "payload_json_noncanonical"),
+        ("payload_json", '{"b":1,"a":2}', "payload_json_noncanonical"),
+        ("payload_json", '{"value":1e400}', "payload_json_nonfinite"),
+        (
+            "attempt_count",
+            (1 << 63) - 1,
+            "attempt_count_not_claimable",
+        ),
+    ),
+)
+async def test_claim_quarantines_malformed_rows_before_handler_and_continues(
+    tmp_path: Path,
+    column_name: str,
+    malformed_value: object,
+    expected_violation: str,
+) -> None:
+    now = [100.0]
+    contract = _external_contract()
+    database, store, key = await _make_store(tmp_path, now)
+    _seed_effect(database, key, effect_id="bad-effect", contract=contract)
+    _seed_effect(database, key, effect_id="good-effect", contract=contract)
+    with database.connect() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            f"UPDATE agent_effect_outbox SET {column_name} = ? "
+            "WHERE effect_id = 'bad-effect'",
+            (malformed_value,),
+        )
+
+    calls: list[str] = []
+
+    async def handler(context: EffectExecutionContext) -> EffectHandlerResult:
+        calls.append(context.claim.effect.effect_id)
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    wake_registry = _WakeRegistry()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.COMPLETED
+    assert result.effect_id == "good-effect"
+    assert calls == ["good-effect"]
+    assert wake_registry.keys == [key, key]
+    with database.connect() as conn:
+        bad_effect = conn.execute(
+            """
+            SELECT status, attempt_count, kind, claim_id, lease_owner,
+                   lease_until, completed_at, last_error
+            FROM agent_effect_outbox
+            WHERE effect_id = 'bad-effect'
+            """
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT kind, source, payload_json
+            FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()
+    assert bad_effect is not None
+    expected_attempt_count = (
+        int(malformed_value) if column_name == "attempt_count" else 0
+    )
+    assert tuple(bad_effect)[:6] == (
+        "failed",
+        expected_attempt_count,
+        "__malformed_persisted_effect__",
+        "",
+        "",
+        None,
+    )
+    assert bad_effect["completed_at"] == now[0]
+    assert "malformed_effect_row" in str(bad_effect["last_error"])
+    assert event is not None
+    assert tuple(event)[:2] == ("EffectQuarantined", "effect_store")
+    payload = json.loads(str(event["payload_json"]))
+    assert payload["failure_code"] == "malformed_effect_row"
+    assert payload["reason_code"] == "malformed_effect_row"
+    assert expected_violation in payload["violations"]
+    assert _evidence_prefix_text(payload["raw_row"][column_name]) == str(
+        malformed_value
+    )
+    assert await store.claim_next(worker_id="worker-after-quarantine") is None
+
+
+@pytest.mark.asyncio
+async def test_only_malformed_claim_still_wakes_its_diagnostic_mailbox(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    contract = _external_contract()
+    database, store, key = await _make_store(tmp_path, now)
+    _seed_effect(database, key, effect_id="bad-effect", contract=contract)
+    with database.connect() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET contract_version = 'abc'
+            WHERE effect_id = 'bad-effect'
+            """
+        )
+    calls = 0
+
+    async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
+        nonlocal calls
+        calls += 1
+        return EffectHandlerResult()
+
+    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
+    handlers.register(contract.effect_kind, handler, contract=contract)
+    wake_registry = _WakeRegistry()
+    executor = DurableEffectExecutor(
+        store=store,
+        handlers=handlers,
+        session_registry=wake_registry,
+        renew_interval_seconds=None,
+        clock=lambda: now[0],
+    )
+
+    result = await executor.run_once()
+
+    assert result.status is EffectRunStatus.EMPTY
+    assert calls == 0
+    assert wake_registry.keys == [key]
+    with database.connect() as conn:
+        effect = conn.execute(
+            "SELECT status, attempt_count FROM agent_effect_outbox"
+        ).fetchone()
+        event = conn.execute(
+            "SELECT kind, status FROM agent_session_mailbox"
+        ).fetchone()
+    assert tuple(effect) == ("failed", 0)
+    assert tuple(event) == ("EffectQuarantined", "pending")
+
+
+@pytest.mark.asyncio
+async def test_lone_surrogate_is_quarantined_without_blocking_following_work(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    _seed_effect(database, key, effect_id="surrogate-effect")
+    _seed_effect(database, key, effect_id="following-effect")
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET payload_json = ?
+            WHERE effect_id = 'surrogate-effect'
+            """,
+            ('{"x":"\\ud800"}',),
+        )
+
+    following = await store.claim_next(worker_id="worker-a")
+
+    assert following is not None
+    assert following.effect.effect_id == "following-effect"
+    with database.connect() as conn:
+        malformed = conn.execute(
+            """
+            SELECT status, attempt_count
+            FROM agent_effect_outbox
+            WHERE effect_id = 'surrogate-effect'
+            """
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT payload_json
+            FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()
+    assert tuple(malformed) == ("failed", 0)
+    payload = json.loads(str(event["payload_json"]))
+    assert "payload_json_invalid_utf8" in payload["violations"]
+    assert _evidence_prefix_text(
+        payload["raw_row"]["payload_json"]
+    ) == '{"x":"\\ud800"}'
+
+    database.initialize()
+    database.initialize()
+    with database.connect() as conn:
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_raw_claim_validation_is_lossless_bounded_and_continues(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    for effect_id in (
+        "invalid-utf8-effect",
+        "deep-effect",
+        "duplicate-key-effect",
+        "many-nodes-effect",
+        "oversized-effect",
+        "following-effect",
+    ):
+        _seed_effect(database, key, effect_id=effect_id)
+    deep_payload = '{"x":' + ("[" * 1_200) + "0" + ("]" * 1_200) + "}"
+    duplicate_payload = '{"x":1,"x":2}'
+    many_nodes_payload = (
+        '{"items":[' + ",".join("0" for _ in range(MAX_CANONICAL_JSON_NODES)) + "]}"
+    )
+    oversized_payload = (
+        '{"blob":"' + ("x" * MAX_CANONICAL_JSON_BYTES) + '"}'
+    )
+    invalid_utf8_payload = b'{"x":\xff}'
+    with database.connect() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET payload_json = CAST(X'7B2278223AFF7D' AS TEXT)
+            WHERE effect_id = 'invalid-utf8-effect'
+            """
+        )
+        conn.execute(
+            "UPDATE agent_effect_outbox SET payload_json = ? "
+            "WHERE effect_id = 'deep-effect'",
+            (deep_payload,),
+        )
+        conn.execute(
+            "UPDATE agent_effect_outbox SET payload_json = ? "
+            "WHERE effect_id = 'duplicate-key-effect'",
+            (duplicate_payload,),
+        )
+        conn.execute(
+            "UPDATE agent_effect_outbox SET payload_json = ? "
+            "WHERE effect_id = 'many-nodes-effect'",
+            (many_nodes_payload,),
+        )
+        conn.execute(
+            "UPDATE agent_effect_outbox SET payload_json = ? "
+            "WHERE effect_id = 'oversized-effect'",
+            (oversized_payload,),
+        )
+
+    assert await store.claim_next(worker_id="quarantine-worker") is None
+    following = await store.claim_next(worker_id="worker-a")
+
+    assert following is not None
+    assert following.effect.effect_id == "following-effect"
+    with database.connect() as conn:
+        events = conn.execute(
+            """
+            SELECT causation_id, payload_json
+            FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            ORDER BY causation_id
+            """
+        ).fetchall()
+    payloads = {
+        str(row["causation_id"]): json.loads(str(row["payload_json"]))
+        for row in events
+    }
+    expected = {
+        "source:invalid-utf8-effect": (
+            "payload_json_invalid_utf8",
+            invalid_utf8_payload,
+        ),
+        "source:deep-effect": ("payload_json_too_deep", deep_payload.encode()),
+        "source:duplicate-key-effect": (
+            "payload_json_duplicate_key",
+            duplicate_payload.encode(),
+        ),
+        "source:many-nodes-effect": (
+            "payload_json_too_many_nodes",
+            many_nodes_payload.encode(),
+        ),
+        "source:oversized-effect": (
+            "payload_json_too_large",
+            oversized_payload.encode(),
+        ),
+    }
+    assert set(payloads) == set(expected)
+    for source_event_id, (violation, original_bytes) in expected.items():
+        payload = payloads[source_event_id]
+        evidence = payload["raw_row"]["payload_json"]
+        assert violation in payload["violations"]
+        assert evidence["storage_class"] == "text"
+        assert evidence["byte_length"] == len(original_bytes)
+        assert evidence["sha256"] == hashlib.sha256(original_bytes).hexdigest()
+        assert _evidence_prefix_bytes(evidence) == original_bytes[:192]
+        assert len(_evidence_prefix_bytes(evidence)) <= 192
+        assert evidence["truncated"] is (len(original_bytes) > 192)
+
+
+@pytest.mark.asyncio
+async def test_unaddressable_runtime_poison_is_inert_and_does_not_block_work(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    _seed_effect(database, key, effect_id="unaddressable-poison")
+    _seed_effect(database, key, effect_id="addressable-good")
+    with database.connect() as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET profile_id = CAST(X'80' AS TEXT)
+            WHERE effect_id = 'unaddressable-poison'
+            """
+        )
+
+    claim = await store.claim_next(worker_id="worker-a")
+
+    assert claim is not None
+    assert claim.effect.effect_id == "addressable-good"
+    with sqlite3.connect(database.config.sqlite_path) as raw_conn:
+        poison = raw_conn.execute(
+            """
+            SELECT status, typeof(profile_id), hex(CAST(profile_id AS BLOB))
+            FROM agent_effect_outbox
+            WHERE effect_id = 'unaddressable-poison'
+            """
+        ).fetchone()
+        diagnostics = raw_conn.execute(
+            """
+            SELECT COUNT(*) FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()[0]
+    assert poison == ("pending", "text", "80")
+    assert diagnostics == 0
+
+
+@pytest.mark.asyncio
+async def test_scrub_cursor_crosses_blocked_prefix_with_bounded_linear_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    database, first_store, key = await _make_store(tmp_path, now)
+    blocked_count = 225
+    _seed_blocked_external_action_effects(
+        database,
+        key,
+        count=blocked_count,
+        now=now[0],
+    )
+    _seed_effect(database, key, effect_id="poison-after-blocked-prefix")
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET payload_json = '{"x":1,"x":2}'
+            WHERE effect_id = 'poison-after-blocked-prefix'
+            """
+        )
+
+    raw_row_calls = 0
+    original_raw_effect_row = effect_store_module._raw_effect_row
+
+    def counted_raw_effect_row(*args: object, **kwargs: object):
+        nonlocal raw_row_calls
+        raw_row_calls += 1
+        return original_raw_effect_row(*args, **kwargs)
+
+    monkeypatch.setattr(
+        effect_store_module,
+        "_raw_effect_row",
+        counted_raw_effect_row,
+    )
+    external_contracts = tuple(
+        contract.ref for contract in builtin_external_action_effect_contracts()
+    )
+    second_store = SQLiteDurableEffectStore(
+        database,
+        lease_seconds=5.0,
+        clock=lambda: now[0],
+    )
+    stores = [first_store, second_store]
+    per_call_counts: list[int] = []
+    for call_index in range(40):
+        if call_index == 12:
+            stores[0] = SQLiteDurableEffectStore(
+                database,
+                lease_seconds=5.0,
+                clock=lambda: now[0],
+            )
+        before = raw_row_calls
+        claimed = await stores[call_index % 2].claim_next(
+            worker_id=f"worker-{call_index % 2}",
+            effect_contracts=external_contracts,
+        )
+        assert claimed is None
+        per_call_counts.append(raw_row_calls - before)
+        with database.connect() as conn:
+            poison_status = conn.execute(
+                """
+                SELECT status FROM agent_effect_outbox
+                WHERE effect_id = 'poison-after-blocked-prefix'
+                """
+            ).fetchone()["status"]
+        if poison_status == "failed":
+            break
+    else:
+        pytest.fail("persisted scrub cursor never reached the poisoned row")
+
+    assert len(per_call_counts) == 29
+    assert max(per_call_counts) <= 8
+    assert raw_row_calls <= blocked_count + 8
+    with database.connect() as conn:
+        cursor = conn.execute(
+            """
+            SELECT last_effect_seq FROM agent_effect_scrub_state
+            WHERE cursor_name = 'claimable'
+            """
+        ).fetchone()["last_effect_seq"]
+        blocked_pending = conn.execute(
+            """
+            SELECT COUNT(*) FROM agent_effect_outbox
+            WHERE status = 'pending' AND effect_id != 'poison-after-blocked-prefix'
+            """
+        ).fetchone()[0]
+    assert cursor == blocked_count + 1
+    assert blocked_pending == blocked_count
+
+
+@pytest.mark.asyncio
+async def test_scrub_streams_at_most_one_oversized_row_per_transaction(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    oversized_ids = tuple(f"oversized-{index}" for index in range(3))
+    for effect_id in (*oversized_ids, "small-following"):
+        _seed_effect(database, key, effect_id=effect_id)
+    oversized_payload = (
+        '{"blob":"' + ("x" * MAX_CANONICAL_JSON_BYTES) + '"}'
+    )
+    with database.connect() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.executemany(
+            """
+            UPDATE agent_effect_outbox SET payload_json = ?
+            WHERE effect_id = ?
+            """,
+            tuple((oversized_payload, effect_id) for effect_id in oversized_ids),
+        )
+
+    for expected_failed in range(1, len(oversized_ids) + 1):
+        assert (
+            await store.claim_next(
+                worker_id=f"scrubber-{expected_failed}",
+                effect_contracts=(),
+            )
+            is None
+        )
+        with database.connect() as conn:
+            failed = conn.execute(
+                """
+                SELECT COUNT(*) FROM agent_effect_outbox
+                WHERE status = 'failed'
+                """
+            ).fetchone()[0]
+            cursor = conn.execute(
+                """
+                SELECT last_effect_seq FROM agent_effect_scrub_state
+                WHERE cursor_name = 'claimable'
+                """
+            ).fetchone()["last_effect_seq"]
+        assert failed == expected_failed
+        assert cursor == expected_failed
+
+    assert (
+        await store.claim_next(worker_id="scrubber-small", effect_contracts=())
+        is None
+    )
+    with database.connect() as conn:
+        cursor = conn.execute(
+            """
+            SELECT last_effect_seq FROM agent_effect_scrub_state
+            WHERE cursor_name = 'claimable'
+            """
+        ).fetchone()["last_effect_seq"]
+        small_status = conn.execute(
+            """
+            SELECT status FROM agent_effect_outbox
+            WHERE effect_id = 'small-following'
+            """
+        ).fetchone()["status"]
+    assert cursor == 4
+    assert small_status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_inline_claim_does_not_stream_second_oversized_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    selected_contract = _external_contract(kind="selected-effect")
+    filtered_contract = _external_contract(kind="filtered-effect")
+    database, store, key = await _make_store(
+        tmp_path,
+        now,
+        contracts=(selected_contract, filtered_contract),
+    )
+    _seed_effect(
+        database,
+        key,
+        effect_id="filtered-prefix",
+        kind=filtered_contract.effect_kind,
+        contract=filtered_contract,
+    )
+    for effect_id in ("oversized-first", "oversized-second"):
+        _seed_effect(
+            database,
+            key,
+            effect_id=effect_id,
+            kind=selected_contract.effect_kind,
+            contract=selected_contract,
+        )
+    oversized_payload = (
+        '{"blob":"' + ("x" * MAX_CANONICAL_JSON_BYTES) + '"}'
+    )
+    with database.connect() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.executemany(
+            """
+            UPDATE agent_effect_outbox SET payload_json = ?
+            WHERE effect_id = ?
+            """,
+            (
+                (oversized_payload, "oversized-first"),
+                (oversized_payload, "oversized-second"),
+            ),
+        )
+
+    streamed_effect_seqs: list[int] = []
+    original_chunk_reader = effect_store_module._read_effect_raw_chunk
+
+    def counted_chunk_reader(*args: object, **kwargs: object) -> object:
+        streamed_effect_seqs.append(int(kwargs["effect_seq"]))
+        return original_chunk_reader(*args, **kwargs)
+
+    monkeypatch.setattr(
+        effect_store_module,
+        "_read_effect_raw_chunk",
+        counted_chunk_reader,
+    )
+
+    assert (
+        await store.claim_next(
+            worker_id="inline-worker",
+            effect_contracts=(selected_contract.ref,),
+        )
+        is None
+    )
+    with database.connect() as conn:
+        statuses = {
+            str(row["effect_id"]): str(row["status"])
+            for row in conn.execute(
+                """
+                SELECT effect_id, status FROM agent_effect_outbox
+                WHERE effect_id LIKE 'oversized-%'
+                ORDER BY effect_seq
+                """
+            )
+        }
+    assert statuses == {
+        "oversized-first": "failed",
+        "oversized-second": "pending",
+    }
+    assert set(streamed_effect_seqs) == {2}
+
+    assert (
+        await store.claim_next(
+            worker_id="scrub-worker",
+            effect_contracts=(selected_contract.ref,),
+        )
+        is None
+    )
+    assert set(streamed_effect_seqs) == {2, 3}
+
+
+@pytest.mark.asyncio
+async def test_attempt_count_int64_boundary_never_reclaims_in_a_hot_loop(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    _seed_effect(database, key, effect_id="boundary-effect")
+    _seed_effect(database, key, effect_id="following-effect")
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET attempt_count = ?
+            WHERE effect_id = 'boundary-effect'
+            """,
+            ((1 << 63) - 2,),
+        )
+
+    boundary = await store.claim_next(worker_id="boundary-worker")
+    assert boundary is not None
+    assert boundary.effect.effect_id == "boundary-effect"
+    assert boundary.attempt_count == (1 << 63) - 1
+    await store.release(boundary, error="boundary retry")
+
+    following = await store.claim_next(worker_id="following-worker")
+
+    assert following is not None
+    assert following.effect.effect_id == "following-effect"
+    notifications = await store.drain_quarantine_notifications()
+    assert len(notifications) == 1
+    with database.connect() as conn:
+        boundary_row = conn.execute(
+            """
+            SELECT status, attempt_count, completed_at
+            FROM agent_effect_outbox
+            WHERE effect_id = 'boundary-effect'
+            """
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT payload_json
+            FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()
+    assert tuple(boundary_row)[:2] == ("failed", (1 << 63) - 1)
+    assert boundary_row["completed_at"] == now[0]
+    payload = json.loads(str(event["payload_json"]))
+    assert "attempt_count_not_claimable" in payload["violations"]
 
 
 @pytest.mark.asyncio
@@ -997,6 +2327,42 @@ def _stored_deadline_effect(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column_name", "malformed_value"),
+    (
+        ("effect_id", ""),
+        ("effect_id", "\tbad-effect"),
+        ("contract_signature", ""),
+        ("ownership_generation", "abc"),
+        ("contract_version", "abc"),
+        ("attempt_count", "abc"),
+        ("payload_json", "not-json"),
+        ("payload_json", "[]"),
+        ("payload_json", '{"x": 1}'),
+    ),
+)
+async def test_fresh_effect_outbox_rejects_malformed_rows(
+    tmp_path: Path,
+    column_name: str,
+    malformed_value: object,
+) -> None:
+    now = [100.0]
+    database, store, key = await _make_store(tmp_path, now)
+    _seed_effect(database, key, payload={"accepted": True})
+
+    with database.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                f"UPDATE agent_effect_outbox SET {column_name} = ?",
+                (malformed_value,),
+            )
+
+    claim = await store.claim_next(worker_id="worker-a")
+    assert claim is not None
+    assert dict(claim.effect.payload) == {"accepted": True}
+
+
 def test_effect_outbox_migration_rebuilds_constraints_and_preserves_rows(
     tmp_path: Path,
 ) -> None:
@@ -1097,6 +2463,580 @@ def test_effect_outbox_migration_rebuilds_constraints_and_preserves_rows(
     assert "CHECK(status IN ('pending', 'processing', 'completed', 'failed'))" in (
         create_sql
     )
+
+
+@pytest.mark.parametrize(
+    "removed_fragment",
+    (
+        "UNIQUE(profile_id, session_id, effect_id),",
+        """FOREIGN KEY(profile_id, session_id)
+            REFERENCES agent_session_aggregates(profile_id, session_id)
+            ON DELETE CASCADE,""",
+        "CHECK(status IN ('pending', 'processing', 'completed', 'failed')),",
+        "CHECK(attempt_count <= 9223372036854775807),",
+    ),
+)
+def test_effect_outbox_schema_verifier_rebuilds_any_weakened_contract(
+    tmp_path: Path,
+    removed_fragment: str,
+) -> None:
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    with database.connect() as conn:
+        canonical_sql = str(
+            conn.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'table' AND name = 'agent_effect_outbox'
+                """
+            ).fetchone()["sql"]
+        )
+        assert removed_fragment in canonical_sql
+        weakened_sql = canonical_sql.replace(removed_fragment, "", 1)
+        conn.execute("ALTER TABLE agent_effect_outbox RENAME TO effect_outbox_current")
+        conn.execute(weakened_sql)
+        conn.execute("DROP TABLE effect_outbox_current")
+
+    database.initialize()
+
+    with database.connect() as conn:
+        rebuilt_sql = str(
+            conn.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'table' AND name = 'agent_effect_outbox'
+                """
+            ).fetchone()["sql"]
+        )
+    assert rebuilt_sql == canonical_sql
+
+
+def test_effect_outbox_schema_verifier_preserves_literal_case(
+    tmp_path: Path,
+) -> None:
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    with database.connect() as conn:
+        canonical_sql = str(
+            conn.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'table' AND name = 'agent_effect_outbox'
+                """
+            ).fetchone()["sql"]
+        )
+        assert "DEFAULT 'pending'" in canonical_sql
+        weakened_sql = canonical_sql.replace(
+            "DEFAULT 'pending'",
+            "DEFAULT 'PENDING'",
+            1,
+        )
+        conn.execute("ALTER TABLE agent_effect_outbox RENAME TO effect_outbox_current")
+        conn.execute(weakened_sql)
+        conn.execute("DROP TABLE effect_outbox_current")
+
+    database.initialize()
+    database.initialize()
+
+    with database.connect() as conn:
+        rebuilt_sql = str(
+            conn.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'table' AND name = 'agent_effect_outbox'
+                """
+            ).fetchone()["sql"]
+        )
+    assert rebuilt_sql == canonical_sql
+
+
+def test_effect_outbox_schema_supports_raw_sqlite_maintenance(
+    tmp_path: Path,
+) -> None:
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("raw-profile", "raw-profile:group:room")
+    owner = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="raw sqlite maintenance fixture",
+    ).ownership
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_session_aggregates (
+                profile_id, session_id, ownership_generation,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, 100.0, 100.0)
+            """,
+            (key.profile_id, key.session_id, owner.generation),
+        )
+
+    with sqlite3.connect(database.config.sqlite_path) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        schema_sql = str(
+            conn.execute(
+                """
+                SELECT sql FROM sqlite_master
+                WHERE type = 'table' AND name = 'agent_effect_outbox'
+                """
+            ).fetchone()[0]
+        )
+        assert "shinbot_canonical" not in schema_sql
+        conn.execute(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, kind,
+                contract_version, contract_signature, payload_json,
+                available_at, created_at, updated_at
+            ) VALUES ('raw-effect', 'raw-key', ?, ?,
+                      ?, 'raw-source', 'raw-kind', 1, 'raw-signature', '{}',
+                      100.0, 100.0, 100.0)
+            """,
+            (key.profile_id, key.session_id, owner.generation),
+        )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        conn.commit()
+        conn.execute("VACUUM")
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        quick = conn.execute("PRAGMA quick_check").fetchone()[0]
+    assert integrity == "ok"
+    assert quick == "ok"
+    database.initialize()
+    database.initialize()
+
+
+def test_effect_outbox_migration_quarantines_malformed_legacy_rows(
+    tmp_path: Path,
+) -> None:
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    key = SessionKey("profile-a", "profile-a:group:room")
+    owner = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="malformed migration fixture owner",
+    ).ownership
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_session_aggregates (
+                profile_id, session_id, ownership_generation, created_at, updated_at
+            ) VALUES (?, ?, ?, 100.0, 100.0)
+            """,
+            (key.profile_id, key.session_id, owner.generation),
+        )
+        conn.execute("ALTER TABLE agent_effect_outbox RENAME TO effect_outbox_current")
+        conn.execute(
+            """
+            CREATE TABLE agent_effect_outbox (
+                effect_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                effect_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                ownership_generation INTEGER NOT NULL DEFAULT 0,
+                event_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL,
+                contract_version INTEGER NOT NULL CHECK(contract_version >= 1),
+                contract_signature TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                available_at REAL NOT NULL,
+                claim_id TEXT NOT NULL DEFAULT '',
+                lease_owner TEXT NOT NULL DEFAULT '',
+                lease_until REAL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                completed_at REAL,
+                last_error TEXT NOT NULL DEFAULT '',
+                UNIQUE(profile_id, session_id, effect_id),
+                UNIQUE(profile_id, session_id, idempotency_key),
+                CHECK(status IN ('pending', 'processing', 'completed', 'failed'))
+            )
+            """
+        )
+        conn.execute("DROP TABLE effect_outbox_current")
+        conn.executemany(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, updated_at, completed_at, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, '', 'external_write', ?, 'signature', ?,
+                      'pending', 0, 100.0, '', '', NULL, 100.0, 100.0, NULL, '')
+            """,
+            (
+                (
+                    "valid-effect",
+                    "valid-key",
+                    key.profile_id,
+                    key.session_id,
+                    owner.generation,
+                    "source:valid-effect",
+                    1,
+                    '{"accepted":true}',
+                ),
+                (
+                    "text-version-effect",
+                    "text-version-key",
+                    key.profile_id,
+                    key.session_id,
+                    owner.generation,
+                    "source:text-version-effect",
+                    "abc",
+                    "{}",
+                ),
+                (
+                    "invalid-json-effect",
+                    "invalid-json-key",
+                    key.profile_id,
+                    key.session_id,
+                    owner.generation,
+                    "source:invalid-json-effect",
+                    1,
+                    "not-json",
+                ),
+                (
+                    "array-payload-effect",
+                    "array-payload-key",
+                    key.profile_id,
+                    key.session_id,
+                    owner.generation,
+                    "source:array-payload-effect",
+                    1,
+                    "[]",
+                ),
+                (
+                    "noncanonical-effect",
+                    "noncanonical-key",
+                    key.profile_id,
+                    key.session_id,
+                    owner.generation,
+                    "source:noncanonical-effect",
+                    1,
+                    '{"x": 1}',
+                ),
+                (
+                    "max-attempt-effect",
+                    "max-attempt-key",
+                    key.profile_id,
+                    key.session_id,
+                    owner.generation,
+                    "source:max-attempt-effect",
+                    1,
+                    "{}",
+                ),
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET attempt_count = ?
+            WHERE effect_id = 'max-attempt-effect'
+            """,
+            ((1 << 63) - 1,),
+        )
+
+    conflicting_event_id = derived_effect_event_id(
+        key=key,
+        effect_id="text-version-effect",
+        outcome="quarantined",
+    )
+    with database.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation,
+                kind, source, occurred_at, payload_json,
+                causation_id, correlation_id, trace_id,
+                status, attempt_count, available_at,
+                claim_id, lease_owner, lease_until,
+                created_at, handled_at, last_error
+            ) VALUES (?, ?, ?, ?, 'ConflictingDiagnostic', 'fixture', 100.0, '{}',
+                      '', '', '', 'pending', 0, 100.0, '', '', NULL,
+                      100.0, NULL, '')
+            """,
+            (
+                conflicting_event_id,
+                key.profile_id,
+                key.session_id,
+                owner.generation,
+            ),
+        )
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="changed diagnostic identity",
+    ):
+        database.initialize()
+    with database.connect() as conn:
+        raw_row = conn.execute(
+            """
+            SELECT typeof(contract_version), contract_version, payload_json
+            FROM agent_effect_outbox
+            WHERE effect_id = 'text-version-effect'
+            """
+        ).fetchone()
+        legacy_table = conn.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'agent_effect_outbox_legacy'
+            """
+        ).fetchone()
+        conn.execute(
+            """
+            DELETE FROM agent_session_mailbox
+            WHERE profile_id = ? AND session_id = ? AND event_id = ?
+            """,
+            (key.profile_id, key.session_id, conflicting_event_id),
+        )
+    assert tuple(raw_row) == ("text", "abc", "{}")
+    assert legacy_table is None
+
+    database.initialize()
+    database.initialize()
+
+    with database.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT effect_id, kind, contract_version, contract_signature,
+                   status, attempt_count, completed_at
+            FROM agent_effect_outbox
+            ORDER BY effect_id
+            """
+        ).fetchall()
+        events = conn.execute(
+            """
+            SELECT causation_id, kind, source, payload_json
+            FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            ORDER BY causation_id
+            """
+        ).fetchall()
+    by_effect_id = {str(row["effect_id"]): row for row in rows}
+    valid = by_effect_id.pop("valid-effect")
+    assert tuple(valid)[:6] == (
+        "valid-effect",
+        "external_write",
+        1,
+        "signature",
+        "pending",
+        0,
+    )
+    assert valid["completed_at"] is None
+    assert set(by_effect_id) == {
+        "array-payload-effect",
+        "invalid-json-effect",
+        "max-attempt-effect",
+        "noncanonical-effect",
+        "text-version-effect",
+    }
+    for effect_id, malformed in by_effect_id.items():
+        expected_attempt_count = (
+            (1 << 63) - 1 if effect_id == "max-attempt-effect" else 0
+        )
+        assert tuple(malformed)[1:6] == (
+            "__malformed_persisted_effect__",
+            1,
+            "schema-quarantine-v1",
+            "failed",
+            expected_attempt_count,
+        )
+        assert malformed["completed_at"] is not None
+    assert len(events) == 5
+    payload_by_source = {
+        str(event["causation_id"]): json.loads(str(event["payload_json"]))
+        for event in events
+    }
+    assert all(
+        tuple(event)[1:3] == ("EffectQuarantined", "effect_store")
+        for event in events
+    )
+    assert (
+        _evidence_prefix_text(
+            payload_by_source["source:text-version-effect"]["raw_row"]
+            ["contract_version"]
+        )
+        == "abc"
+    )
+    assert (
+        _evidence_prefix_text(
+            payload_by_source["source:invalid-json-effect"]["raw_row"]
+            ["payload_json"]
+        )
+        == "not-json"
+    )
+    assert (
+        _evidence_prefix_text(
+            payload_by_source["source:array-payload-effect"]["raw_row"]
+            ["payload_json"]
+        )
+        == "[]"
+    )
+    assert (
+        _evidence_prefix_text(
+            payload_by_source["source:noncanonical-effect"]["raw_row"]
+            ["payload_json"]
+        )
+        == '{"x": 1}'
+    )
+    assert "payload_json_noncanonical" in payload_by_source[
+        "source:noncanonical-effect"
+    ]["violations"]
+    assert "attempt_count_not_claimable" in payload_by_source[
+        "source:max-attempt-effect"
+    ]["violations"]
+    assert {
+        payload["failure_code"] for payload in payload_by_source.values()
+    } == {"malformed_effect_row"}
+
+
+@pytest.mark.asyncio
+async def test_legacy_invalid_utf8_is_quarantined_from_raw_bytes(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, _store, key = await _make_store(tmp_path, now)
+    with database.connect() as conn:
+        _replace_with_weak_effect_outbox(conn)
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            INSERT INTO agent_session_mailbox (
+                event_id, profile_id, session_id, ownership_generation,
+                kind, source, occurred_at, payload_json,
+                causation_id, correlation_id, trace_id,
+                status, attempt_count, available_at,
+                claim_id, lease_owner, lease_until,
+                created_at, handled_at, last_error
+            ) VALUES ('legacy-source', ?, ?, 1, 'LegacySource', 'fixture',
+                      100.0, '{}', '', '', CAST(X'80' AS TEXT),
+                      'completed', 0, 100.0, '', '', NULL, 100.0, 100.0, '')
+            """,
+            (key.profile_id, key.session_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, updated_at, completed_at, last_error
+            ) VALUES ('legacy-invalid-utf8', 'legacy-invalid-utf8-key', ?, ?, 1,
+                      'legacy-source', '', 'external_write', 1, 'signature',
+                      CAST(X'7B2278223AFF7D' AS TEXT), 'pending', 0, 100.0,
+                      '', '', NULL, 100.0, 100.0, NULL, '')
+            """,
+            (key.profile_id, key.session_id),
+        )
+
+    database.initialize()
+    database.initialize()
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT status, kind FROM agent_effect_outbox
+            WHERE effect_id = 'legacy-invalid-utf8'
+            """
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT trace_id, payload_json FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()
+    assert tuple(effect) == ("failed", "__malformed_persisted_effect__")
+    assert event["trace_id"] == ""
+    payload = json.loads(str(event["payload_json"]))
+    assert "payload_json_invalid_utf8" in payload["violations"]
+    assert "source_trace_id_invalid_utf8" in payload["violations"]
+    payload_evidence = payload["raw_row"]["payload_json"]
+    trace_evidence = payload["raw_row"]["source_trace_id"]
+    assert _evidence_prefix_bytes(payload_evidence) == b'{"x":\xff}'
+    assert payload_evidence["sha256"] == hashlib.sha256(b'{"x":\xff}').hexdigest()
+    assert _evidence_prefix_bytes(trace_evidence) == b"\x80"
+    assert trace_evidence["sha256"] == hashlib.sha256(b"\x80").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_unaddressable_legacy_invalid_utf8_rolls_back_rebuild(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, _store, key = await _make_store(tmp_path, now)
+    with database.connect() as conn:
+        _replace_with_weak_effect_outbox(conn)
+        conn.execute(
+            """
+            INSERT INTO agent_effect_outbox (
+                effect_id, idempotency_key, profile_id, session_id,
+                ownership_generation, event_id, operation_id, kind,
+                contract_version, contract_signature, payload_json, status,
+                attempt_count, available_at, claim_id, lease_owner,
+                lease_until, created_at, updated_at, completed_at, last_error
+            ) VALUES ('unaddressable-effect', 'unaddressable-key',
+                      CAST(X'80' AS TEXT), ?, 1, 'legacy-source', '',
+                      'external_write', 1, 'signature', '{}', 'pending', 0,
+                      100.0, '', '', NULL, 100.0, 100.0, NULL, '')
+            """,
+            (key.session_id,),
+        )
+    with sqlite3.connect(database.config.sqlite_path) as raw_conn:
+        before = raw_conn.execute(
+            """
+            SELECT typeof(profile_id), hex(CAST(profile_id AS BLOB)),
+                   typeof(payload_json), hex(CAST(payload_json AS BLOB))
+            FROM agent_effect_outbox
+            """
+        ).fetchone()
+        weak_sql = raw_conn.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = 'agent_effect_outbox'
+            """
+        ).fetchone()[0]
+
+    with pytest.raises(sqlite3.IntegrityError, match="canonical session"):
+        database.initialize()
+
+    with sqlite3.connect(database.config.sqlite_path) as raw_conn:
+        after = raw_conn.execute(
+            """
+            SELECT typeof(profile_id), hex(CAST(profile_id AS BLOB)),
+                   typeof(payload_json), hex(CAST(payload_json AS BLOB))
+            FROM agent_effect_outbox
+            """
+        ).fetchone()
+        after_sql = raw_conn.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = 'agent_effect_outbox'
+            """
+        ).fetchone()[0]
+        legacy_table = raw_conn.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'agent_effect_outbox_legacy'
+            """
+        ).fetchone()
+        diagnostics = raw_conn.execute(
+            """
+            SELECT COUNT(*) FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()[0]
+    assert after == before == ("text", "80", "text", "7B7D")
+    assert after_sql == weak_sql
+    assert legacy_table is None
+    assert diagnostics == 0
 
 
 def test_fresh_operation_input_fences_are_paired_and_nonnegative(

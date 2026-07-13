@@ -7,8 +7,10 @@ import pytest
 
 from shinbot.agent.runtime.session_actor.effect_contracts import (
     DEFAULT_OUTCOME_FENCE_FIELDS,
+    EffectContractAuthority,
     EffectExecutionContract,
     EffectLane,
+    builtin_effect_contract_authority,
     builtin_session_actor_effect_contracts,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
@@ -43,8 +45,41 @@ _FULL_CONTRACTS = (
 class _EmptySessionStore:
     """Session-store stub that records whether activation attempts recovery."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        effect_contract_authority: EffectContractAuthority | None = None,
+        persistence_domain: object | None = None,
+    ) -> None:
         self.pending_keys_calls = 0
+        self._effect_contract_authority = (
+            effect_contract_authority or builtin_effect_contract_authority()
+        )
+        self._persistence_domain = persistence_domain or object()
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the transaction domain used by this fake actor store."""
+
+        return self._persistence_domain
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the immutable authority used by the fake actor store."""
+
+        return self._effect_contract_authority
+
+    def bind_effect_contract_authority(
+        self,
+        authority: EffectContractAuthority,
+    ) -> None:
+        """Bind the composition authority before the fake store is observed."""
+
+        self._effect_contract_authority = authority
+
+    def bind_persistence_domain(self, domain: object) -> None:
+        """Bind the transaction domain before the fake store is observed."""
+
+        self._persistence_domain = domain
 
     async def enqueue(self, envelope: SessionEventEnvelope) -> EventEnqueueResult:
         raise AssertionError(f"unexpected mailbox enqueue: {envelope.event_id}")
@@ -101,11 +136,55 @@ class _BlockingRecoverySessionStore(_EmptySessionStore):
         return []
 
 
+class _SwitchingRecoverySessionStore(_EmptySessionStore):
+    """Actor store that swaps to an equal authority during recovery."""
+
+    async def pending_keys(self) -> list:
+        self.pending_keys_calls += 1
+        self.bind_effect_contract_authority(
+            EffectContractAuthority(self.effect_contract_authority.contracts())
+        )
+        return []
+
+
 class _EmptyEffectStore:
     """Effect-store stub that keeps executor workers idle without I/O."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        effect_contract_authority: EffectContractAuthority | None = None,
+        persistence_domain: object | None = None,
+    ) -> None:
         self.recover_expired_calls = 0
+        self._effect_contract_authority = (
+            effect_contract_authority or builtin_effect_contract_authority()
+        )
+        self._persistence_domain = persistence_domain or object()
+
+    @property
+    def persistence_domain(self) -> object:
+        """Return the transaction domain used by this fake outbox."""
+
+        return self._persistence_domain
+
+    @property
+    def effect_contract_authority(self) -> EffectContractAuthority:
+        """Return the immutable authority used by the fake outbox."""
+
+        return self._effect_contract_authority
+
+    def bind_effect_contract_authority(
+        self,
+        authority: EffectContractAuthority,
+    ) -> None:
+        """Bind the composition authority before the fake store is observed."""
+
+        self._effect_contract_authority = authority
+
+    def bind_persistence_domain(self, domain: object) -> None:
+        """Bind the transaction domain before the fake store is observed."""
+
+        self._persistence_domain = domain
 
     async def claim_next(
         self,
@@ -201,11 +280,31 @@ class _BlockingStartupEffectStore(_EmptyEffectStore):
         return 0
 
 
+class _SwitchingStartupEffectStore(_EmptyEffectStore):
+    """Effect store that swaps to an equal authority during startup recovery."""
+
+    async def recover_expired(self, *, worker_id: str) -> int:
+        del worker_id
+        self.recover_expired_calls += 1
+        self.bind_effect_contract_authority(
+            EffectContractAuthority(self.effect_contract_authority.contracts())
+        )
+        return 0
+
+
 class _BlockingShutdownExecutor:
     """Executor double that pauses cleanup to exercise repeated cancellation."""
 
-    def __init__(self, handlers: EffectHandlerRegistry) -> None:
+    def __init__(
+        self,
+        handlers: EffectHandlerRegistry,
+        session_registry: AgentSessionActorRegistry,
+    ) -> None:
         self.handler_registry = handlers
+        self.effect_contract_authority = handlers.effect_contract_authority
+        self.session_registry = session_registry
+        self.persistence_domain = session_registry.persistence_domain
+        self.healthy = True
         self.started = False
         self.closed = False
         self.shutdown_started = asyncio.Event()
@@ -232,8 +331,16 @@ class _BlockingShutdownExecutor:
 class _UnhealthyStartupExecutor:
     """Executor double that starts no handler-bound worker."""
 
-    def __init__(self, handlers: EffectHandlerRegistry) -> None:
+    def __init__(
+        self,
+        handlers: EffectHandlerRegistry,
+        session_registry: AgentSessionActorRegistry,
+    ) -> None:
         self.handler_registry = handlers
+        self.effect_contract_authority = handlers.effect_contract_authority
+        self.session_registry = session_registry
+        self.persistence_domain = session_registry.persistence_domain
+        self.healthy = True
         self.started = False
         self.closed = False
         self.start_calls = 0
@@ -287,15 +394,21 @@ def _full_handlers(
 ) -> EffectHandlerRegistry:
     """Build a full actor-v2 handler graph using inert handlers."""
 
-    handlers = EffectHandlerRegistry(include_builtin_contracts=False)
-    for expected in _FULL_CONTRACTS:
-        registered = (
+    authority_contracts = tuple(
+        (
             replacement_contract
             if replacement_contract is not None
             and replacement_contract.ref == expected.ref
             else expected
         )
-        handlers.register_contract(registered)
+        for expected in _FULL_CONTRACTS
+    )
+    authority = (
+        builtin_effect_contract_authority()
+        if replacement_contract is None
+        else EffectContractAuthority(authority_contracts)
+    )
+    handlers = EffectHandlerRegistry(contract_authority=authority)
     for expected in _FULL_CONTRACTS:
         if expected.ref == omitted_handler_ref:
             continue
@@ -319,7 +432,14 @@ def _components(
     session_store: _EmptySessionStore | None = None,
     effect_store: _EmptyEffectStore | None = None,
 ) -> tuple[_EmptySessionStore, _EmptyEffectStore, AgentSessionActorRegistry, DurableEffectExecutor]:
-    resolved_session_store = session_store or _EmptySessionStore()
+    authority = handlers.effect_contract_authority
+    persistence_domain = object()
+    resolved_session_store = session_store or _EmptySessionStore(
+        authority,
+        persistence_domain,
+    )
+    resolved_session_store.bind_effect_contract_authority(authority)
+    resolved_session_store.bind_persistence_domain(persistence_domain)
 
     def reduce_unexpected_event(*_args: object) -> SessionTransition:
         raise AssertionError("unexpected actor event reduction")
@@ -328,7 +448,12 @@ def _components(
         store=resolved_session_store,
         handler=reduce_unexpected_event,
     )
-    resolved_effect_store = effect_store or _EmptyEffectStore()
+    resolved_effect_store = effect_store or _EmptyEffectStore(
+        authority,
+        persistence_domain,
+    )
+    resolved_effect_store.bind_effect_contract_authority(authority)
+    resolved_effect_store.bind_persistence_domain(persistence_domain)
     executor = DurableEffectExecutor(
         store=resolved_effect_store,
         handlers=handlers,
@@ -398,6 +523,18 @@ def test_harness_construction_is_inactive_and_does_not_expose_wake_targets() -> 
     assert not hasattr(harness, "session_actor_registry")
 
 
+def test_default_handler_registry_uses_the_builtin_composition_authority() -> None:
+    handlers = EffectHandlerRegistry()
+
+    assert handlers.effect_contract_authority is builtin_effect_contract_authority()
+    assert handlers.effect_contract_authority.contracts() == tuple(
+        sorted(
+            _FULL_CONTRACTS,
+            key=lambda contract: (contract.effect_kind, contract.version),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_partial_harness_cannot_activate_or_start_any_worker() -> None:
     required = _contract()
@@ -438,48 +575,44 @@ async def test_activation_rejects_missing_full_graph_handler_without_starting_wo
     await harness.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_activation_rejects_changed_full_graph_contract_without_starting_work() -> None:
+def test_construction_rejects_changed_full_graph_contract_without_starting_work() -> None:
     required = _FULL_CONTRACTS[0]
     replacement = replace(required, timeout_seconds=required.timeout_seconds + 1.0)
     handlers = _full_handlers(replacement_contract=replacement)
-    harness, session_store, effect_store, _registry, executor = _full_harness(handlers)
+    session_store, effect_store, registry, executor = _components(handlers)
 
-    with pytest.raises(ActorRuntimeHarnessActivationError) as raised:
-        await harness.activate()
+    with pytest.raises(ValueError, match="does not exactly match"):
+        ActorRuntimeHarness(
+            registry=registry,
+            effect_executor=executor,
+            handlers=handlers,
+        )
 
-    assert any(
-        failure.contract == required
-        and failure.reason == "registered contract does not match required contract"
-        for failure in raised.value.failures
-    )
     assert handlers.sealed is False
     assert executor.started is False
     assert session_store.pending_keys_calls == 0
     assert effect_store.recover_expired_calls == 0
-    await harness.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_activation_rejects_extra_registered_contract_without_starting_work() -> None:
+def test_construction_rejects_extra_registered_contract_without_starting_work() -> None:
     extra = _contract()
-    handlers = _full_handlers()
-    handlers.register(extra.effect_kind, _effect_handler, contract=extra)
-    harness, session_store, effect_store, _registry, executor = _full_harness(handlers)
+    authority = EffectContractAuthority((*_FULL_CONTRACTS, extra))
+    handlers = EffectHandlerRegistry(contract_authority=authority)
+    for contract in (*_FULL_CONTRACTS, extra):
+        handlers.register(contract.effect_kind, _effect_handler, contract=contract)
+    session_store, effect_store, registry, executor = _components(handlers)
 
-    with pytest.raises(ActorRuntimeHarnessActivationError) as raised:
-        await harness.activate()
+    with pytest.raises(ValueError, match="does not exactly match"):
+        ActorRuntimeHarness(
+            registry=registry,
+            effect_executor=executor,
+            handlers=handlers,
+        )
 
-    assert any(
-        failure.contract == extra
-        and failure.reason == "registered contract is outside the activation graph"
-        for failure in raised.value.failures
-    )
     assert handlers.sealed is False
     assert executor.started is False
     assert session_store.pending_keys_calls == 0
     assert effect_store.recover_expired_calls == 0
-    await harness.shutdown()
 
 
 @pytest.mark.asyncio
@@ -539,6 +672,36 @@ async def test_full_activation_seals_the_exact_handler_graph_and_is_idempotent()
     assert executor.started is False
 
 
+@pytest.mark.asyncio
+async def test_post_activation_binding_drift_marks_harness_unhealthy() -> None:
+    handlers = _full_handlers()
+    harness, _session_store, effect_store, _registry, executor = _full_harness(
+        handlers
+    )
+
+    try:
+        await harness.activate()
+        assert harness.active is True
+        assert executor.healthy is True
+
+        effect_store.bind_effect_contract_authority(
+            EffectContractAuthority(handlers.effect_contract_authority.contracts())
+        )
+        executor.wake()
+        for _attempt in range(100):
+            if not executor.healthy:
+                break
+            await asyncio.sleep(0)
+
+        assert executor.healthy is False
+        assert executor.binding_failure is not None
+        assert executor.started is False
+        assert executor.running is False
+        assert harness.active is False
+    finally:
+        await harness.shutdown()
+
+
 def test_full_harness_rejects_incomplete_or_extra_required_contract_definitions() -> None:
     handlers = _full_handlers()
     session_store, effect_store, registry, executor = _components(handlers)
@@ -594,6 +757,216 @@ def test_harness_rejects_a_handler_registry_not_owned_by_its_executor() -> None:
         )
 
 
+def test_harness_rejects_an_executor_bound_to_another_wake_target() -> None:
+    handlers = _full_handlers()
+    session_store = _EmptySessionStore(handlers.effect_contract_authority)
+
+    def reduce_unexpected_event(*_args: object) -> SessionTransition:
+        raise AssertionError("unexpected actor event reduction")
+
+    registry = AgentSessionActorRegistry(
+        store=session_store,
+        handler=reduce_unexpected_event,
+    )
+    wrong_registry = AgentSessionActorRegistry(
+        store=session_store,
+        handler=reduce_unexpected_event,
+    )
+    effect_store = _EmptyEffectStore(handlers.effect_contract_authority)
+    executor = DurableEffectExecutor(
+        store=effect_store,
+        handlers=handlers,
+        session_registry=wrong_registry,
+        poll_interval_seconds=60.0,
+        renew_interval_seconds=None,
+    )
+
+    with pytest.raises(ValueError, match="executor's actor registry"):
+        ActorRuntimeHarness(
+            registry=registry,
+            effect_executor=executor,
+            handlers=handlers,
+        )
+
+    assert session_store.pending_keys_calls == 0
+    assert effect_store.recover_expired_calls == 0
+    assert executor.running is False
+
+
+def test_harness_rejects_split_actor_and_effect_store_authorities() -> None:
+    """Equal-looking policy graphs are unsafe when they are separate roots."""
+
+    handlers = _full_handlers()
+    actor_authority = handlers.effect_contract_authority
+    effect_authority = EffectContractAuthority(_FULL_CONTRACTS)
+    assert effect_authority.contracts() == actor_authority.contracts()
+    assert effect_authority is not actor_authority
+    persistence_domain = object()
+    session_store = _EmptySessionStore(actor_authority, persistence_domain)
+
+    def reduce_unexpected_event(*_args: object) -> SessionTransition:
+        raise AssertionError("unexpected actor event reduction")
+
+    registry = AgentSessionActorRegistry(
+        store=session_store,
+        handler=reduce_unexpected_event,
+    )
+    effect_store = _EmptyEffectStore(effect_authority, persistence_domain)
+    executor = DurableEffectExecutor(
+        store=effect_store,
+        handlers=handlers,
+        session_registry=registry,
+        poll_interval_seconds=60.0,
+        renew_interval_seconds=None,
+    )
+
+    with pytest.raises(ValueError, match="authority graph is split"):
+        ActorRuntimeHarness(
+            registry=registry,
+            effect_executor=executor,
+            handlers=handlers,
+        )
+
+    assert session_store.pending_keys_calls == 0
+    assert effect_store.recover_expired_calls == 0
+    assert executor.running is False
+
+
+def test_harness_rejects_split_persistence_domains() -> None:
+    """Actor commits and effect claims must address the same database domain."""
+
+    handlers = _full_handlers()
+    session_store = _EmptySessionStore(
+        handlers.effect_contract_authority,
+        object(),
+    )
+
+    def reduce_unexpected_event(*_args: object) -> SessionTransition:
+        raise AssertionError("unexpected actor event reduction")
+
+    registry = AgentSessionActorRegistry(
+        store=session_store,
+        handler=reduce_unexpected_event,
+    )
+    effect_store = _EmptyEffectStore(
+        handlers.effect_contract_authority,
+        object(),
+    )
+    executor = DurableEffectExecutor(
+        store=effect_store,
+        handlers=handlers,
+        session_registry=registry,
+        poll_interval_seconds=60.0,
+        renew_interval_seconds=None,
+    )
+
+    with pytest.raises(ValueError, match="shared persistence domain"):
+        ActorRuntimeHarness(
+            registry=registry,
+            effect_executor=executor,
+            handlers=handlers,
+        )
+
+    assert session_store.pending_keys_calls == 0
+    assert effect_store.recover_expired_calls == 0
+    assert executor.running is False
+
+
+@pytest.mark.asyncio
+async def test_activation_rechecks_authority_identity_before_recovery() -> None:
+    """Registration after composition cannot silently replace the graph root."""
+
+    handlers = EffectHandlerRegistry(
+        contracts=_FULL_CONTRACTS,
+        include_builtin_contracts=False,
+    )
+    for contract in _FULL_CONTRACTS:
+        handlers.register(contract.effect_kind, _effect_handler, contract=contract)
+    harness, session_store, effect_store, _registry, executor = _full_harness(handlers)
+
+    handlers.register(
+        _contract().effect_kind,
+        _effect_handler,
+        contract=_contract(),
+    )
+
+    with pytest.raises(ValueError, match="authority graph is split"):
+        await harness.activate()
+
+    assert handlers.sealed is False
+    assert executor.running is False
+    assert session_store.pending_keys_calls == 0
+    assert effect_store.recover_expired_calls == 0
+    await harness.shutdown()
+
+
+@pytest.mark.parametrize("component", ("actor_store", "effect_store"))
+@pytest.mark.asyncio
+async def test_activation_rejects_store_authority_rebinding(
+    component: str,
+) -> None:
+    """A store cannot swap an equal policy snapshot after composition."""
+
+    handlers = _full_handlers()
+    harness, session_store, effect_store, _registry, executor = _full_harness(handlers)
+    rebound = EffectContractAuthority(_FULL_CONTRACTS)
+    assert rebound.contracts() == handlers.effect_contract_authority.contracts()
+    assert rebound is not handlers.effect_contract_authority
+    if component == "actor_store":
+        session_store.bind_effect_contract_authority(rebound)
+    else:
+        effect_store.bind_effect_contract_authority(rebound)
+
+    with pytest.raises(RuntimeError, match="changed.*authority"):
+        await harness.activate()
+
+    assert executor.running is False
+    assert session_store.pending_keys_calls == 0
+    assert effect_store.recover_expired_calls == 0
+    await harness.shutdown()
+
+
+@pytest.mark.parametrize("component", ("actor_store", "effect_store"))
+@pytest.mark.asyncio
+async def test_activation_rejects_authority_switch_during_recovery(
+    component: str,
+) -> None:
+    """An await inside activation cannot hide a store authority switch."""
+
+    handlers = _full_handlers()
+    session_store: _EmptySessionStore = (
+        _SwitchingRecoverySessionStore()
+        if component == "actor_store"
+        else _EmptySessionStore()
+    )
+    effect_store: _EmptyEffectStore = (
+        _SwitchingStartupEffectStore()
+        if component == "effect_store"
+        else _EmptyEffectStore()
+    )
+    harness, resolved_session_store, resolved_effect_store, registry, executor = (
+        _full_harness(
+            handlers,
+            session_store=session_store,
+            effect_store=effect_store,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="changed.*authority"):
+        await harness.activate()
+
+    assert harness.active is False
+    assert harness.closed is True
+    assert registry.accepting is False
+    assert executor.running is False
+    if component == "actor_store":
+        assert resolved_session_store.pending_keys_calls == 1
+        assert resolved_effect_store.recover_expired_calls == 0
+    else:
+        assert resolved_session_store.pending_keys_calls == 1
+        assert resolved_effect_store.recover_expired_calls == 1
+
+
 @pytest.mark.asyncio
 async def test_harness_rejects_an_orphan_only_executor_that_is_already_running() -> None:
     """An orphan worker is still live work and cannot be adopted as inactive."""
@@ -632,7 +1005,7 @@ async def test_activation_rejects_executor_without_handler_bound_workers() -> No
         store=session_store,
         handler=reduce_unexpected_event,
     )
-    executor = _UnhealthyStartupExecutor(handlers)
+    executor = _UnhealthyStartupExecutor(handlers, registry)
     harness = ActorRuntimeHarness(
         registry=registry,
         effect_executor=executor,
@@ -728,7 +1101,7 @@ async def test_repeated_cancellation_does_not_interrupt_activation_cleanup() -> 
         store=session_store,
         handler=reduce_unexpected_event,
     )
-    executor = _BlockingShutdownExecutor(handlers)
+    executor = _BlockingShutdownExecutor(handlers, registry)
     harness = ActorRuntimeHarness(
         registry=registry,
         effect_executor=executor,

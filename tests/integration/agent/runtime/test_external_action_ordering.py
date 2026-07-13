@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -79,6 +80,7 @@ def _request(
     operation_id: str,
     action_ordinal: int,
     kind: ExternalActionKind = ExternalActionKind.SEND_POKE,
+    tool_call_id: str | None = None,
 ) -> ExternalActionRequest:
     return ExternalActionRequest(
         key=key,
@@ -89,7 +91,7 @@ def _request(
         target_session_id="adapter-a:group:room",
         intent=ExternalActionIntent(
             kind=kind,
-            tool_call_id=f"{operation_id}-tool-{action_ordinal}",
+            tool_call_id=tool_call_id or f"{operation_id}-tool-{action_ordinal}",
             action_ordinal=action_ordinal,
             payload={"ordinal": action_ordinal},
         ),
@@ -293,6 +295,7 @@ async def test_malformed_action_effect_payload_is_quarantined_without_stalling_w
     now = [100.0]
     database, effect_store, _receipt_store, key = await _make_stores(tmp_path, now)
     with database.connect() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
         conn.executemany(
             """
             INSERT INTO agent_effect_outbox (
@@ -332,20 +335,151 @@ async def test_malformed_action_effect_payload_is_quarantined_without_stalling_w
             ],
         )
 
-    claim = await effect_store.claim_next(worker_id="worker-a")
+    claim = await effect_store.claim_next(
+        worker_id="worker-a",
+        effect_contracts=(("unrelated_effect", 1),),
+    )
 
     assert claim is not None
     assert claim.effect.effect_id == "unrelated-effect"
+    notifications = await effect_store.drain_quarantine_notifications()
+    assert len(notifications) == 1
+    assert notifications[0].key == key
+    with database.connect() as conn:
+        malformed = conn.execute(
+            """
+            SELECT status, attempt_count, claim_id, lease_owner, lease_until
+            FROM agent_effect_outbox
+            WHERE effect_id = 'malformed-action-effect'
+            """
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT kind, source, payload_json
+            FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
+            """
+        ).fetchone()
+    assert malformed is not None
+    assert tuple(malformed) == ("failed", 0, "", "", None)
+    assert event is not None
+    assert tuple(event)[:2] == ("EffectQuarantined", "effect_store")
+    payload = json.loads(str(event["payload_json"]))
+    assert payload["failure_code"] == "malformed_effect_row"
+    raw_prefix = base64.b64decode(
+        payload["raw_row"]["payload_json"]["prefix_base64"]
+    ).decode("utf-8")
+    assert raw_prefix == "not-json"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_violation"),
+    (
+        ("operation_id", "external_action_operation_id_invalid"),
+        ("action_ordinal", "external_action_action_ordinal_invalid"),
+        ("request_digest", "external_action_request_digest_invalid"),
+    ),
+)
+async def test_semantically_malformed_action_is_quarantined_before_order_gate(
+    tmp_path: Path,
+    mutation: str,
+    expected_violation: str,
+) -> None:
+    now = [100.0]
+    database, effect_store, _receipt_store, key = await _make_stores(tmp_path, now)
+    malformed_request = _request(
+        key,
+        operation_id="operation-semantic",
+        action_ordinal=0,
+        tool_call_id="malformed-tool",
+    )
+    following_request = _request(
+        key,
+        operation_id="operation-semantic",
+        action_ordinal=0,
+        tool_call_id="following-tool",
+    )
+    _insert_pending_effect(database, malformed_request, now=now[0])
+    _insert_pending_effect(database, following_request, now=now[0])
+    malformed_effect = _materialized_effect(malformed_request)
+    with database.connect() as conn:
+        payload = dict(malformed_effect.payload)
+        operation_id = malformed_request.operation_id
+        if mutation == "operation_id":
+            operation_id = ""
+        else:
+            payload.pop(mutation)
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET operation_id = ?, payload_json = ?
+            WHERE effect_id = ?
+            """,
+            (
+                operation_id,
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                malformed_effect.effect_id,
+            ),
+        )
+
+    claim = await effect_store.claim_next(worker_id="worker-a")
+
+    assert claim is not None
+    assert claim.effect.effect_id == _materialized_effect(following_request).effect_id
+    notifications = await effect_store.drain_quarantine_notifications()
+    assert len(notifications) == 1
     with database.connect() as conn:
         malformed = conn.execute(
             """
             SELECT status, attempt_count
             FROM agent_effect_outbox
-            WHERE effect_id = 'malformed-action-effect'
+            WHERE effect_id = ?
+            """,
+            (malformed_effect.effect_id,),
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT payload_json
+            FROM agent_session_mailbox
+            WHERE kind = 'EffectQuarantined'
             """
         ).fetchone()
-    assert malformed is not None
-    assert tuple(malformed) == ("pending", 0)
+    assert tuple(malformed) == ("failed", 0)
+    event_payload = json.loads(str(event["payload_json"]))
+    assert expected_violation in event_payload["violations"]
+
+
+@pytest.mark.asyncio
+async def test_external_action_contract_drift_is_left_to_executor_policy(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, effect_store, _receipt_store, key = await _make_stores(tmp_path, now)
+    request = _request(
+        key,
+        operation_id="operation-drift",
+        action_ordinal=0,
+    )
+    _insert_pending_effect(database, request, now=now[0])
+    with database.connect() as conn:
+        conn.execute(
+            """
+            UPDATE agent_effect_outbox
+            SET contract_signature = 'drifted-signature'
+            """
+        )
+
+    claim = await effect_store.claim_next(worker_id="worker-a")
+
+    assert claim is not None
+    assert claim.effect.contract_signature == "drifted-signature"
+    assert await effect_store.drain_quarantine_notifications() == ()
 
 
 @pytest.mark.asyncio

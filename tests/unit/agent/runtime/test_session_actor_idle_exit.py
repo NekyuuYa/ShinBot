@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping
+from dataclasses import replace
 
 import pytest
 
@@ -162,8 +163,9 @@ def _executor_provenance(
     operation_id: str = "idle-operation-1",
     idempotency_key: str | None = None,
     attempt_count: int = 1,
+    contract_version: int | None = None,
 ) -> dict[str, object]:
-    contract = builtin_effect_contract(effect_kind)
+    contract = builtin_effect_contract(effect_kind, version=contract_version)
     return {
         "operation_id": operation_id,
         "plan_id": "review-plan-1",
@@ -200,6 +202,7 @@ def _effect_failure_payload(
     *,
     effect_id: str,
     idempotency_key: str | None = None,
+    contract_version: int | None = None,
 ) -> dict[str, object]:
     return {
         **_executor_provenance(
@@ -207,6 +210,7 @@ def _effect_failure_payload(
             effect_id=effect_id,
             idempotency_key=idempotency_key,
             attempt_count=3,
+            contract_version=contract_version,
         ),
         "failure_code": "retry_exhausted",
         "failure_message": "durable effect remained unavailable",
@@ -231,6 +235,25 @@ def _settled_with_stop_intent(
     return reducer.reduce(_settling(reducer), completion).aggregate
 
 
+def _cancelled_with_intent(
+    reducer: AgentSessionReducer,
+) -> AgentSessionAggregate:
+    return reducer.reduce(
+        _settling(reducer),
+        _event(
+            AgentSessionEventKind.MESSAGE_RECEIVED,
+            event_id="message-103",
+            payload={
+                "message_log_id": 103,
+                "cancel_effect_id": "cancel-effect-1",
+                "cancel_completion_event_id": "cancel-completion-event-1",
+                "cancel_failure_event_id": "cancel-failure-event-1",
+            },
+            occurred_at=110.0,
+        ),
+    ).aggregate
+
+
 def _failed_stop_reconciliation(
     reducer: AgentSessionReducer,
 ) -> SessionTransition:
@@ -247,19 +270,54 @@ def _failed_stop_reconciliation(
     return reducer.reduce(_settled_with_stop_intent(reducer), failure)
 
 
+def _failed_control_reconciliation(
+    reducer: AgentSessionReducer,
+    control_effect_kind: AgentSessionEffectKind,
+) -> SessionTransition:
+    if control_effect_kind == AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME:
+        return _failed_stop_reconciliation(reducer)
+    cancelled = _cancelled_with_intent(reducer)
+    return reducer.reduce(
+        cancelled,
+        _control_effect_event(
+            cancelled,
+            AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+            failed=True,
+        ),
+    )
+
+
 def _reconciliation_event(
     intent: Mapping[str, object],
     *,
     failed: bool = False,
     occurred_at: float = 130.0,
+    contract_version: int | None = None,
 ) -> SessionEventEnvelope:
-    effect_kind = AgentSessionEffectKind.ACTIVE_CHAT_RUNTIME_RECONCILIATION
+    effect_kind = AgentSessionEffectKind(str(intent["reconciliation_kind"]))
+    persisted_version = intent.get("reconciliation_contract_version")
+    resolved_contract_version = contract_version or (
+        int(persisted_version)
+        if isinstance(persisted_version, int)
+        and not isinstance(persisted_version, bool)
+        else 1
+    )
     payload = _executor_provenance(
         effect_kind,
         effect_id=str(intent["reconciliation_effect_id"]),
         operation_id=str(intent["reconciliation_operation_id"]),
         idempotency_key=str(intent["reconciliation_idempotency_key"]),
         attempt_count=8 if failed else 1,
+        contract_version=resolved_contract_version,
+    )
+    payload.update(
+        {
+            "plan_id": intent["plan_id"],
+            "active_epoch": intent["active_epoch"],
+            "activity_generation": intent["activity_generation"],
+            "input_watermark": intent["input_watermark"],
+            "input_ledger_sequence": intent["input_ledger_sequence"],
+        }
     )
     if failed:
         payload.update(
@@ -272,7 +330,12 @@ def _reconciliation_event(
         (
             AgentSessionEventKind.EFFECT_FAILED
             if failed
-            else AgentSessionEventKind.ACTIVE_CHAT_RUNTIME_RECONCILED
+            else (
+                AgentSessionEventKind.ACTIVE_CHAT_RUNTIME_RECONCILED
+                if effect_kind
+                == AgentSessionEffectKind.ACTIVE_CHAT_RUNTIME_RECONCILIATION
+                else AgentSessionEventKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILED
+            )
         ),
         event_id=str(
             intent[
@@ -285,6 +348,70 @@ def _reconciliation_event(
         occurred_at=occurred_at,
         causation_id=str(intent["reconciliation_causation_id"]),
     )
+
+
+def _control_effect_event(
+    aggregate: AgentSessionAggregate,
+    effect_kind: AgentSessionEffectKind,
+    *,
+    failed: bool = False,
+    contract_version: int | None = None,
+) -> SessionEventEnvelope:
+    intent = aggregate.data["effect_control_intents"][effect_kind]
+    persisted_version = intent.get("contract_version")
+    resolved_version = contract_version or (
+        int(persisted_version)
+        if isinstance(persisted_version, int)
+        and not isinstance(persisted_version, bool)
+        else 1
+    )
+    contract = builtin_effect_contract(effect_kind, version=resolved_version)
+    payload: dict[str, object] = {
+        "effect_id": intent["effect_id"],
+        "effect_kind": effect_kind,
+        "idempotency_key": intent["idempotency_key"],
+        "operation_id": intent["operation_id"],
+        "plan_id": intent["plan_id"],
+        "active_epoch": intent["active_epoch"],
+        "activity_generation": intent["activity_generation"],
+        "input_watermark": intent["input_watermark"],
+        "input_ledger_sequence": intent["input_ledger_sequence"],
+        "attempt_count": 5 if failed else 1,
+        "contract_version": contract.version,
+        "contract_signature": contract.signature,
+    }
+    if failed:
+        payload.update(
+            {
+                "failure_code": "control_effect_failed",
+                "failure_message": "control runtime did not converge",
+            }
+        )
+    completion_kind = (
+        AgentSessionEventKind.ACTIVE_CHAT_RUNTIME_STOPPED
+        if effect_kind == AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
+        else AgentSessionEventKind.IDLE_REVIEW_PLANNING_CANCELLATION_COMPLETED
+    )
+    return _event(
+        AgentSessionEventKind.EFFECT_FAILED if failed else completion_kind,
+        event_id=str(
+            intent["failure_event_id" if failed else "completion_event_id"]
+        ),
+        payload=payload,
+        causation_id=str(intent["causation_id"]),
+    )
+
+
+def _replace_control_intent(
+    aggregate: AgentSessionAggregate,
+    effect_kind: AgentSessionEffectKind,
+    intent: Mapping[str, object],
+) -> AgentSessionAggregate:
+    data = dict(aggregate.data)
+    intents = dict(data["effect_control_intents"])
+    intents[effect_kind] = dict(intent)
+    data["effect_control_intents"] = intents
+    return replace(aggregate, data=data)
 
 
 def test_exit_request_creates_fenced_operation_and_durable_effects() -> None:
@@ -327,6 +454,18 @@ def test_exit_request_creates_fenced_operation_and_durable_effects() -> None:
         "completion_event_id": "completion-event-1",
         "deadline_event_id": "deadline-event-1",
         "input_watermark": 102,
+        "planner_contract_version": builtin_effect_contract(
+            AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING
+        ).version,
+        "planner_contract_signature": builtin_effect_contract(
+            AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING
+        ).signature,
+        "deadline_contract_version": builtin_effect_contract(
+            AgentSessionEffectKind.ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE
+        ).version,
+        "deadline_contract_signature": builtin_effect_contract(
+            AgentSessionEffectKind.ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE
+        ).signature,
     }
 
     assert len(transition.operations) == 1
@@ -368,6 +507,92 @@ def test_exit_request_creates_fenced_operation_and_durable_effects() -> None:
     assert transition.review_schedules == ()
 
     assert reducer.reduce(aggregate, event) == transition
+
+
+@pytest.mark.parametrize("tampered_prefix", ["planner", "deadline"])
+def test_idle_planner_and_deadline_contract_snapshots_are_independent(
+    tampered_prefix: str,
+) -> None:
+    reducer = AgentSessionReducer()
+    settling = _settling(reducer)
+    data = dict(settling.data)
+    pending = dict(data["idle_exit"])
+    pending[f"{tampered_prefix}_contract_signature"] = "0" * 64
+    data["idle_exit"] = pending
+    tampered = replace(settling, data=data)
+    planner_event = _event(
+        AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED,
+        event_id="completion-event-1",
+        payload=_completion_payload(
+            {"kind": "planned", "requested_delay_seconds": 30.0}
+        ),
+        causation_id="exit-1",
+    )
+    deadline_event = _event(
+        AgentSessionEventKind.IDLE_REVIEW_PLANNING_DEADLINE_REACHED,
+        event_id="deadline-event-1",
+        payload=_executor_provenance(
+            AgentSessionEffectKind.ENQUEUE_IDLE_REVIEW_PLANNING_DEADLINE,
+            effect_id="deadline-effect-1",
+        ),
+        causation_id="exit-1",
+    )
+    rejected_event = planner_event if tampered_prefix == "planner" else deadline_event
+    accepted_event = deadline_event if tampered_prefix == "planner" else planner_event
+
+    rejected = reducer.reduce(tampered, rejected_event)
+    accepted = reducer.reduce(tampered, accepted_event)
+
+    assert rejected.disposition == "superseded"
+    assert "expected_contract_signature_changed" in rejected.reason
+    assert accepted.disposition == "active_chat_exit_committed"
+
+
+def test_legacy_idle_exit_without_contract_snapshots_accepts_only_v1() -> None:
+    reducer = AgentSessionReducer()
+    settling = _settling(reducer)
+    data = dict(settling.data)
+    pending = dict(data["idle_exit"])
+    for prefix in ("planner", "deadline"):
+        pending.pop(f"{prefix}_contract_version")
+        pending.pop(f"{prefix}_contract_signature")
+    data["idle_exit"] = pending
+    legacy = replace(settling, data=data)
+    legacy_contract = builtin_effect_contract(
+        AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING,
+        version=1,
+    )
+    legacy_payload = _completion_payload(
+        {"kind": "planned", "requested_delay_seconds": 30.0}
+    )
+    legacy_payload.update(
+        {
+            "contract_version": legacy_contract.version,
+            "contract_signature": legacy_contract.signature,
+        }
+    )
+    legacy_event = _event(
+        AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED,
+        event_id="completion-event-1",
+        payload=legacy_payload,
+        causation_id="exit-1",
+    )
+    current_event = _event(
+        AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED,
+        event_id="completion-event-1",
+        payload=_completion_payload(
+            {"kind": "planned", "requested_delay_seconds": 30.0}
+        ),
+        causation_id="exit-1",
+    )
+
+    accepted = reducer.reduce(legacy, legacy_event)
+    rejected = reducer.reduce(legacy, current_event)
+
+    assert accepted.disposition == "active_chat_exit_committed"
+    assert rejected.disposition == "superseded"
+    assert "contract_version_changed" in rejected.reason
+    assert "contract_signature_changed" in rejected.reason
 
 
 @pytest.mark.parametrize(
@@ -682,6 +907,90 @@ def test_stale_completion_only_appends_superseded_journal(
 
 
 @pytest.mark.parametrize(
+    (
+        "authority_location",
+        "field_name",
+        "malformed_value",
+        "supplied_value",
+        "expected_reason",
+    ),
+    (
+        (
+            "idle_exit",
+            "active_epoch",
+            "3",
+            3,
+            "expected_active_epoch_invalid",
+        ),
+        (
+            "idle_exit",
+            "activity_generation",
+            7.0,
+            7,
+            "expected_activity_generation_invalid",
+        ),
+        (
+            "operation_fence",
+            "input_watermark",
+            True,
+            None,
+            "expected_input_watermark_invalid",
+        ),
+        (
+            "idle_exit",
+            "planner_effect_id",
+            1,
+            "1",
+            "expected_effect_id_invalid",
+        ),
+    ),
+)
+def test_idle_planning_completion_rejects_malformed_persisted_authority(
+    authority_location: str,
+    field_name: str,
+    malformed_value: object,
+    supplied_value: object,
+    expected_reason: str,
+) -> None:
+    reducer = AgentSessionReducer()
+    settling = _settling(reducer)
+    data = dict(settling.data)
+    if authority_location == "idle_exit":
+        pending = dict(data["idle_exit"])
+        pending[field_name] = malformed_value
+        data["idle_exit"] = pending
+    else:
+        registry = dict(data["operation_fences"])
+        fence = dict(registry[settling.idle_planning_operation_id])
+        fence[field_name] = malformed_value
+        registry[settling.idle_planning_operation_id] = fence
+        data["operation_fences"] = registry
+    malformed = replace(settling, data=data)
+    payload = _completion_payload(
+        {"kind": "planned", "requested_delay_seconds": 30.0}
+    )
+    completion_field = (
+        "effect_id" if field_name == "planner_effect_id" else field_name
+    )
+    payload[completion_field] = supplied_value
+    event = _event(
+        AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED,
+        event_id="completion-event-1",
+        payload=payload,
+        occurred_at=120.0,
+        causation_id="exit-1",
+    )
+
+    transition = reducer.reduce(malformed, event)
+
+    assert transition.disposition == "superseded"
+    assert expected_reason in transition.reason
+    assert transition.aggregate.state == AgentSessionState.ACTIVE_CHAT_SETTLING
+    assert transition.effects == ()
+    assert transition.review_schedules == ()
+
+
+@pytest.mark.parametrize(
     ("event_id", "causation_id", "expected_reason"),
     [
         ("forged-completion", "exit-1", "event_id_changed"),
@@ -817,6 +1126,11 @@ def test_message_while_settling_cancels_exit_and_supersedes_operation() -> None:
     assert cancellation_intent["status"] == "requested"
     assert cancellation_intent["effect_id"] == "cancel-effect-1"
     assert cancellation_intent["causation_id"] == "message-103"
+    cancel_contract = builtin_effect_contract(
+        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
+    )
+    assert cancellation_intent["contract_version"] == cancel_contract.version
+    assert cancellation_intent["contract_signature"] == cancel_contract.signature
     assert len(transition.operations) == 1
     assert transition.operations[0].status is SessionOperationStatus.SUPERSEDED
     assert transition.operations[0].superseded_at == 110.0
@@ -1164,6 +1478,18 @@ def test_stop_effect_failure_records_idle_runtime_reconciliation_intent() -> Non
         == AgentSessionEffectKind.ACTIVE_CHAT_RUNTIME_RECONCILIATION
     )
     assert intent["reconciliation_effect_id"] == transition.effects[0].effect_id
+    reconciliation_contract = builtin_effect_contract(
+        AgentSessionEffectKind.ACTIVE_CHAT_RUNTIME_RECONCILIATION
+    )
+    assert intent["reconciliation_contract_version"] == (
+        reconciliation_contract.version
+    )
+    assert intent["reconciliation_contract_signature"] == (
+        reconciliation_contract.signature
+    )
+    assert reconciliation.operation_id in transition.aggregate.data[
+        "operation_fences"
+    ]
     assert reducer.reduce(settled, failure) == transition
 
 
@@ -1221,6 +1547,18 @@ def test_cancel_effect_failure_records_reconciliation_without_settling_idle() ->
         transition.effects[0].kind
         == AgentSessionEffectKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILIATION
     )
+    reconciliation_contract = builtin_effect_contract(
+        AgentSessionEffectKind.IDLE_REVIEW_PLANNING_CANCELLATION_RECONCILIATION
+    )
+    assert intent["reconciliation_contract_version"] == (
+        reconciliation_contract.version
+    )
+    assert intent["reconciliation_contract_signature"] == (
+        reconciliation_contract.signature
+    )
+    assert reconciliation.operation_id in transition.aggregate.data[
+        "operation_fences"
+    ]
 
 
 def test_control_completion_closes_requested_intent() -> None:
@@ -1248,6 +1586,114 @@ def test_control_completion_closes_requested_intent() -> None:
     assert transition.effects == ()
 
 
+def test_idle_planning_cancellation_completion_closes_requested_intent() -> None:
+    reducer = AgentSessionReducer()
+    cancelled = _cancelled_with_intent(reducer)
+
+    transition = reducer.reduce(
+        cancelled,
+        _control_effect_event(
+            cancelled,
+            AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+        ),
+    )
+
+    assert transition.disposition == "idle_planning_cancellation_completed"
+    intent = transition.aggregate.data["effect_control_intents"][
+        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING
+    ]
+    assert intent["status"] == "completed"
+    assert intent["completion"]["effect_id"] == "cancel-effect-1"
+
+
+@pytest.mark.parametrize(
+    "effect_kind",
+    [
+        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+        AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME,
+    ],
+)
+@pytest.mark.parametrize("failed", [False, True])
+def test_legacy_control_intent_without_snapshot_accepts_only_v1(
+    effect_kind: AgentSessionEffectKind,
+    failed: bool,
+) -> None:
+    reducer = AgentSessionReducer()
+    aggregate = (
+        _settled_with_stop_intent(reducer)
+        if effect_kind == AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
+        else _cancelled_with_intent(reducer)
+    )
+    intent = dict(aggregate.data["effect_control_intents"][effect_kind])
+    intent.pop("contract_version")
+    intent.pop("contract_signature")
+    legacy = _replace_control_intent(aggregate, effect_kind, intent)
+
+    accepted = reducer.reduce(
+        legacy,
+        _control_effect_event(legacy, effect_kind, failed=failed),
+    )
+    rejected = reducer.reduce(
+        legacy,
+        _control_effect_event(
+            legacy,
+            effect_kind,
+            failed=failed,
+            contract_version=2,
+        ),
+    )
+
+    if failed:
+        assert accepted.disposition in {
+            "active_chat_runtime_reconciliation_required",
+            "idle_planning_cancellation_reconciliation_required",
+        }
+        assert rejected.disposition == "ignored_unrelated_control_effect_failure"
+    else:
+        assert accepted.disposition in {
+            "active_chat_runtime_stopped",
+            "idle_planning_cancellation_completed",
+        }
+        assert rejected.disposition == "ignored_unrelated_control_effect_completion"
+    assert "contract_version_changed" in rejected.reason
+    assert "contract_signature_changed" in rejected.reason
+
+
+@pytest.mark.parametrize(
+    "effect_kind",
+    [
+        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+        AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME,
+    ],
+)
+@pytest.mark.parametrize("failed", [False, True])
+def test_control_intent_rejects_a_mutated_persisted_contract_snapshot(
+    effect_kind: AgentSessionEffectKind,
+    failed: bool,
+) -> None:
+    reducer = AgentSessionReducer()
+    aggregate = (
+        _settled_with_stop_intent(reducer)
+        if effect_kind == AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME
+        else _cancelled_with_intent(reducer)
+    )
+    intent = dict(aggregate.data["effect_control_intents"][effect_kind])
+    intent["contract_signature"] = "0" * 64
+    tampered = _replace_control_intent(aggregate, effect_kind, intent)
+
+    transition = reducer.reduce(
+        tampered,
+        _control_effect_event(tampered, effect_kind, failed=failed),
+    )
+
+    assert transition.disposition == (
+        "ignored_unrelated_control_effect_failure"
+        if failed
+        else "ignored_unrelated_control_effect_completion"
+    )
+    assert "expected_contract_signature_changed" in transition.reason
+
+
 def test_reconciliation_completion_is_fenced_and_completes_operation() -> None:
     reducer = AgentSessionReducer()
     requested = _failed_stop_reconciliation(reducer)
@@ -1272,6 +1718,97 @@ def test_reconciliation_completion_is_fenced_and_completes_operation() -> None:
     assert reconciled["reconciliation_completion"]["effect_id"] == intent[
         "reconciliation_effect_id"
     ]
+    assert intent["reconciliation_operation_id"] not in transition.aggregate.data.get(
+        "operation_fences",
+        {},
+    )
+
+
+@pytest.mark.parametrize(
+    "control_effect_kind",
+    [
+        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+        AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME,
+    ],
+)
+@pytest.mark.parametrize("failed", [False, True])
+def test_legacy_reconciliation_without_snapshot_accepts_only_v1(
+    control_effect_kind: AgentSessionEffectKind,
+    failed: bool,
+) -> None:
+    reducer = AgentSessionReducer()
+    requested = _failed_control_reconciliation(reducer, control_effect_kind)
+    intent = dict(
+        requested.aggregate.data["effect_control_intents"][control_effect_kind]
+    )
+    intent.pop("reconciliation_contract_version")
+    intent.pop("reconciliation_contract_signature")
+    legacy = _replace_control_intent(
+        requested.aggregate,
+        control_effect_kind,
+        intent,
+    )
+
+    accepted = reducer.reduce(
+        legacy,
+        _reconciliation_event(intent, failed=failed),
+    )
+    rejected = reducer.reduce(
+        legacy,
+        _reconciliation_event(intent, failed=failed, contract_version=2),
+    )
+
+    if failed:
+        assert accepted.disposition in {
+            "active_chat_runtime_reconciliation_required",
+            "idle_planning_cancellation_reconciliation_required",
+        }
+        assert rejected.disposition == "ignored_unrelated_reconciliation_failure"
+    else:
+        assert accepted.disposition in {
+            "active_chat_runtime_reconciled",
+            "idle_planning_cancellation_reconciled",
+        }
+        assert rejected.disposition == "ignored_unrelated_control_reconciliation"
+    assert "contract_version_changed" in rejected.reason
+    assert "contract_signature_changed" in rejected.reason
+
+
+@pytest.mark.parametrize(
+    "control_effect_kind",
+    [
+        AgentSessionEffectKind.CANCEL_IDLE_REVIEW_PLANNING,
+        AgentSessionEffectKind.STOP_ACTIVE_CHAT_RUNTIME,
+    ],
+)
+@pytest.mark.parametrize("failed", [False, True])
+def test_reconciliation_rejects_a_mutated_persisted_contract_snapshot(
+    control_effect_kind: AgentSessionEffectKind,
+    failed: bool,
+) -> None:
+    reducer = AgentSessionReducer()
+    requested = _failed_control_reconciliation(reducer, control_effect_kind)
+    intent = dict(
+        requested.aggregate.data["effect_control_intents"][control_effect_kind]
+    )
+    intent["reconciliation_contract_signature"] = "0" * 64
+    tampered = _replace_control_intent(
+        requested.aggregate,
+        control_effect_kind,
+        intent,
+    )
+
+    transition = reducer.reduce(
+        tampered,
+        _reconciliation_event(intent, failed=failed),
+    )
+
+    assert transition.disposition == (
+        "ignored_unrelated_reconciliation_failure"
+        if failed
+        else "ignored_unrelated_control_reconciliation"
+    )
+    assert "expected_contract_signature_changed" in transition.reason
 
 
 def test_reconciliation_failure_retries_with_new_fenced_effect_then_exhausts() -> None:
@@ -1298,6 +1835,12 @@ def test_reconciliation_failure_retries_with_new_fenced_effect_then_exhausts() -
     ]
     assert second_intent["reconciliation_cycle"] == 2
     assert second.effects[0].effect_id != first.effects[0].effect_id
+    assert first_intent["reconciliation_operation_id"] not in second.aggregate.data[
+        "operation_fences"
+    ]
+    assert second_intent["reconciliation_operation_id"] in second.aggregate.data[
+        "operation_fences"
+    ]
 
     exhausted = reducer.reduce(
         second.aggregate,
@@ -1316,6 +1859,9 @@ def test_reconciliation_failure_retries_with_new_fenced_effect_then_exhausts() -
     ]
     assert exhausted_intent["status"] == "reconciliation_failed"
     assert len(exhausted_intent["reconciliation_failures"]) == 2
+    assert second_intent[
+        "reconciliation_operation_id"
+    ] not in exhausted.aggregate.data.get("operation_fences", {})
 
 
 def test_reconciliation_completion_missing_provenance_is_ignored() -> None:

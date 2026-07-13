@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from shinbot.agent.runtime.session_actor.aggregate import (
     AgentSessionAggregate,
     SessionKey,
 )
 from shinbot.agent.runtime.session_actor.effect_contracts import (
+    EffectExecutionContract,
     builtin_effect_contract,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
@@ -32,8 +35,27 @@ from shinbot.agent.runtime.session_actor.reducer import (
     AgentSessionReducer,
     AgentSessionState,
 )
+from shinbot.agent.runtime.session_actor.review_due_identity import (
+    REVIEW_DUE_EVENT_SOURCE,
+    review_due_event_id,
+)
 
 _KEY = SessionKey("profile-a", "profile-a:group:room-a")
+
+
+def _persisted_effect_contract(
+    effect_kind: str,
+    snapshot: dict[str, object],
+) -> EffectExecutionContract:
+    version = snapshot.get("contract_version")
+    return builtin_effect_contract(
+        effect_kind,
+        version=(
+            int(version)
+            if isinstance(version, int) and not isinstance(version, bool)
+            else 1
+        ),
+    )
 
 
 def _message_event(
@@ -96,6 +118,34 @@ def _stamp_operation_sequence(
     return replace(aggregate, data=data)
 
 
+def _replace_operation_fence(
+    aggregate: AgentSessionAggregate,
+    operation_id: str,
+    updates: dict[str, object],
+) -> AgentSessionAggregate:
+    data = dict(aggregate.data)
+    registry = dict(data["operation_fences"])
+    fence = dict(registry[operation_id])
+    fence.update(updates)
+    registry[operation_id] = fence
+    data["operation_fences"] = registry
+    return replace(aggregate, data=data)
+
+
+def _without_operation_contract_snapshot(
+    aggregate: AgentSessionAggregate,
+    operation_id: str,
+) -> AgentSessionAggregate:
+    data = dict(aggregate.data)
+    registry = dict(data["operation_fences"])
+    fence = dict(registry[operation_id])
+    fence.pop("contract_version", None)
+    fence.pop("contract_signature", None)
+    registry[operation_id] = fence
+    data["operation_fences"] = registry
+    return replace(aggregate, data=data)
+
+
 def _active_reply_completion(
     aggregate: AgentSessionAggregate,
     *,
@@ -105,7 +155,7 @@ def _active_reply_completion(
 ) -> SessionEventEnvelope:
     operation_id = aggregate.active_reply_operation_id
     fence = aggregate.data["operation_fences"][operation_id]
-    contract = builtin_effect_contract("run_active_reply_workflow")
+    contract = _persisted_effect_contract("run_active_reply_workflow", fence)
     wire_intents = [
         {
             "proposal_id": item["tool_call_id"],
@@ -233,7 +283,7 @@ def _review_completion(
 ) -> SessionEventEnvelope:
     operation_id = aggregate.review_operation_id
     fence = aggregate.data["operation_fences"][operation_id]
-    contract = builtin_effect_contract("run_review_workflow")
+    contract = _persisted_effect_contract("run_review_workflow", fence)
     wire_intents = [
         {
             "proposal_id": item["tool_call_id"],
@@ -296,26 +346,42 @@ def _review_completion(
     )
 
 
-def _review_due_event(*, event_id: str = "review-due-a") -> SessionEventEnvelope:
+def _review_due_event(
+    *,
+    key: SessionKey = _KEY,
+    plan_id: str = "review-plan-a",
+    plan_revision: int = 1,
+    delivery_cycle: int = 0,
+) -> SessionEventEnvelope:
+    event_id = review_due_event_id(
+        key=key,
+        plan_id=plan_id,
+        plan_revision=plan_revision,
+        ownership_generation=1,
+        delivery_cycle=delivery_cycle,
+    )
+    payload: dict[str, object] = {
+        "version": 1 if delivery_cycle == 0 else 2,
+        "event_id": event_id,
+        "session_key": {
+            "profile_id": key.profile_id,
+            "session_id": key.session_id,
+        },
+        "plan_id": plan_id,
+        "plan_revision": plan_revision,
+        "ownership_generation": 1,
+        "attempt_count": 0,
+    }
+    if delivery_cycle > 0:
+        payload["delivery_cycle"] = delivery_cycle
     return SessionEventEnvelope(
         event_id=event_id,
-        key=_KEY,
+        key=key,
         kind=AgentSessionEventKind.REVIEW_DUE,
         ownership_generation=1,
-        source="review_due_scanner",
+        source=REVIEW_DUE_EVENT_SOURCE,
         occurred_at=100.0,
-        payload={
-            "version": 1,
-            "event_id": event_id,
-            "session_key": {
-                "profile_id": _KEY.profile_id,
-                "session_id": _KEY.session_id,
-            },
-            "plan_id": "review-plan-a",
-            "plan_revision": 1,
-            "ownership_generation": 1,
-            "attempt_count": 0,
-        },
+        payload=payload,
     )
 
 
@@ -405,7 +471,7 @@ def _workflow_effect_failure(
     failure_message: str = "workflow retries exhausted",
 ) -> SessionEventEnvelope:
     fence = aggregate.data["operation_fences"][operation_id]
-    contract = builtin_effect_contract(str(fence["effect_kind"]))
+    contract = _persisted_effect_contract(str(fence["effect_kind"]), fence)
     return SessionEventEnvelope(
         event_id=event_id or str(fence["failure_event_id"]),
         key=_KEY,
@@ -543,6 +609,71 @@ def _idle_with_plan(*, pending_priority: bool) -> AgentSessionAggregate:
         data=data,
         updated_at=50.0,
     )
+
+
+@pytest.mark.parametrize("effect_kind", ["run_active_reply_workflow", "run_review_workflow"])
+@pytest.mark.parametrize("failed", [False, True])
+def test_legacy_workflow_fence_without_snapshot_accepts_only_v1(
+    effect_kind: str,
+    failed: bool,
+) -> None:
+    if effect_kind == "run_active_reply_workflow":
+        reducer, aggregate = _started_active_reply()
+        operation_id = aggregate.active_reply_operation_id
+        aggregate = _without_operation_contract_snapshot(aggregate, operation_id)
+        completion = _active_reply_completion(
+            aggregate,
+            consumed_ids=[10],
+            sequence=1,
+        )
+        stale_disposition = (
+            "active_reply_effect_failure_stale"
+            if failed
+            else "active_reply_completion_stale"
+        )
+    else:
+        reducer, aggregate = _started_review()
+        operation_id = aggregate.review_operation_id
+        completion = _review_completion(
+            aggregate,
+            enter_active_chat=False,
+            consumed_ids=[10, 20],
+            next_review_outcome={
+                "kind": "planned",
+                "requested_delay_seconds": 42.0,
+                "reason": "legacy review complete",
+            },
+        )
+        stale_disposition = (
+            "review_effect_failure_stale"
+            if failed
+            else "review_completion_stale"
+        )
+    legacy_event = (
+        _workflow_effect_failure(aggregate, operation_id=operation_id)
+        if failed
+        else completion
+    )
+    legacy_contract = builtin_effect_contract(effect_kind, version=1)
+    assert legacy_event.payload["contract_version"] == legacy_contract.version
+    assert legacy_event.payload["contract_signature"] == legacy_contract.signature
+    current_contract = builtin_effect_contract(effect_kind)
+    current_event = replace(
+        legacy_event,
+        payload={
+            **legacy_event.payload,
+            "contract_version": current_contract.version,
+            "contract_signature": current_contract.signature,
+        },
+    )
+
+    accepted = reducer.reduce(aggregate, legacy_event)
+    rejected = reducer.reduce(aggregate, current_event)
+
+    assert accepted.disposition != stale_disposition
+    assert rejected.disposition == stale_disposition
+    assert "contract_version_changed" in rejected.reason
+    assert "contract_signature_changed" in rejected.reason
 
 
 def test_active_reply_completion_consumes_snapshot_and_materializes_intent() -> None:
@@ -708,6 +839,143 @@ def test_active_reply_completion_with_wrong_ledger_sequence_is_stale() -> None:
     assert transition.effects == ()
     assert transition.operations == ()
     assert transition.message_ledger_mutations == ()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value", "expected_mismatch"),
+    (
+        ("contract_version", "2", "contract_version_changed"),
+        ("contract_version", 2.9, "contract_version_changed"),
+        ("contract_version", True, "contract_version_changed"),
+        ("active_epoch", "0", "active_epoch_changed"),
+        ("active_epoch", 0.9, "active_epoch_changed"),
+        ("activity_generation", False, "activity_generation_changed"),
+        ("input_watermark", "10", "input_watermark_changed"),
+        ("input_watermark", 10.9, "input_watermark_changed"),
+        ("input_ledger_sequence", "1", "input_ledger_sequence_changed"),
+        ("input_ledger_sequence", 1.9, "input_ledger_sequence_changed"),
+        ("attempt_count", "1", "attempt_count_invalid"),
+        ("attempt_count", 1.9, "attempt_count_invalid"),
+    ),
+)
+def test_workflow_completion_integer_fences_reject_type_confusion(
+    field_name: str,
+    malformed_value: object,
+    expected_mismatch: str,
+) -> None:
+    reducer, started = _started_active_reply()
+    completion = _active_reply_completion(
+        started,
+        consumed_ids=[10],
+        sequence=1,
+    )
+    completion = replace(
+        completion,
+        payload={**completion.payload, field_name: malformed_value},
+    )
+
+    transition = reducer.reduce(started, completion)
+
+    assert transition.disposition == "active_reply_completion_stale"
+    assert expected_mismatch in transition.reason
+    assert transition.aggregate.state == AgentSessionState.ACTIVE_REPLY
+    assert transition.aggregate.active_reply_operation_id == started.active_reply_operation_id
+    assert transition.effects == ()
+    assert transition.operations == ()
+    assert transition.message_ledger_mutations == ()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "effect_id",
+        "effect_kind",
+        "idempotency_key",
+        "operation_id",
+        "plan_id",
+        "contract_signature",
+    ],
+)
+def test_workflow_completion_text_fences_reject_whitespace_aliases(
+    field_name: str,
+) -> None:
+    reducer, started = _started_active_reply()
+    completion = _active_reply_completion(
+        started,
+        consumed_ids=[10],
+        sequence=1,
+    )
+    canonical_value = completion.payload[field_name]
+    assert isinstance(canonical_value, str)
+    completion = replace(
+        completion,
+        payload={
+            **completion.payload,
+            field_name: f" {canonical_value} ",
+        },
+    )
+
+    transition = reducer.reduce(started, completion)
+
+    assert transition.disposition == "active_reply_completion_stale"
+    assert f"{field_name}_changed" in transition.reason
+    assert transition.aggregate.active_reply_operation_id == (
+        started.active_reply_operation_id
+    )
+    assert transition.effects == ()
+    assert transition.operations == ()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value", "supplied_value", "expected_mismatch"),
+    (
+        ("active_epoch", "0", 0, "expected_active_epoch_invalid"),
+        (
+            "activity_generation",
+            0.0,
+            0,
+            "expected_activity_generation_invalid",
+        ),
+        (
+            "ownership_generation",
+            True,
+            None,
+            "expected_ownership_generation_invalid",
+        ),
+        ("effect_id", 1, "1", "expected_effect_id_invalid"),
+    ),
+)
+def test_workflow_completion_rejects_malformed_persisted_authority(
+    field_name: str,
+    malformed_value: object,
+    supplied_value: object,
+    expected_mismatch: str,
+) -> None:
+    reducer, started = _started_active_reply()
+    completion = _active_reply_completion(
+        started,
+        consumed_ids=[10],
+        sequence=1,
+    )
+    operation_id = started.active_reply_operation_id
+    malformed = _replace_operation_fence(
+        started,
+        operation_id,
+        {field_name: malformed_value},
+    )
+    if supplied_value is not None:
+        completion = replace(
+            completion,
+            payload={**completion.payload, field_name: supplied_value},
+        )
+
+    transition = reducer.reduce(malformed, completion)
+
+    assert transition.disposition == "active_reply_completion_stale"
+    assert expected_mismatch in transition.reason
+    assert transition.aggregate.active_reply_operation_id == operation_id
+    assert transition.effects == ()
+    assert transition.operations == ()
 
 
 def test_invalid_active_reply_intent_fails_closed_without_consumption() -> None:
@@ -908,6 +1176,128 @@ def test_review_interruption_releases_active_reply_only_after_cancellation() -> 
     ]
 
 
+def test_legacy_held_active_reply_is_atomically_upgraded_when_released() -> None:
+    reducer, waiting = _interrupted_review_waiting_for_cancellation()
+    operation_id = waiting.active_reply_operation_id
+    waiting = _stamp_operation_sequence(waiting, operation_id, 3)
+    data = dict(waiting.data)
+    fences = dict(data["operation_fences"])
+    legacy_fence = dict(fences[operation_id])
+    legacy_fence.pop("contract_version")
+    legacy_fence.pop("contract_signature")
+    fences[operation_id] = legacy_fence
+    data["operation_fences"] = fences
+    waiting = replace(waiting, data=data)
+
+    released = reducer.reduce(
+        waiting,
+        _review_cancellation_completion(waiting),
+    )
+
+    contract = builtin_effect_contract("run_active_reply_workflow")
+    assert released.effects[0].contract_version == contract.version
+    assert released.effects[0].contract_signature == contract.signature
+    upgraded_fence = released.aggregate.data["operation_fences"][operation_id]
+    assert upgraded_fence["contract_version"] == contract.version
+    assert upgraded_fence["contract_signature"] == contract.signature
+
+    completed = reducer.reduce(
+        released.aggregate,
+        _active_reply_completion(
+            released.aggregate,
+            consumed_ids=[21],
+            sequence=3,
+        ),
+    )
+    assert completed.disposition == "active_reply_completed_review_resumed"
+
+
+def test_explicit_v1_held_active_reply_keeps_its_contract_when_released() -> None:
+    reducer, waiting = _interrupted_review_waiting_for_cancellation()
+    operation_id = waiting.active_reply_operation_id
+    waiting = _stamp_operation_sequence(waiting, operation_id, 3)
+    data = dict(waiting.data)
+    fences = dict(data["operation_fences"])
+    legacy_fence = dict(fences[operation_id])
+    legacy_contract = builtin_effect_contract(
+        "run_active_reply_workflow",
+        version=1,
+    )
+    legacy_fence.update(
+        {
+            "contract_version": legacy_contract.version,
+            "contract_signature": legacy_contract.signature,
+        }
+    )
+    fences[operation_id] = legacy_fence
+    data["operation_fences"] = fences
+    waiting = replace(waiting, data=data)
+
+    released = reducer.reduce(
+        waiting,
+        _review_cancellation_completion(waiting),
+    )
+
+    assert released.disposition == (
+        "review_cancellation_completed_active_reply_released"
+    )
+    assert released.effects[0].contract_version == legacy_contract.version
+    assert released.effects[0].contract_signature == legacy_contract.signature
+    released_fence = released.aggregate.data["operation_fences"][operation_id]
+    assert released_fence["contract_version"] == legacy_contract.version
+    assert released_fence["contract_signature"] == legacy_contract.signature
+
+    completed = reducer.reduce(
+        released.aggregate,
+        _active_reply_completion(
+            released.aggregate,
+            consumed_ids=[21],
+            sequence=3,
+        ),
+    )
+    assert completed.disposition == "active_reply_completed_review_resumed"
+
+
+@pytest.mark.parametrize(
+    ("contract_version", "contract_signature", "expected_mismatch"),
+    (
+        (1, None, "contract_snapshot_incomplete"),
+        (99, "unknown", "contract_version_unknown"),
+        (1, "changed", "contract_signature_changed"),
+    ),
+)
+def test_held_active_reply_rejects_invalid_persisted_contract_snapshot(
+    contract_version: int,
+    contract_signature: str | None,
+    expected_mismatch: str,
+) -> None:
+    reducer, waiting = _interrupted_review_waiting_for_cancellation()
+    operation_id = waiting.active_reply_operation_id
+    waiting = _stamp_operation_sequence(waiting, operation_id, 3)
+    data = dict(waiting.data)
+    fences = dict(data["operation_fences"])
+    invalid_fence = dict(fences[operation_id])
+    invalid_fence["contract_version"] = contract_version
+    if contract_signature is None:
+        invalid_fence.pop("contract_signature", None)
+    else:
+        invalid_fence["contract_signature"] = contract_signature
+    fences[operation_id] = invalid_fence
+    data["operation_fences"] = fences
+    waiting = replace(waiting, data=data)
+
+    blocked = reducer.reduce(
+        waiting,
+        _review_cancellation_completion(waiting),
+    )
+
+    assert blocked.disposition == (
+        "review_cancellation_completed_active_reply_blocked"
+    )
+    assert blocked.effects == ()
+    assert expected_mismatch in blocked.result["failure"]["failure_message"]
+
+
 def test_review_cancellation_completion_requires_exact_provenance() -> None:
     reducer, waiting = _interrupted_review_waiting_for_cancellation()
     waiting = _stamp_operation_sequence(
@@ -989,7 +1379,7 @@ def test_review_cancellation_effect_failure_blocks_reply_and_reschedules_review(
     assert recorded.aggregate.data["pending_high_priority_message_log_ids"] == [21, 22]
 
     retry_due = replace(
-        _review_due_event(event_id="review-due-retry"),
+        _review_due_event(delivery_cycle=1),
         occurred_at=250.0,
     )
     resumed_review = reducer.reduce(recorded.aggregate, retry_due)
@@ -1085,6 +1475,174 @@ def test_external_action_success_starts_bootstrap_after_exact_receipt() -> None:
     assert [effect.kind for effect in released.effects] == [
         "run_active_chat_bootstrap"
     ]
+
+
+def test_legacy_pending_external_action_without_snapshot_accepts_only_v1() -> None:
+    reducer, started = _started_review()
+    waiting = reducer.reduce(
+        started,
+        _review_completion(
+            started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "review-tool-a",
+                    "action_ordinal": 0,
+                    "payload": {"text": "review reply"},
+                }
+            ],
+        ),
+    )
+    action = next(effect for effect in waiting.effects if effect.kind == "send_reply")
+    data = dict(waiting.aggregate.data)
+    pending = dict(data["pending_outbound_actions"])
+    entry = dict(pending[action.effect_id])
+    entry.pop("contract_version")
+    entry.pop("contract_signature")
+    pending[action.effect_id] = entry
+    data["pending_outbound_actions"] = pending
+    legacy_aggregate = replace(waiting.aggregate, data=data)
+    current_event = _external_action_completion(
+        legacy_aggregate,
+        action,
+        receipt_status=ExternalActionReceiptStatus.SUCCEEDED,
+    )
+    legacy_contract = builtin_external_action_effect_contract(
+        action.kind,
+        version=1,
+    )
+    legacy_event = replace(
+        current_event,
+        payload={
+            **current_event.payload,
+            "contract_version": legacy_contract.version,
+            "contract_signature": legacy_contract.signature,
+        },
+    )
+
+    accepted = reducer.reduce(legacy_aggregate, legacy_event)
+    rejected = reducer.reduce(legacy_aggregate, current_event)
+
+    assert accepted.disposition == "external_actions_completed_bootstrap_started"
+    assert "pending_outbound_actions" not in accepted.aggregate.data
+    assert rejected.disposition == "external_action_completion_stale"
+    assert "contract_version_changed" in rejected.reason
+    assert "contract_signature_changed" in rejected.reason
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_mismatch"),
+    (
+        ("effect_id", "pending_external_action_missing"),
+        ("effect_kind", "effect_kind_changed"),
+        ("idempotency_key", "idempotency_key_changed"),
+        ("operation_id", "operation_id_changed"),
+        ("request_digest", "request_digest_changed"),
+        ("contract_signature", "contract_signature_changed"),
+        ("receipt_status", "receipt_status_invalid"),
+    ),
+)
+def test_external_action_completion_text_fences_reject_whitespace_aliases(
+    field_name: str,
+    expected_mismatch: str,
+) -> None:
+    reducer, started = _started_review()
+    waiting = reducer.reduce(
+        started,
+        _review_completion(
+            started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "review-tool-exact-text",
+                    "action_ordinal": 0,
+                    "payload": {"text": "review reply"},
+                }
+            ],
+        ),
+    )
+    action = next(effect for effect in waiting.effects if effect.kind == "send_reply")
+    completion = _external_action_completion(
+        waiting.aggregate,
+        action,
+        receipt_status=ExternalActionReceiptStatus.SUCCEEDED,
+    )
+    canonical_value = completion.payload[field_name]
+    assert isinstance(canonical_value, str)
+    completion = replace(
+        completion,
+        payload={
+            **completion.payload,
+            field_name: f" {canonical_value} ",
+        },
+    )
+
+    transition = reducer.reduce(waiting.aggregate, completion)
+
+    assert transition.disposition == "external_action_completion_stale"
+    assert expected_mismatch in transition.reason
+    assert transition.effects == ()
+    pending = transition.aggregate.data["pending_outbound_actions"]
+    assert pending[action.effect_id]["status"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "malformed_digest",
+    [int("1" * 64), 1.0, True],
+)
+def test_external_action_completion_rejects_malformed_persisted_text_authority(
+    malformed_digest: object,
+) -> None:
+    reducer, started = _started_review()
+    waiting = reducer.reduce(
+        started,
+        _review_completion(
+            started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "review-tool-malformed-authority",
+                    "action_ordinal": 0,
+                    "payload": {"text": "review reply"},
+                }
+            ],
+        ),
+    )
+    action = next(effect for effect in waiting.effects if effect.kind == "send_reply")
+    data = dict(waiting.aggregate.data)
+    pending = dict(data["pending_outbound_actions"])
+    entry = dict(pending[action.effect_id])
+    entry["request_digest"] = malformed_digest
+    pending[action.effect_id] = entry
+    data["pending_outbound_actions"] = pending
+    malformed = replace(waiting.aggregate, data=data)
+    completion = _external_action_completion(
+        malformed,
+        action,
+        receipt_status=ExternalActionReceiptStatus.SUCCEEDED,
+    )
+    completion = replace(
+        completion,
+        payload={
+            **completion.payload,
+            "request_digest": str(malformed_digest),
+        },
+    )
+
+    transition = reducer.reduce(malformed, completion)
+
+    assert transition.disposition == "external_action_completion_stale"
+    assert "pending_external_actions_invalid" in transition.reason
+    assert transition.effects == ()
+    assert transition.aggregate.data["pending_outbound_actions"][action.effect_id][
+        "status"
+    ] == "pending"
 
 
 def test_external_action_unknown_blocks_bootstrap_without_automatic_release() -> None:
@@ -1296,6 +1854,10 @@ def test_review_completion_returns_idle_with_typed_next_schedule() -> None:
             "requested_delay_seconds": 42.0,
             "reason": "review complete",
         },
+        extra_payload={
+            "model_execution_id": "model-execution-review-a",
+            "prompt_signature": "prompt-signature-review-a",
+        },
     )
 
     transition = reducer.reduce(started, completion)
@@ -1305,8 +1867,40 @@ def test_review_completion_returns_idle_with_typed_next_schedule() -> None:
     assert transition.aggregate.current_plan_id != "review-plan-a"
     assert transition.aggregate.review_plan_revision == 2
     assert transition.review_schedules[0].applied_delay_seconds == 42.0
+    assert transition.review_schedules[0].model_execution_id == (
+        "model-execution-review-a"
+    )
+    assert transition.review_schedules[0].prompt_signature == (
+        "prompt-signature-review-a"
+    )
     assert transition.review_schedules[0].status.value == "scheduled"
     assert transition.review_schedule_events[0].previous_plan_id == "review-plan-a"
+
+
+def test_bypassed_review_schedule_preserves_model_provenance() -> None:
+    reducer, started = _started_review()
+    completion = _review_completion(
+        started,
+        enter_active_chat=False,
+        consumed_ids=[10, 20],
+        next_review_outcome={
+            "kind": "bypassed",
+            "applied_delay_seconds": 30.0,
+            "reason": "trusted bypass",
+            "fallback_reason": "review_policy_bypass",
+        },
+        extra_payload={
+            "model_execution_id": "model-execution-bypass",
+            "prompt_signature": "prompt-signature-bypass",
+        },
+    )
+
+    transition = reducer.reduce(started, completion)
+
+    schedule = transition.review_schedules[0]
+    assert schedule.outcome == "bypassed"
+    assert schedule.model_execution_id == "model-execution-bypass"
+    assert schedule.prompt_signature == "prompt-signature-bypass"
 
 
 def test_review_effect_failure_terminalizes_with_default_fallback_schedule() -> None:
@@ -1359,17 +1953,9 @@ def test_review_due_defers_while_prior_visible_action_is_unsettled() -> None:
             },
         ),
     )
-    payload = dict(_review_due_event(event_id="review-due-outbound").payload)
-    payload.update(
-        {
-            "event_id": "review-due-outbound",
-            "plan_id": waiting.aggregate.current_plan_id,
-            "plan_revision": waiting.aggregate.review_plan_revision,
-        }
-    )
-    due = replace(
-        _review_due_event(event_id="review-due-outbound"),
-        payload=payload,
+    due = _review_due_event(
+        plan_id=waiting.aggregate.current_plan_id,
+        plan_revision=waiting.aggregate.review_plan_revision,
     )
 
     deferred = reducer.reduce(waiting.aggregate, due)
@@ -1450,3 +2036,109 @@ def test_review_due_without_priority_starts_single_review() -> None:
     assert len(transition.operations) == 1
     assert transition.operations[0].kind == "review"
     assert len(transition.effects) == 1
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value", "expected_mismatch"),
+    (
+        ("ownership_generation", "1", "ownership_generation_changed"),
+        ("ownership_generation", 1.0, "ownership_generation_changed"),
+        ("ownership_generation", True, "ownership_generation_changed"),
+        ("plan_revision", "1", "plan_revision_missing"),
+        ("plan_revision", 1.0, "plan_revision_missing"),
+        ("plan_revision", True, "plan_revision_missing"),
+    ),
+)
+def test_review_due_integer_fences_reject_type_confusion(
+    field_name: str,
+    malformed_value: object,
+    expected_mismatch: str,
+) -> None:
+    aggregate = _idle_with_plan(pending_priority=False)
+    event = _review_due_event()
+    event = replace(
+        event,
+        payload={**event.payload, field_name: malformed_value},
+    )
+
+    transition = AgentSessionReducer().reduce(aggregate, event)
+
+    assert transition.disposition == "review_due_superseded"
+    assert expected_mismatch in transition.reason
+    assert transition.aggregate.state == AgentSessionState.IDLE
+    assert transition.effects == ()
+    assert transition.operations == ()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["event_id", "profile_id", "session_id", "plan_id"],
+)
+def test_review_due_text_identity_rejects_whitespace_aliases(
+    field_name: str,
+) -> None:
+    aggregate = _idle_with_plan(pending_priority=False)
+    event = _review_due_event()
+    payload = dict(event.payload)
+    if field_name in {"profile_id", "session_id"}:
+        session_key = dict(payload["session_key"])
+        canonical_value = session_key[field_name]
+        assert isinstance(canonical_value, str)
+        session_key[field_name] = f" {canonical_value} "
+        payload["session_key"] = session_key
+    else:
+        canonical_value = payload[field_name]
+        assert isinstance(canonical_value, str)
+        payload[field_name] = f" {canonical_value} "
+    event = replace(event, payload=payload)
+
+    transition = AgentSessionReducer().reduce(aggregate, event)
+
+    assert transition.disposition == "review_due_superseded"
+    assert f"{field_name}_changed" in transition.reason
+    assert transition.aggregate.state == AgentSessionState.IDLE
+    assert transition.effects == ()
+    assert transition.operations == ()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_mismatch"),
+    (
+        ("profile_id", "profile_id_changed"),
+        ("session_id", "session_id_changed"),
+        ("plan_id", "plan_id_missing"),
+    ),
+)
+def test_review_due_identity_rejects_numeric_text_aliases(
+    field_name: str,
+    expected_mismatch: str,
+) -> None:
+    key = SessionKey("1", "2")
+    plan_id = "3"
+    base = _idle_with_plan(pending_priority=False)
+    aggregate = replace(
+        base,
+        key=key,
+        current_plan_id=plan_id,
+        review_plan={
+            **base.review_plan,
+            "plan_id": plan_id,
+        },
+    )
+    event = _review_due_event(key=key, plan_id=plan_id)
+    payload = dict(event.payload)
+    if field_name in {"profile_id", "session_id"}:
+        session_key = dict(payload["session_key"])
+        session_key[field_name] = int(session_key[field_name])
+        payload["session_key"] = session_key
+    else:
+        payload[field_name] = int(plan_id)
+    event = replace(event, payload=payload)
+
+    transition = AgentSessionReducer().reduce(aggregate, event)
+
+    assert transition.disposition == "review_due_superseded"
+    assert expected_mismatch in transition.reason
+    assert transition.aggregate.state == AgentSessionState.IDLE
+    assert transition.effects == ()
+    assert transition.operations == ()

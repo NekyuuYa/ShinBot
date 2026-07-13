@@ -12,12 +12,15 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     ClaimedEffect,
     DurableEffectEnvelope,
     EffectExecutionContext,
+    EffectHandlerRegistry,
 )
 from shinbot.agent.runtime.session_actor.external_action_handler import (
     ExternalActionDispatchResult,
     ExternalActionEffectHandler,
     ExternalActionPreDispatchRejected,
     ExternalActionRetryRequired,
+    external_action_request_from_effect,
+    register_external_action_effect_handlers,
 )
 from shinbot.agent.runtime.session_actor.external_action_store import (
     ClaimedExternalAction,
@@ -30,7 +33,8 @@ from shinbot.agent.runtime.session_actor.external_actions import (
     ExternalActionKind,
     ExternalActionReceiptStatus,
     ExternalActionRequest,
-    materialize_external_action_effect,
+    builtin_external_action_effect_contract,
+    builtin_external_action_effect_contracts,
 )
 from shinbot.core.dispatch.agent_identity import SessionKey
 
@@ -163,24 +167,19 @@ def _request(*, action_ordinal: int = 0) -> ExternalActionRequest:
 
 
 def _context(request: ExternalActionRequest) -> EffectExecutionContext:
-    effect = materialize_external_action_effect(
-        key=request.key,
-        ownership_generation=request.ownership_generation,
-        operation_id=request.operation_id,
-        source_event_id=request.source_event_id,
-        instance_id=request.instance_id,
-        target_session_id=request.target_session_id,
-        intent=request.intent,
+    contract = builtin_external_action_effect_contract(
+        request.intent.kind,
+        version=request.contract_version,
     )
     envelope = DurableEffectEnvelope(
-        effect_id=effect.effect_id,
+        effect_id=request.effect_id,
         key=request.key,
-        kind=effect.kind,
-        idempotency_key=effect.idempotency_key,
+        kind=request.intent.kind.value,
+        idempotency_key=request.idempotency_key,
         ownership_generation=request.ownership_generation,
-        contract_version=effect.contract_version,
-        contract_signature=effect.contract_signature,
-        payload=dict(effect.payload),
+        contract_version=contract.version,
+        contract_signature=contract.signature,
+        payload=request.to_effect_payload(),
         source_event_id=request.source_event_id,
         operation_id=request.operation_id,
     )
@@ -193,6 +192,37 @@ def _context(request: ExternalActionRequest) -> EffectExecutionContext:
         lease_expires_at=20.0,
     )
     return EffectExecutionContext(_EffectStore(), claim)
+
+
+def test_external_action_handler_registry_covers_v1_and_v2() -> None:
+    request = _request()
+    receipts = _Receipts(_claimed_action(request), request)
+    dispatcher = _Dispatcher(
+        ExternalActionDispatchResult(platform_result={"message_id": "message-a"})
+    )
+    registry = EffectHandlerRegistry()
+
+    handler = register_external_action_effect_handlers(
+        registry,
+        receipts=receipts,
+        dispatcher=dispatcher,
+    )
+
+    for contract in builtin_external_action_effect_contracts():
+        resolved_contract, resolved_handler = registry.resolve(
+            contract.effect_kind,
+            contract.version,
+        )
+        assert resolved_contract is contract
+        assert resolved_handler is handler
+
+
+def test_external_action_handler_decodes_persisted_v1_contract() -> None:
+    request = replace(_request(), contract_version=1)
+
+    decoded = external_action_request_from_effect(_context(request))
+
+    assert decoded == request
 
 
 def _receipt(

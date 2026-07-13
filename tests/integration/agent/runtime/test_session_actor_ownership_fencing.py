@@ -210,11 +210,17 @@ def _completion(effect: DurableEffectEnvelope) -> SessionEventEnvelope:
         ownership_generation=effect.ownership_generation,
         payload={
             "effect_id": effect.effect_id,
+            "effect_kind": effect.kind,
+            "idempotency_key": effect.idempotency_key,
+            "operation_id": effect.operation_id,
+            "attempt_count": 1,
             "contract_version": effect.contract_version,
             "contract_signature": effect.contract_signature,
         },
         source="effect_executor",
         causation_id=effect.source_event_id,
+        correlation_id=effect.operation_id or effect.effect_id,
+        trace_id=effect.trace_id,
     )
 
 

@@ -105,7 +105,7 @@ def _request(
     action_ordinal: int = 0,
     payload: dict[str, object] | None = None,
     ownership_generation: int = 1,
-    contract_version: int = 1,
+    contract_version: int = 2,
     source_event_id: str = "round-completed-7",
 ) -> ExternalActionRequest:
     return ExternalActionRequest(
@@ -484,7 +484,7 @@ async def test_same_logical_key_rejects_changed_exact_request(
         available_at=now[0],
     )
     if change == "version":
-        changed = replace(request, contract_version=2)
+        changed = replace(request, contract_version=1)
     elif change == "payload":
         changed = _request(key, payload={"text": "changed"})
     else:

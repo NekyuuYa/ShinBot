@@ -38,12 +38,14 @@ rather than a reducer branch, and pause/force-idle events described by the
 target contract have not yet been added to that enum.  They are activation
 work, not a production capability.
 
-`SQLiteSessionActorStore` already creates durable `RecoveryRequested` mailbox
-events for orphaned non-idle aggregates.  `RecoveryRequested` is not yet an
-`AgentSessionEventKind` or a reducer branch, so the current reducer records it
-as unsupported instead of rebuilding or settling the aggregate.  Durable
-recovery is therefore an explicit activation blocker, not a completed v2
-feature.
+`SQLiteSessionActorStore` already creates legacy heuristic `RecoveryRequested`
+mailbox events for orphaned non-idle aggregates. Those rows use source
+`session_actor_recovery`; they do not contain a recovery certificate and cannot
+authorize the target protocol. `RecoveryRequested` is not yet an
+`AgentSessionEventKind` or a reducer branch, so the current reducer records the
+legacy event as unsupported instead of rebuilding or settling the aggregate.
+Durable recovery is therefore an explicit activation blocker, not a completed
+v2 feature.
 
 ## Problem
 
@@ -415,36 +417,33 @@ state/plan/epoch/watermark fences, and retry cycle.  It is the authoritative
 answer to "what must this timer/cancellation request still be allowed to do?"
 after a restart.
 
-The migrated active-reply, review, bootstrap, and active-chat-round operation
-fences, plus the three control intents below, snapshot both
-`contract_version` and `contract_signature`.  The outbox effect carries the
-same identity.  A completion or `EffectFailed` validates against that persisted
-snapshot, not against whichever contract happens to be registered when the
-event is handled.  This prevents a deploy that changes a contract from turning
-an old completion into a valid completion for a different policy.
+Every actor-owned workflow operation fence and control intent snapshots both
+`contract_version` and `contract_signature`.  Idle planning persists separate
+planner and deadline snapshots because those effects share one operation but
+have different contracts. Reconciliation persists its own snapshot instead of
+reusing the failed control effect's identity, and its operation fence carries
+the same authoritative input boundary as the effect. The outbox effect carries
+the matching identity. A completion or `EffectFailed` validates against that
+persisted snapshot, not against whichever contract happens to be current when
+the event is handled.
 
-The currently versioned control contracts are
-`cancel_review_workflow`, `enqueue_active_chat_exit_request`, and
-`enqueue_active_chat_round_due`.  Their current v2 contracts explicitly
-declare the outcome fields that the executor may project into a mailbox result.
-This declaration is part of the signed policy.  In the normal executor path,
+Every actor-owned effect has a current v2 contract with an explicit outcome
+field declaration signed into the policy. In the normal executor path,
 handlers provide domain output; they do not choose the fence projection or
-reinterpret the contract.  The lower-level store interface retains an optional
+reinterpret the contract. The lower-level store interface retains an optional
 outcome-field argument only as a compatibility assertion: it resolves the
 projection from sealed contract authority and rejects a caller value that
-differs.
-
-Idle-planner/deadline, other control-intent, and reconciliation writers must
-receive the same snapshot audit before Actor v2 can own production traffic.
+differs. Workflow handlers remain registered for both v1 and v2 so an upgrade
+can drain historical outbox work before producing only current v2 effects.
 
 ### Legacy V1 Recovery Policy
 
 Legacy v1 effect records retain their historical signatures and outcome shape.
-For the three control effects above, the executor supplies a compatibility
-projection containing the historical fences that the reducer needs to validate
-their completion or terminal failure.  This preserves recovery of work written
-before v2 outcome-field declarations without changing its persisted v1
-signature.
+The three effects that already had stricter compatibility projections retain
+those projections byte-for-byte; adding v2 declarations for the remaining
+effects does not expand their v1 projections. This preserves recovery of work
+written before v2 outcome-field declarations without changing persisted v1
+behavior or signatures.
 
 An aggregate or intent written before contract snapshots existed is always
 validated as v1.  An inbound completion must never select a newer contract on
@@ -676,6 +675,35 @@ audit purposes, but every delivery for the same
 rule-specific delivery ids. Conflicting projections of the same message fail
 closed instead of causing a second state transition.
 
+The first `eligible_for_work` `MessageReceived` handled by a virgin `IDLE`
+aggregate creates review-plan revision 1 in that same actor transition. The
+outcome is an explicit `Defaulted` policy decision: its relative delay and
+reason come from the profile's actor reducer configuration, while the store
+anchors `scheduled_from` and `next_review_at` to the transaction commit clock.
+The message-ledger append, aggregate plan fence, current schedule, schedule
+journal, state-transition journal, and mailbox completion therefore have no
+crash gap. A high-priority first message binds its active-reply operation to
+this plan before emitting the workflow effect. Suppressed input remains
+auditable in the ledger but does not create a plan; a later first actionable
+message still creates revision 1.
+
+Any transition that advances `current_plan_id` and `review_plan_revision` must
+carry exactly one matching `SessionReviewSchedule`. The actor validates this
+before commit and the SQLite store repeats the check inside its write
+transaction, so alternate handlers cannot persist an orphan aggregate plan.
+The payload of an existing current plan is canonical and immutable: a
+transition that keeps the same plan id and revision may not rewrite any plan
+field. For a new plan, the aggregate plan payload and its sole schedule are
+normalized and must agree on every semantic field, including plan identity,
+revision, policy outcome, trigger/source, requested and applied delay, reason
+and fallback, model/prompt evidence, epoch/activity fences, and committed state
+revision. The scheduled journal carries one exact `metadata.schedule_outcome`
+record; its field set is closed, its overlapping fields must match the journal,
+and its full decision semantics must match the schedule. `scheduled_from` and
+`next_review_at` are not caller authority; only the store may stamp them from
+the transaction commit clock, and the aggregate, schedule row, and schedule
+journal must all use that same committed timing.
+
 A routing worker separates decision from dispatch. It reconstructs context,
 runs the routing policy, and commits the route decision plus every Agent outbox
 row before invoking a command, plugin, or observer target. Recovery may repeat
@@ -777,10 +805,123 @@ stable cursor.
 
 ## Recovery
 
-The following is the target recovery contract.  The current store can enqueue
-the fenced `RecoveryRequested` event for a non-idle aggregate, but the reducer
-does not yet implement that event.  Do not activate Actor v2 ownership until
-that event deterministically rebuilds or settles every such aggregate.
+The following is the target recovery contract. The current store only enqueues
+the legacy `session_actor_recovery` heuristic described above. The certificate
+authority uses source `durable_session_recovery_scanner`; its graph scanner,
+emitter, commit-time revalidation, and reducer branch are not implemented yet.
+Do not activate Actor v2 ownership until the legacy rows have a fenced terminal
+disposition and the typed event deterministically rebuilds or settles every
+non-idle aggregate.
+
+### Recovery Certificates And Cases
+
+Recovery discovery produces a versioned, immutable certificate from one
+transactionally consistent authority graph. The certificate contains the exact
+profile/session/ownership subject, aggregate fence, normalized authority nodes
+and edges, policy invariants, and one exhaustive policy decision. Canonical JSON
+rejects floating-point values and uses sorted object keys and normalized
+set-like collections. Persisted input is decoded through a version registry;
+unknown versions, extra or missing fields, non-canonical ordering, and any
+work-graph, case, certificate, or mailbox identity mismatch fail closed.
+
+The v1 work-graph digest includes the semantic aggregate fence, graph, and
+decision, but excludes `event_sequence`. The complete certificate digest does
+include `event_sequence`. A mailbox failure may therefore produce a new
+certificate for the same semantic case, while a state revision, epoch,
+activity generation, plan fence, graph fact, invariant, or decision change
+produces a new case. The case id binds certificate version, profile-scoped
+subject, policy version, and work-graph digest. Its v1 form is:
+
+```text
+recovery-case:v1:<64 lowercase SHA-256 hex characters>
+```
+
+`agent_session_recovery_cases` is the delivery ledger for that semantic case.
+Identity columns are immutable. A new row may only be inserted when its
+ownership generation exactly matches the aggregate in that transaction. A
+later ownership generation does not delete the old case: historical rows must
+remain available to be marked `superseded`, but they cannot authorize work for
+the new owner.
+
+Fresh rows start in `open`, or in `scanner_blocked` with a non-empty diagnostic.
+They have zero delivery count/cycle, no last event, and identical creation and
+update times. Terminal or progressed rows can only be reached through updates.
+`INSERT OR REPLACE` is not an idempotency mechanism for this ledger: the insert
+guard rejects an existing case id or semantic identity before SQLite can delete
+the old row. Writers select and validate an existing row instead.
+
+Case status has the following bounded meaning:
+
+- `open`: current authority may still require a delivery or commit-time result;
+- `applied`: the fenced recovery decision committed successfully;
+- `superseded`: ownership or graph authority changed before application;
+- `delivery_exhausted`: bounded delivery policy reached its terminal limit;
+- `scanner_blocked`: discovery found malformed or conflicting durable
+  authority and recorded a durable operator-visible blocker.
+
+The status matrix is explicit. `open` may remain open or move to any other
+status. `scanner_blocked` may remain blocked, return to `open` after a successful
+scan of the same semantic graph, or move to a terminal status. `applied`,
+`superseded`, and `delivery_exhausted` are terminal: their certificate digest,
+status, delivery progress, last event/error, and update time are immutable.
+Status changes never rewrite the case identity or creation time.
+
+Delivery cycles start at zero. `next_delivery_cycle` and `delivery_count` are
+the same monotonic value and can advance by at most one in a transaction: before
+delivery both are zero; after committing cycle `N`, both are `N + 1`, and
+`last_event_id` is exactly:
+
+```text
+recovery-requested:v1:<case digest>:<N>
+```
+
+`created_at` never changes. `updated_at` never moves backwards, and any change
+to `latest_certificate_digest`, status, delivery progress, last event id, or
+last error must strictly advance it. Thus a case update has a durable ordering
+even when no delivery cycle is consumed. Repeated writes of identical authority
+may retain the same update time; they do not create a new logical transition.
+
+The ledger only accepts progress when every consumed cycle has a matching
+`RecoveryRequested` mailbox row. The mailbox envelope, deterministic event id,
+typed delivery schema/version, case/cycle, certificate identity, graph digest,
+policy, and subject must agree. The latest certificate digest remains tied to
+the last consumed delivery. A legacy event cannot satisfy this evidence check:
+typed deliveries use source `durable_session_recovery_scanner`, while the
+pre-certificate startup heuristic retains `session_actor_recovery` until it is
+retired at the activation gate.
+
+Once aggregate ownership advances, an older-generation case is history. It may
+be marked `superseded`, `delivery_exhausted`, or retain a blocker for audit, but
+it cannot consume another delivery, rewrite its certificate, reopen from
+`scanner_blocked`, or become `applied`.
+
+The scanner performs discovery and delivery under one `BEGIN IMMEDIATE`
+transaction. It reads the aggregate and every operation, effect, control
+intent, external-action receipt, and pending outbound authority needed by the
+work graph; constructs and verifies the certificate; inserts or validates the
+case; inserts the deterministic mailbox event; and compare-and-swaps the case
+digest, cycle, count, last event id, status, and update time. It commits before
+waking the registry. A failed mailbox insert or case CAS rolls back the entire
+delivery and cannot consume a cycle.
+
+The mailbox payload contains the complete certificate, case id, and delivery
+cycle. Its typed decoder also receives the mailbox envelope projection and
+verifies profile id, session id, ownership generation, event kind, event
+source, and the deterministic event id. Before applying `RecoveryRequested`,
+the reducer/store commit transaction must re-read the aggregate and all graph
+authority, reconstruct the current certificate under the persisted policy
+version, and verify the case is still `open` with the delivered certificate and
+cycle. It then commits either the normal fenced recovery transition plus
+`applied`, or no state transition plus `superseded`/a durable blocker. Comparing
+only aggregate state or trusting a previously decoded in-memory certificate is
+not commit-time revalidation.
+
+Schema initialization verifies the canonical recovery table and replaces all
+same-name recovery triggers. A weak legacy table is rebuilt under a savepoint:
+valid authority is copied without changing its SQLite storage classes or values;
+empty incomplete tables can be replaced; non-empty incomplete, coercible, or
+unjustified authority aborts initialization and leaves the original table and
+trigger definitions intact.
 
 At startup:
 
@@ -903,6 +1044,16 @@ following are true for that ownership mode:
   enter through the durable mailbox;
 - scheduler state, unread/high-priority inbox mutations, operations, schedules,
   journals, and outbox effects share one commit boundary;
+- the actor store, effect store/executor, and handler registry share the same
+  immutable `EffectContractAuthority` instance; stores cannot replace that
+  binding after construction, and its exact graph is revalidated across every
+  activation await and effect execution boundary;
+- actor and effect stores expose the same persistence-domain identity, and the
+  executor's post-settlement wake target is the exact registry owned by the
+  activation harness;
+- mailbox and schedule-journal logical-key columns have passed a canonical
+  storage-class audit, and the exact raw-key expressions used to reject SQLite
+  TEXT/BLOB/numeric aliases have matching indexes rather than table scans;
 - no coordinator retains a direct scheduler mutation callback;
 - model/workflow handlers cannot perform externally visible actions before an
   accepted mailbox completion creates a dedicated action effect;
