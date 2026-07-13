@@ -43,6 +43,11 @@ from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 from shinbot.persistence import DatabaseManager
 from shinbot.persistence.records import MessageLogRecord
 
+_MAILBOX_RAW_LOGICAL_KEY_INDEX = "idx_agent_session_mailbox_raw_logical_key"
+_SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX = (
+    "idx_agent_review_schedule_events_raw_logical_key"
+)
+
 
 @dataclass(slots=True)
 class _WakeTarget:
@@ -171,6 +176,110 @@ def _repository(
         clock=lambda: now[0],
         profile_id=profile_id,
     )
+
+
+def _assert_raw_logical_key_indexes(database: DatabaseManager) -> None:
+    """Assert the storage-aware ReviewDue preflights stay indexed."""
+
+    expected_sql = {
+        _MAILBOX_RAW_LOGICAL_KEY_INDEX: (
+            "CREATE INDEX idx_agent_session_mailbox_raw_logical_key "
+            "ON agent_session_mailbox("
+            "CAST(profile_id AS BLOB),"
+            "CAST(session_id AS BLOB),"
+            "CAST(event_id AS BLOB)"
+            ")"
+        ),
+        _SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX: (
+            "CREATE INDEX idx_agent_review_schedule_events_raw_logical_key "
+            "ON agent_review_schedule_events(CAST(schedule_event_id AS BLOB))"
+        ),
+    }
+    expected_tables = {
+        _MAILBOX_RAW_LOGICAL_KEY_INDEX: "agent_session_mailbox",
+        _SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX: "agent_review_schedule_events",
+    }
+    with database.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT name, tbl_name, sql
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (?, ?)
+            """,
+            (
+                _MAILBOX_RAW_LOGICAL_KEY_INDEX,
+                _SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX,
+            ),
+        ).fetchall()
+        actual = {str(row["name"]): row for row in rows}
+        mailbox_index_flags = {
+            str(row["name"]): int(row["unique"])
+            for row in conn.execute("PRAGMA index_list('agent_session_mailbox')")
+        }
+        schedule_event_index_flags = {
+            str(row["name"]): int(row["unique"])
+            for row in conn.execute(
+                "PRAGMA index_list('agent_review_schedule_events')"
+            )
+        }
+        mailbox_plan = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT * FROM agent_session_mailbox
+            WHERE CAST(profile_id AS BLOB) = ?
+              AND CAST(session_id AS BLOB) = ?
+              AND CAST(event_id AS BLOB) = ?
+            ORDER BY mailbox_id
+            """,
+            (b"profile-a", b"session-a", b"event-a"),
+        ).fetchall()
+        schedule_event_plan = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT * FROM agent_review_schedule_events
+            WHERE CAST(schedule_event_id AS BLOB) = ?
+            ORDER BY schedule_event_seq
+            """,
+            (b"schedule-event-a",),
+        ).fetchall()
+
+    assert set(actual) == set(expected_sql)
+    for index_name, expected in expected_sql.items():
+        assert str(actual[index_name]["tbl_name"]) == expected_tables[index_name]
+        assert actual[index_name]["sql"] is not None
+        assert "".join(str(actual[index_name]["sql"]).upper().split()) == "".join(
+            expected.upper().split()
+        )
+    assert mailbox_index_flags[_MAILBOX_RAW_LOGICAL_KEY_INDEX] == 0
+    assert schedule_event_index_flags[_SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX] == 0
+    _assert_plan_uses_index(
+        mailbox_plan,
+        table_name="agent_session_mailbox",
+        index_name=_MAILBOX_RAW_LOGICAL_KEY_INDEX,
+    )
+    _assert_plan_uses_index(
+        schedule_event_plan,
+        table_name="agent_review_schedule_events",
+        index_name=_SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX,
+    )
+
+
+def _assert_plan_uses_index(
+    plan: list[sqlite3.Row],
+    *,
+    table_name: str,
+    index_name: str,
+) -> None:
+    """Assert a raw-key query is targeted without planner-specific wording."""
+
+    details = tuple(str(row["detail"]) for row in plan)
+    assert any(
+        detail.startswith(f"SEARCH {table_name} ") and index_name in detail
+        for detail in details
+    ), details
+    assert all(f"SCAN {table_name}" not in detail for detail in details), details
+    assert all("USE TEMP B-TREE" not in detail for detail in details), details
 
 
 def _mailbox_rows(database: DatabaseManager) -> list[object]:
@@ -1834,6 +1943,71 @@ async def test_existing_mailbox_invalid_utf8_text_defers_without_partial_commit(
         105.0,
         "mailbox_identity_conflict",
     )
+
+
+def test_raw_logical_key_indexes_are_non_unique_and_selected(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, _store = _make_runtime(tmp_path, now)
+
+    _assert_raw_logical_key_indexes(database)
+
+
+def test_raw_logical_key_index_audit_repairs_same_table_drift(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, _store = _make_runtime(tmp_path, now)
+    with database.connect() as conn:
+        conn.execute(f"DROP INDEX {_MAILBOX_RAW_LOGICAL_KEY_INDEX}")
+        conn.execute(f"DROP INDEX {_SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX}")
+        conn.execute(
+            f"""
+            CREATE INDEX {_MAILBOX_RAW_LOGICAL_KEY_INDEX}
+            ON agent_session_mailbox(profile_id, session_id, event_id)
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX {_SCHEDULE_EVENT_RAW_LOGICAL_KEY_INDEX}
+            ON agent_review_schedule_events(schedule_event_id)
+            """
+        )
+
+    database.initialize()
+    database.initialize()
+
+    _assert_raw_logical_key_indexes(database)
+
+
+def test_raw_logical_key_index_audit_rejects_cross_table_name_conflict(
+    tmp_path: Path,
+) -> None:
+    now = [100.0]
+    database, _store = _make_runtime(tmp_path, now)
+    with database.connect() as conn:
+        conn.execute(f"DROP INDEX {_MAILBOX_RAW_LOGICAL_KEY_INDEX}")
+        conn.execute(
+            f"""
+            CREATE INDEX {_MAILBOX_RAW_LOGICAL_KEY_INDEX}
+            ON agent_review_schedule_events(schedule_event_id)
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="unexpected table"):
+        database.initialize()
+
+    with database.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT tbl_name FROM sqlite_master
+            WHERE type = 'index' AND name = ?
+            """,
+            (_MAILBOX_RAW_LOGICAL_KEY_INDEX,),
+        ).fetchone()
+    assert row is not None
+    assert str(row["tbl_name"]) == "agent_review_schedule_events"
 
 
 @pytest.mark.parametrize(

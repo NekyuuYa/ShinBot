@@ -23,6 +23,34 @@ from shinbot.persistence.sqlite_raw import (
 _SQLITE_INT64_MAX = (1 << 63) - 1
 
 
+# These indexes deliberately remain non-unique. Raw-key preflight must be
+# able to observe TEXT/BLOB storage aliases as conflicting persisted rows
+# instead of making them impossible to inspect or recover from.
+_ACTOR_RAW_LOGICAL_KEY_INDEXES: tuple[tuple[str, str, str], ...] = (
+    (
+        "idx_agent_session_mailbox_raw_logical_key",
+        "agent_session_mailbox",
+        """
+        CREATE INDEX IF NOT EXISTS idx_agent_session_mailbox_raw_logical_key
+        ON agent_session_mailbox(
+            CAST(profile_id AS BLOB),
+            CAST(session_id AS BLOB),
+            CAST(event_id AS BLOB)
+        )
+        """,
+    ),
+    (
+        "idx_agent_review_schedule_events_raw_logical_key",
+        "agent_review_schedule_events",
+        """
+        CREATE INDEX IF NOT EXISTS
+            idx_agent_review_schedule_events_raw_logical_key
+        ON agent_review_schedule_events(CAST(schedule_event_id AS BLOB))
+        """,
+    ),
+)
+
+
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS model_execution_records (
@@ -2028,6 +2056,9 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_agent_runtime_service_health_status
     ON agent_runtime_service_health(status, heartbeat_at)
     """,
+) + tuple(
+    statement
+    for _index_name, _table_name, statement in _ACTOR_RAW_LOGICAL_KEY_INDEXES
 )
 
 
@@ -2654,6 +2685,52 @@ def _create_external_action_receipt_indexes(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_actor_raw_logical_key_indexes(conn: sqlite3.Connection) -> None:
+    """Ensure raw logical-key expression indexes retain their exact contract.
+
+    ``CREATE INDEX IF NOT EXISTS`` only checks an index name. A same-name
+    ordinary TEXT index would otherwise silently survive startup and turn the
+    storage-aware ReviewDue preflight back into a table scan.
+    """
+
+    for index_name, expected_table, create_statement in (
+        _ACTOR_RAW_LOGICAL_KEY_INDEXES
+    ):
+        row = conn.execute(
+            """
+            SELECT type, tbl_name, sql
+            FROM sqlite_master
+            WHERE name = ?
+            """,
+            (index_name,),
+        ).fetchone()
+        if row is None:
+            conn.execute(create_statement)
+            continue
+        if str(row["type"]) != "index":
+            raise sqlite3.IntegrityError(
+                "actor raw logical-key index name is occupied by another "
+                f"schema object: {index_name}"
+            )
+        if str(row["tbl_name"]) != expected_table:
+            raise sqlite3.IntegrityError(
+                "actor raw logical-key index belongs to an unexpected table: "
+                f"{index_name}"
+            )
+        if row["sql"] is None:
+            raise sqlite3.IntegrityError(
+                "actor raw logical-key index has no mutable SQL definition: "
+                f"{index_name}"
+            )
+        if _normalized_create_index_sql(row["sql"]) == _normalized_create_index_sql(
+            create_statement
+        ):
+            continue
+        escaped_index_name = index_name.replace('"', '""')
+        conn.execute(f'DROP INDEX "{escaped_index_name}"')
+        conn.execute(create_statement)
+
+
 def _migrate_session_actor_schema(conn: sqlite3.Connection) -> None:
     """Add durable contract and ownership fences to actor foundation tables."""
 
@@ -3100,6 +3177,18 @@ def _normalized_create_table_sql(value: object) -> str:
         return required_prefix + normalized[len(optional_prefix) :]
     if normalized[: len(required_prefix)].upper() == required_prefix:
         return required_prefix + normalized[len(required_prefix) :]
+    return normalized
+
+
+def _normalized_create_index_sql(value: object) -> str:
+    """Normalize equivalent SQLite index DDL for startup schema auditing."""
+
+    normalized = _collapse_sql_whitespace(str(value or "").strip().rstrip(";"))
+    normalized = normalized.upper()
+    optional_prefix = "CREATE INDEX IF NOT EXISTS "
+    required_prefix = "CREATE INDEX "
+    if normalized.startswith(optional_prefix):
+        return required_prefix + normalized[len(optional_prefix) :]
     return normalized
 
 
@@ -3776,3 +3865,4 @@ def apply_schema(conn: sqlite3.Connection) -> None:
     _migrate_durable_routing_schema(conn)
     _migrate_external_action_receipts_schema(conn)
     _migrate_session_actor_schema(conn)
+    _ensure_actor_raw_logical_key_indexes(conn)
