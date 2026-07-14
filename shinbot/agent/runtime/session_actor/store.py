@@ -35,7 +35,11 @@ from shinbot.agent.runtime.session_actor.events import (
 from shinbot.agent.runtime.session_actor.external_actions import ExternalActionKind
 from shinbot.agent.runtime.session_actor.message_ledger import (
     AppendMessageLedgerEntry,
+    ConsumeMessageLedgerEntries,
+    MessageLedgerConsumptionKind,
+    MessageLedgerConsumptionSelection,
     MessageLedgerEntry,
+    MessageLedgerMutation,
     MessageLedgerProjectionKind,
     MessageLedgerRangeProjection,
 )
@@ -70,6 +74,17 @@ if TYPE_CHECKING:
 _EXTERNAL_ACTION_EFFECT_KINDS = frozenset(
     action_kind.value for action_kind in ExternalActionKind
 )
+_ACTIVE_CHAT_BOOTSTRAP_HANDOFF_METADATA_FIELDS = frozenset(
+    {
+        "handoff_input_ledger_sequence",
+        "handoff_input_watermark",
+        "handoff_message_log_ids",
+        "handoff_operation_id",
+    }
+)
+_ACTOR_NATIVE_ACTIVE_CHAT_BOOTSTRAP_EFFECT_KIND = "run_active_chat_bootstrap"
+_ACTOR_NATIVE_ACTIVE_CHAT_ROUND_EFFECT_KIND = "run_active_chat_round"
+_ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION = 3
 _LEGACY_RECOVERY_EVENT_KIND = "RecoveryRequested"
 _LEGACY_RECOVERY_EVENT_SOURCE = "session_actor_recovery"
 
@@ -99,12 +114,23 @@ class DurableRecordConflict(SessionStoreError):
 
 
 @dataclass(slots=True, frozen=True)
+class _VerifiedActiveChatBootstrapHandoff:
+    """Review-owned selection proven safe for one v3 bootstrap operation."""
+
+    operation_id: str
+    message_log_ids: tuple[int, ...]
+
+
+@dataclass(slots=True, frozen=True)
 class _OperationInputFence:
     """Store-resolved input boundary for one workflow operation."""
 
     input_watermark: int
     input_ledger_sequence: int
     requires_pending_mapping: bool = False
+    verified_active_chat_bootstrap_handoff: (
+        _VerifiedActiveChatBootstrapHandoff | None
+    ) = None
 
 
 class SQLiteSessionActorStore:
@@ -581,6 +607,12 @@ class SQLiteSessionActorStore:
                 claim,
                 transition.operations,
                 input_ledger_sequence=input_ledger_sequence,
+                message_ledger_mutations=transition.message_ledger_mutations,
+                actor_native_bootstrap_operation_ids=frozenset(
+                    effect.operation_id
+                    for effect in transition.effects
+                    if _is_actor_native_active_chat_bootstrap_effect(effect)
+                ),
             )
             target = _stamp_pending_operation_input_fences(
                 target,
@@ -589,6 +621,7 @@ class SQLiteSessionActorStore:
             effects = _stamp_effect_input_fences(
                 transition.effects,
                 operation_fences,
+                aggregate=target,
             )
             self._validate_effect_declarations(
                 replace(transition, effects=effects)
@@ -1535,6 +1568,8 @@ class SQLiteSessionActorStore:
         operations: tuple[SessionOperation, ...],
         *,
         input_ledger_sequence: int,
+        message_ledger_mutations: tuple[MessageLedgerMutation, ...],
+        actor_native_bootstrap_operation_ids: frozenset[str],
     ) -> dict[str, _OperationInputFence]:
         """Resolve workflow input boundaries under the open actor transaction."""
 
@@ -1542,6 +1577,9 @@ class SQLiteSessionActorStore:
             raise ValueError("input_ledger_sequence must not be negative")
         fences: dict[str, _OperationInputFence] = {}
         seen_operation_ids: set[str] = set()
+        operations_by_id = {
+            operation.operation_id: operation for operation in operations
+        }
         for operation in operations:
             operation_id = str(operation.operation_id).strip()
             if operation_id in seen_operation_ids:
@@ -1566,21 +1604,38 @@ class SQLiteSessionActorStore:
                             "an input ledger sequence"
                         )
                     continue
-                if (
-                    operation.input_ledger_sequence is not None
-                    and operation.input_ledger_sequence != input_ledger_sequence
-                ):
-                    raise DurableRecordConflict(
-                        "new operation supplied a stale input ledger sequence"
-                    )
+                resolved_input_ledger_sequence = input_ledger_sequence
+                verified_handoff: _VerifiedActiveChatBootstrapHandoff | None = None
+                if operation.input_ledger_sequence is not None:
+                    resolved_input_ledger_sequence = operation.input_ledger_sequence
+                    if _declares_active_chat_bootstrap_handoff(operation):
+                        verified_handoff = (
+                            SQLiteSessionActorStore._validate_active_chat_bootstrap_handoff(
+                                conn,
+                                claim,
+                                operation,
+                                operations_by_id=operations_by_id,
+                                current_input_ledger_sequence=input_ledger_sequence,
+                                message_ledger_mutations=message_ledger_mutations,
+                                require_handoff_certificate=(
+                                    operation_id
+                                    in actor_native_bootstrap_operation_ids
+                                ),
+                            )
+                        )
+                    elif operation.input_ledger_sequence != input_ledger_sequence:
+                        raise DurableRecordConflict(
+                            "new operation supplied a stale input ledger sequence"
+                        )
                 fences[operation_id] = _OperationInputFence(
                     input_watermark=operation.input_watermark,
-                    input_ledger_sequence=input_ledger_sequence,
+                    input_ledger_sequence=resolved_input_ledger_sequence,
                     requires_pending_mapping=operation.status
                     in {
                         SessionOperationStatus.PENDING,
                         SessionOperationStatus.RUNNING,
                     },
+                    verified_active_chat_bootstrap_handoff=verified_handoff,
                 )
                 continue
 
@@ -1629,6 +1684,403 @@ class SQLiteSessionActorStore:
                     },
                 )
         return fences
+
+    @staticmethod
+    def _validate_active_chat_bootstrap_handoff(
+        conn: sqlite3.Connection,
+        claim: ClaimedSessionEvent,
+        operation: SessionOperation,
+        *,
+        operations_by_id: Mapping[str, SessionOperation],
+        current_input_ledger_sequence: int,
+        message_ledger_mutations: tuple[MessageLedgerMutation, ...],
+        require_handoff_certificate: bool,
+    ) -> _VerifiedActiveChatBootstrapHandoff:
+        """Authorize one v3 bootstrap operation to retain a review handoff fence.
+
+        Most newly-created operations must snapshot the ledger sequence of the
+        event that creates them.  A receipt-gated Active Chat bootstrap is the
+        narrow exception: it may need to use the completed review's older
+        boundary after later messages have arrived.  The exception is safe only
+        when the bootstrap declares, and the store proves, the exact completed
+        review operation and consumed handoff selection that own that boundary.
+        """
+
+        if (
+            operation.kind != "active_chat_bootstrap"
+            or operation.input_watermark is None
+            or operation.input_ledger_sequence is None
+        ):
+            raise DurableRecordConflict(
+                "historical input fences are restricted to active chat bootstrap"
+            )
+        if operation.input_ledger_sequence > current_input_ledger_sequence:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff exceeds the current ledger boundary"
+            )
+
+        metadata = _mapping(operation.metadata)
+        handoff_operation_id = _required_text(
+            metadata,
+            "handoff_operation_id",
+        )
+        if handoff_operation_id == operation.operation_id:
+            raise DurableRecordConflict(
+                "active chat bootstrap cannot hand off from itself"
+            )
+        handoff_input_watermark = _optional_nonnegative_int(
+            metadata.get("handoff_input_watermark"),
+            field_name="active chat bootstrap handoff_input_watermark",
+        )
+        handoff_input_ledger_sequence = _optional_nonnegative_int(
+            metadata.get("handoff_input_ledger_sequence"),
+            field_name="active chat bootstrap handoff_input_ledger_sequence",
+        )
+        if (
+            handoff_input_watermark is None
+            or handoff_input_ledger_sequence is None
+            or handoff_input_watermark != operation.input_watermark
+            or handoff_input_ledger_sequence != operation.input_ledger_sequence
+        ):
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff boundary does not match its operation"
+            )
+        handoff_message_log_ids = _message_log_id_tuple(
+            metadata.get("handoff_message_log_ids"),
+            field_name="active chat bootstrap handoff_message_log_ids",
+        )
+
+        source = conn.execute(
+            """
+            SELECT profile_id, session_id, ownership_generation, kind, status,
+                   active_epoch, activity_generation,
+                   input_watermark, input_ledger_sequence, metadata_json
+            FROM agent_session_operations
+            WHERE operation_id = ?
+            """,
+            (handoff_operation_id,),
+        ).fetchone()
+        if source is None:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff review operation does not exist"
+            )
+        source_identity = (
+            str(source["profile_id"]),
+            str(source["session_id"]),
+            int(source["ownership_generation"]),
+        )
+        expected_identity = (
+            claim.key.profile_id,
+            claim.key.session_id,
+            claim.envelope.ownership_generation,
+        )
+        if source_identity != expected_identity:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff review belongs to another actor"
+            )
+        durable_source_input_watermark = _optional_int(source["input_watermark"])
+        durable_source_input_ledger_sequence = _optional_int(
+            source["input_ledger_sequence"]
+        )
+
+        source_operation = operations_by_id.get(handoff_operation_id)
+        if source_operation is not None:
+            if source_operation.kind != str(source["kind"]):
+                raise DurableRecordConflict(
+                    "active chat bootstrap handoff changed the review kind"
+                )
+            if (
+                source_operation.input_watermark != durable_source_input_watermark
+                or source_operation.input_ledger_sequence
+                != durable_source_input_ledger_sequence
+            ):
+                raise DurableRecordConflict(
+                    "active chat bootstrap handoff changed the review input fence"
+                )
+            source_kind = source_operation.kind
+            source_status = source_operation.status.value
+            source_active_epoch = source_operation.active_epoch
+            source_activity_generation = source_operation.activity_generation
+            source_input_watermark = source_operation.input_watermark
+            source_input_ledger_sequence = source_operation.input_ledger_sequence
+            source_metadata = _mapping(source_operation.metadata)
+        else:
+            source_kind = str(source["kind"])
+            source_status = str(source["status"])
+            source_active_epoch = _optional_int(source["active_epoch"])
+            source_activity_generation = _optional_int(
+                source["activity_generation"]
+            )
+            source_input_watermark = durable_source_input_watermark
+            source_input_ledger_sequence = durable_source_input_ledger_sequence
+            source_metadata = _json_mapping(source["metadata_json"])
+
+        if source_kind != "review" or source_status != SessionOperationStatus.COMPLETED.value:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff must reference a completed review"
+            )
+        if (
+            source_input_watermark != handoff_input_watermark
+            or source_input_ledger_sequence != handoff_input_ledger_sequence
+        ):
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff does not match the review input fence"
+            )
+        if source_metadata.get("enter_active_chat") is not True:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff review did not enter active chat"
+            )
+        source_consumed_message_log_ids = _message_log_id_tuple(
+            source_metadata.get("consumed_message_log_ids"),
+            field_name="review consumed_message_log_ids",
+        )
+        if source_consumed_message_log_ids != handoff_message_log_ids:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff does not match review consumption"
+            )
+        if require_handoff_certificate:
+            SQLiteSessionActorStore._validate_active_chat_bootstrap_handoff_certificate(
+                conn,
+                claim,
+                bootstrap_metadata=metadata,
+                source_metadata=source_metadata,
+                source_operation_id=handoff_operation_id,
+                source_active_epoch=source_active_epoch,
+                source_activity_generation=source_activity_generation,
+                source_input_watermark=source_input_watermark,
+                source_input_ledger_sequence=source_input_ledger_sequence,
+                source_message_log_ids=source_consumed_message_log_ids,
+                source_is_current_transition=source_operation is not None,
+                message_ledger_mutations=message_ledger_mutations,
+            )
+        return _VerifiedActiveChatBootstrapHandoff(
+            operation_id=handoff_operation_id,
+            message_log_ids=handoff_message_log_ids,
+        )
+
+    @staticmethod
+    def _validate_active_chat_bootstrap_handoff_certificate(
+        conn: sqlite3.Connection,
+        claim: ClaimedSessionEvent,
+        *,
+        bootstrap_metadata: Mapping[str, object],
+        source_metadata: Mapping[str, object],
+        source_operation_id: str,
+        source_active_epoch: int | None,
+        source_activity_generation: int | None,
+        source_input_watermark: int | None,
+        source_input_ledger_sequence: int | None,
+        source_message_log_ids: tuple[int, ...],
+        source_is_current_transition: bool,
+        message_ledger_mutations: tuple[MessageLedgerMutation, ...],
+    ) -> None:
+        """Prove a v3 handoff certificate against review and ledger records.
+
+        A review can create bootstrap in its own transition or after an
+        external-action receipt. The former has not yet applied its ledger
+        mutation, while the latter must have a persisted consumption row. Both
+        cases are checked before the bootstrap effect enters the outbox.
+        """
+
+        certificate = _active_chat_handoff_certificate(
+            bootstrap_metadata.get("handoff_certificate"),
+            field_name="active chat bootstrap handoff_certificate",
+        )
+        source_certificate = _active_chat_handoff_certificate(
+            source_metadata.get("active_chat_handoff"),
+            field_name="review active_chat_handoff",
+        )
+        if certificate != source_certificate:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff certificate changed review proof"
+            )
+        if certificate["review_operation_id"] != source_operation_id:
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff certificate changed review operation"
+            )
+        if (
+            source_active_epoch is None
+            or source_activity_generation is None
+            or source_input_watermark is None
+            or source_input_ledger_sequence is None
+        ):
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff source has incomplete fences"
+            )
+        if (
+            certificate["source_active_epoch"] != source_active_epoch
+            or certificate["source_activity_generation"]
+            != source_activity_generation
+            or certificate["input_watermark"] != source_input_watermark
+            or certificate["input_ledger_sequence"]
+            != source_input_ledger_sequence
+            or certificate["message_log_ids"] != source_message_log_ids
+        ):
+            raise DurableRecordConflict(
+                "active chat bootstrap handoff certificate changed review fences"
+            )
+        if source_message_log_ids:
+            source_completion_event_id = _required_exact_text(
+                source_metadata.get("completion_event_id"),
+                field_name="review completion_event_id",
+            )
+            if certificate["review_completion_event_id"] != source_completion_event_id:
+                raise DurableRecordConflict(
+                    "active chat bootstrap handoff certificate changed review completion"
+                )
+
+        if source_is_current_transition:
+            SQLiteSessionActorStore._validate_current_transition_handoff_consumption(
+                claim,
+                certificate=certificate,
+                source_operation_id=source_operation_id,
+                message_ledger_mutations=message_ledger_mutations,
+            )
+            return
+        SQLiteSessionActorStore._validate_persisted_handoff_consumption(
+            conn,
+            claim,
+            certificate=certificate,
+            source_operation_id=source_operation_id,
+        )
+
+    @staticmethod
+    def _validate_current_transition_handoff_consumption(
+        claim: ClaimedSessionEvent,
+        *,
+        certificate: Mapping[str, object],
+        source_operation_id: str,
+        message_ledger_mutations: tuple[MessageLedgerMutation, ...],
+    ) -> None:
+        """Match one newly-completed review to its same-transaction mutation."""
+
+        consumptions = tuple(
+            mutation
+            for mutation in message_ledger_mutations
+            if isinstance(mutation, ConsumeMessageLedgerEntries)
+            and mutation.kind is MessageLedgerConsumptionKind.REVIEW
+            and mutation.operation_id == source_operation_id
+        )
+        message_log_ids = tuple(certificate["message_log_ids"])
+        if not message_log_ids:
+            if consumptions:
+                raise DurableRecordConflict(
+                    "empty active chat handoff has review consumption"
+                )
+            return
+        if len(consumptions) != 1:
+            raise DurableRecordConflict(
+                "active chat handoff requires exactly one review consumption"
+            )
+        consumption = consumptions[0]
+        if (
+            consumption.key != claim.key
+            or consumption.ownership_generation
+            != claim.envelope.ownership_generation
+            or consumption.selection
+            is not MessageLedgerConsumptionSelection.EXPLICIT_IDS
+            or consumption.consumption_id
+            != certificate["review_consumption_id"]
+            or consumption.idempotency_key
+            != certificate["review_consumption_idempotency_key"]
+            or consumption.source_event_id
+            != certificate["review_completion_event_id"]
+            or consumption.input_watermark != certificate["input_watermark"]
+            or consumption.input_ledger_sequence
+            != certificate["input_ledger_sequence"]
+            or consumption.explicit_message_log_ids
+            != tuple(sorted(message_log_ids))
+        ):
+            raise DurableRecordConflict(
+                "active chat handoff certificate changed review consumption"
+            )
+
+    @staticmethod
+    def _validate_persisted_handoff_consumption(
+        conn: sqlite3.Connection,
+        claim: ClaimedSessionEvent,
+        *,
+        certificate: Mapping[str, object],
+        source_operation_id: str,
+    ) -> None:
+        """Match a receipt-gated bootstrap to its committed review consumption."""
+
+        message_log_ids = tuple(certificate["message_log_ids"])
+        rows = conn.execute(
+            """
+            SELECT consumption_id, idempotency_key, source_event_id,
+                   ownership_generation, selection, input_watermark,
+                   input_ledger_sequence, explicit_message_log_ids_json
+            FROM agent_message_ledger_consumptions
+            WHERE profile_id = ?
+              AND session_id = ?
+              AND operation_id = ?
+              AND kind = ?
+            ORDER BY committed_at, consumption_id
+            """,
+            (
+                claim.key.profile_id,
+                claim.key.session_id,
+                source_operation_id,
+                MessageLedgerConsumptionKind.REVIEW.value,
+            ),
+        ).fetchall()
+        if not message_log_ids:
+            if rows:
+                raise DurableRecordConflict(
+                    "empty active chat handoff has persisted review consumption"
+                )
+            return
+        if len(rows) != 1:
+            raise DurableRecordConflict(
+                "active chat handoff requires one persisted review consumption"
+            )
+        row = rows[0]
+        persisted_message_log_ids = _json_message_log_id_tuple(
+            row["explicit_message_log_ids_json"],
+            field_name="persisted active chat handoff message_log_ids",
+        )
+        if (
+            str(row["consumption_id"]) != certificate["review_consumption_id"]
+            or str(row["idempotency_key"])
+            != certificate["review_consumption_idempotency_key"]
+            or str(row["source_event_id"])
+            != certificate["review_completion_event_id"]
+            or int(row["ownership_generation"])
+            != claim.envelope.ownership_generation
+            or str(row["selection"])
+            != MessageLedgerConsumptionSelection.EXPLICIT_IDS.value
+            or int(row["input_watermark"]) != certificate["input_watermark"]
+            or int(row["input_ledger_sequence"])
+            != certificate["input_ledger_sequence"]
+            or persisted_message_log_ids != tuple(sorted(message_log_ids))
+        ):
+            raise DurableRecordConflict(
+                "active chat handoff certificate changed persisted consumption"
+            )
+        applied_rows = conn.execute(
+            """
+            SELECT message_log_id
+            FROM agent_message_ledger
+            WHERE profile_id = ?
+              AND session_id = ?
+              AND ownership_generation = ?
+              AND review_consumption_id = ?
+            ORDER BY ledger_sequence
+            """,
+            (
+                claim.key.profile_id,
+                claim.key.session_id,
+                claim.envelope.ownership_generation,
+                str(row["consumption_id"]),
+            ),
+        ).fetchall()
+        if tuple(sorted(int(row["message_log_id"]) for row in applied_rows)) != tuple(
+            sorted(message_log_ids)
+        ):
+            raise DurableRecordConflict(
+                "active chat handoff review consumption was not applied to its selection"
+            )
 
     @staticmethod
     def _upsert_operation(
@@ -2214,6 +2666,135 @@ def _optional_nonnegative_int(value: object, *, field_name: str) -> int | None:
     return _required_nonnegative_int(value, field_name=field_name)
 
 
+def _declares_active_chat_bootstrap_handoff(operation: SessionOperation) -> bool:
+    """Return whether an operation opts into the verified review handoff path."""
+
+    if operation.kind != "active_chat_bootstrap":
+        return False
+    metadata = _mapping(operation.metadata)
+    return bool(_ACTIVE_CHAT_BOOTSTRAP_HANDOFF_METADATA_FIELDS.intersection(metadata))
+
+
+def _message_log_id_tuple(value: object, *, field_name: str) -> tuple[int, ...]:
+    """Return one exact, duplicate-free durable message selection."""
+
+    if not isinstance(value, (list, tuple)):
+        raise DurableRecordConflict(f"{field_name} must be an array")
+    result: list[int] = []
+    seen: set[int] = set()
+    for index, item in enumerate(value):
+        if isinstance(item, bool) or not isinstance(item, int) or item < 1:
+            raise DurableRecordConflict(
+                f"{field_name}[{index}] must be a positive integer"
+            )
+        if item in seen:
+            raise DurableRecordConflict(
+                f"{field_name} must not contain duplicate message log ids"
+            )
+        result.append(item)
+        seen.add(item)
+    return tuple(result)
+
+
+def _active_chat_handoff_certificate(
+    value: object,
+    *,
+    field_name: str,
+) -> dict[str, object]:
+    """Return one strict, durable review-to-bootstrap handoff certificate."""
+
+    if not isinstance(value, Mapping):
+        raise DurableRecordConflict(f"{field_name} must be an object")
+    version = _required_nonnegative_int(
+        value.get("version"),
+        field_name=f"{field_name}.version",
+    )
+    if version != 1:
+        raise DurableRecordConflict(f"{field_name}.version is unsupported")
+    message_log_ids = _message_log_id_tuple(
+        value.get("message_log_ids"),
+        field_name=f"{field_name}.message_log_ids",
+    )
+    certificate: dict[str, object] = {
+        "version": version,
+        "review_operation_id": _required_exact_text(
+            value.get("review_operation_id"),
+            field_name=f"{field_name}.review_operation_id",
+        ),
+        "source_active_epoch": _required_nonnegative_int(
+            value.get("source_active_epoch"),
+            field_name=f"{field_name}.source_active_epoch",
+        ),
+        "source_activity_generation": _required_nonnegative_int(
+            value.get("source_activity_generation"),
+            field_name=f"{field_name}.source_activity_generation",
+        ),
+        "input_watermark": _required_nonnegative_int(
+            value.get("input_watermark"),
+            field_name=f"{field_name}.input_watermark",
+        ),
+        "input_ledger_sequence": _required_nonnegative_int(
+            value.get("input_ledger_sequence"),
+            field_name=f"{field_name}.input_ledger_sequence",
+        ),
+        "message_log_ids": message_log_ids,
+        "review_consumption_id": _optional_handoff_certificate_text(
+            value.get("review_consumption_id"),
+            field_name=f"{field_name}.review_consumption_id",
+        ),
+        "review_consumption_idempotency_key": _optional_handoff_certificate_text(
+            value.get("review_consumption_idempotency_key"),
+            field_name=(
+                f"{field_name}.review_consumption_idempotency_key"
+            ),
+        ),
+        "review_completion_event_id": _optional_handoff_certificate_text(
+            value.get("review_completion_event_id"),
+            field_name=f"{field_name}.review_completion_event_id",
+        ),
+    }
+    consumption_fields = (
+        "review_consumption_id",
+        "review_consumption_idempotency_key",
+        "review_completion_event_id",
+    )
+    if message_log_ids and any(not certificate[field] for field in consumption_fields):
+        raise DurableRecordConflict(
+            f"{field_name} omits review consumption identity"
+        )
+    if not message_log_ids and any(certificate[field] for field in consumption_fields):
+        raise DurableRecordConflict(
+            f"{field_name} has consumption identity without messages"
+        )
+    return certificate
+
+
+def _optional_handoff_certificate_text(value: object, *, field_name: str) -> str:
+    """Return optional exact JSON text from a handoff certificate."""
+
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise DurableRecordConflict(f"{field_name} must be JSON text")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise DurableRecordConflict(f"{field_name} must contain valid UTF-8") from exc
+    return value
+
+
+def _json_message_log_id_tuple(value: object, *, field_name: str) -> tuple[int, ...]:
+    """Decode one persisted JSON message selection without coercing its values."""
+
+    if not isinstance(value, str):
+        raise DurableRecordConflict(f"{field_name} must be JSON text")
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DurableRecordConflict(f"{field_name} is invalid JSON") from exc
+    return _message_log_id_tuple(decoded, field_name=field_name)
+
+
 def _optional_int(value: object) -> int | None:
     return None if value is None else int(value)
 
@@ -2430,6 +3011,8 @@ def _stamp_pending_operation_input_fences(
 def _stamp_effect_input_fences(
     effects: tuple[SessionEffect, ...],
     fences: Mapping[str, _OperationInputFence],
+    *,
+    aggregate: AgentSessionAggregate,
 ) -> tuple[SessionEffect, ...]:
     """Copy each resolved operation boundary into its own workflow effects."""
 
@@ -2455,6 +3038,18 @@ def _stamp_effect_input_fences(
                 )
             stamped.append(effect)
             continue
+        if _is_actor_native_active_chat_bootstrap_effect(effect):
+            _validate_active_chat_bootstrap_effect_handoff(
+                effect,
+                payload,
+                fence,
+            )
+        if _is_actor_native_active_chat_round_effect(effect):
+            _validate_active_chat_round_effect_fence(
+                effect,
+                payload,
+                aggregate=aggregate,
+            )
         watermark = _required_nonnegative_int(
             payload.get("input_watermark"),
             field_name=f"effect {effect.effect_id!r} input_watermark",
@@ -2476,6 +3071,218 @@ def _stamp_effect_input_fences(
         payload["input_ledger_sequence"] = fence.input_ledger_sequence
         stamped.append(replace(effect, payload=payload))
     return tuple(stamped)
+
+
+def _is_actor_native_active_chat_bootstrap_effect(effect: SessionEffect) -> bool:
+    """Return whether an effect requires the v3 review-handoff binding."""
+
+    return (
+        effect.kind == _ACTOR_NATIVE_ACTIVE_CHAT_BOOTSTRAP_EFFECT_KIND
+        and effect.contract_version == _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
+    )
+
+
+def _is_actor_native_active_chat_round_effect(effect: SessionEffect) -> bool:
+    """Return whether an effect requires the v3 round-fence binding."""
+
+    return (
+        effect.kind == _ACTOR_NATIVE_ACTIVE_CHAT_ROUND_EFFECT_KIND
+        and effect.contract_version == _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
+    )
+
+
+def _validate_active_chat_bootstrap_effect_handoff(
+    effect: SessionEffect,
+    payload: Mapping[str, object],
+    fence: _OperationInputFence,
+) -> None:
+    """Require one v3 bootstrap effect to retain its proven review handoff."""
+
+    verified_handoff = fence.verified_active_chat_bootstrap_handoff
+    if verified_handoff is None:
+        raise DurableRecordConflict(
+            f"v3 active chat bootstrap effect {effect.effect_id!r} has no "
+            "verified review handoff"
+        )
+    handoff_operation_id = _required_text(payload, "handoff_operation_id")
+    if handoff_operation_id != verified_handoff.operation_id:
+        raise DurableRecordConflict(
+            f"v3 active chat bootstrap effect {effect.effect_id!r} changed "
+            "the verified review handoff operation"
+        )
+    handoff_message_log_ids = _message_log_id_tuple(
+        payload.get("handoff_message_log_ids"),
+        field_name=f"effect {effect.effect_id!r} handoff_message_log_ids",
+    )
+    if handoff_message_log_ids != verified_handoff.message_log_ids:
+        raise DurableRecordConflict(
+            f"v3 active chat bootstrap effect {effect.effect_id!r} changed "
+            "the verified review handoff messages"
+        )
+
+
+def _validate_active_chat_round_effect_fence(
+    effect: SessionEffect,
+    payload: Mapping[str, object],
+    *,
+    aggregate: AgentSessionAggregate,
+) -> None:
+    """Require one v3 round effect to retain its aggregate operation fence."""
+
+    operation_fence = _active_chat_round_operation_fence(
+        aggregate,
+        operation_id=effect.operation_id,
+        effect_id=effect.effect_id,
+    )
+    expected_message_log_ids = _active_chat_round_message_log_id_tuple(
+        operation_fence.get("message_log_ids"),
+        field_name="active chat round operation fence message_log_ids",
+    )
+    supplied_message_log_ids = _active_chat_round_message_log_id_tuple(
+        payload.get("message_log_ids"),
+        field_name=f"effect {effect.effect_id!r} message_log_ids",
+    )
+    if supplied_message_log_ids != expected_message_log_ids:
+        raise DurableRecordConflict(
+            f"v3 active chat round effect {effect.effect_id!r} changed "
+            "the ordered operation-fence message selection"
+        )
+
+    _require_matching_active_chat_round_text_fence(
+        effect,
+        field_name="round_schedule_id",
+        supplied=payload.get("round_schedule_id"),
+        expected=operation_fence.get("round_schedule_id"),
+    )
+    _require_matching_active_chat_round_number_fence(
+        effect,
+        field_name="active_chat_interest_value",
+        supplied=payload.get("active_chat_interest_value"),
+        expected=operation_fence.get("active_chat_interest_value"),
+    )
+    _require_matching_active_chat_round_text_fence(
+        effect,
+        field_name="bootstrap_disposition",
+        supplied=payload.get("bootstrap_disposition"),
+        expected=operation_fence.get("bootstrap_disposition"),
+    )
+
+
+def _active_chat_round_operation_fence(
+    aggregate: AgentSessionAggregate,
+    *,
+    operation_id: str,
+    effect_id: str,
+) -> Mapping[str, object]:
+    """Return one v3 round's durable aggregate operation fence."""
+
+    registry = aggregate.data.get("operation_fences")
+    if not isinstance(registry, Mapping):
+        raise DurableRecordConflict(
+            f"v3 active chat round effect {effect_id!r} has no operation fence registry"
+        )
+    operation_fence = registry.get(operation_id)
+    if not isinstance(operation_fence, Mapping):
+        raise DurableRecordConflict(
+            f"v3 active chat round effect {effect_id!r} has no operation fence"
+        )
+    return operation_fence
+
+
+def _active_chat_round_message_log_id_tuple(
+    value: object,
+    *,
+    field_name: str,
+) -> tuple[int, ...]:
+    """Return one non-empty, ordered v3 round message selection."""
+
+    if not isinstance(value, list):
+        raise DurableRecordConflict(f"{field_name} must be a JSON array")
+    message_log_ids = _message_log_id_tuple(value, field_name=field_name)
+    if not message_log_ids:
+        raise DurableRecordConflict(f"{field_name} must not be empty")
+    return message_log_ids
+
+
+def _require_matching_active_chat_round_text_fence(
+    effect: SessionEffect,
+    *,
+    field_name: str,
+    supplied: object,
+    expected: object,
+) -> None:
+    """Reject a v3 round effect that changes one exact text operation fence."""
+
+    expected_text = _required_exact_text(
+        expected,
+        field_name=f"active chat round operation fence {field_name}",
+    )
+    supplied_text = _required_exact_text(
+        supplied,
+        field_name=f"effect {effect.effect_id!r} {field_name}",
+    )
+    if supplied_text != expected_text:
+        raise DurableRecordConflict(
+            f"v3 active chat round effect {effect.effect_id!r} changed "
+            f"the operation-fence {field_name}"
+        )
+
+
+def _require_matching_active_chat_round_number_fence(
+    effect: SessionEffect,
+    *,
+    field_name: str,
+    supplied: object,
+    expected: object,
+) -> None:
+    """Reject a v3 round effect that changes one exact numeric operation fence."""
+
+    expected_number = _required_nonnegative_finite_number(
+        expected,
+        field_name=f"active chat round operation fence {field_name}",
+    )
+    supplied_number = _required_nonnegative_finite_number(
+        supplied,
+        field_name=f"effect {effect.effect_id!r} {field_name}",
+    )
+    if (
+        type(supplied_number) is not type(expected_number)
+        or supplied_number != expected_number
+    ):
+        raise DurableRecordConflict(
+            f"v3 active chat round effect {effect.effect_id!r} changed "
+            f"the operation-fence {field_name}"
+        )
+
+
+def _required_exact_text(value: object, *, field_name: str) -> str:
+    """Return non-empty JSON text without coercion or whitespace normalization."""
+
+    if not isinstance(value, str) or not value:
+        raise DurableRecordConflict(f"{field_name} must be non-empty JSON text")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise DurableRecordConflict(
+            f"{field_name} must contain valid UTF-8 text"
+        ) from exc
+    return value
+
+
+def _required_nonnegative_finite_number(
+    value: object,
+    *,
+    field_name: str,
+) -> int | float:
+    """Return one JSON numeric fence value without lossy coercion."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DurableRecordConflict(f"{field_name} must be a JSON number")
+    if not math.isfinite(float(value)) or value < 0:
+        raise DurableRecordConflict(
+            f"{field_name} must be a non-negative finite JSON number"
+        )
+    return value
 
 
 def _stamp_operation_input_fence(

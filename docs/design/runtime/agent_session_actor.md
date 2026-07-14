@@ -25,6 +25,15 @@ as its ingress wake target.  This deliberate boundary prevents legacy and v2
 from becoming concurrent writers while the remaining end-to-end adapters are
 finished.
 
+The Actor-native Active Chat v3 workflows described below are likewise
+diagnostic-only assembly components. They do not replace or take ownership from
+the legacy `ActiveChatCoordinator`/`ActiveChatFastRunner` path. Production
+`actor_v2` ownership remains disabled because state-specific recovery
+materializers for non-idle Active Chat state and the full `AgentRuntime`
+production composition (registry, executor, ingress wake, and ownership
+wiring) are not complete. The v3 handlers are testable in isolation, but are
+not a production wake target.
+
 The invariant and workflow sections below therefore use two meanings:
 
 - **Target contract** describes the required behavior after activation.
@@ -252,8 +261,9 @@ those message-log rows in ledger order before one reply-decision call. The
 Actor composition uses intent collection rather than tool execution, disables
 configured extra tools and model repair/retry calls, carries model execution
 provenance, and rejects unbound `send_poke` actions. It always returns to
-`IDLE` with a defaulted next-review outcome; active-chat bootstrap, round work,
-summaries, compression, and production runtime mounting remain later slices.
+`IDLE` with a defaulted next-review outcome. Active Chat bootstrap and round
+work now have the separate diagnostic-only v3 slice below; summaries,
+compression, and production runtime mounting remain later activation work.
 The context projector rechecks ownership generation, transport session, ledger
 fences, and message-log identity before model work. A projection or model
 decision failure does not consume input. Registering these handlers improves
@@ -276,6 +286,79 @@ becomes a receipt-fenced outbound effect; only that effect may call an adapter.
 SQLite integration coverage proves
 the full high-priority-message -> workflow -> accepted intent -> receipt ->
 adapter-send -> assistant-log chain while the runtime remains inactive.
+
+### Actor-Native Active Chat V3 (Diagnostic-Only)
+
+The Actor-native Active Chat vertical now implements version 3 contracts for
+`run_active_chat_bootstrap` and `run_active_chat_round`. The v3 contracts seal
+the extra bootstrap handoff and round-selection fields into their outcome
+fences, and the native handler registration deliberately serves only v3.
+Historical v1/v2 records retain their compatibility/recovery semantics; this
+slice does not install a new native workflow implementation for them.
+
+Bootstrap projects only the frozen review handoff: ledger rows already consumed
+by the named `handoff_operation_id` and exact
+`handoff_message_log_ids`, restored in durable ledger order. It does not read
+legacy coordinator state, tail history, summaries, or pending buffers. A round
+re-reads its dual-fenced unread snapshot (`input_watermark` and
+`input_ledger_sequence`) and exposes only the effect's explicit selected
+message-log IDs in ledger order. Both projectors revalidate ownership, effect
+fences, base transport session, and message-log identity before model work.
+
+Each reducer-created v3 handoff also carries a versioned review certificate:
+the source review operation, source active epoch/activity generation, captured
+input boundary, exact selected IDs, and (for a non-empty handoff) the review
+ledger-consumption identity. The SQLite store compares that certificate with
+the completed review operation and proves the consumption against either the
+same transition's mutation or the already-persisted consumption and ledger
+rows after an outbound receipt wait. A v3 bootstrap with a missing, changed, or
+unapplied certificate cannot enter the outbox.
+
+The bootstrap workflow returns one structured disposition. The round workflow
+collects action intents only and accepts at most one terminal model tool call.
+Replies and reactions must target a selected `message_log_id`; unquoted
+replies, raw platform identifiers, `send_poke`, selection widening, multiple
+visible actions, and malformed action payloads fail closed. Neither workflow
+executes the legacy tool loop or adapter I/O. Only an actor-accepted completion
+may create the existing receipt-gated external action effect.
+
+Bootstrap and round completions preserve `model_execution_id` and
+`prompt_signature` in their terminal operation records. This makes the frozen
+input, model invocation, and accepted result inspectable without granting the
+v3 workflows live production ownership.
+
+#### Version Pinning
+
+`active_chat_state.actor_workflow_contract_version` is an epoch-level
+compatibility marker, not a request to upgrade old work. Only an exact v3 marker
+authorizes the Actor-native contracts; a missing, malformed, historical, or
+unknown marker is pinned to the last compatible v2 contract. A newly created
+Active Chat epoch writes the v3 marker together with its frozen review handoff.
+A legacy `waiting_outbound` state cannot become v3 merely because its pending
+external action receipt succeeds: without the already-persisted v3 handoff it
+starts a v2 bootstrap/round path. This prevents receipt recovery from
+reinterpreting an existing epoch with the newer input contract.
+
+#### Bounded Round Retry Chain
+
+Actor-native v3 rounds persist one retry chain keyed by the `active_epoch` and
+the exact frozen selected `message_log_ids`. A logical `retry` result and a
+terminal round-effect failure advance that same chain, so they cannot receive
+independent retry budgets. This model-work retry chain is separate from the
+round-due control effect's bounded reconciliation policy. The first failure,
+and any later failure below the configured maximum, leaves the selection unread
+and schedules the next round through the durable round-due control effect. Once
+the budget is exhausted, the reducer records a durable blocker and requests the
+normal Active Chat exit; idle review planning then owns the eventual review
+schedule rather than another unbounded round retry.
+
+A valid consuming completion clears the retry chain. New input that changes the
+exact selection clears both the chain and any blocker before the next frozen
+round begins, giving that new selection a fresh bounded budget. An invalid or
+unprovable selection cannot extend the old chain; it must fail closed into the
+normal exit path or be replaced by a newly frozen selection. This retry policy
+is part of the diagnostic v3 reducer slice and does not relax the production
+ownership gate.
 
 ### Workflow Completions
 
@@ -465,14 +548,38 @@ the matching identity. A completion or `EffectFailed` validates against that
 persisted snapshot, not against whichever contract happens to be current when
 the event is handled.
 
-Every actor-owned effect has a current v2 contract with an explicit outcome
-field declaration signed into the policy. In the normal executor path,
-handlers provide domain output; they do not choose the fence projection or
-reinterpret the contract. The lower-level store interface retains an optional
-outcome-field argument only as a compatibility assertion: it resolves the
-projection from sealed contract authority and rejects a caller value that
-differs. Workflow handlers remain registered for both v1 and v2 so an upgrade
-can drain historical outbox work before producing only current v2 effects.
+Every actor-owned effect has a versioned contract with an explicit outcome-field
+declaration signed into policy. General current effects use v2 declarations;
+Actor-native Active Chat bootstrap and round use their stricter v3 declarations.
+In the normal executor path, handlers provide domain output; they do not choose
+the fence projection or reinterpret the contract. The lower-level store
+interface retains an optional outcome-field argument only as a compatibility
+assertion: it resolves the projection from sealed contract authority and rejects
+a caller value that differs. Compatibility handlers can drain historical rows
+without granting them newer execution semantics.
+
+For v3 Active Chat bootstrap and round effects, the durable payload is also
+bound to `aggregate.data.operation_fences[operation_id]` at commit. The store
+rejects a missing or changed input boundary; bootstrap must retain its verified
+review handoff, while a round must retain its ordered selection, schedule,
+interest, and bootstrap-disposition fences. The payload therefore cannot widen
+or replace the aggregate's frozen operation input.
+
+`EffectQuarantined` is a store-owned terminal event, not a generic caller
+failure. After the effect store has revalidated and terminalized the exact
+durable effect identity, it emits deterministic quarantine evidence containing
+only that identity and diagnostic reason. The reducer rebinds it to the
+persisted operation or control fence and applies the same fail-closed terminal
+recovery path as a verified effect failure. A wrong source, event identity,
+contract, or effect identity is stale/ignored and cannot release a live
+operation. In particular, quarantine never consumes pending ledger input by
+itself.
+
+Current (v2+) external-action completion evidence also includes the receipt
+idempotency key returned by the receipt store. The reducer requires that key to
+match the accepted action's durable idempotency identity before it releases a
+pending outbound gate. Legacy v1 completion recovery remains compatible with
+its historical envelope shape.
 
 ### Legacy V1 Recovery Policy
 
@@ -664,6 +771,12 @@ Callers cannot inject an optional `next_review_plan`. Manual/recovery paths that
 intentionally avoid a model produce an explicit `Bypassed` outcome and still use
 the same commit path.
 
+The `plan_id` carried by an exit-control intent/completion is the current-plan
+provenance fence: it proves which active review schedule the exit was authorized
+against, rather than naming its replacement. Idle planning creates a distinct
+successor plan id and records the former current id as `previous_plan_id`; a
+new review revision must never reuse the fenced current plan id.
+
 Exactly one schedule is current per session. The aggregate stores
 `current_plan_id` and `review_plan_revision`; committing revision `N + 1`
 atomically supersedes revision `N`. Due-review delivery checks both values so a
@@ -688,13 +801,20 @@ round work from the new watermark.
 
 Terminal failure of either control effect follows a bounded policy governed by
 `control_reconciliation_max_cycles` (currently defaulting to two total
-cycles).  A failed exit request is retried only through a new, fenced exit
-intent; after the budget is exhausted the aggregate records `exit_blocker` and
-does not silently request another automatic exit.  A failed round-due request
-is retried only while buffered input remains; after exhaustion it records
-`round_schedule_blocker` and leaves those inputs unconsumed.  A later message
-may create a fresh intent, while the failed attempt remains durable diagnostic
-evidence.
+cycles). A failed round-due request is retried through a fresh fenced intent
+while buffered input remains. If its budget is exhausted, the reducer keeps the
+pending ledger rows unread and automatically enters the normal exit path by
+creating a fenced exit request; it does not wait for another message. If an
+exit-request control effect exhausts its budget, the reducer enters
+`ACTIVE_CHAT_SETTLING` and starts idle planning plus its deadline directly,
+rather than leaving an `exit_blocker` that needs a future signal. The successor
+review then owns any still-pending input through its normal durable review
+workflow.
+
+These quarantine and control-liveness semantics are part of the diagnostic-only
+Actor slice. They do not activate `actor_v2` ownership: state-specific recovery
+materializers and full production `AgentRuntime` composition remain explicit
+production blockers.
 
 ## Ingress Delivery
 

@@ -109,6 +109,7 @@ class AgentSessionEventKind(StrEnum):
     ACTIVE_CHAT_TICK = "ActiveChatTick"
     EXTERNAL_ACTION_COMPLETED = "ExternalActionCompleted"
     EFFECT_FAILED = "EffectFailed"
+    EFFECT_QUARANTINED = "EffectQuarantined"
     ACTIVE_CHAT_RUNTIME_STOPPED = "ActiveChatRuntimeStopped"
     IDLE_REVIEW_PLANNING_CANCELLATION_COMPLETED = (
         "IdleReviewPlanningCancellationCompleted"
@@ -148,6 +149,21 @@ _PENDING_OUTBOUND_DATA_KEY = "pending_outbound_actions"
 _OUTBOUND_BLOCKED_DATA_KEY = "outbound_blocked"
 _OUTBOUND_CONTINUATION_DATA_KEY = "outbound_continuation"
 _REVIEW_CANCELLATION_BLOCKER_DATA_KEY = "review_cancellation_blocked"
+_ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION = 3
+_ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY = "actor_workflow_contract_version"
+_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY = "round_retry_chain"
+_ACTIVE_CHAT_ROUND_RETRY_BLOCKER_STATE_KEY = "round_retry_blocker"
+_EFFECT_QUARANTINE_EVENT_SOURCE = "effect_store"
+_ACTIVE_CHAT_HANDOFF_CERTIFICATE_VERSION = 1
+_ACTOR_NATIVE_BOOTSTRAP_PRESETS: dict[
+    ActiveChatBootstrapDisposition, tuple[float, float]
+] = {
+    ActiveChatBootstrapDisposition.EXIT_SOON: (15.0, 10.0),
+    ActiveChatBootstrapDisposition.WATCH: (20.0, 20.0),
+    ActiveChatBootstrapDisposition.CASUAL: (30.0, 25.0),
+    ActiveChatBootstrapDisposition.ENGAGED: (40.0, 35.0),
+    ActiveChatBootstrapDisposition.FOCUSED: (50.0, 45.0),
+}
 
 
 class IdleReviewScheduleOutcomeKind(StrEnum):
@@ -314,6 +330,7 @@ class IdleExitReducerConfig:
     planning_deadline_seconds: float = 30.0
     control_reconciliation_max_cycles: int = 2
     busy_review_retry_seconds: float = 30.0
+    active_chat_round_max_attempts: int = 2
     provisional_active_chat_interest: float = 15.0
     provisional_active_chat_half_life_seconds: float = 20.0
     active_chat_semantic_wait_seconds: float = 1.5
@@ -358,6 +375,12 @@ class IdleExitReducerConfig:
                 raise ValueError(f"{name} must be finite and non-negative")
         if self.maximum_review_delay_seconds < self.minimum_review_delay_seconds:
             raise ValueError("maximum review delay cannot be below minimum review delay")
+        if (
+            not isinstance(self.active_chat_round_max_attempts, int)
+            or isinstance(self.active_chat_round_max_attempts, bool)
+            or self.active_chat_round_max_attempts < 1
+        ):
+            raise ValueError("active_chat_round_max_attempts must be at least one")
         if not (
             self.minimum_review_delay_seconds
             <= self.default_review_delay_seconds
@@ -457,7 +480,10 @@ class AgentSessionReducer:
             return self._active_chat_tick(aggregate, event)
         if event.kind == AgentSessionEventKind.EXTERNAL_ACTION_COMPLETED:
             return self._external_action_completed(aggregate, event)
-        if event.kind == AgentSessionEventKind.EFFECT_FAILED:
+        if event.kind in {
+            AgentSessionEventKind.EFFECT_FAILED,
+            AgentSessionEventKind.EFFECT_QUARANTINED,
+        }:
             return self._effect_failed(aggregate, event)
         if event.kind in {
             AgentSessionEventKind.ACTIVE_CHAT_RUNTIME_STOPPED,
@@ -666,11 +692,19 @@ class AgentSessionReducer:
             seed=event.event_id,
             purpose="idle-planning-operation",
         )
-        plan_id = self._payload_or_generated_id(
-            event,
-            field_name="plan_id",
-            seed=operation_id,
-            purpose="idle-review-plan",
+        supplied_plan_id = _text(event.payload.get("plan_id"))
+        # An exit-control completion carries the *current* review plan as an
+        # outcome fence. It is not the identity of the successor plan that
+        # idle planning must create. Reusing it would advance the revision
+        # under the same id and violate the aggregate's plan identity rule.
+        plan_id = (
+            supplied_plan_id
+            if supplied_plan_id and supplied_plan_id != aggregate.current_plan_id
+            else self._ids.create(
+                key=event.key,
+                seed=operation_id,
+                purpose="idle-review-plan",
+            )
         )
         completion_event_id = self._payload_or_generated_id(
             event,
@@ -880,26 +914,31 @@ class AgentSessionReducer:
             or expected_watermark != _message_watermark(aggregate.data)
         ):
             mismatch.append("message_watermark_changed")
-        supplied_watermark_valid, supplied_watermark = (
-            _strict_optional_nonnegative_int(
-                event.payload.get("expected_message_watermark")
+        if event.kind != AgentSessionEventKind.EFFECT_QUARANTINED:
+            supplied_watermark_valid, supplied_watermark = (
+                _strict_optional_nonnegative_int(
+                    event.payload.get("expected_message_watermark")
+                )
             )
-        )
-        if not supplied_watermark_valid or supplied_watermark != expected_watermark:
-            mismatch.append("expected_message_watermark_changed")
+            if (
+                not supplied_watermark_valid
+                or supplied_watermark != expected_watermark
+            ):
+                mismatch.append("expected_message_watermark_changed")
         epoch_valid, expected_epoch = _strict_optional_nonnegative_int(
             intent.get("expected_active_epoch")
-        )
-        supplied_epoch_valid, supplied_epoch = _strict_optional_nonnegative_int(
-            event.payload.get("expected_active_epoch")
         )
         if (
             not epoch_valid
             or expected_epoch is None
-            or not supplied_epoch_valid
-            or supplied_epoch != expected_epoch
         ):
             mismatch.append("expected_active_epoch_changed")
+        elif event.kind != AgentSessionEventKind.EFFECT_QUARANTINED:
+            supplied_epoch_valid, supplied_epoch = _strict_optional_nonnegative_int(
+                event.payload.get("expected_active_epoch")
+            )
+            if not supplied_epoch_valid or supplied_epoch != expected_epoch:
+                mismatch.append("expected_active_epoch_changed")
         if expected_event_field == "failure_event_id":
             if not _text(event.payload.get("failure_code")):
                 mismatch.append("failure_code_missing")
@@ -1746,7 +1785,10 @@ class AgentSessionReducer:
             event_id=event.event_id,
         )
         active_chat_state.pop("exit_blocker", None)
+        active_chat_state.pop("exit_control_failover", None)
         active_chat_state["exit_requested"] = False
+        active_chat_state.pop(_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY, None)
+        active_chat_state.pop(_ACTIVE_CHAT_ROUND_RETRY_BLOCKER_STATE_KEY, None)
         pending_ids = list(
             _positive_int_tuple(
                 active_chat_state.get("pending_message_log_ids"),
@@ -1958,6 +2000,10 @@ class AgentSessionReducer:
                 mismatch=mismatch,
             )
         fence = _operation_fence(aggregate.data, operation_id)
+        actor_native = _is_actor_native_active_chat_workflow(
+            fence,
+            effect_kind=AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP,
+        )
         failure_code = ""
         failure_message = ""
         try:
@@ -1970,6 +2016,13 @@ class AgentSessionReducer:
             failure_code = "invalid_active_chat_bootstrap_completion"
             failure_message = str(exc)
         input_watermark, input_ledger_sequence = _captured_input_boundary(fence)
+        bootstrap_correction: dict[str, float] = {}
+        if actor_native and not failure_code:
+            bootstrap_correction = _active_chat_bootstrap_correction(
+                active_state,
+                disposition=result.disposition,
+                config=self._config,
+            )
         status = (
             SessionOperationStatus.FAILED
             if failure_code
@@ -1990,6 +2043,13 @@ class AgentSessionReducer:
                 "completion_event_id": event.event_id,
                 "disposition": result.disposition.value,
                 "reason": result.reason,
+                "model_execution_id": _text(event.payload.get("model_execution_id")),
+                "prompt_signature": _text(event.payload.get("prompt_signature")),
+                **(
+                    {"bootstrap_correction": bootstrap_correction}
+                    if bootstrap_correction
+                    else {}
+                ),
             },
         )
         data = _without_operation_fence(aggregate.data, operation_id)
@@ -2002,6 +2062,25 @@ class AgentSessionReducer:
                 "bootstrap_reason": result.reason,
             }
         )
+        if bootstrap_correction:
+            next_state.update(
+                {
+                    "interest_value": bootstrap_correction["interest_value"],
+                    "decay_half_life_seconds": bootstrap_correction[
+                        "decay_half_life_seconds"
+                    ],
+                    "bootstrap_interest_correction": bootstrap_correction[
+                        "interest_correction"
+                    ],
+                }
+            )
+        next_state[_ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY] = (
+            _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION if actor_native else 2
+        )
+        next_state.pop("bootstrap_handoff_message_log_ids", None)
+        next_state.pop("bootstrap_handoff_operation_id", None)
+        next_state.pop("bootstrap_handoff_input_watermark", None)
+        next_state.pop("bootstrap_handoff_input_ledger_sequence", None)
         effects: tuple[SessionEffect, ...] = ()
         if result.disposition is ActiveChatBootstrapDisposition.EXIT_SOON:
             exit_effect, exit_intent = self._enqueue_active_chat_exit_request(
@@ -2227,6 +2306,18 @@ class AgentSessionReducer:
         delivery_context = _mapping(
             aggregate.data.get(_DELIVERY_CONTEXT_DATA_KEY)
         )
+        active_chat_interest_value = _finite_nonnegative_float(
+            active_state.get("interest_value"),
+            field_name="active_chat_state.interest_value",
+            default=self._config.provisional_active_chat_interest,
+        )
+        bootstrap_disposition = (
+            _text(active_state.get("bootstrap_disposition"))
+            or ActiveChatBootstrapDisposition.WATCH.value
+        )
+        workflow_contract_version = _active_chat_workflow_contract_version(
+            active_state
+        )
         operation_fence = {
             "operation_id": operation_id,
             "operation_kind": "active_chat_round",
@@ -2249,9 +2340,17 @@ class AgentSessionReducer:
             "round_schedule_id": schedule_id,
             "message_log_ids": list(pending_ids),
         }
+        if workflow_contract_version == _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION:
+            operation_fence.update(
+                {
+                    "active_chat_interest_value": active_chat_interest_value,
+                    "bootstrap_disposition": bootstrap_disposition,
+                }
+            )
         operation_fence.update(
             _effect_contract_snapshot(
-                AgentSessionEffectKind.RUN_ACTIVE_CHAT_ROUND
+                AgentSessionEffectKind.RUN_ACTIVE_CHAT_ROUND,
+                version=workflow_contract_version,
             )
         )
         data = _with_completed_control_intent(
@@ -2304,6 +2403,7 @@ class AgentSessionReducer:
             idempotency_key=effect_id,
             operation_id=operation_id,
             payload=operation_fence,
+            contract_version=workflow_contract_version,
         )
         return SessionTransition(
             aggregate=target,
@@ -2408,15 +2508,18 @@ class AgentSessionReducer:
             or _message_watermark(aggregate.data) != expected_watermark
         ):
             mismatch.append("message_watermark_changed")
-        if _exact_json_text(event.payload.get("schedule_id")) != _exact_json_text(
-            intent.get("schedule_id")
-        ):
-            mismatch.append("schedule_id_changed")
-        supplied_revision_valid, supplied_revision = (
-            _strict_optional_nonnegative_int(event.payload.get("schedule_revision"))
-        )
-        if not supplied_revision_valid or supplied_revision != expected_revision:
-            mismatch.append("schedule_revision_changed")
+        if event.kind != AgentSessionEventKind.EFFECT_QUARANTINED:
+            if _exact_json_text(event.payload.get("schedule_id")) != _exact_json_text(
+                intent.get("schedule_id")
+            ):
+                mismatch.append("schedule_id_changed")
+            supplied_revision_valid, supplied_revision = (
+                _strict_optional_nonnegative_int(
+                    event.payload.get("schedule_revision")
+                )
+            )
+            if not supplied_revision_valid or supplied_revision != expected_revision:
+                mismatch.append("schedule_revision_changed")
 
         try:
             pending_message_log_ids = _positive_int_tuple(
@@ -2464,15 +2567,33 @@ class AgentSessionReducer:
                 mismatch=mismatch,
             )
         fence = _operation_fence(aggregate.data, operation_id)
+        actor_native = _is_actor_native_active_chat_workflow(
+            fence,
+            effect_kind=AgentSessionEffectKind.RUN_ACTIVE_CHAT_ROUND,
+        )
+        selected_message_log_ids: tuple[int, ...] = ()
+        input_watermark, input_ledger_sequence = _captured_input_boundary(fence)
+        if actor_native:
+            try:
+                selected_message_log_ids = _active_chat_round_selected_message_log_ids(
+                    fence,
+                    input_watermark=input_watermark,
+                )
+            except (TypeError, ValueError):
+                selected_message_log_ids = ()
         failure_code = ""
         failure_message = ""
         try:
             result = _active_chat_round_workflow_result(event.payload)
-            input_watermark, _ = _captured_input_boundary(fence)
             _validate_consumed_ids(
                 result.consumed_message_log_ids,
                 input_watermark=input_watermark,
             )
+            if actor_native:
+                _validate_actor_active_chat_round_completion(
+                    result,
+                    selected_message_log_ids=selected_message_log_ids,
+                )
             action_effects = self._materialize_completion_actions(
                 aggregate,
                 event,
@@ -2489,8 +2610,43 @@ class AgentSessionReducer:
             action_effects = ()
             failure_code = "invalid_active_chat_round_completion"
             failure_message = str(exc)
-        input_watermark, input_ledger_sequence = _captured_input_boundary(fence)
         consumed_ids = result.consumed_message_log_ids
+        data = _without_operation_fence(aggregate.data, operation_id)
+        active_state = dict(aggregate.active_chat_state)
+        pending_ids = list(
+            _positive_int_tuple(
+                active_state.get("pending_message_log_ids"),
+                field_name="active_chat_state.pending_message_log_ids",
+                allow_empty=True,
+            )
+        )
+        retry_chain: dict[str, Any] | None = None
+        retry_exhausted = False
+        if actor_native and result.outcome is ActiveChatRoundOutcome.RETRY:
+            if selected_message_log_ids and tuple(pending_ids) == selected_message_log_ids:
+                retry_chain = _next_active_chat_round_retry_chain(
+                    active_state,
+                    active_epoch=aggregate.active_epoch,
+                    message_log_ids=selected_message_log_ids,
+                    event=event,
+                    reason=result.reason,
+                    failure_code=failure_code or "active_chat_round_retry",
+                )
+                retry_exhausted = (
+                    int(retry_chain["attempt_count"])
+                    >= self._config.active_chat_round_max_attempts
+                )
+            elif not selected_message_log_ids:
+                retry_chain = {
+                    "active_epoch": aggregate.active_epoch,
+                    "message_log_ids": list(pending_ids),
+                    "attempt_count": self._config.active_chat_round_max_attempts,
+                    "last_event_id": event.event_id,
+                    "last_reason": "active_chat_round_selection_invalid",
+                    "last_failure_code": failure_code
+                    or "active_chat_round_selection_invalid",
+                }
+                retry_exhausted = True
         consumptions: tuple[ConsumeMessageLedgerEntries, ...] = ()
         if consumed_ids:
             consumptions = (
@@ -2535,16 +2691,17 @@ class AgentSessionReducer:
                 "external_action_effect_ids": [
                     effect.effect_id for effect in action_effects
                 ],
+                "model_execution_id": _text(event.payload.get("model_execution_id")),
+                "prompt_signature": _text(event.payload.get("prompt_signature")),
+                **(
+                    {
+                        "retry_chain": retry_chain,
+                        "retry_exhausted": retry_exhausted,
+                    }
+                    if retry_chain is not None
+                    else {}
+                ),
             },
-        )
-        data = _without_operation_fence(aggregate.data, operation_id)
-        active_state = dict(aggregate.active_chat_state)
-        pending_ids = list(
-            _positive_int_tuple(
-                active_state.get("pending_message_log_ids"),
-                field_name="active_chat_state.pending_message_log_ids",
-                allow_empty=True,
-            )
         )
         consumed_set = set(consumed_ids)
         remaining_ids = [item for item in pending_ids if item not in consumed_set]
@@ -2565,6 +2722,12 @@ class AgentSessionReducer:
             "interest_value": next_interest,
             "updated_at": _event_time(aggregate, event),
         }
+        if retry_chain is not None:
+            next_state[_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY] = retry_chain
+        else:
+            next_state.pop(_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY, None)
+        if result.outcome is not ActiveChatRoundOutcome.RETRY:
+            next_state.pop(_ACTIVE_CHAT_ROUND_RETRY_BLOCKER_STATE_KEY, None)
         effects = action_effects
         disposition = "active_chat_round_completed"
         if action_effects:
@@ -2581,6 +2744,26 @@ class AgentSessionReducer:
             )
             next_state["outbound_status"] = "waiting"
             disposition = "active_chat_round_waiting_outbound"
+        elif actor_native and result.outcome is ActiveChatRoundOutcome.RETRY and retry_exhausted:
+            next_state[_ACTIVE_CHAT_ROUND_RETRY_BLOCKER_STATE_KEY] = {
+                **(retry_chain or {}),
+                "exhausted_at": event.occurred_at,
+                "max_attempts": self._config.active_chat_round_max_attempts,
+            }
+            exit_effect, exit_intent = self._enqueue_active_chat_exit_request(
+                aggregate,
+                event,
+                trigger="active_chat_round_retries_exhausted",
+                input_watermark=_message_watermark(data),
+            )
+            data = _with_control_intent(
+                data,
+                effect_kind=AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST,
+                intent=exit_intent,
+            )
+            effects = (*effects, exit_effect)
+            next_state["exit_requested"] = True
+            disposition = "active_chat_round_retries_exhausted_exit_requested"
         elif result.outcome is ActiveChatRoundOutcome.EXIT and not remaining_ids:
             exit_effect, exit_intent = self._enqueue_active_chat_exit_request(
                 aggregate,
@@ -2599,7 +2782,7 @@ class AgentSessionReducer:
         elif remaining_ids:
             delay = (
                 self._config.busy_review_retry_seconds
-                if result.outcome is ActiveChatRoundOutcome.RETRY
+                if retry_chain is not None
                 else self._config.active_chat_semantic_wait_seconds
             )
             next_state, scheduled_effect, round_intent = (
@@ -2611,6 +2794,11 @@ class AgentSessionReducer:
                 delay_seconds=delay,
                 )
             )
+            if retry_chain is not None:
+                next_state[_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY] = {
+                    **retry_chain,
+                    "next_attempt_at": _event_time(aggregate, event) + delay,
+                }
             data = _with_control_intent(
                 data,
                 effect_kind=AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE,
@@ -2637,6 +2825,11 @@ class AgentSessionReducer:
                 "outcome": result.outcome.value,
                 "remaining_message_log_ids": remaining_ids,
                 "round_schedule_id": _text(next_state.get("round_schedule_id")),
+                "round_retry_attempt_count": (
+                    int(retry_chain["attempt_count"])
+                    if retry_chain is not None
+                    else 0
+                ),
             },
             reason=failure_code or result.reason,
         )
@@ -3041,6 +3234,62 @@ class AgentSessionReducer:
 
         active_state = dict(aggregate.active_chat_state)
         active_epoch = aggregate.active_epoch
+        handoff_operation_id = (
+            _exact_json_text(active_state.get("bootstrap_handoff_operation_id"))
+            or ""
+        )
+        handoff_message_log_ids: tuple[int, ...] = ()
+        handoff_message_log_ids_valid = False
+        if "bootstrap_handoff_message_log_ids" in active_state:
+            try:
+                handoff_message_log_ids = _positive_int_tuple(
+                    active_state.get("bootstrap_handoff_message_log_ids"),
+                    field_name="active_chat_state.bootstrap_handoff_message_log_ids",
+                    allow_empty=True,
+                )
+            except (TypeError, ValueError):
+                pass
+            else:
+                handoff_message_log_ids_valid = True
+        handoff_boundary_valid, handoff_input_watermark = (
+            _strict_optional_nonnegative_int(
+                active_state.get("bootstrap_handoff_input_watermark")
+            )
+        )
+        handoff_sequence_valid, handoff_input_ledger_sequence = (
+            _strict_optional_nonnegative_int(
+                active_state.get("bootstrap_handoff_input_ledger_sequence")
+            )
+        )
+        handoff_certificate: dict[str, Any] | None = None
+        try:
+            handoff_certificate = _parse_active_chat_review_handoff_certificate(
+                active_state.get("bootstrap_handoff_certificate"),
+                field_name="active_chat_state.bootstrap_handoff_certificate",
+            )
+        except (TypeError, ValueError):
+            handoff_certificate = None
+        # A persisted pre-v3 waiting state has no replayable review handoff.
+        # Preserve its old contract rather than minting a v3 effect whose
+        # durable input contract cannot be proven.
+        actor_native_handoff = (
+            _active_chat_workflow_contract_version(active_state)
+            == _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
+            and bool(handoff_operation_id)
+            and handoff_message_log_ids_valid
+            and handoff_boundary_valid
+            and handoff_input_watermark is not None
+            and handoff_sequence_valid
+            and handoff_input_ledger_sequence is not None
+            and handoff_certificate is not None
+            and handoff_certificate["review_operation_id"] == handoff_operation_id
+            and tuple(handoff_certificate["message_log_ids"])
+            == handoff_message_log_ids
+            and handoff_certificate["input_watermark"] == handoff_input_watermark
+            and handoff_certificate["input_ledger_sequence"]
+            == handoff_input_ledger_sequence
+        )
+        contract_version = None if actor_native_handoff else 2
         operation_id = self._ids.create(
             key=event.key,
             seed=f"{active_epoch}:{completed_effect_id}",
@@ -3061,7 +3310,14 @@ class AgentSessionReducer:
             seed=effect_id,
             purpose="active-chat-bootstrap-failure-event",
         )
-        input_watermark = _message_watermark(data)
+        input_watermark = (
+            handoff_input_watermark
+            if actor_native_handoff
+            else _message_watermark(data)
+        )
+        input_ledger_sequence = (
+            handoff_input_ledger_sequence if actor_native_handoff else None
+        )
         delivery_context = _mapping(data.get(_DELIVERY_CONTEXT_DATA_KEY))
         fence = {
             "operation_id": operation_id,
@@ -3070,7 +3326,8 @@ class AgentSessionReducer:
             "effect_id": effect_id,
             "effect_kind": AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP,
             **_effect_contract_snapshot(
-                AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP
+                AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP,
+                version=contract_version,
             ),
             "idempotency_key": effect_id,
             "completion_event_id": completion_event_id,
@@ -3080,7 +3337,15 @@ class AgentSessionReducer:
             "active_epoch": active_epoch,
             "activity_generation": aggregate.activity_generation,
             "input_watermark": input_watermark,
-            "input_ledger_sequence": None,
+            "input_ledger_sequence": input_ledger_sequence,
+            **(
+                {
+                    "handoff_operation_id": handoff_operation_id,
+                    "handoff_message_log_ids": list(handoff_message_log_ids),
+                }
+                if actor_native_handoff
+                else {}
+            ),
             "instance_id": _text(delivery_context.get("instance_id")),
             "target_session_id": _text(
                 delivery_context.get("target_session_id")
@@ -3092,6 +3357,11 @@ class AgentSessionReducer:
                 "bootstrap_status": "pending",
                 "bootstrap_operation_id": operation_id,
                 "outbound_gate_completed_effect_id": completed_effect_id,
+                _ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY: (
+                    _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
+                    if actor_native_handoff
+                    else 2
+                ),
             }
         )
         target = aggregate.advance(
@@ -3108,8 +3378,22 @@ class AgentSessionReducer:
             active_epoch=active_epoch,
             activity_generation=aggregate.activity_generation,
             input_watermark=input_watermark,
+            input_ledger_sequence=input_ledger_sequence,
             started_at=event.occurred_at,
-            metadata={"outbound_gate_completed_effect_id": completed_effect_id},
+            metadata={
+                "outbound_gate_completed_effect_id": completed_effect_id,
+                **(
+                    {
+                        "handoff_operation_id": handoff_operation_id,
+                        "handoff_message_log_ids": list(handoff_message_log_ids),
+                        "handoff_input_watermark": input_watermark,
+                        "handoff_input_ledger_sequence": input_ledger_sequence,
+                        "handoff_certificate": handoff_certificate,
+                    }
+                    if actor_native_handoff
+                    else {}
+                ),
+            },
         )
         effect = _durable_effect(
             effect_id=effect_id,
@@ -3117,6 +3401,7 @@ class AgentSessionReducer:
             idempotency_key=effect_id,
             operation_id=operation_id,
             payload=fence,
+            contract_version=contract_version,
         )
         return SessionTransition(
             aggregate=target,
@@ -3984,6 +4269,19 @@ class AgentSessionReducer:
                     kind=MessageLedgerConsumptionKind.REVIEW,
                 ),
             )
+        handoff_certificate = (
+            _active_chat_review_handoff_certificate(
+                review_operation_id=operation_id,
+                source_active_epoch=aggregate.active_epoch,
+                source_activity_generation=aggregate.activity_generation,
+                input_watermark=input_watermark,
+                input_ledger_sequence=input_ledger_sequence,
+                message_log_ids=consumed_ids,
+                consumption=consumptions[0] if consumptions else None,
+            )
+            if enter_active_chat
+            else None
+        )
         operation_metadata: dict[str, Any] = {
             "completion_event_id": event.event_id,
             "consumed_message_log_ids": list(consumed_ids),
@@ -3991,7 +4289,11 @@ class AgentSessionReducer:
                 effect.effect_id for effect in action_effects
             ],
             "enter_active_chat": enter_active_chat,
+            "model_execution_id": _text(event.payload.get("model_execution_id")),
+            "prompt_signature": _text(event.payload.get("prompt_signature")),
         }
+        if handoff_certificate is not None:
+            operation_metadata["active_chat_handoff"] = handoff_certificate
         if terminal_event_metadata is not None:
             operation_metadata.pop("completion_event_id", None)
             operation_metadata.update(dict(terminal_event_metadata))
@@ -4042,6 +4344,16 @@ class AgentSessionReducer:
     ) -> SessionTransition:
         active_epoch = aggregate.active_epoch + 1
         event_time = _event_time(aggregate, event)
+        handoff_certificate = _parse_active_chat_review_handoff_certificate(
+            operation.metadata.get("active_chat_handoff"),
+            field_name="review.operation.active_chat_handoff",
+        )
+        handoff_message_log_ids = tuple(handoff_certificate["message_log_ids"])
+        handoff_operation_id = str(handoff_certificate["review_operation_id"])
+        handoff_input_watermark = int(handoff_certificate["input_watermark"])
+        handoff_input_ledger_sequence = int(
+            handoff_certificate["input_ledger_sequence"]
+        )
         if action_effects:
             pending_data = _with_pending_outbound_actions(
                 data,
@@ -4050,6 +4362,9 @@ class AgentSessionReducer:
             )
             active_chat_state = {
                 "active_epoch": active_epoch,
+                _ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY: (
+                    _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
+                ),
                 "interest_value": self._config.provisional_active_chat_interest,
                 "decay_half_life_seconds": (
                     self._config.provisional_active_chat_half_life_seconds
@@ -4060,6 +4375,11 @@ class AgentSessionReducer:
                 "pending_message_log_ids": [],
                 "bootstrap_status": "waiting_outbound",
                 "bootstrap_operation_id": "",
+                "bootstrap_handoff_operation_id": handoff_operation_id,
+                "bootstrap_handoff_message_log_ids": list(handoff_message_log_ids),
+                "bootstrap_handoff_input_watermark": handoff_input_watermark,
+                "bootstrap_handoff_input_ledger_sequence": handoff_input_ledger_sequence,
+                "bootstrap_handoff_certificate": handoff_certificate,
                 "round_schedule_revision": 0,
                 "round_schedule_id": "",
                 "round_due_at": None,
@@ -4134,7 +4454,8 @@ class AgentSessionReducer:
             seed=bootstrap_effect_id,
             purpose="active-chat-bootstrap-failure-event",
         )
-        input_watermark = _message_watermark(data)
+        input_watermark = handoff_input_watermark
+        input_ledger_sequence = handoff_input_ledger_sequence
         delivery_context = _mapping(data.get(_DELIVERY_CONTEXT_DATA_KEY))
         bootstrap_fence = {
             "operation_id": bootstrap_operation_id,
@@ -4153,7 +4474,9 @@ class AgentSessionReducer:
             "active_epoch": active_epoch,
             "activity_generation": aggregate.activity_generation,
             "input_watermark": input_watermark,
-            "input_ledger_sequence": None,
+            "input_ledger_sequence": input_ledger_sequence,
+            "handoff_operation_id": handoff_operation_id,
+            "handoff_message_log_ids": list(handoff_message_log_ids),
             "instance_id": _text(delivery_context.get("instance_id")),
             "target_session_id": _text(
                 delivery_context.get("target_session_id")
@@ -4166,6 +4489,9 @@ class AgentSessionReducer:
         )
         active_chat_state = {
             "active_epoch": active_epoch,
+            _ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY: (
+                _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
+            ),
             "interest_value": self._config.provisional_active_chat_interest,
             "decay_half_life_seconds": (
                 self._config.provisional_active_chat_half_life_seconds
@@ -4176,6 +4502,11 @@ class AgentSessionReducer:
             "pending_message_log_ids": [],
             "bootstrap_status": "pending",
             "bootstrap_operation_id": bootstrap_operation_id,
+            "bootstrap_handoff_operation_id": handoff_operation_id,
+            "bootstrap_handoff_message_log_ids": list(handoff_message_log_ids),
+            "bootstrap_handoff_input_watermark": handoff_input_watermark,
+            "bootstrap_handoff_input_ledger_sequence": handoff_input_ledger_sequence,
+            "bootstrap_handoff_certificate": handoff_certificate,
             "round_schedule_revision": 0,
             "round_schedule_id": "",
             "round_due_at": None,
@@ -4197,10 +4528,16 @@ class AgentSessionReducer:
             active_epoch=active_epoch,
             activity_generation=aggregate.activity_generation,
             input_watermark=input_watermark,
+            input_ledger_sequence=input_ledger_sequence,
             started_at=event.occurred_at,
             metadata={
                 "review_operation_id": operation.operation_id,
                 "review_plan_id": aggregate.current_plan_id,
+                "handoff_operation_id": handoff_operation_id,
+                "handoff_message_log_ids": list(handoff_message_log_ids),
+                "handoff_input_watermark": handoff_input_watermark,
+                "handoff_input_ledger_sequence": handoff_input_ledger_sequence,
+                "handoff_certificate": handoff_certificate,
             },
         )
         bootstrap_effect = _durable_effect(
@@ -4208,10 +4545,7 @@ class AgentSessionReducer:
             kind=AgentSessionEffectKind.RUN_ACTIVE_CHAT_BOOTSTRAP,
             idempotency_key=bootstrap_effect_id,
             operation_id=bootstrap_operation_id,
-            payload={
-                **bootstrap_fence,
-                "review_completion": _mapping(event.payload.get("workflow_result")),
-            },
+            payload=bootstrap_fence,
         )
         completed_schedule = self._current_review_schedule(
             aggregate,
@@ -5038,29 +5372,127 @@ class AgentSessionReducer:
             "last_failure": failure,
             "retry_cycle": cycle,
         }
-        data = _with_control_intent(
-            aggregate.data,
-            effect_kind=effect_kind,
+        return self._force_active_chat_exit_after_control_failure(
+            aggregate,
+            event,
             intent=failed_intent,
+            failure=failure,
         )
-        target = aggregate.advance(
-            active_chat_state={
-                **active_state,
-                "exit_requested": False,
-                "exit_blocker": {
-                    "effect_id": _text(intent.get("effect_id")),
-                    "failure_event_id": event.event_id,
-                    "failure_code": _text(failure.get("failure_code")),
-                },
+
+    def _force_active_chat_exit_after_control_failure(
+        self,
+        aggregate: AgentSessionAggregate,
+        event: SessionEventEnvelope,
+        *,
+        intent: Mapping[str, Any],
+        failure: Mapping[str, Any],
+    ) -> SessionTransition:
+        """Enter idle planning when the local exit delivery lane is exhausted.
+
+        ``enqueue_active_chat_exit_request`` only delivers an actor-local
+        control event. Once its durable retries are terminal, keeping unread
+        input behind that failed delivery would make a silent session
+        permanently unrecoverable. The original failure was already fenced
+        against the control intent, so the reducer can synthesize the same
+        trusted control completion from that intent and continue into normal
+        idle-review planning without consuming any pending ledger row.
+        """
+
+        effect_kind = AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
+        contract_version = _strict_nonnegative_int(intent.get("contract_version"))
+        if contract_version is None or contract_version < 1:
+            raise ValueError("active chat exit control intent has no contract version")
+        contract = builtin_effect_contract(effect_kind, version=contract_version)
+        completion_event = SessionEventEnvelope(
+            event_id=_required_nonempty_text(
+                intent.get("completion_event_id"),
+                field_name="active chat exit completion_event_id",
+            ),
+            key=aggregate.key,
+            kind=AgentSessionEventKind.EXIT_REQUESTED,
+            ownership_generation=aggregate.ownership_generation,
+            source=contract.completion_source,
+            occurred_at=event.occurred_at,
+            causation_id=_required_nonempty_text(
+                intent.get("causation_id"),
+                field_name="active chat exit causation_id",
+            ),
+            correlation_id=(
+                _exact_json_text(intent.get("operation_id"))
+                or _required_nonempty_text(
+                    intent.get("effect_id"),
+                    field_name="active chat exit effect_id",
+                )
+            ),
+            trace_id=event.trace_id,
+            payload={
+                "effect_id": intent.get("effect_id"),
+                "effect_kind": effect_kind,
+                "idempotency_key": intent.get("idempotency_key"),
+                "operation_id": intent.get("operation_id"),
+                "plan_id": intent.get("plan_id"),
+                "active_epoch": intent.get("active_epoch"),
+                "activity_generation": intent.get("activity_generation"),
+                "input_watermark": intent.get("input_watermark"),
+                "input_ledger_sequence": intent.get("input_ledger_sequence"),
+                "attempt_count": max(
+                    1,
+                    (_strict_nonnegative_int(intent.get("retry_cycle")) or 0)
+                    + 1,
+                ),
+                "contract_version": contract.version,
+                "contract_signature": contract.signature,
+                "trigger": intent.get("trigger"),
+                "expected_active_epoch": intent.get("expected_active_epoch"),
+                "expected_message_watermark": intent.get(
+                    "expected_message_watermark"
+                ),
             },
-            data=data,
+        )
+        transition = self._request_exit(aggregate, completion_event)
+        if transition.disposition != "active_chat_exit_settling":
+            raise RuntimeError(
+                "validated active chat exit failover did not enter idle planning"
+            )
+        failover = {
+            "effect_id": _text(intent.get("effect_id")),
+            "failure_event_id": event.event_id,
+            "failure_code": _text(failure.get("failure_code")),
+            "retry_cycle": _strict_nonnegative_int(intent.get("retry_cycle")) or 0,
+        }
+        # ``_request_exit()`` has already reduced this mailbox event and
+        # advanced its sequence exactly once.  This failover only annotates
+        # that completed transition; advancing again would make one mailbox
+        # event appear as two aggregate events.
+        target = replace(
+            transition.aggregate,
+            active_chat_state={
+                **transition.aggregate.active_chat_state,
+                "exit_requested": False,
+                "exit_control_failover": failover,
+            },
             updated_at=_event_time(aggregate, event),
         )
-        return SessionTransition(
+        operations = tuple(
+            replace(
+                operation,
+                metadata={
+                    **operation.metadata,
+                    "exit_control_failover": failover,
+                },
+            )
+            for operation in transition.operations
+        )
+        return replace(
+            transition,
             aggregate=target,
-            disposition="active_chat_exit_request_failed_blocked",
-            caused_plan_id=aggregate.current_plan_id,
-            result={"failure": failure, "retry_cycle": cycle},
+            disposition="active_chat_exit_request_failed_forced_settling",
+            operations=operations,
+            result={
+                **transition.result,
+                "control_failure": dict(failure),
+                "control_failover": True,
+            },
             reason="active_chat_exit_request_retries_exhausted",
         )
 
@@ -5154,12 +5586,25 @@ class AgentSessionReducer:
                 "effect_id": _text(intent.get("effect_id")),
                 "failure_event_id": event.event_id,
                 "failure_code": _text(failure.get("failure_code")),
+                "recovery": "active_chat_exit_requested",
             },
+            "exit_requested": True,
         }
         data = _with_control_intent(
             aggregate.data,
             effect_kind=effect_kind,
             intent=failed_intent,
+        )
+        exit_effect, exit_intent = self._enqueue_active_chat_exit_request(
+            aggregate,
+            event,
+            trigger="active_chat_round_due_retries_exhausted",
+            input_watermark=_message_watermark(data),
+        )
+        data = _with_control_intent(
+            data,
+            effect_kind=AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST,
+            intent=exit_intent,
         )
         target = aggregate.advance(
             active_chat_state=next_state,
@@ -5168,12 +5613,14 @@ class AgentSessionReducer:
         )
         return SessionTransition(
             aggregate=target,
-            disposition="active_chat_round_due_failed_blocked",
+            disposition="active_chat_round_due_failed_exit_requested",
             caused_plan_id=aggregate.current_plan_id,
+            effects=(exit_effect,),
             result={
                 "failure": failure,
                 "retry_cycle": cycle,
                 "remaining_message_log_ids": list(pending_ids),
+                "exit_effect_id": exit_effect.effect_id,
             },
             reason="active_chat_round_due_retries_exhausted",
         )
@@ -5380,6 +5827,10 @@ class AgentSessionReducer:
                 "bootstrap_failure_event_id": event.event_id,
             }
         )
+        next_state.pop("bootstrap_handoff_message_log_ids", None)
+        next_state.pop("bootstrap_handoff_operation_id", None)
+        next_state.pop("bootstrap_handoff_input_watermark", None)
+        next_state.pop("bootstrap_handoff_input_ledger_sequence", None)
         exit_effect, exit_intent = self._enqueue_active_chat_exit_request(
             aggregate,
             event,
@@ -5434,11 +5885,56 @@ class AgentSessionReducer:
 
         fence = _operation_fence(aggregate.data, operation_id)
         input_watermark, input_ledger_sequence = _captured_input_boundary(fence)
+        actor_native = _is_actor_native_active_chat_workflow(
+            fence,
+            effect_kind=AgentSessionEffectKind.RUN_ACTIVE_CHAT_ROUND,
+        )
+        selected_message_log_ids: tuple[int, ...] = ()
+        if actor_native:
+            try:
+                selected_message_log_ids = _active_chat_round_selected_message_log_ids(
+                    fence,
+                    input_watermark=input_watermark,
+                )
+            except (TypeError, ValueError):
+                selected_message_log_ids = ()
         failure = _workflow_effect_failure_record(event)
         failure_code = _text(failure.get("failure_code")) or (
             "active_chat_round_effect_failed"
         )
         failure_message = _text(failure.get("failure_message"))
+        active_state = dict(aggregate.active_chat_state)
+        pending_ids = _positive_int_tuple(
+            active_state.get("pending_message_log_ids"),
+            field_name="active_chat_state.pending_message_log_ids",
+            allow_empty=True,
+        )
+        retry_chain: dict[str, Any] | None = None
+        retry_exhausted = False
+        if actor_native:
+            if selected_message_log_ids and pending_ids == selected_message_log_ids:
+                retry_chain = _next_active_chat_round_retry_chain(
+                    active_state,
+                    active_epoch=aggregate.active_epoch,
+                    message_log_ids=selected_message_log_ids,
+                    event=event,
+                    reason=failure_message or failure_code,
+                    failure_code=failure_code,
+                )
+                retry_exhausted = (
+                    int(retry_chain["attempt_count"])
+                    >= self._config.active_chat_round_max_attempts
+                )
+            elif not selected_message_log_ids:
+                retry_chain = {
+                    "active_epoch": aggregate.active_epoch,
+                    "message_log_ids": list(pending_ids),
+                    "attempt_count": self._config.active_chat_round_max_attempts,
+                    "last_event_id": event.event_id,
+                    "last_reason": "active_chat_round_selection_invalid",
+                    "last_failure_code": failure_code,
+                }
+                retry_exhausted = True
         operation = SessionOperation(
             operation_id=operation_id,
             kind="active_chat_round",
@@ -5456,15 +5952,17 @@ class AgentSessionReducer:
                 "outcome": ActiveChatRoundOutcome.RETRY.value,
                 "consumed_message_log_ids": [],
                 "external_action_effect_ids": [],
+                **(
+                    {
+                        "retry_chain": retry_chain,
+                        "retry_exhausted": retry_exhausted,
+                    }
+                    if retry_chain is not None
+                    else {}
+                ),
             },
         )
         data = _without_operation_fence(aggregate.data, operation_id)
-        active_state = dict(aggregate.active_chat_state)
-        pending_ids = _positive_int_tuple(
-            active_state.get("pending_message_log_ids"),
-            field_name="active_chat_state.pending_message_log_ids",
-            allow_empty=True,
-        )
         next_state: dict[str, Any] = {
             **active_state,
             "round_operation_id": "",
@@ -5473,17 +5971,46 @@ class AgentSessionReducer:
             "round_last_failure_code": failure_code,
             "updated_at": _event_time(aggregate, event),
         }
+        if retry_chain is not None:
+            next_state[_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY] = retry_chain
+        else:
+            next_state.pop(_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY, None)
         effects: tuple[SessionEffect, ...] = ()
-        if pending_ids:
+        if actor_native and retry_exhausted:
+            next_state[_ACTIVE_CHAT_ROUND_RETRY_BLOCKER_STATE_KEY] = {
+                **(retry_chain or {}),
+                "exhausted_at": event.occurred_at,
+                "max_attempts": self._config.active_chat_round_max_attempts,
+            }
+            exit_effect, exit_intent = self._enqueue_active_chat_exit_request(
+                aggregate,
+                event,
+                trigger="active_chat_round_retries_exhausted",
+                input_watermark=_message_watermark(data),
+            )
+            data = _with_control_intent(
+                data,
+                effect_kind=AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST,
+                intent=exit_intent,
+            )
+            effects = (exit_effect,)
+            next_state["exit_requested"] = True
+        elif pending_ids:
             next_state, retry_effect, round_intent = (
                 self._schedule_active_chat_round_due(
                 aggregate,
                 event,
                 active_chat_state=next_state,
                 input_watermark=_message_watermark(data),
-                delay_seconds=self._config.busy_review_retry_seconds,
+                    delay_seconds=self._config.busy_review_retry_seconds,
                 )
             )
+            if retry_chain is not None:
+                next_state[_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY] = {
+                    **retry_chain,
+                    "next_attempt_at": _event_time(aggregate, event)
+                    + self._config.busy_review_retry_seconds,
+                }
             data = _with_control_intent(
                 data,
                 effect_kind=AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE,
@@ -5499,9 +6026,13 @@ class AgentSessionReducer:
         return SessionTransition(
             aggregate=target,
             disposition=(
-                "active_chat_round_effect_failed_retry_scheduled"
-                if effects
-                else "active_chat_round_effect_failed"
+                "active_chat_round_retries_exhausted_exit_requested"
+                if actor_native and retry_exhausted
+                else (
+                    "active_chat_round_effect_failed_retry_scheduled"
+                    if effects
+                    else "active_chat_round_effect_failed"
+                )
             ),
             caused_operation_id=operation_id,
             caused_plan_id=aggregate.current_plan_id,
@@ -5511,6 +6042,11 @@ class AgentSessionReducer:
                 "failure": failure,
                 "remaining_message_log_ids": list(pending_ids),
                 "round_schedule_id": _text(next_state.get("round_schedule_id")),
+                "round_retry_attempt_count": (
+                    int(retry_chain["attempt_count"])
+                    if retry_chain is not None
+                    else 0
+                ),
             },
             reason=failure_code,
         )
@@ -7109,6 +7645,17 @@ def _effect_failure_record(event: SessionEventEnvelope) -> dict[str, Any]:
         **_effect_completion_record(event),
         "failure_code": _text(event.payload.get("failure_code")),
         "failure_message": _text(event.payload.get("failure_message")),
+        **(
+            {
+                "terminal_event_kind": str(event.kind),
+                "quarantine_reason_code": _text(event.payload.get("reason_code")),
+                "quarantine_reason_message": _text(
+                    event.payload.get("reason_message")
+                ),
+            }
+            if event.kind == AgentSessionEventKind.EFFECT_QUARANTINED
+            else {}
+        ),
     }
 
 
@@ -7183,6 +7730,21 @@ def _effect_event_provenance_mismatch(
     expected_contract_signature: object = None,
 ) -> tuple[str, ...]:
     """Validate complete executor provenance, treating omissions as stale."""
+
+    if event.kind == AgentSessionEventKind.EFFECT_QUARANTINED:
+        return _effect_quarantine_provenance_mismatch(
+            aggregate,
+            event,
+            expected_effect_kind=expected_effect_kind,
+            expected_effect_id=expected_effect_id,
+            expected_idempotency_key=expected_idempotency_key,
+            expected_operation_id=expected_operation_id,
+            expected_plan_id=expected_plan_id,
+            expected_causation_id=expected_causation_id,
+            expected_ownership_generation=expected_ownership_generation,
+            expected_contract_version=expected_contract_version,
+            expected_contract_signature=expected_contract_signature,
+        )
 
     mismatch: list[str] = []
     effect_kind = _exact_json_text(expected_effect_kind)
@@ -7361,6 +7923,126 @@ def _effect_event_provenance_mismatch(
     return tuple(dict.fromkeys(mismatch))
 
 
+def _effect_quarantine_provenance_mismatch(
+    aggregate: AgentSessionAggregate,
+    event: SessionEventEnvelope,
+    *,
+    expected_effect_kind: object,
+    expected_effect_id: object,
+    expected_idempotency_key: object,
+    expected_operation_id: object,
+    expected_plan_id: object,
+    expected_causation_id: object,
+    expected_ownership_generation: object,
+    expected_contract_version: object,
+    expected_contract_signature: object,
+) -> tuple[str, ...]:
+    """Validate an effect-store quarantine without trusting its missing fences.
+
+    ``EffectQuarantined`` is emitted by the durable effect store after it has
+    terminalized a known outbox row, but it intentionally carries only effect
+    identity and diagnostic fields.  The actor therefore rebinds it to the
+    already-persisted operation/control fence instead of accepting a caller's
+    replacement for those fields.
+    """
+
+    mismatch: list[str] = []
+    effect_kind = _exact_json_text(expected_effect_kind)
+    effect_id = _exact_json_text(expected_effect_id)
+    idempotency_key = _exact_json_text(expected_idempotency_key)
+    operation_id = _exact_json_text(expected_operation_id)
+    plan_id = _exact_json_text(expected_plan_id)
+    causation_id = _exact_json_text(expected_causation_id)
+    if not effect_kind:
+        mismatch.append("expected_effect_kind_invalid")
+    if not effect_id:
+        mismatch.append("expected_effect_id_invalid")
+    if idempotency_key is None:
+        mismatch.append("expected_idempotency_key_invalid")
+        idempotency_key = ""
+    if operation_id is None:
+        mismatch.append("expected_operation_id_invalid")
+        operation_id = ""
+    if plan_id is None:
+        mismatch.append("expected_plan_id_invalid")
+        plan_id = ""
+    if not causation_id:
+        mismatch.append("expected_causation_id_invalid")
+
+    version_valid, contract_version = _strict_optional_nonnegative_int(
+        expected_contract_version
+    )
+    if not version_valid:
+        mismatch.append("expected_contract_version_invalid")
+    if contract_version is None:
+        contract_version = 1
+    elif contract_version < 1:
+        mismatch.append("expected_contract_version_invalid")
+        contract_version = 1
+    expected_signature = _exact_json_text(expected_contract_signature)
+    if expected_contract_signature is not None and expected_signature is None:
+        mismatch.append("expected_contract_signature_invalid")
+        expected_signature = ""
+    try:
+        contract = builtin_effect_contract(effect_kind or "", version=contract_version)
+    except KeyError:
+        mismatch.append("contract_version_unknown")
+        contract = None
+    if contract is not None:
+        if expected_signature and expected_signature != contract.signature:
+            mismatch.append("expected_contract_signature_changed")
+        expected_signature = expected_signature or contract.signature
+
+    if event.source != _EFFECT_QUARANTINE_EVENT_SOURCE:
+        mismatch.append("quarantine_source_changed")
+    if effect_id:
+        expected_event_id = derived_effect_event_id(
+            key=aggregate.key,
+            effect_id=effect_id,
+            outcome="quarantined",
+        )
+        if event.event_id != expected_event_id:
+            mismatch.append("quarantine_event_id_changed")
+    if causation_id and event.causation_id != causation_id:
+        mismatch.append("causation_id_changed")
+
+    ownership_valid, ownership_generation = _strict_optional_nonnegative_int(
+        expected_ownership_generation
+    )
+    if not ownership_valid or ownership_generation is None:
+        mismatch.append("expected_ownership_generation_invalid")
+    elif (
+        event.ownership_generation != ownership_generation
+        or aggregate.ownership_generation != ownership_generation
+    ):
+        mismatch.append("ownership_generation_changed")
+
+    for field_name, expected in {
+        "effect_id": effect_id or "",
+        "effect_kind": effect_kind or "",
+        "idempotency_key": idempotency_key,
+        "operation_id": operation_id,
+        "contract_signature": expected_signature or "",
+    }.items():
+        if _exact_json_text(event.payload.get(field_name)) != expected:
+            mismatch.append(f"{field_name}_changed")
+    if _strict_nonnegative_int(event.payload.get("contract_version")) != contract_version:
+        mismatch.append("contract_version_changed")
+    if "attempt_count" not in event.payload or _strict_nonnegative_int(
+        event.payload.get("attempt_count")
+    ) is None:
+        mismatch.append("attempt_count_invalid")
+    if not _text(event.payload.get("failure_code")):
+        mismatch.append("failure_code_missing")
+    if not isinstance(event.payload.get("failure_message"), str):
+        mismatch.append("failure_message_invalid")
+    if not _text(event.payload.get("reason_code")):
+        mismatch.append("reason_code_missing")
+    if not isinstance(event.payload.get("reason_message"), str):
+        mismatch.append("reason_message_invalid")
+    return tuple(dict.fromkeys(mismatch))
+
+
 def _planner_outcome_values(payload: Mapping[str, Any]) -> dict[str, Any]:
     allowed_fields = {
         "active_reply_threshold",
@@ -7423,10 +8105,14 @@ def _durable_effect(
     )
 
 
-def _effect_contract_snapshot(effect_kind: str) -> dict[str, Any]:
+def _effect_contract_snapshot(
+    effect_kind: str,
+    *,
+    version: int | None = None,
+) -> dict[str, Any]:
     """Return the exact contract identity a new operation expects later."""
 
-    contract = builtin_effect_contract(effect_kind)
+    contract = builtin_effect_contract(effect_kind, version=version)
     return {
         "contract_version": contract.version,
         "contract_signature": contract.signature,
@@ -7437,6 +8123,167 @@ def _mapping(value: object) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): item for key, item in value.items()}
+
+
+def _active_chat_review_handoff_certificate(
+    *,
+    review_operation_id: str,
+    source_active_epoch: int,
+    source_activity_generation: int,
+    input_watermark: int,
+    input_ledger_sequence: int,
+    message_log_ids: tuple[int, ...],
+    consumption: ConsumeMessageLedgerEntries | None,
+) -> dict[str, Any]:
+    """Create the immutable proof a v3 bootstrap must retain from review.
+
+    The certificate is deliberately created from the same reducer transition as
+    the review operation and its ledger consumption.  SQLite later compares it
+    with the persisted operation and consumption rows before an Active Chat
+    bootstrap effect can be committed.
+    """
+
+    normalized_ids = _positive_int_tuple(
+        message_log_ids,
+        field_name="active chat handoff message_log_ids",
+        allow_empty=True,
+    )
+    if consumption is None:
+        if normalized_ids:
+            raise ValueError(
+                "non-empty active chat handoff requires review consumption"
+            )
+        consumption_id = ""
+        consumption_idempotency_key = ""
+        completion_event_id = ""
+    else:
+        if consumption.kind is not MessageLedgerConsumptionKind.REVIEW:
+            raise ValueError("active chat handoff must use review consumption")
+        if consumption.operation_id != review_operation_id:
+            raise ValueError("active chat handoff consumption changed review operation")
+        if consumption.input_watermark != input_watermark:
+            raise ValueError("active chat handoff consumption changed watermark")
+        if consumption.input_ledger_sequence != input_ledger_sequence:
+            raise ValueError("active chat handoff consumption changed ledger boundary")
+        if tuple(sorted(normalized_ids)) != consumption.explicit_message_log_ids:
+            raise ValueError("active chat handoff consumption changed message selection")
+        consumption_id = consumption.consumption_id
+        consumption_idempotency_key = consumption.idempotency_key
+        completion_event_id = consumption.source_event_id
+    return {
+        "version": _ACTIVE_CHAT_HANDOFF_CERTIFICATE_VERSION,
+        "review_operation_id": _required_nonempty_text(
+            review_operation_id,
+            field_name="active chat handoff review_operation_id",
+        ),
+        "source_active_epoch": _required_nonnegative_handoff_int(
+            source_active_epoch,
+            field_name="active chat handoff source_active_epoch",
+        ),
+        "source_activity_generation": _required_nonnegative_handoff_int(
+            source_activity_generation,
+            field_name="active chat handoff source_activity_generation",
+        ),
+        "input_watermark": _required_nonnegative_handoff_int(
+            input_watermark,
+            field_name="active chat handoff input_watermark",
+        ),
+        "input_ledger_sequence": _required_nonnegative_handoff_int(
+            input_ledger_sequence,
+            field_name="active chat handoff input_ledger_sequence",
+        ),
+        "message_log_ids": list(normalized_ids),
+        "review_consumption_id": consumption_id,
+        "review_consumption_idempotency_key": consumption_idempotency_key,
+        "review_completion_event_id": completion_event_id,
+    }
+
+
+def _parse_active_chat_review_handoff_certificate(
+    value: object,
+    *,
+    field_name: str,
+) -> dict[str, Any]:
+    """Validate one persisted review-to-bootstrap handoff certificate."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be an object")
+    version = _strict_nonnegative_int(value.get("version"))
+    if version != _ACTIVE_CHAT_HANDOFF_CERTIFICATE_VERSION:
+        raise ValueError(f"{field_name}.version is unsupported")
+    message_log_ids = _positive_int_tuple(
+        value.get("message_log_ids"),
+        field_name=f"{field_name}.message_log_ids",
+        allow_empty=True,
+    )
+    parsed = {
+        "version": version,
+        "review_operation_id": _required_nonempty_text(
+            value.get("review_operation_id"),
+            field_name=f"{field_name}.review_operation_id",
+        ),
+        "source_active_epoch": _required_nonnegative_handoff_int(
+            value.get("source_active_epoch"),
+            field_name=f"{field_name}.source_active_epoch",
+        ),
+        "source_activity_generation": _required_nonnegative_handoff_int(
+            value.get("source_activity_generation"),
+            field_name=f"{field_name}.source_activity_generation",
+        ),
+        "input_watermark": _required_nonnegative_handoff_int(
+            value.get("input_watermark"),
+            field_name=f"{field_name}.input_watermark",
+        ),
+        "input_ledger_sequence": _required_nonnegative_handoff_int(
+            value.get("input_ledger_sequence"),
+            field_name=f"{field_name}.input_ledger_sequence",
+        ),
+        "message_log_ids": list(message_log_ids),
+        "review_consumption_id": _optional_exact_handoff_text(
+            value.get("review_consumption_id"),
+            field_name=f"{field_name}.review_consumption_id",
+        ),
+        "review_consumption_idempotency_key": _optional_exact_handoff_text(
+            value.get("review_consumption_idempotency_key"),
+            field_name=(
+                f"{field_name}.review_consumption_idempotency_key"
+            ),
+        ),
+        "review_completion_event_id": _optional_exact_handoff_text(
+            value.get("review_completion_event_id"),
+            field_name=f"{field_name}.review_completion_event_id",
+        ),
+    }
+    consumption_fields = (
+        "review_consumption_id",
+        "review_consumption_idempotency_key",
+        "review_completion_event_id",
+    )
+    if message_log_ids and any(not parsed[field] for field in consumption_fields):
+        raise ValueError(f"{field_name} omits review consumption identity")
+    if not message_log_ids and any(parsed[field] for field in consumption_fields):
+        raise ValueError(f"{field_name} has consumption identity without messages")
+    return parsed
+
+
+def _required_nonnegative_handoff_int(value: object, *, field_name: str) -> int:
+    """Return a strict non-negative certificate integer."""
+
+    normalized = _strict_nonnegative_int(value)
+    if normalized is None:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return normalized
+
+
+def _optional_exact_handoff_text(value: object, *, field_name: str) -> str:
+    """Return optional exact certificate text without coercion."""
+
+    if value is None:
+        return ""
+    text = _exact_json_text(value)
+    if text is None:
+        raise ValueError(f"{field_name} must be JSON text")
+    return text
 
 
 def _positive_int_tuple(
@@ -7546,6 +8393,256 @@ def _active_reply_selected_message_log_ids(
             "active reply operation selection exceeds its captured watermark"
         )
     return selected
+
+
+def _is_actor_native_active_chat_workflow(
+    fence: Mapping[str, Any],
+    *,
+    effect_kind: AgentSessionEffectKind,
+) -> bool:
+    """Return whether one effect was created with the v3 Actor contract."""
+
+    version = _strict_nonnegative_int(fence.get("contract_version"))
+    return (
+        version == _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION
+        and _exact_json_text(fence.get("effect_kind")) == effect_kind.value
+    )
+
+
+def _active_chat_workflow_contract_version(active_state: Mapping[str, Any]) -> int:
+    """Return the persisted Active Chat workflow contract for one session.
+
+    A missing marker belongs to a pre-v3 aggregate.  Pin it to the last
+    compatible v2 workflow rather than allowing a newly-added current contract
+    to reinterpret an existing Active Chat session during recovery.
+    """
+
+    version = _strict_nonnegative_int(
+        active_state.get(_ACTIVE_CHAT_WORKFLOW_CONTRACT_VERSION_KEY)
+    )
+    if version == _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION:
+        return version
+    return 2
+
+
+def _next_active_chat_round_retry_chain(
+    active_state: Mapping[str, Any],
+    *,
+    active_epoch: int,
+    message_log_ids: tuple[int, ...],
+    event: SessionEventEnvelope,
+    reason: str,
+    failure_code: str,
+) -> dict[str, Any]:
+    """Advance one bounded v3 retry chain for an unchanged round selection."""
+
+    if not message_log_ids:
+        raise ValueError("active chat retry chain requires selected messages")
+    previous = _mapping(active_state.get(_ACTIVE_CHAT_ROUND_RETRY_CHAIN_STATE_KEY))
+    previous_epoch = _strict_nonnegative_int(previous.get("active_epoch"))
+    previous_attempt_count = _strict_nonnegative_int(previous.get("attempt_count"))
+    try:
+        previous_message_log_ids = _positive_int_tuple(
+            previous.get("message_log_ids"),
+            field_name="active_chat_state.round_retry_chain.message_log_ids",
+            allow_empty=False,
+        )
+    except (TypeError, ValueError):
+        previous_message_log_ids = ()
+    same_chain = (
+        previous_epoch == active_epoch
+        and previous_attempt_count is not None
+        and previous_message_log_ids == message_log_ids
+    )
+    base_attempt_count = (
+        previous_attempt_count
+        if same_chain and previous_attempt_count is not None
+        else 0
+    )
+    attempt_count = base_attempt_count + 1
+    return {
+        "active_epoch": active_epoch,
+        "message_log_ids": list(message_log_ids),
+        "attempt_count": attempt_count,
+        "last_event_id": event.event_id,
+        "last_reason": reason,
+        "last_failure_code": failure_code,
+    }
+
+
+def _active_chat_bootstrap_correction(
+    active_state: Mapping[str, Any],
+    *,
+    disposition: ActiveChatBootstrapDisposition,
+    config: IdleExitReducerConfig,
+) -> dict[str, float]:
+    """Apply a deterministic bootstrap curve correction to Actor state.
+
+    The bootstrap model chooses only a discrete disposition.  The reducer owns
+    the numerical interest and decay adjustment, so a delayed model result
+    cannot write arbitrary state values.
+    """
+
+    tick_count = _optional_nonnegative_int(active_state.get("tick_count")) or 0
+    current_interest = _finite_nonnegative_float(
+        active_state.get("interest_value"),
+        field_name="active_chat_state.interest_value",
+        default=config.provisional_active_chat_interest,
+    )
+    preset_interest, preset_half_life = _ACTOR_NATIVE_BOOTSTRAP_PRESETS[disposition]
+    default_curve_interest = _interest_after_active_chat_ticks(
+        config.provisional_active_chat_interest,
+        half_life_seconds=config.provisional_active_chat_half_life_seconds,
+        tick_count=tick_count,
+        tick_interval_seconds=config.active_chat_tick_interval_seconds,
+    )
+    preset_curve_interest = _interest_after_active_chat_ticks(
+        preset_interest,
+        half_life_seconds=preset_half_life,
+        tick_count=tick_count,
+        tick_interval_seconds=config.active_chat_tick_interval_seconds,
+    )
+    interest_correction = preset_curve_interest - default_curve_interest
+    return {
+        "interest_value": min(
+            config.active_chat_max_interest,
+            max(0.0, current_interest + interest_correction),
+        ),
+        "decay_half_life_seconds": preset_half_life,
+        "interest_correction": interest_correction,
+    }
+
+
+def _interest_after_active_chat_ticks(
+    interest_value: float,
+    *,
+    half_life_seconds: float,
+    tick_count: int,
+    tick_interval_seconds: float,
+) -> float:
+    """Return one deterministic exponential-decay curve point."""
+
+    if tick_count <= 0:
+        return interest_value
+    if half_life_seconds <= 0.0:
+        return 0.0
+    elapsed = tick_count * max(0.0, tick_interval_seconds)
+    return interest_value * (0.5 ** (elapsed / half_life_seconds))
+
+
+def _active_chat_round_selected_message_log_ids(
+    fence: Mapping[str, Any],
+    *,
+    input_watermark: int,
+) -> tuple[int, ...]:
+    """Return the exact v3 ledger selection authorized for one chat round."""
+
+    selected = _positive_int_tuple(
+        fence.get("message_log_ids"),
+        field_name="active_chat_round.operation_fence.message_log_ids",
+        allow_empty=False,
+    )
+    if any(message_log_id > input_watermark for message_log_id in selected):
+        raise ValueError(
+            "active chat round selection exceeds its captured watermark"
+        )
+    if not _exact_json_text(fence.get("round_schedule_id")):
+        raise ValueError("active chat round omitted its durable schedule id")
+    return selected
+
+
+def _validate_actor_active_chat_round_completion(
+    result: ActiveChatRoundCompletionResult,
+    *,
+    selected_message_log_ids: tuple[int, ...],
+) -> None:
+    """Fence v3 round consumption, actions, and semantic interest choices."""
+
+    selected = set(selected_message_log_ids)
+    if result.outcome is ActiveChatRoundOutcome.RETRY:
+        if result.consumed_message_log_ids or result.external_action_intents:
+            raise ValueError(
+                "retry active chat round cannot consume messages or propose actions"
+            )
+        if result.interest_delta != 0.0:
+            raise ValueError("retry active chat round must not adjust interest")
+        return
+    if result.consumed_message_log_ids != selected_message_log_ids:
+        raise ValueError(
+            "active chat round must consume exactly its selected messages in ledger order"
+        )
+    intents = result.external_action_intents
+    if result.outcome is ActiveChatRoundOutcome.EXIT:
+        if intents:
+            raise ValueError("active chat exit round cannot propose visible actions")
+        if result.interest_delta != 0.0:
+            raise ValueError("active chat exit round must not adjust interest")
+        return
+    if result.outcome is not ActiveChatRoundOutcome.CONTINUE:
+        raise ValueError("active chat round has an unsupported outcome")
+    if len(intents) > 1:
+        raise ValueError("actor active chat v3 permits at most one visible action")
+    if not intents:
+        if result.interest_delta not in {-10.0, -5.0}:
+            raise ValueError(
+                "active chat no-reply round has an invalid interest adjustment"
+            )
+        return
+    intent = intents[0]
+    if not isinstance(intent, ExternalActionIntent) or intent.action_ordinal != 0:
+        raise ValueError("active chat round action ordinal is invalid")
+    payload = intent.payload
+    if intent.kind is ExternalActionKind.SEND_REPLY:
+        _validate_active_chat_round_payload_fields(
+            payload,
+            allowed={"text", "quote_message_log_id"},
+            action_name="send_reply",
+        )
+        if not isinstance(payload.get("text"), str) or not payload["text"].strip():
+            raise ValueError("active chat send_reply intent has invalid text")
+        _validate_active_reply_target_message_log_id(
+            payload.get("quote_message_log_id"),
+            selected=selected,
+            field_name="quote_message_log_id",
+        )
+        if result.interest_delta not in {5.0, 10.0}:
+            raise ValueError("active chat reply has an invalid interest adjustment")
+        return
+    if intent.kind is ExternalActionKind.SEND_REACTION:
+        _validate_active_chat_round_payload_fields(
+            payload,
+            allowed={"action", "emoji_id", "message_log_id"},
+            action_name="send_reaction",
+        )
+        if payload.get("action") not in {"add", "remove"}:
+            raise ValueError("active chat send_reaction intent has invalid action")
+        if not isinstance(payload.get("emoji_id"), str) or not payload["emoji_id"].strip():
+            raise ValueError("active chat send_reaction intent has invalid emoji_id")
+        _validate_active_reply_target_message_log_id(
+            payload.get("message_log_id"),
+            selected=selected,
+            field_name="message_log_id",
+        )
+        if result.interest_delta != 2.0:
+            raise ValueError("active chat reaction has an invalid interest adjustment")
+        return
+    raise ValueError("actor active chat v3 does not permit this external action")
+
+
+def _validate_active_chat_round_payload_fields(
+    payload: Mapping[str, Any],
+    *,
+    allowed: set[str],
+    action_name: str,
+) -> None:
+    """Reject raw platform identities and unsupported v3 action fields."""
+
+    unknown = sorted(set(payload).difference(allowed))
+    if unknown:
+        raise ValueError(
+            f"active chat {action_name} intent has unsupported fields: "
+            + ", ".join(unknown)
+        )
 
 
 def _validate_active_reply_external_action_intents(
@@ -7948,6 +9045,20 @@ def _external_action_completion_mismatch(
     expected_status = _exact_json_text(expected.get("status"))
     if expected_status != "pending" and receipt_status != expected_status:
         mismatch.append("receipt_status_changed")
+
+    # v2 action effects are completed by the receipt-backed action handler.
+    # The handler returns the receipt identity separately from the outbox
+    # effect identity, so require it before accepting a terminal receipt
+    # result. v1 rows predate that completion field and retain their recovery
+    # compatibility path.
+    contract_version = _strict_nonnegative_int(expected.get("contract_version"))
+    if contract_version is not None and contract_version >= 2:
+        expected_receipt_key = _exact_json_text(expected.get("idempotency_key"))
+        receipt_key = _exact_json_text(event.payload.get("receipt_idempotency_key"))
+        if receipt_key is None:
+            mismatch.append("receipt_idempotency_key_missing")
+        elif receipt_key != expected_receipt_key:
+            mismatch.append("receipt_idempotency_key_changed")
     return tuple(dict.fromkeys(mismatch))
 
 
@@ -8295,6 +9406,15 @@ def _exact_json_text(value: object) -> str | None:
     except UnicodeEncodeError:
         return None
     return value
+
+
+def _required_nonempty_text(value: object, *, field_name: str) -> str:
+    """Return one exact non-empty JSON text value or raise a reducer error."""
+
+    text = _exact_json_text(value)
+    if not text:
+        raise ValueError(f"{field_name} must be non-empty JSON text")
+    return text
 
 
 def _is_nonnegative_finite(value: object) -> bool:

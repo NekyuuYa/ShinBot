@@ -16,6 +16,7 @@ from shinbot.agent.runtime.session_actor.effect_contracts import (
     builtin_effect_contract,
     builtin_effect_contract_authority,
     resolved_outcome_fence_fields,
+    validate_effect_declaration,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
     ClaimedEffect,
@@ -1072,11 +1073,20 @@ async def test_durable_fences_override_handler_completion_payload() -> None:
     assert event.payload["outcome"] == "planned"
 
 
-_ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
-    tuple[str, str, str, set[str]],
-    ...,
-] = (
-    (
+@dataclass(slots=True, frozen=True)
+class _ActorEffectContractExpectation:
+    """Frozen v1/v2 compatibility and optional current-v3 contract facts."""
+
+    effect_kind: str
+    v1_signature: str
+    v2_signature: str
+    v2_outcome_fence_fields: set[str]
+    v3_signature: str | None = None
+    v3_outcome_fence_fields: set[str] | None = None
+
+
+_ACTOR_EFFECT_CONTRACT_MATRIX: tuple[_ActorEffectContractExpectation, ...] = (
+    _ActorEffectContractExpectation(
         "enqueue_idle_review_planning_deadline",
         "3ef2697bcae60f3ad1b269917daf640ad8fc3601a8d2a141484a30d28c76a97a",
         "a2dd7e9359ea9a61c99509c3d5fbd90064dc7e3b80b50aea721ab342a12fea8f",
@@ -1092,7 +1102,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "trigger",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "active_chat_runtime_reconciliation",
         "a64a88da7387a3ca1cc305172f5b7e46bf333058ad655d0170dd0b0125887ab1",
         "effb2bc168531ce2ff402f567c813e6cecbde64f156d6735d065e00f74ba3845",
@@ -1110,7 +1120,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "reconciliation_cycle",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "idle_review_planning_cancellation_reconciliation",
         "6850fb9f10fdb5d0b139e39bcb1e394b9f6c69a591a63ab5ed63458272fc331d",
         "30ce30bf2da1fb2610df3bf08860b0e2cb0e99ad4bcebbc69742583fa33e49af",
@@ -1128,7 +1138,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "reconciliation_cycle",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "cancel_idle_review_planning",
         "b33dee9304b03b6ba87ace4dcb82f640a76215503a6ef8a04e8aca3115eeb2df",
         "854182201f0f1a0a2513a013edc439c18165513cda63eb449166afde63f1ddae",
@@ -1143,7 +1153,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "superseded_by_event_id",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "stop_active_chat_runtime",
         "e972918e09cf20bc6ab80194636dd2392e44a270e8cdade9ca1f1776dccc2400",
         "931c7b0614c2c833f25a21bca0938ccd5fd26fa1e546381e8af3851096f5f286",
@@ -1157,7 +1167,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "failure_event_id",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "cancel_review_workflow",
         "ee222172ee0f101d8ee8585f380685f1445f29b5c44f82ec0326277fd2da4370",
         "bfa750297968f3f079d2e6070dccb3d5c40dd4916bee27e299144ee6752a68a9",
@@ -1172,7 +1182,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "superseded_by_event_id",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "enqueue_active_chat_exit_request",
         "793ade014d0032b31aa0177420e41997a02a3a66fb4e4b7cad44828fa9789cff",
         "10b120c016023a6c99c997c0bbcc41d7cbfd2cb15c2cc4ba3ebe4f7b9f2f86df",
@@ -1190,7 +1200,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "expected_message_watermark",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "enqueue_active_chat_round_due",
         "0eeed00a50957415526ab0c2d6caf4157c38aee6307aff095b89ebf0dfdd3230",
         "cc4ab0a043d88d9f926847fb02ad91532672adf1ab3ac077c0a4215b055bfa61",
@@ -1207,7 +1217,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "schedule_revision",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "run_active_reply_workflow",
         "8f0a8991b6202f0a277d1d16c35de09cf8f02951f54e04f886b00c93d7f80f80",
         "a7b5461c1882b7bbd947e12fd9ba39e7dfaf8e35ef1d267cd8fa5d3c1e654c80",
@@ -1221,7 +1231,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "failure_event_id",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "run_active_chat_bootstrap",
         "1f4b0372633f7ca9f794618409fad81a92721cc108ede35c457092a3f43c0f94",
         "7a9e87fa306a389432fa886a7b42b5d12ad75b3fd84a95f7467e85382bad20b7",
@@ -1234,8 +1244,20 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "completion_event_id",
             "failure_event_id",
         },
+        v3_signature="1b78b5d692155f549b73492f0949765c18693384cb0565f5c3c251794d59e91c",
+        v3_outcome_fence_fields={
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "handoff_message_log_ids",
+            "handoff_operation_id",
+        },
     ),
-    (
+    _ActorEffectContractExpectation(
         "run_active_chat_round",
         "883d69bc054c750c2fb7ba92b4b9e5164faacd89895e32cabdc66d6a7f0c6eb5",
         "5647695cf181283d51aa57b58989b62ffd39682f843272618939abb3610c663d",
@@ -1248,8 +1270,22 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "completion_event_id",
             "failure_event_id",
         },
+        v3_signature="6cf248e0db727b8a6542bb2347d42203ff68298660a09da8f9775fd8355199ac",
+        v3_outcome_fence_fields={
+            "plan_id",
+            "active_epoch",
+            "activity_generation",
+            "input_watermark",
+            "input_ledger_sequence",
+            "completion_event_id",
+            "failure_event_id",
+            "active_chat_interest_value",
+            "bootstrap_disposition",
+            "message_log_ids",
+            "round_schedule_id",
+        },
     ),
-    (
+    _ActorEffectContractExpectation(
         "run_review_workflow",
         "9edc415f442b9136e24864705f0df9711b125d9375d32befc47776a01011013e",
         "e1bbaa80c643890b441264013887dbfc202abaa03c8cc47f8ab2547b14d7b250",
@@ -1263,7 +1299,7 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
             "failure_event_id",
         },
     ),
-    (
+    _ActorEffectContractExpectation(
         "run_idle_review_planning",
         "bbca6267e9a16a690312269aa770263a99180ee753e1abcb75aeeb79fbc8562d",
         "13f2272fb25d1e4cb5f6cc5135026e3588cd597cae2911ad25460d599f8477ee",
@@ -1283,69 +1319,126 @@ _ACTOR_EFFECT_CONTRACT_MATRIX: tuple[
 
 
 @pytest.mark.parametrize(
-    ("effect_kind", "v1_signature", "v2_signature", "expected_fields"),
+    "expectation",
     _ACTOR_EFFECT_CONTRACT_MATRIX,
+    ids=lambda expectation: expectation.effect_kind,
 )
 def test_builtin_actor_effect_contract_matrix_is_exact(
-    effect_kind: str,
-    v1_signature: str,
-    v2_signature: str,
-    expected_fields: set[str],
+    expectation: _ActorEffectContractExpectation,
 ) -> None:
-    current = builtin_effect_contract(effect_kind)
-    legacy = builtin_effect_contract(effect_kind, version=1)
+    current = builtin_effect_contract(expectation.effect_kind)
+    legacy = builtin_effect_contract(expectation.effect_kind, version=1)
+    v2 = builtin_effect_contract(expectation.effect_kind, version=2)
 
-    assert current.version == 2
-    assert current.signature == v2_signature
+    assert v2.version == 2
+    assert v2.signature == expectation.v2_signature
     assert legacy.version == 1
-    assert legacy.signature == v1_signature
+    assert legacy.signature == expectation.v1_signature
     assert legacy.outcome_fence_fields is None
     assert legacy.signature == _historical_contract_signature(legacy)
     legacy_expected = set(DEFAULT_OUTCOME_FENCE_FIELDS)
-    if effect_kind in {
+    if expectation.effect_kind in {
         "cancel_review_workflow",
         "enqueue_active_chat_exit_request",
         "enqueue_active_chat_round_due",
     }:
-        legacy_expected.update(expected_fields)
+        legacy_expected.update(expectation.v2_outcome_fence_fields)
     assert set(resolved_outcome_fence_fields(legacy)) == legacy_expected
+    assert v2.outcome_fence_fields is not None
+    assert set(v2.outcome_fence_fields) == expectation.v2_outcome_fence_fields
+    assert v2.signature != legacy.signature
+
+    if expectation.v3_signature is None:
+        assert expectation.v3_outcome_fence_fields is None
+        assert current == v2
+        return
+
+    assert expectation.v3_outcome_fence_fields is not None
+    assert current.version == 3
+    assert current.signature == expectation.v3_signature
     assert current.outcome_fence_fields is not None
-    assert set(current.outcome_fence_fields) == expected_fields
-    assert current.signature != legacy.signature
+    assert set(current.outcome_fence_fields) == expectation.v3_outcome_fence_fields
+    assert current.signature != v2.signature
+
+
+def _valid_outcome_fence_payload(
+    field_names: set[str] | tuple[str, ...],
+) -> dict[str, object]:
+    """Build schema-valid values for built-in outcome-fence declarations."""
+
+    nonnegative_integer_fields = {
+        "action_ordinal",
+        "active_epoch",
+        "activity_generation",
+        "expected_active_epoch",
+        "expected_activity_generation",
+        "expected_message_watermark",
+        "expected_state_revision",
+        "input_ledger_sequence",
+        "input_watermark",
+        "reconciliation_cycle",
+        "schedule_revision",
+        "state_revision",
+    }
+    values: dict[str, object] = {}
+    for field_name in field_names:
+        if field_name in {"handoff_message_log_ids", "message_log_ids"}:
+            values[field_name] = [101, 102]
+        elif field_name == "active_chat_interest_value":
+            values[field_name] = 12.5
+        elif field_name == "bootstrap_disposition":
+            values[field_name] = "watch"
+        elif field_name == "handoff_operation_id":
+            values[field_name] = "handoff-operation-1"
+        elif field_name == "round_schedule_id":
+            values[field_name] = "round-schedule-1"
+        elif field_name in nonnegative_integer_fields:
+            values[field_name] = 7
+        else:
+            values[field_name] = f"durable:{field_name}"
+    return values
 
 
 @pytest.mark.parametrize(
-    ("effect_kind", "_v1_signature", "_v2_signature", "expected_fields"),
+    "expectation",
     _ACTOR_EFFECT_CONTRACT_MATRIX,
+    ids=lambda expectation: expectation.effect_kind,
 )
 def test_durable_effect_requires_every_current_contract_fence_field(
-    effect_kind: str,
-    _v1_signature: str,
-    _v2_signature: str,
-    expected_fields: set[str],
+    expectation: _ActorEffectContractExpectation,
 ) -> None:
-    payload = dict.fromkeys(expected_fields)
+    current = builtin_effect_contract(expectation.effect_kind)
+    expected_fields = set(current.outcome_fence_fields or ())
+    payload = _valid_outcome_fence_payload(expected_fields)
     effect = session_actor_reducer._durable_effect(
         effect_id="effect-1",
-        kind=effect_kind,
+        kind=expectation.effect_kind,
         idempotency_key="effect-1",
         operation_id="operation-1",
         payload=payload,
     )
 
-    assert effect.contract_version == 2
-    assert effect.contract_signature == builtin_effect_contract(effect_kind).signature
-
-    missing_field = min(expected_fields)
-    payload.pop(missing_field)
-    with pytest.raises(ValueError, match=missing_field):
-        session_actor_reducer._durable_effect(
-            effect_id="effect-2",
-            kind=effect_kind,
-            idempotency_key="effect-2",
-            operation_id="operation-2",
-            payload=payload,
+    assert effect.contract_version == current.version
+    assert effect.contract_signature == current.signature
+    assert (
+        validate_effect_declaration(
+            effect,
+            authority=builtin_effect_contract_authority(),
         )
+        == current
+    )
+
+    for missing_field in sorted(expected_fields):
+        incomplete_payload = dict(payload)
+        incomplete_payload.pop(missing_field)
+        with pytest.raises(ValueError, match=missing_field):
+            session_actor_reducer._durable_effect(
+                effect_id=f"effect-missing-{missing_field}",
+                kind=expectation.effect_kind,
+                idempotency_key=f"effect-missing-{missing_field}",
+                operation_id="operation-2",
+                payload=incomplete_payload,
+            )
 
 
 @pytest.mark.parametrize(
@@ -1432,9 +1525,11 @@ def test_outcome_fence_declaration_changes_contract_signature() -> None:
         "cancel_review_workflow",
         "enqueue_active_chat_exit_request",
         "enqueue_active_chat_round_due",
+        "run_active_chat_bootstrap",
+        "run_active_chat_round",
     ),
 )
-async def test_executor_projects_only_declared_v2_completion_fences(
+async def test_executor_projects_only_declared_current_completion_fences(
     effect_kind: str,
 ) -> None:
     now = [100.0]
@@ -1442,7 +1537,7 @@ async def test_executor_projects_only_declared_v2_completion_fences(
     registry = _WakeRegistry(store.actions)
     contract = builtin_effect_contract(effect_kind)
     fence_fields = resolved_outcome_fence_fields(contract)
-    fence_payload = {field_name: f"durable:{field_name}" for field_name in fence_fields}
+    fence_payload = _valid_outcome_fence_payload(fence_fields)
     await store.seed(
         _effect(
             contract=contract,
@@ -1489,9 +1584,11 @@ async def test_executor_projects_only_declared_v2_completion_fences(
         "cancel_review_workflow",
         "enqueue_active_chat_exit_request",
         "enqueue_active_chat_round_due",
+        "run_active_chat_bootstrap",
+        "run_active_chat_round",
     ),
 )
-async def test_executor_projects_only_declared_v2_failure_fences(
+async def test_executor_projects_only_declared_current_failure_fences(
     effect_kind: str,
 ) -> None:
     now = [100.0]
@@ -1499,7 +1596,7 @@ async def test_executor_projects_only_declared_v2_failure_fences(
     registry = _WakeRegistry(store.actions)
     contract = replace(builtin_effect_contract(effect_kind), max_attempts=1)
     fence_fields = resolved_outcome_fence_fields(contract)
-    fence_payload = {field_name: f"durable:{field_name}" for field_name in fence_fields}
+    fence_payload = _valid_outcome_fence_payload(fence_fields)
     await store.seed(
         _effect(
             contract=contract,
@@ -1570,7 +1667,7 @@ async def test_executor_projects_legacy_v1_control_compatibility_fences(
     registry = _WakeRegistry(store.actions)
     contract = builtin_effect_contract(effect_kind, version=1)
     fence_fields = resolved_outcome_fence_fields(contract)
-    fence_payload = {field_name: f"durable:{field_name}" for field_name in fence_fields}
+    fence_payload = _valid_outcome_fence_payload(fence_fields)
     await store.seed(_effect(contract=contract, extra_payload=fence_payload))
 
     async def handler(_context: EffectExecutionContext) -> EffectHandlerResult:
@@ -1620,7 +1717,7 @@ async def test_executor_projects_legacy_v1_failure_compatibility_fences(
     registry = _WakeRegistry(store.actions)
     contract = builtin_effect_contract(effect_kind, version=1)
     fence_fields = resolved_outcome_fence_fields(contract)
-    fence_payload = {field_name: f"durable:{field_name}" for field_name in fence_fields}
+    fence_payload = _valid_outcome_fence_payload(fence_fields)
     await store.seed(
         _effect(contract=contract, extra_payload=fence_payload),
         attempt_count=contract.max_attempts - 1,

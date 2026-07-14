@@ -26,6 +26,16 @@ ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE: dict[str, dict[PromptStage, list[str]
     },
 }
 
+# Actor v3 has a deliberately narrower terminal-action grammar than the legacy
+# fast-mode workflow. Keep its component set separate so an actor-native round
+# cannot accidentally inherit the legacy multi-action, optional-quote contract.
+ACTOR_ACTIVE_CHAT_V3_PROMPT_COMPONENT_IDS: dict[str, dict[PromptStage, list[str]]] = {
+    "round": {
+        PromptStage.SYSTEM_BASE: ["active_chat.actor_v3.round.system"],
+        PromptStage.CONSTRAINTS: ["active_chat.actor_v3.round.constraints"],
+    },
+}
+
 
 def register_active_chat_prompt_components(
     registry: PromptRegistry,
@@ -58,6 +68,8 @@ def register_active_chat_prompt_components(
         prompt_ids=[
             "active_chat.fast_mode.system",
             "active_chat.fast_mode.constraints",
+            "active_chat.actor_v3.round.system",
+            "active_chat.actor_v3.round.constraints",
             "active_chat.handoff.overflow",
             "active_chat.handoff.digest",
             "active_chat.handoff.legacy",
@@ -75,6 +87,7 @@ def register_active_chat_prompt_components(
 
 __all__ = [
     "ACTIVE_CHAT_PROMPT_COMPONENT_IDS_BY_STAGE",
+    "ACTOR_ACTIVE_CHAT_V3_PROMPT_COMPONENT_IDS",
     "register_active_chat_prompt_components",
 ]
 

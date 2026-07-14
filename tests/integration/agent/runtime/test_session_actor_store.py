@@ -558,6 +558,338 @@ async def test_sqlite_session_store_rejects_invalid_effect_declarations_before_w
     assert tuple(mailbox) == ("processing", claim.claim_id)
 
 
+@pytest.mark.parametrize(
+    (
+        "payload_handoff_operation_id",
+        "payload_handoff_message_log_ids",
+        "certificate_updates",
+        "error_match",
+    ),
+    (
+        ("another-review", [], {}, "verified review handoff operation"),
+        ("review-handoff", [102], {}, "verified review handoff messages"),
+        (
+            "review-handoff",
+            [],
+            {"source_active_epoch": 1},
+            "handoff certificate changed review proof",
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_sqlite_session_store_rejects_v3_bootstrap_effect_handoff_tampering(
+    tmp_path: Path,
+    payload_handoff_operation_id: str,
+    payload_handoff_message_log_ids: list[int],
+    certificate_updates: dict[str, object],
+    error_match: str,
+) -> None:
+    """A v3 bootstrap effect cannot change its verified review handoff."""
+
+    database, store = _make_store(tmp_path)
+    key = SessionKey("profile-a", "instance:group:bootstrap-handoff")
+    handoff_operation_id = "review-handoff"
+    handoff_message_log_ids: list[int] = []
+    handoff_watermark = 102
+    handoff_ledger_sequence = 0
+    handoff_certificate = {
+        "version": 1,
+        "review_operation_id": handoff_operation_id,
+        "source_active_epoch": 0,
+        "source_activity_generation": 0,
+        "input_watermark": handoff_watermark,
+        "input_ledger_sequence": handoff_ledger_sequence,
+        "message_log_ids": handoff_message_log_ids,
+        "review_consumption_id": "",
+        "review_consumption_idempotency_key": "",
+        "review_completion_event_id": "",
+    }
+    bootstrap_handoff_certificate = {
+        **handoff_certificate,
+        **certificate_updates,
+    }
+
+    await store.enqueue(_event("review-handoff-completed", key))
+    review_claim = await store.claim_next(key, worker_id="review-worker")
+    assert review_claim is not None
+    initial = await store.load(key)
+    await store.commit(
+        review_claim,
+        SessionTransition(
+            aggregate=initial.advance(state_changed=False),
+            disposition="review_handoff_completed",
+            caused_operation_id=handoff_operation_id,
+            operations=(
+                SessionOperation(
+                    operation_id=handoff_operation_id,
+                    kind="review",
+                    status=SessionOperationStatus.COMPLETED,
+                    active_epoch=0,
+                    activity_generation=0,
+                    input_watermark=handoff_watermark,
+                    input_ledger_sequence=handoff_ledger_sequence,
+                    metadata={
+                        "enter_active_chat": True,
+                        "consumed_message_log_ids": handoff_message_log_ids,
+                        "active_chat_handoff": handoff_certificate,
+                    },
+                ),
+            ),
+        ),
+        expected_revision=initial.state_revision,
+    )
+
+    await store.enqueue(_event("bootstrap-effect-tampered", key))
+    bootstrap_claim = await store.claim_next(key, worker_id="bootstrap-worker")
+    assert bootstrap_claim is not None
+    current = await store.load(key)
+    bootstrap_operation_id = "bootstrap-operation"
+    bootstrap_operation = SessionOperation(
+        operation_id=bootstrap_operation_id,
+        kind="active_chat_bootstrap",
+        status=SessionOperationStatus.PENDING,
+        input_watermark=handoff_watermark,
+        input_ledger_sequence=handoff_ledger_sequence,
+        metadata={
+            "handoff_operation_id": handoff_operation_id,
+                "handoff_message_log_ids": handoff_message_log_ids,
+                "handoff_input_watermark": handoff_watermark,
+                "handoff_input_ledger_sequence": handoff_ledger_sequence,
+                "handoff_certificate": bootstrap_handoff_certificate,
+        },
+    )
+    contract = builtin_effect_contract("run_active_chat_bootstrap")
+    bootstrap_effect = SessionEffect(
+        effect_id="bootstrap-effect",
+        kind=contract.effect_kind,
+        contract_version=contract.version,
+        contract_signature=contract.signature,
+        idempotency_key="bootstrap-effect",
+        operation_id=bootstrap_operation_id,
+        payload={
+            "plan_id": "plan-a",
+            "active_epoch": 0,
+            "activity_generation": 0,
+            "input_watermark": handoff_watermark,
+            "input_ledger_sequence": handoff_ledger_sequence,
+            "completion_event_id": "bootstrap-completed",
+            "failure_event_id": "bootstrap-failed",
+            "handoff_operation_id": payload_handoff_operation_id,
+            "handoff_message_log_ids": payload_handoff_message_log_ids,
+        },
+    )
+    target = current.advance(
+        data={
+            "operation_fences": {
+                bootstrap_operation_id: {
+                    "input_watermark": handoff_watermark,
+                    "input_ledger_sequence": handoff_ledger_sequence,
+                }
+            }
+        }
+    )
+
+    with pytest.raises(DurableRecordConflict, match=error_match):
+        await store.commit(
+            bootstrap_claim,
+            SessionTransition(
+                aggregate=target,
+                disposition="bootstrap_effect_tampered",
+                caused_operation_id=bootstrap_operation_id,
+                effects=(bootstrap_effect,),
+                operations=(bootstrap_operation,),
+            ),
+            expected_revision=current.state_revision,
+        )
+
+    assert await store.load(key) == current
+    with database.connect() as conn:
+        review_operation = conn.execute(
+            """
+            SELECT status, metadata_json
+            FROM agent_session_operations
+            WHERE operation_id = ?
+            """,
+            (handoff_operation_id,),
+        ).fetchone()
+        bootstrap_operation_row = conn.execute(
+            """
+            SELECT operation_id FROM agent_session_operations WHERE operation_id = ?
+            """,
+            (bootstrap_operation_id,),
+        ).fetchone()
+        bootstrap_effect_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM agent_effect_outbox WHERE effect_id = ?",
+                (bootstrap_effect.effect_id,),
+            ).fetchone()[0]
+        )
+        mailbox = conn.execute(
+            """
+            SELECT status, claim_id FROM agent_session_mailbox WHERE event_id = ?
+            """,
+            (bootstrap_claim.envelope.event_id,),
+        ).fetchone()
+    assert review_operation is not None
+    assert review_operation["status"] == SessionOperationStatus.COMPLETED.value
+    assert json.loads(str(review_operation["metadata_json"])) == {
+        "active_chat_handoff": handoff_certificate,
+        "consumed_message_log_ids": handoff_message_log_ids,
+        "enter_active_chat": True,
+    }
+    assert bootstrap_operation_row is None
+    assert bootstrap_effect_count == 0
+    assert tuple(mailbox) == ("processing", bootstrap_claim.claim_id)
+
+
+@pytest.mark.parametrize(
+    ("tamper_target", "field_name", "tampered_value", "error_match"),
+    (
+        (
+            "payload",
+            "message_log_ids",
+            [102, 101],
+            "ordered operation-fence message selection",
+        ),
+        (
+            "payload",
+            "round_schedule_id",
+            "other-round-schedule",
+            "operation-fence round_schedule_id",
+        ),
+        (
+            "payload",
+            "active_chat_interest_value",
+            20,
+            "operation-fence active_chat_interest_value",
+        ),
+        (
+            "payload",
+            "bootstrap_disposition",
+            "engaged",
+            "operation-fence bootstrap_disposition",
+        ),
+        (
+            "payload_missing",
+            "bootstrap_disposition",
+            None,
+            "missing declared outcome fence fields",
+        ),
+        (
+            "operation_fence_missing",
+            "bootstrap_disposition",
+            None,
+            "operation fence bootstrap_disposition must be non-empty JSON text",
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_sqlite_session_store_rejects_v3_round_effect_fence_tampering(
+    tmp_path: Path,
+    tamper_target: str,
+    field_name: str,
+    tampered_value: object,
+    error_match: str,
+) -> None:
+    """A v3 round effect cannot change its aggregate operation fence."""
+
+    database, store = _make_store(tmp_path)
+    key = SessionKey("profile-a", "instance:group:round-fence")
+    operation_id = "round-operation"
+    input_watermark = 102
+    input_ledger_sequence = 0
+    operation_fence: dict[str, object] = {
+        "input_watermark": input_watermark,
+        "input_ledger_sequence": input_ledger_sequence,
+        "message_log_ids": [101, 102],
+        "round_schedule_id": "round-schedule-a",
+        "active_chat_interest_value": 20.0,
+        "bootstrap_disposition": "watch",
+    }
+    payload: dict[str, object] = {
+        "plan_id": "plan-a",
+        "active_epoch": 0,
+        "activity_generation": 0,
+        "input_watermark": input_watermark,
+        "input_ledger_sequence": input_ledger_sequence,
+        "completion_event_id": "round-completed",
+        "failure_event_id": "round-failed",
+        "message_log_ids": [101, 102],
+        "round_schedule_id": "round-schedule-a",
+        "active_chat_interest_value": 20.0,
+        "bootstrap_disposition": "watch",
+    }
+    if tamper_target == "payload":
+        payload[field_name] = tampered_value
+    elif tamper_target == "payload_missing":
+        payload.pop(field_name)
+    elif tamper_target == "operation_fence_missing":
+        operation_fence.pop(field_name)
+    else:
+        raise AssertionError(f"unsupported tamper target: {tamper_target}")
+
+    await store.enqueue(_event(f"round-fence:{tamper_target}:{field_name}", key))
+    claim = await store.claim_next(key, worker_id="round-worker")
+    assert claim is not None
+    current = await store.load(key)
+    target = current.advance(
+        data={"operation_fences": {operation_id: operation_fence}}
+    )
+    operation = SessionOperation(
+        operation_id=operation_id,
+        kind="active_chat_round",
+        status=SessionOperationStatus.PENDING,
+        input_watermark=input_watermark,
+        input_ledger_sequence=input_ledger_sequence,
+    )
+    contract = builtin_effect_contract("run_active_chat_round")
+    assert contract.version == 3
+    effect = SessionEffect(
+        effect_id="round-effect",
+        kind=contract.effect_kind,
+        contract_version=contract.version,
+        contract_signature=contract.signature,
+        idempotency_key="round-effect",
+        operation_id=operation_id,
+        payload=payload,
+    )
+
+    with pytest.raises(DurableRecordConflict, match=error_match):
+        await store.commit(
+            claim,
+            SessionTransition(
+                aggregate=target,
+                disposition="round_effect_tampered",
+                caused_operation_id=operation_id,
+                effects=(effect,),
+                operations=(operation,),
+            ),
+            expected_revision=current.state_revision,
+        )
+
+    assert await store.load(key) == current
+    with database.connect() as conn:
+        operation_row = conn.execute(
+            "SELECT operation_id FROM agent_session_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        effect_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM agent_effect_outbox WHERE effect_id = ?",
+                (effect.effect_id,),
+            ).fetchone()[0]
+        )
+        mailbox = conn.execute(
+            """
+            SELECT status, claim_id FROM agent_session_mailbox WHERE event_id = ?
+            """,
+            (claim.envelope.event_id,),
+        ).fetchone()
+    assert operation_row is None
+    assert effect_count == 0
+    assert tuple(mailbox) == ("processing", claim.claim_id)
+
+
 @pytest.mark.asyncio
 async def test_sqlite_session_store_commits_operation_schedule_journals_and_effect(
     tmp_path: Path,

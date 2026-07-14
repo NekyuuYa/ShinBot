@@ -23,6 +23,7 @@ from typing import Any, Protocol
 
 from shinbot.agent.runtime.session_actor.aggregate import SessionKey
 from shinbot.agent.runtime.session_actor.effect_contracts import (
+    builtin_effect_contract,
     builtin_session_actor_effect_contracts,
 )
 from shinbot.agent.runtime.session_actor.effect_executor import (
@@ -30,9 +31,16 @@ from shinbot.agent.runtime.session_actor.effect_executor import (
     EffectHandlerRegistry,
     EffectHandlerResult,
 )
-from shinbot.agent.runtime.session_actor.external_actions import ExternalActionIntent
+from shinbot.agent.runtime.session_actor.external_actions import (
+    ExternalActionIntent,
+    ExternalActionKind,
+)
 from shinbot.agent.runtime.session_actor.message_ledger import MessageLedgerEntry
 from shinbot.agent.runtime.session_actor.workflow_completion import (
+    ActiveChatBootstrapCompletionResult,
+    ActiveChatBootstrapDisposition,
+    ActiveChatRoundCompletionResult,
+    ActiveChatRoundOutcome,
     ActiveReplyCompletionResult,
     ReviewCompletionResult,
     ReviewNextReviewOutcome,
@@ -41,6 +49,9 @@ from shinbot.agent.workflows.action_mode import ExternalActionToolMode
 
 _ACTIVE_REPLY_EFFECT_KIND = "run_active_reply_workflow"
 _REVIEW_EFFECT_KIND = "run_review_workflow"
+_ACTIVE_CHAT_BOOTSTRAP_EFFECT_KIND = "run_active_chat_bootstrap"
+_ACTIVE_CHAT_ROUND_EFFECT_KIND = "run_active_chat_round"
+_ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION = 3
 
 
 class WorkflowEffectAdapterError(ValueError):
@@ -393,6 +404,192 @@ class ReviewWorkflowOutput:
         )
 
 
+@dataclass(slots=True, frozen=True)
+class ActiveChatBootstrapWorkflowRequest:
+    """One actor-native bootstrap request with a frozen review handoff."""
+
+    effect: ActorWorkflowEffectInput
+    active_epoch: int
+    handoff_operation_id: str
+    handoff_message_log_ids: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate the durable handoff identity before model work starts."""
+
+        if not isinstance(self.effect, ActorWorkflowEffectInput):
+            raise TypeError("effect must be ActorWorkflowEffectInput")
+        object.__setattr__(
+            self,
+            "active_epoch",
+            _positive_int(self.active_epoch, field_name="active_epoch"),
+        )
+        object.__setattr__(
+            self,
+            "handoff_operation_id",
+            _required_text(
+                self.handoff_operation_id,
+                field_name="handoff_operation_id",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "handoff_message_log_ids",
+            _positive_id_tuple(
+                self.handoff_message_log_ids,
+                field_name="handoff_message_log_ids",
+            ),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatBootstrapWorkflowOutput:
+    """Pure bootstrap decision before encoding an actor completion."""
+
+    disposition: ActiveChatBootstrapDisposition
+    reason: str
+    model_execution_id: str = ""
+    prompt_signature: str = ""
+
+    def __post_init__(self) -> None:
+        """Normalize the only model-controlled bootstrap facts."""
+
+        try:
+            disposition = ActiveChatBootstrapDisposition(self.disposition)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowEffectAdapterError(
+                "active chat bootstrap disposition is invalid"
+            ) from exc
+        object.__setattr__(self, "disposition", disposition)
+        object.__setattr__(self, "reason", _required_text(self.reason, field_name="reason"))
+        for field_name in ("model_execution_id", "prompt_signature"):
+            object.__setattr__(
+                self,
+                field_name,
+                _optional_text(getattr(self, field_name), field_name=field_name),
+            )
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatRoundWorkflowRequest:
+    """One actor-native round request over an exact selected ledger subset."""
+
+    effect: ActorWorkflowEffectInput
+    active_epoch: int
+    round_schedule_id: str
+    message_log_ids: tuple[int, ...]
+    interest_value: float
+    bootstrap_disposition: str = ""
+    external_action_mode: ExternalActionToolMode = (
+        ExternalActionToolMode.COLLECT_INTENTS
+    )
+
+    def __post_init__(self) -> None:
+        """Reject a request that could widen input or execute a tool."""
+
+        if not isinstance(self.effect, ActorWorkflowEffectInput):
+            raise TypeError("effect must be ActorWorkflowEffectInput")
+        if ExternalActionToolMode(self.external_action_mode) is not (
+            ExternalActionToolMode.COLLECT_INTENTS
+        ):
+            raise WorkflowEffectAdapterError(
+                "actor workflows must collect external action intents"
+            )
+        message_log_ids = _positive_id_tuple(
+            self.message_log_ids,
+            field_name="message_log_ids",
+        )
+        if not message_log_ids:
+            raise WorkflowEffectAdapterError(
+                "active chat round requires at least one selected message"
+            )
+        captured_ids = set(self.effect.message_log_ids)
+        if any(message_log_id not in captured_ids for message_log_id in message_log_ids):
+            raise WorkflowEffectAdapterError(
+                "active chat round input includes a message outside its captured ledger"
+            )
+        if isinstance(self.interest_value, bool) or not isinstance(
+            self.interest_value,
+            (int, float),
+        ):
+            raise WorkflowEffectAdapterError("interest_value must be a finite number")
+        interest_value = float(self.interest_value)
+        if not math.isfinite(interest_value) or interest_value < 0.0:
+            raise WorkflowEffectAdapterError(
+                "interest_value must be a non-negative finite number"
+            )
+        object.__setattr__(
+            self,
+            "active_epoch",
+            _positive_int(self.active_epoch, field_name="active_epoch"),
+        )
+        object.__setattr__(
+            self,
+            "round_schedule_id",
+            _required_text(self.round_schedule_id, field_name="round_schedule_id"),
+        )
+        object.__setattr__(self, "message_log_ids", message_log_ids)
+        object.__setattr__(self, "interest_value", interest_value)
+        object.__setattr__(
+            self,
+            "bootstrap_disposition",
+            _optional_text(
+                self.bootstrap_disposition,
+                field_name="bootstrap_disposition",
+            ),
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class ActiveChatRoundWorkflowOutput:
+    """Pure round result accepted only through the actor completion fence."""
+
+    outcome: ActiveChatRoundOutcome
+    interest_delta: float
+    reason: str
+    consumed_message_log_ids: tuple[int, ...] = ()
+    external_action_intents: tuple[ExternalActionIntent, ...] = ()
+    model_execution_id: str = ""
+    prompt_signature: str = ""
+
+    def __post_init__(self) -> None:
+        """Normalize bounded model output without assigning actor identities."""
+
+        try:
+            outcome = ActiveChatRoundOutcome(self.outcome)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowEffectAdapterError("active chat round outcome is invalid") from exc
+        if isinstance(self.interest_delta, bool) or not isinstance(
+            self.interest_delta,
+            (int, float),
+        ):
+            raise WorkflowEffectAdapterError("interest_delta must be a finite number")
+        interest_delta = float(self.interest_delta)
+        if not math.isfinite(interest_delta) or not -100.0 <= interest_delta <= 100.0:
+            raise WorkflowEffectAdapterError(
+                "interest_delta must be finite and within [-100, 100]"
+            )
+        consumed = _positive_id_tuple(
+            self.consumed_message_log_ids,
+            field_name="consumed_message_log_ids",
+        )
+        intents = tuple(self.external_action_intents)
+        if outcome is ActiveChatRoundOutcome.RETRY and (consumed or intents):
+            raise WorkflowEffectAdapterError(
+                "retry active chat round cannot consume messages or propose actions"
+            )
+        object.__setattr__(self, "outcome", outcome)
+        object.__setattr__(self, "interest_delta", interest_delta)
+        object.__setattr__(self, "reason", _required_text(self.reason, field_name="reason"))
+        object.__setattr__(self, "consumed_message_log_ids", consumed)
+        object.__setattr__(self, "external_action_intents", intents)
+        for field_name in ("model_execution_id", "prompt_signature"):
+            object.__setattr__(
+                self,
+                field_name,
+                _optional_text(getattr(self, field_name), field_name=field_name),
+            )
+
+
 class ActiveReplyWorkflowPort(Protocol):
     """Model-facing active-reply workflow with no scheduler or tool executor."""
 
@@ -408,6 +605,26 @@ class ReviewWorkflowPort(Protocol):
 
     async def run_review(self, request: ReviewWorkflowRequest) -> ReviewWorkflowOutput:
         """Return review decisions and per-window deferred action intents."""
+
+
+class ActiveChatBootstrapWorkflowPort(Protocol):
+    """Model-facing bootstrap workflow with no scheduler dependency."""
+
+    async def run_active_chat_bootstrap(
+        self,
+        request: ActiveChatBootstrapWorkflowRequest,
+    ) -> ActiveChatBootstrapWorkflowOutput:
+        """Return one discrete bootstrap disposition and audit provenance."""
+
+
+class ActiveChatRoundWorkflowPort(Protocol):
+    """Model-facing round workflow with deferred visible action intents only."""
+
+    async def run_active_chat_round(
+        self,
+        request: ActiveChatRoundWorkflowRequest,
+    ) -> ActiveChatRoundWorkflowOutput:
+        """Return one fenced round outcome and deferred action intents."""
 
 
 class ActiveReplyWorkflowEffectHandler:
@@ -542,6 +759,192 @@ class ReviewWorkflowEffectHandler:
                 "prompt_signature": output.prompt_signature,
             }
         )
+
+
+class ActiveChatBootstrapWorkflowEffectHandler:
+    """Adapt one v3 bootstrap effect without reading mutable chat state."""
+
+    def __init__(
+        self,
+        *,
+        workflow: ActiveChatBootstrapWorkflowPort,
+    ) -> None:
+        self._workflow = workflow
+
+    async def __call__(self, context: EffectExecutionContext) -> EffectHandlerResult:
+        """Return one discrete bootstrap completion and model provenance."""
+
+        metadata = _actor_native_active_chat_effect_metadata(
+            context,
+            expected_kind=_ACTIVE_CHAT_BOOTSTRAP_EFFECT_KIND,
+        )
+        payload = context.effect.payload
+        request = ActiveChatBootstrapWorkflowRequest(
+            effect=metadata.with_entries(()),
+            active_epoch=_positive_int(
+                payload.get("active_epoch"),
+                field_name="active_epoch",
+            ),
+            handoff_operation_id=_required_text(
+                payload.get("handoff_operation_id"),
+                field_name="handoff_operation_id",
+            ),
+            handoff_message_log_ids=_positive_id_tuple(
+                payload.get("handoff_message_log_ids"),
+                field_name="handoff_message_log_ids",
+            ),
+        )
+        output = await self._workflow.run_active_chat_bootstrap(request)
+        if not isinstance(output, ActiveChatBootstrapWorkflowOutput):
+            raise TypeError("active chat bootstrap workflow returned an invalid output type")
+        completion = ActiveChatBootstrapCompletionResult(
+            disposition=output.disposition,
+            reason=output.reason,
+        )
+        return EffectHandlerResult(
+            payload={
+                "workflow_result": completion.to_payload(),
+                "model_execution_id": output.model_execution_id,
+                "prompt_signature": output.prompt_signature,
+            }
+        )
+
+
+class ActiveChatRoundWorkflowEffectHandler:
+    """Adapt one v3 round effect over its exact unread ledger selection."""
+
+    def __init__(
+        self,
+        *,
+        ledger: ActorWorkflowLedgerPort,
+        workflow: ActiveChatRoundWorkflowPort,
+    ) -> None:
+        self._ledger = ledger
+        self._workflow = workflow
+
+    async def __call__(self, context: EffectExecutionContext) -> EffectHandlerResult:
+        """Run one pure round and encode only its fenced completion facts."""
+
+        metadata = _actor_native_active_chat_effect_metadata(
+            context,
+            expected_kind=_ACTIVE_CHAT_ROUND_EFFECT_KIND,
+        )
+        payload = context.effect.payload
+        captured = await _load_captured_unread(self._ledger, metadata)
+        selected_message_log_ids = _positive_id_tuple(
+            payload.get("message_log_ids"),
+            field_name="message_log_ids",
+        )
+        if not selected_message_log_ids:
+            raise WorkflowEffectAdapterError(
+                "active chat round effect must reference at least one captured message"
+            )
+        entries_by_id = {entry.message_log_id: entry for entry in captured}
+        missing = [
+            message_log_id
+            for message_log_id in selected_message_log_ids
+            if message_log_id not in entries_by_id
+        ]
+        if missing:
+            raise WorkflowEffectAdapterError(
+                "active chat round effect references messages outside its captured "
+                "ledger: "
+                + ", ".join(str(message_log_id) for message_log_id in missing)
+            )
+        selected_id_set = set(selected_message_log_ids)
+        selected_entries = tuple(
+            entry
+            for entry in captured
+            if entry.message_log_id in selected_id_set
+        )
+        ledger_ordered_message_log_ids = tuple(
+            entry.message_log_id for entry in selected_entries
+        )
+        request = ActiveChatRoundWorkflowRequest(
+            effect=metadata.with_entries(selected_entries),
+            active_epoch=_positive_int(
+                payload.get("active_epoch"),
+                field_name="active_epoch",
+            ),
+            round_schedule_id=_required_text(
+                payload.get("round_schedule_id"),
+                field_name="round_schedule_id",
+            ),
+            # The durable payload selects a set; only ledger sequence decides
+            # model-visible and consumption ordering.
+            message_log_ids=ledger_ordered_message_log_ids,
+            interest_value=_nonnegative_finite_number(
+                payload.get("active_chat_interest_value"),
+                field_name="active_chat_interest_value",
+            ),
+            bootstrap_disposition=_required_active_chat_bootstrap_disposition(
+                payload.get("bootstrap_disposition"),
+            ),
+            external_action_mode=ExternalActionToolMode.COLLECT_INTENTS,
+        )
+        output = await self._workflow.run_active_chat_round(request)
+        if not isinstance(output, ActiveChatRoundWorkflowOutput):
+            raise TypeError("active chat round workflow returned an invalid output type")
+        _validate_actor_active_chat_round_output(
+            output,
+            selected_message_log_ids=request.message_log_ids,
+        )
+        completion = ActiveChatRoundCompletionResult(
+            outcome=output.outcome,
+            interest_delta=output.interest_delta,
+            reason=output.reason,
+            consumed_message_log_ids=output.consumed_message_log_ids,
+            external_action_intents=output.external_action_intents,
+        )
+        return EffectHandlerResult(
+            payload={
+                "workflow_result": completion.to_payload(),
+                "model_execution_id": output.model_execution_id,
+                "prompt_signature": output.prompt_signature,
+            }
+        )
+
+
+def register_actor_active_chat_workflow_effect_handlers(
+    registry: EffectHandlerRegistry,
+    *,
+    ledger: ActorWorkflowLedgerPort,
+    active_chat_bootstrap_workflow: ActiveChatBootstrapWorkflowPort,
+    active_chat_round_workflow: ActiveChatRoundWorkflowPort,
+) -> tuple[
+    ActiveChatBootstrapWorkflowEffectHandler,
+    ActiveChatRoundWorkflowEffectHandler,
+]:
+    """Register only the v3 Actor-native Active Chat workflow handlers.
+
+    Older reducer-only v1/v2 effects deliberately receive no new workflow
+    implementation. Their historic recovery semantics remain isolated from
+    the exact handoff and selection fences introduced by v3.
+    """
+
+    bootstrap_handler = ActiveChatBootstrapWorkflowEffectHandler(
+        workflow=active_chat_bootstrap_workflow,
+    )
+    round_handler = ActiveChatRoundWorkflowEffectHandler(
+        ledger=ledger,
+        workflow=active_chat_round_workflow,
+    )
+    for contract in builtin_session_actor_effect_contracts():
+        if contract.version != _ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION:
+            continue
+        if contract.effect_kind == _ACTIVE_CHAT_BOOTSTRAP_EFFECT_KIND:
+            registry.register(
+                _ACTIVE_CHAT_BOOTSTRAP_EFFECT_KIND,
+                bootstrap_handler,
+                contract=contract,
+            )
+        elif contract.effect_kind == _ACTIVE_CHAT_ROUND_EFFECT_KIND:
+            registry.register(
+                _ACTIVE_CHAT_ROUND_EFFECT_KIND,
+                round_handler,
+                contract=contract,
+            )
+    return bootstrap_handler, round_handler
 
 
 def register_actor_workflow_effect_handlers(
@@ -721,6 +1124,54 @@ def _effect_metadata(
     )
 
 
+def _actor_native_active_chat_effect_metadata(
+    context: EffectExecutionContext,
+    *,
+    expected_kind: str,
+) -> _EffectMetadata:
+    """Validate the sealed v3 identity before an Active Chat model call.
+
+    The generic workflow adapter accepts historic effect contracts for active
+    reply and review.  Actor-native Active Chat is intentionally narrower:
+    only the v3 contract carries the frozen handoff or exact round selection
+    required by its workflows.  Reject older rows instead of accidentally
+    granting them new execution semantics.
+    """
+
+    effect = context.effect
+    contract = builtin_effect_contract(
+        expected_kind,
+        version=_ACTOR_NATIVE_ACTIVE_CHAT_CONTRACT_VERSION,
+    )
+    if effect.contract_version != contract.version:
+        raise WorkflowEffectAdapterError(
+            "actor-native active chat workflow requires contract version "
+            f"{contract.version}"
+        )
+    if effect.contract_signature != contract.signature:
+        raise WorkflowEffectAdapterError(
+            "actor-native active chat workflow contract signature does not match"
+        )
+    payload = effect.payload
+    if not isinstance(payload, Mapping):
+        raise WorkflowEffectAdapterError("workflow effect payload must be an object")
+    if _positive_int(
+        payload.get("contract_version"),
+        field_name="contract_version",
+    ) != contract.version:
+        raise WorkflowEffectAdapterError(
+            "actor-native active chat payload changed contract_version"
+        )
+    if _required_text(
+        payload.get("contract_signature"),
+        field_name="contract_signature",
+    ) != contract.signature:
+        raise WorkflowEffectAdapterError(
+            "actor-native active chat payload changed contract_signature"
+        )
+    return _effect_metadata(context, expected_kind=expected_kind)
+
+
 async def _load_captured_unread(
     ledger: ActorWorkflowLedgerPort,
     metadata: _EffectMetadata,
@@ -865,6 +1316,142 @@ def _validate_consumed_ids(
         )
 
 
+def _validate_actor_active_chat_round_output(
+    output: ActiveChatRoundWorkflowOutput,
+    *,
+    selected_message_log_ids: tuple[int, ...],
+) -> None:
+    """Reject v3 round output that cannot become one receipt-fenced action.
+
+    This mirrors the reducer's durable validation so a faulty workflow cannot
+    spend a completion attempt on a result the actor will reject.  The reducer
+    remains authoritative because completion payloads can also enter through
+    recovery or a different executor.
+    """
+
+    if not selected_message_log_ids:
+        raise WorkflowEffectAdapterError(
+            "actor-native active chat round has no selected messages"
+        )
+    selected = set(selected_message_log_ids)
+    if output.outcome is ActiveChatRoundOutcome.RETRY:
+        if output.consumed_message_log_ids or output.external_action_intents:
+            raise WorkflowEffectAdapterError(
+                "retry active chat round cannot consume messages or propose actions"
+            )
+        if output.interest_delta != 0.0:
+            raise WorkflowEffectAdapterError(
+                "retry active chat round must not adjust interest"
+            )
+        return
+    if output.consumed_message_log_ids != selected_message_log_ids:
+        raise WorkflowEffectAdapterError(
+            "active chat round must consume its exact selected messages in ledger order"
+        )
+    intents = output.external_action_intents
+    if output.outcome is ActiveChatRoundOutcome.EXIT:
+        if intents:
+            raise WorkflowEffectAdapterError(
+                "active chat exit round cannot propose visible actions"
+            )
+        if output.interest_delta != 0.0:
+            raise WorkflowEffectAdapterError(
+                "active chat exit round must not adjust interest"
+            )
+        return
+    if output.outcome is not ActiveChatRoundOutcome.CONTINUE:
+        raise WorkflowEffectAdapterError("active chat round has an unsupported outcome")
+    if len(intents) > 1:
+        raise WorkflowEffectAdapterError(
+            "actor-native active chat permits at most one visible action"
+        )
+    if not intents:
+        if output.interest_delta not in {-10.0, -5.0}:
+            raise WorkflowEffectAdapterError(
+                "active chat no-reply round has an invalid interest adjustment"
+            )
+        return
+    intent = intents[0]
+    if not isinstance(intent, ExternalActionIntent) or intent.action_ordinal != 0:
+        raise WorkflowEffectAdapterError("active chat round action ordinal is invalid")
+    payload = intent.payload
+    if intent.kind is ExternalActionKind.SEND_REPLY:
+        _validate_active_chat_round_payload_fields(
+            payload,
+            allowed={"text", "quote_message_log_id"},
+            action_name="send_reply",
+        )
+        if not isinstance(payload.get("text"), str) or not payload["text"].strip():
+            raise WorkflowEffectAdapterError("active chat send_reply intent has invalid text")
+        _validate_active_chat_round_target(
+            payload.get("quote_message_log_id"),
+            selected=selected,
+            field_name="quote_message_log_id",
+        )
+        if output.interest_delta not in {5.0, 10.0}:
+            raise WorkflowEffectAdapterError(
+                "active chat reply has an invalid interest adjustment"
+            )
+        return
+    if intent.kind is ExternalActionKind.SEND_REACTION:
+        _validate_active_chat_round_payload_fields(
+            payload,
+            allowed={"action", "emoji_id", "message_log_id"},
+            action_name="send_reaction",
+        )
+        if payload.get("action") not in {"add", "remove"}:
+            raise WorkflowEffectAdapterError(
+                "active chat send_reaction intent has invalid action"
+            )
+        if not isinstance(payload.get("emoji_id"), str) or not payload["emoji_id"].strip():
+            raise WorkflowEffectAdapterError(
+                "active chat send_reaction intent has invalid emoji_id"
+            )
+        _validate_active_chat_round_target(
+            payload.get("message_log_id"),
+            selected=selected,
+            field_name="message_log_id",
+        )
+        if output.interest_delta != 2.0:
+            raise WorkflowEffectAdapterError(
+                "active chat reaction has an invalid interest adjustment"
+            )
+        return
+    raise WorkflowEffectAdapterError(
+        "actor-native active chat does not permit this external action"
+    )
+
+
+def _validate_active_chat_round_payload_fields(
+    payload: Mapping[str, Any],
+    *,
+    allowed: set[str],
+    action_name: str,
+) -> None:
+    """Reject platform-native IDs and non-contract action fields."""
+
+    unknown = sorted(set(payload).difference(allowed))
+    if unknown:
+        raise WorkflowEffectAdapterError(
+            f"active chat {action_name} intent has unsupported fields: "
+            + ", ".join(unknown)
+        )
+
+
+def _validate_active_chat_round_target(
+    value: object,
+    *,
+    selected: set[int],
+    field_name: str,
+) -> None:
+    """Require one durable selected ledger identity for a visible target."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value not in selected:
+        raise WorkflowEffectAdapterError(
+            f"active chat {field_name} must target a selected message log id"
+        )
+
+
 def _is_transport_target_for_instance(
     *,
     instance_id: str,
@@ -912,6 +1499,33 @@ def _nonnegative_int(value: object, *, field_name: str) -> int:
             f"{field_name} must be a non-negative integer"
         )
     return value
+
+
+def _nonnegative_finite_number(value: object, *, field_name: str) -> float:
+    """Return one non-negative finite number without accepting booleans."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkflowEffectAdapterError(
+            f"{field_name} must be a non-negative finite number"
+        )
+    normalized = float(value)
+    if not math.isfinite(normalized) or normalized < 0.0:
+        raise WorkflowEffectAdapterError(
+            f"{field_name} must be a non-negative finite number"
+        )
+    return normalized
+
+
+def _required_active_chat_bootstrap_disposition(value: object) -> str:
+    """Normalize one discrete reducer-owned bootstrap disposition."""
+
+    normalized = _required_text(value, field_name="bootstrap_disposition")
+    try:
+        return ActiveChatBootstrapDisposition(normalized).value
+    except ValueError as exc:
+        raise WorkflowEffectAdapterError(
+            "bootstrap_disposition is not a supported active chat disposition"
+        ) from exc
 
 
 def _positive_id_tuple(value: object, *, field_name: str) -> tuple[int, ...]:
@@ -966,6 +1580,14 @@ def _plain_json_value(value: object, *, field_name: str) -> Any:
 
 
 __all__ = [
+    "ActiveChatBootstrapWorkflowEffectHandler",
+    "ActiveChatBootstrapWorkflowOutput",
+    "ActiveChatBootstrapWorkflowPort",
+    "ActiveChatBootstrapWorkflowRequest",
+    "ActiveChatRoundWorkflowEffectHandler",
+    "ActiveChatRoundWorkflowOutput",
+    "ActiveChatRoundWorkflowPort",
+    "ActiveChatRoundWorkflowRequest",
     "ActiveReplyWorkflowEffectHandler",
     "ActiveReplyWorkflowOutput",
     "ActiveReplyWorkflowPort",
@@ -979,5 +1601,6 @@ __all__ = [
     "ReviewWorkflowWindowOutput",
     "WorkflowEffectAdapterError",
     "operation_global_review_proposal_id",
+    "register_actor_active_chat_workflow_effect_handlers",
     "register_actor_workflow_effect_handlers",
 ]

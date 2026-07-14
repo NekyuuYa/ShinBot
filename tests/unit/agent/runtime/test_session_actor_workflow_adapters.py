@@ -1,4 +1,4 @@
-"""Unit tests for actor-owned review and active-reply workflow adapters."""
+"""Unit tests for actor-owned review, reply, and Active Chat adapters."""
 
 from __future__ import annotations
 
@@ -27,6 +27,12 @@ from shinbot.agent.runtime.session_actor.message_ledger import (
     MessagePriorityFlags,
 )
 from shinbot.agent.runtime.session_actor.workflow_adapters import (
+    ActiveChatBootstrapWorkflowEffectHandler,
+    ActiveChatBootstrapWorkflowOutput,
+    ActiveChatBootstrapWorkflowRequest,
+    ActiveChatRoundWorkflowEffectHandler,
+    ActiveChatRoundWorkflowOutput,
+    ActiveChatRoundWorkflowRequest,
     ActiveReplyWorkflowEffectHandler,
     ActiveReplyWorkflowOutput,
     ActiveReplyWorkflowRequest,
@@ -36,9 +42,14 @@ from shinbot.agent.runtime.session_actor.workflow_adapters import (
     ReviewWorkflowWindowOutput,
     WorkflowEffectAdapterError,
     operation_global_review_proposal_id,
+    register_actor_active_chat_workflow_effect_handlers,
     register_actor_workflow_effect_handlers,
 )
 from shinbot.agent.runtime.session_actor.workflow_completion import (
+    ActiveChatBootstrapCompletionResult,
+    ActiveChatBootstrapDisposition,
+    ActiveChatRoundCompletionResult,
+    ActiveChatRoundOutcome,
     ActiveReplyCompletionResult,
     ReviewCompletionResult,
     ReviewNextReviewOutcome,
@@ -117,6 +128,40 @@ class _ReviewWorkflow:
         return self.output
 
 
+@dataclass(slots=True)
+class _ActiveChatBootstrapWorkflow:
+    """Pure bootstrap fake that records only its frozen handoff request."""
+
+    output: ActiveChatBootstrapWorkflowOutput
+    requests: list[ActiveChatBootstrapWorkflowRequest] = field(default_factory=list)
+
+    async def run_active_chat_bootstrap(
+        self,
+        request: ActiveChatBootstrapWorkflowRequest,
+    ) -> ActiveChatBootstrapWorkflowOutput:
+        """Return the configured discrete bootstrap output."""
+
+        self.requests.append(request)
+        return self.output
+
+
+@dataclass(slots=True)
+class _ActiveChatRoundWorkflow:
+    """Pure round fake that records one exact selected snapshot request."""
+
+    output: ActiveChatRoundWorkflowOutput
+    requests: list[ActiveChatRoundWorkflowRequest] = field(default_factory=list)
+
+    async def run_active_chat_round(
+        self,
+        request: ActiveChatRoundWorkflowRequest,
+    ) -> ActiveChatRoundWorkflowOutput:
+        """Return the configured deferred round completion candidate."""
+
+        self.requests.append(request)
+        return self.output
+
+
 def _entry(
     message_log_id: int,
     *,
@@ -182,6 +227,8 @@ def _effect(
             "operation_id": operation_id,
             "effect_id": effect_id,
             "effect_kind": kind,
+            "contract_version": contract.version,
+            "contract_signature": contract.signature,
             "idempotency_key": idempotency_key,
             "source_event_id": source_event_id,
             "ownership_generation": 1,
@@ -272,6 +319,155 @@ async def test_active_reply_handler_uses_captured_ledger_and_encodes_nested_resu
         "model_execution_id",
         "prompt_signature",
     }
+
+
+@pytest.mark.asyncio
+async def test_v3_bootstrap_handler_passes_only_the_frozen_review_handoff() -> None:
+    """The native bootstrap handler cannot read mutable unread state itself."""
+
+    effect = _effect(
+        kind="run_active_chat_bootstrap",
+        operation_id="bootstrap-a",
+        payload={
+            "active_epoch": 3,
+            "activity_generation": 4,
+            "handoff_operation_id": "review-a",
+            "handoff_message_log_ids": [10, 11],
+            "plan_id": "plan-a",
+        },
+    )
+    workflow = _ActiveChatBootstrapWorkflow(
+        ActiveChatBootstrapWorkflowOutput(
+            disposition=ActiveChatBootstrapDisposition.ENGAGED,
+            reason="frozen handoff",
+            model_execution_id="bootstrap-execution-a",
+            prompt_signature="bootstrap-prompt-a",
+        )
+    )
+
+    result = await ActiveChatBootstrapWorkflowEffectHandler(workflow=workflow)(
+        _context(effect)
+    )
+
+    assert len(workflow.requests) == 1
+    request = workflow.requests[0]
+    assert request.handoff_operation_id == "review-a"
+    assert request.handoff_message_log_ids == (10, 11)
+    assert request.effect.ledger_entries == ()
+    completion = ActiveChatBootstrapCompletionResult.from_payload(
+        result.payload["workflow_result"]
+    )
+    assert completion.disposition is ActiveChatBootstrapDisposition.ENGAGED
+    assert result.payload["model_execution_id"] == "bootstrap-execution-a"
+    assert result.payload["prompt_signature"] == "bootstrap-prompt-a"
+
+
+@pytest.mark.asyncio
+async def test_v3_round_handler_restores_ledger_order_and_rejects_unbound_reply() -> None:
+    """Payload ordering cannot steer model input or bypass the target fence."""
+
+    effect = _effect(
+        kind="run_active_chat_round",
+        operation_id="round-a",
+        payload={
+            "active_epoch": 3,
+            "activity_generation": 4,
+            "active_chat_interest_value": 20.0,
+            "bootstrap_disposition": "engaged",
+            "message_log_ids": [11, 10],
+            "plan_id": "plan-a",
+            "round_schedule_id": "round-schedule-a",
+        },
+    )
+    ledger = _Ledger((_entry(10, ledger_sequence=1), _entry(11, ledger_sequence=2)))
+    workflow = _ActiveChatRoundWorkflow(
+        ActiveChatRoundWorkflowOutput(
+            outcome=ActiveChatRoundOutcome.CONTINUE,
+            interest_delta=5.0,
+            reason="reply",
+            consumed_message_log_ids=(10, 11),
+            external_action_intents=(
+                ExternalActionIntent(
+                    kind=ExternalActionKind.SEND_REPLY,
+                    tool_call_id="round-reply-a",
+                    action_ordinal=0,
+                    payload={"text": "hello", "quote_message_log_id": 10},
+                ),
+            ),
+        )
+    )
+
+    result = await ActiveChatRoundWorkflowEffectHandler(
+        ledger=ledger,
+        workflow=workflow,
+    )(_context(effect))
+
+    assert ledger.calls == [(_KEY, 1, 20, 2)]
+    assert workflow.requests[0].message_log_ids == (10, 11)
+    assert workflow.requests[0].effect.message_log_ids == (10, 11)
+    completion = ActiveChatRoundCompletionResult.from_payload(
+        result.payload["workflow_result"]
+    )
+    assert completion.consumed_message_log_ids == (10, 11)
+
+    unsafe_workflow = _ActiveChatRoundWorkflow(
+        ActiveChatRoundWorkflowOutput(
+            outcome=ActiveChatRoundOutcome.CONTINUE,
+            interest_delta=5.0,
+            reason="unsafe",
+            consumed_message_log_ids=(10, 11),
+            external_action_intents=(
+                ExternalActionIntent(
+                    kind=ExternalActionKind.SEND_REPLY,
+                    tool_call_id="round-raw-platform-id",
+                    action_ordinal=0,
+                    payload={"text": "hello", "quote_message_id": "platform-10"},
+                ),
+            ),
+        )
+    )
+    with pytest.raises(WorkflowEffectAdapterError, match="unsupported fields"):
+        await ActiveChatRoundWorkflowEffectHandler(
+            ledger=ledger,
+            workflow=unsafe_workflow,
+        )(_context(effect))
+
+
+def test_v3_active_chat_registration_excludes_legacy_effect_contracts() -> None:
+    """Only native v3 rows receive the new bootstrap and round handlers."""
+
+    registry = EffectHandlerRegistry()
+    bootstrap, round_ = register_actor_active_chat_workflow_effect_handlers(
+        registry,
+        ledger=_Ledger(()),
+        active_chat_bootstrap_workflow=_ActiveChatBootstrapWorkflow(
+            ActiveChatBootstrapWorkflowOutput(
+                disposition=ActiveChatBootstrapDisposition.WATCH,
+                reason="watch",
+            )
+        ),
+        active_chat_round_workflow=_ActiveChatRoundWorkflow(
+            ActiveChatRoundWorkflowOutput(
+                outcome=ActiveChatRoundOutcome.RETRY,
+                interest_delta=0.0,
+                reason="retry",
+            )
+        ),
+    )
+
+    bootstrap_contract, bootstrap_handler = registry.resolve(
+        "run_active_chat_bootstrap",
+        3,
+    )
+    round_contract, round_handler = registry.resolve("run_active_chat_round", 3)
+
+    assert bootstrap_contract == builtin_effect_contract(
+        "run_active_chat_bootstrap",
+        version=3,
+    )
+    assert round_contract == builtin_effect_contract("run_active_chat_round", version=3)
+    assert bootstrap_handler is bootstrap
+    assert round_handler is round_
 
 
 @pytest.mark.asyncio

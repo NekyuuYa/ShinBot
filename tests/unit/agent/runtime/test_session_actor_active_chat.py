@@ -55,7 +55,11 @@ def _persisted_effect_contract(
     )
 
 
-def _active_chat(*, bootstrap_status: str = "completed") -> AgentSessionAggregate:
+def _active_chat(
+    *,
+    bootstrap_status: str = "completed",
+    actor_workflow_contract_version: int | None = 3,
+) -> AgentSessionAggregate:
     return AgentSessionAggregate(
         key=_KEY,
         ownership_generation=1,
@@ -69,6 +73,11 @@ def _active_chat(*, bootstrap_status: str = "completed") -> AgentSessionAggregat
         review_plan={"plan_id": "review-plan-a", "plan_revision": 1},
         active_chat_state={
             "active_epoch": 3,
+            **(
+                {"actor_workflow_contract_version": actor_workflow_contract_version}
+                if actor_workflow_contract_version is not None
+                else {}
+            ),
             "interest_value": 20.0,
             "decay_half_life_seconds": 20.0,
             "entered_at": 10.0,
@@ -348,6 +357,7 @@ def _external_action_completion(
             "effect_kind": effect.kind,
             "idempotency_key": effect.idempotency_key,
             "operation_id": effect.operation_id,
+            "receipt_idempotency_key": effect.idempotency_key,
             "receipt_status": receipt_status.value,
             "request_digest": pending["request_digest"],
         },
@@ -460,8 +470,11 @@ def _workflow_effect_failure(
     )
 
 
-def _running_round() -> tuple[AgentSessionReducer, AgentSessionAggregate]:
-    reducer = AgentSessionReducer()
+def _running_round(
+    *,
+    reducer: AgentSessionReducer | None = None,
+) -> tuple[AgentSessionReducer, AgentSessionAggregate]:
+    reducer = reducer or AgentSessionReducer()
     buffered = reducer.reduce(
         _active_chat(),
         _message_event(event_id="message:21", message_log_id=21),
@@ -551,6 +564,28 @@ def test_message_debounces_then_round_due_freezes_one_input_snapshot() -> None:
     assert due.aggregate.active_chat_round_operation_id
     assert due.aggregate.active_chat_state["round_input_message_log_ids"] == [21]
     assert due.effects[0].kind == "run_active_chat_round"
+    assert due.effects[0].contract_version == 3
+
+
+def test_legacy_active_chat_state_pins_new_round_to_v2_contract() -> None:
+    """A pre-v3 aggregate cannot silently mint a native v3 round effect."""
+
+    reducer = AgentSessionReducer()
+    buffered = reducer.reduce(
+        _active_chat(actor_workflow_contract_version=None),
+        _message_event(event_id="message:legacy-round", message_log_id=21),
+    )
+    due = reducer.reduce(buffered.aggregate, _round_due_event(buffered.aggregate))
+
+    effect = due.effects[0]
+    assert effect.kind == "run_active_chat_round"
+    assert effect.contract_version == 2
+    assert effect.contract_signature == builtin_effect_contract(
+        "run_active_chat_round",
+        version=2,
+    ).signature
+    assert "active_chat_interest_value" not in effect.payload
+    assert "bootstrap_disposition" not in effect.payload
 
 
 @pytest.mark.parametrize("malformed_revision", ["1", 1.0, True])
@@ -608,7 +643,7 @@ def test_later_message_stays_beyond_running_round_snapshot() -> None:
             later,
             outcome="continue",
             consumed_ids=[21],
-            interest_delta=2.0,
+            interest_delta=-5.0,
         ),
     )
 
@@ -622,6 +657,220 @@ def test_later_message_stays_beyond_running_round_snapshot() -> None:
     assert consumption.explicit_message_log_ids == (21,)
     assert consumption.input_ledger_sequence == 1
     assert any(effect.kind == "enqueue_active_chat_round_due" for effect in completed.effects)
+
+
+def test_v3_round_rejects_consumption_outside_exact_selection() -> None:
+    """A same-watermark ledger row cannot escape the persisted round selection."""
+
+    reducer, running = _running_round()
+
+    rejected = reducer.reduce(
+        running,
+        _round_completion(
+            running,
+            outcome="continue",
+            consumed_ids=[20],
+            interest_delta=-5.0,
+        ),
+    )
+
+    assert rejected.disposition == "active_chat_round_retry_scheduled"
+    assert rejected.operations[0].failure_code == "invalid_active_chat_round_completion"
+    assert rejected.message_ledger_mutations == ()
+    assert rejected.aggregate.active_chat_state["pending_message_log_ids"] == [21]
+
+
+def test_v3_round_rejects_consumption_outside_exact_ledger_order() -> None:
+    """A completion cannot reorder the frozen selection during recovery."""
+
+    reducer = AgentSessionReducer()
+    buffered = reducer.reduce(
+        _active_chat(),
+        _message_event(event_id="message:21", message_log_id=21),
+    ).aggregate
+    buffered = reducer.reduce(
+        buffered,
+        _message_event(event_id="message:22", message_log_id=22),
+    ).aggregate
+    running = reducer.reduce(
+        buffered,
+        _round_due_event(buffered),
+    ).aggregate
+    running = _stamp_operation_sequence(
+        running,
+        running.active_chat_round_operation_id,
+        2,
+    )
+
+    rejected = reducer.reduce(
+        running,
+        _round_completion(
+            running,
+            outcome="continue",
+            consumed_ids=[22, 21],
+            interest_delta=-5.0,
+        ),
+    )
+
+    assert rejected.disposition == "active_chat_round_retry_scheduled"
+    assert rejected.operations[0].failure_code == "invalid_active_chat_round_completion"
+    assert rejected.message_ledger_mutations == ()
+    assert rejected.aggregate.active_chat_state["pending_message_log_ids"] == [21, 22]
+
+
+def test_v3_round_rejects_reply_quote_outside_exact_selection() -> None:
+    """A reply must quote a selected durable message, not merely an older row."""
+
+    reducer, running = _running_round()
+
+    rejected = reducer.reduce(
+        running,
+        _round_completion(
+            running,
+            outcome="continue",
+            consumed_ids=[21],
+            interest_delta=5.0,
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "selection-escape",
+                    "action_ordinal": 0,
+                    "payload": {
+                        "text": "wrong target",
+                        "quote_message_log_id": 20,
+                    },
+                }
+            ],
+        ),
+    )
+
+    assert rejected.disposition == "active_chat_round_retry_scheduled"
+    assert rejected.operations[0].failure_code == "invalid_active_chat_round_completion"
+    assert not any(effect.kind == "send_reply" for effect in rejected.effects)
+
+
+@pytest.mark.parametrize(
+    ("intent", "interest_delta"),
+    (
+        (
+            {
+                "kind": "send_reply",
+                "tool_call_id": "raw-reply-id",
+                "action_ordinal": 0,
+                "payload": {"text": "unsafe", "quote_message_id": "platform-21"},
+            },
+            5.0,
+        ),
+        (
+            {
+                "kind": "send_reaction",
+                "tool_call_id": "raw-reaction-id",
+                "action_ordinal": 0,
+                "payload": {"action": "add", "emoji_id": "thumbs_up", "message_id": "platform-21"},
+            },
+            2.0,
+        ),
+    ),
+)
+def test_v3_round_rejects_raw_platform_action_ids(
+    intent: dict[str, object],
+    interest_delta: float,
+) -> None:
+    """Actor v3 accepts durable ledger IDs only, never adapter-native targets."""
+
+    reducer, running = _running_round()
+
+    rejected = reducer.reduce(
+        running,
+        _round_completion(
+            running,
+            outcome="continue",
+            consumed_ids=[21],
+            interest_delta=interest_delta,
+            intents=[intent],
+        ),
+    )
+
+    assert rejected.disposition == "active_chat_round_retry_scheduled"
+    assert rejected.operations[0].failure_code == "invalid_active_chat_round_completion"
+    assert not any(effect.kind in {"send_reply", "send_reaction"} for effect in rejected.effects)
+
+
+def test_v3_round_rejects_reply_without_a_durable_quote() -> None:
+    """A reply without a selected quote cannot escape into the action outbox."""
+
+    reducer, running = _running_round()
+
+    rejected = reducer.reduce(
+        running,
+        _round_completion(
+            running,
+            outcome="continue",
+            consumed_ids=[21],
+            interest_delta=5.0,
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "missing-quote",
+                    "action_ordinal": 0,
+                    "payload": {"text": "unsafe"},
+                }
+            ],
+        ),
+    )
+
+    assert rejected.disposition == "active_chat_round_retry_scheduled"
+    assert rejected.operations[0].failure_code == "invalid_active_chat_round_completion"
+    assert not any(effect.kind == "send_reply" for effect in rejected.effects)
+
+
+def test_v3_round_rejects_poke_and_retry_with_action() -> None:
+    """Neither a poke nor a retry can materialize visible round work."""
+
+    reducer, running = _running_round()
+    poke_rejected = reducer.reduce(
+        running,
+        _round_completion(
+            running,
+            outcome="continue",
+            consumed_ids=[21],
+            interest_delta=5.0,
+            intents=[
+                {
+                    "kind": "send_poke",
+                    "tool_call_id": "poke-not-allowed",
+                    "action_ordinal": 0,
+                    "payload": {"user_id": "user-a"},
+                }
+            ],
+        ),
+    )
+    assert poke_rejected.operations[0].failure_code == "invalid_active_chat_round_completion"
+
+    retry_reducer, retry_running = _running_round()
+    retry_rejected = retry_reducer.reduce(
+        retry_running,
+        _round_completion(
+            retry_running,
+            outcome="retry",
+            consumed_ids=[],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "retry-action",
+                    "action_ordinal": 0,
+                    "payload": {
+                        "text": "unsafe",
+                        "quote_message_log_id": 21,
+                    },
+                }
+            ],
+        ),
+    )
+
+    assert retry_rejected.disposition == "active_chat_round_retry_scheduled"
+    assert retry_rejected.operations[0].failure_code == "invalid_active_chat_round_completion"
+    assert not any(effect.kind == "send_reply" for effect in retry_rejected.effects)
 
 
 def test_round_exit_with_no_new_input_only_enqueues_fenced_exit_request() -> None:
@@ -694,6 +943,186 @@ def test_round_effect_failure_keeps_input_and_retries_through_round_due() -> Non
     assert [effect.kind for effect in retry.effects] == ["run_active_chat_round"]
 
 
+@pytest.mark.parametrize(
+    ("first_failure_kind", "second_failure_kind"),
+    (
+        ("logical_retry", "terminal_effect_failure"),
+        ("terminal_effect_failure", "logical_retry"),
+    ),
+)
+def test_v3_round_retry_chain_shares_budget_across_failure_kinds(
+    first_failure_kind: str,
+    second_failure_kind: str,
+) -> None:
+    """A frozen v3 selection has one retry budget across all terminal paths."""
+
+    reducer = AgentSessionReducer(
+        config=IdleExitReducerConfig(active_chat_round_max_attempts=2)
+    )
+    _, running = _running_round(reducer=reducer)
+    first_operation_id = running.active_chat_round_operation_id
+
+    if first_failure_kind == "logical_retry":
+        first = reducer.reduce(
+            running,
+            _round_completion(
+                running,
+                outcome="retry",
+                consumed_ids=[],
+            ),
+        )
+        expected_first_failure_code = "active_chat_round_retry"
+    else:
+        first = reducer.reduce(
+            running,
+            _workflow_effect_failure(
+                running,
+                operation_id=first_operation_id,
+            ),
+        )
+        expected_first_failure_code = "SyntheticWorkflowFailure"
+
+    expected_first_disposition = (
+        "active_chat_round_effect_failed_retry_scheduled"
+        if first_failure_kind == "terminal_effect_failure"
+        else "active_chat_round_retry_scheduled"
+    )
+    assert first.disposition == expected_first_disposition
+    assert [effect.kind for effect in first.effects] == [
+        "enqueue_active_chat_round_due"
+    ]
+    assert first.aggregate.active_chat_state["pending_message_log_ids"] == [21]
+    first_chain = first.aggregate.active_chat_state["round_retry_chain"]
+    assert first_chain["active_epoch"] == 3
+    assert first_chain["message_log_ids"] == [21]
+    assert first_chain["attempt_count"] == 1
+    assert first_chain["last_failure_code"] == expected_first_failure_code
+    assert first_chain["last_reason"]
+    assert first_chain["next_attempt_at"] == (
+        65.0 if first_failure_kind == "terminal_effect_failure" else 60.0
+    ) + 30.0
+    assert first.operations[0].metadata["retry_exhausted"] is False
+    assert first.result["round_retry_attempt_count"] == 1
+
+    retry_running = reducer.reduce(
+        first.aggregate,
+        _round_due_event(first.aggregate),
+    ).aggregate
+    retry_operation_id = retry_running.active_chat_round_operation_id
+    retry_running = _stamp_operation_sequence(
+        retry_running,
+        retry_operation_id,
+        1,
+    )
+
+    if second_failure_kind == "logical_retry":
+        exhausted = reducer.reduce(
+            retry_running,
+            _round_completion(
+                retry_running,
+                outcome="retry",
+                consumed_ids=[],
+            ),
+        )
+        expected_second_failure_code = "active_chat_round_retry"
+    else:
+        exhausted = reducer.reduce(
+            retry_running,
+            _workflow_effect_failure(
+                retry_running,
+                operation_id=retry_operation_id,
+            ),
+        )
+        expected_second_failure_code = "SyntheticWorkflowFailure"
+
+    assert exhausted.disposition == "active_chat_round_retries_exhausted_exit_requested"
+    assert [effect.kind for effect in exhausted.effects] == [
+        "enqueue_active_chat_exit_request"
+    ]
+    assert exhausted.aggregate.active_chat_round_operation_id == ""
+    assert exhausted.aggregate.active_chat_state["pending_message_log_ids"] == [21]
+    assert exhausted.aggregate.active_chat_state["exit_requested"] is True
+    assert exhausted.aggregate.active_chat_state["round_retry_chain"][
+        "attempt_count"
+    ] == 2
+    blocker = exhausted.aggregate.active_chat_state["round_retry_blocker"]
+    assert blocker["active_epoch"] == 3
+    assert blocker["message_log_ids"] == [21]
+    assert blocker["attempt_count"] == 2
+    assert blocker["last_failure_code"] == expected_second_failure_code
+    assert blocker["last_reason"]
+    assert blocker["exhausted_at"] == (
+        65.0 if second_failure_kind == "terminal_effect_failure" else 60.0
+    )
+    assert blocker["max_attempts"] == 2
+    assert exhausted.operations[0].metadata["retry_exhausted"] is True
+    assert exhausted.result["round_retry_attempt_count"] == 2
+
+
+def test_v3_round_retry_chain_resets_when_new_message_changes_selection() -> None:
+    """Fresh input starts a new v3 retry budget instead of inheriting an old one."""
+
+    reducer = AgentSessionReducer(
+        config=IdleExitReducerConfig(active_chat_round_max_attempts=2)
+    )
+    _, running = _running_round(reducer=reducer)
+    first = reducer.reduce(
+        running,
+        _round_completion(
+            running,
+            outcome="retry",
+            consumed_ids=[],
+        ),
+    )
+
+    assert first.aggregate.active_chat_state["round_retry_chain"][
+        "attempt_count"
+    ] == 1
+
+    expanded = reducer.reduce(
+        first.aggregate,
+        _message_event(event_id="message:22", message_log_id=22),
+    )
+
+    assert expanded.aggregate.active_chat_state["pending_message_log_ids"] == [21, 22]
+    assert "round_retry_chain" not in expanded.aggregate.active_chat_state
+    assert "round_retry_blocker" not in expanded.aggregate.active_chat_state
+    assert [effect.kind for effect in expanded.effects] == [
+        "enqueue_active_chat_round_due"
+    ]
+
+    next_running = reducer.reduce(
+        expanded.aggregate,
+        _round_due_event(expanded.aggregate),
+    ).aggregate
+    next_operation_id = next_running.active_chat_round_operation_id
+    next_running = _stamp_operation_sequence(
+        next_running,
+        next_operation_id,
+        2,
+    )
+    retried = reducer.reduce(
+        next_running,
+        _round_completion(
+            next_running,
+            outcome="retry",
+            consumed_ids=[],
+        ),
+    )
+
+    assert retried.disposition == "active_chat_round_retry_scheduled"
+    assert [effect.kind for effect in retried.effects] == [
+        "enqueue_active_chat_round_due"
+    ]
+    assert retried.aggregate.active_chat_state["round_retry_chain"][
+        "message_log_ids"
+    ] == [21, 22]
+    assert retried.aggregate.active_chat_state["round_retry_chain"][
+        "attempt_count"
+    ] == 1
+    assert "round_retry_blocker" not in retried.aggregate.active_chat_state
+
+
 def test_round_effect_failure_requires_its_failure_event_id() -> None:
     reducer = AgentSessionReducer()
     buffered = reducer.reduce(
@@ -722,7 +1151,7 @@ def test_round_effect_failure_requires_its_failure_event_id() -> None:
     assert operation_id in stale.aggregate.data["operation_fences"]
 
 
-def test_round_action_delays_exit_and_next_round_until_receipt_succeeds() -> None:
+def test_round_action_delays_next_round_until_receipt_succeeds() -> None:
     reducer = AgentSessionReducer()
     buffered = reducer.reduce(
         _active_chat(),
@@ -741,14 +1170,18 @@ def test_round_action_delays_exit_and_next_round_until_receipt_succeeds() -> Non
         running,
         _round_completion(
             running,
-            outcome="exit",
+            outcome="continue",
             consumed_ids=[21],
+            interest_delta=5.0,
             intents=[
                 {
                     "kind": "send_reply",
                     "tool_call_id": "round-tool-a",
                     "action_ordinal": 0,
-                    "payload": {"text": "one final reply"},
+                    "payload": {
+                        "text": "one durable reply",
+                        "quote_message_log_id": 21,
+                    },
                 }
             ],
         ),
@@ -978,7 +1411,7 @@ def test_exit_control_supplemental_fences_reject_json_type_aliases(
     assert transition.effects == ()
 
 
-def test_exit_control_failure_is_bounded_then_requires_new_activity() -> None:
+def test_exit_control_failure_is_bounded_then_forces_idle_planning() -> None:
     reducer = AgentSessionReducer(
         config=IdleExitReducerConfig(control_reconciliation_max_cycles=2)
     )
@@ -1015,7 +1448,7 @@ def test_exit_control_failure_is_bounded_then_requires_new_activity() -> None:
         "enqueue_active_chat_exit_request"
     ]["retry_cycle"] == 1
 
-    blocked = reducer.reduce(
+    forced = reducer.reduce(
         retried.aggregate,
         _control_effect_event(
             retried.aggregate,
@@ -1024,23 +1457,18 @@ def test_exit_control_failure_is_bounded_then_requires_new_activity() -> None:
         ),
     )
 
-    assert blocked.disposition == "active_chat_exit_request_failed_blocked"
-    assert blocked.effects == ()
-    assert blocked.aggregate.data["effect_control_intents"][
-        "enqueue_active_chat_exit_request"
-    ]["status"] == "failed"
-    assert reducer.reduce(blocked.aggregate, tick).effects == ()
-
-    resumed = reducer.reduce(
-        blocked.aggregate,
-        _message_event(event_id="message:21", message_log_id=21),
-    )
-    assert resumed.aggregate.data["effect_control_intents"][
-        "enqueue_active_chat_exit_request"
-    ]["status"] == "superseded"
-    assert [effect.kind for effect in resumed.effects] == [
-        "enqueue_active_chat_round_due"
+    assert forced.disposition == "active_chat_exit_request_failed_forced_settling"
+    assert forced.aggregate.state == AgentSessionState.ACTIVE_CHAT_SETTLING
+    assert [effect.kind for effect in forced.effects] == [
+        "run_idle_review_planning",
+        "enqueue_idle_review_planning_deadline",
     ]
+    assert forced.aggregate.data["effect_control_intents"][
+        "enqueue_active_chat_exit_request"
+    ]["status"] == "completed"
+    assert forced.aggregate.active_chat_state["exit_control_failover"][
+        "failure_code"
+    ] == "SyntheticControlFailure"
 
 
 def test_round_due_control_failure_retries_then_preserves_pending_input() -> None:
@@ -1064,7 +1492,7 @@ def test_round_due_control_failure_retries_then_preserves_pending_input() -> Non
     assert retried.aggregate.active_chat_state["pending_message_log_ids"] == [21]
     assert retried.effects[0].kind == "enqueue_active_chat_round_due"
 
-    blocked = reducer.reduce(
+    exiting = reducer.reduce(
         retried.aggregate,
         _control_effect_event(
             retried.aggregate,
@@ -1073,22 +1501,17 @@ def test_round_due_control_failure_retries_then_preserves_pending_input() -> Non
         ),
     )
 
-    assert blocked.disposition == "active_chat_round_due_failed_blocked"
-    assert blocked.effects == ()
-    assert blocked.aggregate.active_chat_state["pending_message_log_ids"] == [21]
-    assert blocked.aggregate.data["effect_control_intents"][
+    assert exiting.disposition == "active_chat_round_due_failed_exit_requested"
+    assert [effect.kind for effect in exiting.effects] == [
+        "enqueue_active_chat_exit_request"
+    ]
+    assert exiting.aggregate.active_chat_state["pending_message_log_ids"] == [21]
+    assert exiting.aggregate.active_chat_state["exit_requested"] is True
+    assert exiting.aggregate.data["effect_control_intents"][
         "enqueue_active_chat_round_due"
     ]["status"] == "failed"
-
-    resumed = reducer.reduce(
-        blocked.aggregate,
-        _message_event(event_id="message:22", message_log_id=22),
-    )
-    assert [effect.kind for effect in resumed.effects] == [
-        "enqueue_active_chat_round_due"
-    ]
-    assert resumed.aggregate.data["effect_control_intents"][
-        "enqueue_active_chat_round_due"
+    assert exiting.aggregate.data["effect_control_intents"][
+        "enqueue_active_chat_exit_request"
     ]["status"] == "requested"
 
 

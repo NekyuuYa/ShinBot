@@ -174,6 +174,24 @@ _CURRENT_OUTCOME_FENCE_FIELDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Actor-native Active Chat work needs stricter durable input declarations than
+# the early reducer-only effects.  Keep this as a separate v3 schema so the
+# historic v1/v2 recovery projections remain byte-for-byte compatible.
+_ACTOR_NATIVE_ACTIVE_CHAT_V3_OUTCOME_FENCE_FIELDS: dict[str, tuple[str, ...]] = {
+    "run_active_chat_bootstrap": (
+        *_CURRENT_OUTCOME_FENCE_FIELDS["run_active_chat_bootstrap"],
+        "handoff_message_log_ids",
+        "handoff_operation_id",
+    ),
+    "run_active_chat_round": (
+        *_CURRENT_OUTCOME_FENCE_FIELDS["run_active_chat_round"],
+        "active_chat_interest_value",
+        "bootstrap_disposition",
+        "message_log_ids",
+        "round_schedule_id",
+    ),
+}
+
 
 _LEGACY_V1_OUTCOME_FENCE_FIELDS: dict[str, tuple[str, ...]] = {
     effect_kind: tuple(sorted({*DEFAULT_OUTCOME_FENCE_FIELDS, *fields}))
@@ -408,6 +426,9 @@ _NONNEGATIVE_INTEGER_FENCE_FIELDS = frozenset(
         "state_revision",
     }
 )
+_NONNEGATIVE_FINITE_NUMBER_FENCE_FIELDS = frozenset(
+    {"active_chat_interest_value"}
+)
 _NULLABLE_INTEGER_FENCE_FIELDS = frozenset(
     {
         "expected_active_epoch",
@@ -420,11 +441,13 @@ _NULLABLE_INTEGER_FENCE_FIELDS = frozenset(
 _TEXT_FENCE_FIELDS = frozenset(
     {
         "completion_event_id",
+        "bootstrap_disposition",
         "control_effect_id",
         "control_effect_kind",
         "deadline_event_id",
         "desired_state",
         "failure_event_id",
+        "handoff_operation_id",
         "plan_id",
         "request_digest",
         "schedule_id",
@@ -434,6 +457,9 @@ _TEXT_FENCE_FIELDS = frozenset(
     }
 )
 _NULLABLE_TEXT_FENCE_FIELDS = frozenset({"superseded_by_event_id"})
+_MESSAGE_LOG_ID_SEQUENCE_FENCE_FIELDS = frozenset(
+    {"handoff_message_log_ids", "message_log_ids"}
+)
 
 
 def resolved_outcome_fence_fields(
@@ -636,6 +662,34 @@ def validate_effect_declaration(
 
 
 def _validate_declared_fence_value(field_name: str, value: object) -> None:
+    if field_name in _MESSAGE_LOG_ID_SEQUENCE_FENCE_FIELDS:
+        if not isinstance(value, list):
+            raise EffectDeclarationValidationError(
+                f"effect.payload.{field_name} must be a JSON array"
+            )
+        seen: set[int] = set()
+        for index, item in enumerate(value):
+            message_log_id = _positive_json_integer(
+                item,
+                field_name=f"effect.payload.{field_name}[{index}]",
+            )
+            if message_log_id in seen:
+                raise EffectDeclarationValidationError(
+                    f"effect.payload.{field_name} must not contain duplicate "
+                    "message log ids"
+                )
+            seen.add(message_log_id)
+        return
+    if field_name in _NONNEGATIVE_FINITE_NUMBER_FENCE_FIELDS:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise EffectDeclarationValidationError(
+                f"effect.payload.{field_name} must be a JSON number"
+            )
+        if not math.isfinite(float(value)) or float(value) < 0.0:
+            raise EffectDeclarationValidationError(
+                f"effect.payload.{field_name} must be a non-negative finite number"
+            )
+        return
     if field_name in _NONNEGATIVE_INTEGER_FENCE_FIELDS:
         if value is None and field_name in _NULLABLE_INTEGER_FENCE_FIELDS:
             return
@@ -871,7 +925,21 @@ def builtin_session_actor_effect_contracts() -> tuple[EffectExecutionContract, .
         if (outcome_fence_fields := _CURRENT_OUTCOME_FENCE_FIELDS.get(contract.effect_kind))
         is not None
     )
-    return (*legacy_contracts, *current_contracts)
+    actor_native_active_chat_contracts = tuple(
+        replace(
+            contract,
+            version=3,
+            outcome_fence_fields=outcome_fence_fields,
+        )
+        for contract in current_contracts
+        if (
+            outcome_fence_fields := _ACTOR_NATIVE_ACTIVE_CHAT_V3_OUTCOME_FENCE_FIELDS.get(
+                contract.effect_kind
+            )
+        )
+        is not None
+    )
+    return (*legacy_contracts, *current_contracts, *actor_native_active_chat_contracts)
 
 
 def builtin_effect_contract(

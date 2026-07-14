@@ -416,6 +416,7 @@ def _external_action_completion(
             "effect_kind": effect.kind,
             "idempotency_key": effect.idempotency_key,
             "operation_id": effect.operation_id,
+            "receipt_idempotency_key": effect.idempotency_key,
             "receipt_status": receipt_status.value,
             "request_digest": request_digest or pending["request_digest"],
         },
@@ -1588,6 +1589,180 @@ def test_external_action_success_starts_bootstrap_after_exact_receipt() -> None:
     ]
 
 
+@pytest.mark.parametrize("legacy_marker", [None, 99])
+def test_legacy_waiting_outbound_state_pins_bootstrap_to_v2(
+    legacy_marker: int | None,
+) -> None:
+    """A persisted pre-v3 receipt gate must not mint a native bootstrap."""
+
+    reducer, started = _started_review()
+    waiting = reducer.reduce(
+        started,
+        _review_completion(
+            started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "legacy-waiting-outbound-reply",
+                    "action_ordinal": 0,
+                    "payload": {"text": "review reply"},
+                }
+            ],
+        ),
+    )
+    action = next(effect for effect in waiting.effects if effect.kind == "send_reply")
+    active_state = dict(waiting.aggregate.active_chat_state)
+    if legacy_marker is None:
+        active_state.pop("actor_workflow_contract_version")
+    else:
+        active_state["actor_workflow_contract_version"] = legacy_marker
+    legacy_waiting = replace(waiting.aggregate, active_chat_state=active_state)
+
+    released = reducer.reduce(
+        legacy_waiting,
+        _external_action_completion(
+            legacy_waiting,
+            action,
+            receipt_status=ExternalActionReceiptStatus.SUCCEEDED,
+        ),
+    )
+
+    bootstrap = next(
+        effect
+        for effect in released.effects
+        if effect.kind == "run_active_chat_bootstrap"
+    )
+    assert bootstrap.contract_version == 2
+    assert bootstrap.contract_signature == builtin_effect_contract(
+        "run_active_chat_bootstrap",
+        version=2,
+    ).signature
+    assert "handoff_operation_id" not in bootstrap.payload
+    assert "handoff_message_log_ids" not in bootstrap.payload
+    assert (
+        released.aggregate.active_chat_state["actor_workflow_contract_version"]
+        == 2
+    )
+
+
+def test_v3_waiting_outbound_without_a_provable_handoff_downgrades_to_v2() -> None:
+    """A partial v3 state must not resume as mixed-version bootstrap/round work."""
+
+    reducer, started = _started_review()
+    waiting = reducer.reduce(
+        started,
+        _review_completion(
+            started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "partial-v3-waiting-outbound-reply",
+                    "action_ordinal": 0,
+                    "payload": {"text": "review reply"},
+                }
+            ],
+        ),
+    )
+    action = next(effect for effect in waiting.effects if effect.kind == "send_reply")
+    active_state = dict(waiting.aggregate.active_chat_state)
+    active_state.pop("bootstrap_handoff_message_log_ids")
+    partial_v3_waiting = replace(waiting.aggregate, active_chat_state=active_state)
+
+    released = reducer.reduce(
+        partial_v3_waiting,
+        _external_action_completion(
+            partial_v3_waiting,
+            action,
+            receipt_status=ExternalActionReceiptStatus.SUCCEEDED,
+        ),
+    )
+
+    bootstrap = next(
+        effect
+        for effect in released.effects
+        if effect.kind == "run_active_chat_bootstrap"
+    )
+    assert bootstrap.contract_version == 2
+    assert "handoff_operation_id" not in bootstrap.payload
+    assert "handoff_message_log_ids" not in bootstrap.payload
+    assert released.aggregate.active_chat_state["actor_workflow_contract_version"] == 2
+
+
+def test_bootstrap_handoff_is_equivalent_with_or_without_review_reply_receipt() -> None:
+    """A receipt delay cannot widen or otherwise rewrite bootstrap model input."""
+
+    direct_reducer, direct_started = _started_review()
+    direct = direct_reducer.reduce(
+        direct_started,
+        _review_completion(
+            direct_started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+        ),
+    )
+    direct_effect = next(
+        effect
+        for effect in direct.effects
+        if effect.kind == "run_active_chat_bootstrap"
+    )
+
+    receipt_reducer, receipt_started = _started_review()
+    waiting = receipt_reducer.reduce(
+        receipt_started,
+        _review_completion(
+            receipt_started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "review-handoff-reply",
+                    "action_ordinal": 0,
+                    "payload": {"text": "review reply"},
+                }
+            ],
+        ),
+    )
+    action = next(effect for effect in waiting.effects if effect.kind == "send_reply")
+    receipt = receipt_reducer.reduce(
+        waiting.aggregate,
+        _external_action_completion(
+            waiting.aggregate,
+            action,
+            receipt_status=ExternalActionReceiptStatus.SUCCEEDED,
+        ),
+    )
+    receipt_effect = next(
+        effect
+        for effect in receipt.effects
+        if effect.kind == "run_active_chat_bootstrap"
+    )
+
+    fields = {
+        "contract_version",
+        "contract_signature",
+        "handoff_operation_id",
+        "handoff_message_log_ids",
+        "input_watermark",
+        "input_ledger_sequence",
+        "active_epoch",
+        "activity_generation",
+        "instance_id",
+        "target_session_id",
+    }
+    assert {field: direct_effect.payload[field] for field in fields} == {
+        field: receipt_effect.payload[field] for field in fields
+    }
+    assert direct_effect.contract_version == 3
+    assert receipt_effect.contract_version == 3
+    assert "review_completion" not in direct_effect.payload
+    assert "review_completion" not in receipt_effect.payload
+
+
 def test_legacy_pending_external_action_without_snapshot_accepts_only_v1() -> None:
     reducer, started = _started_review()
     waiting = reducer.reduce(
@@ -1651,6 +1826,7 @@ def test_legacy_pending_external_action_without_snapshot_accepts_only_v1() -> No
         ("idempotency_key", "idempotency_key_changed"),
         ("operation_id", "operation_id_changed"),
         ("request_digest", "request_digest_changed"),
+        ("receipt_idempotency_key", "receipt_idempotency_key_changed"),
         ("contract_signature", "contract_signature_changed"),
         ("receipt_status", "receipt_status_invalid"),
     ),
@@ -1952,6 +2128,48 @@ def test_external_action_completion_with_changed_request_digest_is_stale() -> No
     assert stale.aggregate.active_chat_state["bootstrap_status"] == "waiting_outbound"
     pending = stale.aggregate.data["pending_outbound_actions"]
     assert pending[action.effect_id]["status"] == "pending"
+
+
+def test_v2_external_action_completion_requires_receipt_idempotency_key() -> None:
+    """A v2 receipt result cannot settle an action without its receipt identity."""
+
+    reducer, started = _started_review()
+    waiting = reducer.reduce(
+        started,
+        _review_completion(
+            started,
+            enter_active_chat=True,
+            consumed_ids=[10, 20],
+            intents=[
+                {
+                    "kind": "send_reply",
+                    "tool_call_id": "review-tool-a",
+                    "action_ordinal": 0,
+                    "payload": {"text": "review reply"},
+                }
+            ],
+        ),
+    )
+    action = next(effect for effect in waiting.effects if effect.kind == "send_reply")
+    completion = _external_action_completion(
+        waiting.aggregate,
+        action,
+        receipt_status=ExternalActionReceiptStatus.SUCCEEDED,
+    )
+    payload = dict(completion.payload)
+    payload.pop("receipt_idempotency_key")
+
+    stale = reducer.reduce(
+        waiting.aggregate,
+        replace(completion, payload=payload),
+    )
+
+    assert stale.disposition == "external_action_completion_stale"
+    assert "receipt_idempotency_key_missing" in stale.reason
+    assert stale.effects == ()
+    assert stale.aggregate.data["pending_outbound_actions"][action.effect_id][
+        "status"
+    ] == "pending"
 
 
 def test_review_completion_returns_idle_with_typed_next_schedule() -> None:

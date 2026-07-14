@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from shinbot.agent.runtime.session_actor.aggregate import SessionKey
+from shinbot.agent.runtime.session_actor.aggregate import (
+    AgentSessionAggregate,
+    SessionKey,
+)
 from shinbot.agent.runtime.session_actor.delayed_control_handler import (
     register_delayed_control_effect_handlers,
 )
@@ -43,6 +46,10 @@ from shinbot.agent.runtime.session_actor.reducer import (
     IdleExitReducerConfig,
 )
 from shinbot.agent.runtime.session_actor.registry import AgentSessionActorRegistry
+from shinbot.agent.runtime.session_actor.review_due_identity import (
+    REVIEW_DUE_EVENT_SOURCE,
+    review_due_event_id,
+)
 from shinbot.agent.runtime.session_actor.store import SQLiteSessionActorStore
 from shinbot.core.dispatch.agent_ownership import AgentRuntimeOwnershipMode
 from shinbot.persistence import DatabaseManager
@@ -374,7 +381,10 @@ async def test_active_chat_round_snapshot_commits_without_consuming_later_work(
     operation_id = running.active_chat_round_operation_id
     fence = running.data["operation_fences"][operation_id]
     assert fence["input_ledger_sequence"] == 1
-    round_contract = builtin_effect_contract("run_active_chat_round")
+    round_contract = builtin_effect_contract(
+        "run_active_chat_round",
+        version=int(fence["contract_version"]),
+    )
     completion = SessionEventEnvelope(
         event_id=str(fence["completion_event_id"]),
         key=key,
@@ -402,7 +412,7 @@ async def test_active_chat_round_snapshot_commits_without_consuming_later_work(
                 "consumed_message_log_ids": [message_log_id],
                 "external_actions": {"schema_version": 1, "intents": []},
                 "outcome": "continue",
-                "interest_delta": 1.0,
+                "interest_delta": -5.0,
                 "reason": "observed message",
             },
         },
@@ -649,10 +659,10 @@ async def test_v2_exit_request_completion_flows_from_executor_to_settling_actor(
 
 
 @pytest.mark.asyncio
-async def test_v2_exit_failure_flows_from_executor_to_actor_blocker(
+async def test_v2_exit_failure_flows_from_executor_to_idle_planning_failover(
     tmp_path: Path,
 ) -> None:
-    """A terminal v2 exit-control failure must be reduced into a visible blocker."""
+    """A terminal exit-control failure must enter durable idle-planning recovery."""
 
     now = [100.0]
     database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
@@ -749,19 +759,20 @@ async def test_v2_exit_failure_flows_from_executor_to_actor_blocker(
     assert terminal.status == EffectRunStatus.FAILED
     assert terminal.event_id == intent["failure_event_id"]
     assert handler_attempts == exit_contract.max_attempts
-    blocked = await store.load(key)
-    blocked_intent = blocked.data["effect_control_intents"][
+    settling = await store.load(key)
+    exit_intent = settling.data["effect_control_intents"][
         AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
     ]
-    assert blocked.state == AgentSessionState.ACTIVE_CHAT
-    assert blocked_intent["status"] == "failed"
-    assert blocked_intent["last_failure"]["failure_code"] == "RuntimeError"
-    assert blocked.active_chat_state["exit_requested"] is False
-    assert blocked.active_chat_state["exit_blocker"] == {
+    assert settling.state == AgentSessionState.ACTIVE_CHAT_SETTLING
+    assert exit_intent["status"] == "completed"
+    assert settling.active_chat_state["exit_requested"] is False
+    assert settling.active_chat_state["exit_control_failover"] == {
         "effect_id": intent["effect_id"],
         "failure_event_id": terminal.event_id,
         "failure_code": "RuntimeError",
+        "retry_cycle": 0,
     }
+    assert settling.idle_planning_operation_id
 
     with database.connect() as conn:
         effect = conn.execute(
@@ -785,6 +796,260 @@ async def test_v2_exit_failure_flows_from_executor_to_actor_blocker(
     assert tuple(effect) == ("failed", exit_contract.version)
     assert failure is not None
     assert tuple(failure) == ("completed", AgentSessionEventKind.EFFECT_FAILED)
+
+
+@pytest.mark.asyncio
+async def test_round_due_terminal_failure_hands_pending_ledger_to_next_review(
+    tmp_path: Path,
+) -> None:
+    """A failed Active Chat timer leaves its frozen input for the next review."""
+
+    now = [100.0]
+    database = DatabaseManager.from_bootstrap(data_dir=tmp_path)
+    database.initialize()
+    store = SQLiteSessionActorStore(database, clock=lambda: now[0])
+    reducer = AgentSessionReducer(
+        config=IdleExitReducerConfig(control_reconciliation_max_cycles=1)
+    )
+    key = SessionKey("profile-a", "session-a")
+    ownership = database.agent_runtime_ownership.claim(
+        key,
+        AgentRuntimeOwnershipMode.ACTOR_V2,
+        reason="pending ledger handoff integration test",
+        legacy_session_id="legacy:session-a",
+    ).ownership
+    await _seed_active_chat(store, key=key, generation=ownership.generation)
+
+    async def commit_event(
+        envelope: SessionEventEnvelope,
+        *,
+        worker_id: str,
+    ) -> AgentSessionAggregate:
+        """Run one real mailbox claim/reduce/commit transition."""
+
+        enqueue_result = await store.enqueue(envelope)
+        assert enqueue_result.inserted is True
+        claim = await store.claim_next(key, worker_id=worker_id)
+        assert claim is not None
+        current = await store.load(key)
+        transition = reducer.reduce(current, claim.envelope)
+        return await store.commit(
+            claim,
+            transition,
+            expected_revision=current.state_revision,
+        )
+
+    message_log_id = database.message_logs.insert(
+        MessageLogRecord(
+            session_id="base-a",
+            platform_msg_id="platform:pending-ledger-1",
+            sender_id="user-a",
+            sender_name="User A",
+            raw_text="please keep this pending",
+            content_json="[]",
+            role="user",
+            created_at=10.0,
+        )
+    )
+    buffered = await commit_event(
+        _message_event(
+            key=key,
+            generation=ownership.generation,
+            message_log_id=message_log_id,
+        ),
+        worker_id="message-worker",
+    )
+    assert buffered.state == AgentSessionState.ACTIVE_CHAT
+    round_intent = buffered.data["effect_control_intents"][
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE
+    ]
+    round_contract = builtin_effect_contract(
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE,
+        version=int(round_intent["contract_version"]),
+    )
+
+    round_failure = SessionEventEnvelope(
+        event_id=str(round_intent["failure_event_id"]),
+        key=key,
+        kind=AgentSessionEventKind.EFFECT_FAILED,
+        ownership_generation=ownership.generation,
+        source=round_contract.completion_source,
+        occurred_at=20.0,
+        causation_id=str(round_intent["causation_id"]),
+        correlation_id=str(round_intent["effect_id"]),
+        payload={
+            "effect_id": round_intent["effect_id"],
+            "effect_kind": AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE,
+            "idempotency_key": round_intent["idempotency_key"],
+            "operation_id": round_intent["operation_id"],
+            "plan_id": round_intent["plan_id"],
+            "active_epoch": round_intent["active_epoch"],
+            "activity_generation": round_intent["activity_generation"],
+            "input_watermark": round_intent["input_watermark"],
+            "input_ledger_sequence": round_intent["input_ledger_sequence"],
+            "attempt_count": 1,
+            "contract_version": round_contract.version,
+            "contract_signature": round_contract.signature,
+            "schedule_id": round_intent["schedule_id"],
+            "schedule_revision": round_intent["schedule_revision"],
+            "failure_code": "SyntheticControlFailure",
+            "failure_message": "round due control exhausted",
+        },
+    )
+    exit_requested = await commit_event(round_failure, worker_id="failure-worker")
+    assert exit_requested.state == AgentSessionState.ACTIVE_CHAT
+    assert exit_requested.data["effect_control_intents"][
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_ROUND_DUE
+    ]["status"] == "failed"
+    assert exit_requested.active_chat_state["pending_message_log_ids"] == [
+        message_log_id
+    ]
+    exit_intent = exit_requested.data["effect_control_intents"][
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
+    ]
+    exit_contract = builtin_effect_contract(
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST,
+        version=int(exit_intent["contract_version"]),
+    )
+
+    exit_completion = SessionEventEnvelope(
+        event_id=str(exit_intent["completion_event_id"]),
+        key=key,
+        kind=AgentSessionEventKind.EXIT_REQUESTED,
+        ownership_generation=ownership.generation,
+        source=exit_contract.completion_source,
+        occurred_at=30.0,
+        causation_id=str(exit_intent["causation_id"]),
+        correlation_id=str(exit_intent["effect_id"]),
+        payload={
+            "effect_id": exit_intent["effect_id"],
+            "effect_kind": AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST,
+            "idempotency_key": exit_intent["idempotency_key"],
+            "operation_id": exit_intent["operation_id"],
+            "plan_id": exit_intent["plan_id"],
+            "active_epoch": exit_intent["active_epoch"],
+            "activity_generation": exit_intent["activity_generation"],
+            "input_watermark": exit_intent["input_watermark"],
+            "input_ledger_sequence": exit_intent["input_ledger_sequence"],
+            "attempt_count": 1,
+            "contract_version": exit_contract.version,
+            "contract_signature": exit_contract.signature,
+            "trigger": exit_intent["trigger"],
+            "expected_active_epoch": exit_intent["expected_active_epoch"],
+            "expected_message_watermark": exit_intent[
+                "expected_message_watermark"
+            ],
+        },
+    )
+    settling = await commit_event(exit_completion, worker_id="exit-worker")
+    assert settling.state == AgentSessionState.ACTIVE_CHAT_SETTLING
+    assert settling.data["effect_control_intents"][
+        AgentSessionEffectKind.ENQUEUE_ACTIVE_CHAT_EXIT_REQUEST
+    ]["status"] == "completed"
+    idle_exit = settling.data["idle_exit"]
+    idle_operation_id = str(idle_exit["operation_id"])
+    idle_fence = settling.data["operation_fences"][idle_operation_id]
+    assert idle_fence["input_watermark"] == message_log_id
+    assert idle_fence["input_ledger_sequence"] == 1
+    planner_contract = builtin_effect_contract(
+        AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING,
+        version=int(idle_exit["planner_contract_version"]),
+    )
+
+    planner_completion = SessionEventEnvelope(
+        event_id=str(idle_exit["completion_event_id"]),
+        key=key,
+        kind=AgentSessionEventKind.IDLE_REVIEW_PLANNING_COMPLETED,
+        ownership_generation=ownership.generation,
+        source=planner_contract.completion_source,
+        occurred_at=40.0,
+        causation_id=str(idle_exit["requested_by_event_id"]),
+        correlation_id=idle_operation_id,
+        payload={
+            "effect_id": idle_exit["planner_effect_id"],
+            "effect_kind": AgentSessionEffectKind.RUN_IDLE_REVIEW_PLANNING,
+            "idempotency_key": idle_exit["planner_idempotency_key"],
+            "operation_id": idle_operation_id,
+            "plan_id": idle_exit["plan_id"],
+            "active_epoch": idle_exit["active_epoch"],
+            "activity_generation": idle_exit["activity_generation"],
+            "input_watermark": idle_fence["input_watermark"],
+            "input_ledger_sequence": idle_fence["input_ledger_sequence"],
+            "attempt_count": 1,
+            "contract_version": planner_contract.version,
+            "contract_signature": planner_contract.signature,
+            "outcome": {
+                "kind": "planned",
+                "requested_delay_seconds": 0.0,
+                "reason": "recover_pending_active_chat_input",
+            },
+        },
+    )
+    idle = await commit_event(planner_completion, worker_id="planner-worker")
+    assert idle.state == AgentSessionState.IDLE
+    assert idle.current_plan_id == idle_exit["plan_id"]
+
+    due_event_id = review_due_event_id(
+        key=key,
+        plan_id=idle.current_plan_id,
+        plan_revision=idle.review_plan_revision,
+        ownership_generation=ownership.generation,
+    )
+    review_due = SessionEventEnvelope(
+        event_id=due_event_id,
+        key=key,
+        kind=AgentSessionEventKind.REVIEW_DUE,
+        ownership_generation=ownership.generation,
+        source=REVIEW_DUE_EVENT_SOURCE,
+        occurred_at=50.0,
+        payload={
+            "version": 1,
+            "event_id": due_event_id,
+            "session_key": {
+                "profile_id": key.profile_id,
+                "session_id": key.session_id,
+            },
+            "plan_id": idle.current_plan_id,
+            "plan_revision": idle.review_plan_revision,
+            "ownership_generation": ownership.generation,
+            "attempt_count": 0,
+        },
+    )
+    reviewing = await commit_event(review_due, worker_id="review-worker")
+    assert reviewing.state == AgentSessionState.REVIEW
+    review_operation_id = reviewing.review_operation_id
+    review_fence = reviewing.data["operation_fences"][review_operation_id]
+    assert review_fence["input_watermark"] == message_log_id
+    assert review_fence["input_ledger_sequence"] == 1
+
+    unread = await store.list_unread_messages(key)
+    assert [entry.message_log_id for entry in unread] == [message_log_id]
+    assert unread[0].chat_consumption is None
+    assert unread[0].review_consumption is None
+    captured = await store.list_captured_unread(
+        key=key,
+        ownership_generation=ownership.generation,
+        input_watermark=int(review_fence["input_watermark"]),
+        input_ledger_sequence=int(review_fence["input_ledger_sequence"]),
+    )
+    assert [entry.message_log_id for entry in captured] == [message_log_id]
+
+    with database.connect() as conn:
+        effect = conn.execute(
+            """
+            SELECT operation_id, payload_json, status
+            FROM agent_effect_outbox
+            WHERE effect_id = ?
+            """,
+            (review_fence["effect_id"],),
+        ).fetchone()
+    assert effect is not None
+    review_effect_payload = json.loads(str(effect["payload_json"]))
+    assert effect["operation_id"] == review_operation_id
+    assert effect["status"] == "pending"
+    assert review_effect_payload["input_watermark"] == message_log_id
+    assert review_effect_payload["input_ledger_sequence"] == 1
+    assert review_effect_payload["plan_id"] == idle.current_plan_id
 
 
 @pytest.mark.asyncio
@@ -903,7 +1168,7 @@ async def test_external_action_v2_authority_overrides_handler_identity_and_relea
         calls = 0
 
         async def forged_handler(
-            _context: EffectExecutionContext,
+            context: EffectExecutionContext,
         ) -> EffectHandlerResult:
             nonlocal calls
             calls += 1
@@ -911,6 +1176,7 @@ async def test_external_action_v2_authority_overrides_handler_identity_and_relea
                 payload={
                     "action_ordinal": 999,
                     "request_digest": "0" * 64,
+                    "receipt_idempotency_key": context.effect.idempotency_key,
                     "receipt_status": "succeeded",
                 }
             )
